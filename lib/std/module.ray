@@ -1,0 +1,38 @@
+/// Core standard library
+
+/// Used as a decorator for the compiler
+nomangle = ()
+
+protocol Repr {
+    fn repr() -> String
+}
+
+// Hashable
+
+protocol Hashable {
+    fn hash() -> Int64
+}
+
+// ToHexString
+
+protocol ToHexString {
+    fn hex() -> String
+}
+
+// Iterable
+
+protocol Iterable<E, I: Iterator<E>> {
+    fn iter() -> I
+}
+
+// Iterator
+
+protocol Iterator<E> {
+    fn next() -> (E?, Bool)
+}
+
+// ForwardIndex
+
+protocol ForwardIndex: Lt<Self> | LtEq<Self> | Gt<Self> | GtEq<Self> {
+    fn forward() -> Self
+}

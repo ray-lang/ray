@@ -1,0 +1,14 @@
+///
+/// libc bindings for Ray
+///
+/// Each function has the `c` modifier, marking it as a C function.
+/// Arguments in a call to these functions are automatically converted
+/// to the appropriated C type. For example, a Ray `String` is converted
+/// to a `char *` and a Ray `UInt8` is converted to a `char`.
+///
+/// NOTE: Currently, we cannot get typedefs/structs.
+///
+
+import "C" "stdlib.h"
+import "C" "string.h"
+import "C" "stdio.h"

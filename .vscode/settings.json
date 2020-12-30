@@ -1,0 +1,8 @@
+{
+    "rust-client.channel": "stable",
+    "rust-client.trace.server": "messages",
+    "rust.racer_completion": true,
+    "[rust]": {
+        "editor.formatOnSave": true,
+    }
+}

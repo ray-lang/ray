@@ -1,0 +1,1018 @@
+import platform
+import builtins
+import asm
+
+extern impl Int: ToString
+extern impl Int8: ToString
+extern impl Int16: ToString
+extern impl Int32: ToString
+extern impl Int64: ToString
+extern impl UInt: ToString
+extern impl UInt8: ToString
+extern impl UInt16: ToString
+extern impl UInt32: ToString
+extern impl UInt64: ToString
+
+extern impl Int: ToHexString
+extern impl Int8: ToHexString
+extern impl Int16: ToHexString
+extern impl Int32: ToHexString
+extern impl Int64: ToHexString
+extern impl UInt: ToHexString
+extern impl UInt8: ToHexString
+extern impl UInt16: ToHexString
+extern impl UInt32: ToHexString
+extern impl UInt64: ToHexString
+
+// Add
+
+impl Int: Add<Int> {
+    fn add(other: Int) -> Int => asm.addi(self, other)
+}
+
+impl Int8: Add<Int8> {
+    fn add(other: Int8) -> Int8 => asm.addi8(self, other)
+}
+
+impl Int16: Add<Int16> {
+    fn add(other: Int16) -> Int16 => asm.addi16(self, other)
+}
+
+impl Int32: Add<Int32> {
+    fn add(other: Int32) -> Int32 => asm.addi32(self, other)
+}
+
+impl Int64: Add<Int64> {
+    fn add(other: Int64) -> Int64 => asm.addi64(self, other)
+}
+
+impl UInt: Add<UInt> {
+    fn add(other: UInt) -> UInt => asm.addu(self, other)
+}
+
+impl UInt8: Add<UInt8> {
+    fn add(other: UInt8) -> UInt8 => asm.addu8(self, other)
+}
+
+impl UInt16: Add<UInt16> {
+    fn add(other: UInt16) -> UInt16 => asm.addu16(self, other)
+}
+
+impl UInt32: Add<UInt32> {
+    fn add(other: UInt32) -> UInt32 => asm.addu32(self, other)
+}
+
+impl UInt64: Add<UInt64> {
+    fn add(other: UInt64) -> UInt64 => asm.addu64(self, other)
+}
+
+// Sub
+
+impl Int: Sub<Int> {
+    fn sub(other: Int) -> Int => asm.subi(self, other)
+}
+
+impl Int8: Sub<Int8> {
+    fn sub(other: Int8) -> Int8 => asm.subi8(self, other)
+}
+
+impl Int16: Sub<Int16> {
+    fn sub(other: Int16) -> Int16 => asm.subi16(self, other)
+}
+
+impl Int32: Sub<Int32> {
+    fn sub(other: Int32) -> Int32 => asm.subi32(self, other)
+}
+
+impl Int64: Sub<Int64> {
+    fn sub(other: Int64) -> Int64 => asm.subi64(self, other)
+}
+
+impl UInt: Sub<UInt> {
+    fn sub(other: UInt) -> UInt => asm.subu(self, other)
+}
+
+impl UInt8: Sub<UInt8> {
+    fn sub(other: UInt8) -> UInt8 => asm.subu8(self, other)
+}
+
+impl UInt16: Sub<UInt16> {
+    fn sub(other: UInt16) -> UInt16 => asm.subu16(self, other)
+}
+
+impl UInt32: Sub<UInt32> {
+    fn sub(other: UInt32) -> UInt32 => asm.subu32(self, other)
+}
+
+impl UInt64: Sub<UInt64> {
+    fn sub(other: UInt64) -> UInt64 => asm.subu64(self, other)
+}
+
+// Mul
+
+impl Int: Mul<Int> {
+    fn mul(other: Int) -> Int => asm.muli(self, other)
+}
+
+impl Int8: Mul<Int8> {
+    fn mul(other: Int8) -> Int8 => asm.muli8(self, other)
+}
+
+impl Int16: Mul<Int16> {
+    fn mul(other: Int16) -> Int16 => asm.muli16(self, other)
+}
+
+impl Int32: Mul<Int32> {
+    fn mul(other: Int32) -> Int32 => asm.muli32(self, other)
+}
+
+impl Int64: Mul<Int64> {
+    fn mul(other: Int64) -> Int64 => asm.muli64(self, other)
+}
+
+impl UInt: Mul<UInt> {
+    fn mul(other: UInt) -> UInt => asm.mulu(self, other)
+}
+
+impl UInt8: Mul<UInt8> {
+    fn mul(other: UInt8) -> UInt8 => asm.mulu8(self, other)
+}
+
+impl UInt16: Mul<UInt16> {
+    fn mul(other: UInt16) -> UInt16 => asm.mulu16(self, other)
+}
+
+impl UInt32: Mul<UInt32> {
+    fn mul(other: UInt32) -> UInt32 => asm.mulu32(self, other)
+}
+
+impl UInt64: Mul<UInt64> {
+    fn mul(other: UInt64) -> UInt64 => asm.mulu64(self, other)
+}
+
+// Div
+
+impl Int: Div<Int> {
+    fn div(other: Int) -> Int => asm.divi(self, other)
+}
+
+impl Int8: Div<Int8> {
+    fn div(other: Int8) -> Int8 => asm.divi8(self, other)
+}
+
+impl Int16: Div<Int16> {
+    fn div(other: Int16) -> Int16 => asm.divi16(self, other)
+}
+
+impl Int32: Div<Int32> {
+    fn div(other: Int32) -> Int32 => asm.divi32(self, other)
+}
+
+impl Int64: Div<Int64> {
+    fn div(other: Int64) -> Int64 => asm.divi64(self, other)
+}
+
+impl UInt: Div<UInt> {
+    fn div(other: UInt) -> UInt => asm.divu(self, other)
+}
+
+impl UInt8: Div<UInt8> {
+    fn div(other: UInt8) -> UInt8 => asm.divu8(self, other)
+}
+
+impl UInt16: Div<UInt16> {
+    fn div(other: UInt16) -> UInt16 => asm.divu16(self, other)
+}
+
+impl UInt32: Div<UInt32> {
+    fn div(other: UInt32) -> UInt32 => asm.divu32(self, other)
+}
+
+impl UInt64: Div<UInt64> {
+    fn div(other: UInt64) -> UInt64 => asm.divu64(self, other)
+}
+
+// Mod
+
+impl Int: Mod<Int> {
+    fn mod(other: Int) -> Int => asm.modi(self, other)
+}
+
+impl Int8: Mod<Int8> {
+    fn mod(other: Int8) -> Int8 => asm.modi8(self, other)
+}
+
+impl Int16: Mod<Int16> {
+    fn mod(other: Int16) -> Int16 => asm.modi16(self, other)
+}
+
+impl Int32: Mod<Int32> {
+    fn mod(other: Int32) -> Int32 => asm.modi32(self, other)
+}
+
+impl Int64: Mod<Int64> {
+    fn mod(other: Int64) -> Int64 => asm.modi64(self, other)
+}
+
+impl UInt: Mod<UInt> {
+    fn mod(other: UInt) -> UInt => asm.modu(self, other)
+}
+
+impl UInt8: Mod<UInt8> {
+    fn mod(other: UInt8) -> UInt8 => asm.modu8(self, other)
+}
+
+impl UInt16: Mod<UInt16> {
+    fn mod(other: UInt16) -> UInt16 => asm.modu16(self, other)
+}
+
+impl UInt32: Mod<UInt32> {
+    fn mod(other: UInt32) -> UInt32 => asm.modu32(self, other)
+}
+
+impl UInt64: Mod<UInt64> {
+    fn mod(other: UInt64) -> UInt64 => asm.modu64(self, other)
+}
+
+// BitAnd
+
+impl Int: BitAnd<Int> {
+    fn bit_and(other: Int) -> Int => asm.andi(self, other)
+}
+
+impl Int8: BitAnd<Int8> {
+    fn bit_and(other: Int8) -> Int8 => asm.andi8(self, other)
+}
+
+impl Int16: BitAnd<Int16> {
+    fn bit_and(other: Int16) -> Int16 => asm.andi16(self, other)
+}
+
+impl Int32: BitAnd<Int32> {
+    fn bit_and(other: Int32) -> Int32 => asm.andi32(self, other)
+}
+
+impl Int64: BitAnd<Int64> {
+    fn bit_and(other: Int64) -> Int64 => asm.andi64(self, other)
+}
+
+impl UInt: BitAnd<UInt> {
+    fn bit_and(other: UInt) -> UInt => asm.andu(self, other)
+}
+
+impl UInt8: BitAnd<UInt8> {
+    fn bit_and(other: UInt8) -> UInt8 => asm.andu8(self, other)
+}
+
+impl UInt16: BitAnd<UInt16> {
+    fn bit_and(other: UInt16) -> UInt16 => asm.andu16(self, other)
+}
+
+impl UInt32: BitAnd<UInt32> {
+    fn bit_and(other: UInt32) -> UInt32 => asm.andu32(self, other)
+}
+
+impl UInt64: BitAnd<UInt64> {
+    fn bit_and(other: UInt64) -> UInt64 => asm.andu64(self, other)
+}
+
+// BitOr
+
+impl Int: BitOr<Int> {
+    fn bit_or(other: Int) -> Int => asm.ori(self, other)
+}
+
+impl Int8: BitOr<Int8> {
+    fn bit_or(other: Int8) -> Int8 => asm.ori8(self, other)
+}
+
+impl Int16: BitOr<Int16> {
+    fn bit_or(other: Int16) -> Int16 => asm.ori16(self, other)
+}
+
+impl Int32: BitOr<Int32> {
+    fn bit_or(other: Int32) -> Int32 => asm.ori32(self, other)
+}
+
+impl Int64: BitOr<Int64> {
+    fn bit_or(other: Int64) -> Int64 => asm.ori64(self, other)
+}
+
+impl UInt: BitOr<UInt> {
+    fn bit_or(other: UInt) -> UInt => asm.oru(self, other)
+}
+
+impl UInt8: BitOr<UInt8> {
+    fn bit_or(other: UInt8) -> UInt8 => asm.oru8(self, other)
+}
+
+impl UInt16: BitOr<UInt16> {
+    fn bit_or(other: UInt16) -> UInt16 => asm.oru16(self, other)
+}
+
+impl UInt32: BitOr<UInt32> {
+    fn bit_or(other: UInt32) -> UInt32 => asm.oru32(self, other)
+}
+
+impl UInt64: BitOr<UInt64> {
+    fn bit_or(other: UInt64) -> UInt64 => asm.oru64(self, other)
+}
+
+// BitXor
+
+impl Int: BitXor<Int> {
+    fn bit_xor(other: Int) -> Int => asm.xori(self, other)
+}
+
+impl Int8: BitXor<Int8> {
+    fn bit_xor(other: Int8) -> Int8 => asm.xori8(self, other)
+}
+
+impl Int16: BitXor<Int16> {
+    fn bit_xor(other: Int16) -> Int16 => asm.xori16(self, other)
+}
+
+impl Int32: BitXor<Int32> {
+    fn bit_xor(other: Int32) -> Int32 => asm.xori32(self, other)
+}
+
+impl Int64: BitXor<Int64> {
+    fn bit_xor(other: Int64) -> Int64 => asm.xori64(self, other)
+}
+
+impl UInt: BitXor<UInt> {
+    fn bit_xor(other: UInt) -> UInt => asm.xoru(self, other)
+}
+
+impl UInt8: BitXor<UInt8> {
+    fn bit_xor(other: UInt8) -> UInt8 => asm.xoru8(self, other)
+}
+
+impl UInt16: BitXor<UInt16> {
+    fn bit_xor(other: UInt16) -> UInt16 => asm.xoru16(self, other)
+}
+
+impl UInt32: BitXor<UInt32> {
+    fn bit_xor(other: UInt32) -> UInt32 => asm.xoru32(self, other)
+}
+
+impl UInt64: BitXor<UInt64> {
+    fn bit_xor(other: UInt64) -> UInt64 => asm.xoru64(self, other)
+}
+
+// Shl
+
+impl Int: Shl<Int> {
+    fn shl(other: Int) -> Int => asm.lshli(self, other)
+}
+
+impl Int8: Shl<Int8> {
+    fn shl(other: Int8) -> Int8 => asm.lshli8(self, other)
+}
+
+impl Int16: Shl<Int16> {
+    fn shl(other: Int16) -> Int16 => asm.lshli16(self, other)
+}
+
+impl Int32: Shl<Int32> {
+    fn shl(other: Int32) -> Int32 => asm.lshli32(self, other)
+}
+
+impl Int64: Shl<Int64> {
+    fn shl(other: Int64) -> Int64 => asm.lshli64(self, other)
+}
+
+impl UInt: Shl<UInt> {
+    fn shl(other: UInt) -> UInt => asm.lshlu(self, other)
+}
+
+impl UInt8: Shl<UInt8> {
+    fn shl(other: UInt8) -> UInt8 => asm.lshlu8(self, other)
+}
+
+impl UInt16: Shl<UInt16> {
+    fn shl(other: UInt16) -> UInt16 => asm.lshlu16(self, other)
+}
+
+impl UInt32: Shl<UInt32> {
+    fn shl(other: UInt32) -> UInt32 => asm.lshlu32(self, other)
+}
+
+impl UInt64: Shl<UInt64> {
+    fn shl(other: UInt64) -> UInt64 => asm.lshlu64(self, other)
+}
+
+// Shr
+
+impl Int: Shr<Int> {
+    fn shr(other: Int) -> Int => asm.lshri(self, other)
+}
+
+impl Int8: Shr<Int8> {
+    fn shr(other: Int8) -> Int8 => asm.lshri8(self, other)
+}
+
+impl Int16: Shr<Int16> {
+    fn shr(other: Int16) -> Int16 => asm.lshri16(self, other)
+}
+
+impl Int32: Shr<Int32> {
+    fn shr(other: Int32) -> Int32 => asm.lshri32(self, other)
+}
+
+impl Int64: Shr<Int64> {
+    fn shr(other: Int64) -> Int64 => asm.lshri64(self, other)
+}
+
+impl UInt: Shr<UInt> {
+    fn shr(other: UInt) -> UInt => asm.lshru(self, other)
+}
+
+impl UInt8: Shr<UInt8> {
+    fn shr(other: UInt8) -> UInt8 => asm.lshru8(self, other)
+}
+
+impl UInt16: Shr<UInt16> {
+    fn shr(other: UInt16) -> UInt16 => asm.lshru16(self, other)
+}
+
+impl UInt32: Shr<UInt32> {
+    fn shr(other: UInt32) -> UInt32 => asm.lshru32(self, other)
+}
+
+impl UInt64: Shr<UInt64> {
+    fn shr(other: UInt64) -> UInt64 => asm.lshru64(self, other)
+}
+
+// Asr
+
+impl Int: Asr<Int> {
+    fn asr(other: Int) -> Int => asm.ashri(self, other)
+}
+
+impl Int8: Asr<Int8> {
+    fn asr(other: Int8) -> Int8 => asm.ashri8(self, other)
+}
+
+impl Int16: Asr<Int16> {
+    fn asr(other: Int16) -> Int16 => asm.ashri16(self, other)
+}
+
+impl Int32: Asr<Int32> {
+    fn asr(other: Int32) -> Int32 => asm.ashri32(self, other)
+}
+
+impl Int64: Asr<Int64> {
+    fn asr(other: Int64) -> Int64 => asm.ashri64(self, other)
+}
+
+impl UInt: Asr<UInt> {
+    fn asr(other: UInt) -> UInt => asm.ashru(self, other)
+}
+
+impl UInt8: Asr<UInt8> {
+    fn asr(other: UInt8) -> UInt8 => asm.ashru8(self, other)
+}
+
+impl UInt16: Asr<UInt16> {
+    fn asr(other: UInt16) -> UInt16 => asm.ashru16(self, other)
+}
+
+impl UInt32: Asr<UInt32> {
+    fn asr(other: UInt32) -> UInt32 => asm.ashru32(self, other)
+}
+
+impl UInt64: Asr<UInt64> {
+    fn asr(other: UInt64) -> UInt64 => asm.ashru64(self, other)
+}
+
+// Lt
+
+impl Int: Lt<Int> {
+    fn lt(other: Int) -> Bool => asm.lti(self, other) as Bool
+}
+
+impl Int8: Lt<Int8> {
+    fn lt(other: Int8) -> Bool => asm.lti8(self, other) as Bool
+}
+
+impl Int16: Lt<Int16> {
+    fn lt(other: Int16) -> Bool => asm.lti16(self, other) as Bool
+}
+
+impl Int32: Lt<Int32> {
+    fn lt(other: Int32) -> Bool => asm.lti32(self, other) as Bool
+}
+
+impl Int64: Lt<Int64> {
+    fn lt(other: Int64) -> Bool => asm.lti64(self, other) as Bool
+}
+
+impl UInt: Lt<UInt> {
+    fn lt(other: UInt) -> Bool => asm.ltu(self, other) as Bool
+}
+
+impl UInt8: Lt<UInt8> {
+    fn lt(other: UInt8) -> Bool => asm.ltu8(self, other) as Bool
+}
+
+impl UInt16: Lt<UInt16> {
+    fn lt(other: UInt16) -> Bool => asm.ltu16(self, other) as Bool
+}
+
+impl UInt32: Lt<UInt32> {
+    fn lt(other: UInt32) -> Bool => asm.ltu32(self, other) as Bool
+}
+
+impl UInt64: Lt<UInt64> {
+    fn lt(other: UInt64) -> Bool => asm.ltu64(self, other) as Bool
+}
+
+// LtEq
+
+impl Int: LtEq<Int> {
+    fn lteq(other: Int) -> Bool => asm.lteqi(self, other) as Bool
+}
+
+impl Int8: LtEq<Int8> {
+    fn lteq(other: Int8) -> Bool => asm.lteqi8(self, other) as Bool
+}
+
+impl Int16: LtEq<Int16> {
+    fn lteq(other: Int16) -> Bool => asm.lteqi16(self, other) as Bool
+}
+
+impl Int32: LtEq<Int32> {
+    fn lteq(other: Int32) -> Bool => asm.lteqi32(self, other) as Bool
+}
+
+impl Int64: LtEq<Int64> {
+    fn lteq(other: Int64) -> Bool => asm.lteqi64(self, other) as Bool
+}
+
+impl UInt: LtEq<UInt> {
+    fn lteq(other: UInt) -> Bool => asm.ltequ(self, other) as Bool
+}
+
+impl UInt8: LtEq<UInt8> {
+    fn lteq(other: UInt8) -> Bool => asm.ltequ8(self, other) as Bool
+}
+
+impl UInt16: LtEq<UInt16> {
+    fn lteq(other: UInt16) -> Bool => asm.ltequ16(self, other) as Bool
+}
+
+impl UInt32: LtEq<UInt32> {
+    fn lteq(other: UInt32) -> Bool => asm.ltequ32(self, other) as Bool
+}
+
+impl UInt64: LtEq<UInt64> {
+    fn lteq(other: UInt64) -> Bool => asm.ltequ64(self, other) as Bool
+}
+
+// Gt
+
+impl Int: Gt<Int> {
+    fn gt(other: Int) -> Bool => asm.gti(self, other) as Bool
+}
+
+impl Int8: Gt<Int8> {
+    fn gt(other: Int8) -> Bool => asm.gti8(self, other) as Bool
+}
+
+impl Int16: Gt<Int16> {
+    fn gt(other: Int16) -> Bool => asm.gti16(self, other) as Bool
+}
+
+impl Int32: Gt<Int32> {
+    fn gt(other: Int32) -> Bool => asm.gti32(self, other) as Bool
+}
+
+impl Int64: Gt<Int64> {
+    fn gt(other: Int64) -> Bool => asm.gti64(self, other) as Bool
+}
+
+impl UInt: Gt<UInt> {
+    fn gt(other: UInt) -> Bool => asm.gtu(self, other) as Bool
+}
+
+impl UInt8: Gt<UInt8> {
+    fn gt(other: UInt8) -> Bool => asm.gtu8(self, other) as Bool
+}
+
+impl UInt16: Gt<UInt16> {
+    fn gt(other: UInt16) -> Bool => asm.gtu16(self, other) as Bool
+}
+
+impl UInt32: Gt<UInt32> {
+    fn gt(other: UInt32) -> Bool => asm.gtu32(self, other) as Bool
+}
+
+impl UInt64: Gt<UInt64> {
+    fn gt(other: UInt64) -> Bool => asm.gtu64(self, other) as Bool
+}
+
+// GtEq
+
+impl Int: GtEq<Int> {
+    fn gteq(other: Int) -> Bool => asm.gteqi(self, other) as Bool
+}
+
+impl Int8: GtEq<Int8> {
+    fn gteq(other: Int8) -> Bool => asm.gteqi8(self, other) as Bool
+}
+
+impl Int16: GtEq<Int16> {
+    fn gteq(other: Int16) -> Bool => asm.gteqi16(self, other) as Bool
+}
+
+impl Int32: GtEq<Int32> {
+    fn gteq(other: Int32) -> Bool => asm.gteqi32(self, other) as Bool
+}
+
+impl Int64: GtEq<Int64> {
+    fn gteq(other: Int64) -> Bool => asm.gteqi64(self, other) as Bool
+}
+
+impl UInt: GtEq<UInt> {
+    fn gteq(other: UInt) -> Bool => asm.gtequ(self, other) as Bool
+}
+
+impl UInt8: GtEq<UInt8> {
+    fn gteq(other: UInt8) -> Bool => asm.gtequ8(self, other) as Bool
+}
+
+impl UInt16: GtEq<UInt16> {
+    fn gteq(other: UInt16) -> Bool => asm.gtequ16(self, other) as Bool
+}
+
+impl UInt32: GtEq<UInt32> {
+    fn gteq(other: UInt32) -> Bool => asm.gtequ32(self, other) as Bool
+}
+
+impl UInt64: GtEq<UInt64> {
+    fn gteq(other: UInt64) -> Bool => asm.gtequ64(self, other) as Bool
+}
+
+// Eq
+
+impl Int: Eq<Int> {
+    fn eq(other: Int) -> Bool => asm.eqi(self, other) as Bool
+}
+
+impl Int8: Eq<Int8> {
+    fn eq(other: Int8) -> Bool => asm.eqi8(self, other) as Bool
+}
+
+impl Int16: Eq<Int16> {
+    fn eq(other: Int16) -> Bool => asm.eqi16(self, other) as Bool
+}
+
+impl Int32: Eq<Int32> {
+    fn eq(other: Int32) -> Bool => asm.eqi32(self, other) as Bool
+}
+
+impl Int64: Eq<Int64> {
+    fn eq(other: Int64) -> Bool => asm.eqi64(self, other) as Bool
+}
+
+impl UInt: Eq<UInt> {
+    fn eq(other: UInt) -> Bool => asm.equ(self, other) as Bool
+}
+
+impl UInt8: Eq<UInt8> {
+    fn eq(other: UInt8) -> Bool => asm.equ8(self, other) as Bool
+}
+
+impl UInt16: Eq<UInt16> {
+    fn eq(other: UInt16) -> Bool => asm.equ16(self, other) as Bool
+}
+
+impl UInt32: Eq<UInt32> {
+    fn eq(other: UInt32) -> Bool => asm.equ32(self, other) as Bool
+}
+
+impl UInt64: Eq<UInt64> {
+    fn eq(other: UInt64) -> Bool => asm.equ64(self, other) as Bool
+}
+
+// Neq
+
+impl Int: Neq<Int> {
+    fn neq(other: Int) -> Bool => asm.neqi(self, other) as Bool
+}
+
+impl Int8: Neq<Int8> {
+    fn neq(other: Int8) -> Bool => asm.neqi8(self, other) as Bool
+}
+
+impl Int16: Neq<Int16> {
+    fn neq(other: Int16) -> Bool => asm.neqi16(self, other) as Bool
+}
+
+impl Int32: Neq<Int32> {
+    fn neq(other: Int32) -> Bool => asm.neqi32(self, other) as Bool
+}
+
+impl Int64: Neq<Int64> {
+    fn neq(other: Int64) -> Bool => asm.neqi64(self, other) as Bool
+}
+
+impl UInt: Neq<UInt> {
+    fn neq(other: UInt) -> Bool => asm.nequ(self, other) as Bool
+}
+
+impl UInt8: Neq<UInt8> {
+    fn neq(other: UInt8) -> Bool => asm.nequ8(self, other) as Bool
+}
+
+impl UInt16: Neq<UInt16> {
+    fn neq(other: UInt16) -> Bool => asm.nequ16(self, other) as Bool
+}
+
+impl UInt32: Neq<UInt32> {
+    fn neq(other: UInt32) -> Bool => asm.nequ32(self, other) as Bool
+}
+
+impl UInt64: Neq<UInt64> {
+    fn neq(other: UInt64) -> Bool => asm.nequ64(self, other) as Bool
+}
+
+impl Int {
+    static fn from_i8(i: Int8) -> Int => i as Int
+    static fn from_i16(i: Int16) -> Int => i as Int
+    static fn from_i32(i: Int32) -> Int => i as Int
+    static fn from_i64(i: Int64) -> Int => i as Int
+    static fn from_uint(i: UInt) -> Int => i as Int
+    static fn from_u8(i: UInt8) -> Int => i as Int
+    static fn from_u16(i: UInt16) -> Int => i as Int
+    static fn from_u32(i: UInt32) -> Int => i as Int
+    static fn from_u64(i: UInt64) -> Int => i as Int
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl Int8 {
+    static fn from_int(i: Int) -> Int8 => i as Int8
+    static fn from_i8(i: Int8) -> Int8 => i as Int8
+    static fn from_i16(i: Int16) -> Int8 => i as Int8
+    static fn from_i32(i: Int32) -> Int8 => i as Int8
+    static fn from_i64(i: Int64) -> Int8 => i as Int8
+    static fn from_uint(i: UInt) -> Int8 => i as Int8
+    static fn from_u8(i: UInt8) -> Int8 => i as Int8
+    static fn from_u16(i: UInt16) -> Int8 => i as Int8
+    static fn from_u32(i: UInt32) -> Int8 => i as Int8
+    static fn from_u64(i: UInt64) -> Int8 => i as Int8
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl Int16 {
+    static fn from_int(i: Int) -> Int16 => i as Int16
+    static fn from_i8(i: Int8) -> Int16 => i as Int16
+    static fn from_i16(i: Int16) -> Int16 => i as Int16
+    static fn from_i32(i: Int32) -> Int16 => i as Int16
+    static fn from_i64(i: Int64) -> Int16 => i as Int16
+    static fn from_uint(i: UInt) -> Int16 => i as Int16
+    static fn from_u8(i: UInt8) -> Int16 => i as Int16
+    static fn from_u16(i: UInt16) -> Int16 => i as Int16
+    static fn from_u32(i: UInt32) -> Int16 => i as Int16
+    static fn from_u64(i: UInt64) -> Int16 => i as Int16
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl Int32 {
+    static fn from_int(i: Int) -> Int32 => i as Int32
+    static fn from_i8(i: Int8) -> Int32 => i as Int32
+    static fn from_i16(i: Int16) -> Int32 => i as Int32
+    static fn from_i32(i: Int32) -> Int32 => i as Int32
+    static fn from_i64(i: Int64) -> Int32 => i as Int32
+    static fn from_uint(i: UInt) -> Int32 => i as Int32
+    static fn from_u8(i: UInt8) -> Int32 => i as Int32
+    static fn from_u16(i: UInt16) -> Int32 => i as Int32
+    static fn from_u32(i: UInt32) -> Int32 => i as Int32
+    static fn from_u64(i: UInt64) -> Int32 => i as Int32
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl Int64 {
+    static fn from_int(i: Int) -> Int64 => i as Int64
+    static fn from_i8(i: Int8) -> Int64 => i as Int64
+    static fn from_i16(i: Int16) -> Int64 => i as Int64
+    static fn from_i32(i: Int32) -> Int64 => i as Int64
+    static fn from_i64(i: Int64) -> Int64 => i as Int64
+    static fn from_uint(i: UInt) -> Int64 => i as Int64
+    static fn from_u8(i: UInt8) -> Int64 => i as Int64
+    static fn from_u16(i: UInt16) -> Int64 => i as Int64
+    static fn from_u32(i: UInt32) -> Int64 => i as Int64
+    static fn from_u64(i: UInt64) -> Int64 => i as Int64
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl UInt {
+    static fn from_int(i: Int) -> UInt => i as UInt
+    static fn from_i8(i: Int8) -> UInt => i as UInt
+    static fn from_i16(i: Int16) -> UInt => i as UInt
+    static fn from_i32(i: Int32) -> UInt => i as UInt
+    static fn from_i64(i: Int64) -> UInt => i as UInt
+    static fn from_uint(i: UInt) -> UInt => i as UInt
+    static fn from_u8(i: UInt8) -> UInt => i as UInt
+    static fn from_u16(i: UInt16) -> UInt => i as UInt
+    static fn from_u32(i: UInt32) -> UInt => i as UInt
+    static fn from_u64(i: UInt64) -> UInt => i as UInt
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl UInt8 {
+    static fn from_int(i: Int) -> UInt8 => i as UInt8
+    static fn from_i8(i: Int8) -> UInt8 => i as UInt8
+    static fn from_i16(i: Int16) -> UInt8 => i as UInt8
+    static fn from_i32(i: Int32) -> UInt8 => i as UInt8
+    static fn from_i64(i: Int64) -> UInt8 => i as UInt8
+    static fn from_uint(i: UInt) -> UInt8 => i as UInt8
+    static fn from_u8(i: UInt8) -> UInt8 => i as UInt8
+    static fn from_u16(i: UInt16) -> UInt8 => i as UInt8
+    static fn from_u32(i: UInt32) -> UInt8 => i as UInt8
+    static fn from_u64(i: UInt64) -> UInt8 => i as UInt8
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl UInt16 {
+    static fn from_int(i: Int) -> UInt16 => i as UInt16
+    static fn from_i8(i: Int8) -> UInt16 => i as UInt16
+    static fn from_i16(i: Int16) -> UInt16 => i as UInt16
+    static fn from_i32(i: Int32) -> UInt16 => i as UInt16
+    static fn from_i64(i: Int64) -> UInt16 => i as UInt16
+    static fn from_uint(i: UInt) -> UInt16 => i as UInt16
+    static fn from_u8(i: UInt8) -> UInt16 => i as UInt16
+    static fn from_u16(i: UInt16) -> UInt16 => i as UInt16
+    static fn from_u32(i: UInt32) -> UInt16 => i as UInt16
+    static fn from_u64(i: UInt64) -> UInt16 => i as UInt16
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl UInt32 {
+    static fn from_int(i: Int) -> UInt32 => i as UInt32
+    static fn from_i8(i: Int8) -> UInt32 => i as UInt32
+    static fn from_i16(i: Int16) -> UInt32 => i as UInt32
+    static fn from_i32(i: Int32) -> UInt32 => i as UInt32
+    static fn from_i64(i: Int64) -> UInt32 => i as UInt32
+    static fn from_uint(i: UInt) -> UInt32 => i as UInt32
+    static fn from_u8(i: UInt8) -> UInt32 => i as UInt32
+    static fn from_u16(i: UInt16) -> UInt32 => i as UInt32
+    static fn from_u32(i: UInt32) -> UInt32 => i as UInt32
+    static fn from_u64(i: UInt64) -> UInt32 => i as UInt32
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl UInt64 {
+    static fn from_int(i: Int) -> UInt64 => i as UInt64
+    static fn from_i8(i: Int8) -> UInt64 => i as UInt64
+    static fn from_i16(i: Int16) -> UInt64 => i as UInt64
+    static fn from_i32(i: Int32) -> UInt64 => i as UInt64
+    static fn from_i64(i: Int64) -> UInt64 => i as UInt64
+    static fn from_uint(i: UInt) -> UInt64 => i as UInt64
+    static fn from_u8(i: UInt8) -> UInt64 => i as UInt64
+    static fn from_u16(i: UInt16) -> UInt64 => i as UInt64
+    static fn from_u32(i: UInt32) -> UInt64 => i as UInt64
+    static fn from_u64(i: UInt64) -> UInt64 => i as UInt64
+
+    fn to_int() -> Int => self as Int
+    fn to_i8() -> Int8 => self as Int8
+    fn to_i16() -> Int16 => self as Int16
+    fn to_i32() -> Int32 => self as Int32
+    fn to_i64() -> Int64 => self as Int64
+    fn to_uint() -> UInt => self as UInt
+    fn to_u8() -> UInt8 => self as UInt8
+    fn to_u16() -> UInt16 => self as UInt16
+    fn to_u32() -> UInt32 => self as UInt32
+    fn to_u64() -> UInt64 => self as UInt64
+}
+
+impl Int: ForwardIndex {
+    fn forward() -> Int => self + 1
+}
+
+impl Int8: ForwardIndex {
+    fn forward() -> Int8 => self + 1
+}
+
+impl Int16: ForwardIndex {
+    fn forward() -> Int16 => self + 1
+}
+
+impl Int32: ForwardIndex {
+    fn forward() -> Int32 => self + 1
+}
+
+impl Int64: ForwardIndex {
+    fn forward() -> Int64 => self + 1
+}
+
+impl UInt: ForwardIndex {
+    fn forward() -> UInt => self + 1
+}
+
+impl UInt8: ForwardIndex {
+    fn forward() -> UInt8 => self + 1
+}
+
+impl UInt16: ForwardIndex {
+    fn forward() -> UInt16 => self + 1
+}
+
+impl UInt32: ForwardIndex {
+    fn forward() -> UInt32 => self + 1
+}
+
+impl UInt64: ForwardIndex {
+    fn forward() -> UInt64 => self + 1
+}

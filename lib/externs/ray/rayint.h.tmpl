@@ -1,0 +1,15 @@
+#ifndef _RAYINT_H
+#define _RAYINT_H
+
+#include <inttypes.h>
+#include "structs.h"
+
+void ray_int_deinit(const char *, ray_object_t*);
+{{ range $idx, $type := .types }}
+// {{ $type.Name }}
+ray_object_t *ray_{{ $type.Sign }}int{{ $type.Size }}_from_raw({{ $type.CType }} value);
+{{ $type.CType }} ray_{{ $type.Sign }}int{{ $type.Size }}_to_raw(ray_object_t *obj);
+ray_object_t *ray_{{ $type.Sign }}int{{ $type.Size }}_to_string(ray_object_t *obj);
+ray_object_t *ray_{{ $type.Sign }}int{{ $type.Size }}_hex(ray_object_t *obj);
+{{ end }}
+#endif

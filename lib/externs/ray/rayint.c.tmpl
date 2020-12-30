@@ -1,0 +1,67 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "rayint.h"
+#include "raystring.h"
+#include "externs.h"
+
+ray_ty_path_t *__ray_int_path(char *name) {
+    ray_ty_path_t *path = malloc(sizeof(ray_ty_path_t));
+    path->name = name;
+    path->scope = malloc(sizeof(char*));
+    path->scope[0] = 0; // no scope
+    path->module = malloc(sizeof(char*)*2);
+    path->module[0] = strdup("stdlib");
+    path->module[1] = 0;
+    path->has_impl = 0;
+    path->is_static = 0;
+    return path;
+}
+
+// NOTE: this can be used on an Int of any size
+void ray_int_deinit(const char *_ti, ray_object_t *obj) {
+    free(obj->value);
+    ray_struct_free(obj);
+}
+{{ range $idx, $type := .types }}
+/** {{ $type.Name }} **/
+
+ray_object_t *ray_{{ $type.Sign }}int{{ $type.Size }}_from_raw({{ $type.CType }} value) {
+    // alloc the int value on the value on the heap
+    {{ $type.CType }} *value_ptr = malloc(sizeof({{ $type.CType }}));
+    *value_ptr = value;
+
+    // make type path for {{ $type.Name }}
+    ray_ty_path_t *path = __ray_int_path("{{ $type.Name }}");
+
+    // encode type info
+    char *enc_ty_info = ray_encode_ty_info(path, "stdlib::{{ $type.Name }}");
+
+    // make the struct
+    return __ray_make_struct(value_ptr, enc_ty_info, ray_int_deinit);
+}
+
+{{ $type.CType }} ray_{{ $type.Sign }}int{{ $type.Size }}_to_raw(ray_object_t *obj) {
+    return *({{ $type.CType }}*)obj->value;
+}
+
+ray_object_t *ray_{{ $type.Sign }}int{{ $type.Size }}_to_string(ray_object_t *obj) {
+    {{ $type.CType }} val = *({{ $type.CType }}*)obj->value;
+    int length = snprintf(NULL, 0, "{{ $type.Format "to_string" }}", val); // length of the string
+    char* str = malloc(length + 1); // malloc the string
+    snprintf(str, length + 1, "{{ $type.Format "to_string" }}", val); // create the formatted string
+    ray_object_t *str_obj = ray_string_from_raw("stdlib::String", str); // convert to ray object
+    free(str); // free the str because we created a copy of str above
+    return str_obj;
+}
+
+ray_object_t *ray_{{ $type.Sign }}int{{ $type.Size }}_hex(ray_object_t *obj) {
+    {{ $type.CType }} val = *({{ $type.CType }}*)obj->value;
+    int length = snprintf(NULL, 0, "{{ $type.Format "hex" }}", val); // length of the string
+    char* str = malloc(length + 1); // malloc the string
+    snprintf(str, length + 1, "{{ $type.Format "hex" }}", val); // create the formatted string
+    ray_object_t *str_obj = ray_string_from_raw("stdlib::String", str); // convert to ray object
+    free(str); // free the str because we created a copy of str above
+    return str_obj;
+}
+{{ end }}

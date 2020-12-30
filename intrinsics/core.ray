@@ -1,0 +1,13 @@
+// extern __heap_start: uint
+// mut __heap_end = __heap_start
+
+// struct List[T] {
+//     ptr: *T
+//     size: uint
+// }
+
+// pub fn malloc[T](size: uint) -> *T {
+//     ptr = unsafe __heap_start as *T
+//     __heap_end += size
+//     ptr
+// }

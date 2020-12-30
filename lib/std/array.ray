@@ -1,0 +1,61 @@
+import builtins
+
+extern impl<E> Array<E>: Subscriptable<Int, E>
+
+impl<E> Array<E> {
+    extern fn len() -> Int
+    extern fn append(element: E)
+    extern static fn reserve<T>(size: Int) -> Array<T>
+
+    fn slice(start: Int, end: Int) -> Array<E> {
+        size = end - start
+        new_arr: Array<E> = Array::reserve(size)
+        for i in start..<end {
+            el = self[i] else break
+            new_arr[i - start] = el
+        }
+        new_arr
+    }
+}
+
+impl<E> Array<E>: Iterable<E, ArrayIterator<E>> {
+    fn iter() -> ArrayIterator<E> => ArrayIterator(array: self, index: 0)
+}
+
+impl<E: ToString> Array<E> {
+    fn join(separator: String) -> String {
+        mut s = ""
+        let l = self.len()
+        mut i = 0
+        for el in self {
+            s = s + el.to_string()
+            i += 1
+            if i < l {
+                s = s + separator
+            }
+        }
+        s
+    }
+}
+
+impl<E: ToString> Array<E>: ToString {
+    fn to_string() -> String => "[" + self.join(", ") + "]"
+}
+
+struct ArrayIterator<E> {
+    array: Array<E>
+    index: Int
+}
+
+impl<E> ArrayIterator<E>: Iterator<E> {
+    fn next() -> (E?, Bool) {
+        idx = self.index
+        if idx < self.array.len() {
+            v = self.array[idx]
+            self.index = idx + 1
+            (v, true)
+        } else {
+            (nil, false)
+        }
+    }
+}

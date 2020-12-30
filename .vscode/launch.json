@@ -1,0 +1,51 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'ray'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=ray",
+                    "--package=ray"
+                ],
+                "filter": {
+                    "name": "ray",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--log-level",
+                "debug",
+                "build",
+                "--print-ast",
+                "examples/scratch.ray"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'ray'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=ray",
+                    "--package=ray"
+                ],
+                "filter": {
+                    "name": "ray",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

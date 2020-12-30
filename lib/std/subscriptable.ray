@@ -1,0 +1,4 @@
+protocol Subscriptable<T, E> {
+    fn get(k: T) -> E?
+    fn set(k: T, v: E)
+}

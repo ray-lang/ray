@@ -1,0 +1,15 @@
+/// Print any number of args to stdout
+///
+/// If an argument implements `ToString`, then `to_string()` is called on the argument.
+/// Otherwise, `describe()` is called with the argument
+///
+/// # Examples
+/// ```ray
+/// let i = 10
+/// let j = 30
+/// print(i, j) // prints: "10 30"
+/// ```
+fn print<T: ToString>(arg: T) {
+    io.stdout.write(arg.to_string())
+    io.stdout.write("\n")
+}

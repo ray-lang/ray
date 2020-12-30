@@ -1,0 +1,105 @@
+import builtins
+import libc
+
+fn _byte_count(b: UInt8) -> Int {
+    if (b >> 5) == 0x6 {
+        2
+    } else if (b >> 4) == 0xe {
+        3
+    } else if (b >> 3) == 0x1e {
+        4
+    } else {
+        1
+    }
+}
+
+impl Char {
+    static fn deinit(ch: Char) {
+        ptr = addrof(ch)
+        val_ptr = ptr.get(0) // get the value pointer
+        libc.free(val_ptr) // free the value
+        libc.free(ptr) // free the pointer
+    }
+
+    static fn from_bytes(bytes: Array<UInt8>) -> Char? {
+        // get each byte (using the first byte to determine how many)
+        byte = bytes[0] else return nil
+        count = _byte_count(byte)
+
+        v = libc.malloc(count as Int32)
+        for i in 0..<count {
+            b = bytes[i] else break
+            v.set_byte(i, b)
+        }
+
+        // note: this is a little awkward, because the type checker
+        // infers T to be Optional<Char> if we return the result
+        // of make_struct(...) directly. Can this be remedied?
+        ch: Char = builtins.make_struct(v, Char, Char::deinit)
+        ch
+    }
+
+    static fn from_raw(raw: UInt32) -> Char {
+        value = if raw < 0x80 {
+            v = libc.malloc(1)
+            v.set_bytes(0, [raw.to_u8()])
+            v
+        } else if raw < 0x800 {
+            v = libc.malloc(2)
+            v.set_bytes(0, [
+                ((raw >> 6) | 0b11000000).to_u8(),
+                ((raw & 0b00111111) | 0b11000000).to_u8()
+            ])
+            v
+        } else if raw < 0x10000 {
+            v = libc.malloc(3)
+            v.set_bytes(0, [
+                ((raw >> 12) | 0b11100000).to_u8(),
+                (((raw >> 6) & 0b00111111) | 0b10000000).to_u8(),
+                ((raw & 0b00111111) | 0b10000000).to_u8()
+            ])
+            v
+        } else {
+            v = libc.malloc(4)
+            v.set_bytes(0, [
+                ((raw >> 18) | 0b11110000).to_u8(),
+                (((raw >> 12) & 0b00111111) | 0b10000000).to_u8(),
+                (((raw >> 6) & 0b00111111) | 0b10000000).to_u8(),
+                ((raw & 0b00111111) | 0b10000000).to_u8()
+            ])
+            v
+        }
+
+        builtins.make_struct(value, Char, Char::deinit)
+    }
+
+    fn byte_count() -> Int {
+        ptr = addrof(self)
+        byte = ptr.get_byte(0)
+        _byte_count(byte)
+    }
+
+    fn bytes() -> Array<UInt8> {
+        count = self.byte_count()
+        ptr = addrof(self)
+        ptr.get_bytes(count)
+    }
+
+    fn to_int() -> UInt32 {
+        mut i = 0u32
+        bytes = self.bytes()
+        for j in 0..<bytes.len() {
+            b = bytes[j] else return 0
+            i |= (b.to_u32() << (j.to_u32()*8))
+        }
+        i
+    }
+}
+
+impl Char: ToString {
+    fn to_string() -> String {
+        s = String.reserve(1)
+        s[0] = self
+        s
+    }
+}

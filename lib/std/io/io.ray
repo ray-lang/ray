@@ -1,0 +1,22 @@
+import libc
+
+struct File {
+    path: String
+    handle: RawPointer
+}
+
+fn open(path: String, mode: String) -> File {
+    handle = libc.fopen(path.to_raw(), mode.to_raw())
+    File(path, handle)
+}
+
+extern fn fputs(file: File, str: String) -> Int
+
+impl File {
+    fn write(str: String) -> Int => fputs(self, str)
+}
+
+// TODO: This is *nix specific
+stdin = open("/dev/stdin", "r")
+stdout = open("/dev/stdout", "w")
+stderr = open("/dev/stderr", "w")

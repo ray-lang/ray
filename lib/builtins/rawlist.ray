@@ -1,0 +1,76 @@
+import asm
+import platform
+import libc
+
+fn rawlist_new(count: Int) -> RawPointer {
+    // size: count (length of array) + 3 pointers
+    // 1. length of the array
+    // 2. length of this segment
+    // 3. pointer to the next segment (which in this case is null)
+    let size = ((count + 3) * platform.POINTER_SIZE).to_i32()
+    let ptr = libc.malloc(size)
+
+    // store the length of the array
+    ptr.set(0, count)
+
+    // length of this segment in memory
+    ptr.set(1, count)
+
+    let next_segment: Int = 0
+    ptr.set(2, next_segment)
+
+    ptr
+}
+
+fn rawlist_free(ptr: RawPointer) {
+    // FIXME: each segment needs to be freed, but this code is incorrect
+    // mut segment_addr = ptr + platform.POINTER_SIZE
+    // while !segment_addr.is_nil() {
+    //     libc.free(segment_addr)
+    //     segment_addr = segment_addr.get(platform.POINTER_SIZE)
+    // }
+
+    // NOTE: this assumes that the owner of the rawlist freed the elements
+    libc.free(ptr)
+}
+
+fn rawlist_len(ptr: RawPointer) -> Int {
+    ptr.get(0).to_int()
+}
+
+fn rawlist_getelptr(ptr: RawPointer, idx: Int) -> RawPointer {
+    mut segment_addr = ptr + platform.POINTER_SIZE
+    mut l = 0
+    while !segment_addr.is_nil() {
+        let segment_len = segment_addr.get(0).to_int()
+        l = l + segment_len
+
+        let next_segment_addr = segment_addr.get(1)
+
+        if idx < l {
+            let elements_addr = segment_addr + (platform.POINTER_SIZE * 2) // two pointers
+            let segment_idx = (idx - l) + segment_len
+            return elements_addr + (segment_idx * platform.POINTER_SIZE)
+        }
+
+        segment_addr = next_segment_addr
+    }
+
+    0
+}
+
+fn rawlist_get(ptr: RawPointer, idx: Int) -> RawPointer {
+    let el_ptr = rawlist_getelptr(ptr, idx)
+    if !el_ptr.is_nil() {
+        el_ptr.get(0)
+    } else {
+        0
+    }
+}
+
+fn rawlist_set(ptr: RawPointer, idx: Int, value: RawAny) {
+    let el_ptr = rawlist_getelptr(ptr, idx)
+    if !el_ptr.is_nil() {
+        el_ptr.set(0, value)
+    }
+}

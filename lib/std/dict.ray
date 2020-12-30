@@ -1,0 +1,1 @@
+extern impl<K, V> Dict<K, V>: Subscriptable<K, V>

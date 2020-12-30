@@ -1,0 +1,3 @@
+impl Tuple {
+    extern fn len() -> Int
+}

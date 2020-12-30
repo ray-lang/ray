@@ -1,0 +1,20 @@
+extern fn addrof(a: Any) -> RawPointer
+extern fn get_global(s: String) -> RawPointer
+extern fn refcount(a: Any) -> Int
+
+extern impl RawPointer: Add<Int>
+extern impl RawPointer: Eq<RawPointer>
+extern impl RawPointer: Neq<RawPointer>
+extern impl RawPointer: ToHexString
+
+impl RawPointer {
+    // note: offsets are in number of bytes not number of pointers
+    extern fn get(offset: Int) -> RawPointer
+    extern fn set(offset: Int, value: RawAny)
+    extern fn get_byte(offset: Int) -> UInt8
+    extern fn set_byte(offset: Int, byte: UInt8)
+    extern fn get_bytes(count: Int) -> Array<UInt8>
+    extern fn set_bytes(offset: Int, bytes: Array<UInt8>)
+    extern fn to_int() -> Int
+    extern fn is_nil() -> Bool
+}

@@ -1,0 +1,35 @@
+import asm
+import builtins
+import libc
+
+impl Bool {
+    // static fn deinit(b: Bool) {
+    //     let val = addrof(b).get(0)
+    //     free(val.deref())
+    //     free(b)
+    // }
+
+    extern static fn deinit(b: Bool)
+
+    fn to_int() -> UInt8 {
+        ptr = addrof(self)
+        val = ptr.get(0)
+        val.get_byte(0)
+    }
+}
+
+impl Bool: And<Bool> {
+    fn and(other: Bool) -> Bool => asm.andu8(self as UInt8, other as UInt8) as Bool
+}
+
+impl Bool: Or<Bool> {
+    fn or(other: Bool) -> Bool => asm.oru8(self as UInt8, other as UInt8) as Bool
+}
+
+impl Bool: Not {
+    fn not() -> Bool => asm.xoru8(self as UInt8, 1) as Bool
+}
+
+impl Bool: ToString {
+    fn to_string() -> String => if self "true" else "false"
+}
