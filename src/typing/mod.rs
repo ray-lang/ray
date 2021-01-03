@@ -10,6 +10,7 @@ mod infer;
 mod subst;
 mod variance;
 
+pub mod top;
 pub mod ty;
 
 pub use bound::*;
@@ -24,7 +25,7 @@ pub use variance::*;
 #[cfg(test)]
 mod typing_test {
     use super::{
-        ty::{Ty, TyVar},
+        ty::{LiteralKind, Ty, TyVar},
         InferError, InferSystem,
     };
 
@@ -262,8 +263,8 @@ mod typing_test {
     fn test_int_subtype() -> TestResult<()> {
         let ctx = mk_ctx! {
             foo => Ty::Func(vec![Ty::u32(), Ty::i8()], Box::new(Ty::unit())),
-            1 => Ty::IntLiteral,
-            2 => Ty::IntLiteral
+            1 => Ty::Literal(LiteralKind::Int, TyVar::new()),
+            2 => Ty::Literal(LiteralKind::Int, TyVar::new())
         };
 
         let e = mkexpr! {

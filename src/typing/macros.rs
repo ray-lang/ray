@@ -52,15 +52,19 @@ macro_rules! mk_binop_ty {
 
 #[macro_export]
 macro_rules! subst {
-    () => {
-        Subst::new()
+    {} => {
+        $crate::typing::subst::Subst::new()
     };
 
-    ($k:expr => $v:expr) => {{
-        let mut h = Subst::new();
-        h.insert($k, $v);
-        h
-    }};
+    { $($key:expr => $value:expr),+ $(,)? } => {
+        {
+            let mut s = $crate::typing::subst::Subst::new();
+            $(
+                s.insert($key, $value);
+            )+
+            s
+        }
+    };
 }
 
 #[macro_export]

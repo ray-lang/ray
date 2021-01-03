@@ -14,18 +14,28 @@ use super::{
     constraint::ConstraintSet,
     context::Ctx,
     elim::Elim,
-    generalize::Generalize,
     subst::{ApplySubst, Subst},
+    top::traits::{Generalize, HasFreeVars, Skolemize},
     variance::Variance,
     InferError,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TyVar(pub String);
 
 impl std::fmt::Display for TyVar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl ApplySubst for TyVar {
+    fn apply_subst(self, subst: &Subst) -> TyVar {
+        if let Some(Ty::Var(v)) = subst.get(&self) {
+            v.clone()
+        } else {
+            self
+        }
     }
 }
 
@@ -41,12 +51,26 @@ impl TyVar {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LiteralKind {
+    Int,
+    Float,
+}
+
+impl std::fmt::Display for LiteralKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LiteralKind::Int => write!(f, "int literal"),
+            LiteralKind::Float => write!(f, "float literal"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ty {
     Never,
     Any,
-    IntLiteral,
-    FloatLiteral,
+    Literal(LiteralKind, TyVar),
     Var(TyVar),
     Union(Vec<Ty>),
     Func(Vec<Ty>, Box<Ty>),
@@ -60,8 +84,7 @@ impl std::fmt::Display for Ty {
         match self {
             Ty::Never => write!(f, "never"),
             Ty::Any => write!(f, "any"),
-            Ty::IntLiteral => write!(f, "int literal"),
-            Ty::FloatLiteral => write!(f, "float literal"),
+            Ty::Literal(kind, _) => write!(f, "{}", kind),
             Ty::Var(v) => write!(f, "{}", v),
             Ty::Union(tys) => {
                 if tys.len() != 0 {
@@ -92,8 +115,9 @@ impl std::fmt::Display for Ty {
 impl ApplySubst for Ty {
     fn apply_subst(self, subst: &Subst) -> Ty {
         match self {
-            Ty::Any | Ty::Never | Ty::IntLiteral | Ty::FloatLiteral => self.clone(),
-            Ty::Var(ref v) => subst.get(&v).cloned().unwrap_or_else(|| self.clone()),
+            Ty::Any | Ty::Never => self.clone(),
+            Ty::Literal(k, v) => subst.get(&v).cloned().unwrap_or_else(|| Ty::Literal(k, v)),
+            Ty::Var(v) => subst.get(&v).cloned().unwrap_or_else(|| Ty::Var(v)),
             Ty::Union(tys) => {
                 let mut tys = tys.apply_subst(subst);
                 tys.dedup(); // remove any duplicates
@@ -113,12 +137,6 @@ impl ApplySubst for Ty {
     }
 }
 
-impl ApplySubst<Vec<Ty>> for Vec<Ty> {
-    fn apply_subst(self, subst: &Subst) -> Vec<Ty> {
-        self.into_iter().map(|x| x.apply_subst(subst)).collect()
-    }
-}
-
 impl ApplySubst<Vec<(String, Ty)>> for Vec<(String, Ty)> {
     fn apply_subst(self, subst: &Subst) -> Vec<(String, Ty)> {
         self.into_iter()
@@ -131,10 +149,17 @@ impl Elim for Ty {
     /// S ⇑(V) T : T is the least supertype of S such that FV(T) ∩ V = ∅
     fn elim_up<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Ty, InferError<T>> {
         Ok(match self {
-            Ty::Any | Ty::Never | Ty::IntLiteral | Ty::FloatLiteral => self.clone(),
+            Ty::Any | Ty::Never => self.clone(),
             Ty::Var(v) => {
                 if !vs.contains(&v) {
-                    Ty::Var(v.clone())
+                    Ty::Var(v)
+                } else {
+                    Ty::Any
+                }
+            }
+            Ty::Literal(k, v) => {
+                if !vs.contains(&v) {
+                    Ty::Literal(k, v)
                 } else {
                     Ty::Any
                 }
@@ -172,10 +197,17 @@ impl Elim for Ty {
     /// S ⇓(V) T : T is the greatest subtype of S such that FV(T) ∩ V = ∅
     fn elim_down<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Ty, InferError<T>> {
         Ok(match self {
-            Ty::Any | Ty::Never | Ty::IntLiteral | Ty::FloatLiteral => self.clone(),
+            Ty::Any | Ty::Never => self.clone(),
             Ty::Var(v) => {
                 if !vs.contains(&v) {
                     Ty::Var(v.clone())
+                } else {
+                    Ty::Never
+                }
+            }
+            Ty::Literal(k, v) => {
+                if !vs.contains(&v) {
+                    Ty::Literal(k, v)
                 } else {
                     Ty::Never
                 }
@@ -320,63 +352,111 @@ impl GreatestLowerBound for Vec<Ty> {
 }
 
 impl Generalize for Ty {
-    fn generalize(self, ty: Ty, reverse_subst: &mut HashMap<(Ty, Ty), TyVar>) -> Ty {
-        println!("generalize: {} and {}", self, ty);
-        if let Some(a) = reverse_subst.get(&(self.clone(), ty.clone())) {
-            return Ty::Var(a.clone());
-        }
-
-        let ty = match (self, ty) {
-            (Ty::Union(_), Ty::Union(_)) => unimplemented!("generalize unions"),
-            (Ty::Union(tys), t) | (t, Ty::Union(tys)) => tys
-                .into_iter()
-                .fold(t, |s, t| s.generalize(t, reverse_subst)),
-            (Ty::Constrained(tys, s), t) => {
-                s.generalize(t, reverse_subst)
-                // Ty::Constrained(tys, Box::new(s.generalize(t, reverse_subst)))
-            }
-            (s, Ty::Constrained(tys, t)) => {
-                s.generalize(*t, reverse_subst)
-                // Ty::Constrained(tys, Box::new(s.generalize(*t, reverse_subst)))
-            }
-            (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-                Ty::Projection(a.clone(), s.generalize(t, reverse_subst))
-            }
-            (Ty::Func(r, s), Ty::Func(t, u)) => {
-                if r.len() == t.len() {
-                    Ty::Func(
-                        r.generalize(t, reverse_subst),
-                        Box::new(s.generalize(*u, reverse_subst)),
-                    )
-                } else {
-                    Ty::Union(vec![Ty::Func(r, s), Ty::Func(t, u)])
-                }
-            }
-            (Ty::All(xs, s), t) => Ty::generalize_forall(xs, *s, t),
-            (t, Ty::All(xs, s)) => Ty::generalize_forall(xs, *s, t),
-            (a, b) => {
-                if a != b {
-                    let tv = TyVar::new();
-                    reverse_subst.insert((a, b), tv.clone());
-                    Ty::Var(tv)
-                } else {
-                    a
-                }
-            }
-        };
-
-        println!("generalized: {}", ty);
-
-        ty
+    fn generalize(self, m: &Vec<Ty>) -> Ty {
+        // generalize(M, τ) => ∀{a}.τ where {a} = ftv(τ) − ftv(M).
+        let tyvars = self
+            .free_vars()
+            .difference(&m.free_vars())
+            .map(|&t| t.clone())
+            .collect::<Vec<_>>();
+        Ty::All(tyvars, Box::new(self))
     }
+    // fn generalize(self, ty: Ty, reverse_subst: &mut HashMap<(Ty, Ty), TyVar>) -> Ty {
+    //     println!("generalize: {} and {}", self, ty);
+    //     if let Some(a) = reverse_subst.get(&(self.clone(), ty.clone())) {
+    //         return Ty::Var(a.clone());
+    //     }
+
+    //     let ty = match (self, ty) {
+    //         (Ty::Union(_), Ty::Union(_)) => unimplemented!("generalize unions"),
+    //         (Ty::Union(tys), t) | (t, Ty::Union(tys)) => tys
+    //             .into_iter()
+    //             .fold(t, |s, t| s.generalize(t, reverse_subst)),
+    //         (Ty::Constrained(tys, s), t) => {
+    //             s.generalize(t, reverse_subst)
+    //             // Ty::Constrained(tys, Box::new(s.generalize(t, reverse_subst)))
+    //         }
+    //         (s, Ty::Constrained(tys, t)) => {
+    //             s.generalize(*t, reverse_subst)
+    //             // Ty::Constrained(tys, Box::new(s.generalize(*t, reverse_subst)))
+    //         }
+    //         (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
+    //             Ty::Projection(a.clone(), s.generalize(t, reverse_subst))
+    //         }
+    //         (Ty::Func(r, s), Ty::Func(t, u)) => {
+    //             if r.len() == t.len() {
+    //                 Ty::Func(
+    //                     r.generalize(t, reverse_subst),
+    //                     Box::new(s.generalize(*u, reverse_subst)),
+    //                 )
+    //             } else {
+    //                 Ty::Union(vec![Ty::Func(r, s), Ty::Func(t, u)])
+    //             }
+    //         }
+    //         (Ty::All(xs, s), t) => Ty::generalize_forall(xs, *s, t),
+    //         (t, Ty::All(xs, s)) => Ty::generalize_forall(xs, *s, t),
+    //         (a, b) => {
+    //             if a != b {
+    //                 let tv = TyVar::new();
+    //                 reverse_subst.insert((a, b), tv.clone());
+    //                 Ty::Var(tv)
+    //             } else {
+    //                 a
+    //             }
+    //         }
+    //     };
+
+    //     println!("generalized: {}", ty);
+
+    //     ty
+    // }
 }
 
 impl Generalize for Vec<Ty> {
-    fn generalize(self, other: Vec<Ty>, reverse_subst: &mut HashMap<(Ty, Ty), TyVar>) -> Vec<Ty> {
-        self.into_iter()
-            .zip(other.into_iter())
-            .map(|(a, b)| a.generalize(b, reverse_subst))
-            .collect()
+    fn generalize(self, m: &Vec<Ty>) -> Self {
+        self.into_iter().map(|t| t.generalize(m)).collect()
+    }
+
+    // fn generalize(self, other: Vec<Ty>, reverse_subst: &mut HashMap<(Ty, Ty), TyVar>) -> Vec<Ty> {
+    //     self.into_iter()
+    //         .zip(other.into_iter())
+    //         .map(|(a, b)| a.generalize(b, reverse_subst))
+    //         .collect()
+    // }
+}
+
+impl HasFreeVars for Ty {
+    fn free_vars(&self) -> HashSet<&TyVar> {
+        match self {
+            Ty::All(xs, ty) => {
+                let xs = xs.iter().collect();
+                ty.free_vars().difference(&xs).map(|t| *t).collect()
+            }
+            Ty::Union(tys) | Ty::Projection(_, tys) => tys.free_vars(),
+            Ty::Func(tys, r) => tys
+                .iter()
+                .chain(std::iter::once(r.as_ref()))
+                .flat_map(|t| t.free_vars())
+                .collect(),
+            Ty::Var(tv) => vec![tv].into_iter().collect(),
+            Ty::Constrained(_, t) => t.free_vars(),
+            _ => HashSet::new(),
+        }
+    }
+}
+
+impl HasFreeVars for Vec<Ty> {
+    fn free_vars(&self) -> HashSet<&TyVar> {
+        self.iter().flat_map(|t| t.free_vars()).collect()
+    }
+}
+
+impl Skolemize for Ty {
+    fn skolemize(&self) -> (Self, Vec<TyVar>)
+    where
+        Self: Sized,
+    {
+        todo!()
     }
 }
 
@@ -504,6 +584,10 @@ impl Ty {
 
     pub fn string() -> Ty {
         Ty::Projection(str!("string"), vec![])
+    }
+
+    pub fn bytes() -> Ty {
+        Ty::Projection(str!("bytes"), vec![])
     }
 
     pub fn int() -> Ty {
@@ -644,65 +728,47 @@ impl Ty {
         self.free_vars().len() != 0
     }
 
-    pub fn free_vars(&self) -> HashSet<&TyVar> {
-        match self {
-            Ty::All(xs, ty) => {
-                let xs = xs.iter().collect();
-                ty.free_vars().difference(&xs).map(|t| *t).collect()
-            }
-            Ty::Union(tys) | Ty::Projection(_, tys) => {
-                tys.iter().flat_map(|t| t.free_vars()).collect()
-            }
-            Ty::Func(tys, r) => tys
-                .iter()
-                .chain(std::iter::once(r.as_ref()))
-                .flat_map(|t| t.free_vars())
-                .collect(),
-            Ty::Var(tv) => vec![tv].into_iter().collect(),
-            Ty::Constrained(_, t) => t.free_vars(),
-            _ => HashSet::new(),
-        }
-    }
-
     pub fn generalize_forall(xs: Vec<TyVar>, s: Ty, t: Ty) -> Ty {
+        unimplemented!();
+
         // create fresh type variables
-        let new_xs = (0..xs.len()).map(|_| TyVar::new()).collect::<Vec<_>>();
-        let xs_subst = Subst::from_types(
-            xs.clone(),
-            new_xs
-                .iter()
-                .map(|x| Ty::Var(x.clone()))
-                .collect::<Vec<_>>(),
-        );
+        // let new_xs = (0..xs.len()).map(|_| TyVar::new()).collect::<Vec<_>>();
+        // let xs_subst = Subst::from_types(
+        //     xs.clone(),
+        //     new_xs
+        //         .iter()
+        //         .map(|x| Ty::Var(x.clone()))
+        //         .collect::<Vec<_>>(),
+        // );
 
-        // apply them to the types
-        let s = s.apply_subst(&xs_subst);
+        // // apply them to the types
+        // let s = s.apply_subst(&xs_subst);
 
-        println!(
-            "generalize for all: new_xs = {:?}; s = {}; t = {}",
-            new_xs, s, t
-        );
-        let mut subst = HashMap::new();
-        let original_ty = s;
-        let u = original_ty.clone().generalize(t, &mut subst);
-        println!("generalize for all: u = {}", u);
+        // println!(
+        //     "generalize for all: new_xs = {:?}; s = {}; t = {}",
+        //     new_xs, s, t
+        // );
+        // let mut subst = HashMap::new();
+        // let original_ty = s;
+        // let u = original_ty.clone().generalize(t, &mut subst);
+        // println!("generalize for all: u = {}", u);
 
-        if let Ty::Union(union_tys) = u {
-            Ty::Union(
-                union_tys
-                    .into_iter()
-                    .map(|t| {
-                        if t == original_ty {
-                            Ty::All(new_xs.clone(), Box::new(t))
-                        } else {
-                            t
-                        }
-                    })
-                    .collect(),
-            )
-        } else {
-            u
-        }
+        // if let Ty::Union(union_tys) = u {
+        //     Ty::Union(
+        //         union_tys
+        //             .into_iter()
+        //             .map(|t| {
+        //                 if t == original_ty {
+        //                     Ty::All(new_xs.clone(), Box::new(t))
+        //                 } else {
+        //                     t
+        //                 }
+        //             })
+        //             .collect(),
+        //     )
+        // } else {
+        //     u
+        // }
     }
 
     /// Find a minimal substitution (σCR) will minimize R
@@ -735,10 +801,53 @@ impl Ty {
         Ok(subst)
     }
 
+    pub fn mgu(&self, other: &Ty) -> Result<Subst, String> {
+        println!("unify: {} & {}", self, other);
+        Ok(match (self, other) {
+            (_, Ty::Any) | (_, Ty::Never) => Subst::new(),
+            (Ty::Literal(LiteralKind::Int, v), t) | (t, Ty::Literal(LiteralKind::Int, v))
+                if t.is_int_ty() =>
+            {
+                subst! { v.clone() => t.clone() }
+            }
+            (Ty::Literal(LiteralKind::Float, v), t) | (t, Ty::Literal(LiteralKind::Float, v))
+                if t.is_float_ty() =>
+            {
+                subst! { v.clone() => t.clone() }
+            }
+            (Ty::Var(tv), t) | (t, Ty::Var(tv)) if self != other => {
+                if !t.free_vars().contains(&tv) {
+                    subst! { tv.clone() => t.clone() }
+                } else {
+                    return Err(format!("recursive unification: {} and {}", self, other));
+                }
+            }
+            (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
+                let mut sub = Subst::new();
+                for (x, y) in s.iter().zip(t.iter()) {
+                    sub = sub.union(x.mgu(y)?)
+                }
+                sub
+            }
+            (Ty::Func(r, s), Ty::Func(t, u)) if r.len() == t.len() => {
+                let mut sub = Subst::new();
+                for (x, y) in r.iter().zip(t.iter()) {
+                    sub = sub.union(x.mgu(y)?)
+                }
+
+                sub.union(s.mgu(u)?)
+            }
+            (Ty::All(xs, s), Ty::All(ys, t)) if xs.len() == ys.len() => s.mgu(t)?,
+            (Ty::All(_, s), t) => s.mgu(t)?,
+            (s, Ty::All(_, t)) => s.mgu(t)?,
+            _ => return Err(format!("type mismatch `{}` and `{}`", self, other)),
+        })
+    }
+
     pub fn variance_in(&self, v: &TyVar) -> Variance {
         match self {
-            Ty::Any | Ty::Never | Ty::IntLiteral | Ty::FloatLiteral => Variance::Constant,
-            Ty::Var(u) => {
+            Ty::Any | Ty::Never => Variance::Constant,
+            Ty::Literal(_, u) | Ty::Var(u) => {
                 if v == u {
                     Variance::Covariant
                 } else {
@@ -776,8 +885,8 @@ impl Ty {
     pub fn is_subtype(&self, t: &Ty) -> bool {
         match (self, t) {
             (_, Ty::Any) | (Ty::Never, _) => true,
-            (Ty::IntLiteral, t) if t.is_int_ty() => true,
-            (Ty::FloatLiteral, t) if t.is_float_ty() => true,
+            (Ty::Literal(LiteralKind::Int, _), t) if t.is_int_ty() => true,
+            (Ty::Literal(LiteralKind::Float, _), t) if t.is_float_ty() => true,
             (Ty::Projection(a, s), Ty::Projection(b, t)) => {
                 a == b && s.iter().zip(t.iter()).all(|(x, y)| x.is_subtype(y))
             }
@@ -937,51 +1046,49 @@ impl Ty {
 mod ty_test {
     use std::collections::HashMap;
 
-    use crate::typing::Generalize;
-
     use super::{Ty, TyVar};
 
     #[test]
     fn test_generalize() {
-        let t_int = || Ty::Projection("int".to_string(), vec![]);
-        let t_float = || Ty::Projection("float".to_string(), vec![]);
-        let t_char = || Ty::Projection("char".to_string(), vec![]);
-        let t_bool = || Ty::Projection("bool".to_string(), vec![]);
-        let t_seq = |x| Ty::Projection("seq".to_string(), vec![x]);
+        // let t_int = || Ty::Projection("int".to_string(), vec![]);
+        // let t_float = || Ty::Projection("float".to_string(), vec![]);
+        // let t_char = || Ty::Projection("char".to_string(), vec![]);
+        // let t_bool = || Ty::Projection("bool".to_string(), vec![]);
+        // let t_seq = |x| Ty::Projection("seq".to_string(), vec![x]);
 
-        let s = Ty::Func(vec![t_int(), t_int()], Box::new(t_int()));
-        let t = Ty::Func(vec![t_int(), t_int()], Box::new(t_float()));
-        let u = Ty::Func(vec![t_int(), t_float()], Box::new(t_float()));
+        // let s = Ty::Func(vec![t_int(), t_int()], Box::new(t_int()));
+        // let t = Ty::Func(vec![t_int(), t_int()], Box::new(t_float()));
+        // let u = Ty::Func(vec![t_int(), t_float()], Box::new(t_float()));
 
-        let mut subst = HashMap::new();
-        let r = s.generalize(t, &mut subst).generalize(u, &mut subst);
-        assert!(matches!(r, Ty::Func(..)));
+        // let mut subst = HashMap::new();
+        // let r = s.generalize(t, &mut subst).generalize(u, &mut subst);
+        // assert!(matches!(r, Ty::Func(..)));
 
-        println!("generalized type: {}", r);
+        // println!("generalized type: {}", r);
 
-        let (_, _, params, ret) = r.try_unpack_fn::<()>().unwrap();
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], t_int());
-        assert!(matches!(params[1], Ty::Var(_)));
-        assert!(matches!(ret, Ty::Var(_)));
+        // let (_, _, params, ret) = r.try_unpack_fn::<()>().unwrap();
+        // assert_eq!(params.len(), 2);
+        // assert_eq!(params[0], t_int());
+        // assert!(matches!(params[1], Ty::Var(_)));
+        // assert!(matches!(ret, Ty::Var(_)));
 
-        let lt_eq_ch = Ty::Func(vec![t_char(), t_char()], Box::new(t_bool()));
-        let lt_eq_seq = Ty::All(
-            vec![tvar!(a)],
-            Box::new(Ty::Func(
-                vec![t_seq(Ty::Var(tvar!(a))), t_seq(Ty::Var(tvar!(a)))],
-                Box::new(t_bool()),
-            )),
-        );
+        // let lt_eq_ch = Ty::Func(vec![t_char(), t_char()], Box::new(t_bool()));
+        // let lt_eq_seq = Ty::All(
+        //     vec![tvar!(a)],
+        //     Box::new(Ty::Func(
+        //         vec![t_seq(Ty::Var(tvar!(a))), t_seq(Ty::Var(tvar!(a)))],
+        //         Box::new(t_bool()),
+        //     )),
+        // );
 
-        let mut subst = HashMap::new();
-        let lt_eq = lt_eq_ch.generalize(lt_eq_seq, &mut subst);
-        println!("generalized type for `≤`: {}", lt_eq);
-        assert!(matches!(lt_eq, Ty::Func(..)));
+        // let mut subst = HashMap::new();
+        // let lt_eq = lt_eq_ch.generalize(lt_eq_seq, &mut subst);
+        // println!("generalized type for `≤`: {}", lt_eq);
+        // assert!(matches!(lt_eq, Ty::Func(..)));
 
-        let (_, _, params, ret) = lt_eq.try_unpack_fn::<()>().unwrap();
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0], params[1]);
-        assert_eq!(ret, t_bool());
+        // let (_, _, params, ret) = lt_eq.try_unpack_fn::<()>().unwrap();
+        // assert_eq!(params.len(), 2);
+        // assert_eq!(params[0], params[1]);
+        // assert_eq!(ret, t_bool());
     }
 }

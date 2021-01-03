@@ -6,7 +6,7 @@ use crate::{
     pathlib::FilePath,
     span::Span,
     typing::{
-        ty::{Ty, TyVar},
+        ty::{LiteralKind, Ty, TyVar},
         Ctx,
     },
 };
@@ -203,7 +203,7 @@ impl IntoHirNode for ast::Cast {
         &self,
         _: &[ast::Expr],
         scope: &ast::Path,
-        filepath: &FilePath,
+        _: &FilePath,
         ctx: &mut Ctx,
     ) -> RayResult<HirNode<Span>> {
         Ok(Const(Ty::from_ast_ty(&self.ty.kind, scope, ctx)).into())
@@ -339,18 +339,18 @@ impl IntoHirNode for ast::Literal {
                     let sign = if !signed { "u" } else { "i" };
                     Ty::Projection(format!("{}{}", sign, size), vec![])
                 } else {
-                    Ty::IntLiteral
+                    Ty::Literal(LiteralKind::Int, TyVar::new())
                 }
             }
             ast::Literal::Float { size, .. } => {
                 if *size != 0 {
                     Ty::Projection(format!("f{}", size), vec![])
                 } else {
-                    Ty::FloatLiteral
+                    Ty::Literal(LiteralKind::Float, TyVar::new())
                 }
             }
             ast::Literal::String(_) => Ty::string(),
-            ast::Literal::ByteString(_) => Ty::string(),
+            ast::Literal::ByteString(_) => Ty::bytes(),
             ast::Literal::Byte(_) => Ty::u8(),
             ast::Literal::Char(_) => Ty::char(),
             ast::Literal::Bool(_) => Ty::bool(),

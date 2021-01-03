@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
+    top::traits::HasFreeVars,
     ty::{Ty, TyVar},
     InferError, Subst,
 };

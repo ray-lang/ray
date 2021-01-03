@@ -76,12 +76,6 @@ impl<T: Copy + Clone> ApplySubst for HirNode<T> {
     }
 }
 
-impl<T: Copy + Clone> ApplySubst for Vec<HirNode<T>> {
-    fn apply_subst(self, subst: &Subst) -> Vec<HirNode<T>> {
-        self.into_iter().map(|e| e.apply_subst(subst)).collect()
-    }
-}
-
 impl<T: Copy + Clone> HirNode<T> {
     pub fn new(kind: HirNodeKind<T>) -> HirNode<T> {
         HirNode {
@@ -265,12 +259,6 @@ impl<T: Copy + Clone> ApplySubst for HirNodeKind<T> {
             ),
             HirNodeKind::Typed(e) => HirNodeKind::Typed(e.apply_subst(subst)),
         }
-    }
-}
-
-impl<T: Copy + Clone> ApplySubst for Vec<HirNodeKind<T>> {
-    fn apply_subst(self, subst: &Subst) -> Vec<HirNodeKind<T>> {
-        self.into_iter().map(|e| e.apply_subst(subst)).collect()
     }
 }
 

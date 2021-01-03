@@ -32,3 +32,32 @@ where
 {
     i.into_iter().map(f).collect::<Vec<_>>().join(sep.into())
 }
+
+pub trait FoldFirst {
+    type Item;
+
+    fn foldf<F>(self, f: F) -> Option<Self::Item>
+    where
+        F: FnMut(Self::Item, Self::Item) -> Self::Item,
+        Self: Sized;
+}
+
+impl<I: Iterator> FoldFirst for I {
+    type Item = I::Item;
+
+    fn foldf<F>(mut self, mut f: F) -> Option<Self::Item>
+    where
+        F: FnMut(Self::Item, Self::Item) -> Self::Item,
+        Self: Sized,
+    {
+        if let Some(mut curr) = self.next() {
+            while let Some(next) = self.next() {
+                curr = f(curr, next);
+            }
+
+            Some(curr)
+        } else {
+            None
+        }
+    }
+}

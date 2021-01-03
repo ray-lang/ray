@@ -1,21 +1,15 @@
-use std::{
-    collections::{HashMap, HashSet},
-    marker::PhantomData,
-};
+use std::{collections::HashSet, marker::PhantomData};
 
 use crate::{
-    errors::RayResult,
     hir::{HirNode, HirNodeKind, Param, TypedHirNode},
     utils::join,
 };
 
 use super::{
-    constraint::ConstraintSet,
     context::Ctx,
-    elim::Elim,
-    generalize::Generalize,
     subst::{ApplySubst, Subst},
-    ty::{Ty, TyVar},
+    top::traits::HasFreeVars,
+    ty::{LiteralKind, Ty, TyVar},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,8 +38,16 @@ impl<T: std::fmt::Debug + Copy + Clone> InferSystem<T> {
         println!("unify: {} and {}", a, b);
         Ok(match (a, b) {
             (_, Ty::Any) | (_, Ty::Never) => Subst::new(),
-            (Ty::IntLiteral, t) | (t, Ty::IntLiteral) if t.is_int_ty() => Subst::new(),
-            (Ty::FloatLiteral, t) | (t, Ty::FloatLiteral) if t.is_float_ty() => Subst::new(),
+            (Ty::Literal(LiteralKind::Int, v), t) | (t, Ty::Literal(LiteralKind::Int, v))
+                if t.is_int_ty() =>
+            {
+                subst! { v.clone() => t.clone() }
+            }
+            (Ty::Literal(LiteralKind::Float, v), t) | (t, Ty::Literal(LiteralKind::Float, v))
+                if t.is_float_ty() =>
+            {
+                subst! { v.clone() => t.clone() }
+            }
             (Ty::Var(tv), t) | (t, Ty::Var(tv)) if a != b => {
                 if !t.free_vars().contains(&tv) {
                     subst! { tv.clone() => t.clone() }
@@ -84,119 +86,6 @@ impl<T: std::fmt::Debug + Copy + Clone> InferSystem<T> {
             }
         })
     }
-
-    /// An [X]/V -constraint set C has the form:
-    ///     { S[i] <: X[i] <: T[i] | (FV(S[i]) ∪ FV(T[i])) ∩ ({V} ∪ {X}) = ∅ }
-    ///
-    /// Given a set of type variables V, a set of unknowns X,
-    /// and two types S and T, calculates the minimal (i.e., least constraining)
-    /// X/V - constraint set C that guarantees S <: T
-    // pub fn cg(
-    //     &self,
-    //     ty_vars: &HashSet<&TyVar>,
-    //     unknowns: &HashSet<TyVar>,
-    //     a: &Ty,
-    //     b: &Ty,
-    //     metadata: Option<T>,
-    // ) -> Result<ConstraintSet, InferError<T>> {
-    //     println!("cg: {:?} and {:?}", a, b);
-    //     println!("  ty_vars = {:?}", ty_vars);
-    //     println!("  unknowns = {:?}", unknowns);
-    //     Ok(match (a, b) {
-    //         (_, Ty::Any) | (Ty::Never, _) => ConstraintSet::new(),
-    //         (Ty::IntLiteral, b) if b.is_int_ty() => ConstraintSet::new(),
-    //         (Ty::FloatLiteral, b) if b.is_float_ty() => ConstraintSet::new(),
-    //         (Ty::Var(y), _)
-    //             // Y ∈ [X] && FV(S) ∩ {X} = ∅
-    //             if a != b && unknowns.contains(&y) && b.free_vars().intersection(&unknowns.iter().collect()).count() == 0 => {
-    //             cset! {
-    //                 y => (Ty::Never) <: b.clone().elim_down(&ty_vars)?
-    //             }
-    //         }
-    //         (_, Ty::Var(y))
-    //             // Y ∈ [X] && FV(S) ∩ {X} = ∅
-    //             if a != b && unknowns.contains(&y) && a.free_vars().intersection(&unknowns.iter().collect()).count() == 0 => {
-    //                cset! {
-    //                    y => (a.clone().elim_up(&ty_vars)?) <: Ty::Any
-    //                }
-    //             }
-    //         (Ty::Var(y), _) | (_, Ty::Var(y)) if a == b && !unknowns.contains(&y) => { // Y ∈/ X
-    //             ConstraintSet::new()
-    //         }
-    //         (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-    //             let mut c = cset!{};
-    //             for (i, j) in s.iter().zip(t.iter()) {
-    //                 let d = self.cg(ty_vars, unknowns, i, j, metadata)?;
-    //                 c = c.meet(d);
-    //             }
-    //             c
-    //         }
-    //         (Ty::Func(r, s), Ty::Func(t, u)) if r.len() == t.len() => {
-    //             // V' ⊢[X] ([T] <: [R]) ⇒ C
-    //             let mut c = cset!{};
-    //             for (i, j) in r.iter().zip(t.iter()) {
-    //                 let d = self.cg(ty_vars, unknowns, i, j, metadata)?;
-    //                 c = c.meet(d);
-    //             }
-
-    //             // V' ⊢[X] (S <: U) ⇒ D
-    //             let d = self.cg(ty_vars, unknowns, s, u, metadata)?;
-    //             c.meet(d)
-    //         }
-    //         (Ty::All(a_ys, s), Ty::All(b_ys, t))
-    //             // Y ∩ (V ∪ X)= ∅
-    //             if a_ys == b_ys  =>
-    //         {
-    //             let ys: HashSet<&TyVar> = a_ys.into_iter().collect();
-    //             let x_prime: HashSet<&TyVar> = ty_vars.union(&unknowns.iter().collect()).map(|v| *v).collect();
-    //             let y_intersect: HashSet<&TyVar> = ys.intersection(&x_prime).map(|v| *v).collect();
-    //             if y_intersect.len() != 0 {
-    //                 return Err(InferError {
-    //                     msg: format!("{:?} ∩ {:?} != ∅", ys, x_prime),
-    //                     metadata,
-    //                 });
-    //             }
-
-    //             // V' = V ∪ {Y}
-    //             let v_prime = ty_vars.union(&ys).map(|t| *t).collect();
-    //             self.cg(&v_prime, &unknowns, s, t, metadata)?
-    //         }
-    //         (Ty::All(ys, s), t) => {
-    //             let ys: HashSet<&TyVar> = ys.into_iter().collect();
-    //             let x_prime: HashSet<&TyVar> = ty_vars.union(&unknowns.iter().collect()).map(|v| *v).collect();
-    //             let y_intersect: HashSet<&TyVar> = ys.intersection(&x_prime).map(|v| *v).collect();
-    //             if y_intersect.len() != 0 {
-    //                 return Err(InferError {
-    //                     msg: format!("{:?} ∩ {:?} != ∅", ys, x_prime),
-    //                     metadata,
-    //                 });
-    //             }
-
-    //             // V' = V ∪ {Y}
-    //             let v_prime = ty_vars.union(&ys).map(|t| *t).collect();
-    //             self.cg(&v_prime, unknowns, s, t, metadata)?
-    //         }
-    //         (s, Ty::All(ys, t)) => {
-    //             let ys: HashSet<&TyVar> = ys.into_iter().collect();
-    //             let x_prime: HashSet<&TyVar> = ty_vars.union(&unknowns.iter().collect()).map(|v| *v).collect();
-    //             let y_intersect: HashSet<&TyVar> = ys.intersection(&x_prime).map(|v| *v).collect();
-    //             if y_intersect.len() != 0 {
-    //                 return Err(InferError {
-    //                     msg: format!("{:?} ∩ {:?} != ∅", ys, x_prime),
-    //                     metadata,
-    //                 });
-    //             }
-
-    //             // V' = V ∪ {Y}
-    //             let v_prime = ty_vars.union(&ys).map(|t| *t).collect();
-    //             self.cg(&v_prime, unknowns, s, t, metadata)?
-    //         }
-    //         _ => return Err(InferError {
-    //             msg: format!("types `{}` and `{}` cannot be unified", a, b),
-    //             metadata
-    //         }),
-    //     })
-    // }
 
     fn unify_fn_args(
         &self,
@@ -240,27 +129,28 @@ impl<T: std::fmt::Debug + Copy + Clone> InferSystem<T> {
     }
 
     fn infer_var(&self, v: String, metadata: Option<T>) -> InferResult<T> {
-        let mut rev_sub = HashMap::new();
+        // let mut rev_sub = HashMap::new();
         let ty = match self.ctx.try_get_var(&v, metadata)? {
             Ty::Union(mut tys) if tys.len() == 1 => tys.pop().unwrap(),
             Ty::Union(mut tys) if tys.len() > 1 => {
-                let ty = tys.pop().unwrap();
-                let ty = tys
-                    .into_iter()
-                    .fold(ty, |t, x| t.generalize(x, &mut rev_sub));
+                // let ty = tys.pop().unwrap();
+                // let ty = tys
+                //     .into_iter()
+                //     .fold(ty, |t, x| t.generalize(x, &mut rev_sub));
 
-                // let ty = if let Ty::All(xs, t) = t {
-                //     (xs, *t.clone())
-                // } else {
-                //     (vec![], t)
-                // };
+                // // let ty = if let Ty::All(xs, t) = t {
+                // //     (xs, *t.clone())
+                // // } else {
+                // //     (vec![], t)
+                // // };
 
-                let ty = ty
-                    .clone()
-                    .constrain_for(v.clone(), ty)
-                    .close(&self.ctx.free_vars());
-                println!("constrained: {}", ty);
-                ty
+                // let ty = ty
+                //     .clone()
+                //     .constrain_for(v.clone(), ty)
+                //     .close(&self.ctx.free_vars());
+                // println!("constrained: {}", ty);
+                // ty
+                unimplemented!()
             }
             t => t,
         };
@@ -415,11 +305,11 @@ impl<T: std::fmt::Debug + Copy + Clone> InferSystem<T> {
                 .map(|sub| ty.clone().apply_subst(sub))
                 .collect::<Vec<Ty>>();
 
-            let mut reverse_subst = HashMap::new();
+            // let mut reverse_subst = HashMap::new();
             let ty_prime = ty_primes.remove(0);
-            let ty_prime = ty_primes
-                .into_iter()
-                .fold(ty_prime, |t, s| t.generalize(s, &mut reverse_subst));
+            // let ty_prime = ty_primes
+            //     .into_iter()
+            //     .fold(ty_prime, |t, s| t.generalize(s, &mut reverse_subst));
 
             println!("ty_prime = {:?}", ty_prime);
             subst = match self.unify(&ty, &ty_prime, metadata) {
