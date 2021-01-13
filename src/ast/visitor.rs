@@ -1,13 +1,18 @@
-use super::{Expr, ExprKind, Module};
+use super::{CurlyElementKind, Expr, ExprKind, Module};
 
-#[derive(Clone, Debug)]
-pub struct Visitor<'a> {
-    module: &'a Module,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Visitor<'a, I>
+where
+    I: Iterator<Item = &'a Expr>,
+{
     stack: Vec<&'a Expr>,
-    stmt_iter: std::slice::Iter<'a, Expr>,
+    stmt_iter: I,
 }
 
-impl<'a> Iterator for Visitor<'a> {
+impl<'a, I> Iterator for Visitor<'a, I>
+where
+    I: Iterator<Item = &'a Expr>,
+{
     type Item = &'a Expr;
 
     fn next(&mut self) -> Option<&'a Expr> {
@@ -23,15 +28,28 @@ impl<'a> Iterator for Visitor<'a> {
     }
 }
 
-impl<'a> Visitor<'a> {
-    pub fn new(module: &'a Module) -> Visitor<'a> {
+impl<'a> From<&'a Module> for Visitor<'a, std::slice::Iter<'a, Expr>> {
+    fn from(module: &'a Module) -> Visitor<'a, std::slice::Iter<'a, Expr>> {
         Visitor {
-            module,
             stack: vec![],
             stmt_iter: module.stmts.iter(),
         }
     }
+}
 
+impl<'a> From<&'a Expr> for Visitor<'a, std::vec::IntoIter<&'a Expr>> {
+    fn from(ex: &'a Expr) -> Visitor<'a, std::vec::IntoIter<&Expr>> {
+        Visitor {
+            stack: vec![],
+            stmt_iter: vec![ex].into_iter(),
+        }
+    }
+}
+
+impl<'a, I> Visitor<'a, I>
+where
+    I: Iterator<Item = &'a Expr>,
+{
     fn add_children(&mut self, ex: &'a Expr) {
         match &ex.kind {
             ExprKind::Break(val) => {
@@ -59,6 +77,14 @@ impl<'a> Visitor<'a> {
             ExprKind::Closure(closure) => {
                 self.stack.extend(closure.args.items.iter());
                 self.stack.push(&closure.body);
+            }
+            ExprKind::Curly(c) => {
+                for el in c.elements.iter() {
+                    match &el.kind {
+                        CurlyElementKind::Labeled(_, e) => self.stack.push(e),
+                        _ => (),
+                    }
+                }
             }
             ExprKind::DefaultValue(default_value) => self.stack.push(&default_value),
             ExprKind::Dot(dot) => self.stack.push(&dot.lhs),
@@ -96,7 +122,6 @@ impl<'a> Visitor<'a> {
             }
             ExprKind::Unsafe(ex) => self.stack.push(&ex),
             ExprKind::Literal(_)
-            | ExprKind::Curly(_)
             | ExprKind::Name(_)
             | ExprKind::Path(_)
             | ExprKind::Range(_)

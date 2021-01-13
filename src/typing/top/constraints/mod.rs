@@ -1,85 +1,29 @@
+mod satisfiable;
 pub mod tree;
 
-use tree::ConstraintTree;
+pub use satisfiable::*;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, iter::FromIterator};
 
 use itertools::Itertools;
 
 use crate::{
-    span::Span,
+    span::Source,
     typing::{
+        predicate::TyPredicate,
         ty::{Ty, TyVar},
         ApplySubst, Subst,
     },
 };
 
-use self::tree::{AttachTree, NodeTree, ReceiverTree};
-
 use super::{
     assumptions::AssumptionSet,
-    binding::{BindingGroup, BindingGroupAnalysis},
-    state::{TyEnv, TyVarFactory},
+    state::TyEnv,
     traits::{HasFreeVars, PolymorphismInfo},
 };
 
-pub trait CollectConstraints {
-    fn collect_constraints(
-        &self,
-        mono_tys: &HashSet<TyVar>,
-        tf: &mut TyVarFactory,
-    ) -> (Ty, AssumptionSet, ConstraintTree);
-
-    fn pattern_var(&self, var: &String, tf: &mut TyVarFactory) -> (Ty, TyEnv, ConstraintTree) {
-        let mut env = TyEnv::new();
-        let tv = tf.next();
-        env.insert(var.clone(), Ty::Var(tv.clone()));
-        let ct = ReceiverTree::new(var.to_string());
-        (Ty::Var(tv), env, ct)
-    }
-
-    fn decl_var<T: CollectConstraints>(
-        &self,
-        var: &String,
-        rhs: &T,
-        mono_tys: &HashSet<TyVar>,
-        tf: &mut TyVarFactory,
-    ) -> (BindingGroup, TyEnv) {
-        let (lhs_ty, env, ct1) = self.pattern_var(var, tf);
-        let (rhs_ty, a, ct2) = self.collect_rhs(rhs, mono_tys, tf);
-        let c = Constraint::new(EqConstraint(lhs_ty, rhs_ty));
-        let bg = BindingGroup::new(env, a, AttachTree::new(c, NodeTree::new(vec![ct1, ct2])));
-
-        (bg, TyEnv::new())
-    }
-
-    fn collect_rhs<T: CollectConstraints>(
-        &self,
-        ex: &T,
-        mono_tys: &HashSet<TyVar>,
-        tf: &mut TyVarFactory,
-    ) -> (Ty, AssumptionSet, ConstraintTree) {
-        let (ty, a, ct) = ex.collect_constraints(mono_tys, tf);
-        let bg = BindingGroup::new(TyEnv::new(), a, ct);
-        let defs = TyEnv::new();
-        let mut bga = BindingGroupAnalysis::new(vec![bg], &defs, tf, mono_tys);
-        let (_, a, ct) = bga.analyze();
-        (ty, a, ct)
-    }
-}
-
-impl<T: CollectConstraints> CollectConstraints for Box<T> {
-    fn collect_constraints(
-        &self,
-        mono_tys: &HashSet<TyVar>,
-        tf: &mut TyVarFactory,
-    ) -> (Ty, AssumptionSet, ConstraintTree) {
-        self.as_ref().collect_constraints(mono_tys, tf)
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct EqConstraint(pub Ty, pub Ty);
+pub struct EqConstraint(Ty, Ty);
 
 impl Into<ConstraintKind> for EqConstraint {
     fn into(self) -> ConstraintKind {
@@ -89,7 +33,7 @@ impl Into<ConstraintKind> for EqConstraint {
 
 impl std::fmt::Debug for EqConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} == {}", self.0, self.1)
+        write!(f, "{} ≡ {}", self.0, self.1)
     }
 }
 
@@ -104,8 +48,8 @@ impl EqConstraint {
             if let Some(tys) = aset.get(x) {
                 for rhs_ty in tys.iter().sorted() {
                     cl.push((
-                        x.clone(),
-                        Constraint::new(EqConstraint(lhs_ty.clone(), rhs_ty.clone())),
+                        rhs_ty.to_string(),
+                        EqConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
                     ));
                 }
             }
@@ -113,10 +57,14 @@ impl EqConstraint {
 
         cl
     }
+
+    pub fn unpack(self) -> (Ty, Ty) {
+        (self.0, self.1)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct GenConstraint(pub Vec<Ty>, pub TyVar, pub Ty);
+pub struct GenConstraint(Vec<Ty>, TyVar, Ty);
 
 impl Into<ConstraintKind> for GenConstraint {
     fn into(self) -> ConstraintKind {
@@ -134,10 +82,14 @@ impl GenConstraint {
     pub fn new(v: Vec<Ty>, tv: TyVar, t: Ty) -> Constraint {
         Constraint::new(GenConstraint(v, tv, t))
     }
+
+    pub fn unpack(self) -> (Vec<Ty>, TyVar, Ty) {
+        (self.0, self.1, self.2)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct InstConstraint(pub Ty, pub Ty);
+pub struct InstConstraint(Ty, Ty);
 
 impl Into<ConstraintKind> for InstConstraint {
     fn into(self) -> ConstraintKind {
@@ -155,10 +107,30 @@ impl InstConstraint {
     pub fn new(t: Ty, u: Ty) -> Constraint {
         Constraint::new(InstConstraint(t, u))
     }
+
+    pub fn unpack(self) -> (Ty, Ty) {
+        (self.0, self.1)
+    }
+
+    pub fn lift(aset: &AssumptionSet, sigs: &TyEnv) -> Vec<(String, Constraint)> {
+        let mut cl = vec![];
+        for (x, tys) in aset.iter().sorted_by_key(|&(x, _)| x) {
+            if let Some(rhs_ty) = sigs.get(x) {
+                for lhs_ty in tys {
+                    cl.push((
+                        lhs_ty.to_string(),
+                        InstConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
+                    ));
+                }
+            }
+        }
+
+        cl
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SkolConstraint(pub Vec<TyVar>, pub Ty, pub Ty);
+pub struct SkolConstraint(Vec<TyVar>, Ty, Ty);
 
 impl Into<ConstraintKind> for SkolConstraint {
     fn into(self) -> ConstraintKind {
@@ -183,12 +155,16 @@ impl std::fmt::Debug for SkolConstraint {
 }
 
 impl SkolConstraint {
-    pub fn lift(env: &TyEnv, defs: &TyEnv, mono_tys: &HashSet<TyVar>) -> Vec<(String, Constraint)> {
+    pub fn new<I: IntoIterator<Item = TyVar>>(v: I, t: Ty, u: Ty) -> Constraint {
+        Constraint::new(SkolConstraint(Vec::from_iter(v), t, u))
+    }
+
+    pub fn lift(env: &TyEnv, sigs: &TyEnv, mono_tys: &HashSet<TyVar>) -> Vec<(String, Constraint)> {
         let mut cl = vec![];
         for (x, lhs_ty) in env.iter().sorted_by_key(|&(x, _)| x) {
-            if let Some(rhs_ty) = defs.get(x) {
+            if let Some(rhs_ty) = sigs.get(x) {
                 cl.push((
-                    x.clone(),
+                    lhs_ty.to_string(),
                     Constraint::new(SkolConstraint(
                         mono_tys.iter().cloned().collect(),
                         lhs_ty.clone(),
@@ -200,10 +176,14 @@ impl SkolConstraint {
 
         cl
     }
+
+    pub fn unpack(self) -> (Vec<TyVar>, Ty, Ty) {
+        (self.0, self.1, self.2)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ImplicitConstraint(pub Vec<TyVar>, pub Ty, pub Ty);
+pub struct ImplicitConstraint(Vec<TyVar>, Ty, Ty);
 
 impl Into<ConstraintKind> for ImplicitConstraint {
     fn into(self) -> ConstraintKind {
@@ -227,6 +207,66 @@ impl std::fmt::Debug for ImplicitConstraint {
     }
 }
 
+impl ImplicitConstraint {
+    pub fn new(vs: Vec<TyVar>, t: Ty, u: Ty) -> Constraint {
+        Constraint::new(ImplicitConstraint(vs, t, u))
+    }
+
+    pub fn unpack(self) -> (Vec<TyVar>, Ty, Ty) {
+        (self.0, self.1, self.2)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ProveConstraint(TyPredicate);
+
+impl Into<ConstraintKind> for ProveConstraint {
+    fn into(self) -> ConstraintKind {
+        ConstraintKind::Prove(self)
+    }
+}
+
+impl std::fmt::Debug for ProveConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Prove ({})", self.0)
+    }
+}
+
+impl ProveConstraint {
+    pub fn new(q: TyPredicate) -> Constraint {
+        Constraint::new(ProveConstraint(q))
+    }
+
+    pub fn get_predicate(self) -> TyPredicate {
+        self.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct AssumeConstraint(TyPredicate);
+
+impl Into<ConstraintKind> for AssumeConstraint {
+    fn into(self) -> ConstraintKind {
+        ConstraintKind::Assume(self)
+    }
+}
+
+impl std::fmt::Debug for AssumeConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Assume ({})", self.0)
+    }
+}
+
+impl AssumeConstraint {
+    pub fn new(q: TyPredicate) -> Constraint {
+        Constraint::new(AssumeConstraint(q))
+    }
+
+    pub fn get_predicate(self) -> TyPredicate {
+        self.0
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ConstraintKind {
     Eq(EqConstraint),
@@ -234,6 +274,8 @@ pub enum ConstraintKind {
     Inst(InstConstraint),
     Skol(SkolConstraint),
     Implicit(ImplicitConstraint),
+    Prove(ProveConstraint),
+    Assume(AssumeConstraint),
 }
 
 impl std::fmt::Debug for ConstraintKind {
@@ -244,20 +286,22 @@ impl std::fmt::Debug for ConstraintKind {
             ConstraintKind::Inst(c) => write!(f, "{:?}", c),
             ConstraintKind::Skol(c) => write!(f, "{:?}", c),
             ConstraintKind::Implicit(c) => write!(f, "{:?}", c),
+            ConstraintKind::Prove(c) => write!(f, "{:?}", c),
+            ConstraintKind::Assume(c) => write!(f, "{:?}", c),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstraintInfo {
-    pub span: Option<Span>,
+    pub src: Vec<Source>,
 }
 
 impl PolymorphismInfo for ConstraintInfo {}
 
 impl ConstraintInfo {
     pub fn new() -> ConstraintInfo {
-        ConstraintInfo { span: None }
+        ConstraintInfo { src: vec![] }
     }
 }
 
@@ -294,6 +338,7 @@ impl HasFreeVars for Constraint {
                 h.extend(t.free_vars());
                 h
             }
+            ConstraintKind::Prove(_) | ConstraintKind::Assume(_) => HashSet::new(),
         }
     }
 }
@@ -312,7 +357,6 @@ impl HasFreeVars for Vec<(String, Constraint)> {
 
 impl ApplySubst for Constraint {
     fn apply_subst(self, subst: &Subst) -> Self {
-        println!("apply subst to constraint (before): {:?}", self);
         let info = self.info;
         let kind = match self.kind {
             ConstraintKind::Eq(EqConstraint(s, t)) => {
@@ -339,9 +383,13 @@ impl ApplySubst for Constraint {
                 t.apply_subst(subst),
             )
             .into(),
+            ConstraintKind::Prove(ProveConstraint(p)) => {
+                ProveConstraint(p.apply_subst(subst)).into()
+            }
+            ConstraintKind::Assume(AssumeConstraint(p)) => {
+                AssumeConstraint(p.apply_subst(subst)).into()
+            }
         };
-
-        println!("apply subst to constraint (after): {:?}", kind);
 
         Constraint { kind, info }
     }
@@ -355,11 +403,15 @@ impl Constraint {
         }
     }
 
-    pub fn syntax(&self) -> String {
-        todo!()
+    pub fn with_src(mut self, src: Option<Source>) -> Constraint {
+        if let Some(src) = src {
+            self.info.src.push(src);
+        }
+        self
     }
 
-    pub fn semantics<F: Fn() -> bool>(&self) -> F {
-        todo!()
+    pub fn with_info(mut self, info: ConstraintInfo) -> Constraint {
+        self.info = info;
+        self
     }
 }

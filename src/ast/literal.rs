@@ -1,8 +1,11 @@
-use crate::ast::token::{IntegerBase, Token, TokenKind};
 use crate::errors::{RayError, RayErrorKind, RayResult};
 use crate::pathlib::FilePath;
+use crate::{
+    ast::token::{IntegerBase, Token, TokenKind},
+    span::Source,
+};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal {
     Integer {
         value: String,
@@ -20,10 +23,29 @@ pub enum Literal {
     Char(String),
     Bool(bool),
     UnicodeEscSeq(String),
+    Unit,
     Nil,
 }
 
 impl Literal {
+    pub fn new_int(value: i64) -> Literal {
+        Literal::Integer {
+            value: value.to_string(),
+            base: IntegerBase::Decimal,
+            size: 0,
+            signed: true,
+        }
+    }
+
+    pub fn new_uint(value: u64) -> Literal {
+        Literal::Integer {
+            value: value.to_string(),
+            base: IntegerBase::Decimal,
+            size: 0,
+            signed: false,
+        }
+    }
+
     pub fn from_token(token: Token, fp: &FilePath) -> RayResult<Literal> {
         Ok(match token.kind {
             TokenKind::Integer {
@@ -38,8 +60,10 @@ impl Literal {
                     let size = parsed.as_ref().map_err(|e| RayError {
                         msg: e.to_string(),
                         kind: RayErrorKind::Parse,
-                        span: Some(span),
-                        fp: fp.clone(),
+                        src: vec![Source {
+                            span: Some(span),
+                            filepath: fp.clone(),
+                        }],
                     })?;
                     (*size, s.starts_with("i"))
                 } else {
@@ -59,8 +83,10 @@ impl Literal {
                         return Err(RayError {
                             msg: format!("invalid prefix for float {}", s),
                             kind: RayErrorKind::Parse,
-                            span: Some(token.span),
-                            fp: fp.clone(),
+                            src: vec![Source {
+                                span: Some(token.span),
+                                filepath: fp.clone(),
+                            }],
                         });
                     }
 
@@ -69,18 +95,16 @@ impl Literal {
                     *parsed.as_ref().map_err(|e| RayError {
                         msg: e.to_string(),
                         kind: RayErrorKind::Parse,
-                        span: Some(span),
-                        fp: fp.clone(),
+                        src: vec![Source {
+                            span: Some(span),
+                            filepath: fp.clone(),
+                        }],
                     })?
                 } else {
                     0
                 };
                 Literal::Float { value, size }
             }
-            TokenKind::String { value, .. } => Literal::String(value),
-            TokenKind::ByteString { value, .. } => Literal::ByteString(value),
-            TokenKind::Byte { value, .. } => Literal::Byte(value),
-            TokenKind::Char { value, .. } => Literal::Char(value),
             TokenKind::Bool(b) => Literal::Bool(b),
             TokenKind::UnicodeEscSeq(s) => Literal::UnicodeEscSeq(s),
             TokenKind::Nil => Literal::Nil,
@@ -133,6 +157,7 @@ impl std::fmt::Display for Literal {
             Literal::Char(s) => write!(f, "(char '{}')", s),
             Literal::UnicodeEscSeq(s) => write!(f, "(unicode \"{}\")", s),
             Literal::Bool(b) => write!(f, "(bool {})", b),
+            Literal::Unit => write!(f, "()"),
             Literal::Nil => write!(f, "nil"),
         }
     }

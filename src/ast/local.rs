@@ -2,7 +2,7 @@ use crate::ast::expr::Expr;
 use crate::ast::pattern::Pattern;
 use crate::ast::ty::Type;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Local {
     pub is_mut: bool,
     pub pattern: Box<Pattern>,

@@ -10,10 +10,6 @@ impl Parser {
         match tok.kind {
             TokenKind::Integer { .. }
             | TokenKind::Float { .. }
-            | TokenKind::String { .. }
-            | TokenKind::ByteString { .. }
-            | TokenKind::Byte { .. }
-            | TokenKind::Char { .. }
             | TokenKind::Bool(..)
             | TokenKind::Nil => {
                 let span = tok.span;
@@ -106,7 +102,6 @@ impl Parser {
             name,
             span,
             ty: None,
-            default: None,
         })
     }
 
@@ -117,12 +112,7 @@ impl Parser {
         } else {
             None
         };
-        Ok(ast::Name {
-            name,
-            span,
-            ty,
-            default: None,
-        })
+        Ok(ast::Name { name, span, ty })
     }
 
     pub(crate) fn parse_paren_pattern(&mut self, ctx: &ParseContext) -> ParseResult<ast::Pattern> {

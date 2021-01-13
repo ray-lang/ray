@@ -25,7 +25,7 @@ impl Parser {
                 let span = self.expect_sp(TokenKind::Break)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&ex.span);
+                    let span = span.extend_to(&ex.src.span.unwrap());
                     (Some(Box::new(ex)), span)
                 } else {
                     (None, span)
@@ -36,7 +36,7 @@ impl Parser {
                 let span = self.expect_sp(TokenKind::Return)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&ex.span);
+                    let span = span.extend_to(&ex.src.span.unwrap());
                     (Some(Box::new(ex)), span)
                 } else {
                     (None, span)
@@ -50,6 +50,42 @@ impl Parser {
             TokenKind::LeftParen => self.parse_paren_expr(ctx),
             TokenKind::LeftCurly => self.parse_block(ctx),
             TokenKind::Mut => self.parse_local(false, ctx),
+            TokenKind::Hash => {
+                let span = self.expect_sp(TokenKind::Hash)?;
+                self.parse_curly_expr(None, span, ctx)
+            }
+            TokenKind::DoubleQuote => {
+                let (s, span) = self.expect_string()?;
+                Ok(self.mk_expr(ast::ExprKind::Literal(ast::Literal::String(s)), span))
+            }
+            TokenKind::SingleQuote => {
+                let (c, span) = self.expect_char()?;
+                Ok(self.mk_expr(ast::ExprKind::Literal(ast::Literal::Char(c)), span))
+            }
+            TokenKind::Identifier(s)
+                if &s == "b"
+                    && matches!(
+                        self.peek_kind_at(1),
+                        TokenKind::SingleQuote | TokenKind::DoubleQuote
+                    ) =>
+            {
+                // parse the `b`
+                let (_, Span { start, .. }) = self.expect_id()?;
+                let quote = self.token()?;
+                if quote.kind == TokenKind::SingleQuote {
+                    let (c, Span { end, .. }) = self.expect_char()?;
+                    Ok(self.mk_expr(
+                        ast::ExprKind::Literal(ast::Literal::Char(c)),
+                        Span { start, end },
+                    ))
+                } else {
+                    let (s, Span { end, .. }) = self.expect_string()?;
+                    Ok(self.mk_expr(
+                        ast::ExprKind::Literal(ast::Literal::String(s)),
+                        Span { start, end },
+                    ))
+                }
+            }
             TokenKind::Identifier(_) | TokenKind::Struct | TokenKind::Underscore => {
                 let n = self.parse_name()?;
                 if peek!(self, TokenKind::FatArrow) {
@@ -107,9 +143,10 @@ impl Parser {
                 continue;
             }
 
-            if let Some(tok) = self.expect_kind(TokenKind::LeftCurly)? {
+            if peek!(self, TokenKind::LeftCurly) {
                 // expr { ... }
-                ex = self.parse_curly_expr(ex, tok, ctx)?;
+                let begin = ex.src.span.unwrap();
+                ex = self.parse_curly_expr(Some(ex), begin, ctx)?;
                 continue;
             }
 
@@ -125,7 +162,7 @@ impl Parser {
 
         let start = tok.span.start;
         let ex = self.parse_expr(ctx)?;
-        let end = ex.span.end;
+        let end = ex.src.span.unwrap().end;
 
         Ok(self.mk_expr(ast::ExprKind::Unsafe(Box::new(ex)), Span { start, end }))
     }
@@ -135,7 +172,7 @@ impl Parser {
         lhs: ast::Expr,
         dot_tok: Token,
     ) -> ParseResult<ast::Expr> {
-        let start = lhs.span.start;
+        let start = lhs.src.span.unwrap().start;
         let rhs = self.parse_name_with_type()?;
         let end = rhs.span.end;
         Ok(self.mk_expr(
@@ -155,7 +192,7 @@ impl Parser {
         lparen_tok: Token,
         ctx: &ParseContext,
     ) -> ParseResult<ast::Expr> {
-        let start = lhs.span.start;
+        let start = lhs.src.span.unwrap().start;
         let mut ty_args = None;
 
         let expects_type = if let ast::ExprKind::Name(n) = &lhs.kind {
@@ -169,15 +206,14 @@ impl Parser {
 
         if let ast::ExprKind::Index(idx) = lhs.kind {
             // convert this to type arguments
-            let span = idx.index.span;
+            let span = idx.index.src.span.unwrap();
             if let Some(tys) = ast::Type::from_expr(&idx.index) {
                 lhs = *idx.lhs;
                 ty_args = Some((tys, span));
             } else {
                 lhs = ast::Expr {
                     kind: ast::ExprKind::Index(idx),
-                    span: lhs.span,
-                    filepath: lhs.filepath,
+                    src: lhs.src,
                     doc: lhs.doc,
                     id: lhs.id,
                 }
@@ -199,7 +235,7 @@ impl Parser {
                 let mut ctx = ctx.clone();
                 ctx.stop_token = Some(TokenKind::RightParen);
                 let args = self.parse_expr(&ctx)?;
-                let span = args.span;
+                let span = args.src.span.unwrap();
                 (
                     if let ast::ExprKind::Sequence(seq) = args.kind {
                         seq
@@ -232,7 +268,7 @@ impl Parser {
 
         if peek!(self, TokenKind::LeftCurly) {
             let closure = self.parse_closure_expr(ctx)?;
-            end = closure.span.end;
+            end = closure.src.span.unwrap().end;
             args.items.push(closure);
         }
 
@@ -259,7 +295,7 @@ impl Parser {
     ) -> ParseResult<ast::Expr> {
         let index = self.parse_expr(ctx)?;
         let rbrack_span = self.expect_sp(TokenKind::RightBracket)?;
-        let span = lhs.span.extend_to(&rbrack_span);
+        let span = lhs.src.span.unwrap().extend_to(&rbrack_span);
         Ok(self.mk_expr(
             ast::ExprKind::Index(ast::Index {
                 lhs: Box::new(lhs),
@@ -272,18 +308,25 @@ impl Parser {
 
     pub(crate) fn parse_curly_expr(
         &mut self,
-        lhs: ast::Expr,
-        lcurly_tok: Token,
+        lhs: Option<ast::Expr>,
+        begin: Span,
         ctx: &ParseContext,
     ) -> ParseResult<ast::Expr> {
-        let lhs = match lhs.kind {
-            ast::ExprKind::Name(n) => n,
-            _ => {
-                return Err(
-                    self.parse_error(str!("expected identifier for struct expression"), lhs.span)
-                )
+        let lhs = if let Some(lhs) = lhs {
+            match lhs.kind {
+                ast::ExprKind::Name(n) => Some(n),
+                _ => {
+                    return Err(self.parse_error(
+                        str!("expected identifier for struct expression"),
+                        lhs.src.span.unwrap(),
+                    ))
+                }
             }
+        } else {
+            None
         };
+
+        let lcurly_span = self.expect_sp(TokenKind::LeftCurly)?;
 
         let seq = self.parse_expr_seq(
             ast::ValueKind::RValue,
@@ -291,15 +334,16 @@ impl Parser {
             Some(TokenKind::RightCurly),
             ctx,
         )?;
+
         let mut elements = vec![];
         for item in seq.items {
-            let span = item.span;
+            let span = item.src.span.unwrap();
             let kind = match item.kind {
                 ast::ExprKind::Name(n) => ast::CurlyElementKind::Name(n),
                 ast::ExprKind::Labeled(label, ex) => {
                     let label = match label.kind {
                         ast::ExprKind::Name(n) => n,
-                        _ => return Err(self.parse_error(format!("expected name for label in curly expression, but found {}", label.kind.desc()), label.span)),
+                        _ => return Err(self.parse_error(format!("expected name for label in curly expression, but found {}", label.kind.desc()), label.src.span.unwrap())),
                     };
 
                     ast::CurlyElementKind::Labeled(label, *ex)
@@ -309,9 +353,10 @@ impl Parser {
 
             elements.push(ast::CurlyElement { kind, span })
         }
+
         let rcurly_span = self.expect_sp(TokenKind::RightCurly)?;
-        let curly_span = lcurly_tok.span.extend_to(&rcurly_span);
-        let span = lhs.span.extend_to(&rcurly_span);
+        let curly_span = lcurly_span.extend_to(&rcurly_span);
+        let span = begin.extend_to(&rcurly_span);
         Ok(self.mk_expr(
             ast::ExprKind::Curly(ast::Curly {
                 lhs,

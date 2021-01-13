@@ -4,7 +4,7 @@ use crate::{
     utils::join,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call {
     pub lhs: Box<Expr>,
     pub ty_args: Option<(Vec<Type>, Span)>,

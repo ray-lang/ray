@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cast {
     pub lhs: Box<ast::Expr>,
     pub ty: ast::Type,

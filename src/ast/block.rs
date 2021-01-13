@@ -2,7 +2,7 @@ use crate::strutils;
 
 use super::Expr;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub stmts: Vec<Expr>,
     pub is_top_level: bool,

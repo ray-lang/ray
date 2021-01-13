@@ -12,11 +12,14 @@ mod ops;
 mod ty;
 
 use crate::ast;
-use crate::ast::token::{Token, TokenKind};
 use crate::errors::{RayError, RayErrorKind};
 use crate::parse::lexer::{Lexer, Preceding};
 use crate::pathlib::FilePath;
 use crate::span::{Pos, Span};
+use crate::{
+    ast::token::{Token, TokenKind},
+    span::Source,
+};
 
 use std::fs::File;
 use std::io;
@@ -152,7 +155,9 @@ impl Parser {
             read_string(File::open(&options.filepath)?)
         }
         .map_err(|mut err| {
-            err.fp = options.filepath.clone();
+            err.src
+                .iter_mut()
+                .for_each(|src| src.filepath = options.filepath.clone());
             err
         })
     }
@@ -173,11 +178,11 @@ impl Parser {
                 }
                 TokenKind::Extern
                 | TokenKind::Struct
-                | TokenKind::Protocol
-                | TokenKind::Type
+                | TokenKind::Trait
+                | TokenKind::TypeAlias
                 | TokenKind::Impl => {
                     let decl = this.parse_decl(&kind, &ctx)?;
-                    let end = decl.span.end;
+                    let end = decl.src.span.unwrap().end;
                     items.decls.push(decl);
                     Ok(end)
                 }
@@ -284,11 +289,11 @@ impl Parser {
                             self.parse_error(
                                 "only functions or function signatures are allowed in this block"
                                     .to_string(),
-                                stmt.span,
+                                stmt.src.span.unwrap(),
                             ),
                         )
                     }
-                    end = stmt.span.end;
+                    end = stmt.src.span.unwrap().end;
                     stmts.push(stmt);
                 }
                 Err(e) => errors.push(e),
@@ -393,12 +398,19 @@ impl Parser {
 
     fn is_next_expr_begin(&mut self) -> bool {
         match self.peek_kind() {
+            TokenKind::Identifier(s)
+                if &s == "b"
+                    && matches!(
+                        self.peek_kind_at(1),
+                        TokenKind::SingleQuote | TokenKind::DoubleQuote
+                    ) =>
+            {
+                true
+            }
             TokenKind::Integer { .. }
             | TokenKind::Float { .. }
-            | TokenKind::String { .. }
-            | TokenKind::ByteString { .. }
-            | TokenKind::Byte { .. }
-            | TokenKind::Char { .. }
+            | TokenKind::SingleQuote { .. }
+            | TokenKind::DoubleQuote { .. }
             | TokenKind::Bool(..)
             | TokenKind::Nil
             | TokenKind::If
@@ -420,8 +432,10 @@ impl Parser {
         self.next_ast_id += 1;
         ast::Expr {
             kind,
-            span,
-            filepath: self.options.filepath.clone(),
+            src: Source {
+                span: Some(span),
+                filepath: self.options.filepath.clone(),
+            },
             id: ast::Id {
                 module_id: self.module_id,
                 local_id: id,
@@ -435,8 +449,10 @@ impl Parser {
         self.next_ast_id += 1;
         ast::Decl {
             kind,
-            span,
-            filepath: self.options.filepath.clone(),
+            src: Source {
+                span: Some(span),
+                filepath: self.options.filepath.clone(),
+            },
             id: ast::Id {
                 module_id: self.module_id,
                 local_id: id,
@@ -466,12 +482,31 @@ impl Parser {
     }
 
     fn expect_string(&mut self) -> ParseResult<(String, Span)> {
-        let tok = self.token()?;
-        let span = tok.span;
-        match tok.kind {
-            TokenKind::String { value: v, .. } => Ok((v, span)),
-            _ => Err(self.unexpected_token(&tok, "string")),
+        let start = self.expect_start(TokenKind::DoubleQuote)?;
+        let (s, terminated) = self.lex.quoted_string('"');
+        let end = self.lex.position();
+        if !terminated {
+            return Err(self.unexpected_eof(end));
         }
+
+        Ok((s, Span { start, end }))
+    }
+
+    fn expect_char(&mut self) -> ParseResult<(String, Span)> {
+        let start = self.expect_start(TokenKind::SingleQuote)?;
+        let (s, terminated) = self.lex.quoted_string('\'');
+        let end = self.lex.position();
+        if !terminated {
+            return Err(self.unexpected_eof(end));
+        }
+
+        Ok((s, Span { start, end }))
+    }
+
+    fn expect_ty_var_ident(&mut self) -> ParseResult<(String, Span)> {
+        let start = self.expect_start(TokenKind::SingleQuote)?;
+        let (ident, Span { end, .. }) = self.expect_id()?;
+        Ok((ident, Span { start, end }))
     }
 
     fn expect_id(&mut self) -> ParseResult<(String, Span)> {
@@ -552,8 +587,10 @@ impl Parser {
     fn parse_error(&self, msg: String, span: Span) -> RayError {
         RayError {
             msg,
-            span: Some(span),
-            fp: self.options.filepath.clone(),
+            src: vec![Source {
+                span: Some(span),
+                filepath: self.options.filepath.clone(),
+            }],
             kind: RayErrorKind::Parse,
         }
     }
@@ -562,8 +599,10 @@ impl Parser {
         let end = self.lex.position();
         RayError {
             msg: format!("unexpected end of file"),
-            span: Some(Span { start, end }),
-            fp: self.options.filepath.clone(),
+            src: vec![Source {
+                span: Some(Span { start, end }),
+                filepath: self.options.filepath.clone(),
+            }],
             kind: RayErrorKind::Parse,
         }
     }
@@ -571,8 +610,10 @@ impl Parser {
     fn unexpected_token(&self, tok: &Token, expected: &str) -> RayError {
         RayError {
             msg: format!("expected {}, but found `{}`", expected, tok),
-            span: Some(tok.span),
-            fp: self.options.filepath.clone(),
+            src: vec![Source {
+                span: Some(tok.span),
+                filepath: self.options.filepath.clone(),
+            }],
             kind: RayErrorKind::Parse,
         }
     }

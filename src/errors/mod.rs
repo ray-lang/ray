@@ -1,5 +1,5 @@
-use crate::pathlib::FilePath;
 use crate::span::Span;
+use crate::{pathlib::FilePath, span::Source};
 
 use colored::*;
 use std::fmt;
@@ -39,15 +39,14 @@ impl fmt::Display for RayErrorKind {
 #[derive(Debug)]
 pub struct RayError {
     pub msg: String,
-    pub span: Option<Span>,
-    pub fp: FilePath,
+    pub src: Vec<Source>,
     pub kind: RayErrorKind,
 }
 
 const ELLIPSIS: &'static str = "...";
 
 impl RayError {
-    pub fn emit(&self) {
+    pub fn emit(self) {
         let kind = format!("{}:", self.kind);
         let mut msg_lines = self.msg.lines().collect::<Vec<_>>();
         let msg = if msg_lines.len() == 1 {
@@ -69,13 +68,15 @@ impl RayError {
         };
 
         eprintln!("{} {}", kind.bold().red(), msg.bold());
-        if !self.fp.is_empty() {
+
+        // TODO: group sources by filepath
+        for src in self.src {
             let arrow = "-->".bold();
-            if let Some(span) = self.span {
+            if let Some(span) = src.span {
                 let start_line = span.start.lineno;
                 let end_line = span.end.lineno;
                 let line_count = span.lines();
-                let mut f = File::open(self.fp.as_ref()).unwrap();
+                let mut f = File::open(&src.filepath).unwrap();
                 let mut buf = String::new();
                 f.read_to_string(&mut buf).unwrap();
 
@@ -91,7 +92,7 @@ impl RayError {
                     "{}{} {}:{}",
                     " ".repeat(max_num_width - 1),
                     arrow,
-                    self.fp,
+                    src.filepath,
                     span
                 );
                 eprintln!("{}{}", full_spacing, pipe);
@@ -141,22 +142,10 @@ impl RayError {
                     );
                 }
             } else {
-                eprintln!(" {} {}", arrow, self.fp);
+                eprintln!(" {} {}", arrow, src.filepath);
             }
         }
         eprintln!()
-    }
-}
-
-impl fmt::Display for RayError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // TODO: make this pretty
-        let span = if let Some(span) = self.span {
-            format!(" at {}", span)
-        } else {
-            "".to_string()
-        };
-        write!(f, "{} {}{} ({})", self.kind, self.msg, span, self.fp)
     }
 }
 
@@ -170,8 +159,7 @@ impl From<io::Error> for RayError {
     fn from(err: io::Error) -> RayError {
         RayError {
             msg: err.to_string(),
-            fp: FilePath::new(),
-            span: None,
+            src: vec![],
             kind: RayErrorKind::IO,
         }
     }

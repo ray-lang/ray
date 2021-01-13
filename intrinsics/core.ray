@@ -1,13 +1,22 @@
-// extern __heap_start: uint
-// mut __heap_end = __heap_start
+extern fn sizeof(t: type['a]) -> int
 
-// struct List[T] {
-//     ptr: *T
-//     size: uint
-// }
+trait Eq['a] {
+    fn ==('a, 'a) -> 'a
+}
 
-// pub fn malloc[T](size: uint) -> *T {
-//     ptr = unsafe __heap_start as *T
-//     __heap_end += size
-//     ptr
-// }
+impl Eq[int] {
+    extern fn ==(a: int, b: int) -> int
+}
+
+impl Eq[i8] {
+    extern fn ==(a: i8, b: i8) -> i8
+}
+
+impl Eq[i16] {
+    extern fn ==(a: i16, b: i16) -> i16
+}
+
+struct List['a] {
+    ptr: *'a
+    size: uint
+}

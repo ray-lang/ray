@@ -1,4 +1,8 @@
-use crate::{ast, pathlib::FilePath, span::Span};
+use crate::{
+    ast,
+    pathlib::FilePath,
+    span::{Source, Span},
+};
 
 use std::fmt;
 
@@ -32,11 +36,16 @@ impl CType {
                         name: Some(self.name),
                         params: inputs
                             .into_iter()
-                            .map(|(name, t)| ast::Name {
-                                name,
-                                ty: Some(t),
-                                span: Span::new(),
-                                default: None,
+                            .map(|(name, t)| {
+                                if name.is_empty() {
+                                    ast::FnParam::Type(t)
+                                } else {
+                                    ast::FnParam::Name(ast::Name {
+                                        name,
+                                        ty: Some(t),
+                                        span: Span::new(),
+                                    })
+                                }
                             })
                             .collect(),
                         ty_params: self
@@ -50,16 +59,22 @@ impl CType {
                             })
                             .unwrap_or_default(),
                         ret_ty: Some(self.out_ty),
+                        span: Span::new(),
                         ty: None,
                         modifiers: vec![],
+                        qualifiers: vec![],
                         doc_comment: None,
                         decorators: None,
                     }),
-                    span,
-                    filepath: self.filepath.clone(),
+                    src: Source {
+                        span: Some(span),
+                        filepath: self.filepath.clone(),
+                    },
                 })),
-                span,
-                filepath: self.filepath,
+                src: Source {
+                    span: Some(span),
+                    filepath: self.filepath,
+                },
             }
         } else {
             match self.out_ty.kind {
@@ -75,7 +90,6 @@ impl CType {
                             name: self.name,
                             ty: None,
                             span: Span::new(),
-                            default: None,
                         },
                         fields: Some(
                             fields
@@ -85,14 +99,15 @@ impl CType {
                                     name,
                                     ty: Some(ty),
                                     span: Span::new(),
-                                    default: None,
                                 })
                                 .collect(),
                         ),
                         ty_params,
                     }),
-                    filepath: self.filepath.clone(),
-                    span,
+                    src: Source {
+                        span: Some(span),
+                        filepath: self.filepath.clone(),
+                    },
                 },
                 kind => ast::Decl {
                     id: ast::Id {
@@ -104,12 +119,13 @@ impl CType {
                             name: self.name,
                             ty: None,
                             span: Span::new(),
-                            default: None,
                         },
                         ast::Type { kind, span: None },
                     ),
-                    filepath: self.filepath,
-                    span,
+                    src: Source {
+                        span: Some(span),
+                        filepath: self.filepath,
+                    },
                 },
             }
         }

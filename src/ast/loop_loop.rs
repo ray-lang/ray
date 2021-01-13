@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Loop {
     pub body: Box<ast::Expr>,
     pub loop_span: Span,

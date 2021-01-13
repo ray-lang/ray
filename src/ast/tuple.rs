@@ -1,6 +1,6 @@
 use crate::ast::Sequence;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tuple {
     pub seq: Sequence,
 }

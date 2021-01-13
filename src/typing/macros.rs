@@ -1,19 +1,3 @@
-macro_rules! cset {
-    () => ( $crate::typing::ConstraintSet::new() );
-
-    (@subtype $cs:ident $tv:ident $s:tt <: $($tail:tt)+) => {
-        $cs.add($tv.clone(), $crate::typing::Constraint::Subtype($s, $crate::typing::ty::Ty::Var($tv.clone()), $($tail)+))
-    };
-
-    ($tv:ident => $($tail:tt)*) => {
-        {
-            let mut cs = $crate::typing::ConstraintSet::new();
-            cset!(@subtype cs $tv $($tail)*);
-            cs
-        }
-    };
-}
-
 #[macro_export]
 macro_rules! mk_ctx {
     () => {
@@ -53,12 +37,12 @@ macro_rules! mk_binop_ty {
 #[macro_export]
 macro_rules! subst {
     {} => {
-        $crate::typing::subst::Subst::new()
+        $crate::typing::Subst::new()
     };
 
     { $($key:expr => $value:expr),+ $(,)? } => {
         {
-            let mut s = $crate::typing::subst::Subst::new();
+            let mut s = $crate::typing::Subst::new();
             $(
                 s.insert($key, $value);
             )+
@@ -84,17 +68,15 @@ macro_rules! mkexpr {
         $crate::typing::ty::Ty::Projection(stringify!($ty).to_string(), vec![])
     };
 
-    (fn $([ $($ty_param:ident),+ ])? ( $($arg:ident),+ ) => { $($body:tt)+ }) => {
-        $crate::hir::HirNode::<()>::new($crate::hir::HirNodeKind::FunInf(
-            vec![$( $($crate::typing::ty::TyVar(stringify!($ty_param).to_string())),+ )?],
+    (fn ( $($arg:ident),+ ) => { $($body:tt)+ }) => {
+        $crate::hir::HirNode::new($crate::hir::HirNodeKind::Fun(
             vec![$( $crate::hir::Param::new(stringify!($arg).to_string(), None) ),*],
             Box::new(mkexpr!($($body)+)),
         ))
     };
 
-    (fn $([ $($ty_param:ident),+ ])? ( $($arg:ident:$ty:tt),* ) => { $($body:tt)+ }) => {
-        $crate::hir::HirNode::<()>::new($crate::hir::HirNodeKind::Fun(
-            vec![$( $(TyVar(stringify!($ty_param).to_string())),+ )?],
+    (fn ( $($arg:ident:$ty:tt),* ) => { $($body:tt)+ }) => {
+        $crate::hir::HirNode::new($crate::hir::HirNodeKind::Fun(
             vec![$((
                 stringify!($arg).to_string(),
                 mkexpr!(@ty $ty)
@@ -104,14 +86,14 @@ macro_rules! mkexpr {
     };
 
     (let $x:ident = ($($head:tt)+) in ($($tail:tt)+)) => {
-        $crate::hir::HirNode::<()>::new($crate::hir::HirNodeKind::Let(
-            vec![(stringify!($x).to_string(), mkexpr!($($head)+))],
+        $crate::hir::HirNode::new($crate::hir::HirNodeKind::Let(
+            vec![$crate::hir::HirDecl::var(stringify!($x).to_string(), mkexpr!($($head)+))],
             Box::new(mkexpr!($($tail)+)),
         ))
     };
 
     (let ( $( $x:ident = ($($head:tt)+) ),+ ) in ($($tail:tt)+)) => {
-        $crate::hir::HirNode::<()>::new($crate::hir::HirNodeKind::Let(
+        $crate::hir::HirNode::new($crate::hir::HirNodeKind::Let(
             vec![$(
                 (stringify!($x).to_string(), mkexpr!($($head)+))
             ),+],
@@ -120,7 +102,7 @@ macro_rules! mkexpr {
     };
 
     ( $x:tt $([ $($ty_arg:tt),* ])? ($($arg:tt),*) ) => {
-        $crate::hir::HirNode::<()>::new($crate::hir::HirNodeKind::Apply(
+        $crate::hir::HirNode::new($crate::hir::HirNodeKind::Apply(
             Box::new(mkexpr!($x)),
             vec![$( $(mkexpr!(@mkty $ty_arg)),* )?],
             vec![$( mkexpr!($arg) ),*],
@@ -128,24 +110,12 @@ macro_rules! mkexpr {
     };
 
     ($x:tt) => {
-        $crate::hir::HirNode::<()>::new($crate::hir::HirNodeKind::Var(stringify!($x).to_string()))
+        $crate::hir::HirNode::new($crate::hir::HirNodeKind::Var(stringify!($x).to_string()))
     };
 }
 
 #[cfg(test)]
 mod test {
-    use crate::typing::ty::{Ty, TyVar};
-
-    #[test]
-    fn test_cset_macro() {
-        let y = TyVar("'t0".to_string());
-        let t = Ty::Var(TyVar("'t1".to_string()));
-        let cs = cset! {
-            y => (Ty::Never) <: t
-        };
-
-        println!("{:?}", cs);
-    }
 
     #[test]
     fn test_mkexpr_macro() {
@@ -160,12 +130,12 @@ mod test {
         println!("{:#?}", ex);
 
         let ex = mkexpr! {
-            let malloc = (fn [a] (size) => {()}) in (())
+            let malloc = (fn (size) => {()}) in (())
         };
         println!("{:#?}", ex);
 
         let ex = mkexpr! {
-            let malloc = (fn [a] (size) => {
+            let malloc = (fn (size) => {
                 let ptr = (int_to_ptr[('v a)](heap)) in
                 (ptr)
             }) in (())

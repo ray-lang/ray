@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum IntTy {
@@ -63,10 +63,6 @@ pub enum TypeKind {
         ty_params: Option<TypeParams>,
         bounds: Option<Box<Type>>,
     },
-    Generic {
-        name: String,
-        bounds: Option<Box<Type>>,
-    },
     Struct {
         name: String,
         ty_params: Option<TypeParams>,
@@ -77,6 +73,7 @@ pub enum TypeKind {
         params: Box<Type>,
         ret: Option<Box<Type>>,
     },
+    Generic(String),
     Pointer(Box<Type>),
     Bool,
     Char,
@@ -197,16 +194,7 @@ impl fmt::Display for TypeKind {
                     "".to_string()
                 }
             ),
-            TypeKind::Generic { name, bounds } => write!(
-                f,
-                "{}{}",
-                name,
-                if let Some(bounds) = bounds {
-                    format!(": {}", bounds)
-                } else {
-                    "".to_string()
-                }
-            ),
+            TypeKind::Generic(name) => write!(f, "'{}", name),
             TypeKind::Struct {
                 name,
                 ty_params,
@@ -385,14 +373,6 @@ impl Type {
 
                 g
             }
-            TypeKind::Generic { bounds, .. } => {
-                let mut g = vec![self];
-                if let Some(bounds) = bounds {
-                    g.extend(bounds.get_generics());
-                }
-
-                g
-            }
             TypeKind::Struct {
                 ty_params, fields, ..
             } => {
@@ -429,6 +409,7 @@ impl Type {
             | TypeKind::Char
             | TypeKind::String
             | TypeKind::Nil
+            | TypeKind::Generic(_)
             | TypeKind::TypeVar(_)
             | TypeKind::Int(..)
             | TypeKind::Float(..) => vec![],

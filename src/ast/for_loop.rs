@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct For {
     pub pat: ast::Pattern,
     pub expr: Box<ast::Expr>,

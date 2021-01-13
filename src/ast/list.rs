@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct List {
     pub items: Vec<ast::Expr>,
     pub lbrack_span: Span,

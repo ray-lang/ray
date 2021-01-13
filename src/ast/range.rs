@@ -20,7 +20,7 @@ impl std::fmt::Display for RangeLimits {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Range {
     pub start: Box<ast::Expr>,
     pub end: Box<ast::Expr>,

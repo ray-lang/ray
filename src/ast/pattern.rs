@@ -1,14 +1,14 @@
 use crate::ast::{Name, Sequence};
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternKind {
     Name(Name),
     Sequence(Sequence),
     Tuple(Sequence),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pattern {
     pub kind: PatternKind,
     pub span: Span,

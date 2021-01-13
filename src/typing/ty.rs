@@ -1,22 +1,24 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::BitOr,
-    time::SystemTime,
 };
 
 use crate::{
-    ast,
-    utils::{join, map_join},
+    ast::{self, FnSig, Path},
+    errors::{RayError, RayErrorKind},
+    pathlib::FilePath,
+    span::Source,
+    utils::join,
 };
 
 use super::{
-    bound::{GreatestLowerBound, LeastUpperBound},
-    constraint::ConstraintSet,
     context::Ctx,
-    elim::Elim,
+    predicate::{PredicateEntails, TyPredicate},
     subst::{ApplySubst, Subst},
-    top::traits::{Generalize, HasFreeVars, Skolemize},
-    variance::Variance,
+    top::{
+        state::TyVarFactory,
+        traits::{FreezeVars, Generalize, HasFreeVars, Skolemize},
+    },
     InferError,
 };
 
@@ -39,16 +41,26 @@ impl ApplySubst for TyVar {
     }
 }
 
-impl TyVar {
-    pub fn new() -> TyVar {
-        let t = (SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            % 100000000)
-            / 10000;
-        TyVar(format!("?t{}", t))
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StructTy {
+    pub path: ast::Path,
+    pub ty: Ty,
+    pub fields: Vec<(String, Ty)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TraitTy {
+    pub path: ast::Path,
+    pub ty: Ty,
+    pub super_traits: Vec<Ty>,
+    pub fields: Vec<(String, Ty)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ImplTy {
+    pub base_ty: Ty,
+    pub trait_ty: Ty,
+    pub predicates: Vec<TyPredicate>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,12 +82,13 @@ impl std::fmt::Display for LiteralKind {
 pub enum Ty {
     Never,
     Any,
-    Literal(LiteralKind, TyVar),
+    Bound(TyVar),
     Var(TyVar),
     Union(Vec<Ty>),
     Func(Vec<Ty>, Box<Ty>),
     Projection(String, Vec<Ty>),
-    Constrained(Vec<(String, Ty)>, Box<Ty>),
+    Cast(Box<Ty>, Box<Ty>),
+    Qualified(Vec<TyPredicate>, Box<Ty>),
     All(Vec<TyVar>, Box<Ty>),
 }
 
@@ -84,8 +97,7 @@ impl std::fmt::Display for Ty {
         match self {
             Ty::Never => write!(f, "never"),
             Ty::Any => write!(f, "any"),
-            Ty::Literal(kind, _) => write!(f, "{}", kind),
-            Ty::Var(v) => write!(f, "{}", v),
+            Ty::Bound(v) | Ty::Var(v) => write!(f, "{}", v),
             Ty::Union(tys) => {
                 if tys.len() != 0 {
                     write!(f, "{}", join(tys, " | "))
@@ -101,14 +113,23 @@ impl std::fmt::Display for Ty {
                     write!(f, "{}", n)
                 }
             }
-            Ty::Constrained(cts, t) => write!(
-                f,
-                "({{{}}}) in {}",
-                map_join(cts, ", ", |(n, s)| { format!("({}): {}", n, s) }),
-                t
-            ),
-            Ty::All(xs, t) => write!(f, "All[{}]({})", join(xs, ", "), t),
+            Ty::Cast(from, to) => write!(f, "cast({}, {})", from, to),
+            Ty::Qualified(qual, t) => {
+                let q = if qual.len() != 0 {
+                    format!(" where {}", join(qual, ", "))
+                } else {
+                    str!("")
+                };
+                write!(f, "{}{}", t, q)
+            }
+            Ty::All(xs, t) => write!(f, "All[{}]{}", join(xs, ", "), t),
         }
+    }
+}
+
+impl Default for Ty {
+    fn default() -> Ty {
+        Ty::unit()
     }
 }
 
@@ -116,8 +137,7 @@ impl ApplySubst for Ty {
     fn apply_subst(self, subst: &Subst) -> Ty {
         match self {
             Ty::Any | Ty::Never => self.clone(),
-            Ty::Literal(k, v) => subst.get(&v).cloned().unwrap_or_else(|| Ty::Literal(k, v)),
-            Ty::Var(v) => subst.get(&v).cloned().unwrap_or_else(|| Ty::Var(v)),
+            Ty::Bound(v) | Ty::Var(v) => subst.get_var(&v),
             Ty::Union(tys) => {
                 let mut tys = tys.apply_subst(subst);
                 tys.dedup(); // remove any duplicates
@@ -129,10 +149,14 @@ impl ApplySubst for Ty {
             }
             Ty::Func(a, r) => Ty::Func(a.apply_subst(subst), Box::new(r.apply_subst(subst))),
             Ty::Projection(n, t) => Ty::Projection(n, t.apply_subst(subst)),
-            Ty::Constrained(cts, t) => {
-                Ty::Constrained(cts.apply_subst(subst), Box::new(t.apply_subst(subst)))
+            Ty::Cast(f, t) => Ty::Cast(
+                Box::new(f.apply_subst(subst)),
+                Box::new(t.apply_subst(subst)),
+            ),
+            Ty::Qualified(p, t) => {
+                Ty::Qualified(p.apply_subst(subst), Box::new(t.apply_subst(subst)))
             }
-            Ty::All(xs, ty) => Ty::All(xs.clone(), Box::new(ty.apply_subst(subst))),
+            Ty::All(xs, ty) => Ty::All(xs.apply_subst(subst), Box::new(ty.apply_subst(subst))),
         }
     }
 }
@@ -145,284 +169,23 @@ impl ApplySubst<Vec<(String, Ty)>> for Vec<(String, Ty)> {
     }
 }
 
-impl Elim for Ty {
-    /// S ⇑(V) T : T is the least supertype of S such that FV(T) ∩ V = ∅
-    fn elim_up<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Ty, InferError<T>> {
-        Ok(match self {
-            Ty::Any | Ty::Never => self.clone(),
-            Ty::Var(v) => {
-                if !vs.contains(&v) {
-                    Ty::Var(v)
-                } else {
-                    Ty::Any
-                }
-            }
-            Ty::Literal(k, v) => {
-                if !vs.contains(&v) {
-                    Ty::Literal(k, v)
-                } else {
-                    Ty::Any
-                }
-            }
-            Ty::Union(tys) => {
-                let mut tys = tys.elim_up(vs)?;
-                tys.dedup();
-                if tys.len() == 1 {
-                    tys.pop().unwrap()
-                } else {
-                    Ty::Union(tys)
-                }
-            }
-            Ty::Projection(n, tys) => Ty::Projection(n, tys.elim_down(vs)?),
-            Ty::Func(params, ret) => Ty::Func(params.elim_down(vs)?, Box::new(ret.elim_up(vs)?)),
-            Ty::Constrained(cts, t) => Ty::Constrained(cts.elim_up(vs)?, Box::new(t.elim_up(vs)?)),
-            Ty::All(xs, ty) => {
-                for x in xs.iter() {
-                    if vs.contains(&x) {
-                        return Err(InferError {
-                            msg: format!(
-                                "could not find the least supertype of {:?}; {:?} exists as a bound variable",
-                                ty, x
-                            ),
-                            metadata: None,
-                        });
-                    }
-                }
-
-                Ty::All(xs.clone(), Box::new(ty.elim_up(vs)?))
-            }
-        })
-    }
-
-    /// S ⇓(V) T : T is the greatest subtype of S such that FV(T) ∩ V = ∅
-    fn elim_down<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Ty, InferError<T>> {
-        Ok(match self {
-            Ty::Any | Ty::Never => self.clone(),
-            Ty::Var(v) => {
-                if !vs.contains(&v) {
-                    Ty::Var(v.clone())
-                } else {
-                    Ty::Never
-                }
-            }
-            Ty::Literal(k, v) => {
-                if !vs.contains(&v) {
-                    Ty::Literal(k, v)
-                } else {
-                    Ty::Never
-                }
-            }
-            Ty::Union(tys) => {
-                let mut tys = tys.elim_down(vs)?;
-                tys.dedup();
-                if tys.len() == 1 {
-                    tys.pop().unwrap()
-                } else {
-                    Ty::Union(tys)
-                }
-            }
-            Ty::Projection(n, tys) => Ty::Projection(n, tys.elim_up(vs)?),
-            Ty::Func(params, ret) => Ty::Func(params.elim_up(vs)?, Box::new(ret.elim_down(vs)?)),
-            Ty::Constrained(cts, t) => {
-                Ty::Constrained(cts.elim_down(vs)?, Box::new(t.elim_down(vs)?))
-            }
-            Ty::All(xs, ty) => {
-                for x in xs.iter() {
-                    if vs.contains(&x) {
-                        return Err(InferError {
-                            msg: format!(
-                                "could not find the greatest subtype of {:?}; {:?} exists as a bound variable",
-                                ty, x
-                            ),
-                            metadata: None
-                        });
-                    }
-                }
-                let ty = ty.elim_down(vs)?;
-                Ty::All(xs.clone(), Box::new(ty))
-            }
-        })
-    }
-}
-
-impl Elim for Vec<Ty> {
-    fn elim_up<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Self, InferError<T>>
-    where
-        Self: Sized,
-    {
-        self.into_iter()
-            .map(|p| p.elim_up(vs))
-            .collect::<Result<Vec<_>, _>>()
-    }
-
-    fn elim_down<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Self, InferError<T>>
-    where
-        Self: Sized,
-    {
-        self.into_iter()
-            .map(|p| p.elim_down(vs))
-            .collect::<Result<Vec<_>, _>>()
-    }
-}
-
-impl Elim for Vec<(String, Ty)> {
-    fn elim_up<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Self, InferError<T>>
-    where
-        Self: Sized,
-    {
-        self.into_iter()
-            .map(|(n, p)| Ok((n, p.elim_up(vs)?)))
-            .collect::<Result<Vec<_>, _>>()
-    }
-
-    fn elim_down<T: Copy + Clone>(self, vs: &HashSet<&TyVar>) -> Result<Self, InferError<T>>
-    where
-        Self: Sized,
-    {
-        self.into_iter()
-            .map(|(n, p)| Ok((n, p.elim_down(vs)?)))
-            .collect::<Result<Vec<_>, _>>()
-    }
-}
-
-impl LeastUpperBound for Ty {
-    /// S ∨ T : least upper bound of S and T
-    fn least_upper_bound(&self, t: &Ty) -> Ty {
-        match (self, t) {
-            (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-                Ty::Projection(a.clone(), s.greatest_lower_bound(t))
-            }
-            (Ty::Union(_), Ty::Union(_)) => unimplemented!("lub: union types"),
-            (Ty::Func(vs, p), Ty::Func(ws, q)) if vs.len() == ws.len() => {
-                let m = vs.greatest_lower_bound(ws);
-                let j = p.least_upper_bound(q);
-                Ty::Func(m, Box::new(j))
-            }
-            (Ty::All(xs, s), Ty::All(ys, t)) if xs == ys => {
-                let u = s.least_upper_bound(t);
-                Ty::All(xs.clone(), Box::new(u))
-            }
-            _ if self.is_subtype(t) => t.clone(),
-            _ if t.is_subtype(self) => self.clone(),
-            _ => Ty::Any,
-        }
-    }
-}
-
-impl LeastUpperBound for Vec<Ty> {
-    fn least_upper_bound(&self, other: &Self) -> Self {
-        self.iter()
-            .zip(other.iter())
-            .map(|(v, w)| v.least_upper_bound(w))
-            .collect()
-    }
-}
-
-impl GreatestLowerBound for Ty {
-    /// S ∧ T: greatest lower bound of S and T
-    fn greatest_lower_bound(&self, t: &Ty) -> Ty {
-        match (self, t) {
-            (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-                Ty::Projection(a.clone(), s.least_upper_bound(t))
-            }
-            (Ty::Union(_), Ty::Union(_)) => unimplemented!("glb: union types"),
-            (Ty::Func(vs, p), Ty::Func(ws, q)) if vs.len() == ws.len() => {
-                let m = vs.least_upper_bound(ws);
-                let j = p.greatest_lower_bound(q);
-                Ty::Func(m, Box::new(j))
-            }
-            (Ty::All(xs, s), Ty::All(ys, t)) if xs == ys => {
-                let u = s.greatest_lower_bound(t);
-                Ty::All(xs.clone(), Box::new(u))
-            }
-            _ if self.is_subtype(t) => self.clone(),
-            _ if t.is_subtype(self) => t.clone(),
-            _ => Ty::Never,
-        }
-    }
-}
-
-impl GreatestLowerBound for Vec<Ty> {
-    fn greatest_lower_bound(&self, other: &Self) -> Self {
-        self.iter()
-            .zip(other.iter())
-            .map(|(v, w)| v.greatest_lower_bound(w))
-            .collect()
-    }
-}
-
 impl Generalize for Ty {
-    fn generalize(self, m: &Vec<Ty>) -> Ty {
+    fn generalize(self, m: &Vec<Ty>, preds: &Vec<TyPredicate>) -> Ty {
         // generalize(M, τ) => ∀{a}.τ where {a} = ftv(τ) − ftv(M).
         let tyvars = self
             .free_vars()
             .difference(&m.free_vars())
             .map(|&t| t.clone())
             .collect::<Vec<_>>();
-        Ty::All(tyvars, Box::new(self))
+
+        self.qualify_with_tyvars(preds, &tyvars).quantify(tyvars)
     }
-    // fn generalize(self, ty: Ty, reverse_subst: &mut HashMap<(Ty, Ty), TyVar>) -> Ty {
-    //     println!("generalize: {} and {}", self, ty);
-    //     if let Some(a) = reverse_subst.get(&(self.clone(), ty.clone())) {
-    //         return Ty::Var(a.clone());
-    //     }
-
-    //     let ty = match (self, ty) {
-    //         (Ty::Union(_), Ty::Union(_)) => unimplemented!("generalize unions"),
-    //         (Ty::Union(tys), t) | (t, Ty::Union(tys)) => tys
-    //             .into_iter()
-    //             .fold(t, |s, t| s.generalize(t, reverse_subst)),
-    //         (Ty::Constrained(tys, s), t) => {
-    //             s.generalize(t, reverse_subst)
-    //             // Ty::Constrained(tys, Box::new(s.generalize(t, reverse_subst)))
-    //         }
-    //         (s, Ty::Constrained(tys, t)) => {
-    //             s.generalize(*t, reverse_subst)
-    //             // Ty::Constrained(tys, Box::new(s.generalize(*t, reverse_subst)))
-    //         }
-    //         (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-    //             Ty::Projection(a.clone(), s.generalize(t, reverse_subst))
-    //         }
-    //         (Ty::Func(r, s), Ty::Func(t, u)) => {
-    //             if r.len() == t.len() {
-    //                 Ty::Func(
-    //                     r.generalize(t, reverse_subst),
-    //                     Box::new(s.generalize(*u, reverse_subst)),
-    //                 )
-    //             } else {
-    //                 Ty::Union(vec![Ty::Func(r, s), Ty::Func(t, u)])
-    //             }
-    //         }
-    //         (Ty::All(xs, s), t) => Ty::generalize_forall(xs, *s, t),
-    //         (t, Ty::All(xs, s)) => Ty::generalize_forall(xs, *s, t),
-    //         (a, b) => {
-    //             if a != b {
-    //                 let tv = TyVar::new();
-    //                 reverse_subst.insert((a, b), tv.clone());
-    //                 Ty::Var(tv)
-    //             } else {
-    //                 a
-    //             }
-    //         }
-    //     };
-
-    //     println!("generalized: {}", ty);
-
-    //     ty
-    // }
 }
 
 impl Generalize for Vec<Ty> {
-    fn generalize(self, m: &Vec<Ty>) -> Self {
-        self.into_iter().map(|t| t.generalize(m)).collect()
+    fn generalize(self, m: &Vec<Ty>, preds: &Vec<TyPredicate>) -> Self {
+        self.into_iter().map(|t| t.generalize(m, &preds)).collect()
     }
-
-    // fn generalize(self, other: Vec<Ty>, reverse_subst: &mut HashMap<(Ty, Ty), TyVar>) -> Vec<Ty> {
-    //     self.into_iter()
-    //         .zip(other.into_iter())
-    //         .map(|(a, b)| a.generalize(b, reverse_subst))
-    //         .collect()
-    // }
 }
 
 impl HasFreeVars for Ty {
@@ -439,7 +202,6 @@ impl HasFreeVars for Ty {
                 .flat_map(|t| t.free_vars())
                 .collect(),
             Ty::Var(tv) => vec![tv].into_iter().collect(),
-            Ty::Constrained(_, t) => t.free_vars(),
             _ => HashSet::new(),
         }
     }
@@ -452,11 +214,57 @@ impl HasFreeVars for Vec<Ty> {
 }
 
 impl Skolemize for Ty {
-    fn skolemize(&self) -> (Self, Vec<TyVar>)
+    fn skolemize(&self, sf: &mut TyVarFactory) -> (Self, Vec<TyVar>)
     where
         Self: Sized,
     {
-        todo!()
+        println!("pre-skolemized: {}", self);
+        let ty = self.clone();
+        let prev_vars = ty.collect_tyvars();
+        let ty = ty.instantiate(sf).generalize(&vec![], &vec![]);
+        println!("skolemized: {}", ty);
+        let mut vars = ty.collect_tyvars();
+        for v in prev_vars {
+            if let Some(pos) = vars.iter().position(|x| x == &v) {
+                vars.remove(pos);
+            }
+        }
+        (ty, vars)
+    }
+}
+
+impl FreezeVars for Ty {
+    fn freeze_tyvars(self) -> Ty {
+        match self {
+            Ty::Var(v) => Ty::Bound(v),
+            Ty::Union(tys) => Ty::Union(tys.freeze_tyvars()),
+            Ty::Func(p, r) => Ty::Func(p.freeze_tyvars(), Box::new(r.freeze_tyvars())),
+            Ty::Projection(s, tys) => Ty::Projection(s, tys.freeze_tyvars()),
+            Ty::Cast(src, dst) => {
+                Ty::Cast(Box::new(src.freeze_tyvars()), Box::new(dst.freeze_tyvars()))
+            }
+            Ty::Qualified(p, t) => Ty::Qualified(p.freeze_tyvars(), Box::new(t.freeze_tyvars())),
+            Ty::All(xs, t) => Ty::All(xs, Box::new(t.freeze_tyvars())),
+            t @ _ => t,
+        }
+    }
+
+    fn unfreeze_tyvars(self) -> Self {
+        match self {
+            Ty::Bound(v) => Ty::Var(v),
+            Ty::Union(tys) => Ty::Union(tys.unfreeze_tyvars()),
+            Ty::Func(p, r) => Ty::Func(p.unfreeze_tyvars(), Box::new(r.unfreeze_tyvars())),
+            Ty::Projection(s, tys) => Ty::Projection(s, tys.unfreeze_tyvars()),
+            Ty::Cast(src, dst) => Ty::Cast(
+                Box::new(src.unfreeze_tyvars()),
+                Box::new(dst.unfreeze_tyvars()),
+            ),
+            Ty::Qualified(p, t) => {
+                Ty::Qualified(p.unfreeze_tyvars(), Box::new(t.unfreeze_tyvars()))
+            }
+            Ty::All(xs, t) => Ty::All(xs, Box::new(t.unfreeze_tyvars())),
+            t @ _ => t,
+        }
     }
 }
 
@@ -487,21 +295,93 @@ impl BitOr for Ty {
 }
 
 impl Ty {
-    pub fn from_ast_ty(kind: &ast::TypeKind, scope: &ast::Path, ctx: &Ctx) -> Ty {
+    pub fn from_sig(
+        sig: &FnSig,
+        fn_scope: &Path,
+        filepath: &FilePath,
+        fn_ctx: &mut Ctx,
+        parent_ctx: &mut Ctx,
+    ) -> Result<Ty, RayError> {
+        let mut param_tys = vec![];
+
+        for param in sig.params.iter() {
+            if let Some(ty) = param.ty() {
+                param_tys.push(Ty::from_ast_ty(&ty.kind, &fn_scope, fn_ctx));
+            } else {
+                return Err(RayError {
+                    msg: format!("parameter `{}` must have a type annotation", param),
+                    src: vec![Source {
+                        span: Some(param.span()),
+                        filepath: filepath.clone(),
+                    }],
+                    kind: RayErrorKind::Type,
+                });
+            }
+        }
+
+        let ret_ty = sig
+            .ret_ty
+            .as_ref()
+            .map(|t| Ty::from_ast_ty(&t.kind, &fn_scope, fn_ctx))
+            .unwrap_or_else(|| Ty::unit());
+
+        let mut ty = Ty::Func(param_tys, Box::new(ret_ty));
+
+        if sig.qualifiers.len() != 0 {
+            let mut p = vec![];
+            for q in sig.qualifiers.iter() {
+                p.push(TyPredicate::from_ast_ty(&q, &fn_scope, &filepath, fn_ctx)?);
+            }
+            ty = Ty::Qualified(p, Box::new(ty));
+        }
+
+        let free_vars = parent_ctx.free_vars();
+        let ty_vars = ty
+            .collect_tyvars()
+            .into_iter()
+            .filter(|tv| !free_vars.contains(tv))
+            .collect::<Vec<_>>();
+
+        Ok(if ty_vars.len() != 0 {
+            Ty::All(ty_vars, Box::new(ty))
+        } else {
+            ty
+        })
+    }
+
+    pub fn from_ast_ty(kind: &ast::TypeKind, scope: &ast::Path, ctx: &mut Ctx) -> Ty {
         match kind {
             ast::TypeKind::Unknown => unimplemented!(),
             ast::TypeKind::Basic {
-                name,
-                ty_params,
-                bounds,
+                name, ty_params, ..
             } => {
                 if let Some(ty) = ctx.get_var(name) {
                     ty.clone()
                 } else {
-                    Ty::Projection(name.to_string(), vec![])
+                    let scope = scope.append(name);
+                    let ty_params = if let Some(ty_params) = ty_params {
+                        ty_params
+                            .tys
+                            .iter()
+                            .map(|t| Ty::from_ast_ty(&t.kind, &scope, ctx))
+                            .collect()
+                    } else {
+                        vec![]
+                    };
+                    Ty::Projection(name.to_string(), ty_params)
                 }
             }
-            ast::TypeKind::Generic { name, bounds } => unimplemented!(),
+            ast::TypeKind::Generic(name) => {
+                let fqn = scope.append(name).to_string();
+                if let Some(ty) = ctx.get_var(&fqn) {
+                    ty.clone()
+                } else {
+                    let tv = TyVar(fqn.clone());
+                    let ty = Ty::Var(tv);
+                    ctx.bind_var(fqn, ty.clone());
+                    ty
+                }
+            }
             ast::TypeKind::Struct {
                 name,
                 ty_params,
@@ -686,6 +566,217 @@ impl Ty {
         }
     }
 
+    pub fn get_path(&self) -> Option<Path> {
+        match self {
+            Ty::Never => Some(Path::from("never")),
+            Ty::Any => Some(Path::from("any")),
+            Ty::Projection(s, _) => Some(Path::from(s)),
+            Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.get_path(),
+            Ty::Bound(_) | Ty::Var(_) | Ty::Union(_) | Ty::Func(_, _) => None,
+        }
+    }
+
+    pub fn instantiate(self, tf: &mut TyVarFactory) -> Ty {
+        match self {
+            Ty::Var(v) => Ty::Var(v),
+            Ty::Bound(v) => Ty::Bound(v),
+            Ty::Union(tys) => Ty::Union(tys.into_iter().map(|t| t.instantiate(tf)).collect()),
+            Ty::Func(p, r) => Ty::Func(
+                p.into_iter().map(|t| t.instantiate(tf)).collect(),
+                Box::new(r.instantiate(tf)),
+            ),
+            Ty::Cast(src, dst) => {
+                Ty::Cast(Box::new(src.instantiate(tf)), Box::new(dst.instantiate(tf)))
+            }
+            Ty::Projection(s, tys) => {
+                Ty::Projection(s, tys.into_iter().map(|t| t.instantiate(tf)).collect())
+            }
+            Ty::Qualified(p, t) => Ty::Qualified(
+                p.into_iter().map(|t| t.instantiate(tf)).collect(),
+                Box::new(t.instantiate(tf)),
+            ),
+            Ty::All(xs, t) => {
+                let new_xs = (0..xs.len()).into_iter().map(|_| Ty::Var(tf.next()));
+                let sub = Subst::from_types(xs, new_xs);
+                t.apply_subst(&sub)
+            }
+            t @ Ty::Never | t @ Ty::Any => t,
+        }
+    }
+
+    pub fn skolemize_freevars(self) -> Ty {
+        match self {
+            Ty::All(xs, t) => {
+                let consts = xs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| Ty::Var(TyVar(format!("${}", i))))
+                    .collect::<Vec<_>>();
+                let sub = Subst::from_types(xs.clone(), consts);
+                Ty::All(xs, t).apply_subst(&sub)
+            }
+            t @ _ => t,
+        }
+    }
+
+    pub fn quantify(self, tyvars: Vec<TyVar>) -> Ty {
+        if tyvars.len() != 0 {
+            Ty::All(tyvars, Box::new(self))
+        } else {
+            self
+        }
+    }
+
+    pub fn unquantify(self) -> Ty {
+        match self {
+            Ty::All(_, t) => *t,
+            t => t,
+        }
+    }
+
+    pub fn qualify_with_tyvars(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
+        let tyvar_set = tyvars.iter().collect::<HashSet<_>>();
+        let q = preds
+            .iter()
+            .filter_map(|p| {
+                if !p.free_vars().is_disjoint(&tyvar_set) {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if q.len() != 0 {
+            // wrap the type in a qualified type if there are type variables
+            match self {
+                Ty::All(xs, t) => Ty::All(xs, Box::new(Ty::Qualified(q, t))),
+                _ => Ty::Qualified(q, Box::new(self)),
+            }
+        } else {
+            self
+        }
+    }
+
+    pub fn unqualify(self) -> Ty {
+        match self {
+            Ty::All(xs, t) => Ty::All(xs, Box::new(t.unqualify())),
+            Ty::Qualified(_, t) => *t,
+            t => t,
+        }
+    }
+
+    // pub fn instantiate(
+    //     self,
+    //     reverse_subst: &mut HashMap<TyVar, TyVar>,
+    //     tf: &mut TyVarFactory,
+    // ) -> Ty {
+    //     match self {
+    //         Ty::Var(v) => {
+    //             if let Some(v) = reverse_subst.get(&v) {
+    //                 Ty::Var(v.clone())
+    //             } else {
+    //                 let u = tf.next();
+    //                 reverse_subst.insert(v, u.clone());
+    //                 Ty::Var(u)
+    //             }
+    //         }
+    //         Ty::Union(tys) => Ty::Union(
+    //             tys.into_iter()
+    //                 .map(|t| t.instantiate(reverse_subst, tf))
+    //                 .collect(),
+    //         ),
+    //         Ty::Func(p, r) => Ty::Func(
+    //             p.into_iter()
+    //                 .map(|t| t.instantiate(reverse_subst, tf))
+    //                 .collect(),
+    //             Box::new(r.instantiate(reverse_subst, tf)),
+    //         ),
+    //         Ty::Cast(src, dst) => Ty::Cast(
+    //             Box::new(src.instantiate(reverse_subst, tf)),
+    //             Box::new(dst.instantiate(reverse_subst, tf)),
+    //         ),
+    //         Ty::Projection(s, tys) => Ty::Projection(
+    //             s,
+    //             tys.into_iter()
+    //                 .map(|t| t.instantiate(reverse_subst, tf))
+    //                 .collect(),
+    //         ),
+    //         Ty::Qualified(p, t) => Ty::Qualified(
+    //             p.into_iter()
+    //                 .map(|t| t.instantiate(reverse_subst, tf))
+    //                 .collect(),
+    //             Box::new(t.instantiate(reverse_subst, tf)),
+    //         ),
+    //         Ty::All(_, t) => t.instantiate(reverse_subst, tf),
+    //         t @ Ty::Never | t @ Ty::Any => t,
+    //     }
+    // }
+
+    // pub fn instance_of(&self, u: &Ty, ctx: &Ctx) -> bool {
+    //     println!("instance_of: {} < {}", self, u);
+    //     let t = self.clone().skolemize_freevars();
+    //     println!("skolemized free_vars: t = {}", t);
+    //     let (xs, t) = t.unpack_quantified_ty();
+    //     let u = u.clone().skolemize_freevars();
+    //     println!("skolemized free_vars: u = {}", u);
+    //     let args = (0..xs.len())
+    //         .into_iter()
+    //         .map(|i| Ty::Var(TyVar(format!("#{}", i))));
+    //     let sub = Subst::from_types(xs, args);
+    //     let (p, t) = t.apply_subst(&sub).unpack_qualified_ty();
+    //     println!("tmp vars: p = {:?}", p);
+    //     println!("tmp vars: t = {}", t);
+    //     let mut tf = TyVarFactory::new("@");
+    //     let (q, u) = u.instantiate(&mut tf).unpack_qualified_ty();
+    //     println!("instantiated: p = {:?}", p);
+    //     println!("instantiated: u = {}", u);
+    //     let sub = match t.mgu(&u) {
+    //         Ok(s) => s,
+    //         _ => return false,
+    //     };
+
+    //     println!("unify: sub = {}", sub);
+    //     q.apply_subst(&sub).iter().all(|q| p.entails(q, ctx))
+    // }
+
+    // pub fn instance_of(&self, r: &Ty) -> bool {
+    //     println!("instance_of: {} < {}", self, r);
+    //     match (self, r) {
+    //         (Ty::All(vs, t), _) => {
+    //             let free_vars = r.free_vars();
+    //             t.instance_of(r) && vs.iter().all(|v| !free_vars.contains(v))
+    //         }
+    //         (_, Ty::All(_, t)) => {
+    //             let sub = match self.mgu(t) {
+    //                 Ok(s) => s,
+    //                 _ => return false,
+    //             };
+    //             let t = t.clone().apply_subst(&sub);
+    //             self.instance_of(&t)
+    //         }
+    //         (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
+    //             p.iter()
+    //                 .collect::<HashSet<_>>()
+    //                 .is_superset(&q.iter().collect::<HashSet<_>>())
+    //                 && t.instance_of(u)
+    //         }
+    //         (Ty::Qualified(_, t), u) => t.instance_of(u),
+    //         (Ty::Func(p, q), Ty::Func(r, s)) if p.len() == r.len() => {
+    //             p.iter().zip(r.iter()).all(|(x, y)| x.instance_of(y)) && q.instance_of(s)
+    //         }
+    //         (Ty::Projection(s, xs), Ty::Projection(t, ys)) if s == t && xs.len() == ys.len() => {
+    //             xs.iter().zip(ys.iter()).all(|(x, y)| x.instance_of(y))
+    //         }
+    //         (Ty::Union(xs), Ty::Union(ys)) if xs.len() == ys.len() => {
+    //             xs.iter().zip(ys.iter()).all(|(x, y)| x.instance_of(y))
+    //         }
+    //         (Ty::Cast(a, b), Ty::Cast(c, d)) => a.instance_of(c) && b.instance_of(d),
+    //         (Ty::Var(_), Ty::Var(_)) => true,
+    //         _ => self == r,
+    //     }
+    // }
+
     pub fn nilable(t: Ty) -> Ty {
         Ty::Union(vec![t, Ty::nil()])
     }
@@ -728,165 +819,76 @@ impl Ty {
         self.free_vars().len() != 0
     }
 
-    pub fn generalize_forall(xs: Vec<TyVar>, s: Ty, t: Ty) -> Ty {
-        unimplemented!();
-
-        // create fresh type variables
-        // let new_xs = (0..xs.len()).map(|_| TyVar::new()).collect::<Vec<_>>();
-        // let xs_subst = Subst::from_types(
-        //     xs.clone(),
-        //     new_xs
-        //         .iter()
-        //         .map(|x| Ty::Var(x.clone()))
-        //         .collect::<Vec<_>>(),
-        // );
-
-        // // apply them to the types
-        // let s = s.apply_subst(&xs_subst);
-
-        // println!(
-        //     "generalize for all: new_xs = {:?}; s = {}; t = {}",
-        //     new_xs, s, t
-        // );
-        // let mut subst = HashMap::new();
-        // let original_ty = s;
-        // let u = original_ty.clone().generalize(t, &mut subst);
-        // println!("generalize for all: u = {}", u);
-
-        // if let Ty::Union(union_tys) = u {
-        //     Ty::Union(
-        //         union_tys
-        //             .into_iter()
-        //             .map(|t| {
-        //                 if t == original_ty {
-        //                     Ty::All(new_xs.clone(), Box::new(t))
-        //                 } else {
-        //                     t
-        //                 }
-        //             })
-        //             .collect(),
-        //     )
-        // } else {
-        //     u
-        // }
-    }
-
-    /// Find a minimal substitution (σCR) will minimize R
-    pub fn min_subst<T: Copy + Clone>(&self, cs: ConstraintSet) -> Result<Subst, InferError<T>> {
-        let mut subst = Subst::new();
-        // For each (S <: X[i] <: T) ∈ C:
-        for (x, c) in cs.into_iter() {
-            let (s, _, t) = c.unpack();
-            let v = self.variance_in(&x);
-            subst.as_mut().insert(
-                x,
-                match v {
-                    // if R is constant or covariant in X[i] then σCR(X[i]) = S
-                    Variance::Constant | Variance::Covariant => s,
-                    // else if R is contravariant in X[i] then σCR(X[i]) = T
-                    Variance::Contravariant => t,
-                    // else if R is invariant in X[i] and S = T then σCR(X[i]) = S
-                    Variance::Invariant if s == t => s,
-                    // else σCR is undefined.
-                    _ => {
-                        return Err(InferError {
-                            msg: format!("cannot find minimum subsitution for {:?}", self),
-                            metadata: None,
-                        })
-                    }
-                },
-            );
-        }
-
-        Ok(subst)
-    }
-
-    pub fn mgu(&self, other: &Ty) -> Result<Subst, String> {
+    pub fn unify_with<A, B, F, G>(
+        &self,
+        other: &Ty,
+        mut f: F,
+        g: G,
+    ) -> Result<(A, Vec<B>), InferError>
+    where
+        F: FnMut(Subst) -> A,
+        G: Fn(&Ty, &Ty) -> B,
+    {
         println!("unify: {} & {}", self, other);
-        Ok(match (self, other) {
-            (_, Ty::Any) | (_, Ty::Never) => Subst::new(),
-            (Ty::Literal(LiteralKind::Int, v), t) | (t, Ty::Literal(LiteralKind::Int, v))
-                if t.is_int_ty() =>
-            {
-                subst! { v.clone() => t.clone() }
-            }
-            (Ty::Literal(LiteralKind::Float, v), t) | (t, Ty::Literal(LiteralKind::Float, v))
-                if t.is_float_ty() =>
-            {
-                subst! { v.clone() => t.clone() }
-            }
+        match (self, other) {
+            (_, Ty::Any) | (_, Ty::Never) => Ok((f(Subst::new()), vec![])),
             (Ty::Var(tv), t) | (t, Ty::Var(tv)) if self != other => {
                 if !t.free_vars().contains(&tv) {
-                    subst! { tv.clone() => t.clone() }
+                    Ok((f(subst! { tv.clone() => t.clone() }), vec![]))
                 } else {
-                    return Err(format!("recursive unification: {} and {}", self, other));
+                    return Err(InferError {
+                        msg: format!("recursive unification: {} and {}", self, other),
+                        src: vec![],
+                    });
                 }
             }
             (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-                let mut sub = Subst::new();
+                let mut b = vec![];
                 for (x, y) in s.iter().zip(t.iter()) {
-                    sub = sub.union(x.mgu(y)?)
+                    b.push(g(x, y));
                 }
-                sub
+                Ok((f(Subst::new()), b))
             }
             (Ty::Func(r, s), Ty::Func(t, u)) if r.len() == t.len() => {
-                let mut sub = Subst::new();
+                let mut b = vec![];
                 for (x, y) in r.iter().zip(t.iter()) {
-                    sub = sub.union(x.mgu(y)?)
+                    b.push(g(x, y));
                 }
-
-                sub.union(s.mgu(u)?)
+                b.push(g(s, u));
+                Ok((f(Subst::new()), b))
             }
-            (Ty::All(xs, s), Ty::All(ys, t)) if xs.len() == ys.len() => s.mgu(t)?,
-            (Ty::All(_, s), t) => s.mgu(t)?,
-            (s, Ty::All(_, t)) => s.mgu(t)?,
-            _ => return Err(format!("type mismatch `{}` and `{}`", self, other)),
-        })
-    }
-
-    pub fn variance_in(&self, v: &TyVar) -> Variance {
-        match self {
-            Ty::Any | Ty::Never => Variance::Constant,
-            Ty::Literal(_, u) | Ty::Var(u) => {
-                if v == u {
-                    Variance::Covariant
-                } else {
-                    Variance::Constant
-                }
+            (Ty::Qualified(p, s), Ty::Qualified(q, t)) if p == q => {
+                Ok((f(Subst::new()), vec![g(s, t)]))
             }
-            Ty::Projection(_, tys) | Ty::Union(tys) => {
-                if tys
-                    .iter()
-                    .find(|x| matches!(x, Ty::Var(u) if u == v))
-                    .is_some()
-                {
-                    Variance::Covariant
-                } else {
-                    Variance::Constant
-                }
+            (Ty::Qualified(_, s), t) => s.unify_with(t, f, g),
+            (s, Ty::Qualified(_, t)) => s.unify_with(t, f, g),
+            (Ty::All(xs, s), Ty::All(ys, t)) if xs.len() == ys.len() => {
+                Ok((f(Subst::new()), vec![g(s, t)]))
             }
-            Ty::Func(params, ret) => ret.variance_in(v).invert().concat(
-                params
-                    .iter()
-                    .fold(Variance::Constant, |var, y| var.concat(y.variance_in(v))),
-            ),
-            Ty::Constrained(_, t) => t.variance_in(v),
-            Ty::All(vs, ty) => {
-                if vs.contains(v) {
-                    ty.variance_in(v)
-                } else {
-                    Variance::Constant
-                }
+            (Ty::All(xs, s), t) => s.unify_with(t, f, g),
+            (s, Ty::All(xs, t)) => s.unify_with(t, f, g),
+            _ => {
+                return Err(InferError {
+                    msg: format!("type mismatch `{}` and `{}`", self, other),
+                    src: vec![],
+                })
             }
         }
+    }
+
+    pub fn mgu(&self, other: &Ty) -> Result<Subst, InferError> {
+        let (sub, subs) = self.unify_with(other, |sub| sub, |x, y| x.mgu(y))?;
+        let mut sub = sub;
+        for s in subs {
+            sub = sub.union(s?);
+        }
+        Ok(sub)
     }
 
     /// S <: T => S is a subtype of T
     pub fn is_subtype(&self, t: &Ty) -> bool {
         match (self, t) {
             (_, Ty::Any) | (Ty::Never, _) => true,
-            (Ty::Literal(LiteralKind::Int, _), t) if t.is_int_ty() => true,
-            (Ty::Literal(LiteralKind::Float, _), t) if t.is_float_ty() => true,
             (Ty::Projection(a, s), Ty::Projection(b, t)) => {
                 a == b && s.iter().zip(t.iter()).all(|(x, y)| x.is_subtype(y))
             }
@@ -901,7 +903,7 @@ impl Ty {
 
     pub fn is_func(&self) -> bool {
         match &self {
-            Ty::All(_, ty) | Ty::Constrained(_, ty) => ty.is_func(),
+            Ty::All(_, ty) => ty.is_func(),
             Ty::Func(..) => true,
             _ => false,
         }
@@ -909,7 +911,7 @@ impl Ty {
 
     pub fn is_funcs_union(&self) -> bool {
         match &self {
-            Ty::All(_, ty) | Ty::Constrained(_, ty) => ty.is_funcs_union(),
+            Ty::All(_, ty) => ty.is_funcs_union(),
             Ty::Union(tys) => tys.iter().all(|t| t.is_func()),
             _ => false,
         }
@@ -917,7 +919,7 @@ impl Ty {
 
     pub fn is_union(&self) -> bool {
         match &self {
-            Ty::All(_, ty) | Ty::Constrained(_, ty) => ty.is_union(),
+            Ty::All(_, ty) => ty.is_union(),
             Ty::Union(_) => true,
             _ => false,
         }
@@ -927,41 +929,66 @@ impl Ty {
         matches!(self, Ty::Var(_))
     }
 
-    pub fn collect_tyvars(&self) -> HashSet<TyVar> {
-        match self {
+    pub fn collect_tyvars(&self) -> Vec<TyVar> {
+        let mut vs = match self {
             Ty::All(xs, t) => {
-                let mut unknowns: HashSet<TyVar> = xs.iter().cloned().collect();
-                unknowns.extend(t.collect_tyvars());
-                unknowns
+                let mut vs: Vec<TyVar> = xs.clone();
+                vs.extend(t.collect_tyvars());
+                vs
             }
+            Ty::Qualified(_, t) => t.collect_tyvars(),
             Ty::Func(param_tys, ret) => param_tys
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .flat_map(|t| t.collect_tyvars())
                 .collect(),
             Ty::Var(v) => vec![v.clone()].into_iter().collect(),
-            _ => HashSet::new(),
+            Ty::Union(t) | Ty::Projection(_, t) => {
+                t.iter().flat_map(|t| t.collect_tyvars()).collect()
+            }
+            Ty::Cast(src, dst) => {
+                let mut ty_vars = src.collect_tyvars();
+                ty_vars.extend(dst.collect_tyvars());
+                ty_vars
+            }
+            Ty::Bound(_) | Ty::Never | Ty::Any => vec![],
+        };
+
+        vs.dedup();
+        vs
+    }
+
+    pub fn get_ty_params(&self) -> Vec<&Ty> {
+        match self {
+            Ty::All(_, t) => t.get_ty_params(),
+            Ty::Qualified(_, t) => t.get_ty_params(),
+            Ty::Cast(_, dst) => dst.get_ty_params(),
+            Ty::Union(t) | Ty::Projection(_, t) => t.iter().collect(),
+            Ty::Never | Ty::Any | Ty::Bound(_) | Ty::Var(_) | Ty::Func(_, _) => vec![],
         }
     }
 
-    // pub fn collect_tyvars(&self) -> Vec<TyVar> {
-    //     match self {
-    //         Ty::Union(tys) | Ty::Projection(_, tys) => {
-    //             tys.iter().flat_map(|t| t.free_vars()).cloned().collect()
-    //         }
-    //         Ty::Func(tys, r) => tys
-    //             .iter()
-    //             .chain(std::iter::once(r.as_ref()))
-    //             .flat_map(|t| t.free_vars())
-    //             .cloned()
-    //             .collect(),
-    //         Ty::Var(tv) => vec![tv.clone()].into_iter().collect(),
-    //         Ty::All(_, ty) | Ty::Constrained(_, ty) => {
-    //             ty.free_vars().into_iter().cloned().collect()
-    //         }
-    //         _ => vec![],
-    //     }
-    // }
+    pub fn set_ty_params(self, tp: Vec<Ty>) -> Ty {
+        match self {
+            Ty::All(xs, t) => Ty::All(xs, Box::new(t.set_ty_params(tp))),
+            Ty::Qualified(q, t) => Ty::Qualified(q, Box::new(t.set_ty_params(tp))),
+            Ty::Cast(src, dst) => Ty::Cast(src, Box::new(dst.set_ty_params(tp))),
+            Ty::Projection(s, _) => Ty::Projection(s, tp),
+            t @ _ => t,
+        }
+    }
+
+    pub fn get_ty_param_at(&self, idx: usize) -> &Ty {
+        match self {
+            Ty::All(_, t) => t.get_ty_param_at(idx),
+            Ty::Qualified(_, t) => t.get_ty_param_at(idx),
+            Ty::Cast(_, dst) => dst.get_ty_param_at(idx),
+            Ty::Union(t) | Ty::Projection(_, t) => t.iter().nth(idx).unwrap(),
+            Ty::Never | Ty::Any | Ty::Bound(_) | Ty::Var(_) | Ty::Func(_, _) => {
+                panic!("no type parameters: {}", self)
+            }
+        }
+    }
 
     pub fn add_to_union(&mut self, ty: Ty) {
         if let Ty::All(_, t) = self {
@@ -971,59 +998,47 @@ impl Ty {
         }
     }
 
-    pub fn get_constraints(self) -> Vec<(String, Ty)> {
+    pub fn unpack_quantified_ty(self) -> (Vec<TyVar>, Ty) {
         match self {
-            Ty::Constrained(k, _) => k,
-            _ => vec![],
+            Ty::All(q, t) => (q, *t),
+            t => (vec![], t),
         }
     }
 
-    pub fn constrain_for(self, v: String, ty: Ty) -> Ty {
-        match self {
-            Ty::All(xs, t) => Ty::All(xs, Box::new(t.constrain_for(v, ty))),
-            Ty::Constrained(mut k, t) => {
-                k.push((v, ty));
-                Ty::Constrained(k, t)
-            }
-            t => Ty::Constrained(vec![(v, ty)], Box::new(t)),
-        }
-    }
-
-    pub fn unpack_constrained(self) -> (Option<Vec<TyVar>>, Option<Vec<(String, Ty)>>, Ty) {
+    pub fn unpack_qualified_ty(self) -> (Vec<TyPredicate>, Ty) {
         match self {
             Ty::All(xs, t) => {
-                let (_, k, t) = t.unpack_constrained();
-                (Some(xs), k, t)
+                let (q, t) = t.unpack_qualified_ty();
+                (q, Ty::All(xs, Box::new(t)))
             }
-            Ty::Constrained(k, t) => (None, Some(k), *t),
-            t => (None, None, t),
+            Ty::Qualified(q, t) => (q, *t),
+            t => (vec![], t),
         }
     }
 
-    pub fn try_unpack_overloaded_fn<T: Copy + Clone>(self) -> Result<Vec<Ty>, InferError<T>> {
+    pub fn try_unpack_overloaded_fn<T: Copy + Clone>(self) -> Result<Vec<Ty>, InferError> {
         if !self.is_func() && !self.is_funcs_union() {
             return Err(InferError {
                 msg: format!("expected function type but found {}", self),
-                metadata: None,
+                src: vec![],
             });
         }
 
         match self {
             Ty::Func(p, r) => Ok(vec![Ty::Func(p, r)]),
             Ty::All(xs, t) if t.is_func() => Ok(vec![Ty::All(xs, t)]),
-            Ty::Constrained(k, t) if t.is_func() => Ok(vec![Ty::Constrained(k, t)]),
             Ty::Union(tys) => Ok(tys),
             t => unreachable!("attempted to unpack non-function: {:?}", t),
         }
     }
 
-    pub fn try_unpack_fn<T: Copy + Clone>(
+    pub fn try_unpack_fn(
         self,
-    ) -> Result<(Option<Vec<TyVar>>, Vec<(String, Ty)>, Vec<Ty>, Ty), InferError<T>> {
+    ) -> Result<(Option<Vec<TyVar>>, Vec<(String, Ty)>, Vec<Ty>, Ty), InferError> {
         if !self.is_func() {
             return Err(InferError {
                 msg: format!("expected function type but found {}", self),
-                metadata: None,
+                src: vec![],
             });
         }
 
@@ -1032,63 +1047,23 @@ impl Ty {
                 let (_, k, p, r) = ty.try_unpack_fn()?;
                 Ok((Some(xs), k, p, r))
             }
-            Ty::Constrained(k, ty) => {
-                let (xs, _, p, r) = ty.try_unpack_fn()?;
-                Ok((xs, k, p, r))
-            }
             Ty::Func(p, r) => Ok((None, vec![], p, *r)),
             _ => unreachable!("attempted to unpack non-function: {:?}", self),
         }
     }
 }
 
-#[cfg(test)]
-mod ty_test {
-    use std::collections::HashMap;
+// #[cfg(test)]
+// mod ty_tests {
+//     use super::{Ty, TyVar};
 
-    use super::{Ty, TyVar};
-
-    #[test]
-    fn test_generalize() {
-        // let t_int = || Ty::Projection("int".to_string(), vec![]);
-        // let t_float = || Ty::Projection("float".to_string(), vec![]);
-        // let t_char = || Ty::Projection("char".to_string(), vec![]);
-        // let t_bool = || Ty::Projection("bool".to_string(), vec![]);
-        // let t_seq = |x| Ty::Projection("seq".to_string(), vec![x]);
-
-        // let s = Ty::Func(vec![t_int(), t_int()], Box::new(t_int()));
-        // let t = Ty::Func(vec![t_int(), t_int()], Box::new(t_float()));
-        // let u = Ty::Func(vec![t_int(), t_float()], Box::new(t_float()));
-
-        // let mut subst = HashMap::new();
-        // let r = s.generalize(t, &mut subst).generalize(u, &mut subst);
-        // assert!(matches!(r, Ty::Func(..)));
-
-        // println!("generalized type: {}", r);
-
-        // let (_, _, params, ret) = r.try_unpack_fn::<()>().unwrap();
-        // assert_eq!(params.len(), 2);
-        // assert_eq!(params[0], t_int());
-        // assert!(matches!(params[1], Ty::Var(_)));
-        // assert!(matches!(ret, Ty::Var(_)));
-
-        // let lt_eq_ch = Ty::Func(vec![t_char(), t_char()], Box::new(t_bool()));
-        // let lt_eq_seq = Ty::All(
-        //     vec![tvar!(a)],
-        //     Box::new(Ty::Func(
-        //         vec![t_seq(Ty::Var(tvar!(a))), t_seq(Ty::Var(tvar!(a)))],
-        //         Box::new(t_bool()),
-        //     )),
-        // );
-
-        // let mut subst = HashMap::new();
-        // let lt_eq = lt_eq_ch.generalize(lt_eq_seq, &mut subst);
-        // println!("generalized type for `≤`: {}", lt_eq);
-        // assert!(matches!(lt_eq, Ty::Func(..)));
-
-        // let (_, _, params, ret) = lt_eq.try_unpack_fn::<()>().unwrap();
-        // assert_eq!(params.len(), 2);
-        // assert_eq!(params[0], params[1]);
-        // assert_eq!(ret, t_bool());
-    }
-}
+//     #[test]
+//     fn test_instanceof() {
+//         let a = Ty::All(
+//             vec![tvar!(a)],
+//             Box::new(Ty::Projection(str!("A"), vec![Ty::Var(tvar!(a))])),
+//         );
+//         let b = Ty::Projection(str!("A"), vec![Ty::int()]);
+//         assert!(b.instance_of(&a))
+//     }
+// }

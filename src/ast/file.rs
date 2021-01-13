@@ -2,7 +2,7 @@ use crate::ast::{Decl, Expr, Import, Path};
 use crate::pathlib::FilePath;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct File {
     pub path: Path,
     pub stmts: Vec<Expr>,

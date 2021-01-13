@@ -1,14 +1,14 @@
-use crate::pathlib::FilePath;
-use crate::span::Span;
+use std::collections::HashSet;
+
+use crate::span::Source;
 
 use super::{
-    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, Id, If, Index, List, Literal,
-    Loop, Name, Path, Range, Sequence, Type, UnaryOp, While,
+    visitor::Visitor, Assign, BinOp, Block, Call, Cast, Closure, Curly, CurlyElementKind, Dot, Fn,
+    For, Id, If, Index, List, Literal, Loop, Name, Path, Range, Sequence, Type, UnaryOp, While,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprKind {
-    List(List),
     Assign(Assign),
     BinOp(BinOp),
     Block(Block),
@@ -24,6 +24,7 @@ pub enum ExprKind {
     If(If),
     Index(Index),
     Labeled(Box<Expr>, Box<Expr>),
+    List(List),
     Literal(Literal),
     Loop(Loop),
     Name(Name),
@@ -88,12 +89,11 @@ pub enum Trailing {
     Warn,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub id: Id,
-    pub span: Span,
-    pub filepath: FilePath,
+    pub src: Source,
     pub doc: Option<String>,
 }
 
@@ -140,5 +140,63 @@ impl std::fmt::Display for Expr {
                 ExprKind::While(ref ex) => ex.to_string(),
             }
         )
+    }
+}
+
+impl Expr {
+    pub fn get_vars(&self) -> HashSet<&String> {
+        let walk = Visitor::from(self);
+        let mut set = HashSet::new();
+        for ex in walk {
+            match &ex.kind {
+                ExprKind::Name(n) => {
+                    set.insert(&n.name);
+                }
+                ExprKind::Curly(c) => {
+                    for el in c.elements.iter() {
+                        match &el.kind {
+                            CurlyElementKind::Name(n) => set.insert(&n.name),
+                            CurlyElementKind::Labeled(n, _) => set.insert(&n.name),
+                        };
+                    }
+                }
+                _ => continue,
+            }
+        }
+        set
+    }
+
+    pub fn get_name(&self) -> Option<String> {
+        match &self.kind {
+            ExprKind::Name(n) => Some(n.name.clone()),
+            ExprKind::Fn(f) => f.sig.name.clone(),
+            ExprKind::Path(p) => Some(p.to_string()),
+            ExprKind::Assign(_)
+            | ExprKind::BinOp(_)
+            | ExprKind::Block(_)
+            | ExprKind::Break(_)
+            | ExprKind::Call(_)
+            | ExprKind::Cast(_)
+            | ExprKind::Closure(_)
+            | ExprKind::Curly(_)
+            | ExprKind::DefaultValue(_)
+            | ExprKind::Dot(_)
+            | ExprKind::For(_)
+            | ExprKind::If(_)
+            | ExprKind::Index(_)
+            | ExprKind::Labeled(_, _)
+            | ExprKind::Literal(_)
+            | ExprKind::List(_)
+            | ExprKind::Loop(_)
+            | ExprKind::Paren(_)
+            | ExprKind::Range(_)
+            | ExprKind::Return(_)
+            | ExprKind::Sequence(_)
+            | ExprKind::Tuple(_)
+            | ExprKind::Type(_)
+            | ExprKind::UnaryOp(_)
+            | ExprKind::Unsafe(_)
+            | ExprKind::While(_) => None,
+        }
     }
 }

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    iter::FromIterator,
     ops::{Deref, DerefMut, Sub},
 };
 
@@ -27,6 +28,12 @@ impl Deref for TyEnv {
 impl DerefMut for TyEnv {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl FromIterator<(String, Ty)> for TyEnv {
+    fn from_iter<T: IntoIterator<Item = (String, Ty)>>(iter: T) -> Self {
+        TyEnv(iter.into_iter().collect())
     }
 }
 

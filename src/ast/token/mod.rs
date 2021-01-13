@@ -57,12 +57,12 @@ pub enum TokenKind {
     Struct,
     /// enum
     Enum,
-    /// protocol
-    Protocol,
+    /// trait
+    Trait,
     /// impl
     Impl,
     /// type
-    Type,
+    TypeAlias,
     /// nil
     Nil,
     /// import
@@ -81,6 +81,8 @@ pub enum TokenKind {
     In,
     /// is
     Is,
+    /// where
+    Where,
 
     Modifier(Modifier),
 
@@ -94,24 +96,9 @@ pub enum TokenKind {
         value: String,
         suffix: Option<String>,
     },
-    String {
-        value: String,
-        terminated: bool,
-    },
-    ByteString {
-        value: String,
-        terminated: bool,
-    },
-    Byte {
-        value: String,
-        terminated: bool,
-    },
-    Char {
-        value: String,
-        terminated: bool,
-    },
     Bool(bool),
     UnicodeEscSeq(String),
+    PrefixedIdent(char, String),
     Identifier(String),
 
     /// =
@@ -155,6 +142,10 @@ pub enum TokenKind {
     /// ]
     RightBracket,
 
+    /// '
+    SingleQuote,
+    /// "
+    DoubleQuote,
     /// ?
     Question,
     /// .
@@ -183,6 +174,8 @@ pub enum TokenKind {
     Dollar,
     /// _
     Underscore,
+    /// #
+    Hash,
 
     // special
     NewLine,
@@ -212,13 +205,9 @@ impl TokenKind {
         match self {
             TokenKind::Integer { .. } => "integer",
             TokenKind::Float { .. } => "float",
-            TokenKind::String { .. } => "string",
-            TokenKind::Char { .. } => "character",
-            TokenKind::ByteString { .. } => "byte string",
-            TokenKind::Byte { .. } => "byte",
             TokenKind::UnicodeEscSeq(_) => "unicode escape sequence",
             TokenKind::Illegal(_) => "illegal",
-            TokenKind::Identifier(_) => "identifier",
+            TokenKind::Identifier(_) | TokenKind::PrefixedIdent(..) => "identifier",
             TokenKind::Modifier(_) => "modifier",
             TokenKind::UpperFn => "`Fn`",
             TokenKind::Mut => "`mut`",
@@ -232,10 +221,10 @@ impl TokenKind {
             TokenKind::Return => "`return`",
             TokenKind::Async => "`async`",
             TokenKind::Extern => "`extern`",
-            TokenKind::Type => "`type`",
+            TokenKind::TypeAlias => "`typealias`",
             TokenKind::Struct => "`struct`",
             TokenKind::Enum => "`enum`",
-            TokenKind::Protocol => "`protocol`",
+            TokenKind::Trait => "`trait`",
             TokenKind::Impl => "`impl`",
             TokenKind::Nil => "`nil`",
             TokenKind::With => "`with`",
@@ -246,6 +235,7 @@ impl TokenKind {
             TokenKind::For => "`for`",
             TokenKind::In => "`in`",
             TokenKind::Is => "`is`",
+            TokenKind::Where => "`where`",
             TokenKind::Equals => "`=`",
             TokenKind::Gt => "`>`",
             TokenKind::Lt => "`<`",
@@ -269,6 +259,8 @@ impl TokenKind {
             TokenKind::RangeInclusive => "`..=`",
             TokenKind::RangeExclusive => "`..<`",
             TokenKind::Dot => "`.`",
+            TokenKind::SingleQuote => "`'`",
+            TokenKind::DoubleQuote => "`\"`",
             TokenKind::Question => "`?`",
             TokenKind::Comma => "`,`",
             TokenKind::Semi => "`;`",
@@ -279,6 +271,7 @@ impl TokenKind {
             TokenKind::At => "`@`",
             TokenKind::Dollar => "`$`",
             TokenKind::Underscore => "`_`",
+            TokenKind::Hash => "`#`",
             TokenKind::NewLine => "newline",
             TokenKind::Whitespace => "whitespace",
             TokenKind::Comment { doc_style, .. } => {
@@ -326,14 +319,11 @@ impl fmt::Display for TokenKind {
                     value.clone()
                 }
             }
-            TokenKind::String { value, .. } => format!("\"{}\"", value),
-            TokenKind::Char { value, .. } => format!("'{}'", value),
-            TokenKind::ByteString { value, .. } => format!("b\"{}\"", value),
-            TokenKind::Byte { value, .. } => format!("b'{}'", value),
             TokenKind::Illegal(c) => c.to_string(),
-            TokenKind::Identifier(ref id) => id.clone(),
-            TokenKind::UnicodeEscSeq(ref id) => id.clone(),
-            TokenKind::Modifier(ref m) => m.to_string(),
+            TokenKind::PrefixedIdent(c, id) => format!("{}{}", c, id),
+            TokenKind::Identifier(id) => id.clone(),
+            TokenKind::UnicodeEscSeq(id) => id.clone(),
+            TokenKind::Modifier(m) => m.to_string(),
             TokenKind::UpperFn => "Fn".to_string(),
             TokenKind::Mut => "mut".to_string(),
             TokenKind::Const => "const".to_string(),
@@ -348,9 +338,9 @@ impl fmt::Display for TokenKind {
             TokenKind::Extern => "extern".to_string(),
             TokenKind::Struct => "struct".to_string(),
             TokenKind::Enum => "enum".to_string(),
-            TokenKind::Protocol => "protocol".to_string(),
+            TokenKind::Trait => "trait".to_string(),
             TokenKind::Impl => "impl".to_string(),
-            TokenKind::Type => "type".to_string(),
+            TokenKind::TypeAlias => "typealias".to_string(),
             TokenKind::With => "with".to_string(),
             TokenKind::Nil => "nil".to_string(),
             TokenKind::Import => "import".to_string(),
@@ -360,6 +350,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Loop => "loop".to_string(),
             TokenKind::In => "in".to_string(),
             TokenKind::Is => "is".to_string(),
+            TokenKind::Where => "where".to_string(),
             TokenKind::Equals => "=".to_string(),
             TokenKind::Gt => ">".to_string(),
             TokenKind::Lt => "<".to_string(),
@@ -383,6 +374,8 @@ impl fmt::Display for TokenKind {
             TokenKind::RangeInclusive => "..=".to_string(),
             TokenKind::RangeExclusive => "..<".to_string(),
             TokenKind::Dot => ".".to_string(),
+            TokenKind::SingleQuote => "'".to_string(),
+            TokenKind::DoubleQuote => "\"".to_string(),
             TokenKind::Question => "?".to_string(),
             TokenKind::Comma => ",".to_string(),
             TokenKind::Semi => ";".to_string(),
@@ -392,6 +385,7 @@ impl fmt::Display for TokenKind {
             TokenKind::FatArrow => "=>".to_string(),
             TokenKind::At => "@".to_string(),
             TokenKind::Dollar => "$".to_string(),
+            TokenKind::Hash => "#".to_string(),
             TokenKind::Underscore => "_".to_string(),
             TokenKind::NewLine => "\n".to_string(),
             TokenKind::Whitespace => " ".to_string(),

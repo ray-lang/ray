@@ -74,6 +74,26 @@ impl From<&FilePath> for Path {
     }
 }
 
+impl From<&String> for Path {
+    fn from(s: &String) -> Path {
+        let parts = s.split("::").map(|s| s.to_string()).collect();
+        Path {
+            parts,
+            span: Span::new(),
+        }
+    }
+}
+
+impl From<&str> for Path {
+    fn from(s: &str) -> Path {
+        let parts = s.split("::").map(|s| s.to_string()).collect();
+        Path {
+            parts,
+            span: Span::new(),
+        }
+    }
+}
+
 impl From<Vec<String>> for Path {
     fn from(parts: Vec<String>) -> Path {
         Path {

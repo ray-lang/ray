@@ -38,7 +38,7 @@ impl Parser {
                         if let ast::ExprKind::Sequence(seq) = &mut lhs.kind {
                             seq.trailing = true;
                         } else {
-                            let span = lhs.span.extend_to(&op_span);
+                            let span = lhs.src.span.unwrap().extend_to(&op_span);
                             lhs = self.mk_expr(
                                 ast::ExprKind::Sequence(ast::Sequence {
                                     items: vec![lhs],
@@ -84,7 +84,7 @@ impl Parser {
                 let ty = self.parse_ty()?;
                 let ty_span = ty.span.unwrap();
                 let rhs = self.mk_expr(ast::ExprKind::Type(ty), ty_span);
-                let span = lhs.span.extend_to(&rhs.span);
+                let span = lhs.src.span.unwrap().extend_to(&rhs.src.span.unwrap());
                 lhs = self.mk_expr(ast::ExprKind::Labeled(Box::new(lhs), Box::new(rhs)), span);
                 continue;
             }
@@ -92,7 +92,7 @@ impl Parser {
             let rhs = self.parse_infix_expr(prec + prec_adjustment, None, &ctx)?;
             ctx.restrictions -= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
 
-            let span = lhs.span.extend_to(&rhs.span);
+            let span = lhs.src.span.unwrap().extend_to(&rhs.src.span.unwrap());
 
             if matches!(op, ast::InfixOp::Colon) && matches!(lhs.kind, ast::ExprKind::Name(_)) {
                 lhs = self.mk_expr(ast::ExprKind::Labeled(Box::new(lhs), Box::new(rhs)), span);
@@ -146,7 +146,7 @@ impl Parser {
         if let Some((op, tok_count)) = self.peek_prefix_op()? {
             let (_, op_span) = self.lex.consume_count(tok_count);
             let expr = self.parse_prefix_expr(ctx)?;
-            let span = op_span.extend_to(&expr.span);
+            let span = op_span.extend_to(&expr.src.span.unwrap());
             Ok(self.mk_expr(
                 ast::ExprKind::UnaryOp(ast::UnaryOp {
                     expr: Box::new(expr),
@@ -169,7 +169,7 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ParseResult<ast::Expr> {
         let end = self.parse_infix_expr(prec + 1, None, ctx)?;
-        let span = start.span.extend_to(&end.span);
+        let span = start.src.span.unwrap().extend_to(&end.src.span.unwrap());
         let limits = match op {
             ast::InfixOp::RangeInclusive => ast::RangeLimits::Inclusive,
             ast::InfixOp::RangeExclusive => ast::RangeLimits::Exclusive,
@@ -194,7 +194,7 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ParseResult<ast::Expr> {
         let ty = self.parse_ty()?;
-        let span = lhs.span.extend_to(&ty.span.unwrap());
+        let span = lhs.src.span.unwrap().extend_to(&ty.span.unwrap());
         Ok(self.mk_expr(
             ast::ExprKind::Cast(ast::Cast {
                 lhs: Box::new(lhs),

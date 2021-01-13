@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::pathlib::FilePath;
+
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Pos {
     pub lineno: usize,
@@ -11,6 +13,28 @@ pub struct Pos {
 pub struct Span {
     pub start: Pos,
     pub end: Pos,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct Source {
+    pub filepath: FilePath,
+    pub span: Option<Span>,
+}
+
+impl Source {
+    pub fn extend_to(&self, other: &Source) -> Source {
+        let span = match (self.span, other.span) {
+            (Some(a), Some(b)) => Some(a.extend_to(&b)),
+            (Some(a), _) => Some(a),
+            (_, Some(b)) => Some(b),
+            _ => None,
+        };
+
+        Source {
+            span,
+            filepath: self.filepath.clone(),
+        }
+    }
 }
 
 impl Span {

@@ -12,7 +12,7 @@ impl Parser {
         let start = self.expect_start(TokenKind::If)?;
         let cond = Box::new(self.parse_expr(&ctx)?);
         let then = Box::new(self.parse_block(&ctx)?);
-        let mut end = then.span.end;
+        let mut end = then.src.span.unwrap().end;
 
         let els = if peek!(self, TokenKind::Else) {
             self.expect(TokenKind::Else)?;
@@ -21,7 +21,7 @@ impl Parser {
             } else {
                 self.parse_block(&ctx)?
             };
-            end = e.span.end;
+            end = e.src.span.unwrap().end;
             Some(Box::new(e))
         } else {
             None
@@ -42,12 +42,12 @@ impl Parser {
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
         let cond = Box::new(self.parse_expr(&ctx)?);
-        let mut end = cond.span.end;
+        let mut end = cond.src.span.unwrap().end;
 
         let els = if peek!(self, TokenKind::Else) {
             self.expect(TokenKind::Else)?;
             let e = self.parse_expr(&ctx)?;
-            end = e.span.end;
+            end = e.src.span.unwrap().end;
             Some(Box::new(e))
         } else {
             None
@@ -70,7 +70,7 @@ impl Parser {
         let expr = self.parse_expr(ctx)?;
         let body = self.parse_block(ctx)?;
 
-        let span = for_span.extend_to(&body.span);
+        let span = for_span.extend_to(&body.src.span.unwrap());
 
         Ok(self.mk_expr(
             ast::ExprKind::For(ast::For {
@@ -89,7 +89,7 @@ impl Parser {
         let cond = self.parse_expr(ctx)?;
         let body = self.parse_block(ctx)?;
 
-        let span = while_span.extend_to(&body.span);
+        let span = while_span.extend_to(&body.src.span.unwrap());
 
         Ok(self.mk_expr(
             ast::ExprKind::While(ast::While {
@@ -104,7 +104,7 @@ impl Parser {
     pub(crate) fn parse_loop(&mut self, ctx: &ParseContext) -> ParseResult<ast::Expr> {
         let loop_span = self.expect_sp(TokenKind::Loop)?;
         let body = self.parse_block(ctx)?;
-        let span = loop_span.extend_to(&body.span);
+        let span = loop_span.extend_to(&body.src.span.unwrap());
 
         Ok(self.mk_expr(
             ast::ExprKind::Loop(ast::Loop {

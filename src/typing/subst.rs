@@ -1,11 +1,12 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    iter::FromIterator,
     ops::{Deref, DerefMut},
 };
 
 use crate::typing::ty::{Ty, TyVar};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Subst(HashMap<TyVar, Ty>);
 
 impl Deref for Subst {
@@ -36,11 +37,33 @@ impl AsMut<HashMap<TyVar, Ty>> for Subst {
     }
 }
 
-impl std::fmt::Display for Subst {
+impl IntoIterator for Subst {
+    type Item = (TyVar, Ty);
+
+    type IntoIter = std::collections::hash_map::IntoIter<TyVar, Ty>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<(TyVar, Ty)> for Subst {
+    fn from_iter<T: IntoIterator<Item = (TyVar, Ty)>>(iter: T) -> Self {
+        Subst(iter.into_iter().collect())
+    }
+}
+
+impl std::fmt::Debug for Subst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map()
             .entries(self.0.iter().map(|(k, v)| ((k.to_string(), v.to_string()))))
             .finish()
+    }
+}
+
+impl std::fmt::Display for Subst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
@@ -61,6 +84,31 @@ impl Subst {
         sub
     }
 
+    pub fn get_var(&self, v: &TyVar) -> Ty {
+        let mut checked = HashSet::new();
+
+        let mut v = v.clone();
+        loop {
+            checked.insert(v.clone());
+            if let Some(t) = self.get(&v) {
+                if let Ty::Var(u) = t {
+                    if checked.contains(&u) {
+                        break;
+                    }
+                    v = u.clone();
+                } else if t.has_unknowns() {
+                    return t.clone().apply_subst(self);
+                } else {
+                    return t.clone();
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ty::Var(v)
+    }
+
     pub fn union(mut self, other: Subst) -> Subst {
         for (tv, ty) in other.0 {
             let ty = ty.apply_subst(&self);
@@ -78,36 +126,19 @@ impl Subst {
         self
     }
 
-    // pub fn union_inplace<F>(&mut self, other: Subst, on_conflict: F)
-    // where
-    //     F: Fn(&TyVar, &Ty, &Ty) -> Ty + Copy,
-    // {
-    //     for (tv, ty) in other.0 {
-    //         let mut ty = ty.apply_subst(&self);
-    //         if let Some(other_ty) = self.get(&tv) {
-    //             ty = on_conflict(self, &tv, &ty, &other_ty);
-    //         }
-
-    //         self.insert(tv, ty);
-    //     }
-    // }
-
-    pub fn try_union_inplace<F, E>(&mut self, other: Subst, on_conflict: F) -> Result<(), E>
+    pub fn union_inplace<F>(&mut self, other: Subst, mut on_conflict: F)
     where
-        F: Fn(&Ty, &Ty) -> Result<Subst, E> + Copy,
+        F: FnMut(&Ty, &Ty),
     {
         for (tv, ty) in other.0 {
             let mut ty = ty.apply_subst(&self);
             if let Some(other_ty) = self.get(&tv) {
-                let s = on_conflict(&ty, &other_ty)?;
-                self.try_union_inplace(s, on_conflict)?;
+                on_conflict(&ty, &other_ty);
                 ty = ty.apply_subst(&self);
             }
 
             self.insert(tv, ty);
         }
-
-        Ok(())
     }
 }
 

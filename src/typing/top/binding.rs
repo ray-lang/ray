@@ -4,6 +4,7 @@ use itertools::Itertools;
 
 use crate::{
     sort::{topological::TopologicalSort, SortByIndexSlice},
+    span::Source,
     typing::ty::{Ty, TyVar},
 };
 
@@ -11,7 +12,7 @@ use super::{
     assumptions::AssumptionSet,
     constraints::{
         tree::{ConstraintTree, NodeTree, StrictTree},
-        Constraint, EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
+        ConstraintInfo, EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
     },
     state::{TyEnv, TyVarFactory},
     traits::HasFreeVars,
@@ -123,44 +124,66 @@ impl<'a> BindingGroupAnalysis<'a> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct BindingGroup(TyEnv, AssumptionSet, ConstraintTree);
+pub struct BindingGroup {
+    env: TyEnv,
+    aset: AssumptionSet,
+    ctree: ConstraintTree,
+    info: ConstraintInfo,
+}
 
 impl std::fmt::Debug for BindingGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BindingGroup")
-            .field("env", &self.0)
-            .field("assumptions", &self.1)
+            .field("env", &self.env)
+            .field("aset", &self.aset)
             .finish()
     }
 }
 
 impl BindingGroup {
-    pub fn new(env: TyEnv, a: AssumptionSet, t: ConstraintTree) -> BindingGroup {
-        BindingGroup(env, a, t)
+    pub fn new(env: TyEnv, aset: AssumptionSet, ctree: ConstraintTree) -> BindingGroup {
+        BindingGroup {
+            env,
+            aset,
+            ctree,
+            info: ConstraintInfo::new(),
+        }
+    }
+
+    pub fn with_info(mut self, info: ConstraintInfo) -> BindingGroup {
+        self.info = info;
+        self
+    }
+
+    pub fn with_src(mut self, src: Option<Source>) -> BindingGroup {
+        if let Some(src) = src {
+            self.info.src.push(src);
+        }
+        self
     }
 
     pub fn unpack(self) -> (TyEnv, AssumptionSet, ConstraintTree) {
-        (self.0, self.1, self.2)
+        (self.env, self.aset, self.ctree)
     }
 
     pub fn env(&self) -> &TyEnv {
-        &self.0
+        &self.env
     }
 
     pub fn aset(&self) -> &AssumptionSet {
-        &self.1
+        &self.aset
     }
 
     pub fn tree(&self) -> &ConstraintTree {
-        &self.2
+        &self.ctree
     }
 
     pub fn borrow(&self) -> (&TyEnv, &AssumptionSet, &ConstraintTree) {
-        (&self.0, &self.1, &self.2)
+        (&self.env, &self.aset, &self.ctree)
     }
 
     pub fn borrow_mut(&mut self) -> (&mut TyEnv, &mut AssumptionSet, &mut ConstraintTree) {
-        (&mut self.0, &mut self.1, &mut self.2)
+        (&mut self.env, &mut self.aset, &mut self.ctree)
     }
 
     pub fn is_mutually_recursive(&self, other: &BindingGroup, sigs: &HashMap<String, Ty>) -> bool {
@@ -176,6 +199,7 @@ impl BindingGroup {
     }
 
     pub fn combine(&mut self, other: BindingGroup) {
+        let rhs_info = other.info.clone();
         let (lhs_sigs, lhs_use, lhs_t) = self.borrow_mut();
         let (rhs_sigs, rhs_use, rhs_t) = other.unpack();
 
@@ -195,6 +219,9 @@ impl BindingGroup {
             lhs_t.replace(|t| NodeTree(vec![t, rhs_t]));
         }
         // if both are empty or lhs is not empty and rhs is empty do nothing
+
+        self.info.src.extend(rhs_info.src);
+        self.info.src.dedup();
     }
 
     pub fn combine_with(
@@ -205,36 +232,37 @@ impl BindingGroup {
         sigs: &TyEnv,
         svar_factory: &mut TyVarFactory,
     ) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
+        let info = self.info.clone();
+        println!("src: {:?}", info.src);
         let (env, lhs_aset, lhs_tree) = self.borrow();
 
         // Cl1 = A1 ≼ Σ;
         // We create an instantiation constraint for assumptions in A1
         // for which we have a type scheme in Σ.
-        let mut cl1 = vec![];
-        for (x, tys) in lhs_aset.iter().sorted_by_key(|&(x, _)| x) {
-            if let Some(rhs_ty) = sigs.get(x) {
-                for lhs_ty in tys {
-                    cl1.push((
-                        x.clone(),
-                        Constraint::new(InstConstraint(lhs_ty.clone(), rhs_ty.clone())),
-                    ));
-                }
-            }
-        }
+        let cl1 = InstConstraint::lift(lhs_aset, sigs)
+            .into_iter()
+            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .collect::<Vec<_>>();
 
         // Cl2 = E ≽M Σ;
         // A skolemization constraint is created for each variable in E
         // with a type scheme in Σ. This constraint records the set of
         // monomorphic types passed to bga, and it constrains the type
         // of a definition to be more general than its declared type signature.
-        let cl2 = SkolConstraint::lift(env, sigs, mono_tys);
+        let cl2 = SkolConstraint::lift(env, sigs, mono_tys)
+            .into_iter()
+            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .collect::<Vec<_>>();
 
         // A1' = A1\dom(Σ); E' = E\dom(Σ)
         let lhs_aset = lhs_aset.clone() - sigs.keys();
         let env = env.clone() - sigs.keys();
 
         // Cl3 = A1' ≡ E'
-        let cl3 = EqConstraint::lift(&lhs_aset, &env);
+        let cl3 = EqConstraint::lift(&lhs_aset, &env)
+            .into_iter()
+            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .collect::<Vec<_>>();
 
         // A1'' = A1'\dom(E')
         let lhs_aset = lhs_aset.clone() - env.keys();
@@ -249,26 +277,25 @@ impl BindingGroup {
         let mut c4 = vec![];
         for (x, v) in implicits.iter() {
             if let Some(t) = env.get(x) {
-                c4.push(Constraint::new(GenConstraint(
-                    mono_tys.iter().cloned().map(|v| Ty::Var(v)).collect(),
-                    v.clone(),
-                    t.clone(),
-                )));
+                c4.push(
+                    GenConstraint::new(
+                        mono_tys.iter().cloned().map(|v| Ty::Var(v)).collect(),
+                        v.clone(),
+                        t.clone(),
+                    )
+                    .with_info(info.clone()),
+                );
             }
         }
 
-        let mut cl5 = vec![];
-        let implicit_map = implicits.into_iter().collect::<HashMap<_, _>>();
-        for (x, tys) in rhs_aset.iter().sorted_by_key(|&(x, _)| x) {
-            if let Some(rhs_tv) = implicit_map.get(x) {
-                for lhs_ty in tys {
-                    cl5.push((
-                        x.clone(),
-                        Constraint::new(InstConstraint(lhs_ty.clone(), Ty::Var(rhs_tv.clone()))),
-                    ));
-                }
-            }
-        }
+        let implicit_map = implicits
+            .into_iter()
+            .map(|(s, t)| (s, Ty::Var(t)))
+            .collect::<TyEnv>();
+        let cl5 = InstConstraint::lift(rhs_aset, &implicit_map)
+            .into_iter()
+            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .collect::<Vec<_>>();
 
         // A2' = A2\dom(E')
         let rhs_aset = rhs_aset.clone() - env.keys();
@@ -279,21 +306,21 @@ impl BindingGroup {
         // (Cl1 ≪◦ (Cl2 ≥◦ (Cl3 ≥◦ TC1)))
 
         // cl3 spread with lhs_tree
-        let mut tsub0 = lhs_tree.clone().spread(cl3);
+        let mut tsub0 = lhs_tree.clone().spread_list(cl3);
 
         // (Cl1 ≪◦ (Cl2 ≥◦ T0))
         // cl2 spread with tsub0
-        tsub0 = tsub0.spread(cl2);
+        tsub0 = tsub0.spread_list(cl2);
 
         // (Cl1 ≪◦ T0)
         // cl strict spread with tsub0
-        tsub0 = tsub0.strict_spread(cl1);
+        tsub0 = tsub0.strict_spread_list(cl1);
 
         // T0 ≪ C4• ≪ (Cl5 ≪◦ TC2)
         let tsub1 = ConstraintTree::list(c4, ConstraintTree::empty());
 
         // T0 ≪ T1 ≪ (Cl5 ≪◦ TC2)
-        let tsub2 = rhs_tree.clone().strict_spread(cl5);
+        let tsub2 = rhs_tree.clone().strict_spread_list(cl5);
 
         // T0 ≪ (T1 ≪ T2)
         let tsub3 = StrictTree::new(tsub1, tsub2);
@@ -317,7 +344,7 @@ mod binding_tests {
             assumptions::AssumptionSet,
             constraints::{
                 tree::{ConstraintTree, SpreadTree, StrictSpreadTree, StrictTree},
-                Constraint, EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
+                EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
             },
             state::{TyEnv, TyVarFactory},
         },
@@ -333,16 +360,6 @@ mod binding_tests {
             let mut env = TyEnv::new();
             $(env.insert(stringify!($e).to_string(), Ty::Var(tvar!($v)));)*
             env
-        }};
-    }
-
-    macro_rules! aset {
-        {} => (AssumptionSet::new());
-
-        { $($e:tt : $v:tt),+ } => {{
-            AssumptionSet::from(vec![
-                $((stringify!($e).to_string(), Ty::Var(tvar!($v)))),*
-            ])
         }};
     }
 
@@ -464,10 +481,10 @@ mod binding_tests {
         //      ≪◦ (l(v1), v1 := Skol(M, ∀a.a → a)) ◃◦ Tc2
         let actual_tree = StrictSpreadTree::new(
             str!("f"),
-            Constraint::new(InstConstraint(Ty::Var(tvar!(v3)), id_fn_ty())),
+            InstConstraint::new(Ty::Var(tvar!(v3)), id_fn_ty()),
             SpreadTree::new(
                 str!("f"),
-                Constraint::new(SkolConstraint(vec![], Ty::Var(tvar!(v1)), id_fn_ty())),
+                SkolConstraint::new(vec![], Ty::Var(tvar!(v1)), id_fn_ty()),
                 ConstraintTree::empty(),
             ),
         );
@@ -511,7 +528,7 @@ mod binding_tests {
             //     ([ (l(v6), v4 ≡ v6), (l(v10), v4 ≡ v10), (l(v7), v8 ≡ v7), (l(v11), v8 ≡ v11) ] ≥◦ [Tc3, Tc4])
             // )
             tc3_4
-                .spread(vec![
+                .spread_list(vec![
                     (
                         str!("x"),
                         EqConstraint::new(Ty::Var(tvar!(v4)), Ty::Var(tvar!(v10))),
@@ -529,7 +546,7 @@ mod binding_tests {
                         EqConstraint::new(Ty::Var(tvar!(v8)), Ty::Var(tvar!(v7))),
                     ),
                 ])
-                .strict_spread(vec![(
+                .strict_spread_list(vec![(
                     str!("f"),
                     InstConstraint::new(Ty::Var(tvar!(v9)), id_fn_ty()),
                 )]),
@@ -544,7 +561,7 @@ mod binding_tests {
                     ConstraintTree::empty(),
                 ),
                 // ≪ ([ (l(v0), v0 := Inst(s0)), (l(v2), v2 := Inst(s1))] ≪◦ TcB)
-                actual_tree.strict_spread(vec![
+                actual_tree.strict_spread_list(vec![
                     (
                         str!("x"),
                         InstConstraint::new(Ty::Var(tvar!(v0)), Ty::Var(tvar!(s0))),
@@ -587,7 +604,7 @@ mod binding_tests {
                     ConstraintTree::empty(),
                 ),
                 // ((l(v5), v5 := Inst(σ2)) ≪◦ TcC)
-                actual_tree.strict_spread(vec![(
+                actual_tree.strict_spread_list(vec![(
                     str!("g"),
                     InstConstraint::new(Ty::Var(tvar!(v5)), Ty::Var(tvar!(s2))),
                 )]),

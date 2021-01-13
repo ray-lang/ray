@@ -1,8 +1,8 @@
-use crate::ast;
 use crate::errors::{RayError, RayErrorKind, RayResult};
 use crate::lir;
 use crate::pathlib::FilePath;
 use crate::sym;
+use crate::{ast, span::Source};
 
 use std::collections::HashMap;
 
@@ -30,10 +30,12 @@ impl Gen {
         ctx: &GenCtx,
     ) -> RayResult<(Vec<lir::Inst>, lir::Value)> {
         let ty = n.ty.as_ref().ok_or_else(|| RayError {
-            fp: FilePath::new(),
+            src: vec![Source {
+                filepath: FilePath::new(),
+                span: Some(n.span),
+            }],
             msg: format!(""),
             kind: RayErrorKind::Compile,
-            span: Some(n.span),
         })?;
 
         unimplemented!()

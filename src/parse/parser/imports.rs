@@ -1,6 +1,5 @@
 use crate::ast::token::TokenKind;
 use crate::ast::{self, Import, Trailing};
-use crate::errors::RayError;
 use crate::parse::{ParseContext, ParseResult, Parser};
 use crate::span::Span;
 
@@ -14,7 +13,7 @@ impl Parser {
     ///   import "C" "stdlib.h"
     pub(crate) fn parse_import(&mut self, ctx: &ParseContext) -> ParseResult<Import> {
         let start = self.expect_start(TokenKind::Import)?;
-        Ok(if must_peek!(self, TokenKind::String { .. }) {
+        Ok(if must_peek!(self, TokenKind::DoubleQuote { .. }) {
             // "C"
             let (s, sp) = self.expect_string()?;
             if &s != "C" {

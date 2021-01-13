@@ -316,63 +316,65 @@ impl ConstraintTree {
         }
     }
 
-    // pub fn spread(self) -> ConstraintTree {
-    //     self.spread_list(&mut vec![])
-    // }
-
-    pub fn spread(self, list: Vec<(String, Constraint)>) -> ConstraintTree {
+    pub fn spread_list(self, list: Vec<(String, Constraint)>) -> ConstraintTree {
         list.into_iter()
             .rfold(self, |t, (l, c)| SpreadTree::new(l, c, t))
     }
 
-    pub fn strict_spread(self, list: Vec<(String, Constraint)>) -> ConstraintTree {
+    pub fn strict_spread_list(self, list: Vec<(String, Constraint)>) -> ConstraintTree {
         list.into_iter()
             .rfold(self, |t, (l, c)| StrictSpreadTree::new(l, c, t))
     }
 
-    // fn spread_list(self, list: &mut Vec<(String, Constraint)>) -> ConstraintTree {
-    //     match self {
-    //         ConstraintTree::Node(NodeTree(trees)) => ConstraintTree::Node(NodeTree(
-    //             trees.into_iter().map(|t| t.spread_list(list)).collect(),
-    //         )),
-    //         ConstraintTree::Attach(AttachTree(c, t)) => {
-    //             ConstraintTree::Attach(AttachTree(c, Box::new(t.spread_list(list))))
-    //         }
-    //         ConstraintTree::ParentAttach(ParentAttachTree(c, t)) => {
-    //             ConstraintTree::ParentAttach(ParentAttachTree(c, Box::new(t.spread_list(list))))
-    //         }
-    //         ConstraintTree::Strict(StrictTree(t1, t2)) => ConstraintTree::Strict(StrictTree(
-    //             Box::new(t1.spread_list(list)),
-    //             Box::new(t2.spread_list(list)),
-    //         )),
-    //         ConstraintTree::Spread(SpreadTree(l, c, t))
-    //         | ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => {
-    //             list.insert(0, (l, c));
-    //             t.spread_list(list)
-    //         }
-    //         ConstraintTree::Receiver(ReceiverTree(l)) => {
-    //             let mut i = 0;
-    //             let mut cs = vec![];
-    //             while i != list.len() {
-    //                 if matches!(&list[i], (l_prime, _) if &l == l_prime) {
-    //                     let (_, c) = list.remove(i);
-    //                     cs.push(c);
-    //                 } else {
-    //                     i += 1;
-    //                 }
-    //             }
+    pub fn spread(self) -> ConstraintTree {
+        self.spread_with(&mut vec![])
+    }
 
-    //             if cs.len() > 0 {
-    //                 ConstraintTree::list(cs, ConstraintTree::empty())
-    //             } else {
-    //                 ConstraintTree::Receiver(ReceiverTree(l))
-    //             }
-    //         }
-    //         ConstraintTree::Phase(PhaseTree(i, t)) => {
-    //             ConstraintTree::Phase(PhaseTree(i, Box::new(t.spread_list(list))))
-    //         }
-    //     }
-    // }
+    fn spread_with(self, list: &mut Vec<(String, Constraint)>) -> ConstraintTree {
+        match self {
+            ConstraintTree::Node(NodeTree(trees)) => ConstraintTree::Node(NodeTree(
+                trees.into_iter().map(|t| t.spread_with(list)).collect(),
+            )),
+            ConstraintTree::Attach(AttachTree(c, t)) => {
+                ConstraintTree::Attach(AttachTree(c, Box::new(t.spread_with(list))))
+            }
+            ConstraintTree::ParentAttach(ParentAttachTree(c, t)) => {
+                ConstraintTree::ParentAttach(ParentAttachTree(c, Box::new(t.spread_with(list))))
+            }
+            ConstraintTree::Strict(StrictTree(t1, t2)) => ConstraintTree::Strict(StrictTree(
+                Box::new(t1.spread_with(list)),
+                Box::new(t2.spread_with(list)),
+            )),
+            ConstraintTree::Spread(SpreadTree(l, c, t))
+            | ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => {
+                list.insert(0, (l, c));
+                t.spread_with(list)
+            }
+            ConstraintTree::Receiver(ReceiverTree(l)) => {
+                println!("receiver label: {:?}", l);
+                println!("list: {:?}", list);
+                let mut i = 0;
+                let mut cs = vec![];
+                while i != list.len() {
+                    if matches!(&list[i], (l_prime, _) if &l == l_prime) {
+                        let (_, c) = list.remove(i);
+                        cs.push(c);
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                if cs.len() > 0 {
+                    ConstraintTree::list(cs, ConstraintTree::empty())
+                } else {
+                    ConstraintTree::Receiver(ReceiverTree(l))
+                }
+            }
+            ConstraintTree::Phase(PhaseTree(i, t)) => {
+                ConstraintTree::Phase(PhaseTree(i, Box::new(t.spread_with(list))))
+            }
+        }
+    }
 
     pub fn phase(self) -> ConstraintTree {
         let (t, pm) = self.phase_rec();
@@ -461,18 +463,19 @@ impl TreeWalk<Constraint> for TopDownWalk {
 mod tree_tests {
     use crate::typing::{
         top::{
-            constraints::{Constraint, EqConstraint, ImplicitConstraint},
+            constraints::{EqConstraint, ImplicitConstraint},
             solvers::{GreedySolver, Solver},
             state::TyVarFactory,
             traits::HasSubst,
         },
         ty::{Ty, TyVar},
+        Ctx, InferError,
     };
 
     use super::{BottomUpWalk, ConstraintTree};
 
     #[test]
-    fn test_constraints1() -> Result<(), String> {
+    fn test_constraints1() -> Result<(), InferError> {
         let mul = Ty::Func(vec![Ty::int(), Ty::int()], Box::new(Ty::int()));
 
         // let sq = λx.(x * x) in sq(1)
@@ -481,27 +484,27 @@ mod tree_tests {
         let app0 = tvar!(app0); // type of the app
 
         // constraint: (x0 -> x1 -> r) == mul
-        let c1 = Constraint::new(EqConstraint(
+        let c1 = EqConstraint::new(
             Ty::Func(
                 vec![Ty::Var(x0), Ty::Var(x1)],
                 Box::new(Ty::Var(app0.clone())),
             ),
             mul,
-        ));
+        );
 
         // λx.(x * x)
         let lam0 = tvar!(lam0); // type of the lambda
         let p0 = tvar!(p0); // type of parameter `x`
         let r0 = tvar!(r0); // type of the body
                             // constraint: lam0 == (p0 -> r0)
-        let c2 = Constraint::new(EqConstraint(
+        let c2 = EqConstraint::new(
             Ty::Var(lam0),
             Ty::Func(vec![Ty::Var(p0.clone())], Box::new(Ty::Var(r0))),
-        ));
+        );
 
         // constraint: p0 == p1
         let p1 = tvar!(p1);
-        let c3 = Constraint::new(EqConstraint(Ty::Var(p0.clone()), Ty::Var(p1)));
+        let c3 = EqConstraint::new(Ty::Var(p0.clone()), Ty::Var(p1));
 
         let sq = tvar!(sq); // type of ident `sq`
         let b0 = tvar!(b0); // type of let body
@@ -509,19 +512,18 @@ mod tree_tests {
         let l1 = tvar!(sq0); // type of the let rhs
 
         // constraint: b0 == l0
-        let c4 = Constraint::new(EqConstraint(Ty::Var(b0), Ty::Var(l0)));
+        let c4 = EqConstraint::new(Ty::Var(b0), Ty::Var(l0));
 
         // constraint: sq ≤m l1
-        let c5 = Constraint::new(ImplicitConstraint(vec![p0], Ty::Var(sq), Ty::Var(l1)));
+        let c5 = ImplicitConstraint::new(vec![p0], Ty::Var(sq), Ty::Var(l1));
 
         let t = ConstraintTree::list(vec![c1, c2, c3, c4, c5], ConstraintTree::empty());
 
         let walker = BottomUpWalk {};
         let cs = t.flatten(walker);
-        let mut tvar_counter = TyVarFactory::new("v");
-        let mut svar_counter = TyVarFactory::new("s");
-        let mut solver = GreedySolver::new(&mut tvar_counter, &mut svar_counter, cs);
-        solver.start_solving()?;
+        let mut ctx = Ctx::new();
+        let mut solver = GreedySolver::new(cs, &mut ctx);
+        // solver.solve()?;
         println!("{:#?}", solver.get_subst());
         Ok(())
     }

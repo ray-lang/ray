@@ -2,7 +2,7 @@ use crate::{span::Span, strutils::indent_lines, utils::join};
 
 use super::{Expr, Name};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CurlyElementKind {
     Name(Name),
     Labeled(Name, Expr),
@@ -17,7 +17,7 @@ impl std::fmt::Display for CurlyElementKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurlyElement {
     pub kind: CurlyElementKind,
     pub span: Span,
@@ -29,9 +29,9 @@ impl std::fmt::Display for CurlyElement {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Curly {
-    pub lhs: Name,
+    pub lhs: Option<Name>,
     pub elements: Vec<CurlyElement>,
     pub curly_span: Span,
 }
@@ -45,12 +45,18 @@ impl std::fmt::Display for Curly {
         };
 
         let elements = join(self.elements.iter(), sep);
-        if multiline {
-            write!(f, "({} {{\n{}\n}})", self.lhs, indent_lines(elements, 2))
+        let body = if multiline {
+            format!("{{\n{}\n}}", indent_lines(elements, 2))
         } else if elements.len() != 0 {
-            write!(f, "({} {{ {} }})", self.lhs, elements)
+            format!("{{ {} }}", elements)
         } else {
-            write!(f, "({} {{}})", self.lhs)
+            format!("{{}}")
+        };
+
+        if let Some(lhs) = &self.lhs {
+            write!(f, "({} {})", lhs, body)
+        } else {
+            write!(f, "{}", body)
         }
     }
 }

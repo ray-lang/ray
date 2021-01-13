@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct While {
     pub cond: Box<ast::Expr>,
     pub body: Box<ast::Expr>,

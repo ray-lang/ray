@@ -1,7 +1,7 @@
 use crate::ast::Expr;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Index {
     pub lhs: Box<Expr>,
     pub index: Box<Expr>,

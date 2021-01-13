@@ -1,6 +1,10 @@
-use crate::ast::token::{IntegerBase, Token, TokenKind};
-use crate::ast::Modifier;
-use crate::span::{Pos, Span};
+use crate::{
+    ast::{
+        token::{IntegerBase, Token, TokenKind},
+        Modifier,
+    },
+    span::{Pos, Span},
+};
 
 use std::collections::VecDeque;
 
@@ -12,8 +16,8 @@ pub enum Preceding {
 
 pub struct Lexer {
     src: Vec<char>,
-    curr_idx: usize,
     curr_pos: Pos,
+    stash_pos: Pos,
     last_tok_span: Span,
     token_stash: VecDeque<Token>,
     stash: VecDeque<(Vec<Preceding>, Token)>,
@@ -35,16 +39,16 @@ impl Lexer {
     pub fn new(src: &str) -> Lexer {
         Lexer {
             src: src.chars().collect(),
-            curr_idx: 0,
             curr_pos: Pos::new(),
+            stash_pos: Pos::new(),
             last_tok_span: Span::new(),
             token_stash: VecDeque::new(),
             stash: VecDeque::new(),
         }
     }
 
-    pub fn is_eof(&mut self) -> bool {
-        self.src.get(self.curr_idx).is_none()
+    pub fn is_eof(&self) -> bool {
+        self.src.get(self.stash_pos.offset).is_none()
     }
 
     fn eof(&mut self) -> Token {
@@ -59,15 +63,14 @@ impl Lexer {
     }
 
     fn next_char(&mut self) -> Option<char> {
-        let ch = self.char_at(self.curr_idx)?;
+        let ch = self.char_at(self.stash_pos.offset)?;
         if ch == '\n' {
-            self.curr_pos.lineno += 1;
-            self.curr_pos.col = 0;
+            self.stash_pos.lineno += 1;
+            self.stash_pos.col = 0;
         } else {
-            self.curr_pos.col += 1;
+            self.stash_pos.col += 1;
         }
-        self.curr_pos.offset += 1;
-        self.curr_idx += 1;
+        self.stash_pos.offset += 1;
         Some(ch)
     }
 
@@ -76,17 +79,23 @@ impl Lexer {
     }
 
     fn first(&self) -> char {
-        self.char_at(self.curr_idx).unwrap_or('\0')
+        self.char_at(self.stash_pos.offset).unwrap_or('\0')
     }
 
     fn second(&self) -> char {
-        self.char_at(self.curr_idx + 1).unwrap_or('\0')
+        self.char_at(self.stash_pos.offset + 1).unwrap_or('\0')
+    }
+
+    fn consume_char(&mut self) -> Option<char> {
+        let c = self.next_char();
+        self.curr_pos = self.stash_pos;
+        c
     }
 
     fn consume_chars(&mut self, n: usize) {
         // consume `n` characters
         for _ in 0..n {
-            self.next_char();
+            self.consume_char();
         }
     }
 
@@ -135,12 +144,39 @@ impl Lexer {
         self.next_char_while(None, |c| !c.is_whitespace())
     }
 
-    fn quoted_string(&mut self, quote: char) -> (String, bool) {
+    pub fn quoted_string(&mut self, quote: char) -> (String, bool) {
+        // first rewind the lexer, so there's nothing in the stash, so
+        // we can get the raw characters back
+        self.rewind_tokens();
+
         let mut s = String::new();
         while let Some(ch) = self.next_char() {
             match ch {
                 c if c == quote => {
                     return (s, true);
+                }
+                '\\' if self.first() == '\\' || self.first() == quote => {
+                    s.push(self.next_char().unwrap());
+                }
+                _ => s.push(ch),
+            }
+        }
+        (s, false)
+    }
+
+    pub fn quoted_char(&mut self, quote: char) -> (String, bool) {
+        // first rewind the lexer, so there's nothing in the stash, so
+        // we can get the raw characters back
+        self.rewind_tokens();
+
+        let mut s = String::new();
+        while let Some(ch) = self.next_char() {
+            match ch {
+                c if c == quote => {
+                    return (s, true);
+                }
+                c if c.is_whitespace() && s.len() > 0 => {
+                    return (s, false);
                 }
                 '\\' if self.first() == '\\' || self.first() == quote => {
                     s.push(self.next_char().unwrap());
@@ -182,9 +218,9 @@ impl Lexer {
             "extern" => TokenKind::Extern,
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
-            "protocol" => TokenKind::Protocol,
+            "trait" => TokenKind::Trait,
             "impl" => TokenKind::Impl,
-            "type" => TokenKind::Type,
+            "typealias" => TokenKind::TypeAlias,
             "with" => TokenKind::With,
             "import" => TokenKind::Import,
             "as" => TokenKind::As,
@@ -193,6 +229,7 @@ impl Lexer {
             "loop" => TokenKind::Loop,
             "in" => TokenKind::In,
             "is" => TokenKind::Is,
+            "where" => TokenKind::Where,
             "pub" => TokenKind::Modifier(Modifier::Pub),
             "static" => TokenKind::Modifier(Modifier::Static),
             "hidden" => TokenKind::Modifier(Modifier::Hidden),
@@ -206,7 +243,7 @@ impl Lexer {
     }
 
     fn next_token(&mut self) -> Token {
-        let start = self.curr_pos;
+        let start = self.stash_pos;
         if !self.is_eof() {
             if let Some(c) = self.next_char() {
                 let kind = match c {
@@ -236,6 +273,8 @@ impl Lexer {
                     '|' => TokenKind::Pipe,
                     '^' => TokenKind::Caret,
                     '?' => TokenKind::Question,
+                    '\'' => TokenKind::SingleQuote,
+                    '"' => TokenKind::DoubleQuote,
 
                     '_' => match self.first() {
                         c if is_valid_id_char(c) => self.keyword_or_ident('_'),
@@ -300,19 +339,6 @@ impl Lexer {
                         _ => TokenKind::Slash,
                     },
 
-                    // literals
-                    'b' => match self.first() {
-                        '"' => {
-                            let (value, terminated) = self.quoted_string('"');
-                            TokenKind::ByteString { value, terminated }
-                        }
-                        '\'' => {
-                            let (value, terminated) = self.quoted_string('\'');
-                            TokenKind::Byte { value, terminated }
-                        }
-                        _ => self.keyword_or_ident('b'),
-                    },
-
                     '0' if self.first() == 'b' => {
                         // binary literal
                         self.consume_chars(1);
@@ -353,16 +379,6 @@ impl Lexer {
                         // unicode escape sequence
                         self.consume_chars(1);
                         TokenKind::UnicodeEscSeq(self.hex())
-                    }
-
-                    '"' => {
-                        let (value, terminated) = self.quoted_string('"');
-                        TokenKind::String { value, terminated }
-                    }
-
-                    '\'' => {
-                        let (value, terminated) = self.quoted_string('\'');
-                        TokenKind::Char { value, terminated }
                     }
 
                     // keywords/identifiers
@@ -414,7 +430,7 @@ impl Lexer {
                     _ => TokenKind::Illegal(self.next_str()),
                 };
 
-                let end = self.curr_pos;
+                let end = self.stash_pos;
                 return Token {
                     kind,
                     span: Span { start, end },
@@ -472,6 +488,18 @@ impl Lexer {
         }
     }
 
+    fn rewind_tokens(&mut self) {
+        if self.stash.len() != 0 {
+            println!("stash: {:?}", self.stash);
+            println!("tokens: {:?}", self.token_stash);
+            self.stash_pos = self.curr_pos;
+        }
+
+        // after resetting the index and position, clear the stash
+        self.stash.clear();
+        self.token_stash.clear();
+    }
+
     fn ensure_stash(&mut self, n: usize) {
         while self.stash.len() < n {
             let p = self.next_preceding();
@@ -496,15 +524,13 @@ impl Lexer {
         } else {
             start
         };
+
+        self.curr_pos = end;
         (toks, Span { start, end })
     }
 
-    pub fn position(&mut self) -> Pos {
-        if self.is_eof() {
-            self.curr_pos
-        } else {
-            self.peek_token().span.start
-        }
+    pub fn position(&self) -> Pos {
+        self.curr_pos
     }
 
     pub fn prev_position(&self) -> Pos {
@@ -520,15 +546,6 @@ impl Lexer {
         // note: this will always unwrap, because we've called ensure stash
         self.stash.get(idx).map(|(_, t)| t).unwrap()
     }
-
-    // pub fn peek_forward(&mut self, find_tok: TokenKind, stop_tok: TokenKind) -> usize {
-    //     let mut idx = 0;
-    //     let tok = self.peek_token_at(idx);
-    //     while !self.is_eof() && tok.kind != find_tok && tok.kind != stop_tok {
-    //         idx += 1;
-    //         self.peek_token_at(idx);
-    //     }
-    // }
 
     pub fn token(&mut self) -> Token {
         let (_, tok) = self.consume();
@@ -547,5 +564,35 @@ impl Lexer {
             .front()
             .map(|(p, _)| p.iter().collect())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod lexer_tests {
+    use crate::ast::token::TokenKind;
+
+    use super::Lexer;
+
+    #[test]
+    fn test_rewind() {
+        let mut lex = Lexer::new("fn foo(a: 'a) -> int");
+        while !lex.is_eof() {
+            let t = lex.token();
+            println!("{:?}", t);
+        }
+    }
+
+    #[test]
+    fn test_char() {
+        let mut lex = Lexer::new("i = 'a'\nj = \"bf12&&`81----==123=\"\nk = zzzz");
+        while !lex.is_eof() {
+            let t = lex.token();
+            if t.kind == TokenKind::DoubleQuote {
+                let (s, _) = lex.quoted_string('"');
+                println!("STRING: {}", s);
+            } else {
+                println!("{:?}", t);
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 use crate::ast::token::Token;
 use crate::ast::{Expr, Name};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dot {
     pub lhs: Box<Expr>,
     pub rhs: Name,

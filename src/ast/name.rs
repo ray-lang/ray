@@ -1,11 +1,10 @@
 use crate::ast::{Expr, Type};
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Name {
     pub name: String,
     pub ty: Option<Type>,
-    pub default: Option<Box<Expr>>,
     pub span: Span,
 }
 

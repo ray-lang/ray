@@ -1,7 +1,7 @@
 use crate::ast;
 use crate::span::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Assign {
     pub lhs: Box<ast::Expr>,
     pub rhs: Box<ast::Expr>,

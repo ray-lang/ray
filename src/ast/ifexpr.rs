@@ -1,6 +1,6 @@
 use crate::ast::Expr;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct If {
     pub cond: Box<Expr>,
     pub then: Box<Expr>,

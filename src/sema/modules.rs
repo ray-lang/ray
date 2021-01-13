@@ -1,9 +1,15 @@
-use crate::ast::{self, Import, Module};
-use crate::errors::{RayError, RayErrorKind};
 use crate::parse::{self, ParseOptions, Parser};
 use crate::pathlib::FilePath;
 use crate::span::Span;
 use crate::strutils;
+use crate::{
+    ast::{self, Import, Module},
+    span::Source,
+};
+use crate::{
+    driver::RayPaths,
+    errors::{RayError, RayErrorKind},
+};
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,18 +18,18 @@ const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local
 #[derive(Debug)]
 pub struct ModuleBuilder {
     pub modules: HashMap<ast::Path, Module>,
-    paths: HashSet<ast::Path>,
-    libpath: FilePath,
+    input_paths: HashSet<ast::Path>,
+    paths: RayPaths,
     c_include_paths: Vec<FilePath>,
 }
 
 impl ModuleBuilder {
-    pub fn new(libpath: FilePath, c_include_paths: Vec<FilePath>) -> ModuleBuilder {
+    pub fn new(paths: RayPaths, c_include_paths: Vec<FilePath>) -> ModuleBuilder {
         ModuleBuilder {
-            libpath,
+            paths,
             c_include_paths,
             modules: HashMap::new(),
-            paths: HashSet::new(),
+            input_paths: HashSet::new(),
         }
     }
 
@@ -74,14 +80,15 @@ impl ModuleBuilder {
 
         // first add the core if it hasn't been added already
         let core_path = ast::Path::from(vec![str!("core")]);
-        if !self.paths.contains(&core_path) {
-            let src = include_str!("../../intrinsics/core.ray");
-            match self.build_from_src(src.to_string(), core_path) {
+        if !self.input_paths.contains(&core_path) {
+            let core_fp = &self.paths.get_src_path() / "intrinsics" / "core.ray";
+            match self.build_from_path(&core_fp, Some(core_path)) {
                 Ok(m) => imports.push(m),
                 Err(e) => errs.extend(e),
             }
         }
 
+        // then build all of the imports from the root file
         let mut c_decl_set = HashSet::new();
         for import in root_file.imports.iter() {
             match self.resolve_import(&root_file.filepath, import) {
@@ -135,11 +142,11 @@ impl ModuleBuilder {
         let mut next_ast_id = 1_u64;
 
         // check if module has already been built
-        if self.paths.contains(&module_path) {
+        if self.input_paths.contains(&module_path) {
             return Ok(module_path);
         }
 
-        self.paths.insert(module_path.clone());
+        self.input_paths.insert(module_path.clone());
 
         let root_file = Parser::parse_from_src(
             src,
@@ -170,11 +177,11 @@ impl ModuleBuilder {
         let module_path = module_path.unwrap_or_else(|| ast::Path::from(input_path));
 
         // check if module has already been built
-        if self.paths.contains(&module_path) {
+        if self.input_paths.contains(&module_path) {
             return Ok(module_path);
         }
 
-        self.paths.insert(module_path.clone());
+        self.input_paths.insert(module_path.clone());
 
         let root_file = self.build_file(&root_fp, &module_path, next_ast_id)?;
         next_ast_id = root_file.last_ast_id;
@@ -221,15 +228,19 @@ impl ModuleBuilder {
                     "No root module file. module.ray or {}.ray should exist in the directory {}",
                     base, path
                 ),
-                fp: path.clone(),
-                span: None,
+                src: vec![Source {
+                    filepath: path.clone(),
+                    span: None,
+                }],
                 kind: RayErrorKind::Import,
             })
         } else {
             Err(RayError {
                 msg: format!("{} does not exist or is not a directory", path),
-                fp: path.clone(),
-                span: None,
+                src: vec![Source {
+                    filepath: path.clone(),
+                    span: None,
+                }],
                 kind: RayErrorKind::IO,
             })
         }
@@ -250,7 +261,9 @@ impl ModuleBuilder {
         } else {
             parent_filepath.dir()
         };
-        let paths_to_check = vec![&self.libpath, &curr_dirpath];
+
+        let stdlib_path = self.paths.get_stdlib_path();
+        let paths_to_check = vec![&stdlib_path, &curr_dirpath];
         let module_fp = &module_path.to_filepath();
         let span = Some(import.span);
         let mut possible_paths = vec![];
@@ -284,9 +297,11 @@ impl ModuleBuilder {
                                 dirbase=dirbase,
                                 base=base,
                             ),
-                            fp: parent_filepath.clone(),
+                            src: vec![Source {
+                                filepath: parent_filepath.clone(),
+                                span,
+                            }],
                             kind: RayErrorKind::Import,
-                            span,
                         })
                     }
                 });
@@ -296,9 +311,11 @@ impl ModuleBuilder {
         if possible_paths.len() == 0 {
             Err(RayError {
                 msg: format!("Could not find module from import {}", module_path),
-                fp: parent_filepath.clone(),
+                src: vec![Source {
+                    filepath: parent_filepath.clone(),
+                    span,
+                }],
                 kind: RayErrorKind::Import,
-                span,
             })
         } else if possible_paths.len() > 1 {
             Err(RayError {
@@ -307,9 +324,11 @@ impl ModuleBuilder {
                     module_path,
                     strutils::indent_lines_iter(&possible_paths, 2),
                 ),
-                fp: parent_filepath.clone(),
+                src: vec![Source {
+                    filepath: parent_filepath.clone(),
+                    span,
+                }],
                 kind: RayErrorKind::Import,
-                span,
             })
         } else {
             Ok(possible_paths.pop().unwrap())
@@ -340,8 +359,10 @@ impl ModuleBuilder {
         Err(RayError {
             kind: RayErrorKind::Import,
             msg: format!("Could not find C header file {:?}", include),
-            fp: src_path.clone(),
-            span: Some(span),
+            src: vec![Source {
+                filepath: src_path.clone(),
+                span: Some(span),
+            }],
         })
 
         // for _, p := range includePaths {

@@ -18,17 +18,19 @@ mod infer_test {
 
     use crate::typing::{
         top::{
-            constraints::{tree::BottomUpWalk, CollectConstraints},
+            collect::CollectConstraints,
+            constraints::tree::BottomUpWalk,
             hm,
             solvers::{GreedySolver, Solver},
             state::TyVarFactory,
             traits::HasSubst,
         },
         ty::Ty,
+        Ctx, InferError,
     };
 
     #[test]
-    fn infer_lit_id() -> Result<(), String> {
+    fn infer_lit_id() -> Result<(), InferError> {
         // let id = λx.x in (i 1)
         let ex = hm::Expr::Let(
             str!("id"),
@@ -42,21 +44,20 @@ mod infer_test {
             )),
         );
 
-        let mut tf = TyVarFactory::new("v");
+        let mut ctx = Ctx::new();
         let mono_tys = HashSet::new();
-        let (ty, _, ct) = ex.collect_constraints(&mono_tys, &mut tf);
+        let (ty, _, ct) = ex.collect_constraints(&mono_tys, &mut ctx.tf_mut());
 
         println!("ty = {}", ty);
         println!("ct = {:#?}", ct);
         let cs = ct.flatten(BottomUpWalk);
         println!("{:?}", cs);
-        let mut sf = TyVarFactory::new("s");
-        let mut solver = GreedySolver::new(&mut tf, &mut sf, cs);
-        solver.start_solving()?;
-        println!("{}", solver.get_subst());
+        let solver = GreedySolver::new(cs, &mut ctx);
+        let (sol, _) = solver.solve();
+        println!("{}", sol.subst);
 
         if let Ty::Var(v) = ty {
-            let sub = solver.get_subst();
+            let sub = sol.subst;
             let t = sub.get(&v).expect("expected variable in substitution");
             assert_eq!(t, &Ty::int());
         } else {
@@ -67,7 +68,7 @@ mod infer_test {
     }
 
     #[test]
-    fn infer_lambda_id() -> Result<(), String> {
+    fn infer_lambda_id() -> Result<(), InferError> {
         // let id = λx.x in (id id)
         let ex = hm::Expr::Let(
             str!("id"),
@@ -81,16 +82,15 @@ mod infer_test {
             )),
         );
 
-        let mut tf = TyVarFactory::new("v");
-        let (ty, _, ct) = ex.collect_constraints(&HashSet::new(), &mut tf);
+        let mut ctx = Ctx::new();
+        let (ty, _, ct) = ex.collect_constraints(&HashSet::new(), &mut ctx.tf_mut());
         println!("ty = {}", ty);
         println!("ct = {:#?}", ct);
         let cs = ct.flatten(BottomUpWalk);
         println!("{:?}", cs);
-        let mut svar_factory = TyVarFactory::new("s");
-        let mut solver = GreedySolver::new(&mut tf, &mut svar_factory, cs);
-        solver.start_solving()?;
-        println!("{}", solver.get_subst());
+        let solver = GreedySolver::new(cs, &mut ctx);
+        let (sol, _) = solver.solve();
+        println!("{}", sol.subst);
 
         Ok(())
     }

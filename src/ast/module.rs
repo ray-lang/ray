@@ -4,7 +4,7 @@ use crate::ast;
 use crate::pathlib::FilePath;
 use crate::strutils;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Module {
     pub path: ast::Path,
     pub stmts: Vec<ast::Expr>,
@@ -33,7 +33,7 @@ impl std::fmt::Display for Module {
 
 impl Module {
     pub fn get_expr(&self, id: ast::Id) -> Option<&ast::Expr> {
-        let v = Visitor::new(self);
+        let v = Visitor::from(self);
         for ex in v {
             if ex.id == id {
                 return Some(ex);

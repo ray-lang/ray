@@ -4,12 +4,13 @@ use crate::typing::{
     top::{
         assumptions::AssumptionSet,
         binding::{BindingGroup, BindingGroupAnalysis},
+        collect::{CollectConstraints, CollectDeclarations, CollectPatterns},
         constraints::{
             tree::{
                 AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree,
                 StrictSpreadTree,
             },
-            CollectConstraints, Constraint, EqConstraint,
+            Constraint, EqConstraint,
         },
         state::{TyEnv, TyVarFactory},
     },
@@ -33,7 +34,7 @@ impl CollectConstraints for Expr {
                     LitKind::String => Ty::string(),
                     LitKind::Char => Ty::char(),
                 };
-                let cs = vec![Constraint::new(EqConstraint(v.clone(), t))];
+                let cs = vec![EqConstraint::new(v.clone(), t)];
                 (
                     v,
                     AssumptionSet::new(),
@@ -62,10 +63,7 @@ impl CollectConstraints for Expr {
                 }
 
                 let ret_ty = Ty::Var(tf.next());
-                let c = Constraint::new(EqConstraint(
-                    fun_ty,
-                    Ty::Func(arg_tys, Box::new(ret_ty.clone())),
-                ));
+                let c = EqConstraint::new(fun_ty, Ty::Func(arg_tys, Box::new(ret_ty.clone())));
 
                 let mut cts = vec![ct1];
                 cts.extend(arg_cts);
@@ -95,10 +93,7 @@ impl CollectConstraints for Expr {
                 });
 
                 let fun_ty = Ty::Var(tf.next());
-                let c = Constraint::new(EqConstraint(
-                    fun_ty.clone(),
-                    Ty::Func(param_tys, Box::new(body_ty)),
-                ));
+                let c = EqConstraint::new(fun_ty.clone(), Ty::Func(param_tys, Box::new(body_ty)));
 
                 (fun_ty, aset - env.keys(), AttachTree::new(c, ct))
             }
@@ -109,15 +104,9 @@ impl CollectConstraints for Expr {
 
                 let branch_ty = Ty::Var(tf.next());
                 let ct = NodeTree::new(vec![
-                    ParentAttachTree::new(Constraint::new(EqConstraint(t1, Ty::bool())), ct1),
-                    ParentAttachTree::new(
-                        Constraint::new(EqConstraint(t2, branch_ty.clone())),
-                        ct2,
-                    ),
-                    ParentAttachTree::new(
-                        Constraint::new(EqConstraint(t3, branch_ty.clone())),
-                        ct3,
-                    ),
+                    ParentAttachTree::new(EqConstraint::new(t1, Ty::bool()), ct1),
+                    ParentAttachTree::new(EqConstraint::new(t2, branch_ty.clone()), ct2),
+                    ParentAttachTree::new(EqConstraint::new(t3, branch_ty.clone()), ct3),
                 ]);
 
                 let aset = AssumptionSet::from(vec![aset1, aset2, aset3]);
@@ -125,14 +114,9 @@ impl CollectConstraints for Expr {
                 (branch_ty, aset, ct)
             }
             Expr::Let(var, rhs, body) => {
-                let (bg, env) = self.decl_var(var, rhs, mono_tys, tf);
-                println!("let: bg = {:?}", bg);
-                println!("let: env = {:?}", env);
+                let (bg, env) = (var, rhs.as_ref()).collect_decls(mono_tys, tf);
 
                 let (body_ty, aset, ct) = body.collect_constraints(mono_tys, tf);
-                println!("let: body_ty = {}", body_ty);
-                println!("let: aset = {:?}", aset);
-                println!("let: ct = {:?}", ct);
 
                 let mut bga = BindingGroupAnalysis::new(
                     vec![BindingGroup::new(TyEnv::new(), aset, ct), bg],
@@ -142,11 +126,9 @@ impl CollectConstraints for Expr {
                 );
 
                 let (_, a, t) = bga.analyze();
-                println!("let: bga.a = {:?}", a);
-                println!("let: bga.t = {:?}", t);
 
                 let b = Ty::Var(tf.next());
-                let c = Constraint::new(EqConstraint(b.clone(), body_ty));
+                let c = EqConstraint::new(b.clone(), body_ty);
                 (b, a, AttachTree::new(c, t))
             }
         }
@@ -164,29 +146,19 @@ mod collector_tests {
 
     use crate::typing::{
         top::{
-            assumptions::AssumptionSet,
+            collect::CollectConstraints,
             constraints::{
                 tree::{
                     AttachTree, ConstraintTree, NodeTree, ReceiverTree, StrictSpreadTree,
                     StrictTree,
                 },
-                CollectConstraints, Constraint, EqConstraint, GenConstraint, InstConstraint,
+                Constraint, EqConstraint, GenConstraint, InstConstraint,
             },
             hm::{Expr, LitKind},
             state::TyVarFactory,
         },
         ty::{Ty, TyVar},
     };
-
-    macro_rules! aset {
-        {} => (AssumptionSet::new());
-
-        { $($e:tt : $v:tt),+ } => {{
-            AssumptionSet::from(vec![
-                $((stringify!($e).to_string(), Ty::Var(tvar!($v)))),*
-            ])
-        }};
-    }
 
     #[test]
     fn test_var() {
@@ -214,10 +186,10 @@ mod collector_tests {
         assert_eq!(
             ct,
             AttachTree::new(
-                Constraint::new(EqConstraint(
+                EqConstraint::new(
                     Ty::Var(tvar!(v0)),
                     Ty::Func(vec![Ty::Var(tvar!(v1))], Box::new(Ty::Var(tvar!(v2))))
-                )),
+                ),
                 NodeTree::new(vec![
                     ReceiverTree::new(str!("f")),
                     ReceiverTree::new(str!("x")),

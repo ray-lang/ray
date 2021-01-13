@@ -1,7 +1,7 @@
-use crate::ast;
 use crate::errors::{RayError, RayErrorKind};
 use crate::pathlib::FilePath;
 use crate::span::{Pos, Span};
+use crate::{ast, span::Source};
 
 use lang_c::ast::{
     DeclarationSpecifier, Declarator, DeclaratorKind, DerivedDeclarator, ExternalDeclaration,
@@ -79,13 +79,15 @@ impl From<lang_c::driver::Error> for RayError {
             PreprocessorError(io_err) => RayError::from(io_err),
             SyntaxError(syn) => RayError {
                 kind: RayErrorKind::Parse,
-                fp: FilePath::new(),
+                src: vec![Source {
+                    filepath: FilePath::new(),
+                    span: Some(Span::from(Pos {
+                        lineno: syn.line,
+                        col: syn.column,
+                        offset: syn.offset,
+                    })),
+                }],
                 msg: "unexpected token".to_string(),
-                span: Some(Span::from(Pos {
-                    lineno: syn.line,
-                    col: syn.column,
-                    offset: syn.offset,
-                })),
             },
         }
     }

@@ -1,6 +1,6 @@
 use crate::ast;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sequence {
     pub items: Vec<ast::Expr>,
     pub trailing: bool, // trailing comma

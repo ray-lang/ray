@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub enum LitKind {
     Int,
     Float,
@@ -5,6 +6,7 @@ pub enum LitKind {
     Char,
 }
 
+#[derive(Debug)]
 pub enum Expr {
     Var(String),
     Lit(LitKind),
