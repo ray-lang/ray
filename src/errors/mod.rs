@@ -1,5 +1,4 @@
-use crate::span::Span;
-use crate::{pathlib::FilePath, span::Source};
+use crate::span::Source;
 
 use colored::*;
 use std::fmt;

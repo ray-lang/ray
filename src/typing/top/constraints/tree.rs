@@ -351,8 +351,6 @@ impl ConstraintTree {
                 t.spread_with(list)
             }
             ConstraintTree::Receiver(ReceiverTree(l)) => {
-                println!("receiver label: {:?}", l);
-                println!("list: {:?}", list);
                 let mut i = 0;
                 let mut cs = vec![];
                 while i != list.len() {

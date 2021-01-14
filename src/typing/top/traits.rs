@@ -1,18 +1,28 @@
-use std::{
-    cell::RefMut,
-    collections::{HashMap, HashSet},
-};
+use std::{cell::RefMut, collections::HashSet};
 
 use crate::typing::{
     predicate::TyPredicate,
     ty::{Ty, TyVar},
-    InferError, Subst,
+    Subst,
 };
 
 use super::{
     constraints::{Constraint, ConstraintInfo},
     state::TyVarFactory,
 };
+
+pub trait HasType {
+    fn get_type(&self) -> Ty;
+}
+
+impl<T> HasType for Box<T>
+where
+    T: HasType,
+{
+    fn get_type(&self) -> Ty {
+        self.as_ref().get_type()
+    }
+}
 
 pub trait HasBasic {
     fn get_constraints(&self) -> Vec<Constraint>;
@@ -49,8 +59,6 @@ pub trait HasState {
 
     fn get_sf(&mut self) -> RefMut<TyVarFactory>;
 
-    // fn get_ty_syn(&self) -> TySynonyms;
-
     fn store_ty(&mut self, v: TyVar, ty: Ty, info: ConstraintInfo);
 
     fn lookup_ty(&self, tv: &TyVar) -> Option<Ty>;
@@ -58,26 +66,16 @@ pub trait HasState {
     fn find_ty(&self, r: &Ty) -> Ty;
 
     fn add_skolems(&mut self, info: &ConstraintInfo, skolems: Vec<TyVar>, monos: Vec<TyVar>);
-
-    fn check_skolems(&mut self);
 }
 
 pub trait HasPredicates {
     fn get_preds(&self) -> &Vec<(TyPredicate, ConstraintInfo)>;
 
-    // assumePredicate :: Predicate → ⟨i⟩ → m ()
     fn assume_pred(&mut self, p: TyPredicate, info: ConstraintInfo);
 
-    // provePredicate :: Predicate → ⟨i⟩ → m ()
     fn prove_pred(&mut self, p: TyPredicate, info: ConstraintInfo);
 
-    // contextReduction :: m ()
-    fn ctx_reduce(&mut self);
-
-    // generalizeWithPreds :: Monos → Type → m TypeScheme
     fn generalize_with_preds(&mut self, mono_tys: &Vec<Ty>, ty: Ty) -> Ty;
-
-    // reportAmbiguous :: m ()
 }
 
 pub trait HasFreeVars {
@@ -104,18 +102,29 @@ where
 }
 
 pub trait PolymorphismInfo {
-    fn inst_ty(self, ty: &Ty) -> Self
+    fn inst_ty(self, _: &Ty) -> Self
     where
         Self: Sized,
     {
         self
     }
 
-    fn skol_ty(self, ty: &Ty) -> Self
+    fn skol_ty(self, _: &Ty) -> Self
     where
         Self: Sized,
     {
         self
+    }
+}
+
+pub trait Instantiate {
+    fn instantiate(self, tf: &mut TyVarFactory) -> Self;
+}
+
+impl<T: Instantiate> Instantiate for Box<T> {
+    fn instantiate(self, tf: &mut TyVarFactory) -> Self {
+        let t = *self;
+        Box::new(t.instantiate(tf))
     }
 }
 

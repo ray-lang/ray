@@ -1,6 +1,4 @@
-use crate::strutils;
-use crate::{ast, span::Span};
-use crate::{span::Source, utils::join};
+use crate::{ast, span::Source, strutils, utils::join};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeclKind {

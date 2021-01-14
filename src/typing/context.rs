@@ -4,10 +4,10 @@ use std::{
     rc::Rc,
 };
 
-use crate::{ast::Path, utils::join};
+use crate::ast::Path;
 
 use super::{
-    predicate::{PredicateEntails, TyPredicate},
+    predicate::PredicateEntails,
     top::{state::TyVarFactory, traits::HasFreeVars},
     ty::{ImplTy, StructTy, TraitTy, Ty, TyVar},
     ApplySubst,
@@ -133,130 +133,6 @@ impl Ctx {
         self.impls.get(&fqn)
     }
 
-    fn try_instance(
-        &self,
-        p: &TyPredicate,
-        q: &TyPredicate,
-        preds: Vec<&TyPredicate>,
-    ) -> Option<Vec<TyPredicate>> {
-        if let Some(sub) = p.match_predicate(q) {
-            Some(
-                preds
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .apply_subst(&sub),
-            )
-        } else {
-            None
-        }
-    }
-
-    // pub fn by_instance(&self, p: &TyPredicate) -> Vec<TyPredicate> {
-    //     // let tryInstance (p',list) = do sub <- matchPredicates synonyms p p'
-    //     //                           Just (sub |-> list)
-    //     //     in msum [ tryInstance it | it <- instances s classes ]
-    //     let trait_ty = match p {
-    //         TyPredicate::Trait(_, t) => t,
-    //         _ => return vec![],
-    //     };
-
-    //     let fqn = trait_ty.get_path().unwrap();
-    //     self.impls
-    //         .get(&fqn)
-    //         .map(|i| {
-    //             i.iter()
-    //                 .flat_map(|t| {
-    //                     let p_prime = TyPredicate::Trait(t.clone(), trait_ty.clone());
-    //                     if let Some(sub) = p.match_predicate(&p_prime) {
-    //                         Some(p_prime)
-    //                     } else {
-    //                         None
-    //                     }
-    //                 })
-    //                 .collect::<Vec<_>>()
-    //         })
-    //         .unwrap_or_default()
-
-    //     // impls.iter().flat_map(|t| {
-    //     //     let p_prime = TyPredicate::Trait(t.clone(), trait_ty.clone());
-    //     //     if let Some(sub) = p.match_predicate(&p_prime) {
-    //     //         Some(p_prime)
-    //     //     } else {
-    //     //         None
-    //     //     }
-    //     // });
-    //     // } else {
-    //     //     vec![]
-    //     // }
-    // }
-
-    // pub fn by_supertrait(&self, p: &TyPredicate) -> Vec<TyPredicate> {
-    //     // p : concat [ bySuperclass classes (Predicate s' tp) | s' <- superclasses s classes ]
-    //     let (s, super_traits) = match p {
-    //         TyPredicate::Trait(s, t) => match self.get_super_traits_from_ty(t) {
-    //             Some(v) => (s, v),
-    //             _ => return vec![],
-    //         },
-    //         _ => return vec![],
-    //     };
-
-    //     let super_preds = super_traits
-    //         .iter()
-    //         .flat_map(|st| match self.get_super_traits_from_ty(st) {
-    //             Some(v) => v
-    //                 .iter()
-    //                 .flat_map(|t| self.by_supertrait(&TyPredicate::Trait(s.clone(), t.clone())))
-    //                 .collect(),
-    //             _ => vec![],
-    //         })
-    //         .collect::<Vec<_>>();
-
-    //     let mut preds = vec![p.clone()];
-    //     preds.extend(super_preds);
-    //     println!("[{}]", join(&preds, ", "));
-    //     preds
-    // }
-
-    // pub fn implements(&self, base_ty: &Ty, trait_ty: &Ty, preds: &Vec<TyPredicate>) -> bool {
-    //     match base_ty {
-    //         Ty::Var(_) | Ty::Bound(_) => {
-    //             todo!()
-    //             // for p in preds {
-    //             //     match p {
-    //             //         TyPredicate::Trait(v, tr) if base_ty == v && trait == trait_ty => {
-    //             //             return true
-    //             //         }
-    //             //         _ => continue,
-    //             //     }
-    //             // }
-    //             // false
-    //         }
-    //         Ty::Union(t) => t.iter().all(|t| self.implements(t, trait_ty, preds)),
-    //         Ty::Projection(_, _) => {
-    //             println!("{} <: {}", base_ty, trait_ty);
-    //             if let Ty::Projection(t, _) = trait_ty {
-    //                 // this should already be an FQN, just needs to be parsed
-    //                 let fqn = Path::from(t);
-    //                 println!("fqn = {}", fqn);
-    //                 let impls = self.impls.get(&fqn);
-    //                 println!("{:?}", impls);
-    //                 impls.map_or(false, |tys| {
-    //                     tys.iter().any(|t| base_ty.instance_of(t, self))
-    //                 })
-    //             } else {
-    //                 false
-    //             }
-    //         }
-    //         Ty::Cast(_, t) => self.implements(t, trait_ty, preds),
-    //         Ty::Qualified(q, t) => self.implements(t, trait_ty, q),
-    //         Ty::All(_, t) => self.implements(t, trait_ty, preds),
-
-    //         // functions and never/any cannot implement traits
-    //         Ty::Func(_, _) | Ty::Never | Ty::Any => false,
-    //     }
-    // }
-
     pub fn tf_mut(&self) -> RefMut<TyVarFactory> {
         self.tf.borrow_mut()
     }
@@ -274,8 +150,7 @@ impl Ctx {
     }
 
     pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {
-        println!("instance_of: {} < {}", t, u);
-        let res = match (t, u) {
+        match (t, u) {
             (Ty::All(vs, t), _) => {
                 let free_vars = u.free_vars();
                 self.instance_of(t, u) && vs.iter().all(|v| !free_vars.contains(v))
@@ -285,11 +160,8 @@ impl Ctx {
                     Ok(s) => s,
                     _ => return false,
                 };
-                println!("instance_of: sub = {}", sub);
                 let t = t.clone().apply_subst(&sub);
-                println!("instance_of: t = {}", t);
                 let u = u.clone().apply_subst(&sub);
-                println!("instance_of: u = {}", u);
                 self.instance_of(&t, &u)
             }
             (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
@@ -311,13 +183,6 @@ impl Ctx {
                 .all(|(x, y)| self.instance_of(x, y)),
             (Ty::Cast(a, b), Ty::Cast(c, d)) => self.instance_of(a, c) && self.instance_of(b, d),
             _ => t == u,
-        };
-
-        if res {
-            println!("{} is instance of {}", t, u)
-        } else {
-            println!("{} is NOT instance of {}", t, u)
         }
-        res
     }
 }

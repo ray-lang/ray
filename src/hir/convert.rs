@@ -5,10 +5,7 @@ use crate::{
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
     span::Source,
-    typing::{
-        ty::{Ty, TyVar},
-        Ctx,
-    },
+    typing::{ty::Ty, Ctx},
 };
 
 use super::{HirDecl, HirNode, HirNodeKind::*, IntoHirNode, Param, TypedHirNode};
@@ -118,7 +115,7 @@ impl IntoHirNode for ast::Assign {
                     filepath: filepath.clone(),
                     span: Some(curr.op_span),
                 });
-                Apply(Box::new(op_var), vec![], vec![lhs_operand, rhs_operand]).into()
+                Apply(Box::new(op_var), vec![lhs_operand, rhs_operand]).into()
             } else {
                 curr.rhs.to_hir_node(scope, filepath, ctx)?
             };
@@ -171,7 +168,7 @@ impl IntoHirNode for ast::BinOp {
             span: Some(self.op_span),
             filepath: filepath.clone(),
         });
-        Ok(Apply(Box::new(op_var), vec![], vec![lhs, rhs]).into())
+        Ok(Apply(Box::new(op_var), vec![lhs, rhs]).into())
     }
 }
 
@@ -196,27 +193,14 @@ impl IntoHirNode for ast::Call {
         filepath: &FilePath,
         ctx: &mut Ctx,
     ) -> RayResult<HirNode> {
-        // if matches!(&self.lhs.kind, ast::ExprKind::Name(n) if &n.name == "sizeof") {
-        //     return Ok(Const(Literal::Int Ty::int()).into());
-        // }
-
         let lhs = self.lhs.to_hir_node(scope, filepath, ctx)?;
-        let ty_args = self
-            .ty_args
-            .as_ref()
-            .map(|(tys, _)| {
-                tys.iter()
-                    .map(|t| Ty::from_ast_ty(&t.kind, &scope, ctx))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
         let args = self
             .args
             .items
             .into_iter()
             .map(|e| e.to_hir_node(scope, filepath, ctx))
             .collect::<RayResult<Vec<_>>>()?;
-        Ok(Apply(Box::new(lhs), ty_args, args).into())
+        Ok(Apply(Box::new(lhs), args).into())
     }
 }
 
@@ -308,7 +292,6 @@ impl IntoHirNode for ast::Curly {
         let params = param_map.into_iter().map(|(_, el)| el).collect();
         Ok(Apply(
             Box::new(Var(format!("{}::init", struct_fqn)).into()),
-            vec![],
             params,
         )
         .into())
@@ -421,6 +404,6 @@ impl IntoHirNode for ast::UnaryOp {
             span: Some(self.op_span),
             filepath: filepath.clone(),
         });
-        Ok(Apply(Box::new(op_var), vec![], vec![expr]).into())
+        Ok(Apply(Box::new(op_var), vec![expr]).into())
     }
 }

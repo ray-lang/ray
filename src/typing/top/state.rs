@@ -85,6 +85,6 @@ impl TyVarFactory {
     pub fn next(&mut self) -> TyVar {
         let v = self.value;
         self.value += 1;
-        TyVar(format!("{}{}", self.prefix, v))
+        TyVar::from(format!("{}{}", self.prefix, v))
     }
 }

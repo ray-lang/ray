@@ -1,10 +1,8 @@
-use std::fmt;
-use std::hash::Hasher;
+use std::{fmt, hash::Hasher};
 
-use crate::pathlib::FilePath;
-use crate::span::Span;
+use crate::{pathlib::FilePath, span::Span};
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Path {
     parts: Vec<String>,
     pub span: Span,
@@ -65,8 +63,24 @@ impl fmt::Display for Path {
     }
 }
 
-impl From<&FilePath> for Path {
-    fn from(f: &FilePath) -> Path {
+// impl<T, I> From<T> for Path
+// where
+//     I: Into<Path>,
+//     T: Deref<Target = I>,
+// {
+//     fn from(t: T) -> Self {
+//         todo!()
+//     }
+// }
+
+// impl<T> From<&T> for Path {
+//     fn from(t: &T) -> Self {
+//         Path::from()
+//     }
+// }
+
+impl From<FilePath> for Path {
+    fn from(f: FilePath) -> Path {
         Path {
             parts: vec![f.file_stem()],
             span: Span::new(),
@@ -74,8 +88,8 @@ impl From<&FilePath> for Path {
     }
 }
 
-impl From<&String> for Path {
-    fn from(s: &String) -> Path {
+impl From<String> for Path {
+    fn from(s: String) -> Path {
         let parts = s.split("::").map(|s| s.to_string()).collect();
         Path {
             parts,

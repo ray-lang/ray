@@ -54,14 +54,14 @@ macro_rules! subst {
 #[macro_export]
 macro_rules! tvar {
     ($v:tt) => {
-        TyVar(stringify!($v).to_string())
+        $crate::typing::ty::TyVar($crate::ast::Path::from(stringify!($v)))
     };
 }
 
 #[macro_export]
 macro_rules! mkexpr {
     (@mkty ('v $ty:tt)) => {
-        $crate::typing::ty::Ty::Var($crate::typing::ty::TyVar(stringify!($ty).to_string()))
+        $crate::typing::ty::Ty::Var($crate::typing::ty::TyVar($crate::ast::Path::from(stringify!($ty))))
     };
 
     (@mkty $ty:tt) => {

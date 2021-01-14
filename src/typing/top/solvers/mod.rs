@@ -18,7 +18,9 @@ use super::{
         AssumeConstraint, Constraint, ConstraintKind, EqConstraint, GenConstraint, InstConstraint,
         ProveConstraint, Satisfiable,
     },
-    traits::{HasBasic, HasPredicates, HasState, HasSubst, PolymorphismInfo, Skolemize},
+    traits::{
+        HasBasic, HasPredicates, HasState, HasSubst, Instantiate, PolymorphismInfo, Skolemize,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,7 +33,6 @@ pub struct Solution {
 impl Solution {
     pub fn satisfies(&self, constraints: Vec<Constraint>, ctx: &Ctx) -> Vec<InferError> {
         let mut errs = vec![];
-        println!("satisfies? = {:?}", constraints);
         for c in constraints.into_iter().rev() {
             if let Some(e) = self.satisfies_constraint(c, ctx).err() {
                 errs.push(e);
@@ -42,9 +43,7 @@ impl Solution {
     }
 
     fn satisfies_constraint(&self, c: Constraint, ctx: &Ctx) -> Result<(), InferError> {
-        println!("apply_subst - before: {:?}", c);
         let c = c.apply_subst(&self.subst);
-        println!("apply_subst - after: {:?}", c);
         c.satisfied_by(self, ctx)
     }
 
@@ -109,14 +108,12 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
 
         self.add_constraints(cs);
         self.solve_constraints(&mut check);
-        // self.check_skolems();
 
         (self.solution(), check)
     }
 
     fn solve_constraints(&mut self, check: &mut Vec<Constraint>) {
         while let Some(c) = self.pop_constraint() {
-            println!("solving constraint: {:?}", c);
             self.solve_constraint(c, check);
             self.apply_subst();
         }
@@ -135,21 +132,16 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
             ConstraintKind::Gen(c) => {
                 let (m, v, t) = c.unpack();
                 self.make_consistent();
-                self.ctx_reduce();
                 let m = m.apply_subst(self.get_subst());
                 let t = t.apply_subst(self.get_subst());
-                println!("generalize (before): {}", t);
                 let s = self.generalize_with_preds(&m, t);
-                println!("generalize (after): {}", s);
                 self.store_ty(v, s, info);
             }
             ConstraintKind::Inst(c) => {
                 let (t, r) = c.unpack();
                 let s = self.find_ty(&r);
                 let info = info.inst_ty(&s);
-                println!("instantiate (before): {}", s);
                 let t_sub = s.instantiate(&mut self.get_tf());
-                println!("instantiate (after): {}", t_sub);
                 let (p, t_sub) = t_sub.unpack_qualified_ty();
                 for pred in p {
                     self.add_constraint(ProveConstraint::new(pred).with_info(info.clone()))
@@ -161,14 +153,11 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                 let (monos, t, r) = c.unpack();
                 let s = self.find_ty(&r);
                 let (t_sub, skolems) = s.skolemize(&mut self.get_sf());
-                println!("t_sub = {}", t_sub);
-                println!("skolems = {}", join(&skolems, ", "));
                 let info = info.skol_ty(&s);
                 self.add_skolems(&info, skolems, monos);
 
                 let (p, t_sub) = t_sub.unpack_qualified_ty();
                 for pred in p {
-                    println!("add assume constraint: {:?}", pred);
                     self.add_constraint(AssumeConstraint::new(pred).with_info(info.clone()))
                 }
                 self.add_constraint(EqConstraint::new(t, t_sub).with_info(info));

@@ -96,10 +96,9 @@ impl Driver {
         // let m = mod_builder.modules.get_mut(&mod_path).unwrap();
         let mut ctx = Ctx::new();
         let hir_mod = hir::HirModule::from_ast_module(&mod_path, &mod_builder.modules, &mut ctx)?;
-        eprintln!("{}", hir_mod.root);
         let mut inf = InferSystem::new(ctx);
-        match inf.infer_ty(&hir_mod.root) {
-            Ok(_) => {}
+        let root = match inf.infer_ty(hir_mod.root) {
+            Ok(n) => n,
             Err(errs) => {
                 return Err(errs
                     .into_iter()
@@ -110,7 +109,7 @@ impl Driver {
                     })
                     .collect());
             }
-        }
+        };
 
         if options.no_compile {
             return Ok(());

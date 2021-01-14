@@ -490,8 +490,6 @@ impl Lexer {
 
     fn rewind_tokens(&mut self) {
         if self.stash.len() != 0 {
-            println!("stash: {:?}", self.stash);
-            println!("tokens: {:?}", self.token_stash);
             self.stash_pos = self.curr_pos;
         }
 

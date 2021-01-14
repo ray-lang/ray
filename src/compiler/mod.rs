@@ -1,7 +1,4 @@
-use crate::ast::{self, Module};
-use crate::parse::{ParseOptions, Parser};
-use crate::pathlib::FilePath;
-use crate::target::Target;
+use crate::{ast::Module, pathlib::FilePath, target::Target};
 
 #[derive(Debug)]
 pub struct CompilerOptions {

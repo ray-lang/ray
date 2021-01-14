@@ -5,7 +5,6 @@ mod bound;
 mod context;
 mod infer;
 mod subst;
-mod variance;
 
 pub mod predicate;
 pub mod top;
@@ -15,7 +14,6 @@ pub use bound::*;
 pub use context::*;
 pub use infer::*;
 pub use subst::*;
-pub use variance::*;
 
 // #[cfg(test)]
 // mod typing_test {

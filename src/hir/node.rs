@@ -5,13 +5,8 @@ use crate::{
     errors::RayResult,
     pathlib::FilePath,
     span::Source,
-    typing::Ctx,
+    typing::{top::traits::HasType, ty::Ty, ApplySubst, Ctx, Subst},
     utils::{indent, join, map_join},
-};
-
-use crate::typing::{
-    ty::{Ty, TyVar},
-    ApplySubst, Subst,
 };
 
 use super::IntoHirNode;
@@ -63,6 +58,10 @@ impl TypedHirNode {
         *self.ex
     }
 
+    pub fn take(self) -> (HirNode, Ty) {
+        (*self.ex, self.ty)
+    }
+
     pub fn get_type(&self) -> Ty {
         self.ty.clone()
     }
@@ -89,6 +88,15 @@ impl ApplySubst for HirNode {
         HirNode {
             kind: self.kind.apply_subst(subst),
             src: self.src,
+        }
+    }
+}
+
+impl HasType for HirNode {
+    fn get_type(&self) -> Ty {
+        match &self.kind {
+            HirNodeKind::Typed(t) => t.get_type(),
+            _ => Ty::unit(),
         }
     }
 }
@@ -174,6 +182,10 @@ impl Param {
 
     pub fn get_ty(&self) -> Option<&Ty> {
         self.ty.as_ref()
+    }
+
+    pub fn set_ty(&mut self, ty: Ty) {
+        self.ty = Some(ty)
     }
 
     pub fn get_ty_mut(&mut self) -> &mut Option<Ty> {
@@ -262,7 +274,7 @@ pub enum HirNodeKind {
     Block(Vec<HirNode>),
     Let(Vec<HirDecl>, Box<HirNode>),
     Fun(Vec<Param>, Box<HirNode>),
-    Apply(Box<HirNode>, Vec<Ty>, Vec<HirNode>),
+    Apply(Box<HirNode>, Vec<HirNode>),
     Typed(TypedHirNode),
 }
 
@@ -280,13 +292,9 @@ impl std::fmt::Display for HirNodeKind {
                 n,
                 map_join(els, ", ", |(n, el)| { format!("{}: {}", n, el) })
             ),
-            HirNodeKind::Apply(fun, ty_args, args) => {
+            HirNodeKind::Apply(fun, args) => {
                 let args = join(args, ", ");
-                if ty_args.len() == 0 {
-                    write!(f, "{}({})", fun, args)
-                } else {
-                    write!(f, "{}[{}]({})", fun, join(ty_args, ", "), args)
-                }
+                write!(f, "{}({})", fun, args)
             }
             HirNodeKind::Fun(params, body) => write!(
                 f,
@@ -340,11 +348,9 @@ impl ApplySubst for HirNodeKind {
                     .map(|(n, el)| (n, el.apply_subst(subst)))
                     .collect(),
             ),
-            HirNodeKind::Apply(fun, ty_args, args) => HirNodeKind::Apply(
-                Box::new(fun.apply_subst(subst)),
-                ty_args.apply_subst(subst),
-                args.apply_subst(subst),
-            ),
+            HirNodeKind::Apply(fun, args) => {
+                HirNodeKind::Apply(Box::new(fun.apply_subst(subst)), args.apply_subst(subst))
+            }
             HirNodeKind::Fun(params, body) => HirNodeKind::Fun(
                 params.into_iter().map(|p| p.apply_subst(subst)).collect(),
                 Box::new(body.apply_subst(subst)),

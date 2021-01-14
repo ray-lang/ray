@@ -1,6 +1,4 @@
-use crate::ast;
-use crate::sym;
-use crate::typing;
+use crate::{ast, sym};
 
 use std::collections::{HashMap, HashSet};
 

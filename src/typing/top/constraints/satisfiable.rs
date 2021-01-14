@@ -24,8 +24,6 @@ impl Satisfiable for EqConstraint {
     fn satisfied_by(self, _: &Solution, _: &Ctx) -> Result<(), InferError> {
         let EqConstraint(s, t) = self;
         if s != t {
-            println!("EqConstraint: s = {:?}", s);
-            println!("EqConstraint: t = {:?}", t);
             Err(InferError {
                 msg: format!("types `{}` and `{}` are not equal", s, t),
                 src: vec![],
@@ -40,10 +38,7 @@ impl Satisfiable for GenConstraint {
     fn satisfied_by(self, solution: &Solution, _: &Ctx) -> Result<(), InferError> {
         let GenConstraint(m, s, t) = self;
         let s = solution.get_ty(Ty::Var(s))?;
-        println!("s = {}", s);
-        println!("preds = {{{}}}", join(&solution.preds, ", "));
         let t = t.generalize(&m, &solution.preds);
-        println!("t = {}", t);
         if s != t {
             Err(InferError {
                 msg: format!("types `{}` and `{}` are not equal", s, t),
@@ -59,9 +54,7 @@ impl Satisfiable for InstConstraint {
     fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
         let InstConstraint(t, u) = self;
         let tyvars = t.free_vars().into_iter().cloned().collect::<Vec<_>>();
-        println!("pre-qualified: {}", t);
         let t = t.qualify_with_tyvars(&solution.preds, &tyvars);
-        println!("    qualified: {}", t);
         let u = solution.get_ty(u)?;
         if !ctx.instance_of(&t, &u) {
             Err(InferError {
@@ -129,7 +122,6 @@ impl Satisfiable for AssumeConstraint {
 
 impl Satisfiable for ConstraintKind {
     fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
-        println!("satisfied_by: {:?}", self);
         match self {
             ConstraintKind::Eq(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Gen(c) => c.satisfied_by(solution, ctx),

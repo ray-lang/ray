@@ -1,5 +1,4 @@
-use crate::ast::{Expr, Type};
-use crate::span::Span;
+use crate::{ast::Type, span::Span};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Name {

@@ -3,18 +3,15 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
 };
 
-use crate::{
-    typing::{
-        predicate::TyPredicate,
-        top::{
-            constraints::EqConstraint,
-            state::TyVarFactory,
-            traits::{Generalize, HasFreeVars, HasPredicates},
-        },
-        ty::{LiteralKind, Ty, TyVar},
-        ApplySubst, Ctx, Subst,
+use crate::typing::{
+    predicate::TyPredicate,
+    top::{
+        constraints::EqConstraint,
+        state::TyVarFactory,
+        traits::{Generalize, HasFreeVars, HasPredicates},
     },
-    utils::{join, map_join},
+    ty::{Ty, TyVar},
+    ApplySubst, Ctx, Subst,
 };
 
 use crate::typing::top::{
@@ -28,7 +25,7 @@ use super::{Solution, Solver};
 pub struct GreedySolver<'a> {
     ctx: &'a mut Ctx,
     subst: Subst,
-    skolems: Vec<(Vec<TyVar>, Vec<TyVar>)>,
+    skolems: Vec<(Vec<TyVar>, Vec<TyVar>, ConstraintInfo)>,
     assume_preds: Vec<(TyPredicate, ConstraintInfo)>,
     prove_preds: Vec<(TyPredicate, ConstraintInfo)>,
     generalized_preds: Vec<(TyPredicate, ConstraintInfo)>,
@@ -61,7 +58,11 @@ impl<'a> Solver for GreedySolver<'a> {
             ty_map,
             ..
         } = self;
+
+        // collect the type map of generalized types
         let ty_map = ty_map.into_iter().map(|(v, (t, _))| (v, t)).collect();
+
+        // collect and dedup all of the predicates
         let mut preds = prove_preds
             .into_iter()
             .chain(assume_preds.into_iter())
@@ -69,6 +70,7 @@ impl<'a> Solver for GreedySolver<'a> {
             .map(|(p, _)| p.apply_subst(&subst))
             .collect::<Vec<_>>();
         preds.dedup();
+
         Solution {
             subst,
             ty_map,
@@ -96,7 +98,7 @@ impl<'a> HasBasic for GreedySolver<'a> {
         self.constraints.pop_front()
     }
 
-    fn add_error(&mut self, info: ConstraintInfo) {
+    fn add_error(&mut self, _: ConstraintInfo) {
         todo!()
     }
 
@@ -275,66 +277,7 @@ impl<'a> HasState for GreedySolver<'a> {
     }
 
     fn add_skolems(&mut self, info: &ConstraintInfo, skolems: Vec<TyVar>, monos: Vec<TyVar>) {
-        self.skolems.push((skolems, monos));
-    }
-
-    fn check_skolems(&mut self) {
-        let xs = self.skolems.drain(..).collect::<Vec<_>>();
-        let list1 = xs
-            .into_iter()
-            .map(|(sk, monos)| {
-                (
-                    sk.into_iter()
-                        .map(|s| {
-                            let t = if let Some(t) = self.subst.get(&s) {
-                                t.clone()
-                            } else {
-                                Ty::Var(s.clone())
-                            };
-                            println!("({}, {})", s, t);
-                            (s, t)
-                        })
-                        .collect::<Vec<_>>(),
-                    monos,
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let (list2, errs) = list1
-            .into_iter()
-            .partition::<Vec<(Vec<(TyVar, Ty)>, Vec<TyVar>)>, _>(|(is, _)| {
-                is.iter().all(|(_, y)| y.is_tyvar())
-            });
-
-        println!("list2 = {:?}", list2);
-
-        if errs.len() != 0 {
-            println!("errs: {:?}", errs);
-        }
-
-        // let problems = list2.iter().map(||)
-
-        // let problems = filter ((>1) . length)
-        //             . groupBy ((==) `on` fst)
-        //             . sortBy  (compare `on` fst)
-        //             $ [ (i, info) | (pairs, (info, _)) <- list2, (_, TVar i) <- pairs ]
-        //     list3 = let is = concatMap (map fst) problems
-        //                 p (pairs, _) = null (ftv (map snd pairs) `intersect` is)
-        //             in filter p list2
-        // mapM_  (addLabeledError skolemVersusSkolemLabel . snd . head) problems
-
-        // -- escaping skolem constants
-        // list4 <- let op rest this@(pairs, (info, monos)) =
-        //                 do monos' <- applySubst monos
-        //                     case ftv monos' `intersect` ftv (map snd pairs) of
-        //                         []  -> return (this:rest)
-        //                         esc -> do addLabeledError escapingSkolemLabel (escapedSkolems esc info)
-        //                                 return rest
-        //         in foldM op [] list3
-
-        // -- store the remaining skolem constants (that are consistent with the current substitution).
-        // let new = [ (concatMap (ftv . snd) pairs, info, monos) | (pairs, (info, monos)) <- list4 ]
-        // setSkolems new
+        self.skolems.push((skolems, monos, info.clone()));
     }
 }
 
@@ -351,44 +294,36 @@ impl<'a> HasPredicates for GreedySolver<'a> {
         self.prove_preds.push((p, info));
     }
 
-    fn ctx_reduce(&mut self) {
-        for (p, _) in self.prove_preds.iter() {
-            println!("prove pred: {}", p);
-        }
-
-        for (p, _) in self.assume_preds.iter() {
-            println!("assume pred: {}", p);
-        }
-    }
-
     fn generalize_with_preds(&mut self, mono_tys: &Vec<Ty>, ty: Ty) -> Ty {
+        // get all of the predicates
         let p = self.prove_preds.drain(..).collect::<Vec<_>>();
-        let sub = self.get_subst();
-        println!("p: {}", map_join(&p, ", ", |(p, _)| p.to_string()));
         let q = self.generalized_preds.drain(..).collect::<Vec<_>>();
-        println!("q: {}", map_join(&q, ", ", |(p, _)| p.to_string()));
+
+        // collect the free variables
         let vs = ty
             .free_vars()
             .difference(&mono_tys.free_vars())
             .map(|&v| v)
             .collect::<HashSet<_>>();
-        println!("vs: {}", join(&vs, ", "));
+
+        // split the prove predicates into a set that do not
+        // contain the free variables and another that does
         let (a, b) = p
             .into_iter()
             .partition::<Vec<_>, _>(|(p, _)| !p.free_vars().is_disjoint(&vs));
-        println!("a: {}", map_join(&a, ", ", |(p, _)| p.to_string()));
-        println!("b: {}", map_join(&b, ", ", |(p, _)| p.to_string()));
+
+        // same but for the generalized predicates
         let c = q
             .into_iter()
             .filter(|(p, _)| !p.free_vars().is_disjoint(&vs))
             .collect::<Vec<_>>();
-        println!("c: {}", map_join(&c, ", ", |(p, _)| p.to_string()));
 
+        // re-add the ones that were split off
         self.prove_preds.extend(b);
         self.generalized_preds.extend(a.clone());
 
+        // collect all of the predicates and generalize the type
         let preds = a.into_iter().chain(c.into_iter()).map(|(p, _)| p).collect();
-        println!("preds: {}", join(&preds, ","));
         ty.generalize(&mono_tys, &preds)
     }
 }
@@ -399,9 +334,8 @@ mod greedy_solver_tests {
         top::{
             constraints::{EqConstraint, ImplicitConstraint},
             solvers::Solver,
-            state::TyVarFactory,
         },
-        ty::{Ty, TyVar},
+        ty::Ty,
         Ctx, InferError,
     };
 

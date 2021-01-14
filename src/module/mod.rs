@@ -1,9 +1,6 @@
-use crate::ast::Module;
-use crate::pathlib::FilePath;
-
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+
+use crate::{ast::Module, pathlib::FilePath};
 
 #[derive(Debug)]
 pub struct ModuleMap {

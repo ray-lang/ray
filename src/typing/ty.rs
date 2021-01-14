@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::BitOr,
-};
+use std::{collections::HashSet, ops::BitOr};
 
 use crate::{
     ast::{self, FnSig, Path},
@@ -13,21 +10,38 @@ use crate::{
 
 use super::{
     context::Ctx,
-    predicate::{PredicateEntails, TyPredicate},
+    predicate::TyPredicate,
     subst::{ApplySubst, Subst},
     top::{
         state::TyVarFactory,
-        traits::{FreezeVars, Generalize, HasFreeVars, Skolemize},
+        traits::{Generalize, HasFreeVars, Instantiate, Skolemize},
     },
     InferError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TyVar(pub String);
+pub struct TyVar(pub Path);
+
+impl<P> From<P> for TyVar
+where
+    P: Into<Path>,
+{
+    fn from(p: P) -> Self {
+        TyVar(p.into())
+    }
+}
 
 impl std::fmt::Display for TyVar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        if f.alternate() {
+            write!(f, "{}", self.0)
+        } else {
+            if let Some(name) = self.0.name() {
+                write!(f, "{}", name)
+            } else {
+                write!(f, "")
+            }
+        }
     }
 }
 
@@ -82,7 +96,6 @@ impl std::fmt::Display for LiteralKind {
 pub enum Ty {
     Never,
     Any,
-    Bound(TyVar),
     Var(TyVar),
     Union(Vec<Ty>),
     Func(Vec<Ty>, Box<Ty>),
@@ -97,7 +110,13 @@ impl std::fmt::Display for Ty {
         match self {
             Ty::Never => write!(f, "never"),
             Ty::Any => write!(f, "any"),
-            Ty::Bound(v) | Ty::Var(v) => write!(f, "{}", v),
+            Ty::Var(v) => {
+                if f.alternate() {
+                    write!(f, "{:#}", v)
+                } else {
+                    write!(f, "{}", v)
+                }
+            }
             Ty::Union(tys) => {
                 if tys.len() != 0 {
                     write!(f, "{}", join(tys, " | "))
@@ -137,7 +156,7 @@ impl ApplySubst for Ty {
     fn apply_subst(self, subst: &Subst) -> Ty {
         match self {
             Ty::Any | Ty::Never => self.clone(),
-            Ty::Bound(v) | Ty::Var(v) => subst.get_var(&v),
+            Ty::Var(v) => subst.get_var(&v),
             Ty::Union(tys) => {
                 let mut tys = tys.apply_subst(subst);
                 tys.dedup(); // remove any duplicates
@@ -213,16 +232,41 @@ impl HasFreeVars for Vec<Ty> {
     }
 }
 
+impl Instantiate for Ty {
+    fn instantiate(self, tf: &mut TyVarFactory) -> Ty {
+        match self {
+            Ty::Var(v) => Ty::Var(v),
+            Ty::Union(tys) => Ty::Union(tys.into_iter().map(|t| t.instantiate(tf)).collect()),
+            Ty::Func(p, r) => Ty::Func(
+                p.into_iter().map(|t| t.instantiate(tf)).collect(),
+                r.instantiate(tf),
+            ),
+            Ty::Cast(src, dst) => Ty::Cast(src.instantiate(tf), dst.instantiate(tf)),
+            Ty::Projection(s, tys) => {
+                Ty::Projection(s, tys.into_iter().map(|t| t.instantiate(tf)).collect())
+            }
+            Ty::Qualified(p, t) => Ty::Qualified(
+                p.into_iter().map(|t| t.instantiate(tf)).collect(),
+                t.instantiate(tf),
+            ),
+            Ty::All(xs, t) => {
+                let new_xs = (0..xs.len()).into_iter().map(|_| Ty::Var(tf.next()));
+                let sub = Subst::from_types(xs, new_xs);
+                t.apply_subst(&sub)
+            }
+            t @ Ty::Never | t @ Ty::Any => t,
+        }
+    }
+}
+
 impl Skolemize for Ty {
     fn skolemize(&self, sf: &mut TyVarFactory) -> (Self, Vec<TyVar>)
     where
         Self: Sized,
     {
-        println!("pre-skolemized: {}", self);
         let ty = self.clone();
         let prev_vars = ty.collect_tyvars();
         let ty = ty.instantiate(sf).generalize(&vec![], &vec![]);
-        println!("skolemized: {}", ty);
         let mut vars = ty.collect_tyvars();
         for v in prev_vars {
             if let Some(pos) = vars.iter().position(|x| x == &v) {
@@ -230,41 +274,6 @@ impl Skolemize for Ty {
             }
         }
         (ty, vars)
-    }
-}
-
-impl FreezeVars for Ty {
-    fn freeze_tyvars(self) -> Ty {
-        match self {
-            Ty::Var(v) => Ty::Bound(v),
-            Ty::Union(tys) => Ty::Union(tys.freeze_tyvars()),
-            Ty::Func(p, r) => Ty::Func(p.freeze_tyvars(), Box::new(r.freeze_tyvars())),
-            Ty::Projection(s, tys) => Ty::Projection(s, tys.freeze_tyvars()),
-            Ty::Cast(src, dst) => {
-                Ty::Cast(Box::new(src.freeze_tyvars()), Box::new(dst.freeze_tyvars()))
-            }
-            Ty::Qualified(p, t) => Ty::Qualified(p.freeze_tyvars(), Box::new(t.freeze_tyvars())),
-            Ty::All(xs, t) => Ty::All(xs, Box::new(t.freeze_tyvars())),
-            t @ _ => t,
-        }
-    }
-
-    fn unfreeze_tyvars(self) -> Self {
-        match self {
-            Ty::Bound(v) => Ty::Var(v),
-            Ty::Union(tys) => Ty::Union(tys.unfreeze_tyvars()),
-            Ty::Func(p, r) => Ty::Func(p.unfreeze_tyvars(), Box::new(r.unfreeze_tyvars())),
-            Ty::Projection(s, tys) => Ty::Projection(s, tys.unfreeze_tyvars()),
-            Ty::Cast(src, dst) => Ty::Cast(
-                Box::new(src.unfreeze_tyvars()),
-                Box::new(dst.unfreeze_tyvars()),
-            ),
-            Ty::Qualified(p, t) => {
-                Ty::Qualified(p.unfreeze_tyvars(), Box::new(t.unfreeze_tyvars()))
-            }
-            Ty::All(xs, t) => Ty::All(xs, Box::new(t.unfreeze_tyvars())),
-            t @ _ => t,
-        }
     }
 }
 
@@ -372,13 +381,14 @@ impl Ty {
                 }
             }
             ast::TypeKind::Generic(name) => {
-                let fqn = scope.append(name).to_string();
-                if let Some(ty) = ctx.get_var(&fqn) {
+                let fqn = scope.append(format!("'{}", name));
+                let fqn_string = fqn.to_string();
+                if let Some(ty) = ctx.get_var(&fqn_string) {
                     ty.clone()
                 } else {
-                    let tv = TyVar(fqn.clone());
+                    let tv = TyVar(fqn);
                     let ty = Ty::Var(tv);
-                    ctx.bind_var(fqn, ty.clone());
+                    ctx.bind_var(fqn_string, ty.clone());
                     ty
                 }
             }
@@ -570,37 +580,9 @@ impl Ty {
         match self {
             Ty::Never => Some(Path::from("never")),
             Ty::Any => Some(Path::from("any")),
-            Ty::Projection(s, _) => Some(Path::from(s)),
+            Ty::Projection(s, _) => Some(Path::from(s.clone())),
             Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.get_path(),
-            Ty::Bound(_) | Ty::Var(_) | Ty::Union(_) | Ty::Func(_, _) => None,
-        }
-    }
-
-    pub fn instantiate(self, tf: &mut TyVarFactory) -> Ty {
-        match self {
-            Ty::Var(v) => Ty::Var(v),
-            Ty::Bound(v) => Ty::Bound(v),
-            Ty::Union(tys) => Ty::Union(tys.into_iter().map(|t| t.instantiate(tf)).collect()),
-            Ty::Func(p, r) => Ty::Func(
-                p.into_iter().map(|t| t.instantiate(tf)).collect(),
-                Box::new(r.instantiate(tf)),
-            ),
-            Ty::Cast(src, dst) => {
-                Ty::Cast(Box::new(src.instantiate(tf)), Box::new(dst.instantiate(tf)))
-            }
-            Ty::Projection(s, tys) => {
-                Ty::Projection(s, tys.into_iter().map(|t| t.instantiate(tf)).collect())
-            }
-            Ty::Qualified(p, t) => Ty::Qualified(
-                p.into_iter().map(|t| t.instantiate(tf)).collect(),
-                Box::new(t.instantiate(tf)),
-            ),
-            Ty::All(xs, t) => {
-                let new_xs = (0..xs.len()).into_iter().map(|_| Ty::Var(tf.next()));
-                let sub = Subst::from_types(xs, new_xs);
-                t.apply_subst(&sub)
-            }
-            t @ Ty::Never | t @ Ty::Any => t,
+            Ty::Var(_) | Ty::Union(_) | Ty::Func(_, _) => None,
         }
     }
 
@@ -610,7 +592,7 @@ impl Ty {
                 let consts = xs
                     .iter()
                     .enumerate()
-                    .map(|(i, _)| Ty::Var(TyVar(format!("${}", i))))
+                    .map(|(i, _)| Ty::Var(TyVar::from(format!("${}", i))))
                     .collect::<Vec<_>>();
                 let sub = Subst::from_types(xs.clone(), consts);
                 Ty::All(xs, t).apply_subst(&sub)
@@ -665,118 +647,6 @@ impl Ty {
             t => t,
         }
     }
-
-    // pub fn instantiate(
-    //     self,
-    //     reverse_subst: &mut HashMap<TyVar, TyVar>,
-    //     tf: &mut TyVarFactory,
-    // ) -> Ty {
-    //     match self {
-    //         Ty::Var(v) => {
-    //             if let Some(v) = reverse_subst.get(&v) {
-    //                 Ty::Var(v.clone())
-    //             } else {
-    //                 let u = tf.next();
-    //                 reverse_subst.insert(v, u.clone());
-    //                 Ty::Var(u)
-    //             }
-    //         }
-    //         Ty::Union(tys) => Ty::Union(
-    //             tys.into_iter()
-    //                 .map(|t| t.instantiate(reverse_subst, tf))
-    //                 .collect(),
-    //         ),
-    //         Ty::Func(p, r) => Ty::Func(
-    //             p.into_iter()
-    //                 .map(|t| t.instantiate(reverse_subst, tf))
-    //                 .collect(),
-    //             Box::new(r.instantiate(reverse_subst, tf)),
-    //         ),
-    //         Ty::Cast(src, dst) => Ty::Cast(
-    //             Box::new(src.instantiate(reverse_subst, tf)),
-    //             Box::new(dst.instantiate(reverse_subst, tf)),
-    //         ),
-    //         Ty::Projection(s, tys) => Ty::Projection(
-    //             s,
-    //             tys.into_iter()
-    //                 .map(|t| t.instantiate(reverse_subst, tf))
-    //                 .collect(),
-    //         ),
-    //         Ty::Qualified(p, t) => Ty::Qualified(
-    //             p.into_iter()
-    //                 .map(|t| t.instantiate(reverse_subst, tf))
-    //                 .collect(),
-    //             Box::new(t.instantiate(reverse_subst, tf)),
-    //         ),
-    //         Ty::All(_, t) => t.instantiate(reverse_subst, tf),
-    //         t @ Ty::Never | t @ Ty::Any => t,
-    //     }
-    // }
-
-    // pub fn instance_of(&self, u: &Ty, ctx: &Ctx) -> bool {
-    //     println!("instance_of: {} < {}", self, u);
-    //     let t = self.clone().skolemize_freevars();
-    //     println!("skolemized free_vars: t = {}", t);
-    //     let (xs, t) = t.unpack_quantified_ty();
-    //     let u = u.clone().skolemize_freevars();
-    //     println!("skolemized free_vars: u = {}", u);
-    //     let args = (0..xs.len())
-    //         .into_iter()
-    //         .map(|i| Ty::Var(TyVar(format!("#{}", i))));
-    //     let sub = Subst::from_types(xs, args);
-    //     let (p, t) = t.apply_subst(&sub).unpack_qualified_ty();
-    //     println!("tmp vars: p = {:?}", p);
-    //     println!("tmp vars: t = {}", t);
-    //     let mut tf = TyVarFactory::new("@");
-    //     let (q, u) = u.instantiate(&mut tf).unpack_qualified_ty();
-    //     println!("instantiated: p = {:?}", p);
-    //     println!("instantiated: u = {}", u);
-    //     let sub = match t.mgu(&u) {
-    //         Ok(s) => s,
-    //         _ => return false,
-    //     };
-
-    //     println!("unify: sub = {}", sub);
-    //     q.apply_subst(&sub).iter().all(|q| p.entails(q, ctx))
-    // }
-
-    // pub fn instance_of(&self, r: &Ty) -> bool {
-    //     println!("instance_of: {} < {}", self, r);
-    //     match (self, r) {
-    //         (Ty::All(vs, t), _) => {
-    //             let free_vars = r.free_vars();
-    //             t.instance_of(r) && vs.iter().all(|v| !free_vars.contains(v))
-    //         }
-    //         (_, Ty::All(_, t)) => {
-    //             let sub = match self.mgu(t) {
-    //                 Ok(s) => s,
-    //                 _ => return false,
-    //             };
-    //             let t = t.clone().apply_subst(&sub);
-    //             self.instance_of(&t)
-    //         }
-    //         (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
-    //             p.iter()
-    //                 .collect::<HashSet<_>>()
-    //                 .is_superset(&q.iter().collect::<HashSet<_>>())
-    //                 && t.instance_of(u)
-    //         }
-    //         (Ty::Qualified(_, t), u) => t.instance_of(u),
-    //         (Ty::Func(p, q), Ty::Func(r, s)) if p.len() == r.len() => {
-    //             p.iter().zip(r.iter()).all(|(x, y)| x.instance_of(y)) && q.instance_of(s)
-    //         }
-    //         (Ty::Projection(s, xs), Ty::Projection(t, ys)) if s == t && xs.len() == ys.len() => {
-    //             xs.iter().zip(ys.iter()).all(|(x, y)| x.instance_of(y))
-    //         }
-    //         (Ty::Union(xs), Ty::Union(ys)) if xs.len() == ys.len() => {
-    //             xs.iter().zip(ys.iter()).all(|(x, y)| x.instance_of(y))
-    //         }
-    //         (Ty::Cast(a, b), Ty::Cast(c, d)) => a.instance_of(c) && b.instance_of(d),
-    //         (Ty::Var(_), Ty::Var(_)) => true,
-    //         _ => self == r,
-    //     }
-    // }
-
     pub fn nilable(t: Ty) -> Ty {
         Ty::Union(vec![t, Ty::nil()])
     }
@@ -816,7 +686,7 @@ impl Ty {
     }
 
     pub fn has_unknowns(&self) -> bool {
-        self.free_vars().len() != 0
+        self.collect_tyvars().len() != 0
     }
 
     pub fn unify_with<A, B, F, G>(
@@ -829,9 +699,9 @@ impl Ty {
         F: FnMut(Subst) -> A,
         G: Fn(&Ty, &Ty) -> B,
     {
-        println!("unify: {} & {}", self, other);
         match (self, other) {
             (_, Ty::Any) | (_, Ty::Never) => Ok((f(Subst::new()), vec![])),
+            // prioritize bound variables over free variables
             (Ty::Var(tv), t) | (t, Ty::Var(tv)) if self != other => {
                 if !t.free_vars().contains(&tv) {
                     Ok((f(subst! { tv.clone() => t.clone() }), vec![]))
@@ -865,8 +735,8 @@ impl Ty {
             (Ty::All(xs, s), Ty::All(ys, t)) if xs.len() == ys.len() => {
                 Ok((f(Subst::new()), vec![g(s, t)]))
             }
-            (Ty::All(xs, s), t) => s.unify_with(t, f, g),
-            (s, Ty::All(xs, t)) => s.unify_with(t, f, g),
+            (Ty::All(_, s), t) => s.unify_with(t, f, g),
+            (s, Ty::All(_, t)) => s.unify_with(t, f, g),
             _ => {
                 return Err(InferError {
                     msg: format!("type mismatch `{}` and `{}`", self, other),
@@ -903,7 +773,7 @@ impl Ty {
 
     pub fn is_func(&self) -> bool {
         match &self {
-            Ty::All(_, ty) => ty.is_func(),
+            Ty::All(_, ty) | Ty::Qualified(_, ty) => ty.is_func(),
             Ty::Func(..) => true,
             _ => false,
         }
@@ -951,7 +821,7 @@ impl Ty {
                 ty_vars.extend(dst.collect_tyvars());
                 ty_vars
             }
-            Ty::Bound(_) | Ty::Never | Ty::Any => vec![],
+            Ty::Never | Ty::Any => vec![],
         };
 
         vs.dedup();
@@ -964,7 +834,7 @@ impl Ty {
             Ty::Qualified(_, t) => t.get_ty_params(),
             Ty::Cast(_, dst) => dst.get_ty_params(),
             Ty::Union(t) | Ty::Projection(_, t) => t.iter().collect(),
-            Ty::Never | Ty::Any | Ty::Bound(_) | Ty::Var(_) | Ty::Func(_, _) => vec![],
+            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => vec![],
         }
     }
 
@@ -984,7 +854,7 @@ impl Ty {
             Ty::Qualified(_, t) => t.get_ty_param_at(idx),
             Ty::Cast(_, dst) => dst.get_ty_param_at(idx),
             Ty::Union(t) | Ty::Projection(_, t) => t.iter().nth(idx).unwrap(),
-            Ty::Never | Ty::Any | Ty::Bound(_) | Ty::Var(_) | Ty::Func(_, _) => {
+            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => {
                 panic!("no type parameters: {}", self)
             }
         }
@@ -1034,7 +904,7 @@ impl Ty {
 
     pub fn try_unpack_fn(
         self,
-    ) -> Result<(Option<Vec<TyVar>>, Vec<(String, Ty)>, Vec<Ty>, Ty), InferError> {
+    ) -> Result<(Option<Vec<TyVar>>, Vec<TyPredicate>, Vec<Ty>, Ty), InferError> {
         if !self.is_func() {
             return Err(InferError {
                 msg: format!("expected function type but found {}", self),
@@ -1044,26 +914,15 @@ impl Ty {
 
         match self {
             Ty::All(xs, ty) => {
-                let (_, k, p, r) = ty.try_unpack_fn()?;
-                Ok((Some(xs), k, p, r))
+                let (_, q, p, r) = ty.try_unpack_fn()?;
+                Ok((Some(xs), q, p, r))
+            }
+            Ty::Qualified(q, ty) => {
+                let (_, _, p, r) = ty.try_unpack_fn()?;
+                Ok((None, q, p, r))
             }
             Ty::Func(p, r) => Ok((None, vec![], p, *r)),
             _ => unreachable!("attempted to unpack non-function: {:?}", self),
         }
     }
 }
-
-// #[cfg(test)]
-// mod ty_tests {
-//     use super::{Ty, TyVar};
-
-//     #[test]
-//     fn test_instanceof() {
-//         let a = Ty::All(
-//             vec![tvar!(a)],
-//             Box::new(Ty::Projection(str!("A"), vec![Ty::Var(tvar!(a))])),
-//         );
-//         let b = Ty::Projection(str!("A"), vec![Ty::int()]);
-//         assert!(b.instance_of(&a))
-//     }
-// }

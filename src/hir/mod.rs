@@ -3,7 +3,7 @@ use itertools::Itertools;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
-    ast::{Decl, DeclKind, Expr, ExprKind, Literal, Module, Path, TypeParams},
+    ast::{Decl, DeclKind, Expr, ExprKind, Module, Path, TypeParams},
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
     span::Source,
@@ -17,9 +17,11 @@ use crate::{
 
 mod collect;
 mod convert;
+mod formalize;
 mod node;
 pub use collect::*;
 pub use convert::*;
+pub use formalize::*;
 pub use node::*;
 
 #[derive(Clone, Debug)]
@@ -266,9 +268,6 @@ impl HirModule {
 
                 let trait_scope = scope.append(name.clone());
                 let fqn = trait_scope.to_string();
-                println!("name: {}", name);
-                println!("fqn: {}", fqn);
-
                 let mut trait_ctx = ctx.clone();
                 let mut ty_vars = vec![];
                 for tp in ty_params.iter() {
@@ -287,7 +286,6 @@ impl HirModule {
                     }
                 }
 
-                let ty_param = ty_params[0].clone();
                 let trait_ty = Ty::Projection(fqn.clone(), ty_params);
 
                 let mut fields = vec![];
@@ -311,7 +309,7 @@ impl HirModule {
                     let ty = Ty::from_sig(func, &fn_scope, &decl.src.filepath, &mut fn_ctx, ctx)?;
                     let (mut q, ty) = ty.unpack_qualified_ty();
                     // add the trait type to the qualifiers
-                    q.insert(0, TyPredicate::Trait(ty_param.clone(), trait_ty.clone()));
+                    q.insert(0, TyPredicate::Trait(trait_ty.clone()));
                     let ty = ty
                         .qualify_with_tyvars(&q, &ty_vars.clone())
                         .quantify(ty_vars.clone());
@@ -413,16 +411,7 @@ impl HirModule {
                 let base_ty = ty_params[0].clone();
                 let impl_scope = scope.append(&base_ty);
                 let mut impl_ctx = ctx.clone();
-                println!("impl_scope: {}", impl_scope);
-                if is_extern {
-                    // if the impl is an extern, then we add all of the
-                    // trait's functions to the context
-                    // for (n, f) in trait_ty.fields {
-                    //     let name = trait_ty.path.append(n).to_string();
-                    //     let f = f.apply_subst(&sub);
-                    //     ctx.bind_var(name, f);
-                    // }
-                } else {
+                if !is_extern {
                     let mut impl_set = HashSet::new();
                     if let Some(funcs) = &imp.funcs {
                         for func in funcs {

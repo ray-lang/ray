@@ -233,7 +233,6 @@ impl BindingGroup {
         svar_factory: &mut TyVarFactory,
     ) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
         let info = self.info.clone();
-        println!("src: {:?}", info.src);
         let (env, lhs_aset, lhs_tree) = self.borrow();
 
         // Cl1 = A1 ≼ Σ;
@@ -348,7 +347,7 @@ mod binding_tests {
             },
             state::{TyEnv, TyVarFactory},
         },
-        ty::{Ty, TyVar},
+        ty::Ty,
     };
 
     use super::{BindingGroup, BindingGroupAnalysis};

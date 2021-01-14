@@ -12,7 +12,13 @@ use super::{
         constraints::tree::BottomUpWalk,
         solvers::{GreedySolver, Solver},
     },
+    ty::Ty,
+    ApplySubst,
 };
+
+mod formalize;
+
+pub use formalize::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InferError {
@@ -32,25 +38,36 @@ impl InferSystem {
         InferSystem { ctx }
     }
 
-    pub fn infer_ty(&mut self, ex: &HirNode) -> Result<(), Vec<InferError>> {
+    pub fn infer_ty(&mut self, ex: HirNode) -> Result<HirNode, Vec<InferError>> {
         let mono_tys = HashSet::new();
-        let (_, _, c) = ex.collect_constraints(&mono_tys, &mut self.ctx.tf_mut());
+        let (ex, _, c) = ex.collect_constraints(&mono_tys, &mut self.ctx.tf_mut());
         let constraints = c.spread().phase().flatten(BottomUpWalk);
-        println!("constraints: {:?}", constraints);
 
         let solver = GreedySolver::new(constraints, &mut self.ctx);
-        let (solution, constraints) = solver.solve();
+        let (mut solution, constraints) = solver.solve();
 
         // verify satisibility of the constraints using the solution
-        println!("subst = {:?}", solution.subst);
         let errs = solution.satisfies(constraints, &self.ctx);
 
-        println!("{:?}", solution);
+        // formalize any unbound type variables
+        let ex = ex.formalize(&mut solution);
+
+        // qualify all types in the substitution
+        for t in solution.subst.values_mut() {
+            if t.is_func() {
+                let tyvars = t.collect_tyvars();
+                let old_t = std::mem::replace(t, Ty::unit());
+                *t = old_t.qualify_with_tyvars(&solution.preds, &tyvars);
+            }
+        }
+
+        // apply the substitution
+        let ex = ex.apply_subst(&solution.subst);
 
         if errs.len() != 0 {
             Err(errs)
         } else {
-            Ok(())
+            Ok(ex)
         }
     }
 }

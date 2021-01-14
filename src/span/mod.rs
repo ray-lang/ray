@@ -2,14 +2,14 @@ use std::fmt;
 
 use crate::pathlib::FilePath;
 
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pos {
     pub lineno: usize,
     pub col: usize,
     pub offset: usize,
 }
 
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,

@@ -174,7 +174,7 @@ impl ModuleBuilder {
         let mut next_ast_id = 1_u64;
         let root_fp = self.get_root_module(input_path)?;
 
-        let module_path = module_path.unwrap_or_else(|| ast::Path::from(input_path));
+        let module_path = module_path.unwrap_or_else(|| ast::Path::from(input_path.clone()));
 
         // check if module has already been built
         if self.input_paths.contains(&module_path) {

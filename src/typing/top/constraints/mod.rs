@@ -295,13 +295,37 @@ impl std::fmt::Debug for ConstraintKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstraintInfo {
     pub src: Vec<Source>,
+    pub pre_ty: Option<Ty>,
+    pub preds: Vec<TyPredicate>,
 }
 
-impl PolymorphismInfo for ConstraintInfo {}
+impl PolymorphismInfo for ConstraintInfo {
+    fn inst_ty(self, ty: &Ty) -> Self
+    where
+        Self: Sized,
+    {
+        let mut info = self;
+        info.pre_ty = Some(ty.clone());
+        info
+    }
+
+    fn skol_ty(self, ty: &Ty) -> Self
+    where
+        Self: Sized,
+    {
+        let mut info = self;
+        info.pre_ty = Some(ty.clone());
+        info
+    }
+}
 
 impl ConstraintInfo {
     pub fn new() -> ConstraintInfo {
-        ConstraintInfo { src: vec![] }
+        ConstraintInfo {
+            src: vec![],
+            preds: vec![],
+            pre_ty: None,
+        }
     }
 }
 
