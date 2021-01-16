@@ -218,6 +218,47 @@ impl ImplicitConstraint {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+pub struct DefaultConstraint(Ty, Ty);
+
+impl Into<ConstraintKind> for DefaultConstraint {
+    fn into(self) -> ConstraintKind {
+        ConstraintKind::Default(self)
+    }
+}
+
+impl std::fmt::Debug for DefaultConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} defaults to {}", self.0, self.1)
+    }
+}
+
+impl DefaultConstraint {
+    pub fn new(t: Ty, u: Ty) -> Constraint {
+        Constraint::new(DefaultConstraint(t, u))
+    }
+
+    pub fn lift(aset: &AssumptionSet, env: &TyEnv) -> Vec<(String, Constraint)> {
+        let mut cl = vec![];
+        for (x, lhs_ty) in env.iter().sorted_by_key(|&(x, _)| x) {
+            if let Some(tys) = aset.get(x) {
+                for rhs_ty in tys.iter().sorted() {
+                    cl.push((
+                        rhs_ty.to_string(),
+                        DefaultConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
+                    ));
+                }
+            }
+        }
+
+        cl
+    }
+
+    pub fn unpack(self) -> (Ty, Ty) {
+        (self.0, self.1)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProveConstraint(TyPredicate);
 
 impl Into<ConstraintKind> for ProveConstraint {
@@ -274,6 +315,7 @@ pub enum ConstraintKind {
     Inst(InstConstraint),
     Skol(SkolConstraint),
     Implicit(ImplicitConstraint),
+    Default(DefaultConstraint),
     Prove(ProveConstraint),
     Assume(AssumeConstraint),
 }
@@ -286,6 +328,7 @@ impl std::fmt::Debug for ConstraintKind {
             ConstraintKind::Inst(c) => write!(f, "{:?}", c),
             ConstraintKind::Skol(c) => write!(f, "{:?}", c),
             ConstraintKind::Implicit(c) => write!(f, "{:?}", c),
+            ConstraintKind::Default(c) => write!(f, "{:?}", c),
             ConstraintKind::Prove(c) => write!(f, "{:?}", c),
             ConstraintKind::Assume(c) => write!(f, "{:?}", c),
         }
@@ -295,8 +338,6 @@ impl std::fmt::Debug for ConstraintKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstraintInfo {
     pub src: Vec<Source>,
-    pub pre_ty: Option<Ty>,
-    pub preds: Vec<TyPredicate>,
 }
 
 impl PolymorphismInfo for ConstraintInfo {
@@ -304,28 +345,20 @@ impl PolymorphismInfo for ConstraintInfo {
     where
         Self: Sized,
     {
-        let mut info = self;
-        info.pre_ty = Some(ty.clone());
-        info
+        self
     }
 
     fn skol_ty(self, ty: &Ty) -> Self
     where
         Self: Sized,
     {
-        let mut info = self;
-        info.pre_ty = Some(ty.clone());
-        info
+        self
     }
 }
 
 impl ConstraintInfo {
     pub fn new() -> ConstraintInfo {
-        ConstraintInfo {
-            src: vec![],
-            preds: vec![],
-            pre_ty: None,
-        }
+        ConstraintInfo { src: vec![] }
     }
 }
 
@@ -344,7 +377,9 @@ impl std::fmt::Debug for Constraint {
 impl HasFreeVars for Constraint {
     fn free_vars(&self) -> HashSet<&TyVar> {
         match &self.kind {
-            ConstraintKind::Eq(EqConstraint(s, t)) | ConstraintKind::Inst(InstConstraint(s, t)) => {
+            ConstraintKind::Eq(EqConstraint(s, t))
+            | ConstraintKind::Default(DefaultConstraint(s, t))
+            | ConstraintKind::Inst(InstConstraint(s, t)) => {
                 s.free_vars().union(&t.free_vars()).map(|&v| v).collect()
             }
             ConstraintKind::Gen(GenConstraint(m, s, t)) => {
@@ -401,6 +436,9 @@ impl ApplySubst for Constraint {
                 t.apply_subst(subst),
             )
             .into(),
+            ConstraintKind::Default(DefaultConstraint(s, t)) => {
+                DefaultConstraint(s.apply_subst(subst), t.apply_subst(subst)).into()
+            }
             ConstraintKind::Implicit(ImplicitConstraint(vs, s, t)) => ImplicitConstraint(
                 vs.apply_subst(subst),
                 s.apply_subst(subst),

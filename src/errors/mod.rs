@@ -1,10 +1,10 @@
 use crate::span::Source;
 
 use colored::*;
-use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+use std::{fmt, num::ParseIntError};
 
 pub type RayResult<T> = Result<T, RayError>;
 
@@ -160,6 +160,17 @@ impl From<io::Error> for RayError {
             msg: err.to_string(),
             src: vec![],
             kind: RayErrorKind::IO,
+        }
+    }
+}
+
+impl From<ParseIntError> for RayError {
+    fn from(err: ParseIntError) -> Self {
+        // todo
+        RayError {
+            msg: err.to_string(),
+            src: vec![],
+            kind: RayErrorKind::Compile,
         }
     }
 }

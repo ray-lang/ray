@@ -48,6 +48,8 @@ pub trait HasSubst {
     fn make_consistent(&mut self);
 
     fn subst_var(&mut self, v: TyVar, ty: Ty);
+
+    fn get_var(&self, v: &Ty) -> Ty;
 }
 
 pub trait HasState {

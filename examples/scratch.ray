@@ -1,10 +1,4 @@
+fn foo(x) => x + 1
 
-// fn eq2(x: 'a, y: 'a) -> 'a where Add['a] {
-//     x + y
-// }
-
-fn eq2(x, y) => x == y
-
-// eq2("s", "foo")
-eq2(1i8, 2i8)
-eq2(1i16, 2i16)
+a = 1
+foo(1i32)

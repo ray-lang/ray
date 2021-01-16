@@ -26,6 +26,7 @@ pub struct GreedySolver<'a> {
     ctx: &'a mut Ctx,
     subst: Subst,
     skolems: Vec<(Vec<TyVar>, Vec<TyVar>, ConstraintInfo)>,
+    original_preds: Vec<TyPredicate>,
     assume_preds: Vec<(TyPredicate, ConstraintInfo)>,
     prove_preds: Vec<(TyPredicate, ConstraintInfo)>,
     generalized_preds: Vec<(TyPredicate, ConstraintInfo)>,
@@ -40,6 +41,7 @@ impl<'a> GreedySolver<'a> {
             constraints: constraints.into(),
             subst: Subst::new(),
             skolems: vec![],
+            original_preds: vec![],
             assume_preds: vec![],
             prove_preds: vec![],
             generalized_preds: vec![],
@@ -52,6 +54,7 @@ impl<'a> Solver for GreedySolver<'a> {
     fn solution(self) -> Solution {
         let GreedySolver {
             subst,
+            original_preds,
             assume_preds,
             prove_preds,
             generalized_preds,
@@ -63,12 +66,16 @@ impl<'a> Solver for GreedySolver<'a> {
         let ty_map = ty_map.into_iter().map(|(v, (t, _))| (v, t)).collect();
 
         // collect and dedup all of the predicates
-        let mut preds = prove_preds
-            .into_iter()
-            .chain(assume_preds.into_iter())
-            .chain(generalized_preds.into_iter())
-            .map(|(p, _)| p.apply_subst(&subst))
-            .collect::<Vec<_>>();
+        let mut preds = original_preds;
+        preds.extend(
+            prove_preds
+                .into_iter()
+                .chain(assume_preds.into_iter())
+                .chain(generalized_preds.into_iter())
+                .map(|(p, _)| p),
+        );
+
+        preds.sort();
         preds.dedup();
 
         Solution {
@@ -113,6 +120,16 @@ impl<'a> HasSubst for GreedySolver<'a> {
         let prove_preds = std::mem::take(&mut self.prove_preds);
         let assume_preds = std::mem::take(&mut self.assume_preds);
         let generalized_preds = std::mem::take(&mut self.generalized_preds);
+
+        self.original_preds
+            .extend(prove_preds.iter().map(|(p, _)| p.clone()));
+        self.original_preds
+            .extend(assume_preds.iter().map(|(p, _)| p.clone()));
+        self.original_preds
+            .extend(generalized_preds.iter().map(|(p, _)| p.clone()));
+        self.original_preds.sort();
+        self.original_preds.dedup();
+
         self.prove_preds = prove_preds
             .into_iter()
             .map(|(p, i)| (p.apply_subst(&self.subst), i))
@@ -153,86 +170,6 @@ impl<'a> HasSubst for GreedySolver<'a> {
             self.add_constraint(c);
         }
         added
-
-        // match (a, b) {
-        //     (Ty::Literal(LiteralKind::Int, v), t) | (t, Ty::Literal(LiteralKind::Int, v))
-        //         if t.is_int_ty() =>
-        //     {
-        //         let mut added_constraints = false;
-        //         let mut sub = self.subst.clone();
-        //         sub.union_inplace(subst! { v.clone() => t.clone() }, |x, y| {
-        //             added_constraints = added_constraints || self.unify_terms(x, y, info);
-        //         });
-        //         self.subst = sub;
-        //         added_constraints
-        //     }
-        //     (Ty::Literal(LiteralKind::Float, v), t) | (t, Ty::Literal(LiteralKind::Float, v))
-        //         if t.is_float_ty() =>
-        //     {
-        //         let mut added_constraints = false;
-        //         let mut sub = self.subst.clone();
-        //         sub.union_inplace(subst! { v.clone() => t.clone() }, |x, y| {
-        //             added_constraints = added_constraints || self.unify_terms(x, y, info);
-        //         });
-        //         self.subst = sub;
-        //         added_constraints
-        //     }
-        //     (Ty::Var(tv), t) | (t, Ty::Var(tv)) if a != b => {
-        //         let mut added_constraints = false;
-        //         if !t.free_vars().contains(&tv) {
-        //             let mut sub = self.subst.clone();
-        //             sub.union_inplace(subst! { tv.clone() => t.clone() }, |x, y| {
-        //                 added_constraints = added_constraints || self.unify_terms(x, y, info);
-        //             });
-        //             self.subst = sub;
-        //         }
-        //         added_constraints
-        //     }
-        //     (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-        //         let mut added_constraints = false;
-        //         for (x, y) in s.iter().zip(t.iter()).rev() {
-        //             self.add_constraint(
-        //                 EqConstraint::new(x.clone(), y.clone()).with_info(info.clone()),
-        //             );
-        //             added_constraints = true;
-        //         }
-        //         added_constraints
-        //     }
-        //     (Ty::Func(r, s), Ty::Func(t, u)) if r.len() == t.len() => {
-        //         self.add_constraint(
-        //             EqConstraint::new(s.as_ref().clone(), u.as_ref().clone())
-        //                 .with_info(info.clone()),
-        //         );
-        //         for (x, y) in r.iter().zip(t.iter()).rev() {
-        //             self.add_constraint(
-        //                 EqConstraint::new(x.clone(), y.clone()).with_info(info.clone()),
-        //             )
-        //         }
-        //         true
-        //     }
-        //     (Ty::Qualified(p, s), Ty::Qualified(q, t)) if p == q => {
-        //         self.add_constraint(
-        //             EqConstraint::new(s.as_ref().clone(), t.as_ref().clone())
-        //                 .with_info(info.clone()),
-        //         );
-        //         true
-        //     }
-        //     (Ty::Qualified(_, s), t) => self.unify_terms(s, t, info),
-        //     (s, Ty::Qualified(_, t)) => self.unify_terms(s, t, info),
-        //     (Ty::All(xs, s), Ty::All(ys, t)) if xs.len() == ys.len() => {
-        //         self.add_constraint(
-        //             EqConstraint::new(s.as_ref().clone(), t.as_ref().clone())
-        //                 .with_info(info.clone()),
-        //         );
-        //         true
-        //     }
-        //     (Ty::All(_, s), t) => self.unify_terms(s, t, info),
-        //     (s, Ty::All(_, t)) => self.unify_terms(s, t, info),
-        //     _ => false, // return Err(InferError {
-        //                 //     msg: format!("type mismatch `{}` and `{}`", a, b),
-        //                 //     src: vec![],
-        //                 // })
-        // }
     }
 
     fn make_consistent(&mut self) {
@@ -241,6 +178,10 @@ impl<'a> HasSubst for GreedySolver<'a> {
 
     fn subst_var(&mut self, v: TyVar, ty: Ty) {
         self.subst.insert(v, ty);
+    }
+
+    fn get_var(&self, v: &Ty) -> Ty {
+        v.clone().apply_subst(&self.subst)
     }
 }
 

@@ -15,7 +15,7 @@ pub struct Span {
     pub end: Pos,
 }
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Source {
     pub filepath: FilePath,
     pub span: Option<Span>,

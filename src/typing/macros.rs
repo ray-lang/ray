@@ -113,33 +113,3 @@ macro_rules! mkexpr {
         $crate::hir::HirNode::new($crate::hir::HirNodeKind::Var(stringify!($x).to_string()))
     };
 }
-
-#[cfg(test)]
-mod test {
-
-    #[test]
-    fn test_mkexpr_macro() {
-        let ex = mkexpr! {
-            malloc[('v a)](1)
-        };
-        println!("{:#?}", ex);
-
-        let ex = mkexpr! {
-            let i = (malloc[int](1)) in (nil)
-        };
-        println!("{:#?}", ex);
-
-        let ex = mkexpr! {
-            let malloc = (fn (size) => {()}) in (())
-        };
-        println!("{:#?}", ex);
-
-        let ex = mkexpr! {
-            let malloc = (fn (size) => {
-                let ptr = (int_to_ptr[('v a)](heap)) in
-                (ptr)
-            }) in (())
-        };
-        println!("{:#?}", ex);
-    }
-}

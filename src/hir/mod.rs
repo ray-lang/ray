@@ -198,6 +198,7 @@ impl HirModule {
                 let struct_ty = Ty::Projection(
                     fqn.clone(),
                     ty_vars.iter().map(|t| Ty::Var(t.clone())).collect(),
+                    field_tys.clone(),
                 );
                 ctx.add_struct_ty(
                     name,
@@ -238,7 +239,7 @@ impl HirModule {
             DeclKind::Trait(tr) => {
                 let ty_span = tr.ty.span.unwrap();
                 let (name, ty_params) = match Ty::from_ast_ty(&tr.ty.kind, scope, ctx) {
-                    Ty::Projection(n, tp) => (n, tp),
+                    Ty::Projection(n, tp, _) => (n, tp),
                     t @ _ => {
                         return Err(RayError {
                             msg: format!(
@@ -286,7 +287,7 @@ impl HirModule {
                     }
                 }
 
-                let trait_ty = Ty::Projection(fqn.clone(), ty_params);
+                let trait_ty = Ty::Projection(fqn.clone(), ty_params, vec![]);
 
                 let mut fields = vec![];
                 for func in tr.funcs.iter() {
@@ -339,7 +340,7 @@ impl HirModule {
             }
             DeclKind::Impl(imp) => {
                 let (trait_name, ty_params) = match Ty::from_ast_ty(&imp.ty.kind, scope, ctx) {
-                    Ty::Projection(name, ty_params) => (name, ty_params),
+                    Ty::Projection(name, ty_params, _) => (name, ty_params),
                     t => {
                         return Err(RayError {
                             msg: format!("`{}` is not a valid trait", t),

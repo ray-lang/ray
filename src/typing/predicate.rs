@@ -5,7 +5,6 @@ use crate::{
     errors::{RayError, RayErrorKind},
     pathlib::FilePath,
     span::Source,
-    utils::join,
 };
 
 use super::{
@@ -30,8 +29,8 @@ pub enum TyPredicate {
 impl std::fmt::Debug for TyPredicate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TyPredicate::Trait(p) => write!(f, "{:?}", p),
-            TyPredicate::Literal(t, k) => write!(f, "{:?} is {:?}", t, k),
+            TyPredicate::Trait(p) => write!(f, "{}", p),
+            TyPredicate::Literal(t, k) => write!(f, "{} is {}", t, k),
         }
     }
 }
@@ -96,7 +95,10 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
                 // subtraits of the trait type
                 let subtraits = ctx.get_subtraits(trait_ty);
                 if subtraits.into_iter().any(|s| {
-                    let s = s.clone().set_ty_params(vec![base_ty.clone()]);
+                    let s = s.clone();
+                    let tv = s.get_ty_param_at(0).clone().as_tyvar();
+                    let sub = subst! { tv => base_ty.clone() };
+                    let s = s.apply_subst(&sub);
                     let p = TyPredicate::Trait(s);
                     self.entails(&p, ctx)
                 }) {
@@ -142,7 +144,7 @@ impl TyPredicate {
         ctx: &mut Ctx,
     ) -> Result<TyPredicate, RayError> {
         let (s, v) = match Ty::from_ast_ty(&q.kind, scope, ctx) {
-            Ty::Projection(s, v) => (s, v),
+            Ty::Projection(s, v, _) => (s, v),
             _ => {
                 return Err(RayError {
                     msg: str!("qualifier must be a trait type"),
@@ -200,5 +202,23 @@ impl TyPredicate {
         let sub = subst! { ty_param => ty_arg };
         let trait_ty = trait_ty.apply_subst(&sub);
         Ok(TyPredicate::Trait(trait_ty))
+    }
+
+    pub fn is_int_trait(&self) -> bool {
+        matches!(self, TyPredicate::Trait(Ty::Projection(s, ..)) if s == "core::Int")
+    }
+
+    pub fn is_float_trait(&self) -> bool {
+        matches!(self, TyPredicate::Trait(Ty::Projection(s, ..)) if s == "core::Float")
+    }
+
+    pub fn desc(&self) -> String {
+        match self {
+            TyPredicate::Trait(t) => format!("implements {}", t),
+            TyPredicate::Literal(_, k) => match k {
+                LiteralKind::Int => str!("is an integer type"),
+                LiteralKind::Float => str!("is a float type"),
+            },
+        }
     }
 }

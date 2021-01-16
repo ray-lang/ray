@@ -10,23 +10,23 @@ macro_rules! debug {
 
 macro_rules! variant {
     // Internal Variants
-    (@ANON_TUPLE [$(,)*], [$($ids:ident)*], $($p:ident)::+, $t:expr) => {
+    (@tuple [$(,)*], [$($ids:ident)*], $($p:ident)::+, $t:expr) => {
         match $t {
             $($p)::+ ( $($ids),* ) => Some(( $($ids),* )),
             _ => None,
         }
     };
-    (@ANON_TUPLE [$(,)*], [$($ids:ident)*], $($p:ident)::+, $t:expr, $else_branch:expr) => {
+    (@tuple [$(,)*], [$($ids:ident)*], $($p:ident)::+, $t:expr, $else_branch:expr) => {
         match $t {
             $($p)::+ ( $($ids),* ) => ( $($ids),* ),
             _ => $else_branch,
         }
     };
-    (@ANON_TUPLE [_], [$($ids:ident)*], $($p:ident)::+, $t:expr $(, $else_branch:expr)?) => {
-        variant!(@ANON_TUPLE [], [$($ids)* x], $($p)::+, $t $(, $else_branch)?)
+    (@tuple [_], [$($ids:ident)*], $($p:ident)::+, $t:expr $(, $else_branch:expr)?) => {
+        variant!(@tuple [], [$($ids)* x], $($p)::+, $t $(, $else_branch)?)
     };
-    (@ANON_TUPLE [_, $($more:tt)*], [$($ids:ident)*], $($p:ident)::+, $t:expr $(, $else_branch:expr)?) => {
-        variant!(@ANON_TUPLE [$($more)*], [$($ids)* x], $($p)::+, $t $(, $else_branch)?)
+    (@tuple [_, $($more:tt)*], [$($ids:ident)*], $($p:ident)::+, $t:expr $(, $else_branch:expr)?) => {
+        variant!(@tuple [$($more)*], [$($ids)* x], $($p)::+, $t $(, $else_branch)?)
     };
 
     // Struct Variants
@@ -39,7 +39,7 @@ macro_rules! variant {
 
     // Tuple Variants
     ($($p:ident)::+ ( $($its:tt)* ) , $t:expr $(, else $else_branch:expr )?) => {
-        variant!(@ANON_TUPLE [$($its)*], [], $($p)::+, $t $(, $else_branch)?)
+        variant!(@tuple [$($its)*], [], $($p)::+, $t $(, $else_branch)?)
     };
 }
 

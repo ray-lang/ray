@@ -3,7 +3,7 @@ use crate::span::Span;
 
 use std::fmt;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub enum IntTy {
     Int,
     Int8,
@@ -38,7 +38,7 @@ impl fmt::Display for IntTy {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub enum FloatTy {
     Float32,
     Float64,
@@ -55,7 +55,7 @@ impl fmt::Display for FloatTy {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub enum TypeKind {
     Unknown,
     Basic {
@@ -279,7 +279,7 @@ impl fmt::Display for TypeKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct TypeParams {
     pub tys: Vec<Type>,
     pub lb_span: Span,
@@ -310,7 +310,7 @@ impl fmt::Display for TypeParams {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash)]
+#[derive(Clone, Debug, Eq, PartialOrd, Ord, Hash)]
 pub struct Type {
     pub kind: TypeKind,
     pub span: Option<Span>,
@@ -415,6 +415,7 @@ impl Type {
             | TypeKind::Float(..) => vec![],
         };
 
+        v.sort();
         v.dedup();
         v
     }
@@ -483,6 +484,7 @@ impl Type {
             TypeKind::Generic { .. } => unreachable!(),
         };
 
+        v.sort();
         v.dedup();
         v
     }

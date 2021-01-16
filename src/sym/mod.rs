@@ -1,6 +1,6 @@
 use crate::ast;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Symbol {
     name: String,
     ty: ast::Type,

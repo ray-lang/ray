@@ -47,6 +47,47 @@ impl Solution {
         c.satisfied_by(self, ctx)
     }
 
+    pub fn formalize_types(&mut self) {
+        // formalize any unbound type variables
+        for ty in self.ty_map.values() {
+            let ty: Ty = ty.clone().apply_subst(&self.subst);
+            if let Ok((_, _, param_tys, ret_ty)) = ty.try_borrow_fn() {
+                // bind all type variables in the function type
+                let mut c = 'a' as u8;
+                let mut subst = Subst::new();
+                for p in param_tys.iter().chain(std::iter::once(ret_ty)) {
+                    if let Ty::Var(v) = p {
+                        if !subst.contains_key(v) {
+                            let u = Ty::Var(TyVar(format!("'{}", c as char).into()));
+                            subst.insert(v.clone(), u);
+                            c += 1;
+                        }
+                    }
+                }
+
+                // add the substition to the solution
+                self.subst.extend(subst);
+            } else if let Ty::All(_, t) = ty {
+                let mut subst = Subst::new();
+                let (preds, ty) = t.unpack_qualified_ty();
+                for p in preds {
+                    if let Ty::Var(v) = &ty {
+                        if p.is_int_trait() {
+                            subst.insert(v.clone(), Ty::int());
+                            break;
+                        } else if p.is_float_trait() {
+                            subst.insert(v.clone(), Ty::float());
+                            break;
+                        }
+                    }
+                }
+
+                // add the substition to the solution
+                self.subst.extend(subst);
+            }
+        }
+    }
+
     pub fn get_ty(&self, r: Ty) -> Result<Ty, InferError> {
         Ok(if let Ty::Var(v) = r {
             let r = self.ty_map.get(&v);
@@ -90,18 +131,27 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         // equality constraints that unify with the default type of the literal
         let mut cs = vec![];
         for (pred, info) in self.get_preds() {
-            if let TyPredicate::Literal(t, k) = pred {
-                if t.is_tyvar() {
-                    cs.push(
-                        EqConstraint::new(
-                            t.clone(),
-                            match k {
-                                LiteralKind::Int => Ty::int(),
-                                LiteralKind::Float => Ty::float(),
-                            },
-                        )
-                        .with_info(info.clone()),
-                    );
+            if let TyPredicate::Trait(t) = pred {
+                match t {
+                    Ty::Projection(x, p, _) => {
+                        if x == "core::Int" || x == "core::Float" {
+                            let base_ty = p[0].clone();
+                            if base_ty.is_tyvar() {
+                                cs.push(
+                                    EqConstraint::new(
+                                        p[0].clone(),
+                                        if x == "core::Int" {
+                                            Ty::int()
+                                        } else {
+                                            Ty::float()
+                                        },
+                                    )
+                                    .with_info(info.clone()),
+                                );
+                            }
+                        }
+                    }
+                    _ => continue,
                 }
             }
         }
@@ -175,6 +225,15 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                     )
                     .with_info(info),
                 ]);
+            }
+            ConstraintKind::Default(c) => {
+                let (ty, default_ty) = c.unpack();
+                if let Ty::Var(_) = self.get_var(&ty) {
+                    // unify terms if `ty` has still not been unified
+                    if self.unify_terms(&ty, &default_ty, &info) {
+                        return;
+                    }
+                }
             }
             ConstraintKind::Prove(c) => self.prove_pred(c.get_predicate(), info),
             ConstraintKind::Assume(c) => self.assume_pred(c.get_predicate(), info),

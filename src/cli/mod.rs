@@ -30,7 +30,7 @@ pub struct Cli {
         possible_values = &["off", "error", "warn", "info", "debug"],
         global = true
     )]
-    log_level: log::Level,
+    log_level: log::LevelFilter,
 
     #[structopt(
         long,
@@ -59,6 +59,9 @@ impl<E: Error> From<E> for CmdError {
 }
 
 pub fn run() {
+    // get the subcommand
+    let cli: Cli = Cli::from_args();
+
     // set up logging
     fern::Dispatch::new()
         .format(move |out, message, record| {
@@ -78,13 +81,10 @@ pub fn run() {
                 message
             ))
         })
-        .level(log::LevelFilter::Debug)
+        .level(cli.log_level)
         .chain(io::stderr())
         .apply()
         .unwrap();
-
-    // get the subcommand
-    let cli: Cli = Cli::from_args();
 
     // get the ray_path
     let ray_path = if let Some(p) = cli.ray_path {

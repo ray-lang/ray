@@ -599,7 +599,9 @@ dependencies = [
  "lang-c",
  "log",
  "pprof",
+ "quote",
  "structopt",
+ "syn",
 ]
 
 [[package]]

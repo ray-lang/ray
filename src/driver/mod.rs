@@ -1,6 +1,6 @@
 use crate::{
     errors::{RayError, RayErrorKind},
-    hir,
+    hir, lir,
     pathlib::FilePath,
     sema,
     typing::{Ctx, InferSystem},
@@ -67,35 +67,9 @@ impl Driver {
             }
         }
 
-        // let mut ctx = mk_ctx! {
-        // * => Ty::All(vec![TyVar(str!("core::deref::T"))],
-        //     Box::new(Ty::Func(vec![
-        //         Ty::Projection(str!("Ptr"), vec![Ty::Var(TyVar(str!("core::deref::T")))])
-        //     ], Box::new(Ty::Var(TyVar(str!("core::deref::T"))))))
-        // ),
-        // extern fn malloc[T](size: int) -> *T
-        // malloc => Ty::All(vec![TyVar(str!("core::malloc::T"))],
-        //     Box::new(Ty::Func(vec![
-        //         Ty::Projection(str!("Ptr"), vec![Ty::Var(TyVar(str!("core::malloc::T")))])
-        //     ], Box::new(Ty::Var(TyVar(str!("core::malloc::T"))))))
-        // ),
-        // };
-        // add_binops!(
-        //     ctx,
-        //     [
-        //         "+", "-", "*", "/", "%", "**", ">>", "<<", "&", "|", "^", "==", "!=", ">", "<",
-        //         ">=", "<="
-        //     ],
-        //     [int, i8, i16, i32, i64, i128, uint, u8, u16, u32, u64, u128, float, f32, f64, f128]
-        // );
-
-        // add_binops!(ctx, ["+"], [int]);
-
-        // add_binops!(ctx, ["&&", "||"], [bool]);
-
-        // let m = mod_builder.modules.get_mut(&mod_path).unwrap();
         let mut ctx = Ctx::new();
         let hir_mod = hir::HirModule::from_ast_module(&mod_path, &mod_builder.modules, &mut ctx)?;
+        log::debug!("{}", hir_mod.root);
         let mut inf = InferSystem::new(ctx);
         let root = match inf.infer_ty(hir_mod.root) {
             Ok(n) => n,
@@ -111,15 +85,18 @@ impl Driver {
             }
         };
 
+        log::debug!("{}", root);
+
         if options.no_compile {
             return Ok(());
         }
 
         // generate IR
-        // let prog = lir::gen()?;
+        let mut prog = lir::Program::new(mod_path);
+        prog.gen(root)?;
+        eprintln!("{}", prog);
 
         // compile to asm
-
         Ok(())
 
         // parseOpts := &parse.ParseOptions{

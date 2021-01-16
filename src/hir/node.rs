@@ -322,7 +322,7 @@ impl std::fmt::Display for HirNodeKind {
                 if b.len() == 0 {
                     write!(f, "()")
                 } else if b.len() == 1 {
-                    write!(f, "{{{}}}", join(b, ", "))
+                    write!(f, "{{ {} }}", join(b, ", "))
                 } else {
                     write!(f, "{{\n{}\n}}", indent(join(b, "\n"), 2))
                 }

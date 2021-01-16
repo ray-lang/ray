@@ -173,10 +173,13 @@ impl Ctx {
                 p.iter().zip(r.iter()).all(|(x, y)| self.instance_of(x, y))
                     && self.instance_of(q, s)
             }
-            (Ty::Projection(s, xs), Ty::Projection(t, ys)) if s == t && xs.len() == ys.len() => xs
-                .iter()
-                .zip(ys.iter())
-                .all(|(x, y)| self.instance_of(x, y)),
+            (Ty::Projection(s, xs, _), Ty::Projection(t, ys, _))
+                if s == t && xs.len() == ys.len() =>
+            {
+                xs.iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| self.instance_of(x, y))
+            }
             (Ty::Union(xs), Ty::Union(ys)) if xs.len() == ys.len() => xs
                 .iter()
                 .zip(ys.iter())

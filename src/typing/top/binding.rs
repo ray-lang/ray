@@ -221,6 +221,7 @@ impl BindingGroup {
         // if both are empty or lhs is not empty and rhs is empty do nothing
 
         self.info.src.extend(rhs_info.src);
+        self.info.src.sort();
         self.info.src.dedup();
     }
 

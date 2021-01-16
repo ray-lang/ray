@@ -1,19 +1,16 @@
-use crate::{
-    typing::{
-        predicate::PredicateEntails,
-        top::{
-            solvers::Solution,
-            traits::{Generalize, HasFreeVars},
-        },
-        ty::Ty,
-        ApplySubst, Ctx, InferError,
+use crate::typing::{
+    predicate::PredicateEntails,
+    top::{
+        solvers::Solution,
+        traits::{Generalize, HasFreeVars},
     },
-    utils::join,
+    ty::Ty,
+    ApplySubst, Ctx, InferError,
 };
 
 use super::{
-    AssumeConstraint, Constraint, ConstraintKind, EqConstraint, GenConstraint, ImplicitConstraint,
-    InstConstraint, ProveConstraint, SkolConstraint,
+    AssumeConstraint, Constraint, ConstraintKind, DefaultConstraint, EqConstraint, GenConstraint,
+    ImplicitConstraint, InstConstraint, ProveConstraint, SkolConstraint,
 };
 
 pub trait Satisfiable {
@@ -24,6 +21,11 @@ impl Satisfiable for EqConstraint {
     fn satisfied_by(self, _: &Solution, _: &Ctx) -> Result<(), InferError> {
         let EqConstraint(s, t) = self;
         if s != t {
+            log::debug!(
+                "equality constraint not satisified for types {} and {}",
+                s,
+                t
+            );
             Err(InferError {
                 msg: format!("types `{}` and `{}` are not equal", s, t),
                 src: vec![],
@@ -37,9 +39,19 @@ impl Satisfiable for EqConstraint {
 impl Satisfiable for GenConstraint {
     fn satisfied_by(self, solution: &Solution, _: &Ctx) -> Result<(), InferError> {
         let GenConstraint(m, s, t) = self;
-        let s = solution.get_ty(Ty::Var(s))?;
-        let t = t.generalize(&m, &solution.preds);
+        let mut s: Ty = solution.get_ty(Ty::Var(s))?.apply_subst(&solution.subst);
+        if !s.has_unknowns() {
+            s = s.unquantify().unqualify();
+        }
+        let t = t
+            .generalize(&m, &solution.preds)
+            .apply_subst(&solution.subst);
         if s != t {
+            log::debug!(
+                "generalization constraint not satisified for types {} and {}",
+                s,
+                t
+            );
             Err(InferError {
                 msg: format!("types `{}` and `{}` are not equal", s, t),
                 src: vec![],
@@ -92,12 +104,19 @@ impl Satisfiable for ImplicitConstraint {
     }
 }
 
+impl Satisfiable for DefaultConstraint {
+    fn satisfied_by(self, _: &Solution, _: &Ctx) -> Result<(), InferError> {
+        // ignore this constraint, because a prove constraint was used to handle this
+        Ok(())
+    }
+}
+
 impl Satisfiable for ProveConstraint {
     fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
         let p = self.get_predicate();
         if !solution.preds.entails(&p, ctx) {
             Err(InferError {
-                msg: format!("`{}` cannot be met", p),
+                msg: format!("cannot determine if expression {}", p.desc()),
                 src: vec![],
             })
         } else {
@@ -111,7 +130,7 @@ impl Satisfiable for AssumeConstraint {
         let p = self.get_predicate();
         if !solution.preds.entails(&p, ctx) {
             Err(InferError {
-                msg: format!("`{}` cannot be met", p),
+                msg: format!("cannot determine if expression {}", p.desc()),
                 src: vec![],
             })
         } else {
@@ -128,6 +147,7 @@ impl Satisfiable for ConstraintKind {
             ConstraintKind::Inst(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Skol(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Implicit(c) => c.satisfied_by(solution, ctx),
+            ConstraintKind::Default(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Prove(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Assume(c) => c.satisfied_by(solution, ctx),
         }

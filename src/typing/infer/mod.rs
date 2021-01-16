@@ -12,8 +12,8 @@ use super::{
         constraints::tree::BottomUpWalk,
         solvers::{GreedySolver, Solver},
     },
-    ty::Ty,
-    ApplySubst,
+    ty::{Ty, TyVar},
+    ApplySubst, Subst,
 };
 
 mod formalize;
@@ -42,15 +42,25 @@ impl InferSystem {
         let mono_tys = HashSet::new();
         let (ex, _, c) = ex.collect_constraints(&mono_tys, &mut self.ctx.tf_mut());
         let constraints = c.spread().phase().flatten(BottomUpWalk);
+        log::debug!("{}", ex);
+        log::debug!("constraints: {:#?}", constraints);
 
         let solver = GreedySolver::new(constraints, &mut self.ctx);
         let (mut solution, constraints) = solver.solve();
+        log::debug!("constraints to check: {:#?}", constraints);
+
+        log::debug!("solution: {:#?}", solution);
+
+        solution.formalize_types();
+
+        solution
+            .preds
+            .extend(solution.preds.clone().apply_subst(&solution.subst));
+        solution.preds.sort();
+        solution.preds.dedup();
 
         // verify satisibility of the constraints using the solution
         let errs = solution.satisfies(constraints, &self.ctx);
-
-        // formalize any unbound type variables
-        let ex = ex.formalize(&mut solution);
 
         // qualify all types in the substitution
         for t in solution.subst.values_mut() {
@@ -63,6 +73,8 @@ impl InferSystem {
 
         // apply the substitution
         let ex = ex.apply_subst(&solution.subst);
+
+        log::debug!("solution: {:#?}", solution);
 
         if errs.len() != 0 {
             Err(errs)

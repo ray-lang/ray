@@ -1,4 +1,5 @@
 use crate::typing::{
+    predicate::TyPredicate,
     top::solvers::Solution,
     ty::{Ty, TyVar},
     ApplySubst, FormalizeTypes, Subst,
@@ -36,16 +37,33 @@ impl FormalizeTypes for TypedHirNode {
         let (ex, ty) = self.take();
         if matches!(&ex.kind, HirNodeKind::Fun(_, _)) {
             let ty: Ty = ty.clone().apply_subst(&solution.subst);
-            if let Ok((_, _, param_tys, ret_ty)) = ty.try_unpack_fn() {
+            if let Ok((_, _, param_tys, ret_ty)) = ty.try_borrow_fn() {
                 // bind all type variables in the function type
-                let mut c = 'a' as u8;
                 let mut subst = Subst::new();
-                for p in param_tys.iter().chain(std::iter::once(&ret_ty)) {
+                let mut c = 'a' as u8;
+                for p in param_tys.iter().chain(std::iter::once(ret_ty)) {
                     if let Ty::Var(v) = p {
                         if !subst.contains_key(v) {
                             let u = Ty::Var(TyVar(format!("'{}", c as char).into()));
                             subst.insert(v.clone(), u);
                             c += 1;
+                        }
+                    }
+                }
+
+                // add the substition to the solution
+                solution.subst.extend(subst);
+            } else if let Ty::All(_, t) = ty {
+                let mut subst = Subst::new();
+                let (preds, ty) = t.unpack_qualified_ty();
+                for p in preds {
+                    if let Ty::Var(v) = &ty {
+                        if p.is_int_trait() {
+                            subst.insert(v.clone(), Ty::int());
+                            break;
+                        } else if p.is_float_trait() {
+                            subst.insert(v.clone(), Ty::float());
+                            break;
                         }
                     }
                 }

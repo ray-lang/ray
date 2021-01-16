@@ -2,10 +2,16 @@ use std::{fmt, hash::Hasher};
 
 use crate::{pathlib::FilePath, span::Span};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, Eq, PartialOrd, Ord, Hash)]
 pub struct Path {
     parts: Vec<String>,
     pub span: Span,
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts == other.parts
+    }
 }
 
 impl Path {

@@ -13,7 +13,7 @@ use crate::{
                     AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree,
                     StrictSpreadTree,
                 },
-                EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
+                DefaultConstraint, EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
             },
             state::{TyEnv, TyVarFactory},
         },
@@ -118,14 +118,20 @@ impl CollectConstraints for HirNode {
                     Literal::Integer { size, signed, .. } => {
                         if *size != 0 {
                             let sign = if !signed { "u" } else { "i" };
-                            Ty::Projection(format!("{}{}", sign, size), vec![])
+                            Ty::con(format!("{}{}", sign, size))
                         } else {
                             let t = Ty::Var(tf.next());
                             ctree = ConstraintTree::list(
-                                vec![ProveConstraint::new(TyPredicate::Literal(
-                                    t.clone(),
-                                    LiteralKind::Int,
-                                ))],
+                                vec![
+                                    // DefaultConstraint::new(t.clone(), Ty::int())
+                                    //     .with_src(src.clone()),
+                                    ProveConstraint::new(TyPredicate::Trait(Ty::Projection(
+                                        str!("core::Int"),
+                                        vec![t.clone()],
+                                        vec![],
+                                    )))
+                                    .with_src(src.clone()),
+                                ],
                                 ctree,
                             );
                             t
@@ -133,14 +139,19 @@ impl CollectConstraints for HirNode {
                     }
                     Literal::Float { size, .. } => {
                         if *size != 0 {
-                            Ty::Projection(format!("f{}", size), vec![])
+                            Ty::con(format!("f{}", size))
                         } else {
                             let t = Ty::Var(tf.next());
                             ctree = ConstraintTree::list(
-                                vec![ProveConstraint::new(TyPredicate::Literal(
-                                    t.clone(),
-                                    LiteralKind::Float,
-                                ))],
+                                vec![
+                                    // DefaultConstraint::new(t.clone(), Ty::float())
+                                    //     .with_src(src.clone()),
+                                    ProveConstraint::new(TyPredicate::Literal(
+                                        t.clone(),
+                                        LiteralKind::Float,
+                                    ))
+                                    .with_src(src.clone()),
+                                ],
                                 ctree,
                             );
                             t
