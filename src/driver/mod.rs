@@ -92,8 +92,8 @@ impl Driver {
         }
 
         // generate IR
-        let mut prog = lir::Program::new(mod_path);
-        prog.gen(root)?;
+        let mut prog = lir::Program::gen(mod_path, root)?;
+        prog.monomorphize();
         eprintln!("{}", prog);
 
         // compile to asm

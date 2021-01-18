@@ -1,6 +1,10 @@
 use std::{fmt, hash::Hasher};
 
-use crate::{pathlib::FilePath, span::Span};
+use crate::{
+    pathlib::FilePath,
+    span::Span,
+    typing::{ty::TyVar, ApplySubst, Subst},
+};
 
 #[derive(Clone, Debug, Eq, PartialOrd, Ord, Hash)]
 pub struct Path {
@@ -11,6 +15,29 @@ pub struct Path {
 impl PartialEq for Path {
     fn eq(&self, other: &Self) -> bool {
         self.parts == other.parts
+    }
+}
+
+impl ApplySubst for Path {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Path {
+            parts: self
+                .parts
+                .into_iter()
+                .map(|t| {
+                    let tv = TyVar(Path {
+                        parts: vec![t.clone()],
+                        span: Span::new(),
+                    });
+                    if let Some(ty) = subst.get(&tv) {
+                        ty.to_string()
+                    } else {
+                        t
+                    }
+                })
+                .collect(),
+            span: self.span,
+        }
     }
 }
 

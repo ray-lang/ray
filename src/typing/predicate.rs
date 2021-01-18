@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast,
@@ -10,7 +10,7 @@ use crate::{
 use super::{
     top::{
         state::TyVarFactory,
-        traits::{HasFreeVars, Instantiate},
+        traits::{HasFreeVars, Instantiate, Polymorphize},
     },
     ty::{LiteralKind, Ty, TyVar},
     ApplySubst, Ctx, Subst,
@@ -66,6 +66,19 @@ impl HasFreeVars for TyPredicate {
         }
 
         h
+    }
+}
+
+impl Polymorphize for TyPredicate {
+    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self {
+        match self {
+            TyPredicate::Trait(t) => {
+                let (name, mut params, _) = variant!(t, if Ty::Projection(a, b, c));
+                let ty_arg = params.pop().unwrap().polymorphize(tf, subst);
+                TyPredicate::Trait(Ty::Projection(name, vec![ty_arg], vec![]))
+            }
+            TyPredicate::Literal(t, k) => TyPredicate::Literal(t.polymorphize(tf, subst), k),
+        }
     }
 }
 
@@ -198,7 +211,7 @@ impl TyPredicate {
         };
 
         let trait_ty = trait_ty.ty.clone();
-        let ty_param = variant!(Ty::Var(_), trait_ty.get_ty_param_at(0).clone()).unwrap();
+        let ty_param = variant!(trait_ty.get_ty_param_at(0).clone(), if Ty::Var(t));
         let sub = subst! { ty_param => ty_arg };
         let trait_ty = trait_ty.apply_subst(&sub);
         Ok(TyPredicate::Trait(trait_ty))

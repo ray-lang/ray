@@ -1,4 +1,7 @@
-use std::{collections::HashSet, ops::BitOr};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::BitOr,
+};
 
 use crate::{
     ast::{self, FnSig, Path},
@@ -14,7 +17,7 @@ use super::{
     subst::{ApplySubst, Subst},
     top::{
         state::TyVarFactory,
-        traits::{Generalize, HasFreeVars, Instantiate, Skolemize},
+        traits::{Generalize, HasFreeVars, Instantiate, Polymorphize, Skolemize},
     },
     InferError,
 };
@@ -51,6 +54,18 @@ impl ApplySubst for TyVar {
             v.clone()
         } else {
             self
+        }
+    }
+}
+
+impl Polymorphize for TyVar {
+    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self {
+        if let Some(tv) = subst.get(&Ty::Var(self.clone())) {
+            tv.clone()
+        } else {
+            let tv = tf.next();
+            subst.insert(Ty::Var(self), tv.clone());
+            tv
         }
     }
 }
@@ -237,6 +252,34 @@ impl HasFreeVars for Ty {
 impl HasFreeVars for Vec<Ty> {
     fn free_vars(&self) -> HashSet<&TyVar> {
         self.iter().flat_map(|t| t.free_vars()).collect()
+    }
+}
+
+impl Polymorphize for Ty {
+    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Ty {
+        if let Some(tv) = subst.get(&self) {
+            return Ty::Var(tv.clone());
+        }
+
+        match self {
+            Ty::Never => Ty::Never,
+            Ty::Any => Ty::Any,
+            Ty::Var(t) => Ty::Var(t.polymorphize(tf, subst)),
+            Ty::Union(tys) => Ty::Union(tys.polymorphize(tf, subst)),
+            Ty::Func(p, r) => Ty::Func(p.polymorphize(tf, subst), r.polymorphize(tf, subst)),
+            proj @ Ty::Projection(..) => {
+                let tv = tf.next();
+                subst.insert(proj, tv.clone());
+                Ty::Var(tv)
+            }
+            Ty::Cast(src, dst) => {
+                Ty::Cast(src.polymorphize(tf, subst), dst.polymorphize(tf, subst))
+            }
+            Ty::Qualified(preds, t) => {
+                Ty::Qualified(preds.polymorphize(tf, subst), t.polymorphize(tf, subst))
+            }
+            Ty::All(xs, t) => Ty::All(xs.polymorphize(tf, subst), t.polymorphize(tf, subst)),
+        }
     }
 }
 
@@ -695,6 +738,28 @@ impl Ty {
         }
     }
 
+    pub fn formalize(&self) -> Subst {
+        match &self {
+            Ty::All(_, t) | Ty::Qualified(_, t) => t.formalize(),
+            Ty::Func(param_tys, ret_ty) => {
+                // bind all type variables in the function type
+                let mut c = 'a' as u8;
+                let mut subst = Subst::new();
+                for p in param_tys.iter().chain(std::iter::once(ret_ty.as_ref())) {
+                    if let Ty::Var(v) = p {
+                        if !subst.contains_key(v) {
+                            let u = Ty::Var(TyVar(format!("'{}", c as char).into()));
+                            subst.insert(v.clone(), u);
+                            c += 1;
+                        }
+                    }
+                }
+                subst
+            }
+            _ => Subst::new(),
+        }
+    }
+
     pub fn qualify_with_tyvars(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
         let tyvar_set = tyvars.iter().collect::<HashSet<_>>();
         let q = preds
@@ -848,6 +913,14 @@ impl Ty {
             _ if self == t => true,
             _ => false,
         }
+    }
+
+    pub fn is_unit(&self) -> bool {
+        matches!(self, Ty::Union(tys) if tys.is_empty())
+    }
+
+    pub fn is_polymorphic(&self) -> bool {
+        self.has_unknowns()
     }
 
     pub fn is_func(&self) -> bool {

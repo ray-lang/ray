@@ -17,11 +17,9 @@ use crate::{
 
 mod collect;
 mod convert;
-mod formalize;
 mod node;
 pub use collect::*;
 pub use convert::*;
-pub use formalize::*;
 pub use node::*;
 
 #[derive(Clone, Debug)]
@@ -233,8 +231,9 @@ impl HirModule {
 
                 // make sure that the signature is fully typed
                 let ty = Ty::from_sig(sig, &fn_scope, &decl.src.filepath, &mut fn_ctx, ctx)?;
-                ctx.bind_var(name.clone(), ty.clone());
-                decls.push(HirDecl::ty(name, ty).with_src(Some(decl.src.clone())));
+                ctx.add_fqn(name.clone(), fn_scope.clone());
+                ctx.bind_var(fn_scope.to_string(), ty.clone());
+                decls.push(HirDecl::ty(fn_scope.to_string(), ty).with_src(Some(decl.src.clone())));
             }
             DeclKind::Trait(tr) => {
                 let ty_span = tr.ty.span.unwrap();
@@ -271,25 +270,26 @@ impl HirModule {
                 let fqn = trait_scope.to_string();
                 let mut trait_ctx = ctx.clone();
                 let mut ty_vars = vec![];
-                for tp in ty_params.iter() {
-                    if let Ty::Var(v) = tp {
-                        ty_vars.push(v.clone());
-                        trait_ctx.bind_var(v.to_string(), tp.clone());
-                    } else {
-                        return Err(RayError {
-                            msg: format!("expected a type parameter but found {}", tp),
-                            src: vec![Source {
-                                span: Some(ty_span),
-                                filepath: decl.src.filepath.clone(),
-                            }],
-                            kind: RayErrorKind::Type,
-                        });
-                    }
+                let tp = &ty_params[0];
+                if let Ty::Var(v) = tp {
+                    ty_vars.push(v.clone());
+                    trait_ctx.bind_var(v.to_string(), tp.clone());
+                } else {
+                    return Err(RayError {
+                        msg: format!("expected a type parameter but found {}", tp),
+                        src: vec![Source {
+                            span: Some(ty_span),
+                            filepath: decl.src.filepath.clone(),
+                        }],
+                        kind: RayErrorKind::Type,
+                    });
                 }
 
+                let ty_arg = tp.clone();
                 let trait_ty = Ty::Projection(fqn.clone(), ty_params, vec![]);
 
                 let mut fields = vec![];
+                let ty_arg_fqn = scope.append(&ty_arg);
                 for func in tr.funcs.iter() {
                     let func_name = match &func.name {
                         Some(n) => n.clone(),
@@ -314,13 +314,17 @@ impl HirModule {
                     let ty = ty
                         .qualify_with_tyvars(&q, &ty_vars.clone())
                         .quantify(ty_vars.clone());
-                    ctx.bind_var(func_name.clone(), ty.clone());
+
+                    let func_fqn = ty_arg_fqn.append(&func_name);
+                    ctx.add_fqn(func_name.clone(), func_fqn.clone());
+                    ctx.bind_var(func_fqn.to_string(), ty.clone());
+
                     fields.push((func_name.clone(), ty.clone()));
                     let src = Source {
                         filepath: decl.src.filepath.clone(),
                         span: Some(func.span),
                     };
-                    decls.push(HirDecl::ty(func_name, ty).with_src(Some(src)));
+                    decls.push(HirDecl::ty(func_fqn.to_string(), ty).with_src(Some(src)));
                 }
 
                 let super_trait = tr

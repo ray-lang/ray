@@ -9,38 +9,26 @@ macro_rules! debug {
 }
 
 macro_rules! variant {
-    // Internal Variants
-    (@tuple [$(,)*], [$($ids:ident)*], $($p:ident)::+, $t:expr) => {
-        match $t {
-            $($p)::+ ( $($ids),* ) => Some(( $($ids),* )),
-            _ => None,
+    ($x:expr, if $($p:ident)::+ ($($id:ident),*) , else |$e:ident| $b:block) => {{
+        match $x {
+            $($p)::+($($id),*) => ($($id),*),
+            $e @ _ => $b,
         }
-    };
-    (@tuple [$(,)*], [$($ids:ident)*], $($p:ident)::+, $t:expr, $else_branch:expr) => {
-        match $t {
-            $($p)::+ ( $($ids),* ) => ( $($ids),* ),
-            _ => $else_branch,
-        }
-    };
-    (@tuple [_], [$($ids:ident)*], $($p:ident)::+, $t:expr $(, $else_branch:expr)?) => {
-        variant!(@tuple [], [$($ids)* x], $($p)::+, $t $(, $else_branch)?)
-    };
-    (@tuple [_, $($more:tt)*], [$($ids:ident)*], $($p:ident)::+, $t:expr $(, $else_branch:expr)?) => {
-        variant!(@tuple [$($more)*], [$($ids)* x], $($p)::+, $t $(, $else_branch)?)
-    };
+    }};
 
-    // Struct Variants
-    ($($p:ident)::+ { $($i:ident),* $(,)* } , $t:expr) => {
-        match $t {
-            $($p)::+ {$($i),*} => Some(($($i),*)),
-            _ => None
+    ($x:expr, if $($p:ident)::+ ($($id:ident),*) , else $b:block) => {{
+        match $x {
+            $($p)::+($($id),*) => ($($id),*),
+            _ => $b,
         }
-    };
+    }};
 
-    // Tuple Variants
-    ($($p:ident)::+ ( $($its:tt)* ) , $t:expr $(, else $else_branch:expr )?) => {
-        variant!(@tuple [$($its)*], [], $($p)::+, $t $(, $else_branch)?)
-    };
+    ($x:expr, if $($p:ident)::+ ($($id:ident),*)) => {{
+        match $x {
+            $($p)::+($($id),*) => ($($id),*),
+            _ => panic!("Unexpected value found inside '{}'", stringify!($x)),
+        }
+    }};
 }
 
 macro_rules! aset {

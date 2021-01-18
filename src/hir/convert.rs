@@ -163,7 +163,12 @@ impl IntoHirNode for ast::BinOp {
         let lhs = self.lhs.to_hir_node(scope, filepath, ctx)?;
         let rhs = self.rhs.to_hir_node(scope, filepath, ctx)?;
 
-        let mut op_var: HirNode = Var(str!(self.op.to_string())).into();
+        let mut name = self.op.to_string();
+        if let Some(fqn) = ctx.lookup_fqn(&name) {
+            name = fqn.to_string();
+        }
+
+        let mut op_var: HirNode = Var(name).into();
         op_var.src = Some(Source {
             span: Some(self.op_span),
             filepath: filepath.clone(),
@@ -383,9 +388,17 @@ impl IntoHirNode for ast::Name {
         _: &mut VecDeque<ast::Expr>,
         _: &ast::Path,
         _: &FilePath,
-        _: &mut Ctx,
+        ctx: &mut Ctx,
     ) -> RayResult<HirNode> {
-        Ok(Var(self.name.clone()).into())
+        log::debug!("lookup fqn: {}", self.name);
+        let name = if let Some(fqn) = ctx.lookup_fqn(&self.name) {
+            log::debug!("fqn for `{}`: {}", self.name, fqn);
+            fqn.to_string()
+        } else {
+            self.name.clone()
+        };
+
+        Ok(Var(name).into())
     }
 }
 

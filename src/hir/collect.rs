@@ -219,15 +219,19 @@ impl CollectConstraints for HirNode {
                     AttachTree::new(c, t),
                 )
             }
-            HirNodeKind::Fun(params, body) => {
+            HirNodeKind::Fun(mut params, body) => {
                 let mut mono_tys = mono_tys.clone();
                 let mut param_tys = vec![];
                 let mut env = TyEnv::new();
                 let mut cts = vec![];
-                for p in params.iter() {
+                for p in params.iter_mut() {
                     let tv = tf.next();
                     mono_tys.insert(tv.clone());
                     let ty = Ty::Var(tv.clone());
+                    if p.get_ty().is_none() {
+                        p.set_ty(ty.clone());
+                    }
+
                     let name = p.get_name().clone();
                     cts.push(ReceiverTree::new(tv.to_string()));
                     param_tys.push(ty.clone());

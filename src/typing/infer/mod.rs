@@ -16,10 +16,6 @@ use super::{
     ApplySubst, Subst,
 };
 
-mod formalize;
-
-pub use formalize::*;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InferError {
     pub msg: String,

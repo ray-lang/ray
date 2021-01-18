@@ -132,11 +132,28 @@ impl HirNode {
         })
     }
 
+    pub fn fn_name(&self) -> Option<&String> {
+        match &self.kind {
+            HirNodeKind::Var(v) => Some(v),
+            HirNodeKind::Apply(f, _) => f.fn_name(),
+            HirNodeKind::Typed(t) => t.get_expr().fn_name(),
+            _ => None,
+        }
+    }
+
     pub fn get_type(&self) -> Ty {
         if let HirNodeKind::Typed(t) = &self.kind {
             t.get_type()
         } else {
             panic!("not a typed expression: {}", self)
+        }
+    }
+
+    pub fn borrow_typed(&self) -> Option<(&HirNode, &Ty)> {
+        if let HirNodeKind::Typed(t) = &self.kind {
+            Some((t.ex.as_ref(), &t.ty))
+        } else {
+            None
         }
     }
 }

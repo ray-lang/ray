@@ -1,4 +1,7 @@
-use std::{cell::RefMut, collections::HashSet};
+use std::{
+    cell::RefMut,
+    collections::{HashMap, HashSet},
+};
 
 use crate::typing::{
     predicate::TyPredicate,
@@ -116,6 +119,25 @@ pub trait PolymorphismInfo {
         Self: Sized,
     {
         self
+    }
+}
+
+pub trait Polymorphize {
+    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self;
+}
+
+impl<T: Polymorphize> Polymorphize for Vec<T> {
+    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self {
+        self.into_iter()
+            .map(|t| t.polymorphize(tf, subst))
+            .collect()
+    }
+}
+
+impl<T: Polymorphize> Polymorphize for Box<T> {
+    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self {
+        let t = *self;
+        Box::new(t.polymorphize(tf, subst))
     }
 }
 

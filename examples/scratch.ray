@@ -1,4 +1,3 @@
 fn foo(x) => x + 1
 
-a = 1
-foo(1i32)
+foo(1)

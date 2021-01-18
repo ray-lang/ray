@@ -51,19 +51,8 @@ impl Solution {
         // formalize any unbound type variables
         for ty in self.ty_map.values() {
             let ty: Ty = ty.clone().apply_subst(&self.subst);
-            if let Ok((_, _, param_tys, ret_ty)) = ty.try_borrow_fn() {
-                // bind all type variables in the function type
-                let mut c = 'a' as u8;
-                let mut subst = Subst::new();
-                for p in param_tys.iter().chain(std::iter::once(ret_ty)) {
-                    if let Ty::Var(v) = p {
-                        if !subst.contains_key(v) {
-                            let u = Ty::Var(TyVar(format!("'{}", c as char).into()));
-                            subst.insert(v.clone(), u);
-                            c += 1;
-                        }
-                    }
-                }
+            if ty.is_func() {
+                let subst = ty.formalize();
 
                 // add the substition to the solution
                 self.subst.extend(subst);

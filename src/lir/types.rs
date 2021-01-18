@@ -5,8 +5,9 @@ use crate::{
     typing::{
         predicate::TyPredicate,
         ty::{Ty, TyVar},
+        ApplySubst, Subst,
     },
-    utils::join,
+    utils::{join, map_join},
 };
 
 use std::collections::{HashMap, HashSet};
@@ -21,19 +22,19 @@ macro_rules! LirImplInto {
     };
 }
 
-#[derive(Clone, Debug)]
-pub struct FunctionType {
-    ty_params: Option<Vec<TyVar>>,
-    predicates: Vec<TyPredicate>,
-    param_tys: Vec<Ty>,
-    ret_ty: Ty,
+#[derive(Clone)]
+pub struct FnType {
+    pub ty_params: Option<Vec<TyVar>>,
+    pub predicates: Vec<TyPredicate>,
+    pub param_tys: Vec<Ty>,
+    pub ret_ty: Ty,
 }
 
-impl From<Ty> for FunctionType {
-    fn from(t: Ty) -> FunctionType {
+impl From<Ty> for FnType {
+    fn from(t: Ty) -> FnType {
         let (ty_params, predicates, param_tys, ret_ty) =
             t.try_unpack_fn().expect("expected function type");
-        FunctionType {
+        FnType {
             ty_params,
             predicates,
             param_tys,
@@ -42,14 +43,8 @@ impl From<Ty> for FunctionType {
     }
 }
 
-impl std::fmt::Display for FunctionType {
+impl std::fmt::Display for FnType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let all = if let Some(ty_params) = &self.ty_params {
-            format!("All[{}]", join(ty_params, ", "))
-        } else {
-            str!("")
-        };
-
         let q = if self.predicates.len() != 0 {
             format!(" where {}", join(&self.predicates, ", "))
         } else {
@@ -57,12 +52,47 @@ impl std::fmt::Display for FunctionType {
         };
         write!(
             f,
-            "{}({}) -> {}{}",
-            all,
+            "({}) -> {}{}",
             join(&self.param_tys, ", "),
             self.ret_ty,
             q
         )
+    }
+}
+
+impl std::fmt::Debug for FnType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl ApplySubst for FnType {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        FnType {
+            ty_params: self.ty_params.map(|p| p.apply_subst(subst)),
+            predicates: self.predicates.apply_subst(subst),
+            param_tys: self.param_tys.apply_subst(subst),
+            ret_ty: self.ret_ty.apply_subst(subst),
+        }
+    }
+}
+
+impl FnType {
+    pub fn is_polymorphic(&self) -> bool {
+        self.ty_params.is_some()
+    }
+
+    pub fn to_ty(&self) -> Ty {
+        let mut ty = Ty::Func(self.param_tys.clone(), Box::new(self.ret_ty.clone()));
+        if self.predicates.len() != 0 {
+            ty = Ty::Qualified(self.predicates.clone(), Box::new(ty));
+        }
+
+        if let Some(ty_params) = &self.ty_params {
+            ty = Ty::All(ty_params.clone(), Box::new(ty));
+        }
+
+        ty
     }
 }
 
@@ -103,6 +133,12 @@ impl std::fmt::Display for Variable {
     }
 }
 
+impl ApplySubst for Variable {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        self
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Atom {
     Variable(Variable),
@@ -113,6 +149,8 @@ pub enum Atom {
     RawString(String),
     NilConst,
 }
+
+LirImplInto!(Value for Atom);
 
 impl std::fmt::Display for Atom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -128,7 +166,15 @@ impl std::fmt::Display for Atom {
     }
 }
 
-LirImplInto!(Value for Atom);
+impl ApplySubst for Atom {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        match self {
+            Atom::Variable(v) => Atom::Variable(v.apply_subst(subst)),
+            Atom::FuncRef(r) => Atom::FuncRef(r.apply_subst(subst)),
+            t @ _ => t,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Malloc(pub Size);
@@ -137,6 +183,12 @@ LirImplInto!(Value for Malloc);
 impl std::fmt::Display for Malloc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "malloc({})", self.0)
+    }
+}
+
+impl ApplySubst for Malloc {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        self
     }
 }
 
@@ -150,8 +202,15 @@ impl std::fmt::Display for Alloca {
     }
 }
 
+impl ApplySubst for Alloca {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        self
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Value {
+    Empty,
     Atom(Atom),
     Malloc(Malloc),
     Alloca(Alloca),
@@ -165,9 +224,12 @@ pub enum Value {
     IntConvert(IntConvert),
 }
 
+LirImplInto!(InstKind for Value);
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Value::Empty => write!(f, ""),
             Value::Atom(a) => write!(f, "{}", a),
             Value::Malloc(a) => write!(f, "{}", a),
             Value::Alloca(a) => write!(f, "{}", a),
@@ -179,6 +241,25 @@ impl std::fmt::Display for Value {
             Value::Lea(a) => write!(f, "{}", a),
             Value::BinOp(a) => write!(f, "{}", a),
             Value::IntConvert(a) => write!(f, "{}", a),
+        }
+    }
+}
+
+impl ApplySubst for Value {
+    fn apply_subst(self, subst: &Subst) -> Value {
+        match self {
+            Value::Empty => Value::Empty,
+            Value::Atom(a) => Value::Atom(a.apply_subst(subst)),
+            Value::Malloc(m) => Value::Malloc(m.apply_subst(subst)),
+            Value::Alloca(a) => Value::Alloca(a.apply_subst(subst)),
+            Value::Call(c) => Value::Call(c.apply_subst(subst)),
+            Value::CExternCall(_) => todo!(),
+            Value::Branch(b) => Value::Branch(b.apply_subst(subst)),
+            Value::Select(s) => Value::Select(s.apply_subst(subst)),
+            Value::Load(l) => Value::Load(l.apply_subst(subst)),
+            Value::Lea(l) => Value::Lea(l.apply_subst(subst)),
+            Value::BinOp(b) => Value::BinOp(b.apply_subst(subst)),
+            Value::IntConvert(i) => Value::IntConvert(i.apply_subst(subst)),
         }
     }
 }
@@ -235,7 +316,28 @@ impl Into<Inst> for InstKind {
     fn into(self) -> Inst {
         Inst {
             kind: self,
-            comment: String::new(),
+            comment: None,
+        }
+    }
+}
+
+impl ApplySubst for InstKind {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        match self {
+            InstKind::Value(v) => InstKind::Value(v.apply_subst(subst)),
+            InstKind::Free(i) => InstKind::Free(i),
+            InstKind::SetGlobal(i, v) => InstKind::SetGlobal(i, v.apply_subst(subst)),
+            InstKind::SetLocal(i, v) => InstKind::SetLocal(i, v.apply_subst(subst)),
+            InstKind::Block(b) => InstKind::Block(b.apply_subst(subst)),
+            InstKind::Func(f) => InstKind::Func(f.apply_subst(subst)),
+            InstKind::IfBlock(b) => InstKind::IfBlock(b.apply_subst(subst)),
+            InstKind::Loop(l) => InstKind::Loop(l.apply_subst(subst)),
+            InstKind::Store(s) => InstKind::Store(s.apply_subst(subst)),
+            InstKind::IncRef(v, i) => InstKind::IncRef(v.apply_subst(subst), i),
+            InstKind::DecRef(v) => InstKind::DecRef(v.apply_subst(subst)),
+            InstKind::Return(v) => InstKind::Return(v.apply_subst(subst)),
+            InstKind::Break => InstKind::Break,
+            InstKind::Halt => InstKind::Halt,
         }
     }
 }
@@ -243,7 +345,7 @@ impl Into<Inst> for InstKind {
 #[derive(Clone, Debug)]
 pub struct Inst {
     pub kind: InstKind,
-    pub comment: String,
+    pub comment: Option<String>,
 }
 
 impl std::fmt::Display for Inst {
@@ -251,13 +353,31 @@ impl std::fmt::Display for Inst {
         write!(
             f,
             "{}{}",
-            self.kind,
-            if !self.comment.is_empty() {
-                format!("; {}", self.comment)
+            &self.kind,
+            if let Some(c) = &self.comment {
+                format!("; {}", c)
             } else {
                 str!("")
             }
         )
+    }
+}
+
+impl ApplySubst for Inst {
+    fn apply_subst(self, subst: &Subst) -> Inst {
+        Inst {
+            kind: self.kind.apply_subst(subst),
+            comment: self.comment,
+        }
+    }
+}
+
+impl Inst {
+    pub fn new<T>(t: T) -> Inst
+    where
+        T: Into<InstKind>,
+    {
+        t.into().into()
     }
 }
 
@@ -382,17 +502,23 @@ impl Size {
 
 #[derive(Clone, Debug)]
 pub struct Extern {
-    name: String,
-    ty: FunctionType,
-    is_c: bool,
+    pub name: String,
+    pub ty: FnType,
+    pub is_c: bool,
+}
+
+impl std::fmt::Display for Extern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "extern {}{}", self.name, self.ty)
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct PolyFuncRef {
-    name: String,              // this is the "simple" func name
-    func_ctx: String,          // the name of the enclosing function
-    poly_type: FunctionType,   // the polymorphic type
-    callee_type: FunctionType, // the type of the callee (which may be polymorphic as well)
+pub struct PolyFnRef {
+    pub name: String, // the name of the calling function
+    // pub fn_ctx: usize,     // the index of the enclosing function
+    pub poly_ty: FnType,   // the polymorphic type
+    pub callee_ty: FnType, // the type of the callee (which may be polymorphic as well)
 }
 
 #[derive(Clone, Debug)]
@@ -402,6 +528,9 @@ pub struct Program {
     pub data: Vec<Data>,
     pub funcs: Vec<Func>,
     pub externs: Vec<Extern>,
+    pub extern_set: HashSet<String>,
+    pub poly_fn_map: HashMap<String, usize>,
+    pub poly_fn_refs: Vec<PolyFnRef>,
     pub defined_symbols: HashSet<sym::Symbol>,
     pub undefined_symbols: HashSet<sym::Symbol>,
     pub type_metadata: HashMap<String, TypeMetadata>,
@@ -413,7 +542,13 @@ pub struct Program {
 
 impl std::fmt::Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&join(&self.funcs, "\n "))
+        write!(f, "{}", &join(&self.externs, "\n"))?;
+
+        if !self.externs.is_empty() {
+            write!(f, "\n\n")?;
+        }
+
+        write!(f, "{}", &join(&self.funcs, "\n\n"))
     }
 }
 
@@ -425,6 +560,9 @@ impl Program {
             data: vec![],
             funcs: vec![],
             externs: vec![],
+            poly_fn_map: HashMap::new(),
+            extern_set: HashSet::new(),
+            poly_fn_refs: vec![],
             defined_symbols: HashSet::new(),
             undefined_symbols: HashSet::new(),
             type_metadata: HashMap::new(),
@@ -456,16 +594,17 @@ pub struct Global {
 #[derive(Clone, Debug)]
 pub struct Local {
     pub idx: usize,
-    // pub name: String,
     pub ty: Ty,
-    // pub is_alloca: bool,
-    // size: Size,
-    // signed: bool,
+    pub name: Option<String>,
 }
 
 impl std::fmt::Display for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${}", self.idx)
+        if let Some(name) = &self.name {
+            write!(f, "${}", name)
+        } else {
+            write!(f, "${}", self.idx)
+        }
     }
 }
 
@@ -474,19 +613,35 @@ impl Local {
         Local {
             idx,
             ty,
-            // name: String::new(),
-            // is_alloca: false,
+            name: None,
         }
     }
 }
 
-// impl Local {
-//     pub fn set_type(&self, ty: typing::Ty) {
-//         // self.size = getTypeSize(ty);
-//         // self.signed = getTypeSign(ty);
-//         self.ty = ty
-//     }
-// }
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub idx: usize,
+    pub name: String,
+    pub ty: Ty,
+    pub size: Size,
+}
+
+impl std::fmt::Display for Param {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "${}: {}", self.name, self.ty)
+    }
+}
+
+impl ApplySubst for Param {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Param {
+            idx: self.idx,
+            name: self.name,
+            ty: self.ty.apply_subst(subst),
+            size: self.size,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -496,11 +651,16 @@ pub struct Block {
 
 impl std::fmt::Display for Block {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "(\n{}\n)",
-            indent_lines(join(&self.instructions, "\n"), 2)
-        )
+        write!(f, "{}", indent_lines(join(&self.instructions, "\n"), 2))
+    }
+}
+
+impl ApplySubst for Block {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Block {
+            name: self.name,
+            instructions: self.instructions.apply_subst(subst),
+        }
     }
 }
 
@@ -516,9 +676,9 @@ impl Block {
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
-    pub params: Vec<Local>,
+    pub params: Vec<Param>,
     pub locals: Vec<Local>,
-    pub ty: FunctionType,
+    pub ty: FnType,
     pub body: Block,
     pub symbols: SymbolSet,
 }
@@ -527,18 +687,53 @@ impl std::fmt::Display for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "fn {}({}) {{\n{}\n}}",
+            "fn {}({}) -> {}{} {{\n{}\n}}",
             self.name,
-            join(&self.params, ", "),
-            indent_lines(&self.body, 2)
+            map_join(&self.params, ", ", |p| format!("${}: {}", p.idx, p.ty)),
+            self.ty.ret_ty,
+            if !self.ty.predicates.is_empty() {
+                format!(" where {}", join(&self.ty.predicates, ", "))
+            } else {
+                str!("")
+            },
+            self.body
         )
+    }
+}
+
+impl ApplySubst for Func {
+    fn apply_subst(self, subst: &Subst) -> Func {
+        Func {
+            name: self.name,
+            params: self.params.apply_subst(subst),
+            locals: self.locals,
+            ty: self.ty.apply_subst(subst),
+            body: self.body.apply_subst(subst),
+            symbols: self.symbols,
+        }
+    }
+}
+
+impl Func {
+    pub fn new<S: Into<String>>(name: S, ty: Ty) -> Func {
+        let name = name.into();
+        let ty = FnType::from(ty);
+        log::debug!("type of {}: {}", name, ty);
+        Func {
+            name,
+            ty,
+            params: vec![],
+            locals: vec![],
+            body: Block::new(),
+            symbols: SymbolSet::new(),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct FuncRef {
-    name: String,
-    ty: FunctionType,
+    pub name: String,
+    pub ty: FnType,
 }
 
 impl std::fmt::Display for FuncRef {
@@ -547,13 +742,22 @@ impl std::fmt::Display for FuncRef {
     }
 }
 
+impl ApplySubst for FuncRef {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        FuncRef {
+            name: self.name,
+            ty: self.ty.apply_subst(subst),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Call {
-    fn_name: String,
-    original_fn: String,
-    fn_ref: Local,
-    args: Vec<Atom>,
-    ty: FunctionType,
+    pub fn_name: String,
+    pub original_fn: String,
+    pub fn_ref: Option<usize>,
+    pub args: Vec<Atom>,
+    pub ty: FnType,
 }
 
 LirImplInto!(Value for Call);
@@ -564,11 +768,45 @@ impl std::fmt::Display for Call {
     }
 }
 
+impl ApplySubst for Call {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Call {
+            fn_name: self.fn_name,
+            original_fn: self.original_fn,
+            fn_ref: self.fn_ref,
+            args: self.args.apply_subst(subst),
+            ty: self.ty.apply_subst(subst),
+        }
+    }
+}
+
+impl Call {
+    pub fn new(fn_name: String, args: Vec<Atom>, ty: Ty) -> Value {
+        Value::Call(Call {
+            original_fn: fn_name.clone(),
+            fn_ref: None,
+            ty: FnType::from(ty),
+            args,
+            fn_name,
+        })
+    }
+
+    pub fn new_ref(fn_ref: usize, args: Vec<Atom>, ty: Ty) -> Value {
+        Value::Call(Call {
+            original_fn: str!(""),
+            fn_name: str!(""),
+            fn_ref: Some(fn_ref),
+            ty: FnType::from(ty),
+            args,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CExternCall {
     fn_name: String,
     args: Vec<Atom>,
-    ty: FunctionType,
+    ty: FnType,
 }
 
 LirImplInto!(Value for CExternCall);
@@ -581,11 +819,11 @@ impl std::fmt::Display for CExternCall {
 
 #[derive(Clone, Debug)]
 pub struct IfBlock {
-    name: String,
-    cond: Block,
-    then: Block,
-    els: Block,
-    end: Block,
+    pub name: String,
+    pub cond: Block,
+    pub then: Block,
+    pub els: Block,
+    pub end: Block,
 }
 
 impl std::fmt::Display for IfBlock {
@@ -601,13 +839,37 @@ impl std::fmt::Display for IfBlock {
     }
 }
 
+impl ApplySubst for IfBlock {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        IfBlock {
+            name: self.name,
+            cond: self.cond.apply_subst(subst),
+            then: self.then.apply_subst(subst),
+            els: self.els.apply_subst(subst),
+            end: self.end.apply_subst(subst),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Loop {
-    name: String,
-    begin: Block,
-    cond: Block,
-    body: Block,
-    end: Block,
+    pub name: String,
+    pub begin: Block,
+    pub cond: Block,
+    pub body: Block,
+    pub end: Block,
+}
+
+impl ApplySubst for Loop {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Loop {
+            name: self.name,
+            begin: self.begin.apply_subst(subst),
+            cond: self.cond.apply_subst(subst),
+            body: self.body.apply_subst(subst),
+            end: self.end.apply_subst(subst),
+        }
+    }
 }
 
 impl std::fmt::Display for Loop {
@@ -643,6 +905,17 @@ impl std::fmt::Display for Branch {
     }
 }
 
+impl ApplySubst for Branch {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Branch {
+            op: self.op,
+            operand: self.operand.apply_subst(subst),
+            then_label: self.then_label,
+            else_label: self.else_label,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Select {
     cond: Variable,
@@ -658,12 +931,22 @@ impl std::fmt::Display for Select {
     }
 }
 
+impl ApplySubst for Select {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Select {
+            cond: self.cond.apply_subst(subst),
+            then: self.then.apply_subst(subst),
+            els: self.els.apply_subst(subst),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
-    dst: Variable,
-    value: Value,
-    offset: Size,
-    size: Size,
+    pub dst: Variable,
+    pub value: Value,
+    pub offset: Size,
+    pub size: Size,
 }
 
 impl std::fmt::Display for Store {
@@ -673,6 +956,17 @@ impl std::fmt::Display for Store {
             "store {} {} {} {}",
             self.dst, self.value, self.offset, self.size
         )
+    }
+}
+
+impl ApplySubst for Store {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Store {
+            dst: self.dst.apply_subst(subst),
+            value: self.value.apply_subst(subst),
+            offset: self.offset,
+            size: self.size,
+        }
     }
 }
 
@@ -688,6 +982,16 @@ LirImplInto!(Value for Load);
 impl std::fmt::Display for Load {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "load {} {} {}", self.src, self.offset, self.size)
+    }
+}
+
+impl ApplySubst for Load {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Load {
+            src: self.src.apply_subst(subst),
+            offset: self.offset,
+            size: self.size,
+        }
     }
 }
 
@@ -710,6 +1014,16 @@ impl std::fmt::Display for Lea {
     }
 }
 
+impl ApplySubst for Lea {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Lea {
+            value: self.value.apply_subst(subst),
+            src_offset: self.src_offset,
+            dst_offset: self.dst_offset,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BinOp {
     op: Op,
@@ -723,6 +1037,17 @@ LirImplInto!(Value for BinOp);
 impl std::fmt::Display for BinOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {}", self.op, join(&self.operands, ", "))
+    }
+}
+
+impl ApplySubst for BinOp {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        BinOp {
+            op: self.op,
+            size: self.size,
+            signed: self.signed,
+            operands: self.operands.apply_subst(subst),
+        }
     }
 }
 
@@ -744,5 +1069,15 @@ impl std::fmt::Display for IntConvert {
             if self.dst.1 { "signed" } else { "unsigned" },
             self.dst.0
         )
+    }
+}
+
+impl ApplySubst for IntConvert {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        IntConvert {
+            value: self.value.apply_subst(subst),
+            src: self.src,
+            dst: self.dst,
+        }
     }
 }
