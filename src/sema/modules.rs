@@ -1,10 +1,16 @@
-use crate::parse::{self, ParseOptions, Parser};
-use crate::pathlib::FilePath;
 use crate::span::Span;
 use crate::strutils;
 use crate::{
+    ast::SourceInfo,
+    parse::{self, ParseOptions, Parser},
+};
+use crate::{
     ast::{self, Import, Module},
     span::Source,
+};
+use crate::{
+    ast::{Decl, Expr},
+    pathlib::FilePath,
 };
 use crate::{
     driver::RayPaths,
@@ -16,15 +22,23 @@ use std::collections::{HashMap, HashSet};
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
 #[derive(Debug)]
-pub struct ModuleBuilder {
-    pub modules: HashMap<ast::Path, Module>,
+pub struct ModuleBuilder<A, B, Info>
+where
+    A: std::fmt::Debug + Clone + PartialEq + Eq,
+    B: std::fmt::Debug + Clone + PartialEq + Eq,
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    pub modules: HashMap<ast::Path, Module<A, B, Info>>,
     input_paths: HashSet<ast::Path>,
     paths: RayPaths,
     c_include_paths: Vec<FilePath>,
 }
 
-impl ModuleBuilder {
-    pub fn new(paths: RayPaths, c_include_paths: Vec<FilePath>) -> ModuleBuilder {
+impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
+    pub fn new(
+        paths: RayPaths,
+        c_include_paths: Vec<FilePath>,
+    ) -> ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
         ModuleBuilder {
             paths,
             c_include_paths,
@@ -35,13 +49,11 @@ impl ModuleBuilder {
 
     fn build(
         &mut self,
-        mut root_file: ast::File,
+        mut root_file: ast::File<SourceInfo>,
         root_fp: &FilePath,
         input_path: &FilePath,
         module_path: ast::Path,
-        mut next_ast_id: u64,
     ) -> Result<ast::Path, Vec<RayError>> {
-        let module_id = module_path.to_id();
         let mut errs = vec![];
 
         let mut filepaths = vec![root_fp.clone()];
@@ -55,9 +67,8 @@ impl ModuleBuilder {
 
             // parse each file in the module
             for fp in subfile_paths {
-                match self.build_file(&fp, &module_path, next_ast_id) {
+                match self.build_file(&fp, &module_path) {
                     Ok(f) => {
-                        next_ast_id = f.last_ast_id;
                         filepaths.push(fp);
                         stmts.extend(f.stmts);
                         decls.extend(f.decls);
@@ -96,7 +107,7 @@ impl ModuleBuilder {
                     if import.c_import.is_some() {
                         if let Ok(tys) = parse::cparse(&fpath, &self.c_include_paths) {
                             for (ty, span) in tys {
-                                let decl = ty.convert_to_decl(span, module_id, &mut next_ast_id);
+                                let decl = ty.convert_to_decl(span);
                                 let key = decl.to_string();
                                 if !c_decl_set.contains(&key) {
                                     decls.push(decl);
@@ -156,14 +167,11 @@ impl ModuleBuilder {
                 module_path: module_path.clone(),
                 use_stdin: false,
             },
-            next_ast_id,
         )?;
-
-        next_ast_id = root_file.last_ast_id;
 
         // the "filepath"
         let fpath = FilePath::new();
-        self.build(root_file, &fpath, &fpath, module_path, next_ast_id)
+        self.build(root_file, &fpath, &fpath, module_path)
     }
 
     pub fn build_from_path(
@@ -171,7 +179,6 @@ impl ModuleBuilder {
         input_path: &FilePath,
         module_path: Option<ast::Path>,
     ) -> Result<ast::Path, Vec<RayError>> {
-        let mut next_ast_id = 1_u64;
         let root_fp = self.get_root_module(input_path)?;
 
         let module_path = module_path.unwrap_or_else(|| ast::Path::from(input_path.clone()));
@@ -183,30 +190,24 @@ impl ModuleBuilder {
 
         self.input_paths.insert(module_path.clone());
 
-        let root_file = self.build_file(&root_fp, &module_path, next_ast_id)?;
-        next_ast_id = root_file.last_ast_id;
-
-        self.build(root_file, &root_fp, input_path, module_path, next_ast_id)
+        let root_file = self.build_file(&root_fp, &module_path)?;
+        self.build(root_file, &root_fp, input_path, module_path)
     }
 
     fn build_file(
         &mut self,
         input_path: &FilePath,
         module_path: &ast::Path,
-        next_ast_id: u64,
-    ) -> Result<ast::File, RayError> {
+    ) -> Result<ast::File<SourceInfo>, RayError> {
         log::debug!("parsing {}", input_path);
         let filepath = input_path.clone();
         let original_filepath = input_path.clone();
-        Parser::parse(
-            ParseOptions {
-                filepath,
-                original_filepath,
-                module_path: module_path.clone(),
-                use_stdin: false,
-            },
-            next_ast_id,
-        )
+        Parser::parse(ParseOptions {
+            filepath,
+            original_filepath,
+            module_path: module_path.clone(),
+            use_stdin: false,
+        })
     }
 
     fn get_root_module(&mut self, path: &FilePath) -> Result<FilePath, RayError> {

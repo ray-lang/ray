@@ -3,10 +3,7 @@ use std::collections::HashMap;
 use crate::{
     ast::Path,
     lir, sema,
-    typing::{
-        top::{state::TyVarFactory, traits::Polymorphize},
-        ApplySubst,
-    },
+    typing::{state::TyVarFactory, traits::Polymorphize, ApplySubst},
 };
 
 #[derive(Debug)]

@@ -8,7 +8,6 @@ mod driver;
 mod errors;
 mod hir;
 mod lir;
-mod module;
 mod parse;
 mod pathlib;
 mod sema;

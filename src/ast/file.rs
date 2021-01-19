@@ -1,15 +1,18 @@
-use crate::ast::{Decl, Expr, Import, Path};
-use crate::pathlib::FilePath;
-use crate::span::Span;
+use crate::{
+    ast::{Decl, Expr, Import, Node, Path},
+    pathlib::FilePath,
+    span::Span,
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct File {
+pub struct File<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
     pub path: Path,
-    pub stmts: Vec<Expr>,
-    pub decls: Vec<Decl>,
+    pub stmts: Vec<Node<Expr<Info>, Info>>,
+    pub decls: Vec<Node<Decl<Info>, Info>>,
     pub imports: Vec<Import>,
     pub doc_comment: Option<String>,
     pub filepath: FilePath,
     pub span: Span,
-    pub last_ast_id: u64,
 }

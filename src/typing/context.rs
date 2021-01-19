@@ -8,7 +8,8 @@ use crate::ast::Path;
 
 use super::{
     predicate::PredicateEntails,
-    top::{state::TyVarFactory, traits::HasFreeVars},
+    state::TyVarFactory,
+    traits::HasFreeVars,
     ty::{ImplTy, StructTy, TraitTy, Ty, TyVar},
     ApplySubst,
 };

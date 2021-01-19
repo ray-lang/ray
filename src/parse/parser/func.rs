@@ -1,11 +1,16 @@
 use super::{ParseContext, ParseResult, Parser, Restrictions};
 
-use crate::ast;
-use crate::ast::token::TokenKind;
-use crate::span::Span;
+use crate::{
+    ast::{self, token::TokenKind, FnParam, FnSig, SourceInfo},
+    span::Span,
+};
 
 impl Parser {
-    pub(crate) fn parse_fn(&mut self, only_sigs: bool, ctx: &ParseContext) -> ParseResult<ast::Fn> {
+    pub(crate) fn parse_fn(
+        &mut self,
+        only_sigs: bool,
+        ctx: &ParseContext,
+    ) -> ParseResult<ast::Fn<SourceInfo>> {
         let sig = self.parse_fn_sig(ctx)?;
         let start = sig.span.start;
         let mut end = sig.span.end;
@@ -15,7 +20,7 @@ impl Parser {
             } else {
                 self.parse_block(ctx)?
             };
-            end = b.src.span.unwrap().end;
+            end = b.info.src.span.unwrap().end;
             Some(b)
         } else {
             None
@@ -29,11 +34,14 @@ impl Parser {
         })
     }
 
-    pub(crate) fn parse_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<ast::FnSig> {
+    pub(crate) fn parse_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FnSig<SourceInfo>> {
         self.parse_fn_sig_with_param(ctx, |this| this.parse_params(ctx))
     }
 
-    pub(crate) fn parse_trait_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<ast::FnSig> {
+    pub(crate) fn parse_trait_fn_sig(
+        &mut self,
+        ctx: &ParseContext,
+    ) -> ParseResult<FnSig<SourceInfo>> {
         self.parse_fn_sig_with_param(ctx, |this| this.parse_trait_fn_params(ctx))
     }
 
@@ -41,9 +49,9 @@ impl Parser {
         &mut self,
         ctx: &ParseContext,
         f: F,
-    ) -> ParseResult<ast::FnSig>
+    ) -> ParseResult<FnSig<SourceInfo>>
     where
-        F: Fn(&mut Parser) -> ParseResult<(Vec<ast::FnParam>, Span)>,
+        F: Fn(&mut Parser) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)>,
     {
         let modifiers = self.parse_modifiers()?;
         let start = self.expect_start(TokenKind::Fn)?;
@@ -61,7 +69,7 @@ impl Parser {
 
         let qualifiers = self.parse_where_clause()?;
 
-        Ok(ast::FnSig {
+        Ok(FnSig {
             name,
             params,
             ty_params,
@@ -93,16 +101,14 @@ impl Parser {
     pub(crate) fn parse_params(
         &mut self,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<ast::FnParam>, Span)> {
-        self.parse_params_with(ctx, |this| {
-            Ok(ast::FnParam::Name(this.parse_name_with_type()?))
-        })
+    ) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)> {
+        self.parse_params_with(ctx, |this| Ok(FnParam::Name(this.parse_name_with_type()?)))
     }
 
     pub(crate) fn parse_trait_fn_params(
         &mut self,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<ast::FnParam>, Span)> {
+    ) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)> {
         self.parse_params_with(ctx, |this| Ok(this.parse_trait_fn_param()?))
     }
 
@@ -110,9 +116,9 @@ impl Parser {
         &mut self,
         ctx: &ParseContext,
         f: F,
-    ) -> ParseResult<(Vec<ast::FnParam>, Span)>
+    ) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)>
     where
-        F: Fn(&mut Parser) -> ParseResult<ast::FnParam>,
+        F: Fn(&mut Parser) -> ParseResult<FnParam<SourceInfo>>,
     {
         let (lparen_tok, lp_span) = self.expect(TokenKind::LeftParen)?;
         let start = lp_span.start;
@@ -128,7 +134,7 @@ impl Parser {
             let mut param = f(self)?;
             if expect_if!(self, TokenKind::Equals) {
                 let d = self.parse_expr(&ctx)?;
-                param = ast::FnParam::DefaultValue(Box::new(param), Box::new(d));
+                param = FnParam::DefaultValue(Box::new(param), Box::new(d));
             }
             params.push(param);
 

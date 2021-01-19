@@ -1,11 +1,16 @@
-use super::{ParseContext, ParseResult, Parser, Restrictions};
+use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
 
-use crate::ast;
-use crate::ast::token::{Token, TokenKind};
-use crate::span::Span;
+use crate::{
+    ast::{
+        token::{Token, TokenKind},
+        Call, Curly, CurlyElement, CurlyElementKind, Dot, Expr, Index, Literal, Modifier, Sequence,
+        Trailing, Type, ValueKind,
+    },
+    span::Span,
+};
 
 impl Parser {
-    pub(crate) fn parse_expr(&mut self, ctx: &ParseContext) -> ParseResult<ast::Expr> {
+    pub(crate) fn parse_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let mut ex = self.parse_infix_expr(0, None, ctx)?;
         if peek!(self, TokenKind::If) {
             // expr if ... else ...
@@ -14,38 +19,38 @@ impl Parser {
         Ok(ex)
     }
 
-    pub(crate) fn parse_base_expr(&mut self, ctx: &ParseContext) -> ParseResult<ast::Expr> {
+    pub(crate) fn parse_base_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         match self.must_peek_kind()? {
             TokenKind::If => self.parse_if(ctx),
             TokenKind::For => self.parse_for(ctx),
             TokenKind::While => self.parse_while(ctx),
             TokenKind::Loop => self.parse_loop(ctx),
-            TokenKind::Modifier(ast::Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
+            TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
             TokenKind::Break => {
                 let span = self.expect_sp(TokenKind::Break)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&ex.src.span.unwrap());
+                    let span = span.extend_to(&ex.info.src.span.unwrap());
                     (Some(Box::new(ex)), span)
                 } else {
                     (None, span)
                 };
-                Ok(self.mk_expr(ast::ExprKind::Break(ex), span))
+                Ok(self.mk_expr(Expr::Break(ex), span))
             }
             TokenKind::Return => {
                 let span = self.expect_sp(TokenKind::Return)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&ex.src.span.unwrap());
+                    let span = span.extend_to(&ex.info.src.span.unwrap());
                     (Some(Box::new(ex)), span)
                 } else {
                     (None, span)
                 };
-                Ok(self.mk_expr(ast::ExprKind::Return(ex), span))
+                Ok(self.mk_expr(Expr::Return(ex), span))
             }
             TokenKind::Fn | TokenKind::Modifier(_) => self.parse_fn(false, ctx).map(|f| {
                 let span = f.span;
-                self.mk_expr(ast::ExprKind::Fn(f), span)
+                self.mk_expr(Expr::Fn(f), span)
             }),
             TokenKind::LeftParen => self.parse_paren_expr(ctx),
             TokenKind::LeftCurly => self.parse_block(ctx),
@@ -56,11 +61,11 @@ impl Parser {
             }
             TokenKind::DoubleQuote => {
                 let (s, span) = self.expect_string()?;
-                Ok(self.mk_expr(ast::ExprKind::Literal(ast::Literal::String(s)), span))
+                Ok(self.mk_expr(Expr::Literal(Literal::String(s)), span))
             }
             TokenKind::SingleQuote => {
                 let (c, span) = self.expect_char()?;
-                Ok(self.mk_expr(ast::ExprKind::Literal(ast::Literal::Char(c)), span))
+                Ok(self.mk_expr(Expr::Literal(Literal::Char(c)), span))
             }
             TokenKind::Identifier(s)
                 if &s == "b"
@@ -74,16 +79,10 @@ impl Parser {
                 let quote = self.token()?;
                 if quote.kind == TokenKind::SingleQuote {
                     let (c, Span { end, .. }) = self.expect_char()?;
-                    Ok(self.mk_expr(
-                        ast::ExprKind::Literal(ast::Literal::Char(c)),
-                        Span { start, end },
-                    ))
+                    Ok(self.mk_expr(Expr::Literal(Literal::Char(c)), Span { start, end }))
                 } else {
                     let (s, Span { end, .. }) = self.expect_string()?;
-                    Ok(self.mk_expr(
-                        ast::ExprKind::Literal(ast::Literal::String(s)),
-                        Span { start, end },
-                    ))
+                    Ok(self.mk_expr(Expr::Literal(Literal::String(s)), Span { start, end }))
                 }
             }
             TokenKind::Identifier(_) | TokenKind::Struct | TokenKind::Underscore => {
@@ -91,8 +90,8 @@ impl Parser {
                 if peek!(self, TokenKind::FatArrow) {
                     // closure expression
                     let span = n.span;
-                    let args = ast::Sequence {
-                        items: vec![self.mk_expr(ast::ExprKind::Name(n), span)],
+                    let args = Sequence {
+                        items: vec![self.mk_expr(Expr::Name(n), span)],
                         trailing: false,
                     };
                     return self.parse_closure_expr_with_seq(args, false, None, span, ctx);
@@ -101,10 +100,10 @@ impl Parser {
                 if expect_if!(self, TokenKind::DoubleColon) {
                     let p = self.parse_path_with((n.name, n.span))?;
                     let span = p.span;
-                    Ok(self.mk_expr(ast::ExprKind::Path(p), span))
+                    Ok(self.mk_expr(Expr::Path(p), span))
                 } else {
                     let span = n.span;
-                    Ok(self.mk_expr(ast::ExprKind::Name(n), span))
+                    Ok(self.mk_expr(Expr::Name(n), span))
                 }
             }
             TokenKind::LeftBracket => self.parse_array_expr(ctx),
@@ -112,16 +111,16 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_postfix_expr(&mut self, ctx: &ParseContext) -> ParseResult<ast::Expr> {
+    pub(crate) fn parse_postfix_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let base = self.parse_base_expr(ctx)?;
         self.parse_postfix_expr_with(base, ctx)
     }
 
     pub(crate) fn parse_postfix_expr_with(
         &mut self,
-        mut ex: ast::Expr,
+        mut ex: ParsedExpr,
         ctx: &ParseContext,
-    ) -> ParseResult<ast::Expr> {
+    ) -> ExprResult {
         loop {
             if let Some(tok) = self.expect_kind(TokenKind::Dot)? {
                 // expr.member
@@ -145,7 +144,7 @@ impl Parser {
 
             if peek!(self, TokenKind::LeftCurly) {
                 // expr { ... }
-                let begin = ex.src.span.unwrap();
+                let begin = ex.info.src.span.unwrap();
                 ex = self.parse_curly_expr(Some(ex), begin, ctx)?;
                 continue;
             }
@@ -154,32 +153,27 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_unsafe_expr(&mut self, ctx: &ParseContext) -> ParseResult<ast::Expr> {
+    pub(crate) fn parse_unsafe_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let tok = self.token()?;
-        if !matches!(tok.kind, TokenKind::Modifier(ast::Modifier::Unsafe)) {
+        if !matches!(tok.kind, TokenKind::Modifier(Modifier::Unsafe)) {
             return Err(self.unexpected_token(&tok, "`unsafe`"));
         }
 
         let start = tok.span.start;
         let ex = self.parse_expr(ctx)?;
-        let end = ex.src.span.unwrap().end;
+        let end = ex.info.src.span.unwrap().end;
 
-        Ok(self.mk_expr(ast::ExprKind::Unsafe(Box::new(ex)), Span { start, end }))
+        Ok(self.mk_expr(Expr::Unsafe(Box::new(ex)), Span { start, end }))
     }
 
-    pub(crate) fn parse_dot_expr(
-        &mut self,
-        lhs: ast::Expr,
-        dot_tok: Token,
-    ) -> ParseResult<ast::Expr> {
-        let start = lhs.src.span.unwrap().start;
+    pub(crate) fn parse_dot_expr(&mut self, lhs: ParsedExpr, dot_tok: Token) -> ExprResult {
+        let start = lhs.info.src.span.unwrap().start;
         let rhs = self.parse_name_with_type()?;
         let end = rhs.span.end;
         Ok(self.mk_expr(
-            ast::ExprKind::Dot(ast::Dot {
+            Expr::Dot(Dot {
                 lhs: Box::new(lhs),
                 rhs,
-                desugared: None,
                 dot: dot_tok,
             }),
             Span { start, end },
@@ -188,14 +182,14 @@ impl Parser {
 
     pub(crate) fn parse_fn_call_expr(
         &mut self,
-        mut lhs: ast::Expr,
+        mut lhs: ParsedExpr,
         lparen_tok: Token,
         ctx: &ParseContext,
-    ) -> ParseResult<ast::Expr> {
-        let start = lhs.src.span.unwrap().start;
+    ) -> ExprResult {
+        let start = lhs.info.src.span.unwrap().start;
         let mut ty_args = None;
 
-        let expects_type = if let ast::ExprKind::Name(n) = &lhs.kind {
+        let expects_type = if let Expr::Name(n) = &lhs.value {
             match n.name.as_str() {
                 "sizeof" => true,
                 _ => false,
@@ -204,19 +198,14 @@ impl Parser {
             false
         };
 
-        if let ast::ExprKind::Index(idx) = lhs.kind {
+        if let Expr::Index(idx) = lhs.value {
             // convert this to type arguments
-            let span = idx.index.src.span.unwrap();
-            if let Some(tys) = ast::Type::from_expr(&idx.index) {
+            let span = idx.index.info.src.span.unwrap();
+            if let Some(tys) = Type::from_expr(&idx.index) {
                 lhs = *idx.lhs;
                 ty_args = Some((tys, span));
             } else {
-                lhs = ast::Expr {
-                    kind: ast::ExprKind::Index(idx),
-                    src: lhs.src,
-                    doc: lhs.doc,
-                    id: lhs.id,
-                }
+                lhs.value = Expr::Index(idx);
             }
         }
 
@@ -225,8 +214,8 @@ impl Parser {
                 let ty = self.parse_ty()?;
                 let span = ty.span.unwrap();
                 (
-                    ast::Sequence {
-                        items: vec![self.mk_expr(ast::ExprKind::Type(ty), span)],
+                    Sequence {
+                        items: vec![self.mk_expr(Expr::Type(ty), span)],
                         trailing: false,
                     },
                     span,
@@ -235,12 +224,12 @@ impl Parser {
                 let mut ctx = ctx.clone();
                 ctx.stop_token = Some(TokenKind::RightParen);
                 let args = self.parse_expr(&ctx)?;
-                let span = args.src.span.unwrap();
+                let span = args.info.src.span.unwrap();
                 (
-                    if let ast::ExprKind::Sequence(seq) = args.kind {
+                    if let Expr::Sequence(seq) = args.value {
                         seq
                     } else {
-                        ast::Sequence {
+                        Sequence {
                             items: vec![args],
                             trailing: false,
                         }
@@ -253,7 +242,7 @@ impl Parser {
             return Err(self.parse_error(str!("expected type but found `)`"), span));
         } else {
             (
-                ast::Sequence {
+                Sequence {
                     items: vec![],
                     trailing: false,
                 },
@@ -268,12 +257,12 @@ impl Parser {
 
         if peek!(self, TokenKind::LeftCurly) {
             let closure = self.parse_closure_expr(ctx)?;
-            end = closure.src.span.unwrap().end;
+            end = closure.info.src.span.unwrap().end;
             args.items.push(closure);
         }
 
         Ok(self.mk_expr(
-            ast::ExprKind::Call(ast::Call {
+            Expr::Call(Call {
                 lhs: Box::new(lhs),
                 args,
                 args_span,
@@ -289,15 +278,15 @@ impl Parser {
 
     pub(crate) fn parse_index_expr(
         &mut self,
-        lhs: ast::Expr,
+        lhs: ParsedExpr,
         lbrack_tok: Token,
         ctx: &ParseContext,
-    ) -> ParseResult<ast::Expr> {
+    ) -> ExprResult {
         let index = self.parse_expr(ctx)?;
         let rbrack_span = self.expect_sp(TokenKind::RightBracket)?;
-        let span = lhs.src.span.unwrap().extend_to(&rbrack_span);
+        let span = lhs.info.src.span.unwrap().extend_to(&rbrack_span);
         Ok(self.mk_expr(
-            ast::ExprKind::Index(ast::Index {
+            Expr::Index(Index {
                 lhs: Box::new(lhs),
                 index: Box::new(index),
                 bracket_span: lbrack_tok.span.extend_to(&rbrack_span),
@@ -308,17 +297,17 @@ impl Parser {
 
     pub(crate) fn parse_curly_expr(
         &mut self,
-        lhs: Option<ast::Expr>,
+        lhs: Option<ParsedExpr>,
         begin: Span,
         ctx: &ParseContext,
-    ) -> ParseResult<ast::Expr> {
+    ) -> ExprResult {
         let lhs = if let Some(lhs) = lhs {
-            match lhs.kind {
-                ast::ExprKind::Name(n) => Some(n),
+            match lhs.value {
+                Expr::Name(n) => Some(n),
                 _ => {
                     return Err(self.parse_error(
                         str!("expected identifier for struct expression"),
-                        lhs.src.span.unwrap(),
+                        lhs.info.src.span.unwrap(),
                     ))
                 }
             }
@@ -329,36 +318,36 @@ impl Parser {
         let lcurly_span = self.expect_sp(TokenKind::LeftCurly)?;
 
         let seq = self.parse_expr_seq(
-            ast::ValueKind::RValue,
-            ast::Trailing::Allow,
+            ValueKind::RValue,
+            Trailing::Allow,
             Some(TokenKind::RightCurly),
             ctx,
         )?;
 
         let mut elements = vec![];
         for item in seq.items {
-            let span = item.src.span.unwrap();
-            let kind = match item.kind {
-                ast::ExprKind::Name(n) => ast::CurlyElementKind::Name(n),
-                ast::ExprKind::Labeled(label, ex) => {
-                    let label = match label.kind {
-                        ast::ExprKind::Name(n) => n,
-                        _ => return Err(self.parse_error(format!("expected name for label in curly expression, but found {}", label.kind.desc()), label.src.span.unwrap())),
+            let span = item.info.src.span.unwrap();
+            let kind = match item.value {
+                Expr::Name(n) => CurlyElementKind::Name(n),
+                Expr::Labeled(label, ex) => {
+                    let label = match label.value {
+                        Expr::Name(n) => n,
+                        _ => return Err(self.parse_error(format!("expected name for label in curly expression, but found {}", label.value.desc()), label.info.src.span.unwrap())),
                     };
 
-                    ast::CurlyElementKind::Labeled(label, *ex)
+                    CurlyElementKind::Labeled(label, *ex)
                 },
-                _ => return Err(self.parse_error(format!("expected identifier or labeled expression in curly expression, but found {}", item.kind.desc()), span)),
+                _ => return Err(self.parse_error(format!("expected identifier or labeled expression in curly expression, but found {}", item.value.desc()), span)),
             };
 
-            elements.push(ast::CurlyElement { kind, span })
+            elements.push(CurlyElement { kind, span })
         }
 
         let rcurly_span = self.expect_sp(TokenKind::RightCurly)?;
         let curly_span = lcurly_span.extend_to(&rcurly_span);
         let span = begin.extend_to(&rcurly_span);
         Ok(self.mk_expr(
-            ast::ExprKind::Curly(ast::Curly {
+            Expr::Curly(Curly {
                 lhs,
                 elements,
                 curly_span,

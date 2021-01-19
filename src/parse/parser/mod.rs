@@ -11,18 +11,18 @@ mod imports;
 mod ops;
 mod ty;
 
-use crate::ast;
-use crate::errors::{RayError, RayErrorKind};
-use crate::parse::lexer::{Lexer, Preceding};
-use crate::pathlib::FilePath;
-use crate::span::{Pos, Span};
-use crate::{
-    ast::token::{Token, TokenKind},
-    span::Source,
-};
+use std::{fs, io};
 
-use std::fs::File;
-use std::io;
+use crate::{
+    ast::{
+        token::{Token, TokenKind},
+        Decl, Decorator, Expr, File, Id, Import, Node, Path, SourceInfo, SourceNode, ValueKind,
+    },
+    errors::{RayError, RayErrorKind},
+    parse::lexer::{Lexer, Preceding},
+    pathlib::FilePath,
+    span::{Pos, Source, Span},
+};
 
 fn read_string<R: io::Read>(mut r: R) -> ParseResult<String> {
     let mut src = String::new();
@@ -31,6 +31,10 @@ fn read_string<R: io::Read>(mut r: R) -> ParseResult<String> {
 }
 
 pub type ParseResult<T> = Result<T, RayError>;
+pub type ParsedExpr = SourceNode<Expr<SourceInfo>>;
+pub type ParsedDecl = SourceNode<Decl<SourceInfo>>;
+pub type ExprResult = ParseResult<ParsedExpr>;
+pub type DeclResult = ParseResult<ParsedDecl>;
 
 bitflags::bitflags! {
     pub struct Restrictions: u8 {
@@ -48,7 +52,7 @@ bitflags::bitflags! {
 #[derive(Clone, Debug)]
 pub struct ParseContext {
     pub top_level: bool,
-    pub path: ast::Path,
+    pub path: Path,
     pub in_func: bool,
     pub in_loop: bool,
     pub restrictions: Restrictions,
@@ -56,7 +60,7 @@ pub struct ParseContext {
 }
 
 impl ParseContext {
-    pub fn new(path: ast::Path) -> ParseContext {
+    pub fn new(path: Path) -> ParseContext {
         ParseContext {
             path,
             top_level: false,
@@ -67,18 +71,18 @@ impl ParseContext {
         }
     }
 
-    pub fn get_vkind(&self) -> ast::ValueKind {
+    pub fn get_vkind(&self) -> ValueKind {
         if self.restrictions.contains(Restrictions::LVALUE) {
-            ast::ValueKind::LValue
+            ValueKind::LValue
         } else {
-            ast::ValueKind::RValue
+            ValueKind::RValue
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ParseOptions {
-    pub module_path: ast::Path,
+    pub module_path: Path,
     pub use_stdin: bool,
     pub filepath: FilePath,
     pub original_filepath: FilePath,
@@ -101,14 +105,20 @@ pub struct StatementParseOptions {
     allow_externs: bool,
 }
 
-struct Items {
-    imports: Vec<ast::Import>,
-    decls: Vec<ast::Decl>,
-    stmts: Vec<ast::Expr>,
+struct Items<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    imports: Vec<Import>,
+    decls: Vec<Node<Decl<Info>, Info>>,
+    stmts: Vec<Node<Expr<Info>, Info>>,
 }
 
-impl Items {
-    fn new() -> Items {
+impl<Info> Items<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    fn new() -> Items<Info> {
         Items {
             imports: vec![],
             decls: vec![],
@@ -120,29 +130,17 @@ impl Items {
 pub struct Parser {
     lex: Lexer,
     options: ParseOptions,
-    module_id: u64,
-    next_ast_id: u64,
 }
 
 impl Parser {
-    pub fn parse(options: ParseOptions, next_ast_id: u64) -> ParseResult<ast::File> {
+    pub fn parse(options: ParseOptions) -> ParseResult<File<SourceInfo>> {
         let src = Parser::get_src(&options)?;
-        Parser::parse_from_src(src, options, next_ast_id)
+        Parser::parse_from_src(src, options)
     }
 
-    pub fn parse_from_src(
-        src: String,
-        options: ParseOptions,
-        next_ast_id: u64,
-    ) -> ParseResult<ast::File> {
+    pub fn parse_from_src(src: String, options: ParseOptions) -> ParseResult<File<SourceInfo>> {
         let lex = Lexer::new(&src);
-        let module_id = options.module_path.to_id();
-        let mut parser = Parser {
-            lex,
-            options,
-            next_ast_id,
-            module_id,
-        };
+        let mut parser = Parser { lex, options };
         parser.parse_into_file()
     }
 
@@ -152,7 +150,7 @@ impl Parser {
             let stdin = io::stdin();
             read_string(stdin)
         } else {
-            read_string(File::open(&options.filepath)?)
+            read_string(fs::File::open(&options.filepath)?)
         }
         .map_err(|mut err| {
             err.src
@@ -162,7 +160,7 @@ impl Parser {
         })
     }
 
-    fn parse_into_file(&mut self) -> ParseResult<ast::File> {
+    fn parse_into_file(&mut self) -> ParseResult<File<SourceInfo>> {
         let path = self.options.module_path.clone();
         let ctx = ParseContext::new(path.clone());
         let doc_comment = self.parse_doc_comment();
@@ -182,7 +180,7 @@ impl Parser {
                 | TokenKind::TypeAlias
                 | TokenKind::Impl => {
                     let decl = this.parse_decl(&kind, &ctx)?;
-                    let end = decl.src.span.unwrap().end;
+                    let end = decl.info.src.span.unwrap().end;
                     items.decls.push(decl);
                     Ok(end)
                 }
@@ -194,7 +192,7 @@ impl Parser {
                 }),
             }
         })?;
-        Ok(ast::File {
+        Ok(File {
             path,
             stmts: items.stmts,
             decls: items.decls,
@@ -202,7 +200,6 @@ impl Parser {
             doc_comment,
             filepath,
             span,
-            last_ast_id: self.next_ast_id,
         })
     }
 
@@ -211,7 +208,7 @@ impl Parser {
             &mut Self,
             TokenKind,
             Option<String>,
-            Option<Vec<ast::Decorator>>,
+            Option<Vec<Decorator<SourceInfo>>>,
         ) -> Result<Pos, RayError>,
     >(
         &mut self,
@@ -254,7 +251,7 @@ impl Parser {
         stop_token: Option<&TokenKind>,
         ctx: &ParseContext,
         options: StatementParseOptions,
-    ) -> (Vec<ast::Expr>, Span, Vec<RayError>) {
+    ) -> (Vec<ParsedExpr>, Span, Vec<RayError>) {
         debug!("parser.statements at {:?}", pos);
 
         let start = pos;
@@ -276,24 +273,16 @@ impl Parser {
 
             match self.parse_stmt(decs, doc, ctx) {
                 Ok(stmt) => {
-                    if options.only_functions
-                        && !matches!(
-                            stmt,
-                            ast::Expr {
-                                kind: ast::ExprKind::Fn(_),
-                                ..
-                            }
-                        )
-                    {
+                    if options.only_functions && !matches!(stmt.value, Expr::Fn(_)) {
                         errors.push(
                             self.parse_error(
                                 "only functions or function signatures are allowed in this block"
                                     .to_string(),
-                                stmt.src.span.unwrap(),
+                                stmt.info.src.span.unwrap(),
                             ),
                         )
                     }
-                    end = stmt.src.span.unwrap().end;
+                    end = stmt.info.src.span.unwrap().end;
                     stmts.push(stmt);
                 }
                 Err(e) => errors.push(e),
@@ -345,12 +334,12 @@ impl Parser {
 
     fn parse_stmt(
         &mut self,
-        decs: Option<Vec<ast::Decorator>>,
+        decs: Option<Vec<Decorator<SourceInfo>>>,
         doc: Option<String>,
         ctx: &ParseContext,
-    ) -> ParseResult<ast::Expr> {
+    ) -> ExprResult {
         let mut expr = self.parse_expr(ctx)?;
-        expr.doc = doc;
+        expr.info.doc = doc;
         Ok(expr)
     }
 
@@ -427,37 +416,30 @@ impl Parser {
         }
     }
 
-    pub(crate) fn mk_expr(&mut self, kind: ast::ExprKind, span: Span) -> ast::Expr {
-        let id = self.next_ast_id;
-        self.next_ast_id += 1;
-        ast::Expr {
-            kind,
-            src: Source {
-                span: Some(span),
-                filepath: self.options.filepath.clone(),
+    pub(crate) fn mk_expr(&mut self, expr: Expr<SourceInfo>, span: Span) -> ParsedExpr {
+        Node::new(
+            expr,
+            SourceInfo {
+                src: Source {
+                    span: Some(span),
+                    filepath: self.options.filepath.clone(),
+                },
+                doc: None,
             },
-            id: ast::Id {
-                module_id: self.module_id,
-                local_id: id,
-            },
-            doc: None,
-        }
+        )
     }
 
-    pub(crate) fn mk_decl(&mut self, kind: ast::DeclKind, span: Span) -> ast::Decl {
-        let id = self.next_ast_id;
-        self.next_ast_id += 1;
-        ast::Decl {
-            kind,
-            src: Source {
-                span: Some(span),
-                filepath: self.options.filepath.clone(),
+    pub(crate) fn mk_decl(&mut self, value: Decl<SourceInfo>, span: Span) -> ParsedDecl {
+        Node::new(
+            value,
+            SourceInfo {
+                src: Source {
+                    span: Some(span),
+                    filepath: self.options.filepath.clone(),
+                },
+                doc: None,
             },
-            id: ast::Id {
-                module_id: self.module_id,
-                local_id: id,
-            },
-        }
+        )
     }
 
     fn expect(&mut self, kind: TokenKind) -> ParseResult<(Token, Span)> {

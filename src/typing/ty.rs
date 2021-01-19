@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    ast::{self, FnSig, Path},
+    ast::{self, FnSig, HasSource, Path},
     errors::{RayError, RayErrorKind},
     pathlib::FilePath,
     span::Source,
@@ -14,11 +14,9 @@ use crate::{
 use super::{
     context::Ctx,
     predicate::TyPredicate,
+    state::TyVarFactory,
     subst::{ApplySubst, Subst},
-    top::{
-        state::TyVarFactory,
-        traits::{Generalize, HasFreeVars, Instantiate, Polymorphize, Skolemize},
-    },
+    traits::{Generalize, HasFreeVars, Instantiate, Polymorphize, Skolemize},
     InferError,
 };
 
@@ -182,27 +180,14 @@ impl ApplySubst for Ty {
                     Ty::Union(tys.apply_subst(subst))
                 }
             }
-            Ty::Func(a, r) => Ty::Func(a.apply_subst(subst), Box::new(r.apply_subst(subst))),
+            Ty::Func(a, r) => Ty::Func(a.apply_subst(subst), r.apply_subst(subst)),
             Ty::Projection(n, t, f) => {
                 Ty::Projection(n, t.apply_subst(subst), f.apply_subst(subst))
             }
-            Ty::Cast(f, t) => Ty::Cast(
-                Box::new(f.apply_subst(subst)),
-                Box::new(t.apply_subst(subst)),
-            ),
-            Ty::Qualified(p, t) => {
-                Ty::Qualified(p.apply_subst(subst), Box::new(t.apply_subst(subst)))
-            }
-            Ty::All(xs, ty) => Ty::All(xs.apply_subst(subst), Box::new(ty.apply_subst(subst))),
+            Ty::Cast(f, t) => Ty::Cast(f.apply_subst(subst), t.apply_subst(subst)),
+            Ty::Qualified(p, t) => Ty::Qualified(p.apply_subst(subst), t.apply_subst(subst)),
+            Ty::All(xs, ty) => Ty::All(xs.apply_subst(subst), ty.apply_subst(subst)),
         }
-    }
-}
-
-impl ApplySubst<Vec<(String, Ty)>> for Vec<(String, Ty)> {
-    fn apply_subst(self, subst: &Subst) -> Vec<(String, Ty)> {
-        self.into_iter()
-            .map(|(n, t)| (n, t.apply_subst(subst)))
-            .collect()
     }
 }
 
@@ -295,7 +280,7 @@ impl Instantiate for Ty {
             Ty::All(xs, t) => {
                 let new_xs = (0..xs.len()).into_iter().map(|_| Ty::Var(tf.next()));
                 let sub = Subst::from_types(xs, new_xs);
-                t.apply_subst(&sub)
+                (*t).apply_subst(&sub)
             }
             t @ Ty::Never | t @ Ty::Any => t,
         }
@@ -356,13 +341,16 @@ impl BitOr for Ty {
 }
 
 impl Ty {
-    pub fn from_sig(
-        sig: &FnSig,
+    pub fn from_sig<Info>(
+        sig: &FnSig<Info>,
         fn_scope: &Path,
         filepath: &FilePath,
         fn_ctx: &mut Ctx,
         parent_ctx: &mut Ctx,
-    ) -> Result<Ty, RayError> {
+    ) -> Result<Ty, RayError>
+    where
+        Info: std::fmt::Debug + Clone + PartialEq + Eq + HasSource,
+    {
         let mut param_tys = vec![];
 
         for param in sig.params.iter() {

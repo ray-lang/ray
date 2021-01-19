@@ -17,6 +17,7 @@ itertools = "0.9"
 lang-c = "0.9"
 log = "0.4"
 pprof = { version = "0.3", features = ["protobuf"] }
+rand = "0.8"
 quote = "1.0"
 structopt = "0.3"
 syn = "1.0"

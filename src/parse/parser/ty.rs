@@ -1,11 +1,11 @@
 use crate::{
-    ast::{token::TokenKind, FnParam, Name, Type, TypeKind, TypeParams},
+    ast::{token::TokenKind, FnParam, Name, SourceInfo, Type, TypeKind, TypeParams},
     parse::{ParseResult, Parser},
     span::Span,
 };
 
 impl Parser {
-    pub(crate) fn parse_trait_fn_param(&mut self) -> ParseResult<FnParam> {
+    pub(crate) fn parse_trait_fn_param(&mut self) -> ParseResult<FnParam<SourceInfo>> {
         if let Some(ty) = self.parse_ty_complex()? {
             return Ok(FnParam::Type(self.parse_ty_with(Some(ty))?));
         }

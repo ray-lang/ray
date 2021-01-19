@@ -1,7 +1,8 @@
-use crate::ast::token::TokenKind;
-use crate::ast::{self, Import, Trailing};
-use crate::parse::{ParseContext, ParseResult, Parser};
-use crate::span::Span;
+use crate::{
+    ast::{token::TokenKind, Import, Path, Trailing},
+    parse::{ParseContext, ParseResult, Parser},
+    span::Span,
+};
 
 impl Parser {
     /// Parses an import statement
@@ -25,7 +26,7 @@ impl Parser {
             let (c_import, sp) = self.expect_string()?;
             let end = sp.end;
             Import {
-                path: ast::Path::new(),
+                path: Path::new(),
                 with: None,
                 span: Span { start, end },
                 c_import: Some((c_import, sp)),

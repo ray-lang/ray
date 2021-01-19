@@ -167,6 +167,12 @@ impl ApplySubst for Subst {
     }
 }
 
+impl<T: ApplySubst> ApplySubst<Box<T>> for Box<T> {
+    fn apply_subst(self, subst: &Subst) -> Box<T> {
+        Box::new((*self).apply_subst(subst))
+    }
+}
+
 impl<T: ApplySubst> ApplySubst<Vec<T>> for Vec<T> {
     fn apply_subst(self, subst: &Subst) -> Vec<T> {
         self.into_iter().map(|x| x.apply_subst(subst)).collect()
@@ -176,5 +182,13 @@ impl<T: ApplySubst> ApplySubst<Vec<T>> for Vec<T> {
 impl<T: ApplySubst> ApplySubst<VecDeque<T>> for VecDeque<T> {
     fn apply_subst(self, subst: &Subst) -> VecDeque<T> {
         self.into_iter().map(|x| x.apply_subst(subst)).collect()
+    }
+}
+
+impl<T: ApplySubst> ApplySubst<Vec<(String, T)>> for Vec<(String, T)> {
+    fn apply_subst(self, subst: &Subst) -> Vec<(String, T)> {
+        self.into_iter()
+            .map(|(n, t)| (n, t.apply_subst(subst)))
+            .collect()
     }
 }

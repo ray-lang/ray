@@ -1,0 +1,28 @@
+use crate::{
+    ast::{Expr, Node},
+    span::Span,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct While<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    pub cond: Box<Node<Expr<Info>, Info>>,
+    pub body: Box<Node<Expr<Info>, Info>>,
+    pub while_span: Span,
+}
+
+impl<Info> std::fmt::Display for While<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(while {} {})",
+            self.cond.to_string(),
+            self.body.to_string()
+        )
+    }
+}

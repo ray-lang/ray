@@ -32,10 +32,10 @@ macro_rules! variant {
 }
 
 macro_rules! aset {
-    {} => ($crate::typing::top::assumptions::AssumptionSet::new());
+    {} => ($crate::typing::assumptions::AssumptionSet::new());
 
     { $($e:tt : $v:tt),+ } => {{
-        $crate::typing::top::assumptions::AssumptionSet::from(vec![
+        $crate::typing::assumptions::AssumptionSet::from(vec![
             $((stringify!($e).to_string(), Ty::Var(tvar!($v)))),*
         ])
     }};

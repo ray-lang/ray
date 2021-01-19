@@ -1,19 +1,14 @@
 use std::collections::HashSet;
 
-use crate::{
-    hir::{HirNode, TypedHirNode},
-    span::Source,
-};
+use crate::span::Source;
 
 use super::{
+    collect::CollectConstraints,
+    constraints::tree::BottomUpWalk,
     context::Ctx,
-    top::{
-        collect::CollectConstraints,
-        constraints::tree::BottomUpWalk,
-        solvers::{GreedySolver, Solver},
-    },
-    ty::{Ty, TyVar},
-    ApplySubst, Subst,
+    solvers::{GreedySolver, Solver},
+    ty::Ty,
+    ApplySubst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,8 +16,6 @@ pub struct InferError {
     pub msg: String,
     pub src: Vec<Source>,
 }
-
-pub type InferResult = Result<(TypedHirNode, Ctx), InferError>;
 
 #[derive(Clone, Debug)]
 pub struct InferSystem {
@@ -34,11 +27,15 @@ impl InferSystem {
         InferSystem { ctx }
     }
 
-    pub fn infer_ty(&mut self, ex: HirNode) -> Result<HirNode, Vec<InferError>> {
+    pub fn infer_ty<T, U>(&mut self, v: T) -> Result<U, Vec<InferError>>
+    where
+        T: CollectConstraints<Output = U>,
+        U: std::fmt::Display + ApplySubst,
+    {
         let mono_tys = HashSet::new();
-        let (ex, _, c) = ex.collect_constraints(&mono_tys, &mut self.ctx.tf_mut());
+        let (v, _, c) = v.collect_constraints(&mono_tys, &mut self.ctx.tf_mut());
         let constraints = c.spread().phase().flatten(BottomUpWalk);
-        log::debug!("{}", ex);
+        log::debug!("{}", v);
         log::debug!("constraints: {:#?}", constraints);
 
         let solver = GreedySolver::new(constraints, &mut self.ctx);
@@ -68,14 +65,14 @@ impl InferSystem {
         }
 
         // apply the substitution
-        let ex = ex.apply_subst(&solution.subst);
+        let v = v.apply_subst(&solution.subst);
 
         log::debug!("solution: {:#?}", solution);
 
         if errs.len() != 0 {
             Err(errs)
         } else {
-            Ok(ex)
+            Ok(v)
         }
     }
 }

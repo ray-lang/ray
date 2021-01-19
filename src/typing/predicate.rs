@@ -8,10 +8,8 @@ use crate::{
 };
 
 use super::{
-    top::{
-        state::TyVarFactory,
-        traits::{HasFreeVars, Instantiate, Polymorphize},
-    },
+    state::TyVarFactory,
+    traits::{HasFreeVars, Instantiate, Polymorphize},
     ty::{LiteralKind, Ty, TyVar},
     ApplySubst, Ctx, Subst,
 };

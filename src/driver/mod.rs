@@ -67,12 +67,13 @@ impl Driver {
             }
         }
 
+        let mut modules = mod_builder.modules;
         let mut ctx = Ctx::new();
-        let hir_mod = hir::HirModule::from_ast_module(&mod_path, &mod_builder.modules, &mut ctx)?;
-        log::debug!("{}", hir_mod.root);
+        let hir_mod = hir::transform_modules(&mod_path, &mut modules, &mut ctx)?;
+        log::debug!("{}", hir_mod);
         let mut inf = InferSystem::new(ctx);
-        let root = match inf.infer_ty(hir_mod.root) {
-            Ok(n) => n,
+        let typed_mod = match inf.infer_ty(hir_mod) {
+            Ok(m) => m,
             Err(errs) => {
                 return Err(errs
                     .into_iter()
@@ -85,16 +86,16 @@ impl Driver {
             }
         };
 
-        log::debug!("{}", root);
+        log::debug!("{}", typed_mod);
 
         if options.no_compile {
             return Ok(());
         }
 
         // generate IR
-        let mut prog = lir::Program::gen(mod_path, root)?;
-        prog.monomorphize();
-        eprintln!("{}", prog);
+        // let mut prog = lir::Program::gen(mod_path, typed_mod)?;
+        // prog.monomorphize();
+        // eprintln!("{}", prog);
 
         // compile to asm
         Ok(())

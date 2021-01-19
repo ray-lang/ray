@@ -21,6 +21,16 @@ pub struct Source {
     pub span: Option<Span>,
 }
 
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(span) = &self.span {
+            write!(f, "{} at {}", self.filepath, span)
+        } else {
+            write!(f, "{}", self.filepath)
+        }
+    }
+}
+
 impl Source {
     pub fn extend_to(&self, other: &Source) -> Source {
         let span = match (self.span, other.span) {

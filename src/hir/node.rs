@@ -1,157 +1,254 @@
 use std::collections::VecDeque;
 
 use crate::{
-    ast::{Expr, Literal, Path},
+    ast::{Expr, Literal, Node, Path, SourceInfo},
     errors::RayResult,
-    pathlib::FilePath,
     span::Source,
-    typing::{top::traits::HasType, ty::Ty, ApplySubst, Ctx, Subst},
+    typing::{traits::HasType, ty::Ty, ApplySubst, Ctx, Subst},
     utils::{indent, join, map_join},
 };
 
-use super::IntoHirNode;
+use super::{HirInfo, IntoHirNode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypedHirNode {
-    ex: Box<HirNode>,
-    ty: Ty,
+pub enum HirNode<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    Var(String),
+    Literal(Literal),
+    Type(Ty),
+    Cast(Box<Node<HirNode<Info>, Info>>, Ty),
+    Decl(Node<HirDecl<Info>, Info>),
+    Struct(String, Vec<(String, Node<HirNode<Info>, Info>)>),
+    Block(Vec<Node<HirNode<Info>, Info>>),
+    Let(
+        Vec<Node<HirDecl<Info>, Info>>,
+        Box<Node<HirNode<Info>, Info>>,
+    ),
+    Fun(Vec<Param>, Box<Node<HirNode<Info>, Info>>),
+    Apply(
+        Box<Node<HirNode<Info>, Info>>,
+        Vec<Node<HirNode<Info>, Info>>,
+    ),
+    Typed(Box<Node<HirNode<Info>, HirInfo>>),
 }
 
-impl std::fmt::Display for TypedHirNode {
+impl<Info> std::fmt::Display for HirNode<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} : {}", self.ex, self.ty)
-    }
-}
+        match self {
+            HirNode::Var(n) => write!(f, "{}", n),
+            HirNode::Literal(l) => write!(f, "{}", l),
+            HirNode::Type(t) => write!(f, "{}", t),
+            HirNode::Cast(b, t) => write!(f, "({} as {})", b, t),
+            HirNode::Decl(d) => write!(f, "{}", d),
+            HirNode::Struct(n, els) => write!(
+                f,
+                "{} ({})",
+                n,
+                map_join(els, ", ", |(n, el)| { format!("{}: {}", n, el) })
+            ),
+            HirNode::Apply(fun, args) => {
+                let args = join(args, ", ");
+                write!(f, "{}({})", fun, args)
+            }
+            HirNode::Fun(params, body) => write!(
+                f,
+                "fn({}) {{\n{}\n}}",
+                join(params, ", "),
+                indent(body.to_string(), 2)
+            ),
+            HirNode::Let(decls, b) => {
+                let v = map_join(decls, ",\n", |d| d.to_string());
+                let lhs = if decls.len() <= 1 {
+                    v
+                } else {
+                    format!("(\n{}\n)", indent(v, 2))
+                };
 
-impl ApplySubst for TypedHirNode {
-    fn apply_subst(self, subst: &Subst) -> TypedHirNode {
-        TypedHirNode {
-            ex: Box::new(self.ex.apply_subst(subst)),
-            ty: self.ty.apply_subst(subst),
+                let body = if matches!(b.value, HirNode::Block(_)) {
+                    b.to_string()
+                } else {
+                    format!("{{\n{}\n}}", indent(b.to_string(), 2))
+                };
+
+                write!(f, "let {} in {}", lhs, body)
+            }
+            HirNode::Block(b) => {
+                if b.len() == 0 {
+                    write!(f, "()")
+                } else if b.len() == 1 {
+                    write!(f, "{{ {} }}", join(b, ", "))
+                } else {
+                    write!(f, "{{\n{}\n}}", indent(join(b, "\n"), 2))
+                }
+            }
+            HirNode::Typed(e) => write!(f, "{}", e),
         }
     }
 }
 
-impl Into<HirNode> for TypedHirNode {
-    fn into(self) -> HirNode {
-        HirNodeKind::Typed(self).into()
-    }
-}
-
-impl TypedHirNode {
-    pub fn new(ex: HirNode, ty: Ty) -> TypedHirNode {
-        TypedHirNode {
-            ex: Box::new(ex),
-            ty,
-        }
-    }
-
-    pub fn get_expr(&self) -> &HirNode {
-        self.ex.as_ref()
-    }
-
-    pub fn get_src(&self) -> Option<&Source> {
-        self.ex.src.as_ref()
-    }
-
-    pub fn take_expr(self) -> HirNode {
-        *self.ex
-    }
-
-    pub fn take(self) -> (HirNode, Ty) {
-        (*self.ex, self.ty)
-    }
-
-    pub fn get_type(&self) -> Ty {
-        self.ty.clone()
-    }
-
-    pub fn set_type(&mut self, ty: Ty) {
-        self.ty = ty;
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HirNode {
-    pub kind: HirNodeKind,
-    pub src: Option<Source>,
-}
-
-impl std::fmt::Display for HirNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
-
-impl ApplySubst for HirNode {
-    fn apply_subst(self, subst: &Subst) -> HirNode {
-        HirNode {
-            kind: self.kind.apply_subst(subst),
-            src: self.src,
+impl<Info> ApplySubst for HirNode<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
+{
+    fn apply_subst(self, subst: &Subst) -> HirNode<Info> {
+        match self {
+            HirNode::Var(v) => HirNode::Var(v),
+            HirNode::Type(ty) => HirNode::Type(ty.apply_subst(subst)),
+            HirNode::Literal(l) => HirNode::Literal(l),
+            HirNode::Cast(d, t) => HirNode::Cast(d.apply_subst(subst), t.apply_subst(subst)),
+            HirNode::Decl(d) => HirNode::Decl(d.apply_subst(subst)),
+            HirNode::Struct(n, els) => HirNode::Struct(n, els.apply_subst(subst)),
+            HirNode::Apply(fun, args) => {
+                HirNode::Apply(fun.apply_subst(subst), args.apply_subst(subst))
+            }
+            HirNode::Fun(params, body) => HirNode::Fun(
+                params.into_iter().map(|p| p.apply_subst(subst)).collect(),
+                body.apply_subst(subst),
+            ),
+            HirNode::Let(vars, b) => HirNode::Let(
+                vars.into_iter().map(|d| d.apply_subst(subst)).collect(),
+                b.apply_subst(subst),
+            ),
+            HirNode::Block(b) => HirNode::Block(b.apply_subst(subst)),
+            HirNode::Typed(e) => HirNode::Typed(e.apply_subst(subst)),
         }
     }
 }
 
-impl HasType for HirNode {
-    fn get_type(&self) -> Ty {
-        match &self.kind {
-            HirNodeKind::Typed(t) => t.get_type(),
+// #[derive(Clone, Debug, PartialEq, Eq)]
+// pub struct TypedHirNode<Info>
+// where
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     ex: Box<HirNode<Info>>,
+//     ty: Ty,
+// }
+
+// impl<Info> std::fmt::Display for TypedHirNode<Info>
+// where
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "{} : {}", self.ex, self.ty)
+//     }
+// }
+
+// impl<Info> ApplySubst for TypedHirNode<Info>
+// where
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     fn apply_subst(self, subst: &Subst) -> TypedHirNode<Info> {
+//         TypedHirNode {
+//             ex: Box::new(self.ex.apply_subst(subst)),
+//             ty: self.ty.apply_subst(subst),
+//         }
+//     }
+// }
+
+// impl<Info> Into<HirNode<Info>> for TypedHirNode<Info>
+// where
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     fn into(self) -> HirNode<Info> {
+//         HirNode::Typed(self)
+//     }
+// }
+
+// impl<Info> TypedHirNode<Info>
+// where
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     pub fn new(ex: HirNode<Info>, ty: Ty) -> TypedHirNode<Info> {
+//         TypedHirNode {
+//             ex: Box::new(ex),
+//             ty,
+//         }
+//     }
+
+//     pub fn get_expr(&self) -> &HirNode<Info> {
+//         self.ex.as_ref()
+//     }
+
+//     pub fn get_src(&self) -> Option<&Source> {
+//         self.ex.src.as_ref()
+//     }
+
+//     pub fn take_expr(self) -> HirNode<Info> {
+//         *self.ex
+//     }
+
+//     pub fn take(self) -> (HirNode<Info>, Ty) {
+//         (*self.ex, self.ty)
+//     }
+
+//     pub fn get_type(&self) -> Ty {
+//         self.ty.clone()
+//     }
+
+//     pub fn set_type(&mut self, ty: Ty) {
+//         self.ty = ty;
+//     }
+// }
+
+impl<Info> HasType for HirNode<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    fn ty(&self) -> Ty {
+        match &self {
+            HirNode::Typed(t) => t.ty(),
             _ => Ty::unit(),
         }
     }
 }
 
-impl HirNode {
-    pub fn new(kind: HirNodeKind) -> HirNode {
-        HirNode { kind, src: None }
-    }
-
-    pub fn typed(t: TypedHirNode) -> HirNode {
-        HirNode {
-            kind: HirNodeKind::Typed(t),
-            src: None,
-        }
-    }
-
+impl HirNode<SourceInfo> {
     pub fn block(
-        exprs: &mut VecDeque<Expr>,
+        exprs: &mut VecDeque<Node<Expr<SourceInfo>, SourceInfo>>,
         scope: &Path,
-        filepath: &FilePath,
+        id: u64,
+        info: &SourceInfo,
         ctx: &mut Ctx,
-    ) -> RayResult<HirNode> {
+    ) -> RayResult<Node<HirNode<SourceInfo>, SourceInfo>> {
         let mut nodes = vec![];
         while let Some(first) = exprs.pop_front() {
-            nodes.push(first.to_hir_node_with(exprs, scope, filepath, ctx)?);
+            nodes.push(first.to_hir_node_with(exprs, scope, id, info, ctx)?);
         }
 
-        Ok(if nodes.len() != 0 {
-            HirNodeKind::Block(nodes).into()
-        } else {
-            // otherwise it'll be a const unit
-            HirNodeKind::Literal(Literal::Unit).into()
+        Ok(Node {
+            id,
+            info: info.clone(),
+            value: if nodes.len() != 0 {
+                HirNode::Block(nodes)
+            } else {
+                // otherwise it'll be a const unit
+                HirNode::Literal(Literal::Unit)
+            },
         })
     }
+}
 
+impl<Info> HirNode<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
     pub fn fn_name(&self) -> Option<&String> {
-        match &self.kind {
-            HirNodeKind::Var(v) => Some(v),
-            HirNodeKind::Apply(f, _) => f.fn_name(),
-            HirNodeKind::Typed(t) => t.get_expr().fn_name(),
+        match &self {
+            HirNode::Var(v) => Some(v),
+            HirNode::Apply(f, _) => f.fn_name(),
+            HirNode::Typed(t) => t.value.fn_name(),
             _ => None,
         }
     }
 
-    pub fn get_type(&self) -> Ty {
-        if let HirNodeKind::Typed(t) = &self.kind {
-            t.get_type()
-        } else {
-            panic!("not a typed expression: {}", self)
-        }
-    }
-
-    pub fn borrow_typed(&self) -> Option<(&HirNode, &Ty)> {
-        if let HirNodeKind::Typed(t) = &self.kind {
-            Some((t.ex.as_ref(), &t.ty))
+    pub fn borrow_typed(&self) -> Option<(&HirNode<Info>, Ty)> {
+        if let HirNode::Typed(t) = &self {
+            Some((&t.value, t.ty()))
         } else {
             None
         }
@@ -228,162 +325,47 @@ impl std::fmt::Display for HirPattern {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HirDeclKind {
-    Pattern(HirPattern, Box<HirNode>),
+pub enum HirDecl<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    Pattern(HirPattern, Box<Node<HirNode<Info>, Info>>),
     Type(String, Ty),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HirDecl {
-    pub kind: HirDeclKind,
-    pub src: Option<Source>,
-}
-
-impl HirDecl {
-    pub fn var<S: Into<String>, R: Into<HirNode>>(var: S, rhs: R) -> HirDecl {
-        HirDecl {
-            kind: HirDeclKind::Pattern(HirPattern::Var(var.into()), Box::new(rhs.into())),
-            src: None,
-        }
+impl<Info> HirDecl<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
+    pub fn var<S: Into<String>>(var: S, rhs: Node<HirNode<Info>, Info>) -> HirDecl<Info> {
+        HirDecl::Pattern(HirPattern::Var(var.into()), Box::new(rhs))
     }
 
-    pub fn ty<S: Into<String>>(name: S, ty: Ty) -> HirDecl {
-        HirDecl {
-            kind: HirDeclKind::Type(name.into(), ty),
-            src: None,
-        }
-    }
-
-    pub fn with_src(mut self, src: Option<Source>) -> HirDecl {
-        self.src = src;
-        self
+    pub fn ty<S: Into<String>>(name: S, ty: Ty) -> HirDecl<Info> {
+        HirDecl::Type(name.into(), ty)
     }
 }
 
-impl std::fmt::Display for HirDecl {
+impl<Info> std::fmt::Display for HirDecl<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.kind {
-            HirDeclKind::Pattern(x, n) => write!(f, "{} = {}", x, n),
-            HirDeclKind::Type(x, t) => write!(f, "{} :: {}", x, t),
+        match &self {
+            HirDecl::Pattern(x, n) => write!(f, "{} = {}", x, n),
+            HirDecl::Type(x, t) => write!(f, "{} :: {}", x, t),
         }
     }
 }
 
-impl ApplySubst for HirDecl {
-    fn apply_subst(self, subst: &Subst) -> HirDecl {
-        let span = self.src;
-        let kind = match self.kind {
-            HirDeclKind::Pattern(x, n) => HirDeclKind::Pattern(x, Box::new(n.apply_subst(subst))),
-            HirDeclKind::Type(x, t) => HirDeclKind::Type(x, t.apply_subst(subst)),
-        };
-        HirDecl { kind, src: span }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HirNodeKind {
-    Var(String),
-    Literal(Literal),
-    Type(Ty),
-    Cast(Box<HirNode>, Ty),
-    Decl(HirDecl),
-    Struct(String, Vec<(String, HirNode)>),
-    Block(Vec<HirNode>),
-    Let(Vec<HirDecl>, Box<HirNode>),
-    Fun(Vec<Param>, Box<HirNode>),
-    Apply(Box<HirNode>, Vec<HirNode>),
-    Typed(TypedHirNode),
-}
-
-impl std::fmt::Display for HirNodeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<Info> ApplySubst for HirDecl<Info>
+where
+    Info: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
+{
+    fn apply_subst(self, subst: &Subst) -> HirDecl<Info> {
         match self {
-            HirNodeKind::Var(n) => write!(f, "{}", n),
-            HirNodeKind::Literal(l) => write!(f, "{}", l),
-            HirNodeKind::Type(t) => write!(f, "{}", t),
-            HirNodeKind::Cast(b, t) => write!(f, "({} as {})", b, t),
-            HirNodeKind::Decl(d) => write!(f, "{}", d),
-            HirNodeKind::Struct(n, els) => write!(
-                f,
-                "{} ({})",
-                n,
-                map_join(els, ", ", |(n, el)| { format!("{}: {}", n, el) })
-            ),
-            HirNodeKind::Apply(fun, args) => {
-                let args = join(args, ", ");
-                write!(f, "{}({})", fun, args)
-            }
-            HirNodeKind::Fun(params, body) => write!(
-                f,
-                "fn({}) {{\n{}\n}}",
-                join(params, ", "),
-                indent(body.to_string(), 2)
-            ),
-            HirNodeKind::Let(decls, b) => {
-                let v = map_join(decls, ",\n", |d| d.to_string());
-                let lhs = if decls.len() <= 1 {
-                    v
-                } else {
-                    format!("(\n{}\n)", indent(v, 2))
-                };
-
-                let body = if matches!(b.kind, HirNodeKind::Block(_)) {
-                    b.to_string()
-                } else {
-                    format!("{{\n{}\n}}", indent(b.to_string(), 2))
-                };
-
-                write!(f, "let {} in {}", lhs, body)
-            }
-            HirNodeKind::Block(b) => {
-                if b.len() == 0 {
-                    write!(f, "()")
-                } else if b.len() == 1 {
-                    write!(f, "{{ {} }}", join(b, ", "))
-                } else {
-                    write!(f, "{{\n{}\n}}", indent(join(b, "\n"), 2))
-                }
-            }
-            HirNodeKind::Typed(e) => write!(f, "{}", e),
+            HirDecl::Pattern(x, n) => HirDecl::Pattern(x, n.apply_subst(subst)),
+            HirDecl::Type(x, t) => HirDecl::Type(x, t.apply_subst(subst)),
         }
-    }
-}
-
-impl ApplySubst for HirNodeKind {
-    fn apply_subst(self, subst: &Subst) -> HirNodeKind {
-        match self {
-            HirNodeKind::Var(v) => HirNodeKind::Var(v),
-            HirNodeKind::Type(ty) => HirNodeKind::Type(ty.apply_subst(subst)),
-            HirNodeKind::Literal(l) => HirNodeKind::Literal(l),
-            HirNodeKind::Cast(d, t) => {
-                HirNodeKind::Cast(Box::new(d.apply_subst(subst)), t.apply_subst(subst))
-            }
-            HirNodeKind::Decl(d) => HirNodeKind::Decl(d.apply_subst(subst)),
-            HirNodeKind::Struct(n, els) => HirNodeKind::Struct(
-                n,
-                els.into_iter()
-                    .map(|(n, el)| (n, el.apply_subst(subst)))
-                    .collect(),
-            ),
-            HirNodeKind::Apply(fun, args) => {
-                HirNodeKind::Apply(Box::new(fun.apply_subst(subst)), args.apply_subst(subst))
-            }
-            HirNodeKind::Fun(params, body) => HirNodeKind::Fun(
-                params.into_iter().map(|p| p.apply_subst(subst)).collect(),
-                Box::new(body.apply_subst(subst)),
-            ),
-            HirNodeKind::Let(vars, b) => HirNodeKind::Let(
-                vars.into_iter().map(|d| d.apply_subst(subst)).collect(),
-                Box::new(b.apply_subst(subst)),
-            ),
-            HirNodeKind::Block(b) => HirNodeKind::Block(b.apply_subst(subst)),
-            HirNodeKind::Typed(e) => HirNodeKind::Typed(e.apply_subst(subst)),
-        }
-    }
-}
-
-impl Into<HirNode> for HirNodeKind {
-    fn into(self) -> HirNode {
-        HirNode::new(self)
     }
 }
