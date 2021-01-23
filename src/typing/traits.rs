@@ -66,6 +66,8 @@ pub trait HasState {
 
     fn store_ty(&mut self, v: TyVar, ty: Ty, info: ConstraintInfo);
 
+    fn inst_ty(&mut self, v: Ty, u: Ty);
+
     fn lookup_ty(&self, tv: &TyVar) -> Option<Ty>;
 
     fn find_ty(&self, r: &Ty) -> Ty;
@@ -83,8 +85,100 @@ pub trait HasPredicates {
     fn generalize_with_preds(&mut self, mono_tys: &Vec<Ty>, ty: Ty) -> Ty;
 }
 
+pub trait QualifyTypes {
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>);
+}
+
+impl<'a> QualifyTypes for std::vec::IntoIter<&'a mut Ty> {
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+        for t in self {
+            if t.is_func() {
+                t.qualify_in_place(preds);
+            }
+        }
+    }
+}
+
+impl<'a, K> QualifyTypes for std::collections::hash_map::ValuesMut<'a, K, Ty> {
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+        for t in self {
+            if t.is_func() {
+                t.qualify_in_place(preds);
+            }
+        }
+    }
+}
+
+impl<'a, T> QualifyTypes for Vec<T>
+where
+    T: QualifyTypes,
+{
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+        for t in self.iter_mut() {
+            t.qualify_tys(preds);
+        }
+    }
+}
+
+pub trait QuantifyTypes {
+    fn quantify_tys(&mut self);
+}
+
+impl<'a> QuantifyTypes for std::vec::IntoIter<&'a mut Ty> {
+    fn quantify_tys(&mut self) {
+        for t in self {
+            if t.is_func() {
+                t.quantify_in_place();
+            }
+        }
+    }
+}
+
+impl<'a, K> QuantifyTypes for std::collections::hash_map::ValuesMut<'a, K, Ty> {
+    fn quantify_tys(&mut self) {
+        for t in self {
+            if t.is_func() {
+                t.quantify_in_place();
+            }
+        }
+    }
+}
+
+impl<'a, T> QuantifyTypes for Vec<T>
+where
+    T: QuantifyTypes,
+{
+    fn quantify_tys(&mut self) {
+        for t in self.iter_mut() {
+            t.quantify_tys();
+        }
+    }
+}
+
 pub trait HasFreeVars {
     fn free_vars(&self) -> HashSet<&TyVar>;
+}
+
+impl<T> HasFreeVars for Vec<T>
+where
+    T: HasFreeVars,
+{
+    fn free_vars(&self) -> HashSet<&TyVar> {
+        self.iter()
+            .flat_map(|t| t.free_vars())
+            .collect::<HashSet<_>>()
+    }
+}
+
+impl<S, T> HasFreeVars for Vec<(S, T)>
+where
+    T: HasFreeVars,
+{
+    fn free_vars(&self) -> HashSet<&TyVar> {
+        self.iter()
+            .flat_map(|(_, t)| t.free_vars())
+            .collect::<HashSet<_>>()
+    }
 }
 
 pub trait FreezeVars {

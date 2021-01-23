@@ -99,12 +99,15 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
     fn entails(&self, q: &TyPredicate, ctx: &Ctx) -> bool {
         match q {
             TyPredicate::Trait(trait_ty) => {
+                log::debug!("[entails] {}", q);
+                log::debug!("[entails] trait type: {}", trait_ty);
                 let base_ty = trait_ty.get_ty_param_at(0);
 
                 // look through all of the traits and find the traits that include
                 // the trait type in `q` as a super trait, meaning find all of the
                 // subtraits of the trait type
                 let subtraits = ctx.get_subtraits(trait_ty);
+                log::debug!("[entails] subtraits: {:?}", subtraits);
                 if subtraits.into_iter().any(|s| {
                     let s = s.clone();
                     let tv = s.get_ty_param_at(0).clone().as_tyvar();

@@ -35,7 +35,7 @@ impl Parser {
                 } else {
                     (None, span)
                 };
-                Ok(self.mk_expr(Expr::Break(ex), span))
+                Ok(self.mk_expr(Expr::Break(ex), span, ctx.path.clone()))
             }
             TokenKind::Return => {
                 let span = self.expect_sp(TokenKind::Return)?;
@@ -46,11 +46,12 @@ impl Parser {
                 } else {
                     (None, span)
                 };
-                Ok(self.mk_expr(Expr::Return(ex), span))
+                Ok(self.mk_expr(Expr::Return(ex), span, ctx.path.clone()))
             }
             TokenKind::Fn | TokenKind::Modifier(_) => self.parse_fn(false, ctx).map(|f| {
                 let span = f.span;
-                self.mk_expr(Expr::Fn(f), span)
+                let path = f.sig.path.clone();
+                self.mk_expr(Expr::Fn(f), span, path)
             }),
             TokenKind::LeftParen => self.parse_paren_expr(ctx),
             TokenKind::LeftCurly => self.parse_block(ctx),
@@ -61,11 +62,11 @@ impl Parser {
             }
             TokenKind::DoubleQuote => {
                 let (s, span) = self.expect_string()?;
-                Ok(self.mk_expr(Expr::Literal(Literal::String(s)), span))
+                Ok(self.mk_expr(Expr::Literal(Literal::String(s)), span, ctx.path.clone()))
             }
             TokenKind::SingleQuote => {
                 let (c, span) = self.expect_char()?;
-                Ok(self.mk_expr(Expr::Literal(Literal::Char(c)), span))
+                Ok(self.mk_expr(Expr::Literal(Literal::Char(c)), span, ctx.path.clone()))
             }
             TokenKind::Identifier(s)
                 if &s == "b"
@@ -79,10 +80,18 @@ impl Parser {
                 let quote = self.token()?;
                 if quote.kind == TokenKind::SingleQuote {
                     let (c, Span { end, .. }) = self.expect_char()?;
-                    Ok(self.mk_expr(Expr::Literal(Literal::Char(c)), Span { start, end }))
+                    Ok(self.mk_expr(
+                        Expr::Literal(Literal::Char(c)),
+                        Span { start, end },
+                        ctx.path.clone(),
+                    ))
                 } else {
                     let (s, Span { end, .. }) = self.expect_string()?;
-                    Ok(self.mk_expr(Expr::Literal(Literal::String(s)), Span { start, end }))
+                    Ok(self.mk_expr(
+                        Expr::Literal(Literal::String(s)),
+                        Span { start, end },
+                        ctx.path.clone(),
+                    ))
                 }
             }
             TokenKind::Identifier(_) | TokenKind::Struct | TokenKind::Underscore => {
@@ -91,7 +100,7 @@ impl Parser {
                     // closure expression
                     let span = n.span;
                     let args = Sequence {
-                        items: vec![self.mk_expr(Expr::Name(n), span)],
+                        items: vec![self.mk_expr(Expr::Name(n), span, ctx.path.clone())],
                         trailing: false,
                     };
                     return self.parse_closure_expr_with_seq(args, false, None, span, ctx);
@@ -100,10 +109,10 @@ impl Parser {
                 if expect_if!(self, TokenKind::DoubleColon) {
                     let p = self.parse_path_with((n.name, n.span))?;
                     let span = p.span;
-                    Ok(self.mk_expr(Expr::Path(p), span))
+                    Ok(self.mk_expr(Expr::Path(p), span, ctx.path.clone()))
                 } else {
                     let span = n.span;
-                    Ok(self.mk_expr(Expr::Name(n), span))
+                    Ok(self.mk_expr(Expr::Name(n), span, ctx.path.clone()))
                 }
             }
             TokenKind::LeftBracket => self.parse_array_expr(ctx),
@@ -124,7 +133,7 @@ impl Parser {
         loop {
             if let Some(tok) = self.expect_kind(TokenKind::Dot)? {
                 // expr.member
-                ex = self.parse_dot_expr(ex, tok)?;
+                ex = self.parse_dot_expr(ex, tok, ctx)?;
                 continue;
             }
 
@@ -163,10 +172,19 @@ impl Parser {
         let ex = self.parse_expr(ctx)?;
         let end = ex.info.src.span.unwrap().end;
 
-        Ok(self.mk_expr(Expr::Unsafe(Box::new(ex)), Span { start, end }))
+        Ok(self.mk_expr(
+            Expr::Unsafe(Box::new(ex)),
+            Span { start, end },
+            ctx.path.clone(),
+        ))
     }
 
-    pub(crate) fn parse_dot_expr(&mut self, lhs: ParsedExpr, dot_tok: Token) -> ExprResult {
+    pub(crate) fn parse_dot_expr(
+        &mut self,
+        lhs: ParsedExpr,
+        dot_tok: Token,
+        ctx: &ParseContext,
+    ) -> ExprResult {
         let start = lhs.info.src.span.unwrap().start;
         let rhs = self.parse_name_with_type()?;
         let end = rhs.span.end;
@@ -177,6 +195,7 @@ impl Parser {
                 dot: dot_tok,
             }),
             Span { start, end },
+            ctx.path.clone(),
         ))
     }
 
@@ -215,7 +234,7 @@ impl Parser {
                 let span = ty.span.unwrap();
                 (
                     Sequence {
-                        items: vec![self.mk_expr(Expr::Type(ty), span)],
+                        items: vec![self.mk_expr(Expr::Type(ty), span, ctx.path.clone())],
                         trailing: false,
                     },
                     span,
@@ -273,6 +292,7 @@ impl Parser {
                 },
             }),
             Span { start, end },
+            ctx.path.clone(),
         ))
     }
 
@@ -292,6 +312,7 @@ impl Parser {
                 bracket_span: lbrack_tok.span.extend_to(&rbrack_span),
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 
@@ -353,6 +374,7 @@ impl Parser {
                 curly_span,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 }

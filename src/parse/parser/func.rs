@@ -14,11 +14,15 @@ impl Parser {
         let sig = self.parse_fn_sig(ctx)?;
         let start = sig.span.start;
         let mut end = sig.span.end;
+
+        let mut ctx = ctx.clone();
+        ctx.path = sig.path.clone();
+
         let body = if !only_sigs {
             let b = if expect_if!(self, TokenKind::FatArrow) {
-                self.parse_expr(ctx)?
+                self.parse_expr(&ctx)?
             } else {
-                self.parse_block(ctx)?
+                self.parse_block(&ctx)?
             };
             end = b.info.src.span.unwrap().end;
             Some(b)
@@ -56,6 +60,11 @@ impl Parser {
         let modifiers = self.parse_modifiers()?;
         let start = self.expect_start(TokenKind::Fn)?;
         let name = self.parse_fn_name(ctx)?;
+        let path = if let Some(name) = &name {
+            ctx.path.append(name)
+        } else {
+            ctx.path.append("<anon>")
+        };
         let ty_params = self.parse_ty_params()?;
         let (params, param_span) = f(self)?;
         let mut end = param_span.end;
@@ -70,6 +79,7 @@ impl Parser {
         let qualifiers = self.parse_where_clause()?;
 
         Ok(FnSig {
+            path,
             name,
             params,
             ty_params,

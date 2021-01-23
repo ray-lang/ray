@@ -20,6 +20,7 @@ impl Parser {
                 Ok(self.mk_expr(
                     Expr::Literal(Literal::from_token(tok, &self.options.filepath)?),
                     span,
+                    ctx.path.clone(),
                 ))
             }
             _ => {
@@ -183,7 +184,7 @@ impl Parser {
             return self.parse_closure_expr_with_seq(args, false, None, Span { start, end }, &ctx);
         }
 
-        Ok(self.mk_expr(kind, Span { start, end }))
+        Ok(self.mk_expr(kind, Span { start, end }, ctx.path.clone()))
     }
 
     pub(crate) fn parse_name_seq(
@@ -236,7 +237,7 @@ impl Parser {
                 (ValueKind::LValue, TokenKind::Identifier(_), _) => {
                     let n = self.parse_name_with_type()?;
                     let span = n.span;
-                    items.push(self.mk_expr(Expr::Name(n), span))
+                    items.push(self.mk_expr(Expr::Name(n), span, ctx.path.clone()))
                 }
                 (ValueKind::RValue, _, _) => {
                     let ex = self.parse_expr(ctx)?;
@@ -289,6 +290,7 @@ impl Parser {
                 body: Box::new(body),
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 
@@ -305,7 +307,8 @@ impl Parser {
                 let r = self.expect_sp(TokenKind::RightCurly)?;
                 span.end = r.end;
                 curly_spans = Some((l, r));
-                let body = Box::new(self.mk_expr(Expr::Tuple(Sequence::empty()), span));
+                let body =
+                    Box::new(self.mk_expr(Expr::Tuple(Sequence::empty()), span, ctx.path.clone()));
                 return Ok(self.mk_expr(
                     Expr::Closure(Closure {
                         args: Sequence::empty(),
@@ -314,6 +317,7 @@ impl Parser {
                         body,
                     }),
                     span,
+                    ctx.path.clone(),
                 ));
             }
 
@@ -346,7 +350,7 @@ impl Parser {
 
             span.end = name_span.end;
             Sequence {
-                items: vec![self.mk_expr(Expr::Name(name), name_span)],
+                items: vec![self.mk_expr(Expr::Name(name), name_span, ctx.path.clone())],
                 trailing: false,
             }
         };
@@ -372,6 +376,7 @@ impl Parser {
                 is_top_level: ctx.top_level,
             }),
             Span { start, end },
+            ctx.path.clone(),
         ))
     }
 }

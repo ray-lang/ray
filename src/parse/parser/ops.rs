@@ -49,6 +49,7 @@ impl Parser {
                                     trailing: true,
                                 }),
                                 span,
+                                ctx.path.clone(),
                             )
                         }
                     }
@@ -85,14 +86,18 @@ impl Parser {
                 // this is a typed expression
                 let ty = self.parse_ty()?;
                 let ty_span = ty.span.unwrap();
-                let rhs = self.mk_expr(Expr::Type(ty), ty_span);
+                let rhs = self.mk_expr(Expr::Type(ty), ty_span, ctx.path.clone());
                 let span = lhs
                     .info
                     .src
                     .span
                     .unwrap()
                     .extend_to(&rhs.info.src.span.unwrap());
-                lhs = self.mk_expr(Expr::Labeled(Box::new(lhs), Box::new(rhs)), span);
+                lhs = self.mk_expr(
+                    Expr::Labeled(Box::new(lhs), Box::new(rhs)),
+                    span,
+                    ctx.path.clone(),
+                );
                 continue;
             }
 
@@ -107,7 +112,11 @@ impl Parser {
                 .extend_to(&rhs.info.src.span.unwrap());
 
             if matches!(op, InfixOp::Colon) && matches!(lhs.value, Expr::Name(_)) {
-                lhs = self.mk_expr(Expr::Labeled(Box::new(lhs), Box::new(rhs)), span);
+                lhs = self.mk_expr(
+                    Expr::Labeled(Box::new(lhs), Box::new(rhs)),
+                    span,
+                    ctx.path.clone(),
+                );
                 continue;
             }
 
@@ -146,7 +155,7 @@ impl Parser {
                 }),
             };
 
-            lhs = self.mk_expr(kind, span)
+            lhs = self.mk_expr(kind, span, ctx.path.clone())
         }
 
         Ok(lhs)
@@ -164,6 +173,7 @@ impl Parser {
                     op_span,
                 }),
                 span,
+                ctx.path.clone(),
             ))
         } else {
             self.parse_postfix_expr(ctx)
@@ -199,6 +209,7 @@ impl Parser {
                 limits,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 
@@ -217,6 +228,7 @@ impl Parser {
                 as_span,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 

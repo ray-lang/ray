@@ -6,7 +6,7 @@ use super::{
     collect::CollectConstraints,
     constraints::tree::BottomUpWalk,
     context::Ctx,
-    solvers::{GreedySolver, Solver},
+    solvers::{GreedySolver, Solution, Solver},
     ty::Ty,
     ApplySubst,
 };
@@ -27,7 +27,7 @@ impl InferSystem {
         InferSystem { ctx }
     }
 
-    pub fn infer_ty<T, U>(&mut self, v: T) -> Result<U, Vec<InferError>>
+    pub fn infer_ty<T, U>(&mut self, v: T) -> Result<(U, Solution), Vec<InferError>>
     where
         T: CollectConstraints<Output = U>,
         U: std::fmt::Display + ApplySubst,
@@ -40,39 +40,19 @@ impl InferSystem {
 
         let solver = GreedySolver::new(constraints, &mut self.ctx);
         let (mut solution, constraints) = solver.solve();
-        log::debug!("constraints to check: {:#?}", constraints);
 
-        log::debug!("solution: {:#?}", solution);
-
-        solution.formalize_types();
-
-        solution
-            .preds
-            .extend(solution.preds.clone().apply_subst(&solution.subst));
-        solution.preds.sort();
-        solution.preds.dedup();
+        log::debug!("solution (before satisfy check): {:#?}", solution);
 
         // verify satisibility of the constraints using the solution
         let errs = solution.satisfies(constraints, &self.ctx);
 
-        // qualify all types in the substitution
-        for t in solution.subst.values_mut() {
-            if t.is_func() {
-                let tyvars = t.collect_tyvars();
-                let old_t = std::mem::replace(t, Ty::unit());
-                *t = old_t.qualify_with_tyvars(&solution.preds, &tyvars);
-            }
-        }
-
         // apply the substitution
         let v = v.apply_subst(&solution.subst);
-
-        log::debug!("solution: {:#?}", solution);
 
         if errs.len() != 0 {
             Err(errs)
         } else {
-            Ok(v)
+            Ok((v, solution))
         }
     }
 }

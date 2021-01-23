@@ -101,12 +101,19 @@ impl Ctx {
     }
 
     pub fn get_subtraits(&self, super_trait: &Ty) -> Vec<&Ty> {
+        log::debug!("super trait: {}", super_trait);
         let fqn = super_trait.get_path().unwrap();
+        log::debug!("super fqn: {}", fqn);
         self.traits
             .values()
             .filter_map(|t| {
                 for s in t.super_traits.iter() {
-                    if fqn == s.get_path().unwrap() {
+                    log::debug!("super trait: {}", s);
+                    let p = s.get_path().unwrap();
+                    let name = p.name().unwrap();
+                    let super_fqn = self.lookup_fqn(name).unwrap();
+                    log::debug!("super fqn: {}", super_fqn);
+                    if &fqn == super_fqn {
                         return Some(&t.ty);
                     }
                 }

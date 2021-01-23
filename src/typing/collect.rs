@@ -46,14 +46,14 @@ where
     ) -> (Self::Output, BindingGroup, TyEnv);
 }
 
-impl<V, A, B> CollectDeclarations for (V, A, Source)
+impl<V, A, B> CollectDeclarations for (V, A, SourceInfo)
 where
     Self: Sized,
     V: CollectPatterns + std::fmt::Debug,
     A: CollectConstraints<Output = B> + std::fmt::Debug,
     B: HasType,
 {
-    type Output = (V, B, Source);
+    type Output = (V, B, SourceInfo);
 
     fn collect_decls(
         self,

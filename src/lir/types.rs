@@ -1,5 +1,5 @@
 use crate::{
-    ast,
+    ast::{self, Node, Path, SourceInfo},
     strutils::indent_lines,
     sym,
     typing::{
@@ -10,7 +10,10 @@ use crate::{
     utils::{join, map_join},
 };
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::{RefCell, RefMut},
+    collections::{HashMap, HashSet},
+};
 
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {
@@ -22,78 +25,9 @@ macro_rules! LirImplInto {
     };
 }
 
-#[derive(Clone)]
-pub struct FnType {
-    pub ty_params: Option<Vec<TyVar>>,
-    pub predicates: Vec<TyPredicate>,
-    pub param_tys: Vec<Ty>,
-    pub ret_ty: Ty,
-}
-
-impl From<Ty> for FnType {
-    fn from(t: Ty) -> FnType {
-        let (ty_params, predicates, param_tys, ret_ty) =
-            t.try_unpack_fn().expect("expected function type");
-        FnType {
-            ty_params,
-            predicates,
-            param_tys,
-            ret_ty,
-        }
-    }
-}
-
-impl std::fmt::Display for FnType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let q = if self.predicates.len() != 0 {
-            format!(" where {}", join(&self.predicates, ", "))
-        } else {
-            str!("")
-        };
-        write!(
-            f,
-            "({}) -> {}{}",
-            join(&self.param_tys, ", "),
-            self.ret_ty,
-            q
-        )
-    }
-}
-
-impl std::fmt::Debug for FnType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
-    }
-}
-
-impl ApplySubst for FnType {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        FnType {
-            ty_params: self.ty_params.map(|p| p.apply_subst(subst)),
-            predicates: self.predicates.apply_subst(subst),
-            param_tys: self.param_tys.apply_subst(subst),
-            ret_ty: self.ret_ty.apply_subst(subst),
-        }
-    }
-}
-
-impl FnType {
-    pub fn is_polymorphic(&self) -> bool {
-        self.ty_params.is_some()
-    }
-
-    pub fn to_ty(&self) -> Ty {
-        let mut ty = Ty::Func(self.param_tys.clone(), Box::new(self.ret_ty.clone()));
-        if self.predicates.len() != 0 {
-            ty = Ty::Qualified(self.predicates.clone(), Box::new(ty));
-        }
-
-        if let Some(ty_params) = &self.ty_params {
-            ty = Ty::All(ty_params.clone(), Box::new(ty));
-        }
-
-        ty
-    }
+pub trait NamedInst {
+    fn get_name(&self) -> &String;
+    fn set_name(&mut self, name: String);
 }
 
 #[derive(Clone, Debug)]
@@ -224,7 +158,7 @@ pub enum Value {
     IntConvert(IntConvert),
 }
 
-LirImplInto!(InstKind for Value);
+LirImplInto!(Inst for Value);
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -264,6 +198,22 @@ impl ApplySubst for Value {
     }
 }
 
+impl NamedInst for Value {
+    fn get_name(&self) -> &String {
+        match self {
+            Value::Call(c) => &c.fn_name,
+            _ => panic!("{} is unnamed", self),
+        }
+    }
+
+    fn set_name(&mut self, name: String) {
+        match self {
+            Value::Call(c) => c.fn_name = name,
+            _ => panic!("{} is unnamed", self),
+        }
+    }
+}
+
 impl Value {
     pub fn new<V>(v: V) -> Value
     where
@@ -273,8 +223,12 @@ impl Value {
     }
 }
 
+pub struct LirInfo {
+    src: SourceInfo,
+}
+
 #[derive(Clone, Debug)]
-pub enum InstKind {
+pub enum Inst {
     Value(Value),
     Free(usize),
     SetGlobal(usize, Value),
@@ -291,83 +245,60 @@ pub enum InstKind {
     Halt,
 }
 
-impl std::fmt::Display for InstKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InstKind::Value(v) => write!(f, "{}", v),
-            InstKind::Free(s) => write!(f, "free ${}", s),
-            InstKind::SetGlobal(s, v) => write!(f, "$global[{}] = {}", s, v),
-            InstKind::SetLocal(s, v) => write!(f, "${} = {}", s, v),
-            InstKind::Block(b) => write!(f, "{}", b),
-            InstKind::Func(func) => write!(f, "{}", func),
-            InstKind::IfBlock(b) => write!(f, "{}", b),
-            InstKind::Loop(l) => write!(f, "{}", l),
-            InstKind::Store(s) => write!(f, "{}", s),
-            InstKind::IncRef(v, i) => write!(f, "incref {} {}", v, i),
-            InstKind::DecRef(v) => write!(f, "decref {}", v),
-            InstKind::Return(v) => write!(f, "ret {}", v),
-            InstKind::Break => write!(f, "break"),
-            InstKind::Halt => write!(f, "halt"),
-        }
-    }
-}
-
-impl Into<Inst> for InstKind {
-    fn into(self) -> Inst {
-        Inst {
-            kind: self,
-            comment: None,
-        }
-    }
-}
-
-impl ApplySubst for InstKind {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        match self {
-            InstKind::Value(v) => InstKind::Value(v.apply_subst(subst)),
-            InstKind::Free(i) => InstKind::Free(i),
-            InstKind::SetGlobal(i, v) => InstKind::SetGlobal(i, v.apply_subst(subst)),
-            InstKind::SetLocal(i, v) => InstKind::SetLocal(i, v.apply_subst(subst)),
-            InstKind::Block(b) => InstKind::Block(b.apply_subst(subst)),
-            InstKind::Func(f) => InstKind::Func(f.apply_subst(subst)),
-            InstKind::IfBlock(b) => InstKind::IfBlock(b.apply_subst(subst)),
-            InstKind::Loop(l) => InstKind::Loop(l.apply_subst(subst)),
-            InstKind::Store(s) => InstKind::Store(s.apply_subst(subst)),
-            InstKind::IncRef(v, i) => InstKind::IncRef(v.apply_subst(subst), i),
-            InstKind::DecRef(v) => InstKind::DecRef(v.apply_subst(subst)),
-            InstKind::Return(v) => InstKind::Return(v.apply_subst(subst)),
-            InstKind::Break => InstKind::Break,
-            InstKind::Halt => InstKind::Halt,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Inst {
-    pub kind: InstKind,
-    pub comment: Option<String>,
-}
-
 impl std::fmt::Display for Inst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}{}",
-            &self.kind,
-            if let Some(c) = &self.comment {
-                format!("; {}", c)
-            } else {
-                str!("")
-            }
-        )
+        match self {
+            Inst::Value(v) => write!(f, "{}", v),
+            Inst::Free(s) => write!(f, "free ${}", s),
+            Inst::SetGlobal(s, v) => write!(f, "$global[{}] = {}", s, v),
+            Inst::SetLocal(s, v) => write!(f, "${} = {}", s, v),
+            Inst::Block(b) => write!(f, "{}", b),
+            Inst::Func(func) => write!(f, "{}", func),
+            Inst::IfBlock(b) => write!(f, "{}", b),
+            Inst::Loop(l) => write!(f, "{}", l),
+            Inst::Store(s) => write!(f, "{}", s),
+            Inst::IncRef(v, i) => write!(f, "incref {} {}", v, i),
+            Inst::DecRef(v) => write!(f, "decref {}", v),
+            Inst::Return(v) => write!(f, "ret {}", v),
+            Inst::Break => write!(f, "break"),
+            Inst::Halt => write!(f, "halt"),
+        }
     }
 }
 
 impl ApplySubst for Inst {
-    fn apply_subst(self, subst: &Subst) -> Inst {
-        Inst {
-            kind: self.kind.apply_subst(subst),
-            comment: self.comment,
+    fn apply_subst(self, subst: &Subst) -> Self {
+        match self {
+            Inst::Value(v) => Inst::Value(v.apply_subst(subst)),
+            Inst::Free(i) => Inst::Free(i),
+            Inst::SetGlobal(i, v) => Inst::SetGlobal(i, v.apply_subst(subst)),
+            Inst::SetLocal(i, v) => Inst::SetLocal(i, v.apply_subst(subst)),
+            Inst::Block(b) => Inst::Block(b.apply_subst(subst)),
+            Inst::Func(f) => Inst::Func(f.apply_subst(subst)),
+            Inst::IfBlock(b) => Inst::IfBlock(b.apply_subst(subst)),
+            Inst::Loop(l) => Inst::Loop(l.apply_subst(subst)),
+            Inst::Store(s) => Inst::Store(s.apply_subst(subst)),
+            Inst::IncRef(v, i) => Inst::IncRef(v.apply_subst(subst), i),
+            Inst::DecRef(v) => Inst::DecRef(v.apply_subst(subst)),
+            Inst::Return(v) => Inst::Return(v.apply_subst(subst)),
+            Inst::Break => Inst::Break,
+            Inst::Halt => Inst::Halt,
+        }
+    }
+}
+
+impl NamedInst for Inst {
+    fn get_name(&self) -> &String {
+        match self {
+            Inst::Value(v) => v.get_name(),
+            _ => panic!("{} is unnamed", self),
+        }
+    }
+
+    fn set_name(&mut self, name: String) {
+        match self {
+            Inst::Value(v) => v.set_name(name),
+            _ => panic!("{} is unnamed", self),
         }
     }
 }
@@ -375,9 +306,9 @@ impl ApplySubst for Inst {
 impl Inst {
     pub fn new<T>(t: T) -> Inst
     where
-        T: Into<InstKind>,
+        T: Into<Inst>,
     {
-        t.into().into()
+        t.into()
     }
 }
 
@@ -503,22 +434,14 @@ impl Size {
 #[derive(Clone, Debug)]
 pub struct Extern {
     pub name: String,
-    pub ty: FnType,
+    pub ty: Ty,
     pub is_c: bool,
 }
 
 impl std::fmt::Display for Extern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "extern {}{}", self.name, self.ty)
+        write!(f, "extern {} : {}", self.name, self.ty)
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct PolyFnRef {
-    pub name: String, // the name of the calling function
-    // pub fn_ctx: usize,     // the index of the enclosing function
-    pub poly_ty: FnType,   // the polymorphic type
-    pub callee_ty: FnType, // the type of the callee (which may be polymorphic as well)
 }
 
 #[derive(Clone, Debug)]
@@ -530,7 +453,6 @@ pub struct Program {
     pub externs: Vec<Extern>,
     pub extern_set: HashSet<String>,
     pub poly_fn_map: HashMap<String, usize>,
-    pub poly_fn_refs: Vec<PolyFnRef>,
     pub defined_symbols: HashSet<sym::Symbol>,
     pub undefined_symbols: HashSet<sym::Symbol>,
     pub type_metadata: HashMap<String, TypeMetadata>,
@@ -562,7 +484,6 @@ impl Program {
             externs: vec![],
             poly_fn_map: HashMap::new(),
             extern_set: HashSet::new(),
-            poly_fn_refs: vec![],
             defined_symbols: HashSet::new(),
             undefined_symbols: HashSet::new(),
             type_metadata: HashMap::new(),
@@ -646,7 +567,7 @@ impl ApplySubst for Param {
 #[derive(Clone, Debug)]
 pub struct Block {
     pub name: String,
-    pub instructions: Vec<Inst>,
+    pub instructions: Vec<Node<Inst, SourceInfo>>,
 }
 
 impl std::fmt::Display for Block {
@@ -676,23 +597,25 @@ impl Block {
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
+    pub scope: Path,
     pub params: Vec<Param>,
     pub locals: Vec<Local>,
-    pub ty: FnType,
+    pub ty: Ty,
     pub body: Block,
     pub symbols: SymbolSet,
 }
 
 impl std::fmt::Display for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (_, preds, _, ret_ty) = self.ty.try_borrow_fn().unwrap();
         write!(
             f,
             "fn {}({}) -> {}{} {{\n{}\n}}",
             self.name,
             map_join(&self.params, ", ", |p| format!("${}: {}", p.idx, p.ty)),
-            self.ty.ret_ty,
-            if !self.ty.predicates.is_empty() {
-                format!(" where {}", join(&self.ty.predicates, ", "))
+            ret_ty,
+            if let Some(preds) = preds {
+                format!(" where {}", join(preds, ", "))
             } else {
                 str!("")
             },
@@ -705,6 +628,7 @@ impl ApplySubst for Func {
     fn apply_subst(self, subst: &Subst) -> Func {
         Func {
             name: self.name,
+            scope: self.scope,
             params: self.params.apply_subst(subst),
             locals: self.locals,
             ty: self.ty.apply_subst(subst),
@@ -715,12 +639,12 @@ impl ApplySubst for Func {
 }
 
 impl Func {
-    pub fn new<S: Into<String>>(name: S, ty: Ty) -> Func {
+    pub fn new<S: Into<String>>(name: S, scope: Path, ty: Ty) -> Func {
         let name = name.into();
-        let ty = FnType::from(ty);
         log::debug!("type of {}: {}", name, ty);
         Func {
             name,
+            scope,
             ty,
             params: vec![],
             locals: vec![],
@@ -733,7 +657,7 @@ impl Func {
 #[derive(Clone, Debug)]
 pub struct FuncRef {
     pub name: String,
-    pub ty: FnType,
+    pub ty: Ty,
 }
 
 impl std::fmt::Display for FuncRef {
@@ -757,7 +681,8 @@ pub struct Call {
     pub original_fn: String,
     pub fn_ref: Option<usize>,
     pub args: Vec<Atom>,
-    pub ty: FnType,
+    pub ty: Ty,
+    pub poly_ty: Option<Ty>,
 }
 
 LirImplInto!(Value for Call);
@@ -776,27 +701,40 @@ impl ApplySubst for Call {
             fn_ref: self.fn_ref,
             args: self.args.apply_subst(subst),
             ty: self.ty.apply_subst(subst),
+            poly_ty: self.poly_ty,
         }
     }
 }
 
+impl NamedInst for Call {
+    fn get_name(&self) -> &String {
+        &self.fn_name
+    }
+
+    fn set_name(&mut self, name: String) {
+        self.fn_name = name;
+    }
+}
+
 impl Call {
-    pub fn new(fn_name: String, args: Vec<Atom>, ty: Ty) -> Value {
+    pub fn new(fn_name: String, args: Vec<Atom>, ty: Ty, poly_ty: Option<Ty>) -> Value {
         Value::Call(Call {
             original_fn: fn_name.clone(),
             fn_ref: None,
-            ty: FnType::from(ty),
+            ty,
+            poly_ty,
             args,
             fn_name,
         })
     }
 
-    pub fn new_ref(fn_ref: usize, args: Vec<Atom>, ty: Ty) -> Value {
+    pub fn new_ref(fn_ref: usize, args: Vec<Atom>, ty: Ty, poly_ty: Option<Ty>) -> Value {
         Value::Call(Call {
             original_fn: str!(""),
             fn_name: str!(""),
             fn_ref: Some(fn_ref),
-            ty: FnType::from(ty),
+            ty,
+            poly_ty,
             args,
         })
     }
@@ -806,7 +744,7 @@ impl Call {
 pub struct CExternCall {
     fn_name: String,
     args: Vec<Atom>,
-    ty: FnType,
+    ty: Ty,
 }
 
 LirImplInto!(Value for CExternCall);

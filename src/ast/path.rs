@@ -20,22 +20,21 @@ impl PartialEq for Path {
 
 impl ApplySubst for Path {
     fn apply_subst(self, subst: &Subst) -> Self {
+        let mut parts = vec![];
+        for part in self.parts.into_iter() {
+            parts.push(part);
+            let tv = TyVar(Path::from(parts.clone()));
+            if let Some(ty) = subst.get(&tv) {
+                parts = ty
+                    .to_string()
+                    .split("::")
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>();
+            }
+        }
+
         Path {
-            parts: self
-                .parts
-                .into_iter()
-                .map(|t| {
-                    let tv = TyVar(Path {
-                        parts: vec![t.clone()],
-                        span: Span::new(),
-                    });
-                    if let Some(ty) = subst.get(&tv) {
-                        ty.to_string()
-                    } else {
-                        t
-                    }
-                })
-                .collect(),
+            parts,
             span: self.span,
         }
     }
@@ -83,6 +82,29 @@ impl Path {
     pub fn append<T: ToString>(&self, s: T) -> Path {
         let mut parts = self.parts.clone();
         parts.push(s.to_string());
+        Path {
+            parts,
+            span: self.span,
+        }
+    }
+
+    pub fn with_name<T: ToString>(&self, name: T) -> Path {
+        let mut parts = self.parts.clone();
+        let name = name.to_string();
+        if let Some(last) = parts.last_mut() {
+            *last = name;
+        } else {
+            parts = vec![name];
+        }
+        Path {
+            parts,
+            span: self.span,
+        }
+    }
+
+    pub fn pop_last(&self) -> Path {
+        let mut parts = self.parts.clone();
+        parts.pop();
         Path {
             parts,
             span: self.span,

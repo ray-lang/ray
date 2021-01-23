@@ -6,6 +6,7 @@ use crate::{
     ast::{Decl, Expr, HasSource, Module, Node, Path, SourceInfo, TypeParams},
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
+    sema,
     span::Source,
     subst,
     typing::{
@@ -52,6 +53,20 @@ impl ApplySubst for HirInfo {
             src_info: self.src_info.apply_subst(subst),
             ty_info: self.ty_info.apply_subst(subst),
         }
+    }
+}
+
+impl HirInfo {
+    pub fn path(&self) -> &Path {
+        &self.src_info.path
+    }
+
+    pub fn src_info(&self) -> &SourceInfo {
+        &self.src_info
+    }
+
+    pub fn original_ty(&self) -> &Ty {
+        self.ty_info.original_ty()
     }
 }
 
@@ -290,10 +305,12 @@ fn convert_decl(
             let ty = Ty::from_sig(sig, &fn_scope, &decl.src().filepath, &mut fn_ctx, ctx)?;
             ctx.add_fqn(name.clone(), fn_scope.clone());
             ctx.bind_var(fn_scope.to_string(), ty.clone());
+
+            let fqn = sema::fn_name(&fn_scope, &ty);
             decls.push(Node {
                 id,
                 info,
-                value: HirDecl::ty(fn_scope.to_string(), ty),
+                value: HirDecl::ty(fqn, ty),
             });
         }
         Decl::Trait(tr) => {
@@ -347,7 +364,6 @@ fn convert_decl(
             let trait_ty = Ty::Projection(fqn.clone(), ty_params, vec![]);
 
             let mut fields = vec![];
-            let ty_arg_fqn = scope.append(&ty_arg);
             for func in tr.funcs.iter() {
                 let func_name = match &func.name {
                     Some(n) => n.clone(),
@@ -369,11 +385,9 @@ fn convert_decl(
                 let (mut q, ty) = ty.unpack_qualified_ty();
                 // add the trait type to the qualifiers
                 q.insert(0, TyPredicate::Trait(trait_ty.clone()));
-                let ty = ty
-                    .qualify_with_tyvars(&q, &ty_vars.clone())
-                    .quantify(ty_vars.clone());
+                let ty = ty.qualify(&q, &ty_vars.clone()).quantify(ty_vars.clone());
 
-                let func_fqn = ty_arg_fqn.append(&func_name);
+                let func_fqn = scope.append(&func_name);
                 ctx.add_fqn(func_name.clone(), func_fqn.clone());
                 ctx.bind_var(func_fqn.to_string(), ty.clone());
 
@@ -383,10 +397,12 @@ fn convert_decl(
                     filepath: decl.src().filepath.clone(),
                     span: Some(func.span),
                 });
+
+                let name = func_fqn.to_string();
                 decls.push(Node {
                     id,
                     info,
-                    value: HirDecl::ty(func_fqn.to_string(), ty),
+                    value: HirDecl::ty(name, ty),
                 });
             }
 
@@ -477,7 +493,7 @@ fn convert_decl(
             };
 
             let base_ty = ty_params[0].clone();
-            let impl_scope = scope.append(&base_ty);
+            let impl_scope = base_ty.get_path().unwrap();
             let mut impl_ctx = ctx.clone();
             if !is_extern {
                 let mut impl_set = HashSet::new();
@@ -508,7 +524,7 @@ fn convert_decl(
                         if let Expr::Fn(f) = &mut func.value {
                             // make this a fully-qualified name
                             let fqn = impl_scope.append(&func_name).to_string();
-                            f.sig.name = Some(fqn)
+                            f.sig.name = Some(fqn);
                         }
 
                         impl_set.insert(func_name);
@@ -519,16 +535,24 @@ fn convert_decl(
                 if let Some(ext) = &imp.externs {
                     for e in ext {
                         let name = e.get_name().unwrap();
-                        let fqn = impl_scope.append(&name).to_string();
+                        // let fqn = scope.append(&name);
                         impl_set.insert(name);
-                        let mut e = e.clone();
-                        if let Decl::Extern(d) = &mut e.value {
-                            if let Decl::Fn(sig) = &mut d.value {
-                                sig.name = Some(fqn);
-                            }
-                        }
+                        // let mut e = e.clone();
+                        // if let Decl::Extern(d) = &mut e.value {
+                        //     if let Decl::Fn(sig) = &mut d.value {
+                        //         let mut fn_ctx = ctx.clone();
+                        //         let ty = Ty::from_sig(
+                        //             sig,
+                        //             &fqn,
+                        //             &decl.src().filepath,
+                        //             &mut fn_ctx,
+                        //             ctx,
+                        //         )?;
+                        //         sig.name = Some(sema::fn_name(&fqn, &ty));
+                        //     }
+                        // }
 
-                        let (d, f) = convert_decl(scope, &e, true, &mut impl_ctx)?;
+                        let (d, f) = convert_decl(scope, e, true, &mut impl_ctx)?;
                         decls.extend(d);
                         deferred_funcs.extend(f);
                     }

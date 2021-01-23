@@ -8,6 +8,7 @@ use std::{collections::HashSet, iter::FromIterator};
 use itertools::Itertools;
 
 use crate::{
+    ast::SourceInfo,
     span::Source,
     typing::{
         predicate::TyPredicate,
@@ -19,7 +20,7 @@ use crate::{
 use super::{
     assumptions::AssumptionSet,
     state::TyEnv,
-    traits::{HasFreeVars, PolymorphismInfo},
+    traits::{HasFreeVars, PolymorphismInfo, QualifyTypes, QuantifyTypes},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -335,9 +336,33 @@ impl std::fmt::Debug for ConstraintKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+impl QualifyTypes for ConstraintKind {
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+        todo!()
+    }
+}
+
+impl ConstraintKind {
+    fn get_tys_mut(&mut self) -> std::vec::IntoIter<&mut Ty> {
+        let v = match self {
+            ConstraintKind::Eq(EqConstraint(s, t))
+            | ConstraintKind::Inst(InstConstraint(s, t))
+            | ConstraintKind::Implicit(ImplicitConstraint(_, s, t))
+            | ConstraintKind::Default(DefaultConstraint(s, t))
+            | ConstraintKind::Skol(SkolConstraint(_, s, t)) => vec![s, t],
+            ConstraintKind::Gen(GenConstraint(m, _, t)) => {
+                m.iter_mut().chain(std::iter::once(t)).collect()
+            }
+            ConstraintKind::Prove(ProveConstraint(_))
+            | ConstraintKind::Assume(AssumeConstraint(_)) => vec![],
+        };
+        v.into_iter()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstraintInfo {
-    pub src: Vec<Source>,
+    pub src: Vec<SourceInfo>,
 }
 
 impl PolymorphismInfo for ConstraintInfo {
@@ -362,7 +387,7 @@ impl ConstraintInfo {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Constraint {
     pub kind: ConstraintKind,
     pub info: ConstraintInfo,
@@ -399,18 +424,6 @@ impl HasFreeVars for Constraint {
             }
             ConstraintKind::Prove(_) | ConstraintKind::Assume(_) => HashSet::new(),
         }
-    }
-}
-
-impl HasFreeVars for Vec<Constraint> {
-    fn free_vars(&self) -> HashSet<&TyVar> {
-        self.iter().flat_map(|c| c.free_vars()).collect()
-    }
-}
-
-impl HasFreeVars for Vec<(String, Constraint)> {
-    fn free_vars(&self) -> HashSet<&TyVar> {
-        self.iter().flat_map(|(_, c)| c.free_vars()).collect()
     }
 }
 
@@ -457,6 +470,24 @@ impl ApplySubst for Constraint {
     }
 }
 
+impl QualifyTypes for Constraint {
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+        self.kind.get_tys_mut().qualify_tys(preds);
+    }
+}
+
+// impl QualifyTypes for Vec<Constraint> {
+//     fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+//         todo!()
+//     }
+// }
+
+impl QuantifyTypes for Constraint {
+    fn quantify_tys(&mut self) {
+        self.kind.get_tys_mut().quantify_tys();
+    }
+}
+
 impl Constraint {
     pub fn new<T: Into<ConstraintKind>>(c: T) -> Constraint {
         Constraint {
@@ -465,7 +496,7 @@ impl Constraint {
         }
     }
 
-    pub fn with_src(mut self, src: Source) -> Constraint {
+    pub fn with_src(mut self, src: SourceInfo) -> Constraint {
         self.info.src.push(src);
         self
     }

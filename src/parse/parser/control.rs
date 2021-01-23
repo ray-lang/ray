@@ -27,7 +27,11 @@ impl Parser {
             None
         };
 
-        Ok(self.mk_expr(Expr::If(If { cond, then, els }), Span { start, end }))
+        Ok(self.mk_expr(
+            Expr::If(If { cond, then, els }),
+            Span { start, end },
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_ternary_expr(
@@ -57,6 +61,7 @@ impl Parser {
                 els,
             }),
             Span { start, end },
+            ctx.path.clone(),
         ))
     }
 
@@ -78,6 +83,7 @@ impl Parser {
                 in_span,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 
@@ -95,6 +101,7 @@ impl Parser {
                 while_span,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 
@@ -109,6 +116,7 @@ impl Parser {
                 loop_span,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 }

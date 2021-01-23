@@ -7,7 +7,10 @@ use crate::typing::{
     constraints::{Constraint, ConstraintInfo, EqConstraint},
     predicate::TyPredicate,
     state::TyVarFactory,
-    traits::{Generalize, HasBasic, HasFreeVars, HasPredicates, HasState, HasSubst},
+    traits::{
+        Generalize, HasBasic, HasFreeVars, HasPredicates, HasState, HasSubst, QualifyTypes,
+        QuantifyTypes,
+    },
     ty::{Ty, TyVar},
     ApplySubst, Ctx, Subst,
 };
@@ -25,6 +28,7 @@ pub struct GreedySolver<'a> {
     generalized_preds: Vec<(TyPredicate, ConstraintInfo)>,
     constraints: VecDeque<Constraint>,
     ty_map: HashMap<TyVar, (Ty, ConstraintInfo)>,
+    inst_map: Subst,
 }
 
 impl<'a> GreedySolver<'a> {
@@ -39,6 +43,7 @@ impl<'a> GreedySolver<'a> {
             prove_preds: vec![],
             generalized_preds: vec![],
             ty_map: HashMap::new(),
+            inst_map: Subst::new(),
         }
     }
 }
@@ -46,12 +51,13 @@ impl<'a> GreedySolver<'a> {
 impl<'a> Solver for GreedySolver<'a> {
     fn solution(self) -> Solution {
         let GreedySolver {
-            subst,
+            mut subst,
             original_preds,
             assume_preds,
             prove_preds,
             generalized_preds,
             ty_map,
+            inst_map,
             ..
         } = self;
 
@@ -71,9 +77,16 @@ impl<'a> Solver for GreedySolver<'a> {
         preds.sort();
         preds.dedup();
 
+        // qualify all types in the substitution
+        subst.qualify_tys(&preds);
+
+        // quantify all types in the substitution
+        subst.quantify_tys();
+
         Solution {
             subst,
             ty_map,
+            inst_map,
             preds,
         }
     }
@@ -201,6 +214,13 @@ impl<'a> HasState for GreedySolver<'a> {
 
     fn lookup_ty(&self, tv: &TyVar) -> Option<Ty> {
         self.ty_map.get(tv).cloned().map(|(t, _)| t)
+    }
+
+    fn inst_ty(&mut self, v: Ty, u: Ty) {
+        // type `v` is an instance of `u`
+        if let Ty::Var(v) = v {
+            self.inst_map.insert(v, u);
+        }
     }
 
     fn find_ty(&self, r: &Ty) -> Ty {

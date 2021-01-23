@@ -4,7 +4,10 @@ use std::{
     ops::{Deref, DerefMut, Sub},
 };
 
-use crate::typing::ty::{Ty, TyVar};
+use crate::{
+    ast::Path,
+    typing::ty::{Ty, TyVar},
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct TyEnv(HashMap<String, Ty>);
@@ -67,15 +70,28 @@ impl TyEnv {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TyVarFactory {
     value: u64,
     prefix: &'static str,
+    scope: Option<Path>,
 }
 
 impl TyVarFactory {
     pub fn new(prefix: &'static str) -> TyVarFactory {
-        TyVarFactory { value: 0, prefix }
+        TyVarFactory {
+            value: 0,
+            scope: None,
+            prefix,
+        }
+    }
+
+    pub fn scoped(prefix: &'static str, scope: Path) -> TyVarFactory {
+        TyVarFactory {
+            value: 0,
+            scope: Some(scope),
+            prefix,
+        }
     }
 
     pub fn skip_to(&mut self, value: u64) {
@@ -85,6 +101,19 @@ impl TyVarFactory {
     pub fn next(&mut self) -> TyVar {
         let v = self.value;
         self.value += 1;
-        TyVar::from(format!("{}{}", self.prefix, v))
+        let name = format!("{}{}", self.prefix, v);
+        if let Some(scope) = &self.scope {
+            let path = scope.append(name);
+            TyVar(path)
+        } else {
+            TyVar::from(name)
+        }
+    }
+
+    pub fn with_scope(&mut self, scope: &Path) -> TyVar {
+        let v = self.value;
+        self.value += 1;
+        let path = scope.append(format!("{}{}", self.prefix, v));
+        TyVar(path)
     }
 }

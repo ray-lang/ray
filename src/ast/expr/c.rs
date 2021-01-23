@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Decl, FnParam, FnSig, Name, Node, SourceInfo, Struct, Type, TypeKind, TypeParams},
+    ast::{Decl, FnParam, FnSig, Name, Node, Path, SourceInfo, Struct, Type, TypeKind, TypeParams},
     pathlib::FilePath,
     span::{Source, Span},
 };
@@ -21,6 +21,7 @@ impl CType {
             Node::new(
                 Decl::Extern(Box::new(Node::new(
                     Decl::Fn(FnSig {
+                        path: Path::new(),
                         name: Some(self.name),
                         params: inputs
                             .into_iter()
@@ -59,6 +60,7 @@ impl CType {
                             span: Some(span),
                             filepath: self.filepath.clone(),
                         },
+                        path: Path::new(),
                         doc: None,
                     },
                 ))),
@@ -67,6 +69,7 @@ impl CType {
                         span: Some(span),
                         filepath: self.filepath,
                     },
+                    path: Path::new(),
                     doc: None,
                 },
             )
@@ -99,6 +102,7 @@ impl CType {
                             span: Some(span),
                             filepath: self.filepath.clone(),
                         },
+                        path: Path::new(),
                         doc: None,
                     },
                 ),
@@ -116,6 +120,7 @@ impl CType {
                             span: Some(span),
                             filepath: self.filepath,
                         },
+                        path: Path::new(),
                         doc: None,
                     },
                 ),

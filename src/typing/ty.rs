@@ -34,25 +34,22 @@ where
 
 impl std::fmt::Display for TyVar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
-            write!(f, "{}", self.0)
-        } else {
-            if let Some(name) = self.0.name() {
-                write!(f, "{}", name)
-            } else {
-                write!(f, "")
-            }
-        }
+        write!(f, "{}", self.0)
+        // if f.alternate() {
+        //     write!(f, "{}", self.0)
+        // } else {
+        //     if let Some(name) = self.0.name() {
+        //         write!(f, "{}", name)
+        //     } else {
+        //         write!(f, "")
+        //     }
+        // }
     }
 }
 
 impl ApplySubst for TyVar {
     fn apply_subst(self, subst: &Subst) -> TyVar {
-        if let Some(Ty::Var(v)) = subst.get(&self) {
-            v.clone()
-        } else {
-            self
-        }
+        subst.get_var(self)
     }
 }
 
@@ -61,10 +58,17 @@ impl Polymorphize for TyVar {
         if let Some(tv) = subst.get(&Ty::Var(self.clone())) {
             tv.clone()
         } else {
-            let tv = tf.next();
+            let path = self.path().pop_last();
+            let tv = tf.with_scope(&path);
             subst.insert(Ty::Var(self), tv.clone());
             tv
         }
+    }
+}
+
+impl TyVar {
+    pub fn path(&self) -> &Path {
+        &self.0
     }
 }
 
@@ -169,7 +173,7 @@ impl ApplySubst for Ty {
     fn apply_subst(self, subst: &Subst) -> Ty {
         match self {
             Ty::Any | Ty::Never => self.clone(),
-            Ty::Var(v) => subst.get_var(&v),
+            Ty::Var(v) => subst.get_ty_for_var(&v),
             Ty::Union(tys) => {
                 let mut tys = tys.apply_subst(subst);
                 tys.sort();
@@ -185,8 +189,31 @@ impl ApplySubst for Ty {
                 Ty::Projection(n, t.apply_subst(subst), f.apply_subst(subst))
             }
             Ty::Cast(f, t) => Ty::Cast(f.apply_subst(subst), t.apply_subst(subst)),
-            Ty::Qualified(p, t) => Ty::Qualified(p.apply_subst(subst), t.apply_subst(subst)),
-            Ty::All(xs, ty) => Ty::All(xs.apply_subst(subst), ty.apply_subst(subst)),
+            Ty::Qualified(p, ty) => {
+                let preds = p.apply_subst(subst);
+                let ty = ty.apply_subst(subst);
+                let preds_freevars = preds.free_vars();
+                let ty_freevars = ty.free_vars();
+                if preds_freevars.is_disjoint(&ty_freevars) {
+                    *ty
+                } else {
+                    Ty::Qualified(preds, ty)
+                }
+            }
+            Ty::All(xs, ty) => {
+                let ty = ty.apply_subst(subst);
+                log::debug!("ty = {}", ty);
+                let xs = xs.apply_subst(subst);
+                log::debug!("xs = [{}]", join(&xs, ", "));
+                let freevars = ty.free_vars();
+                log::debug!("freevars = [{}]", join(&freevars, ", "));
+                if xs.iter().collect::<HashSet<_>>().is_disjoint(&freevars) {
+                    log::debug!("{}", ty);
+                    *ty
+                } else {
+                    Ty::All(xs, ty)
+                }
+            }
         }
     }
 }
@@ -200,7 +227,7 @@ impl Generalize for Ty {
             .map(|&t| t.clone())
             .collect::<Vec<_>>();
 
-        self.qualify_with_tyvars(preds, &tyvars).quantify(tyvars)
+        self.qualify(preds, &tyvars).quantify(tyvars)
     }
 }
 
@@ -217,6 +244,8 @@ impl HasFreeVars for Ty {
                 let xs = xs.iter().collect();
                 ty.free_vars().difference(&xs).map(|t| *t).collect()
             }
+            Ty::Qualified(_, t) => t.free_vars(),
+            Ty::Cast(_, dst) => dst.free_vars(),
             Ty::Union(tys) => tys.free_vars(),
             Ty::Projection(_, tys, f) => tys
                 .iter()
@@ -229,14 +258,8 @@ impl HasFreeVars for Ty {
                 .flat_map(|t| t.free_vars())
                 .collect(),
             Ty::Var(tv) => vec![tv].into_iter().collect(),
-            _ => HashSet::new(),
+            Ty::Never | Ty::Any => HashSet::new(),
         }
-    }
-}
-
-impl HasFreeVars for Vec<Ty> {
-    fn free_vars(&self) -> HashSet<&TyVar> {
-        self.iter().flat_map(|t| t.free_vars()).collect()
     }
 }
 
@@ -690,9 +713,21 @@ impl Ty {
         match self {
             Ty::Never => Some(Path::from("never")),
             Ty::Any => Some(Path::from("any")),
+            Ty::Var(v) => Some(v.path().clone()),
             Ty::Projection(s, _, _) => Some(Path::from(s.clone())),
             Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.get_path(),
-            Ty::Var(_) | Ty::Union(_) | Ty::Func(_, _) => None,
+            Ty::Union(_) | Ty::Func(_, _) => None,
+        }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Ty::Never => str!("never"),
+            Ty::Any => str!("any"),
+            Ty::Var(v) => v.path().name().cloned().unwrap(),
+            Ty::Projection(s, _, _) => s.clone(),
+            Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.name(),
+            Ty::Union(_) | Ty::Func(_, _) => str!(""),
         }
     }
 
@@ -719,6 +754,21 @@ impl Ty {
         }
     }
 
+    pub fn quantify_in_place(&mut self) {
+        let tyvars = self.collect_tyvars();
+        if tyvars.len() != 0 {
+            let old_ty = std::mem::replace(self, Ty::unit());
+            *self = Ty::All(
+                tyvars,
+                if let Ty::All(_, old_ty) = old_ty {
+                    old_ty
+                } else {
+                    Box::new(old_ty)
+                },
+            );
+        }
+    }
+
     pub fn unquantify(self) -> Ty {
         match self {
             Ty::All(_, t) => *t,
@@ -736,7 +786,8 @@ impl Ty {
                 for p in param_tys.iter().chain(std::iter::once(ret_ty.as_ref())) {
                     if let Ty::Var(v) = p {
                         if !subst.contains_key(v) {
-                            let u = Ty::Var(TyVar(format!("'{}", c as char).into()));
+                            let path = v.path().with_name(format!("'{}", c as char));
+                            let u = Ty::Var(TyVar(path));
                             subst.insert(v.clone(), u);
                             c += 1;
                         }
@@ -748,9 +799,15 @@ impl Ty {
         }
     }
 
-    pub fn qualify_with_tyvars(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
+    pub fn qualify_in_place(&mut self, preds: &Vec<TyPredicate>) {
+        let tyvars = self.collect_tyvars();
+        let ty = std::mem::replace(self, Ty::unit());
+        *self = ty.qualify(preds, &tyvars);
+    }
+
+    pub fn qualify(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
         let tyvar_set = tyvars.iter().collect::<HashSet<_>>();
-        let q = preds
+        let mut preds = preds
             .iter()
             .filter_map(|p| {
                 if !p.free_vars().is_disjoint(&tyvar_set) {
@@ -761,11 +818,18 @@ impl Ty {
             })
             .collect::<Vec<_>>();
 
-        if q.len() != 0 {
+        preds.sort();
+        preds.dedup();
+        self.qualify_with(preds)
+    }
+
+    fn qualify_with(self, preds: Vec<TyPredicate>) -> Ty {
+        if preds.len() != 0 {
             // wrap the type in a qualified type if there are type variables
             match self {
-                Ty::All(xs, t) => Ty::All(xs, Box::new(Ty::Qualified(q, t))),
-                _ => Ty::Qualified(q, Box::new(self)),
+                Ty::All(xs, t) => Ty::All(xs, Box::new(t.qualify_with(preds))),
+                Ty::Qualified(_, t) => Ty::Qualified(preds, t),
+                _ => Ty::Qualified(preds, Box::new(self)),
             }
         } else {
             self

@@ -20,6 +20,7 @@ impl Parser {
                 rbrack_span,
             }),
             span,
+            ctx.path.clone(),
         ))
     }
 }

@@ -49,11 +49,12 @@ impl Parser {
                     Ok(end)
                 }
                 TokenKind::Fn | TokenKind::Modifier(_) => {
-                    let mut f = this.parse_fn(only_sigs, &ctx)?;
+                    let mut f = this.parse_fn(only_sigs, ctx)?;
+                    let path = f.sig.path.clone();
                     let span = f.span;
                     f.sig.doc_comment = doc;
                     f.sig.decorators = decs;
-                    let ex = this.mk_expr(Expr::Fn(f), span);
+                    let ex = this.mk_expr(Expr::Fn(f), span, path);
                     funcs.push(ex);
                     Ok(span.end)
                 }
@@ -78,11 +79,12 @@ impl Parser {
             TokenKind::Extern => self.parse_extern(ctx)?,
             TokenKind::Struct => {
                 let (st, span) = self.parse_struct(ctx)?;
-                self.mk_decl(Decl::Struct(st), span)
+                let path = ctx.path.append(&st.name);
+                self.mk_decl(Decl::Struct(st), span, path)
             }
             TokenKind::Impl => {
                 let (i, span) = self.parse_impl(false, false, ctx)?;
-                self.mk_decl(Decl::Impl(i), span)
+                self.mk_decl(Decl::Impl(i), span, ctx.path.clone())
             }
             TokenKind::Trait => self.parse_trait(ctx)?,
             _ => unreachable!(),
@@ -109,13 +111,14 @@ impl Parser {
             }
         };
 
-        let e = self.mk_decl(kind, span);
+        let e = self.mk_decl(kind, span, ctx.path.clone());
         Ok(self.mk_decl(
             Decl::Extern(Box::new(e)),
             Span {
                 start,
                 end: span.end,
             },
+            ctx.path.clone(),
         ))
     }
 
@@ -124,7 +127,8 @@ impl Parser {
             TokenKind::Fn | TokenKind::Modifier(_) => {
                 let sig = self.parse_fn_sig(ctx)?;
                 let span = sig.span;
-                self.mk_decl(Decl::Fn(sig), span)
+                let path = sig.path.clone();
+                self.mk_decl(Decl::Fn(sig), span, path)
             }
             _ => {
                 let tok = self.token()?;
@@ -133,7 +137,11 @@ impl Parser {
         };
 
         let end = e.info.src.span.unwrap().end;
-        Ok(self.mk_decl(Decl::Extern(Box::new(e)), Span { start, end }))
+        Ok(self.mk_decl(
+            Decl::Extern(Box::new(e)),
+            Span { start, end },
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_local(&mut self, is_extern: bool, ctx: &ParseContext) -> ExprResult {
@@ -175,6 +183,8 @@ impl Parser {
     pub(crate) fn parse_trait(&mut self, ctx: &ParseContext) -> DeclResult {
         let start = self.expect_start(TokenKind::Trait)?;
         let (name, span) = self.expect_id()?;
+        let mut ctx = ctx.clone();
+        ctx.path = ctx.path.append(&name);
         let ty = self.parse_ty_with_name(name, span)?;
 
         let super_trait = if expect_if!(self, TokenKind::Colon) {
@@ -190,7 +200,7 @@ impl Parser {
                 break;
             }
 
-            let mut sig = self.parse_trait_fn_sig(ctx)?;
+            let sig = self.parse_trait_fn_sig(&ctx)?;
             funcs.push(sig);
         }
 
@@ -203,6 +213,7 @@ impl Parser {
                 super_trait,
             }),
             Span { start, end },
+            ctx.path,
         ))
     }
 

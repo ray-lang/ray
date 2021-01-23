@@ -3,7 +3,8 @@ use std::{fmt::Debug, ops::Deref};
 use rand::Rng;
 
 use crate::{
-    ast::Expr,
+    ast::{Expr, Path},
+    pathlib::FilePath,
     span::Source,
     typing::{traits::HasType, ty::Ty, ApplySubst, Subst},
 };
@@ -43,6 +44,7 @@ pub type SourceNode<T> = Node<T, SourceInfo>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceInfo {
     pub src: Source,
+    pub path: Path,
     pub doc: Option<String>,
 }
 
@@ -69,8 +71,23 @@ impl ApplySubst for SourceInfo {
 }
 
 impl SourceInfo {
+    pub fn empty() -> SourceInfo {
+        SourceInfo {
+            src: Source {
+                filepath: FilePath::new(),
+                span: None,
+            },
+            path: Path::new(),
+            doc: None,
+        }
+    }
+
     pub fn new(src: Source) -> SourceInfo {
-        SourceInfo { src, doc: None }
+        SourceInfo {
+            src,
+            path: Path::new(),
+            doc: None,
+        }
     }
 }
 

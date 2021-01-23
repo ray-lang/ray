@@ -134,9 +134,13 @@ impl IntoHirNode<SourceInfo> for ast::Assign<SourceInfo> {
                 let rhs_id = curr.rhs.id;
                 let rhs_info = curr.rhs.info.clone();
                 let rhs_operand = curr.rhs.to_hir_node(scope, rhs_id, &rhs_info, ctx)?;
+                let mut name = op.to_string();
+                if let Some(fqn) = ctx.lookup_fqn(&name) {
+                    name = fqn.to_string();
+                }
                 let op_var = Node {
                     id: rhs_id,
-                    value: Var(str!(op.to_string())),
+                    value: Var(name),
                     info: SourceInfo::new(Source {
                         filepath: curr_info.src.filepath.clone(),
                         span: Some(curr.op_span),
@@ -382,7 +386,9 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
         ctx: &mut Ctx,
     ) -> RayResult<Self::Output> {
         let name = self.sig.name.clone().unwrap();
-        let fn_scope = scope.append(name.clone());
+        let fn_fqn = scope.append(name.clone());
+        ctx.add_fqn(name.clone(), fn_fqn.clone());
+
         let mut fn_ctx = ctx.clone();
         let mut params = vec![];
         for p in self.sig.params.iter() {
@@ -403,7 +409,7 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
             params.push(Param::new(
                 n,
                 p.ty()
-                    .map(|t| Ty::from_ast_ty(&t.kind, &fn_scope, &mut fn_ctx)),
+                    .map(|t| Ty::from_ast_ty(&t.kind, &fn_fqn, &mut fn_ctx)),
             ));
         }
 
@@ -423,7 +429,7 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
         let body = self.body.unwrap();
         let body_id = body.id;
         let body_info = body.info.clone();
-        let fn_body = body.to_hir_node(&fn_scope, body_id, &body_info, ctx)?;
+        let fn_body = body.to_hir_node(&fn_fqn, body_id, &body_info, ctx)?;
 
         let mut rhs = Node {
             id: body_id,
@@ -431,7 +437,7 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
             value: Fun(params, Box::new(fn_body)),
         };
         if num_typed == param_tys.len() {
-            let ty = Ty::from_sig(&self.sig, &fn_scope, &info.src.filepath, &mut fn_ctx, ctx)?;
+            let ty = Ty::from_sig(&self.sig, &fn_fqn, &info.src.filepath, &mut fn_ctx, ctx)?;
             rhs = Node {
                 id: rhs.id,
                 info: rhs.info.clone(),
@@ -453,7 +459,7 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
                 vec![Node {
                     id,
                     info: info.clone(),
-                    value: HirDecl::var(name, rhs),
+                    value: HirDecl::var(fn_fqn.to_string(), rhs),
                 }],
                 Box::new(body),
             ),
@@ -523,8 +529,13 @@ impl IntoHirNode<SourceInfo> for ast::UnaryOp<SourceInfo> {
         ctx: &mut Ctx,
     ) -> RayResult<Self::Output> {
         let expr = self.expr.to_hir_node(scope, id, info, ctx)?;
+        let mut name = self.op.to_string();
+        if let Some(fqn) = ctx.lookup_fqn(&name) {
+            name = fqn.to_string();
+        }
+
         let op_var = Node::new(
-            Var(str!(self.op.to_string())),
+            Var(name),
             SourceInfo::new(Source {
                 span: Some(self.op_span),
                 filepath: info.src.filepath.clone(),

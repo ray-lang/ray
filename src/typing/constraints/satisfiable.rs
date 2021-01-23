@@ -64,7 +64,7 @@ impl Satisfiable for InstConstraint {
     fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
         let InstConstraint(t, u) = self;
         let tyvars = t.free_vars().into_iter().cloned().collect::<Vec<_>>();
-        let t = t.qualify_with_tyvars(&solution.preds, &tyvars);
+        let t = t.qualify(&solution.preds, &tyvars);
         let u = solution.get_ty(u)?;
         if !ctx.instance_of(&t, &u) {
             Err(InferError {
@@ -154,7 +154,7 @@ impl Satisfiable for ConstraintKind {
 
 impl Satisfiable for Constraint {
     fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
-        let src = self.info.src.clone();
+        let src = self.info.src.iter().map(|i| i.src.clone()).collect();
         self.kind.satisfied_by(solution, ctx).map_err(|mut e| {
             e.src = src;
             e

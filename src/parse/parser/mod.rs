@@ -416,7 +416,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn mk_expr(&mut self, expr: Expr<SourceInfo>, span: Span) -> ParsedExpr {
+    pub(crate) fn mk_expr(&mut self, expr: Expr<SourceInfo>, span: Span, path: Path) -> ParsedExpr {
         Node::new(
             expr,
             SourceInfo {
@@ -424,12 +424,18 @@ impl Parser {
                     span: Some(span),
                     filepath: self.options.filepath.clone(),
                 },
+                path,
                 doc: None,
             },
         )
     }
 
-    pub(crate) fn mk_decl(&mut self, value: Decl<SourceInfo>, span: Span) -> ParsedDecl {
+    pub(crate) fn mk_decl(
+        &mut self,
+        value: Decl<SourceInfo>,
+        span: Span,
+        path: Path,
+    ) -> ParsedDecl {
         Node::new(
             value,
             SourceInfo {
@@ -437,6 +443,7 @@ impl Parser {
                     span: Some(span),
                     filepath: self.options.filepath.clone(),
                 },
+                path,
                 doc: None,
             },
         )

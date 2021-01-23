@@ -19,15 +19,41 @@ use super::{
         ProveConstraint, Satisfiable,
     },
     traits::{
-        HasBasic, HasPredicates, HasState, HasSubst, Instantiate, PolymorphismInfo, Skolemize,
+        HasBasic, HasPredicates, HasState, HasSubst, Instantiate, PolymorphismInfo, QualifyTypes,
+        QuantifyTypes, Skolemize,
     },
+    ApplySubstMut,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Solution {
     pub subst: Subst,
     pub ty_map: Subst,
+    pub inst_map: Subst,
     pub preds: Vec<TyPredicate>,
+}
+
+impl std::fmt::Debug for Solution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Solution")
+            .field("subst", &self.subst)
+            .field("ty_map", &self.ty_map)
+            .field("inst_map", &self.inst_map)
+            .field("preds", &self.preds)
+            .finish()
+    }
+}
+
+impl ApplySubst for Solution {
+    fn apply_subst(mut self, subst: &Subst) -> Self {
+        self.subst = self.subst.apply_subst(&subst);
+        self.ty_map = self.ty_map.apply_subst(&self.subst);
+        self.inst_map = self.inst_map.apply_subst(&self.subst);
+        self.preds = self.preds.apply_subst(&self.subst);
+        self.preds.sort();
+        self.preds.dedup();
+        self
+    }
 }
 
 impl Solution {
@@ -43,7 +69,6 @@ impl Solution {
     }
 
     fn satisfies_constraint(&self, c: Constraint, ctx: &Ctx) -> Result<(), InferError> {
-        let c = c.apply_subst(&self.subst);
         c.satisfied_by(self, ctx)
     }
 
@@ -53,8 +78,6 @@ impl Solution {
             let ty: Ty = ty.clone().apply_subst(&self.subst);
             if ty.is_func() {
                 let subst = ty.formalize();
-
-                // add the substition to the solution
                 self.subst.extend(subst);
             } else if let Ty::All(_, t) = ty {
                 let mut subst = Subst::new();
@@ -70,8 +93,6 @@ impl Solution {
                         }
                     }
                 }
-
-                // add the substition to the solution
                 self.subst.extend(subst);
             }
         }
@@ -148,7 +169,23 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         self.add_constraints(cs);
         self.solve_constraints(&mut check);
 
-        (self.solution(), check)
+        let mut solution = self.solution();
+        let mut check = check.apply_subst(&solution.subst);
+        check.qualify_tys(&solution.preds);
+        check.quantify_tys();
+
+        solution.formalize_types();
+
+        let subst = solution.subst.clone();
+        solution = solution.apply_subst(&subst);
+
+        check = check.apply_subst(&solution.subst);
+
+        log::debug!("------------- After formalization ---------------");
+        log::debug!("constraints to check: {:#?}", check);
+        log::debug!("solution: {:#?}", solution);
+
+        (solution, check)
     }
 
     fn solve_constraints(&mut self, check: &mut Vec<Constraint>) {
@@ -159,6 +196,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
     }
 
     fn solve_constraint(&mut self, c: Constraint, check: &mut Vec<Constraint>) {
+        log::debug!("solve {:?}", c);
         let c_clone = c.clone();
         let info = c.info;
         match c.kind {
@@ -179,6 +217,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
             ConstraintKind::Inst(c) => {
                 let (t, r) = c.unpack();
                 let s = self.find_ty(&r);
+                self.inst_ty(t.clone(), s.clone());
                 let info = info.inst_ty(&s);
                 let t_sub = s.instantiate(&mut self.get_tf());
                 let (p, t_sub) = t_sub.unpack_qualified_ty();

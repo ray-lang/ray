@@ -56,7 +56,7 @@ impl PhaseMap {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeTree(pub Vec<ConstraintTree>);
 
 impl Into<ConstraintTree> for NodeTree {
@@ -71,7 +71,7 @@ impl NodeTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachTree(pub Constraint, pub Box<ConstraintTree>);
 
 impl Into<ConstraintTree> for AttachTree {
@@ -86,7 +86,7 @@ impl AttachTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParentAttachTree(pub Constraint, pub Box<ConstraintTree>);
 
 impl Into<ConstraintTree> for ParentAttachTree {
@@ -101,7 +101,7 @@ impl ParentAttachTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrictTree(pub Box<ConstraintTree>, pub Box<ConstraintTree>);
 
 impl Into<ConstraintTree> for StrictTree {
@@ -125,7 +125,7 @@ impl StrictTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpreadTree(pub String, pub Constraint, pub Box<ConstraintTree>);
 
 impl Into<ConstraintTree> for SpreadTree {
@@ -140,7 +140,7 @@ impl SpreadTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrictSpreadTree(pub String, pub Constraint, pub Box<ConstraintTree>);
 
 impl Into<ConstraintTree> for StrictSpreadTree {
@@ -155,7 +155,7 @@ impl StrictSpreadTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverTree(pub String);
 
 impl Into<ConstraintTree> for ReceiverTree {
@@ -170,7 +170,7 @@ impl ReceiverTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhaseTree(pub u64, pub Box<ConstraintTree>);
 
 impl Into<ConstraintTree> for PhaseTree {
@@ -185,7 +185,7 @@ impl PhaseTree {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ConstraintTree {
     Node(NodeTree),
     Attach(AttachTree),

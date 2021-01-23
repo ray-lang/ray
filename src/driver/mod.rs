@@ -72,8 +72,8 @@ impl Driver {
         let hir_mod = hir::transform_modules(&mod_path, &mut modules, &mut ctx)?;
         log::debug!("{}", hir_mod);
         let mut inf = InferSystem::new(ctx);
-        let typed_mod = match inf.infer_ty(hir_mod) {
-            Ok(m) => m,
+        let (typed_mod, solution) = match inf.infer_ty(hir_mod) {
+            Ok(r) => r,
             Err(errs) => {
                 return Err(errs
                     .into_iter()
@@ -93,9 +93,10 @@ impl Driver {
         }
 
         // generate IR
-        // let mut prog = lir::Program::gen(mod_path, typed_mod)?;
-        // prog.monomorphize();
-        // eprintln!("{}", prog);
+        let root = &typed_mod.stmts[0];
+        let mut prog = lir::Program::gen(mod_path, &solution, root)?;
+        prog.monomorphize();
+        eprintln!("{}", prog);
 
         // compile to asm
         Ok(())

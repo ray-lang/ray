@@ -6,6 +6,11 @@ use std::{
 
 use crate::typing::ty::{Ty, TyVar};
 
+use super::{
+    predicate::TyPredicate,
+    traits::{QualifyTypes, QuantifyTypes},
+};
+
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Subst(HashMap<TyVar, Ty>);
 
@@ -84,7 +89,7 @@ impl Subst {
         sub
     }
 
-    pub fn get_var(&self, v: &TyVar) -> Ty {
+    pub fn get_ty_for_var(&self, v: &TyVar) -> Ty {
         let mut checked = HashSet::new();
 
         let mut v = v.clone();
@@ -107,6 +112,27 @@ impl Subst {
         }
 
         Ty::Var(v)
+    }
+
+    pub fn get_var(&self, v: TyVar) -> TyVar {
+        let mut checked = HashSet::new();
+        let mut v = v;
+        loop {
+            checked.insert(v.clone());
+            if let Some(t) = self.get(&v) {
+                if let Ty::Var(u) = t {
+                    if checked.contains(&u) {
+                        break;
+                    }
+                    v = u.clone();
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        v
     }
 
     pub fn union(mut self, other: Subst) -> Subst {
@@ -139,6 +165,18 @@ impl Subst {
 
             self.insert(tv, ty);
         }
+    }
+}
+
+impl QualifyTypes for Subst {
+    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+        self.values_mut().qualify_tys(preds);
+    }
+}
+
+impl QuantifyTypes for Subst {
+    fn quantify_tys(&mut self) {
+        self.values_mut().quantify_tys();
     }
 }
 

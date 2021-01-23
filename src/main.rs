@@ -3,6 +3,7 @@ mod macros;
 
 mod ast;
 mod cli;
+mod codegen;
 mod compiler;
 mod driver;
 mod errors;

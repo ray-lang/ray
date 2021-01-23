@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Type, TypeParams},
+    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Path, Type, TypeParams},
     span::Span,
 };
 
@@ -65,6 +65,7 @@ pub struct FnSig<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
+    pub path: Path,
     pub name: Option<String>,
     pub params: Vec<FnParam<Info>>,
     pub ty_params: Option<TypeParams>,

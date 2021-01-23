@@ -1,18 +1,15 @@
 use std::collections::HashSet;
 
 use crate::{
-    ast::{HasSource, Literal, Module, Node, SourceInfo},
+    ast::{Literal, Module, Node, SourceInfo},
     span::Source,
     typing::{
         assumptions::AssumptionSet,
         binding::{BindingGroup, BindingGroupAnalysis},
         collect::{CollectConstraints, CollectDeclarations, CollectPatterns},
         constraints::{
-            tree::{
-                AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree,
-                StrictSpreadTree,
-            },
-            EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
+            tree::{AttachTree, ConstraintTree, NodeTree, ReceiverTree, StrictSpreadTree},
+            EqConstraint, ProveConstraint,
         },
         info::TypeInfo,
         predicate::TyPredicate,
@@ -41,11 +38,11 @@ impl CollectDeclarations for Node<HirDecl<SourceInfo>, SourceInfo> {
         tf: &mut TyVarFactory,
     ) -> (Self::Output, BindingGroup, TyEnv) {
         let id = self.id;
-        let src_info = self.info;
-        let src = src_info.src();
+        let src = self.info;
         let (value, ty, bg, env) = match self.value {
             HirDecl::Pattern(var, rhs) => {
-                let ((var, rhs, src), bg, env) = (var, rhs, src).collect_decls(mono_tys, tf);
+                let ((var, rhs, src), bg, env) =
+                    (var, rhs, src.clone()).collect_decls(mono_tys, tf);
                 let ty = rhs.ty();
                 (HirDecl::Pattern(var, rhs), ty, bg, env)
             }
@@ -57,7 +54,7 @@ impl CollectDeclarations for Node<HirDecl<SourceInfo>, SourceInfo> {
                     HirDecl::Type(id, ty.clone()),
                     ty,
                     BindingGroup::new(TyEnv::new(), AssumptionSet::new(), ConstraintTree::empty())
-                        .with_src(src),
+                        .with_src(src.clone()),
                     env,
                 )
             }
@@ -68,7 +65,7 @@ impl CollectDeclarations for Node<HirDecl<SourceInfo>, SourceInfo> {
                 id,
                 value,
                 info: HirInfo {
-                    src_info,
+                    src_info: src,
                     ty_info: TypeInfo::new(ty),
                 },
             },
@@ -129,8 +126,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
         mono_tys: &HashSet<TyVar>,
         tf: &mut TyVarFactory,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        let (id, value, src_info) = self.unpack();
-        let src = src_info.src();
+        let (id, value, src) = self.unpack();
         let (value, ty, aset, ct) = match value {
             HirNode::Block(stmts) => {
                 let mut ty = Ty::unit();
@@ -140,8 +136,9 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 for stmt in stmts.into_iter() {
                     let (stmt, a, ct) = stmt.collect_constraints(mono_tys, tf);
                     let stmt_ty = stmt.ty();
-                    let b = Ty::Var(tf.next());
-                    let c = EqConstraint::new(b.clone(), stmt_ty).with_src(stmt.src());
+                    let b = Ty::Var(tf.with_scope(&src.path));
+                    let c =
+                        EqConstraint::new(b.clone(), stmt_ty).with_src(stmt.info.src_info.clone());
                     typed_stmts.push(stmt);
                     ty = b;
                     aset.extend(a);
@@ -156,7 +153,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 (HirNode::Block(typed_stmts), ty, aset, ct)
             }
             HirNode::Var(v) => {
-                let t = Ty::Var(tf.next());
+                let t = Ty::Var(tf.with_scope(&src.path));
                 let label = t.to_string();
                 let mut aset = AssumptionSet::new();
                 aset.add(v.clone(), t.clone());
@@ -176,18 +173,14 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                             let sign = if !signed { "u" } else { "i" };
                             Ty::con(format!("{}{}", sign, size))
                         } else {
-                            let t = Ty::Var(tf.next());
+                            let t = Ty::Var(tf.with_scope(&src.path));
                             ctree = ConstraintTree::list(
-                                vec![
-                                    // DefaultConstraint::new(t.clone(), Ty::int())
-                                    //     .with_src(src.clone()),
-                                    ProveConstraint::new(TyPredicate::Trait(Ty::Projection(
-                                        str!("core::Int"),
-                                        vec![t.clone()],
-                                        vec![],
-                                    )))
-                                    .with_src(src.clone()),
-                                ],
+                                vec![ProveConstraint::new(TyPredicate::Trait(Ty::Projection(
+                                    str!("core::Int"),
+                                    vec![t.clone()],
+                                    vec![],
+                                )))
+                                .with_src(src.clone())],
                                 ctree,
                             );
                             t
@@ -197,17 +190,13 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                         if *size != 0 {
                             Ty::con(format!("f{}", size))
                         } else {
-                            let t = Ty::Var(tf.next());
+                            let t = Ty::Var(tf.with_scope(&src.path));
                             ctree = ConstraintTree::list(
-                                vec![
-                                    // DefaultConstraint::new(t.clone(), Ty::float())
-                                    //     .with_src(src.clone()),
-                                    ProveConstraint::new(TyPredicate::Literal(
-                                        t.clone(),
-                                        LiteralKind::Float,
-                                    ))
-                                    .with_src(src.clone()),
-                                ],
+                                vec![ProveConstraint::new(TyPredicate::Literal(
+                                    t.clone(),
+                                    LiteralKind::Float,
+                                ))
+                                .with_src(src.clone())],
                                 ctree,
                             );
                             t
@@ -223,7 +212,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     Literal::UnicodeEscSeq(_) => unimplemented!("unicode escape sequence"),
                 };
 
-                let v = Ty::Var(tf.next());
+                let v = Ty::Var(tf.with_scope(&src.path));
                 let c = EqConstraint::new(v.clone(), t.clone()).with_src(src.clone());
                 (
                     HirNode::Literal(lit),
@@ -233,9 +222,9 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 )
             }
             HirNode::Cast(e, to_ty) => {
-                let src = e.src().clone();
+                let src = e.info.clone();
                 let (from, a, ct) = e.collect_constraints(mono_tys, tf);
-                let v = Ty::Var(tf.next());
+                let v = Ty::Var(tf.with_scope(&src.path));
                 let cast_ty = Ty::Cast(Box::new(from.ty()), Box::new(to_ty.clone()));
                 let c = EqConstraint::new(v.clone(), cast_ty).with_src(src);
                 (HirNode::Cast(from, to_ty), v, a, AttachTree::new(c, ct))
@@ -266,7 +255,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 let mut bga = BindingGroupAnalysis::new(groups, &env, tf, mono_tys);
                 let (_, a, t) = bga.analyze();
 
-                let b = Ty::Var(tf.next());
+                let b = Ty::Var(tf.with_scope(&src.path));
                 let c = EqConstraint::new(b.clone(), body.ty()).with_src(src.clone());
                 (HirNode::Let(typed_decls, body), b, a, AttachTree::new(c, t))
             }
@@ -276,7 +265,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 let mut env = TyEnv::new();
                 let mut cts = vec![];
                 for p in params.iter_mut() {
-                    let tv = tf.next();
+                    let tv = tf.with_scope(&src.path);
                     mono_tys.insert(tv.clone());
                     let ty = Ty::Var(tv.clone());
                     if p.get_ty().is_none() {
@@ -299,7 +288,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     StrictSpreadTree::new(x, c, ct)
                 });
 
-                let fun_ty = Ty::Var(tf.next());
+                let fun_ty = Ty::Var(tf.with_scope(&src.path));
                 let c = EqConstraint::new(fun_ty.clone(), Ty::Func(param_tys, Box::new(body.ty())))
                     .with_src(src.clone());
 
@@ -329,7 +318,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     typed_args.push(arg);
                 }
 
-                let ret_ty = Ty::Var(tf.next());
+                let ret_ty = Ty::Var(tf.with_scope(&src.path));
                 let c = EqConstraint::new(fun.ty(), Ty::Func(arg_tys, Box::new(ret_ty.clone())))
                     .with_src(src.clone());
 
@@ -349,7 +338,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 // let (n, aset, ctree) = ex.collect_constraints(mono_tys, tf);
                 // let c1 = SkolConstraint::new(mono_tys.clone(), n.ty(), prev_ty.clone())
                 //     .with_src(src.clone());
-                // let b = Ty::Var(tf.next());
+                // let b = Ty::Var(tf.with_scope(&src.path));
                 // let c2 = InstConstraint::new(b.clone(), prev_ty).with_src(src.clone());
                 // (
                 //     n.kind,
@@ -360,12 +349,14 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
             }
         };
 
+        log::debug!("aset = {:#?}", aset);
+
         (
             Node {
                 id,
                 value,
                 info: HirInfo {
-                    src_info,
+                    src_info: src,
                     ty_info: TypeInfo::new(ty),
                 },
             },
