@@ -31,6 +31,7 @@ mod symbol;
 mod tuple;
 mod ty;
 mod unaryop;
+mod vars;
 mod while_loop;
 
 pub use assign::*;
@@ -66,4 +67,5 @@ pub use symbol::*;
 pub use tuple::*;
 pub use ty::*;
 pub use unaryop::*;
+pub use vars::*;
 pub use while_loop::*;

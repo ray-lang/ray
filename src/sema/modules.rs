@@ -92,7 +92,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
         // first add the core if it hasn't been added already
         let core_path = ast::Path::from(vec![str!("core")]);
         if !self.input_paths.contains(&core_path) {
-            let core_fp = &self.paths.get_src_path() / "intrinsics" / "core.ray";
+            let core_fp = &self.paths.get_stdlib_path() / "core";
             match self.build_from_path(&core_fp, Some(core_path)) {
                 Ok(m) => imports.push(m),
                 Err(e) => errs.extend(e),

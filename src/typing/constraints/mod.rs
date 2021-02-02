@@ -7,15 +7,11 @@ use std::{collections::HashSet, iter::FromIterator};
 
 use itertools::Itertools;
 
-use crate::{
-    ast::SourceInfo,
-    span::Source,
-    typing::{
+use crate::{ast::SourceInfo, span::Source, typing::{
         predicate::TyPredicate,
         ty::{Ty, TyVar},
         ApplySubst, Subst,
-    },
-};
+    }, utils::join};
 
 use super::{
     assumptions::AssumptionSet,
@@ -75,7 +71,7 @@ impl Into<ConstraintKind> for GenConstraint {
 
 impl std::fmt::Debug for GenConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} := Gen({:?}, {})", self.1, self.0, self.2)
+        write!(f, "{} := Gen([{}], {})", self.1, join(&self.0, ", "), self.2)
     }
 }
 
@@ -219,47 +215,6 @@ impl ImplicitConstraint {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct DefaultConstraint(Ty, Ty);
-
-impl Into<ConstraintKind> for DefaultConstraint {
-    fn into(self) -> ConstraintKind {
-        ConstraintKind::Default(self)
-    }
-}
-
-impl std::fmt::Debug for DefaultConstraint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} defaults to {}", self.0, self.1)
-    }
-}
-
-impl DefaultConstraint {
-    pub fn new(t: Ty, u: Ty) -> Constraint {
-        Constraint::new(DefaultConstraint(t, u))
-    }
-
-    pub fn lift(aset: &AssumptionSet, env: &TyEnv) -> Vec<(String, Constraint)> {
-        let mut cl = vec![];
-        for (x, lhs_ty) in env.iter().sorted_by_key(|&(x, _)| x) {
-            if let Some(tys) = aset.get(x) {
-                for rhs_ty in tys.iter().sorted() {
-                    cl.push((
-                        rhs_ty.to_string(),
-                        DefaultConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
-                    ));
-                }
-            }
-        }
-
-        cl
-    }
-
-    pub fn unpack(self) -> (Ty, Ty) {
-        (self.0, self.1)
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProveConstraint(TyPredicate);
 
 impl Into<ConstraintKind> for ProveConstraint {
@@ -316,7 +271,6 @@ pub enum ConstraintKind {
     Inst(InstConstraint),
     Skol(SkolConstraint),
     Implicit(ImplicitConstraint),
-    Default(DefaultConstraint),
     Prove(ProveConstraint),
     Assume(AssumeConstraint),
 }
@@ -329,7 +283,6 @@ impl std::fmt::Debug for ConstraintKind {
             ConstraintKind::Inst(c) => write!(f, "{:?}", c),
             ConstraintKind::Skol(c) => write!(f, "{:?}", c),
             ConstraintKind::Implicit(c) => write!(f, "{:?}", c),
-            ConstraintKind::Default(c) => write!(f, "{:?}", c),
             ConstraintKind::Prove(c) => write!(f, "{:?}", c),
             ConstraintKind::Assume(c) => write!(f, "{:?}", c),
         }
@@ -348,7 +301,6 @@ impl ConstraintKind {
             ConstraintKind::Eq(EqConstraint(s, t))
             | ConstraintKind::Inst(InstConstraint(s, t))
             | ConstraintKind::Implicit(ImplicitConstraint(_, s, t))
-            | ConstraintKind::Default(DefaultConstraint(s, t))
             | ConstraintKind::Skol(SkolConstraint(_, s, t)) => vec![s, t],
             ConstraintKind::Gen(GenConstraint(m, _, t)) => {
                 m.iter_mut().chain(std::iter::once(t)).collect()
@@ -402,9 +354,7 @@ impl std::fmt::Debug for Constraint {
 impl HasFreeVars for Constraint {
     fn free_vars(&self) -> HashSet<&TyVar> {
         match &self.kind {
-            ConstraintKind::Eq(EqConstraint(s, t))
-            | ConstraintKind::Default(DefaultConstraint(s, t))
-            | ConstraintKind::Inst(InstConstraint(s, t)) => {
+            ConstraintKind::Eq(EqConstraint(s, t)) | ConstraintKind::Inst(InstConstraint(s, t)) => {
                 s.free_vars().union(&t.free_vars()).map(|&v| v).collect()
             }
             ConstraintKind::Gen(GenConstraint(m, s, t)) => {
@@ -449,9 +399,6 @@ impl ApplySubst for Constraint {
                 t.apply_subst(subst),
             )
             .into(),
-            ConstraintKind::Default(DefaultConstraint(s, t)) => {
-                DefaultConstraint(s.apply_subst(subst), t.apply_subst(subst)).into()
-            }
             ConstraintKind::Implicit(ImplicitConstraint(vs, s, t)) => ImplicitConstraint(
                 vs.apply_subst(subst),
                 s.apply_subst(subst),

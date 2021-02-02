@@ -1,0 +1,4 @@
+struct string {
+    raw_ptr: *u8
+    len: uint
+}

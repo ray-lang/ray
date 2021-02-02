@@ -3,7 +3,7 @@ use itertools::Itertools;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
-    ast::{Decl, Expr, HasSource, Module, Node, Path, SourceInfo, TypeParams},
+    ast::{Decl, Expr, HasSource, Modifier, Module, Node, Path, SourceInfo, TypeParams},
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
     sema,
@@ -212,23 +212,28 @@ fn convert_decl(
 > {
     let id = decl.id;
     let info = decl.info.clone();
+    let scope = &info.path;
     let mut decls = vec![];
     let mut deferred_funcs = vec![];
     match &decl.value {
         Decl::Extern(decl) => return convert_decl(scope, decl, true, ctx),
-        Decl::Name(n) => {
+        Decl::Mutable(n) | Decl::Name(n) => {
             let name = n.name.clone();
             let ty = Ty::from_ast_ty(&n.ty.as_ref().unwrap().kind, scope, ctx);
             ctx.bind_var(name.clone(), ty.clone());
             decls.push(Node {
                 id,
                 info,
-                value: HirDecl::ty(name, ty),
+                value: HirDecl::ty(name, ty, matches!(decl.value, Decl::Mutable(_)), None),
             });
         }
         Decl::Struct(st) => {
             let name = st.name.to_string();
-            let struct_path = scope.append(name.clone());
+            let struct_path = if Ty::is_builtin(&name) {
+                Path::from(name.clone())
+            } else {
+                scope.clone()
+            };
             let fqn = struct_path.to_string();
 
             let mut struct_ctx = ctx.clone();
@@ -287,7 +292,7 @@ fn convert_decl(
             decls.push(Node {
                 id,
                 info,
-                value: HirDecl::ty(name, ty),
+                value: HirDecl::ty(name, ty, false, None),
             });
         }
         Decl::Fn(sig) => {
@@ -297,25 +302,28 @@ fn convert_decl(
                 kind: RayErrorKind::Type,
             })?;
 
-            let fn_scope = scope.append(name);
-
             let mut fn_ctx = ctx.clone();
 
             // make sure that the signature is fully typed
-            let ty = Ty::from_sig(sig, &fn_scope, &decl.src().filepath, &mut fn_ctx, ctx)?;
-            ctx.add_fqn(name.clone(), fn_scope.clone());
-            ctx.bind_var(fn_scope.to_string(), ty.clone());
+            let ty = Ty::from_sig(sig, scope, &decl.src().filepath, &mut fn_ctx, ctx)?;
+            let (fqn, src) = if sig.modifiers.contains(&Modifier::Wasi) {
+                (name.clone(), Some("wasi_snapshot_preview1"))
+            } else {
+                // ctx.add_fqn(name.clone(), scope.clone());
+                // ctx.bind_var(scope.to_string(), ty.clone());
+                (scope.to_string(), None)
+            };
 
-            let fqn = sema::fn_name(&fn_scope, &ty);
             decls.push(Node {
                 id,
                 info,
-                value: HirDecl::ty(fqn, ty),
+                value: HirDecl::ty(name.clone(), ty, false, src),
             });
         }
         Decl::Trait(tr) => {
             let ty_span = tr.ty.span.unwrap();
-            let (name, ty_params) = match Ty::from_ast_ty(&tr.ty.kind, scope, ctx) {
+            let parent_scope = scope.parent();
+            let (name, ty_params) = match Ty::from_ast_ty(&tr.ty.kind, &parent_scope, ctx) {
                 Ty::Projection(n, tp, _) => (n, tp),
                 t @ _ => {
                     return Err(RayError {
@@ -341,8 +349,7 @@ fn convert_decl(
                 });
             }
 
-            let trait_scope = scope.append(name.clone());
-            let fqn = trait_scope.to_string();
+            let fqn = scope.to_string();
             let mut trait_ctx = ctx.clone();
             let mut ty_vars = vec![];
             let tp = &ty_params[0];
@@ -360,7 +367,8 @@ fn convert_decl(
                 });
             }
 
-            let ty_arg = tp.clone();
+            let base_ty = tp.clone();
+            let base_ty_fqn = base_ty.get_path().unwrap();
             let trait_ty = Ty::Projection(fqn.clone(), ty_params, vec![]);
 
             let mut fields = vec![];
@@ -379,15 +387,14 @@ fn convert_decl(
                     }
                 };
 
-                let fn_scope = trait_scope.clone();
                 let mut fn_ctx = ctx.clone();
-                let ty = Ty::from_sig(func, &fn_scope, &decl.src().filepath, &mut fn_ctx, ctx)?;
+                let ty = Ty::from_sig(func, scope, &decl.src().filepath, &mut fn_ctx, ctx)?;
                 let (mut q, ty) = ty.unpack_qualified_ty();
                 // add the trait type to the qualifiers
                 q.insert(0, TyPredicate::Trait(trait_ty.clone()));
                 let ty = ty.qualify(&q, &ty_vars.clone()).quantify(ty_vars.clone());
 
-                let func_fqn = scope.append(&func_name);
+                let func_fqn = base_ty_fqn.append(&func_name);
                 ctx.add_fqn(func_name.clone(), func_fqn.clone());
                 ctx.bind_var(func_fqn.to_string(), ty.clone());
 
@@ -402,19 +409,19 @@ fn convert_decl(
                 decls.push(Node {
                     id,
                     info,
-                    value: HirDecl::ty(name, ty),
+                    value: HirDecl::member(name, ty),
                 });
             }
 
             let super_trait = tr
                 .super_trait
                 .as_ref()
-                .map(|t| Ty::from_ast_ty(&t.kind, scope, ctx));
+                .map(|t| Ty::from_ast_ty(&t.kind, &parent_scope, ctx));
 
             ctx.add_trait_ty(
                 name,
                 TraitTy {
-                    path: trait_scope,
+                    path: scope.clone(),
                     ty: trait_ty,
                     super_traits: super_trait.map(|s| vec![s]).unwrap_or_default(),
                     fields,
@@ -422,7 +429,8 @@ fn convert_decl(
             );
         }
         Decl::Impl(imp) => {
-            let (trait_name, ty_params) = match Ty::from_ast_ty(&imp.ty.kind, scope, ctx) {
+            let parent_scope = scope.parent();
+            let (trait_name, ty_params) = match Ty::from_ast_ty(&imp.ty.kind, &parent_scope, ctx) {
                 Ty::Projection(name, ty_params, _) => (name, ty_params),
                 t => {
                     return Err(RayError {
@@ -552,7 +560,7 @@ fn convert_decl(
                         //     }
                         // }
 
-                        let (d, f) = convert_decl(scope, e, true, &mut impl_ctx)?;
+                        let (d, f) = convert_decl(&impl_scope, e, true, &mut impl_ctx)?;
                         decls.extend(d);
                         deferred_funcs.extend(f);
                     }

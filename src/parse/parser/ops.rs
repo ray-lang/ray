@@ -75,8 +75,7 @@ impl Parser {
             };
 
             if matches!(op, InfixOp::Assign | InfixOp::AssignOp(_)) {
-                ctx.restrictions |= Restrictions::ASSIGN;
-                ctx.restrictions -= Restrictions::LVALUE;
+                ctx.restrictions |= Restrictions::RVALUE;
             }
 
             if matches!(op, InfixOp::Comma) {
@@ -86,7 +85,7 @@ impl Parser {
                 // this is a typed expression
                 let ty = self.parse_ty()?;
                 let ty_span = ty.span.unwrap();
-                let rhs = self.mk_expr(Expr::Type(ty), ty_span, ctx.path.clone());
+                let rhs = self.mk_ty(ty, ty_span, ctx.path.clone());
                 let span = lhs
                     .info
                     .src
@@ -94,7 +93,7 @@ impl Parser {
                     .unwrap()
                     .extend_to(&rhs.info.src.span.unwrap());
                 lhs = self.mk_expr(
-                    Expr::Labeled(Box::new(lhs), Box::new(rhs)),
+                    Expr::TypeAnnotated(Box::new(lhs), rhs),
                     span,
                     ctx.path.clone(),
                 );

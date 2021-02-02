@@ -1,0 +1,6 @@
+trait Int['a] {}
+
+impl Int[int] {}
+impl Int[i8] {}
+impl Int[i16] {}
+impl Int[i32] {}

@@ -155,6 +155,10 @@ impl Lexer {
                 c if c == quote => {
                     return (s, true);
                 }
+                '\\' if self.first() == 'n' => {
+                    self.next_char().unwrap();
+                    s.push('\n');
+                }
                 '\\' if self.first() == '\\' || self.first() == quote => {
                     s.push(self.next_char().unwrap());
                 }
@@ -230,11 +234,13 @@ impl Lexer {
             "in" => TokenKind::In,
             "is" => TokenKind::Is,
             "where" => TokenKind::Where,
+            "asm" => TokenKind::Asm,
             "pub" => TokenKind::Modifier(Modifier::Pub),
             "static" => TokenKind::Modifier(Modifier::Static),
             "hidden" => TokenKind::Modifier(Modifier::Hidden),
             "internal" => TokenKind::Modifier(Modifier::Internal),
             "unsafe" => TokenKind::Modifier(Modifier::Unsafe),
+            "wasi" => TokenKind::Modifier(Modifier::Wasi),
             "nil" => TokenKind::Nil,
             "true" => TokenKind::Bool(true),
             "false" => TokenKind::Bool(false),

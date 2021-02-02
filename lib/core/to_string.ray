@@ -1,0 +1,7 @@
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+// impl ToStr[int] {
+//     fn to_str(self: int) -> string => "0"
+// }

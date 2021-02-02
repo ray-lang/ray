@@ -3,7 +3,7 @@ use std::{fmt::Debug, ops::Deref};
 use rand::Rng;
 
 use crate::{
-    ast::{Expr, Path},
+    ast::{Decorator, Expr, Path},
     pathlib::FilePath,
     span::Source,
     typing::{traits::HasType, ty::Ty, ApplySubst, Subst},

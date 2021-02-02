@@ -17,14 +17,14 @@ pub struct InferError {
     pub src: Vec<Source>,
 }
 
-#[derive(Clone, Debug)]
-pub struct InferSystem {
-    ctx: Ctx,
+#[derive(Debug)]
+pub struct InferSystem<'tcx> {
+    tcx: &'tcx mut Ctx,
 }
 
-impl InferSystem {
-    pub fn new(ctx: Ctx) -> InferSystem {
-        InferSystem { ctx }
+impl<'tcx> InferSystem<'tcx> {
+    pub fn new(tcx: &'tcx mut Ctx) -> InferSystem {
+        InferSystem { tcx }
     }
 
     pub fn infer_ty<T, U>(&mut self, v: T) -> Result<(U, Solution), Vec<InferError>>
@@ -33,18 +33,18 @@ impl InferSystem {
         U: std::fmt::Display + ApplySubst,
     {
         let mono_tys = HashSet::new();
-        let (v, _, c) = v.collect_constraints(&mono_tys, &mut self.ctx.tf_mut());
+        let (v, _, c) = v.collect_constraints(&mono_tys, &mut self.tcx.tf_mut());
         let constraints = c.spread().phase().flatten(BottomUpWalk);
         log::debug!("{}", v);
         log::debug!("constraints: {:#?}", constraints);
 
-        let solver = GreedySolver::new(constraints, &mut self.ctx);
-        let (mut solution, constraints) = solver.solve();
+        let solver = GreedySolver::new(constraints, &mut self.tcx);
+        let (solution, constraints) = solver.solve();
 
         log::debug!("solution (before satisfy check): {:#?}", solution);
 
         // verify satisibility of the constraints using the solution
-        let errs = solution.satisfies(constraints, &self.ctx);
+        let errs = solution.satisfies(constraints, &self.tcx);
 
         // apply the substitution
         let v = v.apply_subst(&solution.subst);

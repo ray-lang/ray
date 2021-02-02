@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    ast::{Assign, Expr, HasDoc, HasExpr, HasSource, Module, Node, SourceInfo},
-    hir::HirInfo,
-    span::Source,
+    ast::SourceInfo,
     typing::ty::{Ty, TyVar},
 };
 
@@ -14,7 +12,6 @@ use super::{
         tree::{AttachTree, ConstraintTree, NodeTree, ReceiverTree},
         EqConstraint,
     },
-    info::TypeInfo,
     state::{TyEnv, TyVarFactory},
     traits::HasType,
 };

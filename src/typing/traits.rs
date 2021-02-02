@@ -12,6 +12,7 @@ use crate::typing::{
 use super::{
     constraints::{Constraint, ConstraintInfo},
     state::TyVarFactory,
+    Ctx,
 };
 
 pub trait HasType {
@@ -28,6 +29,8 @@ where
 }
 
 pub trait HasBasic {
+    fn ctx(&self) -> &Ctx;
+
     fn get_constraints(&self) -> Vec<Constraint>;
 
     fn add_constraint(&mut self, c: Constraint);
@@ -76,7 +79,7 @@ pub trait HasState {
 }
 
 pub trait HasPredicates {
-    fn get_preds(&self) -> &Vec<(TyPredicate, ConstraintInfo)>;
+    fn get_preds(&self) -> Vec<&(TyPredicate, ConstraintInfo)>;
 
     fn assume_pred(&mut self, p: TyPredicate, info: ConstraintInfo);
 

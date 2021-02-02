@@ -7,8 +7,8 @@ use crate::typing::{
 };
 
 use super::{
-    AssumeConstraint, Constraint, ConstraintKind, DefaultConstraint, EqConstraint, GenConstraint,
-    ImplicitConstraint, InstConstraint, ProveConstraint, SkolConstraint,
+    AssumeConstraint, Constraint, ConstraintKind, EqConstraint, GenConstraint, ImplicitConstraint,
+    InstConstraint, ProveConstraint, SkolConstraint,
 };
 
 pub trait Satisfiable {
@@ -68,7 +68,7 @@ impl Satisfiable for InstConstraint {
         let u = solution.get_ty(u)?;
         if !ctx.instance_of(&t, &u) {
             Err(InferError {
-                msg: format!("type `{}` is not an instance of `{}`", t, u),
+                msg: format!("type `{}` is not an instance of type `{}`", t, u),
                 src: vec![],
             })
         } else {
@@ -87,7 +87,7 @@ impl Satisfiable for SkolConstraint {
         );
         if !ctx.instance_of(&t, &u) {
             Err(InferError {
-                msg: format!("type `{}` is not an instance of type `{}`", u, t),
+                msg: format!("type `{}` is not an instance of type `{}`", t, u),
                 src: vec![],
             })
         } else {
@@ -99,13 +99,6 @@ impl Satisfiable for SkolConstraint {
 impl Satisfiable for ImplicitConstraint {
     fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
         todo!()
-    }
-}
-
-impl Satisfiable for DefaultConstraint {
-    fn satisfied_by(self, _: &Solution, _: &Ctx) -> Result<(), InferError> {
-        // ignore this constraint, because a prove constraint was used to handle this
-        Ok(())
     }
 }
 
@@ -145,7 +138,6 @@ impl Satisfiable for ConstraintKind {
             ConstraintKind::Inst(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Skol(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Implicit(c) => c.satisfied_by(solution, ctx),
-            ConstraintKind::Default(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Prove(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Assume(c) => c.satisfied_by(solution, ctx),
         }

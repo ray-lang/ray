@@ -141,8 +141,8 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         // equality constraints that unify with the default type of the literal
         let mut cs = vec![];
         for (pred, info) in self.get_preds() {
-            if let TyPredicate::Trait(t) = pred {
-                match t {
+            match pred {
+                TyPredicate::Trait(t) => match t {
                     Ty::Projection(x, p, _) => {
                         if x == "core::Int" || x == "core::Float" {
                             let base_ty = p[0].clone();
@@ -162,7 +162,21 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                         }
                     }
                     _ => continue,
+                },
+                TyPredicate::HasMember(t, m, u) => {
+                    let fqn = match t.get_path() {
+                        Some(p) => p,
+                        _ => continue,
+                    };
+                    let st = match self.ctx().get_struct_ty(&fqn) {
+                        Some(st) => st,
+                        _ => continue,
+                    };
+                    if let Some((idx, f)) = st.get_field(m) {
+                        cs.push(EqConstraint::new(u.clone(), f.clone()).with_info(info.clone()));
+                    }
                 }
+                _ => continue,
             }
         }
 
@@ -253,15 +267,6 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                     )
                     .with_info(info),
                 ]);
-            }
-            ConstraintKind::Default(c) => {
-                let (ty, default_ty) = c.unpack();
-                if let Ty::Var(_) = self.get_var(&ty) {
-                    // unify terms if `ty` has still not been unified
-                    if self.unify_terms(&ty, &default_ty, &info) {
-                        return;
-                    }
-                }
             }
             ConstraintKind::Prove(c) => self.prove_pred(c.get_predicate(), info),
             ConstraintKind::Assume(c) => self.assume_pred(c.get_predicate(), info),

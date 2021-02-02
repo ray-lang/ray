@@ -8,7 +8,7 @@ use crate::{
     typing::{info::TypeInfo, ty::Ty, Ctx},
 };
 
-use super::{HirDecl, HirInfo, HirNode, IntoHirNode, Param};
+use super::{HirDecl, HirField, HirInfo, HirNode, IntoHirNode, Param};
 use HirNode::*;
 
 type SourceNode = ast::Node<ast::Expr<SourceInfo>, SourceInfo>;
@@ -37,6 +37,7 @@ impl IntoHirNode<SourceInfo> for SourceNode {
             }
 
             ast::Expr::Assign(assign) => assign.to_hir_node_with(rest, scope, id, &info, ctx)?,
+            ast::Expr::Asm(asm) => asm.to_hir_node(scope, id, &info, ctx)?,
             ast::Expr::Block(block) => block.to_hir_node_with(rest, scope, id, &info, ctx)?,
             ast::Expr::BinOp(binop) => binop.to_hir_node(scope, id, &info, ctx)?,
             ast::Expr::Call(call) => call.to_hir_node(scope, id, &info, ctx)?,
@@ -46,8 +47,8 @@ impl IntoHirNode<SourceInfo> for SourceNode {
             ast::Expr::DefaultValue(default_value) => {
                 unimplemented!("to_infer_expr: DefaultValue")
             }
-            ast::Expr::Dot(dot) => unimplemented!("to_infer_expr: Dot"),
-            ast::Expr::Fn(f) => f.to_hir_node_with(rest, scope, id, &info, ctx)?,
+            ast::Expr::Dot(dot) => dot.to_hir_node(scope, id, &info, ctx)?,
+            ast::Expr::Fn(f) => f.to_hir_node_with(rest, &info.path, id, &info, ctx)?,
             ast::Expr::For(for_ex) => unimplemented!("to_infer_expr: For"),
             ast::Expr::If(if_ex) => unimplemented!("to_infer_expr: If"),
             ast::Expr::Index(index) => unimplemented!("to_infer_expr: Index"),
@@ -61,12 +62,29 @@ impl IntoHirNode<SourceInfo> for SourceNode {
             ast::Expr::Range(range) => unimplemented!("to_infer_expr: Range"),
             ast::Expr::Return(val) => unimplemented!("to_infer_expr: Return"),
             ast::Expr::Sequence(sequence) => unimplemented!("to_infer_expr: Sequence"),
-            ast::Expr::Tuple(tuple) => unimplemented!("to_infer_expr: Tuple"),
-            ast::Expr::Type(ty) => ast::Node {
+            ast::Expr::Tuple(tuple) => tuple.to_hir_node(scope, id, &info, ctx)?,
+            ast::Expr::Type(ty) => Node {
                 id,
                 info,
                 value: Type(Ty::ty_type(Ty::from_ast_ty(&ty.kind, &scope, ctx))),
             },
+            ast::Expr::TypeAnnotated(value, ty) => {
+                let value_id = value.id;
+                let value_info = value.info.clone();
+                let new_value = value.to_hir_node(scope, id, &info, ctx)?;
+                Node {
+                    id,
+                    info,
+                    value: HirNode::Typed(Box::new(Node {
+                        id: value_id,
+                        info: HirInfo {
+                            src_info: value_info,
+                            ty_info: TypeInfo::new(Ty::from_ast_ty(&ty.value.kind, &scope, ctx)),
+                        },
+                        value: new_value.value,
+                    })),
+                }
+            }
             ast::Expr::UnaryOp(unary_op) => unary_op.to_hir_node(scope, id, &info, ctx)?,
             ast::Expr::While(while_ex) => unimplemented!("to_infer_expr: While"),
             ast::Expr::Unsafe(ex) => {
@@ -96,6 +114,29 @@ impl IntoHirNode<SourceInfo> for SourceNode {
 //     }
 // }
 
+impl IntoHirNode<SourceInfo> for ast::asm::Asm {
+    type Output = OutNode;
+
+    fn to_hir_node_with(
+        self,
+        rest: &mut VecDeque<Node<ast::Expr<SourceInfo>, SourceInfo>>,
+        scope: &ast::Path,
+        id: u64,
+        info: &SourceInfo,
+        ctx: &mut Ctx,
+    ) -> RayResult<Self::Output> {
+        let ret_ty = self
+            .ret_ty
+            .as_ref()
+            .map(|t| Ty::from_ast_ty(&t.kind, scope, ctx));
+        Ok(Node {
+            id,
+            value: HirNode::Asm(ret_ty, self.inst),
+            info: info.clone(),
+        })
+    }
+}
+
 impl IntoHirNode<SourceInfo> for ast::Assign<SourceInfo> {
     type Output = OutNode;
 
@@ -108,91 +149,58 @@ impl IntoHirNode<SourceInfo> for ast::Assign<SourceInfo> {
         ctx: &mut Ctx,
     ) -> RayResult<Self::Output> {
         let mut vars = vec![];
-        let mut id = id;
-        let mut curr_info = info.clone();
-        let mut curr = self;
-        let mut lhs_vars = HashSet::new();
-        loop {
-            let (lhs_id, lhs_value, lhs_info) = curr.lhs.unpack();
-            // let (rhs_id, rhs_value, rhs_info) = curr.rhs.unpack();
-            let lhs = match &lhs_value {
-                ast::Expr::Name(n) => n.name.clone(),
-                _ => unimplemented!("converting lhs of assign to infer expr: {}", lhs_value),
+        let info = info.clone();
+        let (lhs_id, lhs_value, lhs_info) = self.lhs.unpack();
+        let lhs = match &lhs_value {
+            ast::Expr::Name(n) => n.name.clone(),
+            _ => unimplemented!("converting lhs of assign to infer expr: {}", lhs_value),
+        };
+
+        let rhs_src = self.rhs.src();
+        let lhs_src = lhs_info.src();
+        let rhs = if let ast::InfixOp::AssignOp(op) = &self.op {
+            let lhs_operand = Node {
+                id: lhs_id,
+                value: Var(lhs.clone()),
+                info: lhs_info,
             };
 
-            lhs_vars.insert(lhs.clone());
-
-            let rhs_src = curr.rhs.src();
-            let lhs_src = lhs_info.src();
-            let rhs = if let ast::InfixOp::AssignOp(op) = &curr.op {
-                let lhs_operand = Node {
-                    id: lhs_id,
-                    value: Var(lhs.clone()),
-                    info: lhs_info,
-                };
-
-                let rhs_id = curr.rhs.id;
-                let rhs_info = curr.rhs.info.clone();
-                let rhs_operand = curr.rhs.to_hir_node(scope, rhs_id, &rhs_info, ctx)?;
-                let mut name = op.to_string();
-                if let Some(fqn) = ctx.lookup_fqn(&name) {
-                    name = fqn.to_string();
-                }
-                let op_var = Node {
-                    id: rhs_id,
-                    value: Var(name),
-                    info: SourceInfo::new(Source {
-                        filepath: curr_info.src.filepath.clone(),
-                        span: Some(curr.op_span),
-                    }),
-                };
-                Node {
-                    id: rhs_id,
-                    info: rhs_info,
-                    value: Apply(Box::new(op_var), vec![lhs_operand, rhs_operand]),
-                }
-            } else {
-                curr.rhs.to_hir_node(scope, id, &curr_info, ctx)?
-            };
-
-            let mut info = curr_info.clone();
-            info.src = lhs_src.extend_to(&rhs_src);
-            vars.push(Node {
-                id,
-                info,
-                value: HirDecl::var(lhs, rhs),
-            });
-
-            if let Some(next) = rest.pop_front() {
-                if let ast::Expr::Assign(a) = next.value {
-                    let rhs_vars = a.rhs.get_vars();
-                    if !lhs_vars
-                        .iter()
-                        .collect::<HashSet<_>>()
-                        .is_disjoint(&rhs_vars)
-                    {
-                        // if there are variables on the RHS that were
-                        // previously defined we have to stop here
-                        break;
-                    }
-
-                    id = next.id;
-                    curr_info = next.info;
-                    curr = a;
-                    continue;
-                }
-
-                // otherwise, put it back
-                rest.push_front(next);
+            let rhs_id = self.rhs.id;
+            let rhs_info = self.rhs.info.clone();
+            let rhs_operand = self.rhs.to_hir_node(scope, rhs_id, &rhs_info, ctx)?;
+            let mut name = op.to_string();
+            if let Some(fqn) = ctx.lookup_fqn(&name) {
+                name = fqn.to_string();
             }
+            let op_var = Node {
+                id: rhs_id,
+                value: Var(name),
+                info: SourceInfo::new(Source {
+                    filepath: info.src.filepath.clone(),
+                    span: Some(self.op_span),
+                }),
+            };
+            Node {
+                id: rhs_id,
+                info: rhs_info,
+                value: Apply(Box::new(op_var), vec![lhs_operand, rhs_operand]),
+            }
+        } else {
+            self.rhs.to_hir_node(scope, id, &info, ctx)?
+        };
 
-            break;
-        }
+        let mut info = info.clone();
+        info.src = lhs_src.extend_to(&rhs_src);
+        vars.push(Node {
+            id,
+            info: info.clone(),
+            value: HirDecl::var(lhs, rhs),
+        });
 
-        let body = HirNode::block(rest, scope, id, &curr_info, ctx)?;
+        let body = HirNode::block(rest, scope, id, &info, ctx)?;
         Ok(Node {
             id,
-            info: curr_info,
+            info,
             value: Let(vars, Box::new(body)),
         })
     }
@@ -284,7 +292,7 @@ impl IntoHirNode<SourceInfo> for ast::Cast<SourceInfo> {
         Ok(Node {
             id,
             info: info.clone(),
-            value: Cast(Box::new(self.to_hir_node(scope, id, info, ctx)?), ty),
+            value: Cast(Box::new(self.lhs.to_hir_node(scope, id, info, ctx)?), ty),
         })
     }
 }
@@ -333,6 +341,7 @@ impl IntoHirNode<SourceInfo> for ast::Curly<SourceInfo> {
             }
         };
 
+        let mut ty = struct_ty.ty.clone();
         let mut idx = HashMap::new();
         for (i, (f, _)) in struct_ty.fields.iter().enumerate() {
             idx.insert(f.clone(), i);
@@ -350,7 +359,7 @@ impl IntoHirNode<SourceInfo> for ast::Curly<SourceInfo> {
             };
 
             if let Some(i) = idx.get(&n) {
-                param_map.push((*i, el));
+                param_map.push((*i, n.clone(), el));
             } else {
                 return Err(RayError {
                     msg: format!("struct `{}` does not have field `{}`", lhs, n),
@@ -363,13 +372,35 @@ impl IntoHirNode<SourceInfo> for ast::Curly<SourceInfo> {
             }
         }
 
-        param_map.sort_by_key(|(i, _)| *i);
-        let params = param_map.into_iter().map(|(_, el)| el).collect();
-        let v = Node::new(Var(format!("{}::init", struct_fqn)), info.clone());
+        param_map.sort_by_key(|(i, ..)| *i);
+        let params = param_map.into_iter().map(|(_, n, el)| (n, el)).collect();
         Ok(Node {
             id,
             info: info.clone(),
-            value: Apply(Box::new(v), params),
+            value: Struct(struct_fqn, ty, params),
+        })
+    }
+}
+
+impl IntoHirNode<SourceInfo> for ast::Dot<SourceInfo> {
+    type Output = OutNode;
+
+    fn to_hir_node_with(
+        self,
+        rest: &mut VecDeque<SourceNode>,
+        scope: &ast::Path,
+        id: u64,
+        info: &SourceInfo,
+        ctx: &mut Ctx,
+    ) -> RayResult<Self::Output> {
+        let lhs = self.lhs.to_hir_node(scope, id, info, ctx)?;
+        Ok(Node {
+            id,
+            info: info.clone(),
+            value: Dot(
+                Box::new(lhs),
+                Node::new(HirField::new(self.rhs.name), info.clone()),
+            ),
         })
     }
 }
@@ -386,7 +417,11 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
         ctx: &mut Ctx,
     ) -> RayResult<Self::Output> {
         let name = self.sig.name.clone().unwrap();
-        let fn_fqn = scope.append(name.clone());
+        let mut fn_fqn = ast::Path::from(name.clone());
+        if fn_fqn.len() == 1 {
+            fn_fqn = scope.clone();
+        }
+
         ctx.add_fqn(name.clone(), fn_fqn.clone());
 
         let mut fn_ctx = ctx.clone();
@@ -434,7 +469,7 @@ impl IntoHirNode<SourceInfo> for ast::Fn<SourceInfo> {
         let mut rhs = Node {
             id: body_id,
             info: body_info.clone(),
-            value: Fun(params, Box::new(fn_body)),
+            value: Fun(params, Box::new(fn_body), self.sig.decorators.clone()),
         };
         if num_typed == param_tys.len() {
             let ty = Ty::from_sig(&self.sig, &fn_fqn, &info.src.filepath, &mut fn_ctx, ctx)?;
@@ -513,6 +548,26 @@ impl IntoHirNode<SourceInfo> for ast::Name {
             id,
             info: info.clone(),
             value: Var(name),
+        })
+    }
+}
+
+impl IntoHirNode<SourceInfo> for ast::Sequence<SourceInfo> {
+    type Output = OutNode;
+
+    fn to_hir_node_with(
+        self,
+        _: &mut VecDeque<Node<ast::Expr<SourceInfo>, SourceInfo>>,
+        scope: &ast::Path,
+        id: u64,
+        info: &SourceInfo,
+        ctx: &mut Ctx,
+    ) -> RayResult<Self::Output> {
+        let els = self.items.to_hir_node(scope, id, info, ctx)?;
+        Ok(Node {
+            id,
+            info: info.clone(),
+            value: Tuple(els),
         })
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::{
-    ast::{Expr, Literal, Node, Path, SourceInfo},
+    ast::{asm::AsmOp, Decorator, Expr, Literal, Node, Path, SourceInfo},
     errors::RayResult,
     span::Source,
     typing::{traits::HasType, ty::Ty, ApplySubst, Ctx, Subst},
@@ -11,22 +11,48 @@ use crate::{
 use super::{HirInfo, IntoHirNode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HirField(String);
+
+impl std::fmt::Display for HirField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl HirField {
+    pub fn new<S: ToString>(name: S) -> HirField {
+        HirField(name.to_string())
+    }
+
+    pub fn name(&self) -> &String {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirNode<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     Var(String),
     Literal(Literal),
+    Tuple(Vec<Node<HirNode<Info>, Info>>),
     Type(Ty),
+    Asm(Option<Ty>, Vec<(AsmOp, Vec<String>)>),
     Cast(Box<Node<HirNode<Info>, Info>>, Ty),
     Decl(Node<HirDecl<Info>, Info>),
-    Struct(String, Vec<(String, Node<HirNode<Info>, Info>)>),
+    Struct(Path, Ty, Vec<(String, Node<HirNode<Info>, Info>)>),
     Block(Vec<Node<HirNode<Info>, Info>>),
+    Dot(Box<Node<HirNode<Info>, Info>>, Node<HirField, Info>),
     Let(
         Vec<Node<HirDecl<Info>, Info>>,
         Box<Node<HirNode<Info>, Info>>,
     ),
-    Fun(Vec<Param>, Box<Node<HirNode<Info>, Info>>),
+    Fun(
+        Vec<Param>,
+        Box<Node<HirNode<Info>, Info>>,
+        Option<Vec<Decorator>>,
+    ),
     Apply(
         Box<Node<HirNode<Info>, Info>>,
         Vec<Node<HirNode<Info>, Info>>,
@@ -43,21 +69,44 @@ where
             HirNode::Var(n) => write!(f, "{}", n),
             HirNode::Literal(l) => write!(f, "{}", l),
             HirNode::Type(t) => write!(f, "{}", t),
+            HirNode::Tuple(t) => write!(f, "({})", join(t, ", ")),
+            HirNode::Asm(ret_ty, inst) => {
+                write!(
+                    f,
+                    "asm{} {{\n{}\n}}",
+                    ret_ty
+                        .as_ref()
+                        .map(|r| format!("({})", r))
+                        .unwrap_or_default(),
+                    indent(
+                        map_join(inst, "\n", |(op, operands)| {
+                            format!("{} {}", op, join(operands, " "))
+                        }),
+                        2
+                    )
+                )
+            }
             HirNode::Cast(b, t) => write!(f, "({} as {})", b, t),
             HirNode::Decl(d) => write!(f, "{}", d),
-            HirNode::Struct(n, els) => write!(
+            HirNode::Struct(fqn, _, els) => write!(
                 f,
                 "{} ({})",
-                n,
+                fqn,
                 map_join(els, ", ", |(n, el)| { format!("{}: {}", n, el) })
             ),
+            HirNode::Dot(lhs, name) => {
+                write!(f, "{}.{}", lhs, name)
+            }
             HirNode::Apply(fun, args) => {
                 let args = join(args, ", ");
                 write!(f, "{}({})", fun, args)
             }
-            HirNode::Fun(params, body) => write!(
+            HirNode::Fun(params, body, decs) => write!(
                 f,
-                "fn({}) {{\n{}\n}}",
+                "{}fn({}) {{\n{}\n}}",
+                decs.as_ref()
+                    .map(|d| { format!("{}\n", join(d, "\n")) })
+                    .unwrap_or_default(),
                 join(params, ", "),
                 indent(body.to_string(), 2)
             ),
@@ -100,15 +149,21 @@ where
             HirNode::Var(v) => HirNode::Var(v),
             HirNode::Type(ty) => HirNode::Type(ty.apply_subst(subst)),
             HirNode::Literal(l) => HirNode::Literal(l),
+            HirNode::Tuple(t) => HirNode::Tuple(t.apply_subst(subst)),
+            HirNode::Asm(ty, inst) => HirNode::Asm(ty.map(|t| t.apply_subst(subst)), inst),
             HirNode::Cast(d, t) => HirNode::Cast(d.apply_subst(subst), t.apply_subst(subst)),
             HirNode::Decl(d) => HirNode::Decl(d.apply_subst(subst)),
-            HirNode::Struct(n, els) => HirNode::Struct(n, els.apply_subst(subst)),
+            HirNode::Struct(fqn, ty, els) => {
+                HirNode::Struct(fqn, ty.apply_subst(subst), els.apply_subst(subst))
+            }
+            HirNode::Dot(lhs, n) => HirNode::Dot(lhs.apply_subst(subst), n),
             HirNode::Apply(fun, args) => {
                 HirNode::Apply(fun.apply_subst(subst), args.apply_subst(subst))
             }
-            HirNode::Fun(params, body) => HirNode::Fun(
+            HirNode::Fun(params, body, dec) => HirNode::Fun(
                 params.into_iter().map(|p| p.apply_subst(subst)).collect(),
                 body.apply_subst(subst),
+                dec,
             ),
             HirNode::Let(vars, b) => HirNode::Let(
                 vars.into_iter().map(|d| d.apply_subst(subst)).collect(),
@@ -330,7 +385,8 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     Pattern(HirPattern, Box<Node<HirNode<Info>, Info>>),
-    Type(String, Ty),
+    Type(String, Ty, bool, Option<String>),
+    TraitMember(String, Ty),
 }
 
 impl<Info> HirDecl<Info>
@@ -341,8 +397,17 @@ where
         HirDecl::Pattern(HirPattern::Var(var.into()), Box::new(rhs))
     }
 
-    pub fn ty<S: Into<String>>(name: S, ty: Ty) -> HirDecl<Info> {
-        HirDecl::Type(name.into(), ty)
+    pub fn ty<S: Into<String>>(
+        name: S,
+        ty: Ty,
+        is_mutable: bool,
+        src: Option<&str>,
+    ) -> HirDecl<Info> {
+        HirDecl::Type(name.into(), ty, is_mutable, src.map(|s| s.to_string()))
+    }
+
+    pub fn member<S: Into<String>>(name: S, ty: Ty) -> HirDecl<Info> {
+        HirDecl::TraitMember(name.into(), ty)
     }
 }
 
@@ -353,7 +418,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
             HirDecl::Pattern(x, n) => write!(f, "{} = {}", x, n),
-            HirDecl::Type(x, t) => write!(f, "{} :: {}", x, t),
+            HirDecl::Type(x, t, _, _) | HirDecl::TraitMember(x, t) => write!(f, "{} :: {}", x, t),
         }
     }
 }
@@ -365,7 +430,10 @@ where
     fn apply_subst(self, subst: &Subst) -> HirDecl<Info> {
         match self {
             HirDecl::Pattern(x, n) => HirDecl::Pattern(x, n.apply_subst(subst)),
-            HirDecl::Type(x, t) => HirDecl::Type(x, t.apply_subst(subst)),
+            HirDecl::Type(x, t, is_mutable, src) => {
+                HirDecl::Type(x, t.apply_subst(subst), is_mutable, src)
+            }
+            HirDecl::TraitMember(x, t) => HirDecl::TraitMember(x, t.apply_subst(subst)),
         }
     }
 }

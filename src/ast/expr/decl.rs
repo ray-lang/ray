@@ -10,6 +10,7 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     Extern(Box<Node<Decl<Info>, Info>>),
+    Mutable(Name),
     Name(Name),
     Declare(Assign<Info>),
     Fn(FnSig<Info>),
@@ -21,7 +22,7 @@ where
 
 impl<Info> PartialOrd for Decl<Info>
 where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq + Ord,
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let i: usize = self.into();
@@ -32,7 +33,7 @@ where
 
 impl<Info> Ord for Decl<Info>
 where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq + Ord,
+    Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let i: usize = self.into();
@@ -54,7 +55,7 @@ where
             Decl::Fn(_) => 4,
             Decl::Impl(_) => 5,
             Decl::Declare(_) => 6,
-            Decl::Name(_) => 7,
+            Decl::Mutable(_) | Decl::Name(_) => 7,
         }
     }
 }
@@ -95,6 +96,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Decl::Extern(ref ext) => write!(f, "(extern {})", ext),
+            Decl::Mutable(ref n) => write!(f, "(mut {})", n),
             Decl::Name(ref n) => write!(f, "(declare {})", n),
             Decl::Declare(ref a) => write!(f, "(declare {})", a),
             Decl::TypeAlias(ref n, ref ty) => write!(f, "(type {} = {})", n, ty),
@@ -182,7 +184,7 @@ where
     pub fn get_name(&self) -> Option<String> {
         match &self {
             Decl::Extern(e) => e.get_name(),
-            Decl::Name(n) => Some(n.name.clone()),
+            Decl::Mutable(n) | Decl::Name(n) => Some(n.name.clone()),
             Decl::Fn(f) => f.name.clone(),
             Decl::Struct(s) => Some(s.name.name.clone()),
             Decl::Trait(t) => match &t.ty.kind {

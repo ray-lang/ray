@@ -4,5 +4,6 @@
     "rust.racer_completion": true,
     "[rust]": {
         "editor.formatOnSave": true,
-    }
+    },
+    "rust-analyzer.checkOnSave.command": "build"
 }

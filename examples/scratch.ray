@@ -1,3 +1,8 @@
-fn foo(x) => x + 1
+@inline()
+fn malloc(size: uint) -> *'a => asm(*'a) { $malloc size }
 
-foo(1)
+
+nwritten = malloc(4) : *uint
+s = "hello, world\n"
+io = IOVec { base: s.raw_ptr, len: s.len }
+n = fd_write(1, io, 1, nwritten)

@@ -1,4 +1,7 @@
+use std::fs;
+
 use crate::{
+    codegen::{codegen, wasm},
     errors::{RayError, RayErrorKind},
     hir, lir,
     pathlib::FilePath,
@@ -68,10 +71,10 @@ impl Driver {
         }
 
         let mut modules = mod_builder.modules;
-        let mut ctx = Ctx::new();
-        let hir_mod = hir::transform_modules(&mod_path, &mut modules, &mut ctx)?;
+        let mut tcx = Ctx::new();
+        let hir_mod = hir::transform_modules(&mod_path, &mut modules, &mut tcx)?;
         log::debug!("{}", hir_mod);
-        let mut inf = InferSystem::new(ctx);
+        let mut inf = InferSystem::new(&mut tcx);
         let (typed_mod, solution) = match inf.infer_ty(hir_mod) {
             Ok(r) => r,
             Err(errs) => {
@@ -94,11 +97,44 @@ impl Driver {
 
         // generate IR
         let root = &typed_mod.stmts[0];
-        let mut prog = lir::Program::gen(mod_path, &solution, root)?;
+        let mut prog = lir::Program::gen(mod_path.clone(), &solution, root, tcx)?;
         prog.monomorphize();
-        eprintln!("{}", prog);
+        prog.post_process();
 
-        // compile to asm
+        log::debug!("{}", prog);
+
+        // compile to wasm
+        let wasm_mod = codegen(&prog);
+
+        // serialize the wasm module
+        let bytes = match wasm::serialize(wasm_mod) {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(vec![RayError {
+                    msg: format!("failed to serialize WASM module\n{}", e),
+                    src: vec![],
+                    kind: RayErrorKind::Compile,
+                }])
+            }
+        };
+
+        // determine the output path
+        let outpath = if let Some(outpath) = options.output_path {
+            if outpath.is_dir() {
+                let filename = mod_path.name().unwrap();
+                (outpath / filename).with_extension("wasm")
+            } else {
+                outpath
+            }
+        } else {
+            let filename = mod_path.name().unwrap();
+            FilePath::from(filename).with_extension("wasm")
+        };
+
+        // write to output path
+        if let Some(err) = fs::write(outpath, bytes).err() {
+            return Err(vec![err.into()]);
+        }
         Ok(())
 
         // parseOpts := &parse.ParseOptions{

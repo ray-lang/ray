@@ -151,6 +151,15 @@ impl BindingGroup {
         }
     }
 
+    pub fn empty() -> BindingGroup {
+        BindingGroup {
+            env: TyEnv::new(),
+            aset: AssumptionSet::new(),
+            ctree: ConstraintTree::empty(),
+            info: ConstraintInfo::new(),
+        }
+    }
+
     pub fn with_info(mut self, info: ConstraintInfo) -> BindingGroup {
         self.info = info;
         self

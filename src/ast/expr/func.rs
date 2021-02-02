@@ -74,7 +74,7 @@ where
     pub modifiers: Vec<Modifier>,
     pub qualifiers: Vec<Type>,
     pub doc_comment: Option<String>,
-    pub decorators: Option<Vec<Decorator<Info>>>,
+    pub decorators: Option<Vec<Decorator>>,
     pub span: Span,
 }
 

@@ -16,7 +16,7 @@ use std::{fs, io};
 use crate::{
     ast::{
         token::{Token, TokenKind},
-        Decl, Decorator, Expr, File, Id, Import, Node, Path, SourceInfo, SourceNode, ValueKind,
+        Decl, Decorator, Expr, File, Import, Node, Path, SourceInfo, SourceNode, Type, ValueKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
@@ -42,7 +42,7 @@ bitflags::bitflags! {
         const IF_ELSE     = 1 << 1;
         const IN_LOOP     = 1 << 2;
         const IN_FUNC     = 1 << 3;
-        const ASSIGN      = 1 << 4;
+        const RVALUE      = 1 << 4;
         const LVALUE      = 1 << 5;
         const AFTER_COMMA = 1 << 6;
         const IN_PAREN    = 1 << 7;
@@ -208,7 +208,7 @@ impl Parser {
             &mut Self,
             TokenKind,
             Option<String>,
-            Option<Vec<Decorator<SourceInfo>>>,
+            Option<Vec<Decorator>>,
         ) -> Result<Pos, RayError>,
     >(
         &mut self,
@@ -218,7 +218,6 @@ impl Parser {
         mut f: F,
     ) -> ParseResult<Span> {
         let mut end = start;
-        let mut errors = vec![];
 
         while !self.is_eof() {
             let doc = self.parse_doc_comment();
@@ -227,10 +226,7 @@ impl Parser {
                     end = span.end;
                     Some(dec)
                 }
-                Err(e) => {
-                    errors.push(e);
-                    None
-                }
+                Err(e) => return Err(e),
             };
 
             let kind = match (self.peek_kind(), stop_token.as_ref()) {
@@ -334,11 +330,14 @@ impl Parser {
 
     fn parse_stmt(
         &mut self,
-        decs: Option<Vec<Decorator<SourceInfo>>>,
+        decs: Option<Vec<Decorator>>,
         doc: Option<String>,
         ctx: &ParseContext,
     ) -> ExprResult {
         let mut expr = self.parse_expr(ctx)?;
+        if let Expr::Fn(f) = &mut expr.value {
+            f.sig.decorators = decs;
+        }
         expr.info.doc = doc;
         Ok(expr)
     }
@@ -419,6 +418,20 @@ impl Parser {
     pub(crate) fn mk_expr(&mut self, expr: Expr<SourceInfo>, span: Span, path: Path) -> ParsedExpr {
         Node::new(
             expr,
+            SourceInfo {
+                src: Source {
+                    span: Some(span),
+                    filepath: self.options.filepath.clone(),
+                },
+                path,
+                doc: None,
+            },
+        )
+    }
+
+    pub(crate) fn mk_ty(&mut self, ty: Type, span: Span, path: Path) -> SourceNode<Type> {
+        Node::new(
+            ty,
             SourceInfo {
                 src: Source {
                     span: Some(span),
@@ -564,11 +577,9 @@ impl Parser {
     /// then the lexer must be at the end of the current line
     fn is_eol(&mut self) -> bool {
         self.is_eof()
-            || self.lex.peek_preceding().iter().any(|p| {
-                if let Preceding::Whitespace(w) = p {
-                    w.kind == TokenKind::NewLine
-                } else {
-                    false
+            || self.lex.peek_preceding().iter().any(|p| match p {
+                Preceding::Whitespace(t) | Preceding::Comment(t) => {
+                    t.kind == TokenKind::NewLine || t.span.lines() > 1
                 }
             })
     }

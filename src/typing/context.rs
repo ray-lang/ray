@@ -75,7 +75,7 @@ impl Ctx {
         self.vars.get(name)
     }
 
-    pub fn get_struct_ty(&mut self, fqn: &Path) -> Option<&StructTy> {
+    pub fn get_struct_ty(&self, fqn: &Path) -> Option<&StructTy> {
         self.struct_tys.get(fqn)
     }
 
@@ -158,16 +158,15 @@ impl Ctx {
     }
 
     pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {
+        log::debug!("{} instanceof {}", t, u);
         match (t, u) {
+            (Ty::All(_, t), Ty::All(_, u)) => self.instance_of(t, u),
             (Ty::All(vs, t), _) => {
                 let free_vars = u.free_vars();
                 self.instance_of(t, u) && vs.iter().all(|v| !free_vars.contains(v))
             }
             (_, Ty::All(_, u)) => {
-                let sub = match t.mgu(u) {
-                    Ok(s) => s,
-                    _ => return false,
-                };
+                let sub = t.mgu(u).unwrap_or_default();
                 let t = t.clone().apply_subst(&sub);
                 let u = u.clone().apply_subst(&sub);
                 self.instance_of(&t, &u)
@@ -181,6 +180,7 @@ impl Ctx {
                 p.iter().zip(r.iter()).all(|(x, y)| self.instance_of(x, y))
                     && self.instance_of(q, s)
             }
+            (Ty::Ptr(t), Ty::Ptr(u)) => self.instance_of(t, u),
             (Ty::Projection(s, xs, _), Ty::Projection(t, ys, _))
                 if s == t && xs.len() == ys.len() =>
             {

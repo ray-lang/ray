@@ -1,9 +1,48 @@
-use std::{cell::RefMut, collections::VecDeque};
-
 use crate::{
     ast::{Node, SourceInfo},
     lir,
 };
+
+pub trait IterCalls<'a> {
+    fn iter_calls(self) -> std::vec::IntoIter<&'a mut Node<lir::Inst, SourceInfo>>;
+}
+
+impl<'a, I> IterCalls<'a> for I
+where
+    I: IntoIterator<Item = &'a mut Node<lir::Inst, SourceInfo>>,
+{
+    fn iter_calls(self) -> std::vec::IntoIter<&'a mut Node<lir::Inst, SourceInfo>> {
+        let mut calls = vec![];
+        for inst in self {
+            let inst = match &inst.value {
+                lir::Inst::Value(v)
+                | lir::Inst::SetGlobal(_, v)
+                | lir::Inst::SetLocal(_, v)
+                | lir::Inst::IncRef(v, _)
+                | lir::Inst::DecRef(v)
+                | lir::Inst::Return(v) => {
+                    if matches!(v, lir::Value::Call(_)) {
+                        inst
+                    } else {
+                        continue;
+                    }
+                }
+                lir::Inst::Store(s) => {
+                    if matches!(s.value, lir::Value::Call(_)) {
+                        inst
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+
+            calls.push(inst);
+        }
+
+        calls.into_iter()
+    }
+}
 
 impl<'a> IntoIterator for &'a mut lir::Program {
     type Item = &'a mut Node<lir::Inst, SourceInfo>;
@@ -18,65 +57,6 @@ impl<'a> IntoIterator for &'a mut lir::Program {
         result.into_iter()
     }
 }
-
-// impl<'a> IntoIterator for &'a lir::Func {
-//     type Item = &'a lir::Inst;
-
-//     type IntoIter = std::vec::IntoIter<&'a lir::Inst>;
-
-//     fn into_iter(self) -> Self::IntoIter {
-//         fn append<'a>(inst: &'a lir::Inst, v: &mut Vec<&'a lir::Inst>) {
-//             match &inst {
-//                 lir::Inst::Block(b) => {
-//                     for i in b.instructions.iter() {
-//                         append(i, v);
-//                     }
-//                     return;
-//                 }
-//                 lir::Inst::Func(f) => {
-//                     for i in f.body.instructions.iter() {
-//                         append(i, v);
-//                     }
-//                     return;
-//                 }
-//                 lir::Inst::IfBlock(b) => {
-//                     for i in b
-//                         .cond
-//                         .instructions
-//                         .iter()
-//                         .chain(b.then.instructions.iter())
-//                         .chain(b.els.instructions.iter())
-//                     {
-//                         append(i, v);
-//                     }
-//                     return;
-//                 }
-//                 lir::Inst::Loop(l) => {
-//                     for i in l
-//                         .begin
-//                         .instructions
-//                         .iter()
-//                         .chain(l.cond.instructions.iter())
-//                         .chain(l.body.instructions.iter())
-//                         .chain(l.end.instructions.iter())
-//                     {
-//                         append(i, v);
-//                     }
-//                     return;
-//                 }
-//                 _ => (),
-//             }
-
-//             v.push(inst);
-//         }
-
-//         let mut result = vec![];
-//         for inst in self.body.instructions.iter() {
-//             append(inst, &mut result);
-//         }
-//         result.into_iter()
-//     }
-// }
 
 impl<'a> IntoIterator for &'a mut lir::Func {
     type Item = &'a mut Node<lir::Inst, SourceInfo>;
@@ -137,83 +117,3 @@ impl<'a> IntoIterator for &'a mut lir::Func {
         result.into_iter()
     }
 }
-
-// pub struct InstIter<'a> {
-//     inst: VecDeque<&'a lir::Inst>,
-// }
-
-// pub struct InstIterMut<'a> {
-//     inst: VecDeque<&'a mut Node<lir::Inst, SourceInfo>>,
-// }
-
-// impl<'a> Iterator for InstIter<'a> {
-//     type Item = &'a lir::Inst;
-
-//     fn next(&mut self) -> Option<&'a lir::Inst> {
-//         let inst = self.inst.pop_front();
-//         if let Some(inst) = inst {
-//             match &inst.kind {
-//                 lir::InstKind::Block(b) => {
-//                     self.inst.extend(b.instructions.iter());
-//                 }
-//                 lir::InstKind::Func(f) => {
-//                     self.inst.extend(f.body.instructions.iter());
-//                 }
-//                 lir::InstKind::IfBlock(b) => {
-//                     self.inst.extend(
-//                         b.cond
-//                             .instructions
-//                             .iter()
-//                             .chain(b.then.instructions.iter())
-//                             .chain(b.els.instructions.iter()),
-//                     );
-//                 }
-//                 lir::InstKind::Loop(l) => {
-//                     self.inst.extend(
-//                         l.begin
-//                             .instructions
-//                             .iter()
-//                             .chain(l.cond.instructions.iter())
-//                             .chain(l.body.instructions.iter())
-//                             .chain(l.end.instructions.iter()),
-//                     );
-//                 }
-//                 _ => (),
-//             }
-//         }
-
-//         inst
-//     }
-// }
-
-// impl<'a> From<&'a lir::Func> for InstIter<'a> {
-//     fn from(f: &'a lir::Func) -> Self {
-//         InstIter {
-//             inst: f.body.instructions.iter().collect(),
-//         }
-//     }
-// }
-
-// impl<'a> Iterator for InstIterMut<'a> {
-//     type Item = &'a mut Node<lir::Inst, SourceInfo>;
-
-//     fn next(&mut self) -> Option<&'a mut Node<lir::Inst, SourceInfo>> {
-//         let inst = self.inst.pop_front();
-
-//         inst
-//     }
-// }
-
-// impl<'a> From<VecDeque<&'a mut Node<lir::Inst, SourceInfo>>> for InstIterMut<'a> {
-//     fn from(inst: VecDeque<&'a mut Node<lir::Inst, SourceInfo>>) -> Self {
-//         InstIterMut { inst }
-//     }
-// }
-
-// impl<'a> From<&'a mut lir::Func> for InstIterMut<'a> {
-//     fn from(f: &'a mut lir::Func) -> Self {
-//         InstIterMut {
-//             inst: f.body.instructions.iter_mut().collect(),
-//         }
-//     }
-// }

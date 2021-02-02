@@ -1,8 +1,8 @@
 use std::{collections::HashSet, fmt::Debug};
 
 use crate::ast::{
-    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List, Literal, Loop,
-    Name, Node, Path, Range, Sequence, Type, UnaryOp, While,
+    asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List,
+    Literal, Loop, Name, Node, Path, Range, Sequence, Type, UnaryOp, While,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,6 +11,7 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     Assign(Assign<Info>),
+    Asm(Asm),
     BinOp(BinOp<Info>),
     Block(Block<Info>),
     Break(Option<Box<Node<Expr<Info>, Info>>>),
@@ -36,6 +37,7 @@ where
     Sequence(Sequence<Info>),
     Tuple(Sequence<Info>),
     Type(Type),
+    TypeAnnotated(Box<Node<Expr<Info>, Info>>, Node<Type, Info>),
     UnaryOp(UnaryOp<Info>),
     Unsafe(Box<Node<Expr<Info>, Info>>),
     While(While<Info>),
@@ -65,6 +67,7 @@ where
             match self {
                 Expr::List(ex) => ex.to_string(),
                 Expr::Assign(ex) => ex.to_string(),
+                Expr::Asm(ex) => ex.to_string(),
                 Expr::BinOp(ex) => ex.to_string(),
                 Expr::Block(ex) => ex.to_string(),
                 Expr::Break(ex) => ex.as_ref().map_or_else(
@@ -81,101 +84,39 @@ where
                 Expr::For(ex) => ex.to_string(),
                 Expr::If(ex) => ex.to_string(),
                 Expr::Index(ex) => ex.to_string(),
-                Expr::Labeled(label, ex) => format!("({}: {})", label, ex.to_string()),
+                Expr::Labeled(label, ex) => format!("({}: {})", label, ex),
                 Expr::Literal(ex) => ex.to_string(),
                 Expr::Loop(ex) => ex.to_string(),
                 Expr::Name(ex) => ex.to_string(),
                 Expr::Path(ex) => ex.to_string(),
                 Expr::Paren(ex) => ex.to_string(),
                 Expr::Range(ex) => ex.to_string(),
-                Expr::Return(ex) => ex.as_ref().map_or_else(
-                    || "(return)".to_string(),
-                    |ex| format!("(return {})", ex.to_string())
-                ),
+                Expr::Return(ex) => ex
+                    .as_ref()
+                    .map_or_else(|| "(return)".to_string(), |ex| format!("(return {})", ex)),
                 Expr::Sequence(ex) => ex.to_string(),
-                Expr::Tuple(ex) => format!("(tuple {})", ex.to_string()),
+                Expr::Tuple(ex) => format!("(tuple {})", ex),
                 Expr::Type(ex) => ex.to_string(),
+                Expr::TypeAnnotated(value, ty) => format!("({} :: {})", value, ty),
                 Expr::UnaryOp(ex) => ex.to_string(),
-                Expr::Unsafe(ex) => format!("(unsafe {})", ex.to_string()),
+                Expr::Unsafe(ex) => format!("(unsafe {})", ex),
                 Expr::While(ex) => ex.to_string(),
             }
         )
     }
 }
 
-// impl<Info> PartialEq for Expr<Info>
-// where
-//     T: PartialEq,
-//     Info: PartialEq,
-// {
-//     fn eq(&self, other: &Self) -> bool {
-//         match (self, other) {
-//             (Expr::List(x), Expr::List(y)) => x == y,
-//             (Expr::Assign(x), Expr::Assign(y)) => x == y,
-//             (Expr::BinOp(x), Expr::BinOp(y)) => x == y,
-//             (Expr::Block(x), Expr::Block(y)) => x == y,
-//             (Expr::Break(x), Expr::Break(y)) => x == y,
-//             (Expr::Call(x), Expr::Call(y)) => x == y,
-//             (Expr::Cast(x), Expr::Cast(y)) => x == y,
-//             (Expr::Closure(x), Expr::Closure(y)) => x == y,
-//             (Expr::Curly(x), Expr::Curly(y)) => x == y,
-//             (Expr::DefaultValue(x), Expr::DefaultValue(y)) => x == y,
-//             (Expr::Dot(x), Expr::Dot(y)) => x == y,
-//             (Expr::Fn(x), Expr::Fn(y)) => x == y,
-//             (Expr::For(x), Expr::For(y)) => x == y,
-//             (Expr::If(x), Expr::If(y)) => x == y,
-//             (Expr::Index(x), Expr::Index(y)) => x == y,
-//             (Expr::Labeled(x), Expr::Labeled(y)) => x == y,
-//             (Expr::Literal(x), Expr::Literal(y)) => x == y,
-//             (Expr::Loop(x), Expr::Loop(y)) => x == y,
-//             (Expr::Name(x), Expr::Name(y)) => x == y,
-//             (Expr::Path(x), Expr::Path(y)) => x == y,
-//             (Expr::Paren(x), Expr::Paren(y)) => x == y,
-//             (Expr::Range(x), Expr::Range(y)) => x == y,
-//             (Expr::Return(x), Expr::Return(y)) => x == y,
-//             (Expr::Sequence(x), Expr::Sequence(y)) => x == y,
-//             (Expr::Tuple(x), Expr::Tuple(y)) => x == y,
-//             (Expr::Type(x), Expr::Type(y)) => x == y,
-//             (Expr::UnaryOp(x), Expr::UnaryOp(y)) => x == y,
-//             (Expr::Unsafe(x), Expr::Unsafe(y)) => x == y,
-//             (Expr::While(x), Expr::While(y)) => x == y,
-//         }
-//     }
-// }
-
 impl<Info> Expr<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub fn get_vars(&self) -> HashSet<&String> {
-        todo!()
-        // let walk = Visitor::from(self);
-        // let mut set = HashSet::new();
-        // for ex in walk {
-        //     match &ex {
-        //         Expr::Name(n) => {
-        //             set.insert(&n.name);
-        //         }
-        //         Expr::Curly(c) => {
-        //             for el in c.elements.iter() {
-        //                 match &el.kind {
-        //                     CurlyElementKind::Name(n) => set.insert(&n.name),
-        //                     CurlyElementKind::Labeled(n, _) => set.insert(&n.name),
-        //                 };
-        //             }
-        //         }
-        //         _ => continue,
-        //     }
-        // }
-        // set
-    }
-
     pub fn get_name(&self) -> Option<String> {
         match &self {
             Expr::Name(n) => Some(n.name.clone()),
             Expr::Fn(f) => f.sig.name.clone(),
             Expr::Path(p) => Some(p.to_string()),
             Expr::Assign(_)
+            | Expr::Asm(_)
             | Expr::BinOp(_)
             | Expr::Block(_)
             | Expr::Break(_)
@@ -198,6 +139,7 @@ where
             | Expr::Sequence(_)
             | Expr::Tuple(_)
             | Expr::Type(_)
+            | Expr::TypeAnnotated(..)
             | Expr::UnaryOp(_)
             | Expr::Unsafe(_)
             | Expr::While(_) => None,
@@ -208,6 +150,7 @@ where
         match self {
             Expr::List(..) => "array",
             Expr::Assign(..) => "assign",
+            Expr::Asm(..) => "asm",
             Expr::BinOp(..) => "binary operation",
             Expr::Block(..) => "block",
             Expr::Break(..) => "break",
@@ -232,6 +175,7 @@ where
             Expr::Sequence(..) => "sequence",
             Expr::Tuple(..) => "tuple",
             Expr::Type(..) => "type",
+            Expr::TypeAnnotated(..) => "type-annotated expression",
             Expr::UnaryOp(..) => "unary operation",
             Expr::Unsafe(..) => "unsafe",
             Expr::While(..) => "while",

@@ -1,0 +1,47 @@
+trait Eq['a] {
+    fn ==('a, 'a) -> bool
+}
+
+impl Eq[int] {
+    @inline()
+    fn ==(a: int, b: int) -> bool => asm { $int_eq a b }
+}
+
+impl Eq[i8] {
+    @inline()
+    fn ==(a: i8, b: i8) -> bool => asm { $i8_eq a b }
+}
+
+impl Eq[i16] {
+    @inline()
+    fn ==(a: i16, b: i16) -> bool => asm { $i16_eq a b }
+}
+
+impl Eq[i32] {
+    @inline()
+    fn ==(a: i32, b: i32) -> bool => asm { $i32_eq a b }
+}
+
+impl Eq[i64] {
+    @inline()
+    fn ==(a: i64, b: i64) -> bool => asm { $i64_eq a b }
+}
+
+trait Add['a] {
+    fn +('a, 'a) -> 'a
+}
+
+impl Add[int] {
+    @inline()
+    fn +(a: int, b: int) -> int => asm { $int_add a b }
+}
+
+impl Add[i8] {
+    @inline()
+    fn +(a: i8, b: i8) -> i8 => asm { $i8_add a b }
+}
+
+impl Add[i16] {
+    @inline()
+    fn +(a: i16, b: i16) -> i16 => asm { $i16_add a b }
+}

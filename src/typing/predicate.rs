@@ -22,6 +22,7 @@ pub trait PredicateEntails<Other = Self> {
 pub enum TyPredicate {
     Trait(Ty),
     Literal(Ty, LiteralKind),
+    HasMember(Ty, String, Ty),
 }
 
 impl std::fmt::Debug for TyPredicate {
@@ -29,6 +30,7 @@ impl std::fmt::Debug for TyPredicate {
         match self {
             TyPredicate::Trait(p) => write!(f, "{}", p),
             TyPredicate::Literal(t, k) => write!(f, "{} is {}", t, k),
+            TyPredicate::HasMember(t, m, u) => write!(f, "{} has {} :: {}", t, m, u),
         }
     }
 }
@@ -38,6 +40,7 @@ impl std::fmt::Display for TyPredicate {
         match self {
             TyPredicate::Trait(p) => write!(f, "{}", p),
             TyPredicate::Literal(t, k) => write!(f, "{} is {}", t, k),
+            TyPredicate::HasMember(t, m, u) => write!(f, "{} has {} :: {}", t, m, u),
         }
     }
 }
@@ -47,23 +50,23 @@ impl ApplySubst for TyPredicate {
         match self {
             TyPredicate::Trait(p) => TyPredicate::Trait(p.apply_subst(subst)),
             TyPredicate::Literal(t, k) => TyPredicate::Literal(t.apply_subst(subst), k),
+            TyPredicate::HasMember(t, m, u) => {
+                TyPredicate::HasMember(t.apply_subst(subst), m, u.apply_subst(subst))
+            }
         }
     }
 }
 
 impl HasFreeVars for TyPredicate {
     fn free_vars(&self) -> HashSet<&TyVar> {
-        let mut h = HashSet::new();
         match self {
-            TyPredicate::Trait(p) => {
-                h.extend(p.free_vars());
-            }
-            TyPredicate::Literal(t, _) => {
-                h.extend(t.free_vars());
+            TyPredicate::Trait(t) | TyPredicate::Literal(t, _) => t.free_vars(),
+            TyPredicate::HasMember(t, _, u) => {
+                let mut v = t.free_vars();
+                v.extend(u.free_vars());
+                v
             }
         }
-
-        h
     }
 }
 
@@ -76,6 +79,9 @@ impl Polymorphize for TyPredicate {
                 TyPredicate::Trait(Ty::Projection(name, vec![ty_arg], vec![]))
             }
             TyPredicate::Literal(t, k) => TyPredicate::Literal(t.polymorphize(tf, subst), k),
+            TyPredicate::HasMember(t, m, u) => {
+                TyPredicate::HasMember(t.polymorphize(tf, subst), m, u.polymorphize(tf, subst))
+            }
         }
     }
 }
@@ -85,6 +91,9 @@ impl Instantiate for TyPredicate {
         match self {
             TyPredicate::Trait(p) => TyPredicate::Trait(p.instantiate(tf)),
             TyPredicate::Literal(t, k) => TyPredicate::Literal(t.instantiate(tf), k),
+            TyPredicate::HasMember(t, m, u) => {
+                TyPredicate::HasMember(t.instantiate(tf), m, u.instantiate(tf))
+            }
         }
     }
 }
@@ -125,11 +134,7 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
                         .iter()
                         .filter(|i| {
                             // unify the base types
-                            let sub = match i.base_ty.mgu(base_ty) {
-                                Ok(s) => s,
-                                _ => return false,
-                            };
-
+                            let sub = i.base_ty.mgu(base_ty).unwrap_or_default();
                             let lhs = i.base_ty.clone().apply_subst(&sub);
                             let rhs = base_ty.clone().apply_subst(&sub);
                             lhs == rhs
@@ -146,6 +151,28 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
                 LiteralKind::Int => t.is_int_ty(),
                 LiteralKind::Float => t.is_float_ty(),
             },
+            TyPredicate::HasMember(t, m, u) => {
+                let fqn = match t.get_path() {
+                    Some(p) => p,
+                    _ => return false,
+                };
+                let struct_ty = match ctx.get_struct_ty(&fqn) {
+                    Some(t) => t,
+                    _ => return false,
+                };
+
+                for (f, s) in struct_ty.fields.iter() {
+                    if f == m {
+                        // unify the base types
+                        let sub = s.mgu(u).unwrap_or_default();
+                        let s = s.clone().apply_subst(&sub);
+                        let u = u.clone().apply_subst(&sub);
+                        return s == u;
+                    }
+                }
+
+                false
+            }
         }
     }
 }
@@ -233,6 +260,7 @@ impl TyPredicate {
                 LiteralKind::Int => str!("is an integer type"),
                 LiteralKind::Float => str!("is a float type"),
             },
+            TyPredicate::HasMember(_, m, _) => format!("has member `{}`", m),
         }
     }
 }

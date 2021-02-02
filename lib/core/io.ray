@@ -1,0 +1,6 @@
+extern fn memcpy(dst: *'a, src: *'a, size: uint)
+
+// fn puts(s: string) {
+//     v = IOVec { base: s.to_bytes(),  }
+//     fd_write(1, )
+// }

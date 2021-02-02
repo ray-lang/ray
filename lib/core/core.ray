@@ -1,0 +1,2 @@
+// This is the core library for Ray
+extern fn sizeof(t: type['a]) -> uint

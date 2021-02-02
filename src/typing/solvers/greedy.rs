@@ -93,6 +93,10 @@ impl<'a> Solver for GreedySolver<'a> {
 }
 
 impl<'a> HasBasic for GreedySolver<'a> {
+    fn ctx(&self) -> &Ctx {
+        &self.ctx
+    }
+
     fn get_constraints(&self) -> Vec<Constraint> {
         self.constraints.clone().into()
     }
@@ -236,8 +240,11 @@ impl<'a> HasState for GreedySolver<'a> {
 }
 
 impl<'a> HasPredicates for GreedySolver<'a> {
-    fn get_preds(&self) -> &Vec<(TyPredicate, ConstraintInfo)> {
-        &self.prove_preds
+    fn get_preds(&self) -> Vec<&(TyPredicate, ConstraintInfo)> {
+        self.prove_preds
+            .iter()
+            .chain(self.generalized_preds.iter())
+            .collect()
     }
 
     fn assume_pred(&mut self, p: TyPredicate, info: ConstraintInfo) {
@@ -267,14 +274,15 @@ impl<'a> HasPredicates for GreedySolver<'a> {
             .partition::<Vec<_>, _>(|(p, _)| !p.free_vars().is_disjoint(&vs));
 
         // same but for the generalized predicates
-        let c = q
+        let (c, d) = q
             .into_iter()
-            .filter(|(p, _)| !p.free_vars().is_disjoint(&vs))
-            .collect::<Vec<_>>();
+            .partition::<Vec<_>, _>(|(p, _)| !p.free_vars().is_disjoint(&vs));
 
         // re-add the ones that were split off
         self.prove_preds.extend(b);
         self.generalized_preds.extend(a.clone());
+        self.generalized_preds.extend(c.clone());
+        self.generalized_preds.extend(d);
 
         // collect all of the predicates and generalize the type
         let preds = a.into_iter().chain(c.into_iter()).map(|(p, _)| p).collect();

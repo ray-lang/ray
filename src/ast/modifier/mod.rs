@@ -12,6 +12,8 @@ pub enum Modifier {
     Internal,
     /// unsafe
     Unsafe,
+    /// wasi
+    Wasi,
 }
 
 impl fmt::Display for Modifier {
@@ -28,6 +30,7 @@ impl<S: AsRef<str>> From<S> for Modifier {
             "hidden" => Modifier::Hidden,
             "internal" => Modifier::Internal,
             "unsafe" => Modifier::Unsafe,
+            "wasi" => Modifier::Wasi,
             _ => unreachable!(),
         }
     }
@@ -41,6 +44,7 @@ impl Modifier {
             Modifier::Hidden => "hidden",
             Modifier::Internal => "internal",
             Modifier::Unsafe => "unsafe",
+            Modifier::Wasi => "wasi",
         }
     }
 }

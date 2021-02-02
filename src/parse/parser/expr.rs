@@ -1,7 +1,10 @@
+use std::convert::TryFrom;
+
 use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
 
 use crate::{
     ast::{
+        asm::{Asm, AsmOp},
         token::{Token, TokenKind},
         Call, Curly, CurlyElement, CurlyElementKind, Dot, Expr, Index, Literal, Modifier, Sequence,
         Trailing, Type, ValueKind,
@@ -26,6 +29,7 @@ impl Parser {
             TokenKind::While => self.parse_while(ctx),
             TokenKind::Loop => self.parse_loop(ctx),
             TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
+            TokenKind::Asm => self.parse_asm(ctx),
             TokenKind::Break => {
                 let span = self.expect_sp(TokenKind::Break)?;
                 let (ex, span) = if self.is_next_expr_begin() {
@@ -376,5 +380,42 @@ impl Parser {
             span,
             ctx.path.clone(),
         ))
+    }
+
+    pub(crate) fn parse_asm(&mut self, ctx: &ParseContext) -> ExprResult {
+        let mut span = self.expect_sp(TokenKind::Asm)?;
+
+        let mut inst = vec![];
+        let ret_ty = if peek!(self, TokenKind::LeftParen) {
+            self.expect(TokenKind::LeftParen)?;
+            let t = self.parse_ty()?;
+            self.expect(TokenKind::RightParen)?;
+            Some(t)
+        } else {
+            None
+        };
+
+        self.expect(TokenKind::LeftCurly)?;
+        while !peek!(self, TokenKind::RightCurly) {
+            self.expect(TokenKind::Dollar)?;
+            let (op, span) = self.expect_id()?;
+            let op = match AsmOp::try_from(op.as_str()) {
+                Ok(op) => op,
+                Err(s) => {
+                    return Err(self.parse_error(format!("invalid asm operator `${}`", s), span))
+                }
+            };
+
+            let mut operands = vec![];
+            while peek!(self, TokenKind::Identifier(_)) {
+                let (id, _) = self.expect_id()?;
+                operands.push(id);
+            }
+
+            inst.push((op, operands));
+        }
+
+        span.end = self.expect_end(TokenKind::RightCurly)?;
+        Ok(self.mk_expr(Expr::Asm(Asm { ret_ty, inst }), span, ctx.path.clone()))
     }
 }

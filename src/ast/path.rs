@@ -52,6 +52,10 @@ impl Path {
         self.parts.last()
     }
 
+    pub fn len(&self) -> usize {
+        self.parts.len()
+    }
+
     pub fn contains(&self, part: &str) -> bool {
         self.parts.contains(&String::from(part))
     }
@@ -102,7 +106,7 @@ impl Path {
         }
     }
 
-    pub fn pop_last(&self) -> Path {
+    pub fn parent(&self) -> Path {
         let mut parts = self.parts.clone();
         parts.pop();
         Path {

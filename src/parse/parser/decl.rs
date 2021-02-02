@@ -5,7 +5,7 @@ use super::{
 use crate::{
     ast::{
         token::TokenKind, Decl, Decorator, Expr, Impl, Modifier, Name, SourceInfo, Struct,
-        Trailing, Trait, Type, ValueKind,
+        Trailing, Trait, Type,
     },
     errors::{RayError, RayErrorKind},
     span::{Pos, Source, Span},
@@ -104,6 +104,13 @@ impl Parser {
                 (Decl::Impl(imp), span)
             }
             TokenKind::Fn | TokenKind::Modifier(_) => return self.parse_extern_fn_sig(start, ctx),
+            TokenKind::Mut => {
+                let start = self.expect_start(TokenKind::Mut)?;
+                let n = self.parse_name_with_type()?;
+                let mut span = n.span;
+                span.start = start;
+                (Decl::Mutable(n), span)
+            }
             _ => {
                 let n = self.parse_name_with_type()?;
                 let span = n.span;
@@ -153,8 +160,6 @@ impl Parser {
             (false, None)
         };
 
-        let mut ctx = ctx.clone();
-        ctx.restrictions |= Restrictions::ASSIGN | Restrictions::LVALUE;
         let mut assign = self.parse_expr(&ctx)?;
         if let Some(mut_span) = mut_span {
             assign.info.src.span.unwrap().start = mut_span.start;
@@ -283,7 +288,7 @@ impl Parser {
         &mut self,
         pos: Pos,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<Decorator<SourceInfo>>, Span)> {
+    ) -> ParseResult<(Vec<Decorator>, Span)> {
         let mut decs = vec![];
         let mut start = pos;
         let mut end = pos;
@@ -301,12 +306,12 @@ impl Parser {
             let ps = lp_span.start;
             let mut ctx = ctx.clone();
             ctx.restrictions |= Restrictions::IN_PAREN;
-            let args = self.parse_expr_seq(
-                ValueKind::RValue,
-                Trailing::Allow,
-                Some(TokenKind::RightParen),
-                &ctx,
-            )?;
+            let args = if !peek!(self, TokenKind::RightParen) {
+                let (args, _) = self.parse_name_seq(Trailing::Allow, &ctx)?;
+                args
+            } else {
+                vec![]
+            };
             let pe = self.expect_matching(&start_tok, TokenKind::RightParen)?;
             end = pe;
 
