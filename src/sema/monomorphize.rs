@@ -4,6 +4,8 @@ use std::{
     rc::Rc,
 };
 
+use lir::IterCalls;
+
 use crate::{
     ast::{Node, Path, SourceInfo},
     lir::{self, NamedInst},
@@ -22,12 +24,12 @@ struct PolyFnRef<'a> {
 
 #[derive(Debug)]
 pub struct Monomorphizer {
-    extern_set: HashSet<String>,
-    name_set: HashSet<String>,
-    poly_fn_map: HashMap<String, lir::Func>, // polymorphic functions
-    poly_mono_fn_idx: HashMap<String, Vec<String>>, // a mapping of polymorphic functions to monomorphizations
-    mono_poly_fn_idx: HashMap<String, String>, // a mapping of monomorphic functions to their polymorphic counterpart
-    mono_fn_ty_map: HashMap<String, Ty>,       // map of all monomorphic function types
+    extern_set: HashSet<Path>,
+    name_set: HashSet<Path>,
+    poly_fn_map: HashMap<Path, lir::Func>, // polymorphic functions
+    poly_mono_fn_idx: HashMap<Path, Vec<Path>>, // a mapping of polymorphic functions to monomorphizations
+    mono_poly_fn_idx: HashMap<Path, Path>, // a mapping of monomorphic functions to their polymorphic counterpart
+    mono_fn_ty_map: HashMap<Path, Ty>,     // map of all monomorphic function types
 }
 
 impl Monomorphizer {
@@ -51,18 +53,7 @@ impl Monomorphizer {
         }
     }
 
-    pub fn monomorphize(&mut self, entry: &mut lir::Func) -> Vec<lir::Func> {
-        let mut poly_refs = vec![];
-        self.collect(entry, &mut poly_refs);
-        let mut funcs = vec![];
-        for mut poly_ref in poly_refs {
-            log::debug!("[monomorphize] {:?}", poly_ref);
-            self.monomorphize_func(&mut poly_ref, &mut funcs);
-        }
-        funcs
-    }
-
-    fn add_mono_fn_mapping(&mut self, poly_name: &String, mono_name: &String) {
+    fn add_mono_fn_mapping(&mut self, poly_name: &Path, mono_name: &Path) {
         if !self.poly_mono_fn_idx.contains_key(poly_name) {
             self.poly_mono_fn_idx
                 .insert(poly_name.clone(), vec![mono_name.clone()]);
@@ -74,11 +65,36 @@ impl Monomorphizer {
         }
     }
 
-    fn monomorphize_func(
+    pub fn monomorphize(&mut self, entry: &mut lir::Func) -> Vec<lir::Func> {
+        let mut funcs = vec![];
+        self.monomorphize_func(entry, &mut funcs);
+        funcs
+    }
+
+    fn monomorphize_func(&mut self, func: &mut lir::Func, funcs: &mut Vec<lir::Func>) {
+        let mut symbols = func.symbols.clone();
+        let mut poly_refs = vec![];
+        self.collect(func.iter_calls(), &mut poly_refs);
+
+        for mut poly_ref in poly_refs {
+            log::debug!("[monomorphize] {:?}", poly_ref);
+            let (poly_name, mono_name) = self.monomorphize_ref(&mut poly_ref, funcs);
+            log::debug!("symbols: {:?}", symbols);
+            log::debug!("poly_name: {}", poly_name);
+            log::debug!("mono_name: {}", mono_name);
+            symbols.remove(&poly_name);
+            symbols.remove(&poly_name.without_tyargs());
+            symbols.insert(mono_name);
+        }
+
+        func.symbols = symbols;
+    }
+
+    fn monomorphize_ref(
         &mut self,
         poly_ref: &mut PolyFnRef<'_>,
         funcs: &mut Vec<lir::Func>,
-    ) -> (String, String) {
+    ) -> (Path, Path) {
         // NOTE: unless there's a bug in the compiler, the callee function type is always monomorphic
         // Function types that make it here are either contained in a pure-monomorphic
         // function, which means that the call will have a concrete type, or
@@ -87,13 +103,15 @@ impl Monomorphizer {
 
         // check that the callee function type is monomorphic
         if poly_ref.callee_ty.is_polymorphic() {
-            panic!("cannot monomorphize function where the callee type is polymorphic");
+            panic!(
+                "cannot monomorphize function where the callee type is polymorphic: {}",
+                poly_ref.callee_ty
+            );
         }
 
         // get the polymorphic name
-        let name = poly_ref.value.get_name().clone();
-        let poly_fqn = Path::from(name.clone());
-        let poly_base_name = poly_fqn.to_string();
+        let poly_fqn = poly_ref.value.get_name().without_tyargs();
+        let poly_base_name = poly_fqn.clone();
         let poly_name = sema::fn_name(&poly_base_name, &poly_ref.poly_ty);
 
         // get the monomorphized name using a substitution
@@ -104,12 +122,14 @@ impl Monomorphizer {
             .unwrap_or_default();
         log::debug!("[monomorphize] subst = {:#?}", subst);
         let mono_fqn = poly_fqn.clone().apply_subst(&subst);
-        let mono_base_name = mono_fqn.to_string();
-        let mono_name = if self.name_set.contains(&mono_base_name) {
-            mono_base_name.clone()
-        } else {
-            sema::fn_name(&mono_base_name, &poly_ref.callee_ty)
-        };
+        let mono_base_name = mono_fqn.clone();
+        let mono_name = sema::fn_name(&mono_base_name, &poly_ref.callee_ty);
+
+        // if self.name_set.contains(&mono_base_name) {
+        //     mono_base_name.clone()
+        // } else {
+        //     sema::fn_name(&mono_base_name, &poly_ref.callee_ty)
+        // };
 
         log::debug!("[monomorphize] poly_name = {}", poly_name);
         log::debug!("[monomorphize] mono_name = {}", mono_name);
@@ -118,8 +138,16 @@ impl Monomorphizer {
         poly_ref.value.set_name(mono_name.clone());
 
         // make sure that the functions are not externs
-        if self.extern_set.contains(&poly_base_name) || self.extern_set.contains(&mono_base_name) {
-            return (poly_base_name, mono_base_name);
+        if self.extern_set.contains(&poly_base_name) || self.extern_set.contains(&poly_name) {
+            return (poly_name, mono_name);
+        }
+
+        if self.extern_set.contains(&mono_base_name) {
+            return (poly_name, mono_base_name);
+        }
+
+        if self.extern_set.contains(&mono_name) {
+            return (poly_name, mono_name);
         }
 
         // add it to the map
@@ -128,15 +156,15 @@ impl Monomorphizer {
 
         // make sure that there isn't already a monomorphized version
         if self.mono_fn_ty_map.contains_key(&mono_name) {
-            return (poly_name, mono_name);
+            return (poly_base_name, mono_name);
         }
 
         // get the polymorphic function from the index and add a mapping from poly to mono
         let mut mono_fn = self
             .poly_fn_map
-            .get(&name)
+            .get(&poly_fqn)
             .cloned()
-            .expect(&format!("polymorphic function `{}` is undefined", name));
+            .expect(&format!("polymorphic function `{}` is undefined", poly_fqn));
         mono_fn.name = mono_name.clone();
         mono_fn.ty = poly_ref.callee_ty.clone();
 
@@ -146,20 +174,7 @@ impl Monomorphizer {
         mono_fn = mono_fn.apply_subst(&subst);
 
         // collect further polymorphic functions from the new monomorphized function
-        let mut poly_refs = vec![];
-        let mut symbols = mono_fn.symbols.clone();
-        self.collect(&mut mono_fn, &mut poly_refs);
-
-        for mut poly_ref in poly_refs {
-            let (poly_name, mono_name) = self.monomorphize_func(&mut poly_ref, funcs);
-            log::debug!("symbols: {:?}", symbols);
-            log::debug!("poly_name: {}", poly_name);
-            log::debug!("mono_name: {}", mono_name);
-            symbols.remove(&poly_name);
-            symbols.insert(mono_name);
-        }
-
-        mono_fn.symbols = symbols;
+        self.monomorphize_func(&mut mono_fn, funcs);
         funcs.push(mono_fn);
         (poly_name, mono_name)
     }
@@ -198,12 +213,8 @@ impl Monomorphizer {
                     return;
                 }
 
-                let poly_ty = match &c.poly_ty {
-                    Some(t) => t.clone(),
-                    _ => return,
-                };
-
-                (c.ty.clone(), poly_ty, Path::from(c.fn_name.as_str()))
+                let poly_ty = unless!(&c.poly_ty).clone();
+                (c.ty.clone(), poly_ty, c.fn_name.clone())
             }
             lir::Value::CExternCall(_) => todo!(),
             _ => return,

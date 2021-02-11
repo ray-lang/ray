@@ -4,7 +4,6 @@ use itertools::Itertools;
 use crate::{
     ast::{self, asm::AsmOp, Node, Path, SourceInfo},
     strutils::indent_lines,
-    sym,
     typing::{ty::Ty, ApplySubst, Subst},
     utils::{join, map_join},
 };
@@ -29,8 +28,8 @@ macro_rules! LirImplInto {
 }
 
 pub trait NamedInst {
-    fn get_name(&self) -> &String;
-    fn set_name(&mut self, name: String);
+    fn get_name(&self) -> &Path;
+    fn set_name(&mut self, name: Path);
 }
 
 pub trait GetLocals<'a> {
@@ -103,7 +102,13 @@ where
     }
 }
 
-pub type SymbolSet = HashSet<String>;
+pub type SymbolSet = HashSet<Path>;
+
+impl ApplySubst for SymbolSet {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        self.into_iter().map(|p| p.apply_subst(subst)).collect()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct TypeMetadata;
@@ -279,6 +284,7 @@ pub enum Value {
     Select(Select),
     Load(Load),
     Lea(Lea),
+    GetField(GetField),
     BasicOp(BasicOp),
     IntConvert(IntConvert),
 }
@@ -297,6 +303,7 @@ impl std::fmt::Display for Value {
             Value::Select(a) => write!(f, "{}", a),
             Value::Load(a) => write!(f, "{}", a),
             Value::Lea(a) => write!(f, "{}", a),
+            Value::GetField(a) => write!(f, "{}", a),
             Value::BasicOp(a) => write!(f, "{}", a),
             Value::IntConvert(a) => write!(f, "{}", a),
         }
@@ -314,6 +321,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::Load(l) => l.get_locals_mut(),
             Value::Malloc(m) => m.get_locals_mut(),
             Value::Lea(l) => l.get_locals_mut(),
+            Value::GetField(g) => g.get_locals_mut(),
             Value::BasicOp(b) => b.get_locals_mut(),
             Value::IntConvert(_) => todo!(),
             Value::Empty => vec![],
@@ -331,6 +339,7 @@ impl<'a> GetLocals<'a> for Value {
             Value::Select(s) => s.get_locals(),
             Value::Load(l) => l.get_locals(),
             Value::Lea(l) => l.get_locals(),
+            Value::GetField(g) => g.get_locals(),
             Value::BasicOp(b) => b.get_locals(),
             Value::IntConvert(_) => todo!(),
             Value::Malloc(_) | Value::Empty => vec![],
@@ -350,6 +359,7 @@ impl ApplySubst for Value {
             Value::Select(s) => Value::Select(s.apply_subst(subst)),
             Value::Load(l) => Value::Load(l.apply_subst(subst)),
             Value::Lea(l) => Value::Lea(l.apply_subst(subst)),
+            Value::GetField(g) => Value::GetField(g.apply_subst(subst)),
             Value::BasicOp(b) => Value::BasicOp(b.apply_subst(subst)),
             Value::IntConvert(i) => Value::IntConvert(i.apply_subst(subst)),
         }
@@ -357,14 +367,14 @@ impl ApplySubst for Value {
 }
 
 impl NamedInst for Value {
-    fn get_name(&self) -> &String {
+    fn get_name(&self) -> &Path {
         match self {
             Value::Call(c) => &c.fn_name,
             _ => panic!("{} is unnamed", self),
         }
     }
 
-    fn set_name(&mut self, name: String) {
+    fn set_name(&mut self, name: Path) {
         match self {
             Value::Call(c) => c.fn_name = name,
             _ => panic!("{} is unnamed", self),
@@ -509,14 +519,14 @@ impl ApplySubst for Inst {
 }
 
 impl NamedInst for Inst {
-    fn get_name(&self) -> &String {
+    fn get_name(&self) -> &Path {
         match self {
             Inst::Value(v) => v.get_name(),
             _ => panic!("{} is unnamed", self),
         }
     }
 
-    fn set_name(&mut self, name: String) {
+    fn set_name(&mut self, name: Path) {
         match self {
             Inst::Value(v) => v.set_name(name),
             _ => panic!("{} is unnamed", self),
@@ -635,6 +645,35 @@ impl std::ops::AddAssign for Size {
     }
 }
 
+impl std::ops::Mul for Size {
+    type Output = Size;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Size {
+            ptrs: self.ptrs * rhs.ptrs,
+            bytes: self.bytes * rhs.bytes,
+        }
+    }
+}
+
+impl std::ops::Mul<usize> for Size {
+    type Output = Size;
+
+    fn mul(self, rhs: usize) -> Self::Output {
+        Size {
+            ptrs: self.ptrs * rhs,
+            bytes: self.bytes * rhs,
+        }
+    }
+}
+
+impl std::ops::MulAssign for Size {
+    fn mul_assign(&mut self, rhs: Self) {
+        self.ptrs *= rhs.ptrs;
+        self.bytes *= rhs.bytes;
+    }
+}
+
 impl Sum for Size {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut s = Size::default();
@@ -684,7 +723,7 @@ impl Size {
 
 #[derive(Clone, Debug)]
 pub struct Extern {
-    pub name: String,
+    pub name: Path,
     pub ty: Ty,
     pub is_mutable: bool,
     pub src: Option<String>,
@@ -703,11 +742,9 @@ pub struct Program {
     pub data: Vec<Data>,
     pub funcs: Vec<Func>,
     pub externs: Vec<Extern>,
-    pub extern_set: HashSet<String>,
-    pub trait_member_set: HashSet<String>,
-    pub poly_fn_map: HashMap<String, usize>,
-    pub defined_symbols: HashSet<sym::Symbol>,
-    pub undefined_symbols: HashSet<sym::Symbol>,
+    pub extern_set: HashSet<Path>,
+    pub trait_member_set: HashSet<Path>,
+    pub poly_fn_map: HashMap<Path, usize>,
     pub type_metadata: HashMap<String, TypeMetadata>,
     pub module_map_idx: i64,    // data index for __module_map
     pub type_metadata_idx: i64, // data index for __type_metadata
@@ -739,8 +776,6 @@ impl Program {
             poly_fn_map: HashMap::new(),
             extern_set: HashSet::new(),
             trait_member_set: HashSet::new(),
-            defined_symbols: HashSet::new(),
-            undefined_symbols: HashSet::new(),
             type_metadata: HashMap::new(),
             init_func: "".to_string(),
             start_idx: -1,
@@ -907,8 +942,7 @@ impl Block {
 
 #[derive(Clone, Debug)]
 pub struct Func {
-    pub name: String,
-    pub scope: Path,
+    pub name: Path,
     pub params: Vec<Param>,
     pub locals: Vec<Local>,
     pub ty: Ty,
@@ -958,22 +992,20 @@ impl ApplySubst for Func {
     fn apply_subst(self, subst: &Subst) -> Func {
         Func {
             name: self.name,
-            scope: self.scope,
             params: self.params.apply_subst(subst),
             locals: self.locals.apply_subst(subst),
             ty: self.ty.apply_subst(subst),
             body: self.body.apply_subst(subst),
             decorators: self.decorators,
-            symbols: self.symbols,
+            symbols: self.symbols.apply_subst(subst),
         }
     }
 }
 
 impl Func {
-    pub fn new<S: Into<String>>(name: S, scope: Path, ty: Ty) -> Func {
+    pub fn new(name: Path, ty: Ty) -> Func {
         Func {
-            name: name.into(),
-            scope,
+            name,
             ty,
             params: vec![],
             locals: vec![],
@@ -986,7 +1018,7 @@ impl Func {
     pub fn has_decorator(&self, p: &Path) -> bool {
         self.decorators
             .as_ref()
-            .map(|v| v.iter().any(|d| &d.path == p))
+            .map(|v| v.iter().any(|d| d.path.path() == p))
             .unwrap_or_default()
     }
 
@@ -1051,8 +1083,8 @@ impl ApplySubst for FuncRef {
 
 #[derive(Clone, Debug)]
 pub struct Call {
-    pub fn_name: String,
-    pub original_fn: String,
+    pub fn_name: Path,
+    pub original_fn: Path,
     pub fn_ref: Option<usize>,
     pub args: Vec<Variable>,
     pub ty: Ty,
@@ -1082,7 +1114,7 @@ impl<'a> GetLocals<'a> for Call {
 impl ApplySubst for Call {
     fn apply_subst(self, subst: &Subst) -> Self {
         Call {
-            fn_name: self.fn_name,
+            fn_name: self.fn_name.apply_subst(subst),
             original_fn: self.original_fn,
             fn_ref: self.fn_ref,
             args: self.args.apply_subst(subst),
@@ -1093,17 +1125,17 @@ impl ApplySubst for Call {
 }
 
 impl NamedInst for Call {
-    fn get_name(&self) -> &String {
+    fn get_name(&self) -> &Path {
         &self.fn_name
     }
 
-    fn set_name(&mut self, name: String) {
+    fn set_name(&mut self, name: Path) {
         self.fn_name = name;
     }
 }
 
 impl Call {
-    pub fn new(fn_name: String, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Value {
+    pub fn new(fn_name: Path, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Value {
         Value::Call(Call {
             original_fn: fn_name.clone(),
             fn_ref: None,
@@ -1116,8 +1148,8 @@ impl Call {
 
     pub fn new_ref(fn_ref: usize, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Value {
         Value::Call(Call {
-            original_fn: str!(""),
-            fn_name: str!(""),
+            original_fn: Path::new(),
+            fn_name: Path::new(),
             fn_ref: Some(fn_ref),
             ty,
             poly_ty,
@@ -1481,6 +1513,41 @@ impl ApplySubst for Lea {
             value: self.value.apply_subst(subst),
             src_offset: self.src_offset,
             dst_offset: self.dst_offset,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GetField {
+    pub src: Variable,
+    pub field: String,
+}
+
+LirImplInto!(Value for GetField);
+
+impl std::fmt::Display for GetField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "getfield {} {}", self.src, self.field)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for GetField {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        self.src.get_locals_mut()
+    }
+}
+
+impl<'a> GetLocals<'a> for GetField {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        self.src.get_locals()
+    }
+}
+
+impl ApplySubst for GetField {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        GetField {
+            src: self.src.apply_subst(subst),
+            field: self.field,
         }
     }
 }

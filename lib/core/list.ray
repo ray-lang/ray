@@ -1,0 +1,11 @@
+struct list['a] {
+    values: *'a
+    len: uint
+    capacity: uint
+}
+
+// impl Seq[list['a]] {
+//     fn get(self: list['a], index: uint) -> 'a? {
+//         self.values
+//     }
+// }

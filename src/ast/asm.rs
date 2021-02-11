@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 
 use crate::{
+    span::parsed::Parsed,
     typing::{
         ty::{Ty, TyVar},
         ApplySubst, Subst,
@@ -8,7 +9,7 @@ use crate::{
     utils::{indent, join, map_join},
 };
 
-use super::{Path, Type};
+use super::Path;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AsmOp {
@@ -838,9 +839,24 @@ impl AsmOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsmOperand {
+    Var(String),
+    Int(u64),
+}
+
+impl std::fmt::Display for AsmOperand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AsmOperand::Var(s) => write!(f, "{}", s),
+            AsmOperand::Int(i) => write!(f, "{}", i),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asm {
-    pub ret_ty: Option<Type>,
-    pub inst: Vec<(AsmOp, Vec<String>)>,
+    pub ret_ty: Option<Parsed<Ty>>,
+    pub inst: Vec<(AsmOp, Vec<AsmOperand>)>,
 }
 
 impl std::fmt::Display for Asm {

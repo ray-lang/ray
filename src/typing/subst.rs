@@ -4,11 +4,14 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::typing::ty::{Ty, TyVar};
+use crate::{
+    typing::ty::{Ty, TyVar},
+    utils::join,
+};
 
 use super::{
     predicate::TyPredicate,
-    traits::{QualifyTypes, QuantifyTypes},
+    traits::{CollectTyVars, QualifyTypes, QuantifyTypes},
 };
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -90,28 +93,56 @@ impl Subst {
     }
 
     pub fn get_ty_for_var(&self, v: &TyVar) -> Ty {
-        let mut checked = HashSet::new();
+        let mut cache = HashMap::new();
+        self.get_ty_for_var_(v, &mut cache)
+    }
 
-        let mut v = v.clone();
+    fn get_ty_for_var_(&self, v: &TyVar, cache: &mut HashMap<TyVar, Ty>) -> Ty {
+        if let Some(t) = cache.get(v) {
+            return t.clone();
+        }
+
+        // log::debug!("get ty for var: {}", v);
+        let mut checked = HashSet::new();
+        let mut var = v.clone();
+        let mut ty = Ty::Var(var.clone());
         loop {
-            checked.insert(v.clone());
-            if let Some(t) = self.get(&v) {
+            checked.insert(var.clone());
+            if let Some(t) = self.get(&var) {
                 if let Ty::Var(u) = t {
                     if checked.contains(&u) {
                         break;
                     }
-                    v = u.clone();
-                } else if t.has_unknowns() {
-                    return t.clone().apply_subst(self);
+                    var = u.clone();
+                    ty = Ty::Var(var.clone());
                 } else {
-                    return t.clone();
+                    ty = t.clone();
+                    let unknowns = t.collect_tyvars();
+                    // .into_iter()
+                    // .filter(|u| !checked.contains(u))
+                    // .collect::<Vec<_>>();
+                    if unknowns.len() != 0 {
+                        // log::debug!("ty = {}", t);
+                        // log::debug!("unknowns: [{}]", join(&unknowns, ", "));
+                        let sub = unknowns
+                            .into_iter()
+                            .map(|v| {
+                                let u = self.get_ty_for_var(&v);
+                                (v, u)
+                            })
+                            .collect::<Subst>();
+                        // log::debug!("sub: {:?}", sub);
+                        ty = ty.apply_subst(&sub);
+                    }
+                    break;
                 }
             } else {
                 break;
             }
         }
 
-        Ty::Var(v)
+        cache.insert(v.clone(), ty.clone());
+        ty
     }
 
     pub fn get_var(&self, v: TyVar) -> TyVar {
@@ -136,23 +167,29 @@ impl Subst {
     }
 
     pub fn union(mut self, other: Subst) -> Subst {
+        self.union_inplace(other);
+        self
+    }
+
+    pub fn union_inplace(&mut self, other: Subst) {
         for (tv, ty) in other.0 {
             let ty = ty.apply_subst(&self);
-            if let Some(other_ty) = self.get(&tv).cloned() {
+            log::debug!("union_inplace: {} => {}", tv, ty);
+            let other_ty = self.get_ty_for_var(&tv);
+            log::debug!("union_inplace: {} => {}", tv, other_ty);
+            if !matches!(&other_ty, Ty::Var(other_var) if other_var == &tv) {
                 if let Ty::Var(other_tv) = other_ty {
                     self.insert(other_tv, ty.clone());
-                } else if let Ty::Var(tv) = ty {
-                    self.insert(tv, other_ty);
+                } else {
                     continue;
                 }
             }
 
             self.insert(tv, ty);
         }
-        self
     }
 
-    pub fn union_inplace<F>(&mut self, other: Subst, mut on_conflict: F)
+    pub fn union_on_conflict<F>(&mut self, other: Subst, mut on_conflict: F)
     where
         F: FnMut(&Ty, &Ty),
     {
@@ -190,8 +227,12 @@ pub trait ApplySubstMut {
 
 impl<T: ApplySubst + Clone> ApplySubstMut for T {
     fn apply_subst_mut(&mut self, subst: &Subst) {
-        let t = self.clone();
-        let _ = std::mem::replace(self, t.apply_subst(subst));
+        unsafe {
+            let old_t = std::mem::replace(self, std::mem::MaybeUninit::uninit().assume_init());
+            let new_t = old_t.apply_subst(subst);
+            let uninit = std::mem::replace(self, new_t);
+            std::mem::forget(uninit);
+        }
     }
 }
 
@@ -205,25 +246,31 @@ impl ApplySubst for Subst {
     }
 }
 
-impl<T: ApplySubst> ApplySubst<Box<T>> for Box<T> {
+impl<T: ApplySubst> ApplySubst for Box<T> {
     fn apply_subst(self, subst: &Subst) -> Box<T> {
         Box::new((*self).apply_subst(subst))
     }
 }
 
-impl<T: ApplySubst> ApplySubst<Vec<T>> for Vec<T> {
+impl<T: ApplySubst> ApplySubst for Option<T> {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        self.map(|t| t.apply_subst(subst))
+    }
+}
+
+impl<T: ApplySubst> ApplySubst for Vec<T> {
     fn apply_subst(self, subst: &Subst) -> Vec<T> {
         self.into_iter().map(|x| x.apply_subst(subst)).collect()
     }
 }
 
-impl<T: ApplySubst> ApplySubst<VecDeque<T>> for VecDeque<T> {
+impl<T: ApplySubst> ApplySubst for VecDeque<T> {
     fn apply_subst(self, subst: &Subst) -> VecDeque<T> {
         self.into_iter().map(|x| x.apply_subst(subst)).collect()
     }
 }
 
-impl<T: ApplySubst> ApplySubst<Vec<(String, T)>> for Vec<(String, T)> {
+impl<T: ApplySubst> ApplySubst for Vec<(String, T)> {
     fn apply_subst(self, subst: &Subst) -> Vec<(String, T)> {
         self.into_iter()
             .map(|(n, t)| (n, t.apply_subst(subst)))

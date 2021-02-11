@@ -1,10 +1,13 @@
 use std::collections::VecDeque;
 
 use crate::{
-    ast::{asm::AsmOp, Decorator, Expr, Literal, Node, Path, SourceInfo},
+    ast::{
+        asm::{AsmOp, AsmOperand},
+        Decorator, Expr, Literal, Node, Path, SourceInfo,
+    },
     errors::RayResult,
     span::Source,
-    typing::{traits::HasType, ty::Ty, ApplySubst, Ctx, Subst},
+    typing::{traits::HasType, ty::Ty, ApplySubst, Subst, TyCtx},
     utils::{indent, join, map_join},
 };
 
@@ -34,21 +37,31 @@ pub enum HirNode<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    Var(String),
+    Var(Path),
     Literal(Literal),
+    Range(
+        Box<Node<HirNode<Info>, Info>>,
+        Box<Node<HirNode<Info>, Info>>,
+        bool,
+    ),
     Tuple(Vec<Node<HirNode<Info>, Info>>),
+    List(Vec<Node<HirNode<Info>, Info>>),
     Type(Ty),
-    Asm(Option<Ty>, Vec<(AsmOp, Vec<String>)>),
+    Asm(Option<Ty>, Vec<(AsmOp, Vec<AsmOperand>)>),
     Cast(Box<Node<HirNode<Info>, Info>>, Ty),
     Decl(Node<HirDecl<Info>, Info>),
     Struct(Path, Ty, Vec<(String, Node<HirNode<Info>, Info>)>),
     Block(Vec<Node<HirNode<Info>, Info>>),
     Dot(Box<Node<HirNode<Info>, Info>>, Node<HirField, Info>),
+    DerefAssign(
+        Box<Node<HirNode<Info>, Info>>,
+        Box<Node<HirNode<Info>, Info>>,
+    ),
     Let(
         Vec<Node<HirDecl<Info>, Info>>,
         Box<Node<HirNode<Info>, Info>>,
     ),
-    Fun(
+    Fn(
         Vec<Param>,
         Box<Node<HirNode<Info>, Info>>,
         Option<Vec<Decorator>>,
@@ -67,8 +80,16 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HirNode::Var(n) => write!(f, "{}", n),
+            HirNode::Range(start, end, is_inclusive) => {
+                if *is_inclusive {
+                    write!(f, "{}..={}", start, end)
+                } else {
+                    write!(f, "{}..<{}", start, end)
+                }
+            }
             HirNode::Literal(l) => write!(f, "{}", l),
             HirNode::Type(t) => write!(f, "{}", t),
+            HirNode::List(t) => write!(f, "[{}]", join(t, ", ")),
             HirNode::Tuple(t) => write!(f, "({})", join(t, ", ")),
             HirNode::Asm(ret_ty, inst) => {
                 write!(
@@ -101,7 +122,7 @@ where
                 let args = join(args, ", ");
                 write!(f, "{}({})", fun, args)
             }
-            HirNode::Fun(params, body, decs) => write!(
+            HirNode::Fn(params, body, decs) => write!(
                 f,
                 "{}fn({}) {{\n{}\n}}",
                 decs.as_ref()
@@ -110,6 +131,9 @@ where
                 join(params, ", "),
                 indent(body.to_string(), 2)
             ),
+            HirNode::DerefAssign(lhs, rhs) => {
+                write!(f, "*{} = {}", lhs, rhs)
+            }
             HirNode::Let(decls, b) => {
                 let v = map_join(decls, ",\n", |d| d.to_string());
                 let lhs = if decls.len() <= 1 {
@@ -146,9 +170,13 @@ where
 {
     fn apply_subst(self, subst: &Subst) -> HirNode<Info> {
         match self {
-            HirNode::Var(v) => HirNode::Var(v),
+            HirNode::Var(v) => HirNode::Var(v.apply_subst(subst)),
             HirNode::Type(ty) => HirNode::Type(ty.apply_subst(subst)),
+            HirNode::Range(start, end, is_inc) => {
+                HirNode::Range(start.apply_subst(subst), end.apply_subst(subst), is_inc)
+            }
             HirNode::Literal(l) => HirNode::Literal(l),
+            HirNode::List(t) => HirNode::List(t.apply_subst(subst)),
             HirNode::Tuple(t) => HirNode::Tuple(t.apply_subst(subst)),
             HirNode::Asm(ty, inst) => HirNode::Asm(ty.map(|t| t.apply_subst(subst)), inst),
             HirNode::Cast(d, t) => HirNode::Cast(d.apply_subst(subst), t.apply_subst(subst)),
@@ -160,11 +188,14 @@ where
             HirNode::Apply(fun, args) => {
                 HirNode::Apply(fun.apply_subst(subst), args.apply_subst(subst))
             }
-            HirNode::Fun(params, body, dec) => HirNode::Fun(
+            HirNode::Fn(params, body, dec) => HirNode::Fn(
                 params.into_iter().map(|p| p.apply_subst(subst)).collect(),
                 body.apply_subst(subst),
                 dec,
             ),
+            HirNode::DerefAssign(lhs, rhs) => {
+                HirNode::DerefAssign(lhs.apply_subst(subst), rhs.apply_subst(subst))
+            }
             HirNode::Let(vars, b) => HirNode::Let(
                 vars.into_iter().map(|d| d.apply_subst(subst)).collect(),
                 b.apply_subst(subst),
@@ -268,7 +299,7 @@ impl HirNode<SourceInfo> {
         scope: &Path,
         id: u64,
         info: &SourceInfo,
-        ctx: &mut Ctx,
+        ctx: &mut TyCtx,
     ) -> RayResult<Node<HirNode<SourceInfo>, SourceInfo>> {
         let mut nodes = vec![];
         while let Some(first) = exprs.pop_front() {
@@ -292,11 +323,10 @@ impl<Info> HirNode<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub fn fn_name(&self) -> Option<&String> {
+    pub fn name(&self) -> Option<Path> {
         match &self {
-            HirNode::Var(v) => Some(v),
-            HirNode::Apply(f, _) => f.fn_name(),
-            HirNode::Typed(t) => t.value.fn_name(),
+            HirNode::Var(v) => Some(v.clone()),
+            HirNode::Typed(t) => t.value.name(),
             _ => None,
         }
     }
@@ -368,7 +398,7 @@ impl Param {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirPattern {
-    Var(String),
+    Var(Path),
 }
 
 impl std::fmt::Display for HirPattern {
@@ -385,28 +415,26 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     Pattern(HirPattern, Box<Node<HirNode<Info>, Info>>),
-    Type(String, Ty, bool, Option<String>),
-    TraitMember(String, Ty),
+    Extern(Path, Ty, bool, Option<String>),
+    Type(Path, Ty, bool, Option<String>),
+    Fn(
+        Path,
+        Vec<Param>,
+        Box<Node<HirNode<Info>, Info>>,
+        Option<Vec<Decorator>>,
+    ),
+    TraitMember(Path, Ty),
 }
 
 impl<Info> HirDecl<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub fn var<S: Into<String>>(var: S, rhs: Node<HirNode<Info>, Info>) -> HirDecl<Info> {
+    pub fn var<P: Into<Path>>(var: P, rhs: Node<HirNode<Info>, Info>) -> HirDecl<Info> {
         HirDecl::Pattern(HirPattern::Var(var.into()), Box::new(rhs))
     }
 
-    pub fn ty<S: Into<String>>(
-        name: S,
-        ty: Ty,
-        is_mutable: bool,
-        src: Option<&str>,
-    ) -> HirDecl<Info> {
-        HirDecl::Type(name.into(), ty, is_mutable, src.map(|s| s.to_string()))
-    }
-
-    pub fn member<S: Into<String>>(name: S, ty: Ty) -> HirDecl<Info> {
+    pub fn member<P: Into<Path>>(name: P, ty: Ty) -> HirDecl<Info> {
         HirDecl::TraitMember(name.into(), ty)
     }
 }
@@ -418,7 +446,18 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
             HirDecl::Pattern(x, n) => write!(f, "{} = {}", x, n),
-            HirDecl::Type(x, t, _, _) | HirDecl::TraitMember(x, t) => write!(f, "{} :: {}", x, t),
+            HirDecl::Fn(x, params, body, _) => {
+                write!(
+                    f,
+                    "fn {}({}) {{\n{}\n}}",
+                    x,
+                    join(params, ", "),
+                    indent(body.to_string(), 2)
+                )
+            }
+            HirDecl::Extern(x, t, _, _)
+            | HirDecl::Type(x, t, _, _)
+            | HirDecl::TraitMember(x, t) => write!(f, "{} :: {}", x, t),
         }
     }
 }
@@ -433,6 +472,15 @@ where
             HirDecl::Type(x, t, is_mutable, src) => {
                 HirDecl::Type(x, t.apply_subst(subst), is_mutable, src)
             }
+            HirDecl::Extern(x, t, is_mutable, src) => {
+                HirDecl::Extern(x, t.apply_subst(subst), is_mutable, src)
+            }
+            HirDecl::Fn(name, params, body, decs) => HirDecl::Fn(
+                name,
+                params.apply_subst(subst),
+                body.apply_subst(subst),
+                decs,
+            ),
             HirDecl::TraitMember(x, t) => HirDecl::TraitMember(x, t.apply_subst(subst)),
         }
     }

@@ -1,8 +1,8 @@
 use std::ops::Add;
 
-use crate::typing::traits::TreeWalk;
+use crate::{typing::traits::TreeWalk, utils::replace};
 
-use super::Constraint;
+use super::{Constraint, ConstraintList};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhaseMap(Vec<(u64, ConstraintTree)>);
@@ -253,20 +253,19 @@ impl ConstraintTree {
         T: Into<ConstraintTree>,
         F: FnOnce(ConstraintTree) -> T,
     {
-        let old = std::mem::replace(self, ConstraintTree::empty());
-        *self = f(old).into();
+        replace(self, |old| f(old).into());
     }
 
     pub fn flatten<W>(self, walker: W) -> Vec<Constraint>
     where
-        W: TreeWalk<Constraint>,
+        W: TreeWalk,
     {
         self.flatten_top(walker)
     }
 
     fn flatten_top<W>(self, walker: W) -> Vec<Constraint>
     where
-        W: TreeWalk<Constraint>,
+        W: TreeWalk,
     {
         let pair = self.flatten_rec(walker, vec![]);
         walker.walk(vec![], vec![pair])
@@ -274,7 +273,7 @@ impl ConstraintTree {
 
     fn flatten_rec<W>(self, walker: W, down: Vec<Constraint>) -> (Vec<Constraint>, Vec<Constraint>)
     where
-        W: TreeWalk<Constraint>,
+        W: TreeWalk,
     {
         match self {
             ConstraintTree::Node(NodeTree(trees)) => {
@@ -423,7 +422,7 @@ impl ConstraintTree {
 #[derive(Copy, Clone)]
 pub struct BottomUpWalk;
 
-impl TreeWalk<Constraint> for BottomUpWalk {
+impl TreeWalk for BottomUpWalk {
     fn walk(
         self,
         down: Vec<Constraint>,
@@ -434,25 +433,6 @@ impl TreeWalk<Constraint> for BottomUpWalk {
         c.extend(csets.into_iter().flatten());
         c.extend(ups.into_iter().flatten());
         c.extend(down);
-        c
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct TopDownWalk;
-
-impl TreeWalk<Constraint> for TopDownWalk {
-    fn walk(
-        self,
-        down: Vec<Constraint>,
-        pairs: Vec<(Vec<Constraint>, Vec<Constraint>)>,
-    ) -> Vec<Constraint> {
-        let mut c = vec![];
-        c.extend(down);
-
-        let (csets, ups): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-        c.extend(ups.into_iter().flatten());
-        c.extend(csets.into_iter().flatten());
         c
     }
 }
@@ -465,7 +445,7 @@ mod tree_tests {
         state::TyVarFactory,
         traits::HasSubst,
         ty::{Ty, TyVar},
-        Ctx, InferError,
+        InferError, TyCtx,
     };
 
     use super::{BottomUpWalk, ConstraintTree};
@@ -517,7 +497,7 @@ mod tree_tests {
 
         let walker = BottomUpWalk {};
         let cs = t.flatten(walker);
-        let mut ctx = Ctx::new();
+        let mut ctx = TyCtx::new();
         let mut solver = GreedySolver::new(cs, &mut ctx);
         // solver.solve()?;
         println!("{:#?}", solver.get_subst());

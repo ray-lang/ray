@@ -1,3 +1,454 @@
+// ---- Add
+
+trait Add['a] {
+    fn +('a, 'a) -> 'a
+}
+
+impl Add[int] {
+    @inline()
+    fn +(a: int, b: int) -> int => asm { $int_add a b }
+}
+
+impl Add[i8] {
+    @inline()
+    fn +(a: i8, b: i8) -> i8 => asm { $i8_add a b }
+}
+
+impl Add[i16] {
+    @inline()
+    fn +(a: i16, b: i16) -> i16 => asm { $i16_add a b }
+}
+
+impl Add[i32] {
+    @inline()
+    fn +(a: i32, b: i32) -> i32 => asm { $i32_add a b }
+}
+
+impl Add[i64] {
+    @inline()
+    fn +(a: i64, b: i64) -> i64 => asm { $i64_add a b }
+}
+
+impl Add[uint] {
+    @inline()
+    fn +(a: uint, b: uint) -> uint => asm { $uint_add a b }
+}
+
+impl Add[u8] {
+    @inline()
+    fn +(a: u8, b: u8) -> u8 => asm { $u8_add a b }
+}
+
+impl Add[u16] {
+    @inline()
+    fn +(a: u16, b: u16) -> u16 => asm { $u16_add a b }
+}
+
+impl Add[u32] {
+    @inline()
+    fn +(a: u32, b: u32) -> u32 => asm { $u32_add a b }
+}
+
+impl Add[u64] {
+    @inline()
+    fn +(a: u64, b: u64) -> u64 => asm { $u64_add a b }
+}
+
+// ---- Sub
+
+trait Sub['a] {
+    fn -('a, 'a) -> 'a
+}
+
+impl Sub[int] {
+    @inline()
+    fn -(a: int, b: int) -> int => asm { $int_sub a b }
+}
+
+impl Sub[i8] {
+    @inline()
+    fn -(a: i8, b: i8) -> i8 => asm { $i8_sub a b }
+}
+
+impl Sub[i16] {
+    @inline()
+    fn -(a: i16, b: i16) -> i16 => asm { $i16_sub a b }
+}
+
+impl Sub[i32] {
+    @inline()
+    fn -(a: i32, b: i32) -> i32 => asm { $i32_sub a b }
+}
+
+impl Sub[i64] {
+    @inline()
+    fn -(a: i64, b: i64) -> i64 => asm { $i64_sub a b }
+}
+
+impl Sub[uint] {
+    @inline()
+    fn -(a: uint, b: uint) -> uint => asm { $uint_sub a b }
+}
+
+impl Sub[u8] {
+    @inline()
+    fn -(a: u8, b: u8) -> u8 => asm { $u8_sub a b }
+}
+
+impl Sub[u16] {
+    @inline()
+    fn -(a: u16, b: u16) -> u16 => asm { $u16_sub a b }
+}
+
+impl Sub[u32] {
+    @inline()
+    fn -(a: u32, b: u32) -> u32 => asm { $u32_sub a b }
+}
+
+impl Sub[u64] {
+    @inline()
+    fn -(a: u64, b: u64) -> u64 => asm { $u64_sub a b }
+}
+
+// ---- Mul
+
+trait Mul['a] {
+    fn *('a, 'a) -> 'a
+}
+
+impl Mul[int] {
+    @inline()
+    fn *(a: int, b: int) -> int => asm { $int_mul a b }
+}
+
+impl Mul[i8] {
+    @inline()
+    fn *(a: i8, b: i8) -> i8 => asm { $i8_mul a b }
+}
+
+impl Mul[i16] {
+    @inline()
+    fn *(a: i16, b: i16) -> i16 => asm { $i16_mul a b }
+}
+
+impl Mul[i32] {
+    @inline()
+    fn *(a: i32, b: i32) -> i32 => asm { $i32_mul a b }
+}
+
+impl Mul[i64] {
+    @inline()
+    fn *(a: i64, b: i64) -> i64 => asm { $i64_mul a b }
+}
+
+impl Mul[uint] {
+    @inline()
+    fn *(a: uint, b: uint) -> uint => asm { $uint_mul a b }
+}
+
+impl Mul[u8] {
+    @inline()
+    fn *(a: u8, b: u8) -> u8 => asm { $u8_mul a b }
+}
+
+impl Mul[u16] {
+    @inline()
+    fn *(a: u16, b: u16) -> u16 => asm { $u16_mul a b }
+}
+
+impl Mul[u32] {
+    @inline()
+    fn *(a: u32, b: u32) -> u32 => asm { $u32_mul a b }
+}
+
+impl Mul[u64] {
+    @inline()
+    fn *(a: u64, b: u64) -> u64 => asm { $u64_mul a b }
+}
+
+// ---- Div
+
+trait Div['a] {
+    fn /('a, 'a) -> 'a
+}
+
+impl Div[int] {
+    @inline()
+    fn /(a: int, b: int) -> int => asm { $int_div a b }
+}
+
+impl Div[i8] {
+    @inline()
+    fn /(a: i8, b: i8) -> i8 => asm { $i8_div a b }
+}
+
+impl Div[i16] {
+    @inline()
+    fn /(a: i16, b: i16) -> i16 => asm { $i16_div a b }
+}
+
+impl Div[i32] {
+    @inline()
+    fn /(a: i32, b: i32) -> i32 => asm { $i32_div a b }
+}
+
+impl Div[i64] {
+    @inline()
+    fn /(a: i64, b: i64) -> i64 => asm { $i64_div a b }
+}
+
+impl Div[uint] {
+    @inline()
+    fn /(a: uint, b: uint) -> uint => asm { $uint_div a b }
+}
+
+impl Div[u8] {
+    @inline()
+    fn /(a: u8, b: u8) -> u8 => asm { $u8_div a b }
+}
+
+impl Div[u16] {
+    @inline()
+    fn /(a: u16, b: u16) -> u16 => asm { $u16_div a b }
+}
+
+impl Div[u32] {
+    @inline()
+    fn /(a: u32, b: u32) -> u32 => asm { $u32_div a b }
+}
+
+impl Div[u64] {
+    @inline()
+    fn /(a: u64, b: u64) -> u64 => asm { $u64_div a b }
+}
+
+// ---- Mod
+
+trait Mod['a] {
+    fn %('a, 'a) -> 'a
+}
+
+impl Mod[int] {
+    @inline()
+    fn %(a: int, b: int) -> int => asm { $int_mod a b }
+}
+
+impl Mod[i8] {
+    @inline()
+    fn %(a: i8, b: i8) -> i8 => asm { $i8_mod a b }
+}
+
+impl Mod[i16] {
+    @inline()
+    fn %(a: i16, b: i16) -> i16 => asm { $i16_mod a b }
+}
+
+impl Mod[i32] {
+    @inline()
+    fn %(a: i32, b: i32) -> i32 => asm { $i32_mod a b }
+}
+
+impl Mod[i64] {
+    @inline()
+    fn %(a: i64, b: i64) -> i64 => asm { $i64_mod a b }
+}
+
+impl Mod[uint] {
+    @inline()
+    fn %(a: uint, b: uint) -> uint => asm { $uint_mod a b }
+}
+
+impl Mod[u8] {
+    @inline()
+    fn %(a: u8, b: u8) -> u8 => asm { $u8_mod a b }
+}
+
+impl Mod[u16] {
+    @inline()
+    fn %(a: u16, b: u16) -> u16 => asm { $u16_mod a b }
+}
+
+impl Mod[u32] {
+    @inline()
+    fn %(a: u32, b: u32) -> u32 => asm { $u32_mod a b }
+}
+
+impl Mod[u64] {
+    @inline()
+    fn %(a: u64, b: u64) -> u64 => asm { $u64_mod a b }
+}
+
+
+// ---- And
+
+trait And['a] {
+    fn &('a, 'a) -> 'a
+}
+
+impl And[int] {
+    @inline()
+    fn &(a: int, b: int) -> int => asm { $int_and a b }
+}
+
+impl And[i8] {
+    @inline()
+    fn &(a: i8, b: i8) -> i8 => asm { $i8_and a b }
+}
+
+impl And[i16] {
+    @inline()
+    fn &(a: i16, b: i16) -> i16 => asm { $i16_and a b }
+}
+
+impl And[i32] {
+    @inline()
+    fn &(a: i32, b: i32) -> i32 => asm { $i32_and a b }
+}
+
+impl And[i64] {
+    @inline()
+    fn &(a: i64, b: i64) -> i64 => asm { $i64_and a b }
+}
+
+impl And[uint] {
+    @inline()
+    fn &(a: uint, b: uint) -> uint => asm { $uint_and a b }
+}
+
+impl And[u8] {
+    @inline()
+    fn &(a: u8, b: u8) -> u8 => asm { $u8_and a b }
+}
+
+impl And[u16] {
+    @inline()
+    fn &(a: u16, b: u16) -> u16 => asm { $u16_and a b }
+}
+
+impl And[u32] {
+    @inline()
+    fn &(a: u32, b: u32) -> u32 => asm { $u32_and a b }
+}
+
+impl And[u64] {
+    @inline()
+    fn &(a: u64, b: u64) -> u64 => asm { $u64_and a b }
+}
+
+// ---- Or
+
+trait Or['a] {
+    fn |('a, 'a) -> 'a
+}
+
+impl Or[int] {
+    @inline()
+    fn |(a: int, b: int) -> int => asm { $int_or a b }
+}
+
+impl Or[i8] {
+    @inline()
+    fn |(a: i8, b: i8) -> i8 => asm { $i8_or a b }
+}
+
+impl Or[i16] {
+    @inline()
+    fn |(a: i16, b: i16) -> i16 => asm { $i16_or a b }
+}
+
+impl Or[i32] {
+    @inline()
+    fn |(a: i32, b: i32) -> i32 => asm { $i32_or a b }
+}
+
+impl Or[i64] {
+    @inline()
+    fn |(a: i64, b: i64) -> i64 => asm { $i64_or a b }
+}
+
+impl Or[uint] {
+    @inline()
+    fn |(a: uint, b: uint) -> uint => asm { $uint_or a b }
+}
+
+impl Or[u8] {
+    @inline()
+    fn |(a: u8, b: u8) -> u8 => asm { $u8_or a b }
+}
+
+impl Or[u16] {
+    @inline()
+    fn |(a: u16, b: u16) -> u16 => asm { $u16_or a b }
+}
+
+impl Or[u32] {
+    @inline()
+    fn |(a: u32, b: u32) -> u32 => asm { $u32_or a b }
+}
+
+impl Or[u64] {
+    @inline()
+    fn |(a: u64, b: u64) -> u64 => asm { $u64_or a b }
+}
+
+// ---- Xor
+
+trait Xor['a] {
+    fn ^('a, 'a) -> 'a
+}
+
+impl Xor[int] {
+    @inline()
+    fn ^(a: int, b: int) -> int => asm { $int_xor a b }
+}
+
+impl Xor[i8] {
+    @inline()
+    fn ^(a: i8, b: i8) -> i8 => asm { $i8_xor a b }
+}
+
+impl Xor[i16] {
+    @inline()
+    fn ^(a: i16, b: i16) -> i16 => asm { $i16_xor a b }
+}
+
+impl Xor[i32] {
+    @inline()
+    fn ^(a: i32, b: i32) -> i32 => asm { $i32_xor a b }
+}
+
+impl Xor[i64] {
+    @inline()
+    fn ^(a: i64, b: i64) -> i64 => asm { $i64_xor a b }
+}
+
+impl Xor[uint] {
+    @inline()
+    fn ^(a: uint, b: uint) -> uint => asm { $uint_xor a b }
+}
+
+impl Xor[u8] {
+    @inline()
+    fn ^(a: u8, b: u8) -> u8 => asm { $u8_xor a b }
+}
+
+impl Xor[u16] {
+    @inline()
+    fn ^(a: u16, b: u16) -> u16 => asm { $u16_xor a b }
+}
+
+impl Xor[u32] {
+    @inline()
+    fn ^(a: u32, b: u32) -> u32 => asm { $u32_xor a b }
+}
+
+impl Xor[u64] {
+    @inline()
+    fn ^(a: u64, b: u64) -> u64 => asm { $u64_xor a b }
+}
+
+// ---- Eq
+
 trait Eq['a] {
     fn ==('a, 'a) -> bool
 }
@@ -27,21 +478,307 @@ impl Eq[i64] {
     fn ==(a: i64, b: i64) -> bool => asm { $i64_eq a b }
 }
 
-trait Add['a] {
-    fn +('a, 'a) -> 'a
+impl Eq[uint] {
+    @inline()
+    fn ==(a: uint, b: uint) -> bool => asm { $uint_eq a b }
 }
 
-impl Add[int] {
+impl Eq[u8] {
     @inline()
-    fn +(a: int, b: int) -> int => asm { $int_add a b }
+    fn ==(a: u8, b: u8) -> bool => asm { $u8_eq a b }
 }
 
-impl Add[i8] {
+impl Eq[u16] {
     @inline()
-    fn +(a: i8, b: i8) -> i8 => asm { $i8_add a b }
+    fn ==(a: u16, b: u16) -> bool => asm { $u16_eq a b }
 }
 
-impl Add[i16] {
+impl Eq[u32] {
     @inline()
-    fn +(a: i16, b: i16) -> i16 => asm { $i16_add a b }
+    fn ==(a: u32, b: u32) -> bool => asm { $u32_eq a b }
+}
+
+impl Eq[u64] {
+    @inline()
+    fn ==(a: u64, b: u64) -> bool => asm { $u64_eq a b }
+}
+
+// ---- Neq
+
+trait Neq['a] {
+    fn !=('a, 'a) -> bool
+}
+
+impl Neq[int] {
+    @inline()
+    fn !=(a: int, b: int) -> bool => asm { $int_neq a b }
+}
+
+impl Neq[i8] {
+    @inline()
+    fn !=(a: i8, b: i8) -> bool => asm { $i8_neq a b }
+}
+
+impl Neq[i16] {
+    @inline()
+    fn !=(a: i16, b: i16) -> bool => asm { $i16_neq a b }
+}
+
+impl Neq[i32] {
+    @inline()
+    fn !=(a: i32, b: i32) -> bool => asm { $i32_neq a b }
+}
+
+impl Neq[i64] {
+    @inline()
+    fn !=(a: i64, b: i64) -> bool => asm { $i64_neq a b }
+}
+
+impl Neq[uint] {
+    @inline()
+    fn !=(a: uint, b: uint) -> bool => asm { $uint_neq a b }
+}
+
+impl Neq[u8] {
+    @inline()
+    fn !=(a: u8, b: u8) -> bool => asm { $u8_neq a b }
+}
+
+impl Neq[u16] {
+    @inline()
+    fn !=(a: u16, b: u16) -> bool => asm { $u16_neq a b }
+}
+
+impl Neq[u32] {
+    @inline()
+    fn !=(a: u32, b: u32) -> bool => asm { $u32_neq a b }
+}
+
+impl Neq[u64] {
+    @inline()
+    fn !=(a: u64, b: u64) -> bool => asm { $u64_neq a b }
+}
+
+// ---- Gt
+
+trait Gt['a] {
+    fn >('a, 'a) -> bool
+}
+
+impl Gt[int] {
+    @inline()
+    fn >(a: int, b: int) -> bool => asm { $int_gt a b }
+}
+
+impl Gt[i8] {
+    @inline()
+    fn >(a: i8, b: i8) -> bool => asm { $i8_gt a b }
+}
+
+impl Gt[i16] {
+    @inline()
+    fn >(a: i16, b: i16) -> bool => asm { $i16_gt a b }
+}
+
+impl Gt[i32] {
+    @inline()
+    fn >(a: i32, b: i32) -> bool => asm { $i32_gt a b }
+}
+
+impl Gt[i64] {
+    @inline()
+    fn >(a: i64, b: i64) -> bool => asm { $i64_gt a b }
+}
+
+impl Gt[uint] {
+    @inline()
+    fn >(a: uint, b: uint) -> bool => asm { $uint_gt a b }
+}
+
+impl Gt[u8] {
+    @inline()
+    fn >(a: u8, b: u8) -> bool => asm { $u8_gt a b }
+}
+
+impl Gt[u16] {
+    @inline()
+    fn >(a: u16, b: u16) -> bool => asm { $u16_gt a b }
+}
+
+impl Gt[u32] {
+    @inline()
+    fn >(a: u32, b: u32) -> bool => asm { $u32_gt a b }
+}
+
+impl Gt[u64] {
+    @inline()
+    fn >(a: u64, b: u64) -> bool => asm { $u64_gt a b }
+}
+
+// ---- Lt
+
+trait Lt['a] {
+    fn <('a, 'a) -> bool
+}
+
+impl Lt[int] {
+    @inline()
+    fn <(a: int, b: int) -> bool => asm { $int_lt a b }
+}
+
+impl Lt[i8] {
+    @inline()
+    fn <(a: i8, b: i8) -> bool => asm { $i8_lt a b }
+}
+
+impl Lt[i16] {
+    @inline()
+    fn <(a: i16, b: i16) -> bool => asm { $i16_lt a b }
+}
+
+impl Lt[i32] {
+    @inline()
+    fn <(a: i32, b: i32) -> bool => asm { $i32_lt a b }
+}
+
+impl Lt[i64] {
+    @inline()
+    fn <(a: i64, b: i64) -> bool => asm { $i64_lt a b }
+}
+
+impl Lt[uint] {
+    @inline()
+    fn <(a: uint, b: uint) -> bool => asm { $uint_lt a b }
+}
+
+impl Lt[u8] {
+    @inline()
+    fn <(a: u8, b: u8) -> bool => asm { $u8_lt a b }
+}
+
+impl Lt[u16] {
+    @inline()
+    fn <(a: u16, b: u16) -> bool => asm { $u16_lt a b }
+}
+
+impl Lt[u32] {
+    @inline()
+    fn <(a: u32, b: u32) -> bool => asm { $u32_lt a b }
+}
+
+impl Lt[u64] {
+    @inline()
+    fn <(a: u64, b: u64) -> bool => asm { $u64_lt a b }
+}
+
+// ---- GtEq
+
+trait GtEq['a] {
+    fn >=('a, 'a) -> bool
+}
+
+impl GtEq[int] {
+    @inline()
+    fn >=(a: int, b: int) -> bool => asm { $int_gteq a b }
+}
+
+impl GtEq[i8] {
+    @inline()
+    fn >=(a: i8, b: i8) -> bool => asm { $i8_gteq a b }
+}
+
+impl GtEq[i16] {
+    @inline()
+    fn >=(a: i16, b: i16) -> bool => asm { $i16_gteq a b }
+}
+
+impl GtEq[i32] {
+    @inline()
+    fn >=(a: i32, b: i32) -> bool => asm { $i32_gteq a b }
+}
+
+impl GtEq[i64] {
+    @inline()
+    fn >=(a: i64, b: i64) -> bool => asm { $i64_gteq a b }
+}
+
+impl GtEq[uint] {
+    @inline()
+    fn >=(a: uint, b: uint) -> bool => asm { $uint_gteq a b }
+}
+
+impl GtEq[u8] {
+    @inline()
+    fn >=(a: u8, b: u8) -> bool => asm { $u8_gteq a b }
+}
+
+impl GtEq[u16] {
+    @inline()
+    fn >=(a: u16, b: u16) -> bool => asm { $u16_gteq a b }
+}
+
+impl GtEq[u32] {
+    @inline()
+    fn >=(a: u32, b: u32) -> bool => asm { $u32_gteq a b }
+}
+
+impl GtEq[u64] {
+    @inline()
+    fn >=(a: u64, b: u64) -> bool => asm { $u64_gteq a b }
+}
+
+// ---- LtEq
+
+trait LtEq['a] {
+    fn <=('a, 'a) -> bool
+}
+
+impl LtEq[int] {
+    @inline()
+    fn <=(a: int, b: int) -> bool => asm { $int_lteq a b }
+}
+
+impl LtEq[i8] {
+    @inline()
+    fn <=(a: i8, b: i8) -> bool => asm { $i8_lteq a b }
+}
+
+impl LtEq[i16] {
+    @inline()
+    fn <=(a: i16, b: i16) -> bool => asm { $i16_lteq a b }
+}
+
+impl LtEq[i32] {
+    @inline()
+    fn <=(a: i32, b: i32) -> bool => asm { $i32_lteq a b }
+}
+
+impl LtEq[i64] {
+    @inline()
+    fn <=(a: i64, b: i64) -> bool => asm { $i64_lteq a b }
+}
+
+impl LtEq[uint] {
+    @inline()
+    fn <=(a: uint, b: uint) -> bool => asm { $uint_lteq a b }
+}
+
+impl LtEq[u8] {
+    @inline()
+    fn <=(a: u8, b: u8) -> bool => asm { $u8_lteq a b }
+}
+
+impl LtEq[u16] {
+    @inline()
+    fn <=(a: u16, b: u16) -> bool => asm { $u16_lteq a b }
+}
+
+impl LtEq[u32] {
+    @inline()
+    fn <=(a: u32, b: u32) -> bool => asm { $u32_lteq a b }
+}
+
+impl LtEq[u64] {
+    @inline()
+    fn <=(a: u64, b: u64) -> bool => asm { $u64_lteq a b }
 }

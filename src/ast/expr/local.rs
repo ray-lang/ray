@@ -1,4 +1,7 @@
-use crate::ast::{Expr, Node, Pattern, Type};
+use crate::{
+    ast::{Expr, Node, Pattern},
+    typing::ty::Ty,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local<Info>
@@ -7,6 +10,6 @@ where
 {
     pub is_mut: bool,
     pub pattern: Box<Pattern<Info>>,
-    pub ty: Option<Type>,
+    pub ty: Option<Ty>,
     pub init: Option<Box<Node<Expr<Info>, Info>>>,
 }

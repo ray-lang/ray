@@ -2,8 +2,8 @@ use super::{ExprResult, ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
     ast::{
-        token::TokenKind, Block, Closure, Expr, HasExpr, Literal, Name, Path, Pattern, PatternKind,
-        Sequence, SourceInfo, Trailing, ValueKind,
+        token::TokenKind, Block, Closure, Expr, HasExpr, Literal, Name, Path, PathNode, Pattern,
+        PatternKind, Sequence, SourceInfo, Trailing, ValueKind,
     },
     span::{Pos, Span},
 };
@@ -30,25 +30,23 @@ impl Parser {
                 {
                     "an expression after the previous comma"
                 } else {
-                    "an atom"
+                    "an expression"
                 };
                 Err(self.unexpected_token(&tok, expected))
             }
         }
     }
 
-    pub(crate) fn parse_path(&mut self) -> ParseResult<Path> {
+    pub(crate) fn parse_path(&mut self) -> ParseResult<PathNode> {
         let (id, span) = self.expect_id()?;
         if expect_if!(self, TokenKind::DoubleColon) {
             self.parse_path_with((id, span))
         } else {
-            let mut p = Path::from(vec![id]);
-            p.span = span;
-            Ok(p)
+            Ok(PathNode::new(Path::from(vec![id]), span))
         }
     }
 
-    pub(crate) fn parse_path_with(&mut self, first: (String, Span)) -> ParseResult<Path> {
+    pub(crate) fn parse_path_with(&mut self, first: (String, Span)) -> ParseResult<PathNode> {
         // This assumes that the double colon after `first` has been consumed
         let (id, mut span) = first;
         let mut parts = vec![id];
@@ -62,9 +60,7 @@ impl Parser {
             }
         }
 
-        let mut p = Path::from(parts);
-        p.span = span;
-        Ok(p)
+        Ok(PathNode::new(Path::from(parts), span))
     }
 
     pub(crate) fn parse_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Pattern<SourceInfo>> {

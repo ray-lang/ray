@@ -1,6 +1,10 @@
-extern fn memcpy(dst: *'a, src: *'a, size: uint)
+fn puts(s: string) {
+    nwritten = malloc(4) : *uint
+    io = IOVec { base: s.raw_ptr, len: s.len }
+    _ = fd_write(1, io, 1, nwritten)
+}
 
-// fn puts(s: string) {
-//     v = IOVec { base: s.to_bytes(),  }
-//     fd_write(1, )
-// }
+fn print(v: 'a) where ToStr['a] {
+    puts(v.to_str())
+    puts("\n")
+}

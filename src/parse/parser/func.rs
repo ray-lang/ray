@@ -70,7 +70,7 @@ impl Parser {
         let mut end = param_span.end;
         let ret_ty = if expect_if!(self, TokenKind::Arrow) {
             let t = self.parse_ty()?;
-            end = t.span.unwrap().end;
+            end = t.span().unwrap().end;
             Some(t)
         } else {
             None

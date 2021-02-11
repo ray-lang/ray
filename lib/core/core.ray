@@ -1,2 +1,9 @@
 // This is the core library for Ray
 extern fn sizeof(t: type['a]) -> uint
+
+@inline()
+fn malloc(size: uint) -> *'a => asm(*'a) { $malloc size }
+
+@inline()
+fn ptr_add(ptr: *'a, n: uint) -> *'a =>
+    ((ptr as uint) + n) as *'a

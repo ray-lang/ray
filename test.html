@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test WASM</title>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            font-family: 'RecursiveMonoLnrSt-Regular', 'Menlo', 'Courier New', monospace;
+            color: #ffffff;
+            background-color: rgb(30, 37, 46);
+        }
+
+        body {
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <script type="module">
+        import { WASI, WASIExitError, WASIKillError } from 'https://cdn.skypack.dev/@wasmer/wasi';
+        import { WasmFs } from 'https://cdn.skypack.dev/@wasmer/wasmfs';
+
+        import path from 'https://cdn.skypack.dev/path-browserify';
+        import randomfill from 'https://cdn.skypack.dev/randomfill';
+        import hrtime from 'https://cdn.skypack.dev/@wasmer/wasi/lib/polyfills/browser-hrtime';
+        import getBigIntHrtime from 'https://cdn.skypack.dev/@wasmer/wasi/lib/polyfills/hrtime.bigint';
+
+        const wasmFs = new WasmFs();
+        const bindings = {
+            hrtime: getBigIntHrtime(hrtime),
+            exit: code => {
+                throw new WASIExitError(code);
+            },
+            kill: signal => {
+                throw new WASIKillError(signal);
+            },
+            randomFillSync: randomfill.randomFillSync,
+            isTTY: () => true,
+            path: path,
+            fs: wasmFs.fs
+        };
+
+        const wasi = new WASI({
+            args: ['/scratch.wasm'],
+            env: {},
+            bindings,
+        });
+
+        window.getWasiModule = async pathToWasmFile => {
+            // Fetch our Wasm File
+            const response = await fetch(pathToWasmFile)
+            const wasmBytes = new Uint8Array(await response.arrayBuffer())
+
+            // Instantiate the WebAssembly file
+            const wasmModule = await WebAssembly.compile(wasmBytes);
+            let imports = {};
+            try {
+                imports = wasi.getImports(wasmModule);
+            } catch {
+                // module doesn't need any imports
+            }
+
+            return await WebAssembly.instantiate(wasmModule, {
+                ...imports
+            });
+        };
+
+        window.startWasiTask = async instance => {
+            wasi.start(instance)                      // Start the WASI instance
+            const stdout = await wasmFs.getStdOut()   // Get the contents of stdout
+            document.body.append(stdout)              // Write stdout data to the DOM
+        };
+    </script>
+</body>
+</html>

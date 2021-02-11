@@ -1,4 +1,4 @@
-use crate::driver::{BuildOptions, Driver};
+use crate::driver::{BuildOptions, CSTOptions, Driver};
 use crate::pathlib::FilePath;
 
 use colored::{Color, ColoredString, Colorize};
@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use structopt::StructOpt;
 
 mod build;
+mod cst;
 
 #[derive(Debug, StructOpt)]
 pub struct Cli {
@@ -46,6 +47,7 @@ pub struct Cli {
 #[derive(Debug, StructOpt)]
 pub enum Command {
     Build(BuildOptions),
+    ParseCST(CSTOptions),
 }
 
 pub struct CmdError {
@@ -105,6 +107,7 @@ pub fn run() {
     let mut driver = Driver::new(ray_path);
     match cli.cmd {
         Command::Build(options) => build::action(&mut driver, options),
+        Command::ParseCST(options) => cst::action(&mut driver, options),
     }
 
     if let Some(prof) = prof {
@@ -118,13 +121,13 @@ pub fn run() {
                     .unwrap_or_default()
                     .as_secs();
                 let mut file = File::create(format!("profile-{}.pb", d))?;
-                let profile = report.pprof()?;
-
                 let mut content = Vec::new();
+                let profile = report.pprof()?;
                 profile.encode(&mut content)?;
                 file.write_all(&content)?;
 
-                eprintln!("{} {}", "report:".blue(), &report);
+                let file = File::create(format!("flamegraph-{}.svg", d))?;
+                report.flamegraph(file)?;
                 Ok(())
             })
             .err()

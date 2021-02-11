@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    ast::{Node, SourceInfo},
+    ast::{Node, Path, SourceInfo},
     lir::{self, Inst, Store, Value},
 };
 
@@ -70,7 +70,7 @@ impl Optimize for Inline {
                     if let Some(new_inst) = self.inline_call(
                         &mut inst.value,
                         &info,
-                        fn_name.clone(),
+                        &fn_name,
                         args,
                         loc,
                         &mut locals,
@@ -103,13 +103,13 @@ impl Inline {
         &self,
         inst: &mut Inst,
         info: &SourceInfo,
-        fn_name: String,
+        fn_name: &Path,
         args: Vec<lir::Variable>,
         loc: Option<lir::Variable>,
         locals: &mut Vec<lir::Local>,
-        funcs: &HashMap<String, Rc<RefCell<lir::Func>>>,
+        funcs: &HashMap<Path, Rc<RefCell<lir::Func>>>,
     ) -> Option<Vec<Node<Inst, SourceInfo>>> {
-        if let Some(f) = funcs.get(&fn_name) {
+        if let Some(f) = funcs.get(fn_name) {
             if f.borrow().has_inline() {
                 let f = f.borrow().clone();
                 let (new_locs, new_inst, ret_val) = f.inline(args, info.clone(), locals.len());

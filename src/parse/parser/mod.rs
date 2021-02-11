@@ -16,12 +16,13 @@ use std::{fs, io};
 use crate::{
     ast::{
         token::{Token, TokenKind},
-        Decl, Decorator, Expr, File, Import, Node, Path, SourceInfo, SourceNode, Type, ValueKind,
+        Decl, Decorator, Expr, File, Import, Node, Path, SourceInfo, SourceNode, ValueKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
     pathlib::FilePath,
-    span::{Pos, Source, Span},
+    span::{parsed::Parsed, Pos, Source, Span},
+    typing::ty::Ty,
 };
 
 fn read_string<R: io::Read>(mut r: R) -> ParseResult<String> {
@@ -38,14 +39,14 @@ pub type DeclResult = ParseResult<ParsedDecl>;
 
 bitflags::bitflags! {
     pub struct Restrictions: u8 {
-        const EXPECT_EXPR = 1 << 0;
-        const IF_ELSE     = 1 << 1;
-        const IN_LOOP     = 1 << 2;
-        const IN_FUNC     = 1 << 3;
-        const RVALUE      = 1 << 4;
-        const LVALUE      = 1 << 5;
-        const AFTER_COMMA = 1 << 6;
-        const IN_PAREN    = 1 << 7;
+        const EXPECT_EXPR   = 1 << 0;
+        const IF_ELSE       = 1 << 1;
+        const IN_LOOP       = 1 << 2;
+        const IN_FUNC       = 1 << 3;
+        const RVALUE        = 1 << 4;
+        const NO_CURLY_EXPR = 1 << 5;
+        const AFTER_COMMA   = 1 << 6;
+        const IN_PAREN      = 1 << 7;
     }
 }
 
@@ -72,10 +73,10 @@ impl ParseContext {
     }
 
     pub fn get_vkind(&self) -> ValueKind {
-        if self.restrictions.contains(Restrictions::LVALUE) {
-            ValueKind::LValue
-        } else {
+        if self.restrictions.contains(Restrictions::RVALUE) {
             ValueKind::RValue
+        } else {
+            ValueKind::LValue
         }
     }
 }
@@ -178,7 +179,9 @@ impl Parser {
                 | TokenKind::Struct
                 | TokenKind::Trait
                 | TokenKind::TypeAlias
-                | TokenKind::Impl => {
+                | TokenKind::Impl
+                | TokenKind::Modifier(_)
+                | TokenKind::Fn => {
                     let decl = this.parse_decl(&kind, &ctx)?;
                     let end = decl.info.src.span.unwrap().end;
                     items.decls.push(decl);
@@ -429,7 +432,8 @@ impl Parser {
         )
     }
 
-    pub(crate) fn mk_ty(&mut self, ty: Type, span: Span, path: Path) -> SourceNode<Type> {
+    pub(crate) fn mk_ty(&mut self, ty: Parsed<Ty>, path: Path) -> SourceNode<Parsed<Ty>> {
+        let span = *ty.span().unwrap();
         Node::new(
             ty,
             SourceInfo {
@@ -443,14 +447,9 @@ impl Parser {
         )
     }
 
-    pub(crate) fn mk_decl(
-        &mut self,
-        value: Decl<SourceInfo>,
-        span: Span,
-        path: Path,
-    ) -> ParsedDecl {
+    pub(crate) fn mk_decl(&self, decl: Decl<SourceInfo>, span: Span, path: Path) -> ParsedDecl {
         Node::new(
-            value,
+            decl,
             SourceInfo {
                 src: Source {
                     span: Some(span),
@@ -460,6 +459,13 @@ impl Parser {
                 doc: None,
             },
         )
+    }
+
+    pub(crate) fn mk_src(&self, span: Span) -> Source {
+        Source {
+            filepath: self.options.filepath.clone(),
+            span: Some(span),
+        }
     }
 
     fn expect(&mut self, kind: TokenKind) -> ParseResult<(Token, Span)> {

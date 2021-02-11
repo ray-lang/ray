@@ -84,8 +84,8 @@ impl Parser {
             } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
                 // this is a typed expression
                 let ty = self.parse_ty()?;
-                let ty_span = ty.span.unwrap();
-                let rhs = self.mk_ty(ty, ty_span, ctx.path.clone());
+                let ty_span = ty.span().unwrap();
+                let rhs = self.mk_ty(ty, ctx.path.clone());
                 let span = lhs
                     .info
                     .src
@@ -219,7 +219,7 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ExprResult {
         let ty = self.parse_ty()?;
-        let span = lhs.info.src.span.unwrap().extend_to(&ty.span.unwrap());
+        let span = lhs.info.src.span.unwrap().extend_to(ty.span().unwrap());
         Ok(self.mk_expr(
             Expr::Cast(Cast {
                 lhs: Box::new(lhs),

@@ -17,7 +17,7 @@ itertools = "0.9"
 lang-c = "0.9"
 log = "0.4"
 parity-wasm = { git = "https://github.com/ray-lang/parity-wasm", features = ["bulk"] }
-pprof = { version = "0.3", features = ["protobuf"] }
+pprof = { version = "0.3", features = ["protobuf", "flamegraph"] }
 rand = "0.8"
 structopt = "0.3"
 wasmer = "1.0"

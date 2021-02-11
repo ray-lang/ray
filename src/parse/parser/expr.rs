@@ -4,10 +4,10 @@ use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
 
 use crate::{
     ast::{
-        asm::{Asm, AsmOp},
+        asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
         Call, Curly, CurlyElement, CurlyElementKind, Dot, Expr, Index, Literal, Modifier, Sequence,
-        Trailing, Type, ValueKind,
+        Trailing, ValueKind,
     },
     span::Span,
 };
@@ -69,8 +69,9 @@ impl Parser {
                 Ok(self.mk_expr(Expr::Literal(Literal::String(s)), span, ctx.path.clone()))
             }
             TokenKind::SingleQuote => {
-                let (c, span) = self.expect_char()?;
-                Ok(self.mk_expr(Expr::Literal(Literal::Char(c)), span, ctx.path.clone()))
+                let (char_string, span) = self.expect_char()?;
+                let ch = char_string.chars().next().unwrap();
+                Ok(self.mk_expr(Expr::Literal(Literal::Char(ch)), span, ctx.path.clone()))
             }
             TokenKind::Identifier(s)
                 if &s == "b"
@@ -83,9 +84,10 @@ impl Parser {
                 let (_, Span { start, .. }) = self.expect_id()?;
                 let quote = self.token()?;
                 if quote.kind == TokenKind::SingleQuote {
-                    let (c, Span { end, .. }) = self.expect_char()?;
+                    let (char_string, Span { end, .. }) = self.expect_char()?;
+                    let ch = char_string.chars().next().unwrap();
                     Ok(self.mk_expr(
-                        Expr::Literal(Literal::Char(c)),
+                        Expr::Literal(Literal::Char(ch)),
                         Span { start, end },
                         ctx.path.clone(),
                     ))
@@ -112,7 +114,7 @@ impl Parser {
 
                 if expect_if!(self, TokenKind::DoubleColon) {
                     let p = self.parse_path_with((n.name, n.span))?;
-                    let span = p.span;
+                    let span = p.span().clone();
                     Ok(self.mk_expr(Expr::Path(p), span, ctx.path.clone()))
                 } else {
                     let span = n.span;
@@ -155,7 +157,9 @@ impl Parser {
                 continue;
             }
 
-            if peek!(self, TokenKind::LeftCurly) {
+            if peek!(self, TokenKind::LeftCurly)
+                && !ctx.restrictions.contains(Restrictions::NO_CURLY_EXPR)
+            {
                 // expr { ... }
                 let begin = ex.info.src.span.unwrap();
                 ex = self.parse_curly_expr(Some(ex), begin, ctx)?;
@@ -210,7 +214,6 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ExprResult {
         let start = lhs.info.src.span.unwrap().start;
-        let mut ty_args = None;
 
         let expects_type = if let Expr::Name(n) = &lhs.value {
             match n.name.as_str() {
@@ -221,21 +224,10 @@ impl Parser {
             false
         };
 
-        if let Expr::Index(idx) = lhs.value {
-            // convert this to type arguments
-            let span = idx.index.info.src.span.unwrap();
-            if let Some(tys) = Type::from_expr(&idx.index) {
-                lhs = *idx.lhs;
-                ty_args = Some((tys, span));
-            } else {
-                lhs.value = Expr::Index(idx);
-            }
-        }
-
         let (mut args, args_span) = if !peek!(self, TokenKind::RightParen) {
             if expects_type {
                 let ty = self.parse_ty()?;
-                let span = ty.span.unwrap();
+                let span = *ty.span().unwrap();
                 (
                     Sequence {
                         items: vec![self.mk_expr(Expr::Type(ty), span, ctx.path.clone())],
@@ -289,7 +281,6 @@ impl Parser {
                 lhs: Box::new(lhs),
                 args,
                 args_span,
-                ty_args,
                 paren_span: Span {
                     start: lparen_tok.span.start,
                     end: rparen_end,
@@ -407,9 +398,23 @@ impl Parser {
             };
 
             let mut operands = vec![];
-            while peek!(self, TokenKind::Identifier(_)) {
-                let (id, _) = self.expect_id()?;
-                operands.push(id);
+            loop {
+                let kind = self.peek_kind();
+                operands.push(match kind {
+                    TokenKind::Identifier(_) => {
+                        let (id, _) = self.expect_id()?;
+                        AsmOperand::Var(id)
+                    }
+                    TokenKind::Integer { .. } => {
+                        let tok = self.token()?;
+                        let i = match tok.kind {
+                            TokenKind::Integer { value, .. } => value.parse::<u64>()?,
+                            _ => unreachable!(),
+                        };
+                        AsmOperand::Int(i)
+                    }
+                    _ => break,
+                });
             }
 
             inst.push((op, operands));

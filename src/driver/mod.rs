@@ -1,18 +1,21 @@
 use std::fs;
 
 use crate::{
+    ast,
     codegen::{codegen, wasm},
     errors::{RayError, RayErrorKind},
-    hir, lir,
+    hir, lir, parse,
     pathlib::FilePath,
     sema,
-    typing::{Ctx, InferSystem},
+    typing::{InferSystem, TyCtx},
 };
 
 mod build;
+mod parse_cst;
 
 pub use build::BuildOptions;
 use itertools::Itertools;
+pub use parse_cst::CSTOptions;
 
 #[derive(Debug)]
 pub struct RayPaths {
@@ -56,6 +59,20 @@ impl Driver {
         }
     }
 
+    pub fn cst(&self, options: CSTOptions) -> Result<(), Vec<RayError>> {
+        let fp = sema::get_root_module(&options.input_path)?;
+        let module_path = ast::Path::from(options.input_path);
+        let cst_mod = parse::cst::Parser::parse(parse::ParseOptions {
+            module_path,
+            use_stdin: false,
+            filepath: fp.clone(),
+            original_filepath: fp.clone(),
+        })?;
+
+        eprintln!("{:#?}", cst_mod);
+        Ok(())
+    }
+
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
         let paths = RayPaths {
             root: self.ray_path.clone(),
@@ -71,11 +88,11 @@ impl Driver {
         }
 
         let mut modules = mod_builder.modules;
-        let mut tcx = Ctx::new();
-        let hir_mod = hir::transform_modules(&mod_path, &mut modules, &mut tcx)?;
-        log::debug!("{}", hir_mod);
+        let mut tcx = TyCtx::new();
+        let module = hir::transform_modules(&mod_path, &mut modules, &mut tcx)?;
+        log::debug!("{}", module);
         let mut inf = InferSystem::new(&mut tcx);
-        let (typed_mod, solution) = match inf.infer_ty(hir_mod) {
+        let (module, solution) = match inf.infer_ty(module) {
             Ok(r) => r,
             Err(errs) => {
                 return Err(errs
@@ -89,22 +106,21 @@ impl Driver {
             }
         };
 
-        log::debug!("{}", typed_mod);
+        log::debug!("{}", module);
 
         if options.no_compile {
             return Ok(());
         }
 
         // generate IR
-        let root = &typed_mod.stmts[0];
-        let mut prog = lir::Program::gen(mod_path.clone(), &solution, root, tcx)?;
+        let mut prog = lir::Program::gen(&module, &solution)?;
         prog.monomorphize();
         prog.post_process();
 
         log::debug!("{}", prog);
 
         // compile to wasm
-        let wasm_mod = codegen(&prog);
+        let wasm_mod = codegen(&prog, &tcx);
 
         // serialize the wasm module
         let bytes = match wasm::serialize(wasm_mod) {

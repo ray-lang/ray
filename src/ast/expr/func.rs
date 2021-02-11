@@ -1,6 +1,7 @@
 use crate::{
-    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Path, Type, TypeParams},
-    span::Span,
+    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Path, TypeParams},
+    span::{parsed::Parsed, Span},
+    typing::ty::Ty,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,7 +10,7 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     Name(Name),
-    Type(Type),
+    Type(Parsed<Ty>),
     DefaultValue(Box<FnParam<Info>>, Box<Node<Expr<Info>, Info>>),
 }
 
@@ -34,7 +35,7 @@ where
         match self {
             FnParam::DefaultValue(p, e) => p.span().extend_to(&e.info.src().span.unwrap()),
             FnParam::Name(n) => n.span,
-            FnParam::Type(t) => t.span.unwrap(),
+            FnParam::Type(t) => *t.span().unwrap(),
         }
     }
 }
@@ -51,10 +52,10 @@ where
         }
     }
 
-    pub fn ty(&self) -> Option<&Type> {
+    pub fn ty(&self) -> Option<&Ty> {
         match self {
             FnParam::DefaultValue(p, _) => p.ty(),
-            FnParam::Name(n) => n.ty.as_ref(),
+            FnParam::Name(n) => n.ty.as_deref(),
             FnParam::Type(t) => Some(t),
         }
     }
@@ -69,10 +70,10 @@ where
     pub name: Option<String>,
     pub params: Vec<FnParam<Info>>,
     pub ty_params: Option<TypeParams>,
-    pub ret_ty: Option<Type>,
-    pub ty: Option<Type>,
+    pub ret_ty: Option<Parsed<Ty>>,
+    pub ty: Option<Parsed<Ty>>,
     pub modifiers: Vec<Modifier>,
-    pub qualifiers: Vec<Type>,
+    pub qualifiers: Vec<Parsed<Ty>>,
     pub doc_comment: Option<String>,
     pub decorators: Option<Vec<Decorator>>,
     pub span: Span,
@@ -124,13 +125,20 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let body = self.body.as_ref();
         write!(
             f,
-            "(fn {} {})",
+            "(fn {}{}{})",
             self.sig,
-            self.body
-                .as_ref()
-                .map_or_else(|| "".to_string(), |b| b.to_string()),
+            if body
+                .map(|body| { !matches!(body.value, Expr::Block(_)) })
+                .unwrap_or_default()
+            {
+                " => "
+            } else {
+                ""
+            },
+            body.map_or_else(|| str!(""), |b| b.to_string()),
         )
     }
 }

@@ -3,36 +3,40 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
 };
 
-use crate::typing::{
-    constraints::{Constraint, ConstraintInfo, EqConstraint},
-    predicate::TyPredicate,
-    state::TyVarFactory,
-    traits::{
-        Generalize, HasBasic, HasFreeVars, HasPredicates, HasState, HasSubst, QualifyTypes,
-        QuantifyTypes,
+use crate::{
+    convert::ToSet,
+    typing::{
+        constraints::{Constraint, ConstraintInfo, ConstraintList, EqConstraint},
+        predicate::TyPredicate,
+        state::TyVarFactory,
+        traits::{
+            CollectTyVars, Generalize, HasBasic, HasFreeVars, HasPredicates, HasState, HasSubst,
+            QualifyTypes, QuantifyTypes,
+        },
+        ty::{Ty, TyVar},
+        ApplySubst, Subst, TyCtx,
     },
-    ty::{Ty, TyVar},
-    ApplySubst, Ctx, Subst,
 };
 
 use super::{Solution, Solver};
 
 #[derive(Debug)]
 pub struct GreedySolver<'a> {
-    ctx: &'a mut Ctx,
+    ctx: &'a mut TyCtx,
     subst: Subst,
     skolems: Vec<(Vec<TyVar>, Vec<TyVar>, ConstraintInfo)>,
     original_preds: Vec<TyPredicate>,
     assume_preds: Vec<(TyPredicate, ConstraintInfo)>,
     prove_preds: Vec<(TyPredicate, ConstraintInfo)>,
     generalized_preds: Vec<(TyPredicate, ConstraintInfo)>,
-    constraints: VecDeque<Constraint>,
+    constraints: ConstraintList,
     ty_map: HashMap<TyVar, (Ty, ConstraintInfo)>,
     inst_map: Subst,
+    skol_map: Subst,
 }
 
 impl<'a> GreedySolver<'a> {
-    pub fn new(constraints: Vec<Constraint>, ctx: &'a mut Ctx) -> GreedySolver<'a> {
+    pub fn new<T: Into<ConstraintList>>(constraints: T, ctx: &'a mut TyCtx) -> GreedySolver<'a> {
         GreedySolver {
             ctx,
             constraints: constraints.into(),
@@ -44,6 +48,7 @@ impl<'a> GreedySolver<'a> {
             generalized_preds: vec![],
             ty_map: HashMap::new(),
             inst_map: Subst::new(),
+            skol_map: Subst::new(),
         }
     }
 }
@@ -58,6 +63,7 @@ impl<'a> Solver for GreedySolver<'a> {
             generalized_preds,
             ty_map,
             inst_map,
+            skol_map,
             ..
         } = self;
 
@@ -87,18 +93,15 @@ impl<'a> Solver for GreedySolver<'a> {
             subst,
             ty_map,
             inst_map,
+            skol_map,
             preds,
         }
     }
 }
 
 impl<'a> HasBasic for GreedySolver<'a> {
-    fn ctx(&self) -> &Ctx {
+    fn ctx(&self) -> &TyCtx {
         &self.ctx
-    }
-
-    fn get_constraints(&self) -> Vec<Constraint> {
-        self.constraints.clone().into()
     }
 
     fn add_constraint(&mut self, c: Constraint) {
@@ -164,7 +167,7 @@ impl<'a> HasSubst for GreedySolver<'a> {
             b,
             |sub| {
                 let mut new_sub = self.subst.clone();
-                new_sub.union_inplace(sub, |x, y| {
+                new_sub.union_on_conflict(sub, |x, y| {
                     self.unify_terms(x, y, info);
                 });
                 self.subst = new_sub;
@@ -227,6 +230,13 @@ impl<'a> HasState for GreedySolver<'a> {
         }
     }
 
+    fn skol_ty(&mut self, v: Ty, u: Ty) {
+        // type `v` is a skolemized type of `u`
+        if let Ty::Var(v) = v {
+            self.skol_map.insert(v, u);
+        }
+    }
+
     fn find_ty(&self, r: &Ty) -> Ty {
         match r {
             Ty::Var(tv) => self.lookup_ty(tv).unwrap_or_else(|| r.clone()),
@@ -256,47 +266,60 @@ impl<'a> HasPredicates for GreedySolver<'a> {
     }
 
     fn generalize_with_preds(&mut self, mono_tys: &Vec<Ty>, ty: Ty) -> Ty {
-        // get all of the predicates
-        let p = self.prove_preds.drain(..).collect::<Vec<_>>();
-        let q = self.generalized_preds.drain(..).collect::<Vec<_>>();
-
         // collect the free variables
+        let mono_tvs = mono_tys.collect_tyvars();
         let vs = ty
             .free_vars()
-            .difference(&mono_tys.free_vars())
+            .difference(&mono_tvs.iter().to_set())
             .map(|&v| v)
-            .collect::<HashSet<_>>();
+            .to_set();
 
-        // split the prove predicates into a set that do not
-        // contain the free variables and another that does
-        let (a, b) = p
-            .into_iter()
-            .partition::<Vec<_>, _>(|(p, _)| !p.free_vars().is_disjoint(&vs));
+        // move the prove predicates into a set that contains the freevars
+        let mut i = 0;
+        let mut prove_preds = vec![];
+        while i < self.prove_preds.len() {
+            let (p, _) = &self.prove_preds[i];
+            if !p.free_vars().is_disjoint(&vs) {
+                prove_preds.push(self.prove_preds.remove(i));
+            } else {
+                i += 1;
+            }
+        }
 
         // same but for the generalized predicates
-        let (c, d) = q
-            .into_iter()
-            .partition::<Vec<_>, _>(|(p, _)| !p.free_vars().is_disjoint(&vs));
+        let gen_preds = self
+            .generalized_preds
+            .iter()
+            .filter(|(p, _)| !p.free_vars().is_disjoint(&vs))
+            .cloned()
+            .collect::<Vec<_>>();
 
-        // re-add the ones that were split off
-        self.prove_preds.extend(b);
-        self.generalized_preds.extend(a.clone());
-        self.generalized_preds.extend(c.clone());
-        self.generalized_preds.extend(d);
+        // add the preds from prove preds that are to be used in the generalization
+        self.generalized_preds.extend(prove_preds.clone());
 
         // collect all of the predicates and generalize the type
-        let preds = a.into_iter().chain(c.into_iter()).map(|(p, _)| p).collect();
+        let preds = prove_preds
+            .into_iter()
+            .chain(gen_preds.into_iter())
+            .map(|(p, _)| p)
+            .collect();
         ty.generalize(&mono_tys, &preds)
     }
 }
 
 #[cfg(test)]
 mod greedy_solver_tests {
-    use crate::typing::{
-        constraints::{EqConstraint, ImplicitConstraint},
-        solvers::Solver,
-        ty::Ty,
-        Ctx, InferError,
+    use std::io;
+
+    use crate::{
+        ast::Path,
+        typing::{
+            constraints::{EqConstraint, ImplicitConstraint, SkolConstraint},
+            predicate::TyPredicate,
+            solvers::Solver,
+            ty::{TraitTy, Ty},
+            InferError, TyCtx,
+        },
     };
 
     use super::GreedySolver;
@@ -324,7 +347,7 @@ mod greedy_solver_tests {
             EqConstraint::new(Ty::Var(tvar!(v6)), Ty::Var(tvar!(v5))),
         ];
 
-        let mut ctx = Ctx::new();
+        let mut ctx = TyCtx::new();
         ctx.tf_mut().skip_to(7);
         let solver = GreedySolver::new(constraints, &mut ctx);
         let (sol, _) = solver.solve();
@@ -341,6 +364,73 @@ mod greedy_solver_tests {
                 tvar!(v7) => Ty::Func(vec![Ty::Var(tvar!(v8))], Box::new(Ty::Var(tvar!(v8))))
             }
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_annotated_types() -> Result<(), InferError> {
+        fern::Dispatch::new()
+            .level(log::LevelFilter::Debug)
+            .chain(io::stderr())
+            .apply()
+            .unwrap();
+
+        let constraints = vec![
+            // v0 ≡ (v1) -> ()
+            EqConstraint::new(
+                Ty::Var(tvar!(v0)),
+                Ty::Func(vec![Ty::Var(tvar!(v1))], Box::new(Ty::unit())),
+            ),
+            // v0 ≽ (string) -> ()
+            SkolConstraint::new(
+                vec![],
+                Ty::Var(tvar!(v0)),
+                Ty::Func(vec![Ty::string()], Box::new(Ty::unit())),
+            ),
+            // v2 ≡ (v3) -> ()
+            EqConstraint::new(
+                Ty::Var(tvar!(v2)),
+                Ty::Func(vec![Ty::Var(tvar!(v3))], Box::new(Ty::unit())),
+            ),
+            // v2 ≽ All['a]('a) -> () where ToStr['a]
+            SkolConstraint::new(
+                vec![],
+                Ty::Var(tvar!(v2)),
+                Ty::All(
+                    vec![tvar!('a)],
+                    Box::new(Ty::Qualified(
+                        vec![TyPredicate::Trait(Ty::Projection(
+                            str!("ToStr"),
+                            vec![Ty::Var(tvar!('a))],
+                            vec![],
+                        ))],
+                        Box::new(Ty::Func(vec![Ty::Var(tvar!('a))], Box::new(Ty::unit()))),
+                    )),
+                ),
+            ),
+        ];
+
+        let mut ctx = TyCtx::new();
+        ctx.add_trait_ty(
+            str!("ToStr"),
+            TraitTy {
+                path: Path::from("ToStr"),
+                ty: Ty::Projection(str!("ToStr"), vec![Ty::Var(tvar!('a))], vec![]),
+                super_traits: vec![],
+                fields: vec![(
+                    str!("to_str"),
+                    Ty::All(
+                        vec![tvar!('a)],
+                        Box::new(Ty::Func(vec![Ty::Var(tvar!('a))], Box::new(Ty::unit()))),
+                    ),
+                )],
+            },
+        );
+        ctx.tf_mut().skip_to(4);
+        let solver = GreedySolver::new(constraints, &mut ctx);
+        let (sol, _) = solver.solve();
+        println!("{:#?}", sol);
 
         Ok(())
     }

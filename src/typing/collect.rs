@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    ast::SourceInfo,
+    ast::{Path, SourceInfo},
     typing::ty::{Ty, TyVar},
 };
 
@@ -21,6 +21,13 @@ pub trait CollectPatterns {
 }
 
 impl CollectPatterns for String {
+    fn collect_patterns(&self, tf: &mut TyVarFactory) -> (Ty, TyEnv, ConstraintTree) {
+        let path = Path::from(self.clone());
+        path.collect_patterns(tf)
+    }
+}
+
+impl CollectPatterns for Path {
     fn collect_patterns(&self, tf: &mut TyVarFactory) -> (Ty, TyEnv, ConstraintTree) {
         let mut env = TyEnv::new();
         let tv = tf.next();

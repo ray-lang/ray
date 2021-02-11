@@ -21,6 +21,43 @@ use std::collections::{HashMap, HashSet};
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
+pub fn get_root_module(path: &FilePath) -> Result<FilePath, RayError> {
+    if path.exists() && !path.is_dir() {
+        Ok(path.clone())
+    } else if path.is_dir() {
+        // we found a directory matching the name of the module
+        // let's look for a module.ray or BASE.ray file
+        let base = path.file_name();
+        for name in ["module.ray", &format!("{}.ray", base)].iter() {
+            let fp = path / name;
+            if fp.exists() {
+                return Ok(fp);
+            }
+        }
+
+        Err(RayError {
+            msg: format!(
+                "No root module file. module.ray or {}.ray should exist in the directory {}",
+                base, path
+            ),
+            src: vec![Source {
+                filepath: path.clone(),
+                span: None,
+            }],
+            kind: RayErrorKind::Import,
+        })
+    } else {
+        Err(RayError {
+            msg: format!("{} does not exist or is not a directory", path),
+            src: vec![Source {
+                filepath: path.clone(),
+                span: None,
+            }],
+            kind: RayErrorKind::IO,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct ModuleBuilder<A, B, Info>
 where
@@ -116,7 +153,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                             }
                         }
                     } else {
-                        match self.build_from_path(&fpath, Some(import.path.clone())) {
+                        match self.build_from_path(&fpath, Some(import.path.path().clone())) {
                             Ok(m) => imports.push(m),
                             Err(e) => errs.extend(e),
                         }
@@ -179,7 +216,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
         input_path: &FilePath,
         module_path: Option<ast::Path>,
     ) -> Result<ast::Path, Vec<RayError>> {
-        let root_fp = self.get_root_module(input_path)?;
+        let root_fp = get_root_module(input_path)?;
 
         let module_path = module_path.unwrap_or_else(|| ast::Path::from(input_path.clone()));
 
@@ -210,43 +247,6 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
         })
     }
 
-    fn get_root_module(&mut self, path: &FilePath) -> Result<FilePath, RayError> {
-        if path.exists() && !path.is_dir() {
-            Ok(path.clone())
-        } else if path.is_dir() {
-            // we found a directory matching the name of the module
-            // let's look for a module.ray or BASE.ray file
-            let base = path.file_name();
-            for name in ["module.ray", &format!("{}.ray", base)].iter() {
-                let fp = path / name;
-                if fp.exists() {
-                    return Ok(fp);
-                }
-            }
-
-            Err(RayError {
-                msg: format!(
-                    "No root module file. module.ray or {}.ray should exist in the directory {}",
-                    base, path
-                ),
-                src: vec![Source {
-                    filepath: path.clone(),
-                    span: None,
-                }],
-                kind: RayErrorKind::Import,
-            })
-        } else {
-            Err(RayError {
-                msg: format!("{} does not exist or is not a directory", path),
-                src: vec![Source {
-                    filepath: path.clone(),
-                    span: None,
-                }],
-                kind: RayErrorKind::IO,
-            })
-        }
-    }
-
     fn resolve_import(
         &mut self,
         parent_filepath: &FilePath,
@@ -256,7 +256,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
             return self.resolve_c_include(&include, parent_filepath, sp);
         }
 
-        let module_path = &import.path;
+        let module_path = import.path.path();
         let curr_dirpath = if parent_filepath.is_dir() {
             parent_filepath.clone()
         } else {

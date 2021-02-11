@@ -5,10 +5,11 @@ use super::{
 use crate::{
     ast::{
         token::TokenKind, Decl, Decorator, Expr, Impl, Modifier, Name, SourceInfo, Struct,
-        Trailing, Trait, Type,
+        Trailing, Trait,
     },
     errors::{RayError, RayErrorKind},
-    span::{Pos, Source, Span},
+    span::{parsed::Parsed, Pos, Source, Span},
+    typing::ty::Ty,
 };
 
 impl Parser {
@@ -31,7 +32,7 @@ impl Parser {
         start: Pos,
         only_sigs: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<ParsedExpr>, Vec<ParsedDecl>, Vec<ParsedExpr>)> {
+    ) -> ParseResult<(Vec<ParsedDecl>, Vec<ParsedDecl>, Vec<ParsedExpr>)> {
         let mut funcs = vec![];
         let mut externs = vec![];
         let mut consts = vec![];
@@ -54,15 +55,15 @@ impl Parser {
                     let span = f.span;
                     f.sig.doc_comment = doc;
                     f.sig.decorators = decs;
-                    let ex = this.mk_expr(Expr::Fn(f), span, path);
-                    funcs.push(ex);
+                    let decl = this.mk_decl(Decl::Fn(f), span, path);
+                    funcs.push(decl);
                     Ok(span.end)
                 }
                 TokenKind::Extern => {
                     let start = this.expect_start(TokenKind::Extern)?;
-                    let ex = this.parse_extern_fn_sig(start, ctx)?;
-                    let end = ex.info.src.span.unwrap().end;
-                    externs.push(ex);
+                    let decl = this.parse_extern_fn_sig(start, ctx)?;
+                    let end = decl.info.src.span.unwrap().end;
+                    externs.push(decl);
                     Ok(end)
                 }
                 _ => {
@@ -87,6 +88,12 @@ impl Parser {
                 self.mk_decl(Decl::Impl(i), span, ctx.path.clone())
             }
             TokenKind::Trait => self.parse_trait(ctx)?,
+            TokenKind::Fn | TokenKind::Modifier(_) => {
+                let f = self.parse_fn(false, ctx)?;
+                let span = f.span;
+                let path = f.sig.path.clone();
+                self.mk_decl(Decl::Fn(f), span, path)
+            }
             _ => unreachable!(),
         })
     }
@@ -135,7 +142,7 @@ impl Parser {
                 let sig = self.parse_fn_sig(ctx)?;
                 let span = sig.span;
                 let path = sig.path.clone();
-                self.mk_decl(Decl::Fn(sig), span, path)
+                self.mk_decl(Decl::FnSig(sig), span, path)
             }
             _ => {
                 let tok = self.token()?;
@@ -259,7 +266,7 @@ impl Parser {
         let start = self.expect_start(TokenKind::Impl)?;
 
         let ty = self.parse_ty()?;
-        let mut end = ty.span.unwrap().end;
+        let mut end = ty.span().unwrap().end;
 
         let qualifiers = self.parse_where_clause()?;
 
@@ -325,7 +332,7 @@ impl Parser {
         Ok((decs, Span { start, end }))
     }
 
-    pub(crate) fn parse_where_clause(&mut self) -> ParseResult<Vec<Type>> {
+    pub(crate) fn parse_where_clause(&mut self) -> ParseResult<Vec<Parsed<Ty>>> {
         let mut qualifiers = vec![];
         if !peek!(self, TokenKind::Where) {
             return Ok(qualifiers);

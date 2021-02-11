@@ -1,0 +1,15 @@
+module = [ { top_level_statement } ] ;
+
+(* *)
+top_level_statement = [ decorator , { decorator } ] , expression ;
+
+decorator = "@" , identifier , tuple ;
+
+(* atoms *)
+tuple = "(" , _ , [ expression , { "," , expression } , [ "," ] ] , _ , ")" ;
+identifier = alpha [ { alphanumeric } ] ;
+
+alphanumeric = alpha | decimal_digit ;
+decimal_digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+alpha = ? alphabetic unicode characters ? ;
+_ = [ { ? whitespace ?  } ] ;

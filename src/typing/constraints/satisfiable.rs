@@ -3,7 +3,7 @@ use crate::typing::{
     solvers::Solution,
     traits::{Generalize, HasFreeVars},
     ty::Ty,
-    ApplySubst, Ctx, InferError,
+    ApplySubst, InferError, TyCtx,
 };
 
 use super::{
@@ -12,11 +12,11 @@ use super::{
 };
 
 pub trait Satisfiable {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError>;
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError>;
 }
 
 impl Satisfiable for EqConstraint {
-    fn satisfied_by(self, _: &Solution, _: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, _: &Solution, _: &TyCtx) -> Result<(), InferError> {
         let EqConstraint(s, t) = self;
         if s != t {
             log::debug!(
@@ -35,7 +35,8 @@ impl Satisfiable for EqConstraint {
 }
 
 impl Satisfiable for GenConstraint {
-    fn satisfied_by(self, solution: &Solution, _: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, _: &TyCtx) -> Result<(), InferError> {
+        log::debug!("gen constraint: {:?}", self);
         let GenConstraint(m, s, t) = self;
         let mut s: Ty = solution.get_ty(Ty::Var(s))?.apply_subst(&solution.subst);
         if !s.has_unknowns() {
@@ -61,7 +62,8 @@ impl Satisfiable for GenConstraint {
 }
 
 impl Satisfiable for InstConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+        log::debug!("inst constraint: {:?}", self);
         let InstConstraint(t, u) = self;
         let tyvars = t.free_vars().into_iter().cloned().collect::<Vec<_>>();
         let t = t.qualify(&solution.preds, &tyvars);
@@ -78,7 +80,8 @@ impl Satisfiable for InstConstraint {
 }
 
 impl Satisfiable for SkolConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+        log::debug!("skol constraint: {:?}", self);
         let SkolConstraint(m, t, u) = self;
         let u = solution.get_ty(u)?;
         let t = t.generalize(
@@ -97,17 +100,17 @@ impl Satisfiable for SkolConstraint {
 }
 
 impl Satisfiable for ImplicitConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
         todo!()
     }
 }
 
 impl Satisfiable for ProveConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
         let p = self.get_predicate();
         if !solution.preds.entails(&p, ctx) {
             Err(InferError {
-                msg: format!("cannot determine if expression {}", p.desc()),
+                msg: format!("expression does not {}", p.desc()),
                 src: vec![],
             })
         } else {
@@ -117,11 +120,11 @@ impl Satisfiable for ProveConstraint {
 }
 
 impl Satisfiable for AssumeConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
         let p = self.get_predicate();
         if !solution.preds.entails(&p, ctx) {
             Err(InferError {
-                msg: format!("cannot determine if expression {}", p.desc()),
+                msg: format!("expression does not {}", p.desc()),
                 src: vec![],
             })
         } else {
@@ -131,7 +134,7 @@ impl Satisfiable for AssumeConstraint {
 }
 
 impl Satisfiable for ConstraintKind {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
         match self {
             ConstraintKind::Eq(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Gen(c) => c.satisfied_by(solution, ctx),
@@ -145,7 +148,7 @@ impl Satisfiable for ConstraintKind {
 }
 
 impl Satisfiable for Constraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
         let src = self.info.src.iter().map(|i| i.src.clone()).collect();
         self.kind.satisfied_by(solution, ctx).map_err(|mut e| {
             e.src = src;

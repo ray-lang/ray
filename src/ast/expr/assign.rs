@@ -38,7 +38,7 @@ where
 {
     pub fn get_ty_span(&self) -> Option<Span> {
         if let Expr::Name(n) = &self.lhs.expr() {
-            n.ty.as_ref().map(|t| t.span).unwrap_or_default()
+            n.ty.as_ref().and_then(|t| t.span().copied())
         } else {
             None
         }

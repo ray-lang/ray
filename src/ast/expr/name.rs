@@ -1,9 +1,12 @@
-use crate::{ast::Type, span::Span};
+use crate::{
+    span::{parsed::Parsed, Span},
+    typing::ty::Ty,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
     pub name: String,
-    pub ty: Option<Type>,
+    pub ty: Option<Parsed<Ty>>,
     pub span: Span,
 }
 

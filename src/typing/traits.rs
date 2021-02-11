@@ -3,16 +3,19 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use crate::typing::{
-    predicate::TyPredicate,
-    ty::{Ty, TyVar},
-    Subst,
+use crate::{
+    convert::ToSet,
+    typing::{
+        predicate::TyPredicate,
+        ty::{Ty, TyVar},
+        Subst,
+    },
 };
 
 use super::{
-    constraints::{Constraint, ConstraintInfo},
+    constraints::{Constraint, ConstraintInfo, ConstraintList},
     state::TyVarFactory,
-    Ctx,
+    TyCtx,
 };
 
 pub trait HasType {
@@ -29,9 +32,7 @@ where
 }
 
 pub trait HasBasic {
-    fn ctx(&self) -> &Ctx;
-
-    fn get_constraints(&self) -> Vec<Constraint>;
+    fn ctx(&self) -> &TyCtx;
 
     fn add_constraint(&mut self, c: Constraint);
 
@@ -70,6 +71,8 @@ pub trait HasState {
     fn store_ty(&mut self, v: TyVar, ty: Ty, info: ConstraintInfo);
 
     fn inst_ty(&mut self, v: Ty, u: Ty);
+
+    fn skol_ty(&mut self, v: Ty, u: Ty);
 
     fn lookup_ty(&self, tv: &TyVar) -> Option<Ty>;
 
@@ -158,6 +161,19 @@ where
     }
 }
 
+pub trait CollectTyVars {
+    fn collect_tyvars(&self) -> Vec<TyVar>;
+}
+
+impl<T> CollectTyVars for Vec<T>
+where
+    T: CollectTyVars,
+{
+    fn collect_tyvars(&self) -> Vec<TyVar> {
+        self.iter().flat_map(|t| t.collect_tyvars()).collect()
+    }
+}
+
 pub trait HasFreeVars {
     fn free_vars(&self) -> HashSet<&TyVar>;
 }
@@ -167,9 +183,7 @@ where
     T: HasFreeVars,
 {
     fn free_vars(&self) -> HashSet<&TyVar> {
-        self.iter()
-            .flat_map(|t| t.free_vars())
-            .collect::<HashSet<_>>()
+        self.iter().flat_map(|t| t.free_vars()).to_set()
     }
 }
 
@@ -178,9 +192,7 @@ where
     T: HasFreeVars,
 {
     fn free_vars(&self) -> HashSet<&TyVar> {
-        self.iter()
-            .flat_map(|(_, t)| t.free_vars())
-            .collect::<HashSet<_>>()
+        self.iter().flat_map(|(_, t)| t.free_vars()).to_set()
     }
 }
 
@@ -259,6 +271,10 @@ pub trait Skolemize {
         Self: Sized;
 }
 
-pub trait TreeWalk<A>: Copy {
-    fn walk(self, down: Vec<A>, pairs: Vec<(Vec<A>, Vec<A>)>) -> Vec<A>;
+pub trait TreeWalk: Copy {
+    fn walk(
+        self,
+        down: Vec<Constraint>,
+        pairs: Vec<(Vec<Constraint>, Vec<Constraint>)>,
+    ) -> Vec<Constraint>;
 }

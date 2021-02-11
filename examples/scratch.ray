@@ -1,8 +1,6 @@
-@inline()
-fn malloc(size: uint) -> *'a => asm(*'a) { $malloc size }
+c = '0' as u8
+b = true
+r = 0..<5
+a = [1, 2, 3]
 
-
-nwritten = malloc(4) : *uint
-s = "hello, world\n"
-io = IOVec { base: s.raw_ptr, len: s.len }
-n = fd_write(1, io, 1, nwritten)
+// s = if true { "hello" } else { nil }

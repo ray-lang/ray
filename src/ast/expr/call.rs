@@ -1,6 +1,7 @@
 use crate::{
-    ast::{Expr, Node, Sequence, Type},
+    ast::{Expr, Node, Sequence},
     span::Span,
+    typing::ty::Ty,
     utils::join,
 };
 
@@ -10,7 +11,6 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     pub lhs: Box<Node<Expr<Info>, Info>>,
-    pub ty_args: Option<(Vec<Type>, Span)>,
     pub args: Sequence<Info>,
     pub args_span: Span,
     pub paren_span: Span,
@@ -21,15 +21,10 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ty_args = self
-            .ty_args
-            .as_ref()
-            .map(|(tys, _)| format!("[{}]", join(tys, ",")))
-            .unwrap_or_default();
         if self.args.items.len() == 0 {
-            write!(f, "(call {}{})", self.lhs, ty_args)
+            write!(f, "(call {})", self.lhs)
         } else {
-            write!(f, "(call {}{} {})", self.lhs, ty_args, self.args)
+            write!(f, "(call {} {})", self.lhs, self.args)
         }
     }
 }

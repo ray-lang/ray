@@ -1,6 +1,8 @@
 use crate::{
-    ast::{Assign, Expr, FnSig, Name, Node, Type, TypeKind, TypeParams},
+    ast::{Assign, Expr, Fn, FnSig, Name, Node, TypeParams},
+    span::parsed::Parsed,
     strutils,
+    typing::ty::Ty,
     utils::join,
 };
 
@@ -13,10 +15,11 @@ where
     Mutable(Name),
     Name(Name),
     Declare(Assign<Info>),
-    Fn(FnSig<Info>),
+    Fn(Fn<Info>),
+    FnSig(FnSig<Info>),
     Struct(Struct),
     Trait(Trait<Info>),
-    TypeAlias(Name, Type),
+    TypeAlias(Name, Parsed<Ty>),
     Impl(Impl<Info>),
 }
 
@@ -52,7 +55,7 @@ where
             Decl::Struct(_) => 1,
             Decl::TypeAlias(_, _) => 2,
             Decl::Extern(_) => 3,
-            Decl::Fn(_) => 4,
+            Decl::Fn(_) | Decl::FnSig(_) => 4,
             Decl::Impl(_) => 5,
             Decl::Declare(_) => 6,
             Decl::Mutable(_) | Decl::Name(_) => 7,
@@ -72,9 +75,9 @@ pub struct Trait<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub ty: Type,
+    pub ty: Parsed<Ty>,
     pub funcs: Vec<FnSig<Info>>,
-    pub super_trait: Option<Type>,
+    pub super_trait: Option<Parsed<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,10 +85,10 @@ pub struct Impl<Info>
 where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub ty: Type,
-    pub qualifiers: Vec<Type>,
+    pub ty: Parsed<Ty>,
+    pub qualifiers: Vec<Parsed<Ty>>,
     pub externs: Option<Vec<Node<Decl<Info>, Info>>>,
-    pub funcs: Option<Vec<Node<Expr<Info>, Info>>>,
+    pub funcs: Option<Vec<Node<Decl<Info>, Info>>>,
     pub consts: Option<Vec<Node<Expr<Info>, Info>>>,
 }
 
@@ -95,27 +98,28 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Decl::Extern(ref ext) => write!(f, "(extern {})", ext),
-            Decl::Mutable(ref n) => write!(f, "(mut {})", n),
-            Decl::Name(ref n) => write!(f, "(declare {})", n),
-            Decl::Declare(ref a) => write!(f, "(declare {})", a),
-            Decl::TypeAlias(ref n, ref ty) => write!(f, "(type {} = {})", n, ty),
-            Decl::Fn(ref sig) => write!(f, "(fn {})", sig),
-            Decl::Struct(ref st) => {
-                let tp = if let Some(ref tp) = st.ty_params {
+            Decl::Extern(ext) => write!(f, "(extern {})", ext),
+            Decl::Mutable(n) => write!(f, "(mut {})", n),
+            Decl::Name(n) => write!(f, "(declare {})", n),
+            Decl::Declare(a) => write!(f, "(declare {})", a),
+            Decl::TypeAlias(n, ty) => write!(f, "(type {} = {})", n, ty),
+            Decl::Fn(func) => write!(f, "{}", func),
+            Decl::FnSig(sig) => write!(f, "(fn {})", sig),
+            Decl::Struct(st) => {
+                let tp = if let Some(tp) = &st.ty_params {
                     tp.to_string()
                 } else {
                     "".to_string()
                 };
 
-                if let Some(ref fields) = st.fields {
+                if let Some(fields) = &st.fields {
                     let fields = format!("{}\n", strutils::indent_lines_iter(fields, 2));
                     write!(f, "(struct {}{} {{\n{}}})", st.name, tp, fields)
                 } else {
                     write!(f, "(struct {}{})", st.name, tp)
                 }
             }
-            Decl::Trait(ref tr) => {
+            Decl::Trait(tr) => {
                 if tr.funcs.len() != 0 {
                     let methods = format!("{}\n", strutils::indent_lines_iter(&tr.funcs, 2));
                     write!(f, "(trait {}\n{})", tr.ty, methods)
@@ -123,14 +127,14 @@ where
                     write!(f, "(trait {}\n)", tr.ty)
                 }
             }
-            Decl::Impl(ref im) => {
+            Decl::Impl(im) => {
                 let qualifiers = if im.qualifiers.len() != 0 {
                     format!("where {}", join(&im.qualifiers, ", "))
                 } else {
                     str!("")
                 };
 
-                let funcs = if let Some(ref funcs) = im.funcs {
+                let funcs = if let Some(funcs) = &im.funcs {
                     let s = format!("{}", strutils::indent_lines_iter(funcs, 2));
                     if s.len() == 0 {
                         "".to_string()
@@ -141,7 +145,7 @@ where
                     "".to_string()
                 };
 
-                let externs = if let Some(ref externs) = im.externs {
+                let externs = if let Some(externs) = &im.externs {
                     let s = format!("{}", strutils::indent_lines_iter(externs, 2));
                     if s.len() == 0 {
                         "".to_string()
@@ -152,7 +156,7 @@ where
                     "".to_string()
                 };
 
-                let consts = if let Some(ref consts) = im.consts {
+                let consts = if let Some(consts) = &im.consts {
                     let s = format!("{}", strutils::indent_lines_iter(consts, 2));
                     if s.len() == 0 {
                         "".to_string()
@@ -185,12 +189,10 @@ where
         match &self {
             Decl::Extern(e) => e.get_name(),
             Decl::Mutable(n) | Decl::Name(n) => Some(n.name.clone()),
-            Decl::Fn(f) => f.name.clone(),
+            Decl::Fn(f) => f.sig.name.clone(),
+            Decl::FnSig(sig) => sig.name.clone(),
             Decl::Struct(s) => Some(s.name.name.clone()),
-            Decl::Trait(t) => match &t.ty.kind {
-                TypeKind::Basic { name, .. } => Some(name.clone()),
-                _ => None,
-            },
+            Decl::Trait(t) => Some(t.ty.name()),
             Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) => None,
         }
     }

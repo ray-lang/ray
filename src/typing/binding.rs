@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use itertools::Itertools;
 
 use crate::{
-    ast::SourceInfo,
+    ast::{Path, SourceInfo},
+    convert::ToSet,
     sort::{topological::TopologicalSort, SortByIndexSlice},
-    span::Source,
     typing::ty::{Ty, TyVar},
 };
 
@@ -24,10 +24,10 @@ fn make_key_set<'a, K: std::cmp::Eq + std::hash::Hash, V, W>(
     diff: &'a HashMap<K, W>,
 ) -> HashSet<&'a K> {
     map.keys()
-        .collect::<HashSet<_>>()
+        .to_set()
         .difference(&diff.keys().collect())
         .map(|&k| k)
-        .collect::<HashSet<_>>()
+        .to_set()
 }
 
 pub struct BindingGroupAnalysis<'a> {
@@ -87,23 +87,40 @@ impl<'a> BindingGroupAnalysis<'a> {
             let (lhs_sigs, lhs_use, _) = lhs.borrow();
             let (rhs_sigs, rhs_use, _) = rhs.borrow();
 
-            let lhs_def_keys = make_key_set(lhs_sigs, sigs);
-            let lhs_use_keys = make_key_set(lhs_use, sigs);
-            let rhs_def_keys = make_key_set(rhs_sigs, sigs);
-            let rhs_use_keys = make_key_set(rhs_use, sigs);
-
-            if !lhs_def_keys.is_disjoint(&rhs_use_keys) {
+            if lhs_sigs
+                .keys()
+                .any(|p| rhs_use.contains_key(p) && !sigs.contains_key(p))
+            {
                 // LHS defines variables used in RHS, so RHS depends on LHS
                 ts.add_dependency(i, j);
             }
 
-            if !rhs_def_keys.is_disjoint(&lhs_use_keys) {
+            if rhs_sigs
+                .keys()
+                .any(|p| lhs_use.contains_key(p) && !sigs.contains_key(p))
+            {
                 // RHS defines variables used in LHS, LHS depends on RHS
                 ts.add_dependency(j, i);
             }
         }
 
-        let indices = ts.collect::<Vec<_>>();
+        let mut indices = ts.collect::<Vec<_>>();
+        if indices.len() == 0 {
+            return;
+        }
+
+        if indices.len() != self.groups.len() {
+            // if there are groups that are completely disjoint,
+            // meaning they don't show up in the indices list,
+            // then we can just add them to the end
+            let set = indices.iter().copied().to_set();
+            for i in 0..self.groups.len() {
+                if !set.contains(&i) {
+                    indices.push(i);
+                }
+            }
+        }
+
         self.groups.sort_by_index_slice(indices);
     }
 
@@ -114,7 +131,7 @@ impl<'a> BindingGroupAnalysis<'a> {
         let mut a = AssumptionSet::new();
         let mut t = ConstraintTree::empty();
         while let Some(g) = self.groups.pop() {
-            let (new_m, new_a, new_t) = g.combine_with(&m, &a, &t, self.sigs, self.svar_factory);
+            let (new_m, new_a, new_t) = g.combine_with(&m, a, t, self.sigs, self.svar_factory);
             m = new_m;
             a = new_a;
             t = new_t;
@@ -194,16 +211,16 @@ impl BindingGroup {
         (&mut self.env, &mut self.aset, &mut self.ctree)
     }
 
-    pub fn is_mutually_recursive(&self, other: &BindingGroup, sigs: &HashMap<String, Ty>) -> bool {
+    pub fn is_mutually_recursive(&self, other: &BindingGroup, sigs: &HashMap<Path, Ty>) -> bool {
         let (lhs_sigs, lhs_use, _) = self.borrow();
         let (rhs_sigs, rhs_use, _) = other.borrow();
 
-        let lhs_def_keys = make_key_set(lhs_sigs, sigs);
-        let lhs_use_keys = make_key_set(lhs_use, sigs);
-        let rhs_def_keys = make_key_set(rhs_sigs, sigs);
-        let rhs_use_keys = make_key_set(rhs_use, sigs);
-
-        !lhs_def_keys.is_disjoint(&rhs_use_keys) && !rhs_def_keys.is_disjoint(&lhs_use_keys)
+        lhs_sigs
+            .keys()
+            .any(|p| rhs_use.contains_key(p) && !sigs.contains_key(p))
+            && rhs_sigs
+                .keys()
+                .any(|p| lhs_use.contains_key(p) && !sigs.contains_key(p))
     }
 
     pub fn combine(&mut self, other: BindingGroup) {
@@ -234,20 +251,22 @@ impl BindingGroup {
     }
 
     pub fn combine_with(
-        &self,
+        self,
         mono_tys: &HashSet<TyVar>,
-        rhs_aset: &AssumptionSet,
-        rhs_tree: &ConstraintTree,
+        rhs_aset: AssumptionSet,
+        rhs_tree: ConstraintTree,
         sigs: &TyEnv,
         svar_factory: &mut TyVarFactory,
     ) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
         let info = self.info.clone();
-        let (env, lhs_aset, lhs_tree) = self.borrow();
+        let env = self.env;
+        let lhs_aset = self.aset;
+        let lhs_tree = self.ctree;
 
         // Cl1 = A1 ≼ Σ;
         // We create an instantiation constraint for assumptions in A1
         // for which we have a type scheme in Σ.
-        let cl1 = InstConstraint::lift(lhs_aset, sigs)
+        let cl1 = InstConstraint::lift(&lhs_aset, sigs)
             .into_iter()
             .map(|(s, c)| (s, c.with_info(info.clone())))
             .collect::<Vec<_>>();
@@ -257,7 +276,7 @@ impl BindingGroup {
         // with a type scheme in Σ. This constraint records the set of
         // monomorphic types passed to bga, and it constrains the type
         // of a definition to be more general than its declared type signature.
-        let cl2 = SkolConstraint::lift(env, sigs, mono_tys)
+        let cl2 = SkolConstraint::lift(&env, sigs, mono_tys)
             .into_iter()
             .map(|(s, c)| (s, c.with_info(info.clone())))
             .collect::<Vec<_>>();
@@ -300,7 +319,7 @@ impl BindingGroup {
             .into_iter()
             .map(|(s, t)| (s, Ty::Var(t)))
             .collect::<TyEnv>();
-        let cl5 = InstConstraint::lift(rhs_aset, &implicit_map)
+        let cl5 = InstConstraint::lift(&rhs_aset, &implicit_map)
             .into_iter()
             .map(|(s, c)| (s, c.with_info(info.clone())))
             .collect::<Vec<_>>();
@@ -314,7 +333,7 @@ impl BindingGroup {
         // (Cl1 ≪◦ (Cl2 ≥◦ (Cl3 ≥◦ TC1)))
 
         // cl3 spread with lhs_tree
-        let mut tsub0 = lhs_tree.clone().spread_list(cl3);
+        let mut tsub0 = lhs_tree.spread_list(cl3);
 
         // (Cl1 ≪◦ (Cl2 ≥◦ T0))
         // cl2 spread with tsub0
@@ -328,7 +347,7 @@ impl BindingGroup {
         let tsub1 = ConstraintTree::list(c4, ConstraintTree::empty());
 
         // T0 ≪ T1 ≪ (Cl5 ≪◦ TC2)
-        let tsub2 = rhs_tree.clone().strict_spread_list(cl5);
+        let tsub2 = rhs_tree.strict_spread_list(cl5);
 
         // T0 ≪ (T1 ≪ T2)
         let tsub3 = StrictTree::new(tsub1, tsub2);
@@ -347,14 +366,17 @@ impl BindingGroup {
 mod binding_tests {
     use std::collections::HashSet;
 
-    use crate::typing::{
-        assumptions::AssumptionSet,
-        constraints::{
-            tree::{ConstraintTree, SpreadTree, StrictSpreadTree, StrictTree},
-            EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
+    use crate::{
+        ast::Path,
+        typing::{
+            assumptions::AssumptionSet,
+            constraints::{
+                tree::{ConstraintTree, SpreadTree, StrictSpreadTree, StrictTree},
+                EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
+            },
+            state::{TyEnv, TyVarFactory},
+            ty::Ty,
         },
-        state::{TyEnv, TyVarFactory},
-        ty::Ty,
     };
 
     use super::{BindingGroup, BindingGroupAnalysis};
@@ -364,7 +386,7 @@ mod binding_tests {
 
         { $($e:tt : $v:tt),+ } => {{
             let mut env = TyEnv::new();
-            $(env.insert(stringify!($e).to_string(), Ty::Var(tvar!($v)));)*
+            $(env.insert($crate::ast::Path::from(stringify!($e)), Ty::Var(tvar!($v)));)*
             env
         }};
     }
@@ -407,7 +429,7 @@ mod binding_tests {
 
         let mut sigs = TyEnv::new();
         sigs.insert(
-            str!("f"),
+            Path::from("f"),
             Ty::All(
                 vec![tvar!(a)],
                 Box::new(Ty::Func(
@@ -467,7 +489,7 @@ mod binding_tests {
 
         // Σ = [f:∀a.a→a]
         let mut sigs = TyEnv::new();
-        sigs.insert(str!("f"), id_fn_ty());
+        sigs.insert(Path::from("f"), id_fn_ty());
 
         // let mut bga =
         //     BindingGroupAnalysis::new(vec![b5, b3_4, b1, b2], &sigs, &mut tf, &mono_tys);
@@ -481,7 +503,7 @@ mod binding_tests {
         // last triple in the ordered list. Two new labeled constraints
         // are created using f's type signature in Σ, because f is in
         // the pattern environment and in the assumption set.
-        let (mono_tys, aset, ctree) = b2.combine_with(&mono_tys, &aset, &ctree, &sigs, &mut svf);
+        let (mono_tys, aset, ctree) = b2.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
         // TcA = (l(v3), v3 := Inst(∀a.a → a))
         //      ≪◦ (l(v1), v1 := Skol(M, ∀a.a → a)) ◃◦ Tc2
@@ -502,7 +524,7 @@ mod binding_tests {
 
         // TcB = Tc1 ≪ TcA
         let tc1 = b1.tree().clone();
-        let (mono_tys, aset, ctree) = b1.combine_with(&mono_tys, &aset, &ctree, &sigs, &mut svf);
+        let (mono_tys, aset, ctree) = b1.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
         let actual_tree = StrictTree::new(tc1, actual_tree);
         assert_eq!(ctree, actual_tree);
@@ -526,7 +548,7 @@ mod binding_tests {
             .into_iter()
             .map(|t| Ty::Var(t))
             .collect::<Vec<_>>();
-        let (mono_tys, aset, ctree) = b3_4.combine_with(&mono_tys, &aset, &ctree, &sigs, &mut svf);
+        let (mono_tys, aset, ctree) = b3_4.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
         let actual_tree = StrictTree::new(
             // TcC = (
@@ -595,7 +617,7 @@ mod binding_tests {
             .into_iter()
             .map(|t| Ty::Var(t))
             .collect::<Vec<_>>();
-        let (_, aset, ctree) = b5.combine_with(&mono_tys, &aset, &ctree, &sigs, &mut svf);
+        let (_, aset, ctree) = b5.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
         let actual_tree = StrictTree::new(
             // Tc5 ≪

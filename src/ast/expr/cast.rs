@@ -1,6 +1,7 @@
 use crate::{
-    ast::{Expr, Node, Type},
-    span::Span,
+    ast::{Expr, Node},
+    span::{parsed::Parsed, Span},
+    typing::ty::Ty,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9,7 +10,7 @@ where
     Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     pub lhs: Box<Node<Expr<Info>, Info>>,
-    pub ty: Type,
+    pub ty: Parsed<Ty>,
     pub as_span: Span,
 }
 

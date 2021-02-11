@@ -1,0 +1,5 @@
+struct range['a] {
+    start: 'a
+    end: 'a
+    inclusive: bool
+}

@@ -1,28 +1,28 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    ast,
+    ast::{self, Path},
     errors::{RayError, RayErrorKind},
     pathlib::FilePath,
-    span::Source,
+    span::{parsed::Parsed, Source},
 };
 
 use super::{
     state::TyVarFactory,
-    traits::{HasFreeVars, Instantiate, Polymorphize},
+    traits::{CollectTyVars, HasFreeVars, Instantiate, Polymorphize},
     ty::{LiteralKind, Ty, TyVar},
-    ApplySubst, Ctx, Subst,
+    ApplySubst, Subst, TyCtx,
 };
 
 pub trait PredicateEntails<Other = Self> {
-    fn entails(&self, other: &Other, ctx: &Ctx) -> bool;
+    fn entails(&self, other: &Other, ctx: &TyCtx) -> bool;
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TyPredicate {
     Trait(Ty),
     Literal(Ty, LiteralKind),
-    HasMember(Ty, String, Ty),
+    HasMember(Ty, String),
 }
 
 impl std::fmt::Debug for TyPredicate {
@@ -30,7 +30,7 @@ impl std::fmt::Debug for TyPredicate {
         match self {
             TyPredicate::Trait(p) => write!(f, "{}", p),
             TyPredicate::Literal(t, k) => write!(f, "{} is {}", t, k),
-            TyPredicate::HasMember(t, m, u) => write!(f, "{} has {} :: {}", t, m, u),
+            TyPredicate::HasMember(t, m) => write!(f, "{} has {}", t, m),
         }
     }
 }
@@ -40,7 +40,7 @@ impl std::fmt::Display for TyPredicate {
         match self {
             TyPredicate::Trait(p) => write!(f, "{}", p),
             TyPredicate::Literal(t, k) => write!(f, "{} is {}", t, k),
-            TyPredicate::HasMember(t, m, u) => write!(f, "{} has {} :: {}", t, m, u),
+            TyPredicate::HasMember(t, m) => write!(f, "{} has {}", t, m),
         }
     }
 }
@@ -50,9 +50,7 @@ impl ApplySubst for TyPredicate {
         match self {
             TyPredicate::Trait(p) => TyPredicate::Trait(p.apply_subst(subst)),
             TyPredicate::Literal(t, k) => TyPredicate::Literal(t.apply_subst(subst), k),
-            TyPredicate::HasMember(t, m, u) => {
-                TyPredicate::HasMember(t.apply_subst(subst), m, u.apply_subst(subst))
-            }
+            TyPredicate::HasMember(t, m) => TyPredicate::HasMember(t.apply_subst(subst), m),
         }
     }
 }
@@ -60,11 +58,18 @@ impl ApplySubst for TyPredicate {
 impl HasFreeVars for TyPredicate {
     fn free_vars(&self) -> HashSet<&TyVar> {
         match self {
-            TyPredicate::Trait(t) | TyPredicate::Literal(t, _) => t.free_vars(),
-            TyPredicate::HasMember(t, _, u) => {
-                let mut v = t.free_vars();
-                v.extend(u.free_vars());
-                v
+            TyPredicate::Trait(t) | TyPredicate::Literal(t, _) | TyPredicate::HasMember(t, _) => {
+                t.free_vars()
+            }
+        }
+    }
+}
+
+impl CollectTyVars for TyPredicate {
+    fn collect_tyvars(&self) -> Vec<TyVar> {
+        match self {
+            TyPredicate::Trait(t) | TyPredicate::Literal(t, _) | TyPredicate::HasMember(t, _) => {
+                t.collect_tyvars()
             }
         }
     }
@@ -79,9 +84,7 @@ impl Polymorphize for TyPredicate {
                 TyPredicate::Trait(Ty::Projection(name, vec![ty_arg], vec![]))
             }
             TyPredicate::Literal(t, k) => TyPredicate::Literal(t.polymorphize(tf, subst), k),
-            TyPredicate::HasMember(t, m, u) => {
-                TyPredicate::HasMember(t.polymorphize(tf, subst), m, u.polymorphize(tf, subst))
-            }
+            TyPredicate::HasMember(t, m) => TyPredicate::HasMember(t.polymorphize(tf, subst), m),
         }
     }
 }
@@ -91,24 +94,23 @@ impl Instantiate for TyPredicate {
         match self {
             TyPredicate::Trait(p) => TyPredicate::Trait(p.instantiate(tf)),
             TyPredicate::Literal(t, k) => TyPredicate::Literal(t.instantiate(tf), k),
-            TyPredicate::HasMember(t, m, u) => {
-                TyPredicate::HasMember(t.instantiate(tf), m, u.instantiate(tf))
-            }
+            TyPredicate::HasMember(t, m) => TyPredicate::HasMember(t.instantiate(tf), m),
         }
     }
 }
 
 impl PredicateEntails<Vec<TyPredicate>> for Vec<TyPredicate> {
-    fn entails(&self, q: &Vec<TyPredicate>, ctx: &Ctx) -> bool {
+    fn entails(&self, q: &Vec<TyPredicate>, ctx: &TyCtx) -> bool {
+        log::debug!("{:?} entails {:?}", self, q);
         q.iter().all(|q| self.entails(q, ctx))
     }
 }
 
 impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
-    fn entails(&self, q: &TyPredicate, ctx: &Ctx) -> bool {
+    fn entails(&self, q: &TyPredicate, ctx: &TyCtx) -> bool {
+        log::debug!("{:?} entails {}", self, q);
         match q {
             TyPredicate::Trait(trait_ty) => {
-                log::debug!("[entails] {}", q);
                 log::debug!("[entails] trait type: {}", trait_ty);
                 let base_ty = trait_ty.get_ty_param_at(0);
 
@@ -151,27 +153,26 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
                 LiteralKind::Int => t.is_int_ty(),
                 LiteralKind::Float => t.is_float_ty(),
             },
-            TyPredicate::HasMember(t, m, u) => {
-                let fqn = match t.get_path() {
-                    Some(p) => p,
-                    _ => return false,
-                };
-                let struct_ty = match ctx.get_struct_ty(&fqn) {
-                    Some(t) => t,
-                    _ => return false,
-                };
+            TyPredicate::HasMember(t, member) => {
+                let fqn = unless!(t.get_path(), else return false);
 
-                for (f, s) in struct_ty.fields.iter() {
-                    if f == m {
-                        // unify the base types
-                        let sub = s.mgu(u).unwrap_or_default();
-                        let s = s.clone().apply_subst(&sub);
-                        let u = u.clone().apply_subst(&sub);
-                        return s == u;
-                    }
-                }
-
-                false
+                ctx.has_member(&fqn, member)
+                    || self.iter().any(|p| {
+                        match p {
+                            TyPredicate::Trait(trait_ty) => {
+                                // find the trait predicates that include the type `t`
+                                let ty_arg = trait_ty.get_ty_param_at(0);
+                                if t == ty_arg {
+                                    let fqn = trait_ty.get_path().unwrap();
+                                    ctx.has_member(&fqn, member)
+                                } else {
+                                    false
+                                }
+                            }
+                            TyPredicate::HasMember(u, n) => t == u && member == n,
+                            _ => false,
+                        }
+                    })
             }
         }
     }
@@ -179,18 +180,18 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
 
 impl TyPredicate {
     pub fn from_ast_ty(
-        q: &ast::Type,
+        q: &Parsed<Ty>,
         scope: &ast::Path,
         filepath: &FilePath,
-        ctx: &mut Ctx,
+        ctx: &mut TyCtx,
     ) -> Result<TyPredicate, RayError> {
-        let (s, v) = match Ty::from_ast_ty(&q.kind, scope, ctx) {
+        let (s, v) = match q.clone_value().from_ast_ty(scope, ctx) {
             Ty::Projection(s, v, _) => (s, v),
             _ => {
                 return Err(RayError {
                     msg: str!("qualifier must be a trait type"),
                     src: vec![Source {
-                        span: Some(q.span.unwrap()),
+                        span: Some(*q.span().unwrap()),
                         filepath: filepath.clone(),
                     }],
                     kind: RayErrorKind::Type,
@@ -202,7 +203,7 @@ impl TyPredicate {
             return Err(RayError {
                 msg: format!("traits must have one type argument, but found {}", v.len()),
                 src: vec![Source {
-                    span: Some(q.span.unwrap()),
+                    span: Some(*q.span().unwrap()),
                     filepath: filepath.clone(),
                 }],
                 kind: RayErrorKind::Type,
@@ -210,27 +211,14 @@ impl TyPredicate {
         }
 
         let ty_arg = v[0].clone();
-        let fqn = match ctx.lookup_fqn(&s) {
-            Some(fqn) => fqn,
-            _ => {
-                return Err(RayError {
-                    msg: format!("trait `{}` is not defined", s),
-                    src: vec![Source {
-                        span: Some(q.span.unwrap()),
-                        filepath: filepath.clone(),
-                    }],
-                    kind: RayErrorKind::Type,
-                })
-            }
-        };
-
+        let fqn = Path::from(s.as_str());
         let trait_ty = match ctx.get_trait_ty(&fqn) {
             Some(t) => t,
             _ => {
                 return Err(RayError {
-                    msg: format!("trait `{}` is not defined", s),
+                    msg: format!("trait `{}` is not defined", fqn),
                     src: vec![Source {
-                        span: Some(q.span.unwrap()),
+                        span: Some(*q.span().unwrap()),
                         filepath: filepath.clone(),
                     }],
                     kind: RayErrorKind::Type,
@@ -255,12 +243,12 @@ impl TyPredicate {
 
     pub fn desc(&self) -> String {
         match self {
-            TyPredicate::Trait(t) => format!("implements {}", t),
+            TyPredicate::Trait(t) => format!("implement {}", t),
             TyPredicate::Literal(_, k) => match k {
                 LiteralKind::Int => str!("is an integer type"),
                 LiteralKind::Float => str!("is a float type"),
             },
-            TyPredicate::HasMember(_, m, _) => format!("has member `{}`", m),
+            TyPredicate::HasMember(_, m) => format!("has member `{}`", m),
         }
     }
 }

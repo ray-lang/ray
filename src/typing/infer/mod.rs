@@ -5,9 +5,8 @@ use crate::span::Source;
 use super::{
     collect::CollectConstraints,
     constraints::tree::BottomUpWalk,
-    context::Ctx,
+    context::TyCtx,
     solvers::{GreedySolver, Solution, Solver},
-    ty::Ty,
     ApplySubst,
 };
 
@@ -19,11 +18,11 @@ pub struct InferError {
 
 #[derive(Debug)]
 pub struct InferSystem<'tcx> {
-    tcx: &'tcx mut Ctx,
+    tcx: &'tcx mut TyCtx,
 }
 
 impl<'tcx> InferSystem<'tcx> {
-    pub fn new(tcx: &'tcx mut Ctx) -> InferSystem {
+    pub fn new(tcx: &'tcx mut TyCtx) -> InferSystem {
         InferSystem { tcx }
     }
 

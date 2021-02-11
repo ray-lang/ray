@@ -8,7 +8,7 @@ use crate::{
     typing::{
         predicate::TyPredicate,
         ty::{LiteralKind, Ty, TyVar},
-        ApplySubst, Ctx, InferError, Subst,
+        ApplySubst, InferError, Subst, TyCtx,
     },
     utils::join,
 };
@@ -30,6 +30,7 @@ pub struct Solution {
     pub subst: Subst,
     pub ty_map: Subst,
     pub inst_map: Subst,
+    pub skol_map: Subst,
     pub preds: Vec<TyPredicate>,
 }
 
@@ -39,6 +40,7 @@ impl std::fmt::Debug for Solution {
             .field("subst", &self.subst)
             .field("ty_map", &self.ty_map)
             .field("inst_map", &self.inst_map)
+            .field("skol_map", &self.skol_map)
             .field("preds", &self.preds)
             .finish()
     }
@@ -49,6 +51,7 @@ impl ApplySubst for Solution {
         self.subst = self.subst.apply_subst(&subst);
         self.ty_map = self.ty_map.apply_subst(&self.subst);
         self.inst_map = self.inst_map.apply_subst(&self.subst);
+        self.skol_map = self.skol_map.apply_subst(&self.subst);
         self.preds = self.preds.apply_subst(&self.subst);
         self.preds.sort();
         self.preds.dedup();
@@ -57,7 +60,7 @@ impl ApplySubst for Solution {
 }
 
 impl Solution {
-    pub fn satisfies(&self, constraints: Vec<Constraint>, ctx: &Ctx) -> Vec<InferError> {
+    pub fn satisfies(&self, constraints: Vec<Constraint>, ctx: &TyCtx) -> Vec<InferError> {
         let mut errs = vec![];
         for c in constraints.into_iter().rev() {
             if let Some(e) = self.satisfies_constraint(c, ctx).err() {
@@ -68,7 +71,7 @@ impl Solution {
         errs
     }
 
-    fn satisfies_constraint(&self, c: Constraint, ctx: &Ctx) -> Result<(), InferError> {
+    fn satisfies_constraint(&self, c: Constraint, ctx: &TyCtx) -> Result<(), InferError> {
         c.satisfied_by(self, ctx)
     }
 
@@ -96,6 +99,36 @@ impl Solution {
                 self.subst.extend(subst);
             }
         }
+
+        for (var, ty) in self.inst_map.iter() {
+            match self.subst.get(var).cloned() {
+                Some(other_ty) if other_ty.has_unknowns() => {
+                    let sub = other_ty.mgu(ty).unwrap_or_default();
+                    log::debug!("sub = {:#?}", sub);
+                    log::debug!("self.subst = {:#?}", self.subst);
+                    self.subst.union_inplace(sub);
+                    log::debug!("self.subst = {:#?}", self.subst);
+                }
+                _ => continue,
+            }
+        }
+
+        for (var, ty) in self.skol_map.iter() {
+            match self.subst.get(var).cloned() {
+                Some(other_ty) if other_ty.has_unknowns() => {
+                    let sub = other_ty.mgu(ty).unwrap_or_default();
+                    log::debug!("sub = {:#?}", sub);
+                    log::debug!("self.subst = {:#?}", self.subst);
+                    self.subst.union_inplace(sub);
+                    log::debug!("self.subst = {:#?}", self.subst);
+                }
+                _ => continue,
+            }
+        }
+
+        let subst = self.subst.clone();
+        log::debug!("subst = {:#?}", subst);
+        self.apply_subst_mut(&subst);
     }
 
     pub fn get_ty(&self, r: Ty) -> Result<Ty, InferError> {
@@ -163,19 +196,19 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                     }
                     _ => continue,
                 },
-                TyPredicate::HasMember(t, m, u) => {
-                    let fqn = match t.get_path() {
-                        Some(p) => p,
-                        _ => continue,
-                    };
-                    let st = match self.ctx().get_struct_ty(&fqn) {
-                        Some(st) => st,
-                        _ => continue,
-                    };
-                    if let Some((idx, f)) = st.get_field(m) {
-                        cs.push(EqConstraint::new(u.clone(), f.clone()).with_info(info.clone()));
-                    }
-                }
+                // TyPredicate::HasMember(t, m) => {
+                //     let fqn = match t.get_path() {
+                //         Some(p) => p,
+                //         _ => continue,
+                //     };
+                //     let st = match self.ctx().get_struct_ty(&fqn) {
+                //         Some(st) => st,
+                //         _ => continue,
+                //     };
+                //     if let Some((idx, f)) = st.get_field(m) {
+                //         cs.push(EqConstraint::new(u.clone(), f.clone()).with_info(info.clone()));
+                //     }
+                // }
                 _ => continue,
             }
         }
@@ -184,14 +217,17 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         self.solve_constraints(&mut check);
 
         let mut solution = self.solution();
+        log::debug!("------------- Before constraint apply_subst ---------------");
+        log::debug!("solution: {:#?}", solution);
         let mut check = check.apply_subst(&solution.subst);
         check.qualify_tys(&solution.preds);
         check.quantify_tys();
 
-        solution.formalize_types();
+        log::debug!("------------- Before formalization ---------------");
+        log::debug!("constraints to check: {:#?}", check);
+        log::debug!("solution: {:#?}", solution);
 
-        let subst = solution.subst.clone();
-        solution = solution.apply_subst(&subst);
+        solution.formalize_types();
 
         check = check.apply_subst(&solution.subst);
 
@@ -244,6 +280,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
             ConstraintKind::Skol(c) => {
                 let (monos, t, r) = c.unpack();
                 let s = self.find_ty(&r);
+                self.skol_ty(t.clone(), s.clone());
                 let (t_sub, skolems) = s.skolemize(&mut self.get_sf());
                 let info = info.skol_ty(&s);
                 self.add_skolems(&info, skolems, monos);

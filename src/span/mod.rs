@@ -2,6 +2,8 @@ use std::fmt;
 
 use crate::pathlib::FilePath;
 
+pub mod parsed;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pos {
     pub lineno: usize,
@@ -32,6 +34,13 @@ impl std::fmt::Display for Source {
 }
 
 impl Source {
+    pub fn new(filepath: FilePath) -> Source {
+        Source {
+            filepath,
+            span: None,
+        }
+    }
+
     pub fn extend_to(&self, other: &Source) -> Source {
         let span = match (self.span, other.span) {
             (Some(a), Some(b)) => Some(a.extend_to(&b)),

@@ -1,22 +1,34 @@
 mod satisfiable;
 pub mod tree;
 
+use rand::Rng;
 pub use satisfiable::*;
 
-use std::{collections::HashSet, iter::FromIterator};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    iter::FromIterator,
+    rc::Rc,
+};
 
 use itertools::Itertools;
 
-use crate::{ast::SourceInfo, span::Source, typing::{
+use crate::{
+    ast::SourceInfo,
+    convert::ToSet,
+    span::Source,
+    typing::{
         predicate::TyPredicate,
         ty::{Ty, TyVar},
         ApplySubst, Subst,
-    }, utils::join};
+    },
+    utils::{hash_cell::HashCell, join, map_join},
+};
 
 use super::{
     assumptions::AssumptionSet,
     state::TyEnv,
-    traits::{HasFreeVars, PolymorphismInfo, QualifyTypes, QuantifyTypes},
+    traits::{CollectTyVars, HasFreeVars, PolymorphismInfo, QualifyTypes, QuantifyTypes},
+    ApplySubstMut,
 };
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -71,7 +83,13 @@ impl Into<ConstraintKind> for GenConstraint {
 
 impl std::fmt::Debug for GenConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} := Gen([{}], {})", self.1, join(&self.0, ", "), self.2)
+        write!(
+            f,
+            "{} := Gen([{}], {})",
+            self.1,
+            join(&self.0, ", "),
+            self.2
+        )
     }
 }
 
@@ -341,13 +359,31 @@ impl ConstraintInfo {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Constraint {
+    pub id: u64,
     pub kind: ConstraintKind,
     pub info: ConstraintInfo,
 }
 
+impl std::hash::Hash for Constraint {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
 impl std::fmt::Debug for Constraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.kind)
+        write!(
+            f,
+            "{:?} (src=[{}])",
+            self.kind,
+            map_join(&self.info.src, ", ", |info| {
+                if let Some(span) = info.src.span {
+                    format!("{}:{}", info.src.filepath, span)
+                } else {
+                    info.src.filepath.to_string()
+                }
+            })
+        )
     }
 }
 
@@ -387,12 +423,9 @@ impl ApplySubst for Constraint {
             ConstraintKind::Inst(InstConstraint(s, t)) => {
                 InstConstraint(s.apply_subst(subst), t.apply_subst(subst)).into()
             }
-            ConstraintKind::Gen(GenConstraint(m, s, t)) => GenConstraint(
-                m.apply_subst(subst),
-                s.apply_subst(subst),
-                t.apply_subst(subst),
-            )
-            .into(),
+            ConstraintKind::Gen(GenConstraint(m, s, t)) => {
+                GenConstraint(m.apply_subst(subst), s, t.apply_subst(subst)).into()
+            }
             ConstraintKind::Skol(SkolConstraint(vs, s, t)) => SkolConstraint(
                 vs.apply_subst(subst),
                 s.apply_subst(subst),
@@ -413,7 +446,9 @@ impl ApplySubst for Constraint {
             }
         };
 
-        Constraint { kind, info }
+        let mut rng = rand::thread_rng();
+        let id = rng.gen::<u64>();
+        Constraint { id, kind, info }
     }
 }
 
@@ -435,9 +470,41 @@ impl QuantifyTypes for Constraint {
     }
 }
 
+impl CollectTyVars for Constraint {
+    fn collect_tyvars(&self) -> Vec<TyVar> {
+        match &self.kind {
+            ConstraintKind::Eq(EqConstraint(s, t)) | ConstraintKind::Inst(InstConstraint(s, t)) => {
+                let mut vars = s.collect_tyvars();
+                vars.extend(t.collect_tyvars());
+                vars
+            }
+            ConstraintKind::Gen(GenConstraint(m, s, t)) => {
+                let mut vars = vec![];
+                vars.push(s.clone());
+                vars.extend(m.collect_tyvars());
+                vars.extend(t.collect_tyvars());
+                vars
+            }
+            ConstraintKind::Skol(SkolConstraint(vs, s, t))
+            | ConstraintKind::Implicit(ImplicitConstraint(vs, s, t)) => {
+                let mut vars = vec![];
+                vars.extend(vs.clone());
+                vars.extend(s.collect_tyvars());
+                vars.extend(t.collect_tyvars());
+                vars
+            }
+            ConstraintKind::Prove(ProveConstraint(p))
+            | ConstraintKind::Assume(AssumeConstraint(p)) => p.collect_tyvars(),
+        }
+    }
+}
+
 impl Constraint {
     pub fn new<T: Into<ConstraintKind>>(c: T) -> Constraint {
+        let mut rng = rand::thread_rng();
+        let id = rng.gen::<u64>();
         Constraint {
+            id,
             kind: c.into(),
             info: ConstraintInfo::new(),
         }
@@ -451,5 +518,143 @@ impl Constraint {
     pub fn with_info(mut self, info: ConstraintInfo) -> Constraint {
         self.info = info;
         self
+    }
+}
+
+#[derive(Default)]
+pub struct ConstraintList {
+    index: HashMap<u64, Constraint>,
+    var_map: HashMap<TyVar, HashSet<u64>>,
+    reverse_map: HashMap<u64, HashSet<TyVar>>,
+    constraints: VecDeque<u64>,
+}
+
+impl std::fmt::Debug for ConstraintList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cs = self.constraints.clone();
+        f.debug_list()
+            .entries(cs.into_iter().map(|c| self.index.get(&c).unwrap()))
+            .finish()
+    }
+}
+
+impl Extend<ConstraintList> for ConstraintList {
+    fn extend<T: IntoIterator<Item = ConstraintList>>(&mut self, iter: T) {
+        for l in iter {
+            self.extend(l);
+        }
+    }
+}
+
+impl Extend<Constraint> for ConstraintList {
+    fn extend<T: IntoIterator<Item = Constraint>>(&mut self, iter: T) {
+        for c in iter {
+            self.push(c);
+        }
+    }
+}
+
+impl IntoIterator for ConstraintList {
+    type Item = Constraint;
+    type IntoIter = std::vec::IntoIter<Constraint>;
+
+    fn into_iter(mut self) -> Self::IntoIter {
+        // clear to remove the refs so that they can be unwrapped
+        self.var_map.clear();
+        self.reverse_map.clear();
+        self.to_vec().into_iter()
+    }
+}
+
+impl Into<ConstraintList> for Vec<Constraint> {
+    fn into(self) -> ConstraintList {
+        let mut cl = ConstraintList::new();
+        cl.extend(self);
+        cl
+    }
+}
+
+impl ApplySubst for ConstraintList {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        let mut cl = self;
+        let mut reindex = HashSet::new();
+        for v in subst.keys() {
+            if let Some(cs) = cl.var_map.get(v) {
+                for id in cs {
+                    if let Some(c) = cl.index.get_mut(id) {
+                        c.apply_subst_mut(subst);
+                        reindex.insert(*id);
+                    }
+                }
+            }
+        }
+
+        for id in reindex {
+            cl.index_constraint(id);
+        }
+        cl
+    }
+}
+
+impl ConstraintList {
+    pub fn new() -> ConstraintList {
+        ConstraintList {
+            index: HashMap::new(),
+            var_map: HashMap::new(),
+            reverse_map: HashMap::new(),
+            constraints: VecDeque::new(),
+        }
+    }
+
+    pub fn to_vec(mut self) -> Vec<Constraint> {
+        let mut v = vec![];
+        for c in self.constraints {
+            v.push(self.index.remove(&c).unwrap());
+        }
+        v
+    }
+
+    fn index_constraint(&mut self, id: u64) {
+        let c = self.index.get(&id).unwrap();
+        let tyvars = c.collect_tyvars();
+        for v in tyvars.iter() {
+            if let Some(cs) = self.var_map.get_mut(v) {
+                cs.insert(id);
+            } else {
+                let mut set = HashSet::new();
+                set.insert(id);
+                self.var_map.insert(v.clone(), set);
+            }
+        }
+
+        self.reverse_map.insert(id, tyvars.to_set());
+    }
+
+    pub fn push(&mut self, c: Constraint) {
+        let id = c.id;
+        self.index.insert(id, c);
+        self.index_constraint(id);
+        self.constraints.push_back(id);
+    }
+
+    pub fn push_front(&mut self, c: Constraint) {
+        let id = c.id;
+        self.index.insert(id, c);
+        self.index_constraint(id);
+        self.constraints.push_front(id);
+    }
+
+    pub fn pop_front(&mut self) -> Option<Constraint> {
+        match self.constraints.pop_front() {
+            Some(id) => {
+                for v in self.reverse_map.remove(&id).unwrap() {
+                    if let Some(cs) = self.var_map.get_mut(&v) {
+                        cs.remove(&id);
+                    }
+                }
+                Some(self.index.remove(&id).unwrap())
+            }
+            _ => None,
+        }
     }
 }

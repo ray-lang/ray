@@ -1,3 +1,5 @@
+pub mod hash_cell;
+
 pub fn indent(s: String, n: usize) -> String {
     let mut dst = String::new();
     for (i, line) in s.lines().enumerate() {
@@ -31,4 +33,16 @@ where
     F: Fn(T::Item) -> String,
 {
     i.into_iter().map(f).collect::<Vec<_>>().join(sep.into())
+}
+
+pub fn replace<F, T>(dest: &mut T, f: F)
+where
+    F: FnOnce(T) -> T,
+{
+    unsafe {
+        let old = std::mem::replace(dest, std::mem::MaybeUninit::uninit().assume_init());
+        let src = f(old);
+        let uninit = std::mem::replace(dest, src);
+        std::mem::forget(uninit);
+    }
 }

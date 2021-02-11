@@ -20,7 +20,7 @@ pub enum Literal {
     String(String),
     ByteString(String),
     Byte(String),
-    Char(String),
+    Char(char),
     Bool(bool),
     UnicodeEscSeq(String),
     Unit,

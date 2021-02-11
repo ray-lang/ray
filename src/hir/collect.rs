@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    ast::{Literal, Module, Node, SourceInfo},
-    span::Source,
+    ast::{asm::AsmOperand, HasSource, Literal, Module, Node, Path, SourceInfo},
+    span::{Source, Span},
     typing::{
         assumptions::AssumptionSet,
         binding::{BindingGroup, BindingGroupAnalysis},
@@ -49,6 +49,17 @@ impl CollectDeclarations for Node<HirDecl<SourceInfo>, SourceInfo> {
                 let ty = rhs.ty();
                 (HirDecl::Pattern(var, rhs), ty, bg, env)
             }
+            HirDecl::Extern(id, ty, is_mutable, ty_src) => {
+                // B = (∅,∅,•) Σ = [x1 :σ,...,xn :σ]
+                let mut env = TyEnv::new();
+                env.insert(id.clone(), ty.clone());
+                (
+                    HirDecl::Extern(id, ty.clone(), is_mutable, ty_src),
+                    ty,
+                    BindingGroup::empty().with_src(src.clone()),
+                    env,
+                )
+            }
             HirDecl::Type(id, ty, is_mutable, ty_src) => {
                 // B = (∅,∅,•) Σ = [x1 :σ,...,xn :σ]
                 let mut env = TyEnv::new();
@@ -58,6 +69,59 @@ impl CollectDeclarations for Node<HirDecl<SourceInfo>, SourceInfo> {
                     ty,
                     BindingGroup::empty().with_src(src.clone()),
                     env,
+                )
+            }
+            HirDecl::Fn(name, mut params, body, decs) => {
+                // ⟨M⟩, id, A\dom(E),Cl ◃◦•[ TC1,TC2 •] ⊢fb lhs = rhs : {|τ1,...,τn,τ|}
+                let fn_tv = tf.next();
+
+                // LHS
+                let mut mono_tys = mono_tys.clone();
+                let mut param_tys = vec![];
+                let mut param_cts = vec![];
+                let mut lhs_env = TyEnv::new();
+                for param in params.iter_mut() {
+                    let (param_ty, param_env, param_ct) = param.get_name().collect_patterns(tf);
+                    if param.get_ty().is_none() {
+                        param.set_ty(param_ty.clone());
+                    }
+
+                    if let Ty::Var(tv) = &param_ty {
+                        mono_tys.insert(tv.clone());
+                    }
+                    param_tys.push(param_ty);
+                    param_cts.push(param_ct);
+                    lhs_env.extend(param_env);
+                }
+
+                // RHS
+                // ⟨M + ftv(Cl)⟩,A,TC2 ⊢rhs rhs : τ
+                let (body, aset, body_ct) = body.collect_constraints(&mono_tys, tf);
+
+                let fn_ty = Ty::Func(param_tys, Box::new(body.ty()));
+
+                let params_ct = NodeTree::new(param_cts);
+                let cl = EqConstraint::lift(&aset, &lhs_env)
+                    .into_iter()
+                    .map(|(l, c)| (l, c.with_src(src.clone())))
+                    .collect();
+
+                let ct = NodeTree::new(vec![
+                    ReceiverTree::new(fn_tv.to_string()),
+                    ParentAttachTree::new(
+                        EqConstraint::new(Ty::Var(fn_tv.clone()), fn_ty),
+                        NodeTree::new(vec![params_ct, body_ct]).spread_list(cl),
+                    ),
+                ]);
+
+                let mut env = TyEnv::new();
+                env.insert(name.clone(), Ty::Var(fn_tv.clone()));
+                let bg = BindingGroup::new(env, aset - lhs_env.keys(), ct).with_src(src.clone());
+                (
+                    HirDecl::Fn(name, params, body, decs),
+                    Ty::Var(fn_tv),
+                    bg,
+                    TyEnv::new(),
                 )
             }
             HirDecl::TraitMember(id, ty) => {
@@ -97,36 +161,65 @@ impl CollectConstraints for Module<HirNode<SourceInfo>, HirDecl<SourceInfo>, Sou
         tf: &mut TyVarFactory,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let mut module = Module::new_from(&self);
-        let mut nodes = self.stmts;
-        let decls = self.decls;
+        let mut stmts = self.stmts;
         let filepath = self.filepaths[0].clone();
 
-        let body = if nodes.len() == 1 {
-            nodes.pop().unwrap()
-        } else {
-            Node::new(
-                HirNode::Block(nodes),
-                SourceInfo::new(Source {
-                    filepath: filepath.clone(),
-                    span: None,
-                }),
-            )
-        };
+        let mut span = Span::new();
+        if let Some(first) = stmts.first() {
+            if let Some(s) = first.src().span {
+                span.start = s.start;
+            }
+        }
 
-        let node = if decls.len() == 0 {
-            body
-        } else {
-            Node::new(
-                HirNode::Let(decls, Box::new(body)),
-                SourceInfo::new(Source {
-                    filepath,
-                    span: None,
-                }),
-            )
-        };
+        if let Some(last) = stmts.last() {
+            if let Some(s) = last.src().span {
+                span.end = s.end;
+            }
+        }
 
-        let (node, aset, ct) = node.collect_constraints(mono_tys, tf);
-        module.stmts.push(node);
+        stmts.push(Node::new(
+            HirNode::Literal(Literal::Unit),
+            SourceInfo::new(Source {
+                filepath: filepath.clone(),
+                span: None,
+            }),
+        ));
+
+        let body = Node::new(
+            HirNode::Block(stmts),
+            SourceInfo::new(Source {
+                filepath: filepath.clone(),
+                span: Some(span),
+            }),
+        );
+
+        // create a main function for the stmts
+        let main_decl = Node::new(
+            HirDecl::Fn(Path::from("main"), vec![], Box::new(body), None),
+            SourceInfo::new(Source {
+                filepath: filepath.clone(),
+                span: Some(span),
+            }),
+        );
+
+        log::debug!("{}", main_decl.value);
+
+        let decls = std::iter::once(main_decl).chain(self.decls).into_iter();
+        let mut bgroups = vec![];
+        let mut sigs = TyEnv::new();
+        for (decl, bg, decl_env) in decls.map(|d| d.collect_decls(mono_tys, tf)) {
+            module.decls.push(decl);
+            bgroups.push(bg);
+            sigs.extend(decl_env);
+        }
+
+        let mono_tys = HashSet::new();
+        let mut bga = BindingGroupAnalysis::new(bgroups, &sigs, tf, &mono_tys);
+        let (_, aset, ct) = bga.analyze();
+        log::debug!("module aset: {:?}", aset);
+        let cl = InstConstraint::lift(&aset, &sigs);
+        log::debug!("inst constraints: {:?}", cl);
+        let ct = ct.strict_spread_list(cl);
         (module, aset, ct)
     }
 }
@@ -196,6 +289,24 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 let ct = AttachTree::new(c, NodeTree::new(cts));
                 (HirNode::Tuple(typed_els), t, aset, ct)
             }
+            HirNode::List(items) => {
+                let ty = Ty::Var(tf.with_scope(&src.path));
+                let el_ty = Ty::Var(tf.with_scope(&src.path));
+                let mut aset = AssumptionSet::new();
+                let mut cts = vec![];
+                let mut typed_items = vec![];
+                for item in items {
+                    let (item, item_aset, item_ct) = item.collect_constraints(mono_tys, tf);
+                    let c = EqConstraint::new(el_ty.clone(), item.ty()).with_src(src.clone());
+                    cts.push(ParentAttachTree::new(c, item_ct));
+                    aset.extend(item_aset);
+                    typed_items.push(item);
+                }
+
+                let c = EqConstraint::new(ty.clone(), Ty::list(el_ty));
+                let ct = AttachTree::new(c, NodeTree::new(cts));
+                (HirNode::List(typed_items), ty, aset, ct)
+            }
             HirNode::Literal(lit) => {
                 let mut ctree = ConstraintTree::empty();
                 let t = match &lit {
@@ -252,6 +363,31 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     AttachTree::new(c, ctree),
                 )
             }
+            HirNode::Range(start, end, is_inclusive) => {
+                let (start, start_aset, start_ct) = start.collect_constraints(mono_tys, tf);
+                let (end, end_aset, end_ct) = end.collect_constraints(mono_tys, tf);
+                let ty = Ty::Var(tf.with_scope(&src.path));
+                let el_ty = Ty::Var(tf.with_scope(&src.path));
+                let ct = AttachTree::new(
+                    EqConstraint::new(ty.clone(), Ty::range(el_ty.clone())).with_src(src.clone()),
+                    NodeTree::new(vec![
+                        ParentAttachTree::new(
+                            EqConstraint::new(el_ty.clone(), start.ty()).with_src(src.clone()),
+                            start_ct,
+                        ),
+                        ParentAttachTree::new(
+                            EqConstraint::new(el_ty.clone(), end.ty()).with_src(src.clone()),
+                            end_ct,
+                        ),
+                    ]),
+                );
+
+                let mut aset = AssumptionSet::new();
+                aset.extend(start_aset);
+                aset.extend(end_aset);
+
+                (HirNode::Range(start, end, is_inclusive), ty, aset, ct)
+            }
             HirNode::Asm(ty, inst) => {
                 let mut aset = AssumptionSet::new();
                 let mut cts = vec![];
@@ -260,9 +396,14 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     .map(|(op, rands)| {
                         for v in rands.iter() {
                             let t = Ty::Var(tf.with_scope(&src.path));
-                            let label = t.to_string();
-                            aset.add(v.clone(), t.clone());
-                            cts.push(ReceiverTree::new(label));
+                            match v {
+                                AsmOperand::Var(v) => {
+                                    let label = t.to_string();
+                                    aset.add(Path::from(v.as_str()), t.clone());
+                                    cts.push(ReceiverTree::new(label));
+                                }
+                                AsmOperand::Int(_) => continue,
+                            }
                         }
                         (op, rands)
                     })
@@ -296,9 +437,11 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
             }
             HirNode::Struct(fqn, ty, fields) => {
                 let v = Ty::Var(tf.with_scope(&src.path));
+                let c1 = InstConstraint::new(v.clone(), ty.clone()).with_src(src.clone());
+                let mut cts = vec![AttachTree::new(c1, ConstraintTree::empty())];
                 let mut typed_fields = vec![];
+                let mut field_tys = vec![];
                 let mut aset = AssumptionSet::new();
-                let mut cts = vec![];
                 for (fname, fnode) in fields {
                     let (typed_field, a, ct) = fnode.collect_constraints(mono_tys, tf);
                     aset.extend(a);
@@ -306,17 +449,51 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                         ProveConstraint::new(TyPredicate::HasMember(
                             v.clone(),
                             fname.clone(),
-                            typed_field.ty(),
-                        )),
+                            // typed_field.ty()
+                        ))
+                        .with_src(src.clone()),
                         ct,
                     ));
+                    field_tys.push(typed_field.ty());
                     typed_fields.push((fname, typed_field));
                 }
-                let c = EqConstraint::new(v.clone(), ty.clone()).with_src(src.clone());
-                let ct = AttachTree::new(c, NodeTree::new(cts));
+
+                let ty_args = (0..ty.get_ty_params().len())
+                    .into_iter()
+                    .map(|_| Ty::Var(tf.with_scope(&src.path)))
+                    .collect();
+
+                let c2 = EqConstraint::new(
+                    v.clone(),
+                    Ty::Projection(fqn.to_string(), ty_args, field_tys),
+                )
+                .with_src(src.clone());
+                log::debug!("c2 = {:?}", c2);
+
+                let ct = AttachTree::new(c2, NodeTree::new(cts));
+
                 (HirNode::Struct(fqn, ty, typed_fields), v, aset, ct)
             }
             HirNode::Decl(_) => todo!(),
+            HirNode::DerefAssign(lhs, rhs) => {
+                let (lhs, lhs_aset, lhs_ct) = lhs.collect_constraints(mono_tys, tf);
+                let (rhs, rhs_aset, rhs_ct) = rhs.collect_constraints(mono_tys, tf);
+                let mut aset = AssumptionSet::new();
+                aset.extend(lhs_aset);
+                aset.extend(rhs_aset);
+                let el_ty = Ty::Var(tf.with_scope(&src.path));
+                let ct = NodeTree::new(vec![
+                    ParentAttachTree::new(
+                        EqConstraint::new(Ty::ptr(el_ty.clone()), lhs.ty()).with_src(src.clone()),
+                        lhs_ct,
+                    ),
+                    ParentAttachTree::new(
+                        EqConstraint::new(el_ty.clone(), rhs.ty()).with_src(src.clone()),
+                        rhs_ct,
+                    ),
+                ]);
+                (HirNode::DerefAssign(lhs, rhs), Ty::unit(), aset, ct)
+            }
             HirNode::Let(decls, body) => {
                 let mut typed_decls = vec![];
                 let mut decl_bgs = vec![];
@@ -345,7 +522,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 let c = EqConstraint::new(b.clone(), body.ty()).with_src(src.clone());
                 (HirNode::Let(typed_decls, body), b, a, AttachTree::new(c, t))
             }
-            HirNode::Fun(mut params, body, decs) => {
+            HirNode::Fn(mut params, body, decs) => {
                 let mut mono_tys = mono_tys.clone();
                 let mut param_tys = vec![];
                 let mut env = TyEnv::new();
@@ -361,7 +538,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     let name = p.get_name().clone();
                     cts.push(ReceiverTree::new(tv.to_string()));
                     param_tys.push(ty.clone());
-                    env.insert(name, ty);
+                    env.insert(Path::from(name), ty);
                 }
 
                 let (body, aset, ct) = body.collect_constraints(&mono_tys, tf);
@@ -379,7 +556,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                     .with_src(src.clone());
 
                 (
-                    HirNode::Fun(params, body, decs),
+                    HirNode::Fn(params, body, decs),
                     fun_ty,
                     aset - env.keys(),
                     AttachTree::new(c, ct),
@@ -391,7 +568,7 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 let c = ProveConstraint::new(TyPredicate::HasMember(
                     lhs.ty(),
                     member.name().clone(),
-                    member_ty.clone(),
+                    // member_ty.clone(),
                 ))
                 .with_src(src.clone());
 
@@ -412,13 +589,40 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
             }
             HirNode::Apply(fun, args) => {
                 let mut aset = AssumptionSet::new();
+                let mut typed_args = vec![];
                 let mut arg_tys = vec![];
                 let mut arg_cts = vec![];
 
-                let (fun, fun_aset, ct1) = fun.collect_constraints(mono_tys, tf);
-                aset.extend(fun_aset);
+                let (fun, ct1) = if let HirNode::Dot(self_arg, field) = fun.value {
+                    let (self_arg, self_aset, ct1) = self_arg.collect_constraints(mono_tys, tf);
+                    let src_info = self_arg.info.src_info.clone();
+                    let self_ty = self_arg.ty();
+                    arg_tys.push(self_ty.clone());
+                    aset.extend(self_aset);
+                    typed_args.push(*self_arg);
+                    let fqn = Path::from(format!(
+                        "{}::{}",
+                        self_ty.clone().get_path().unwrap(),
+                        field.name()
+                    ));
+                    let member_ty = Ty::Var(tf.with_scope(&src.path));
+                    (
+                        Box::new(Node {
+                            id,
+                            value: HirNode::Var(fqn),
+                            info: HirInfo {
+                                src_info,
+                                ty_info: TypeInfo::new(member_ty),
+                            },
+                        }),
+                        ct1,
+                    )
+                } else {
+                    let (fun, fun_aset, ct1) = fun.collect_constraints(mono_tys, tf);
+                    aset.extend(fun_aset);
+                    (fun, ct1)
+                };
 
-                let mut typed_args = vec![];
                 for (arg, a, ct) in args
                     .into_iter()
                     .map(|a| a.collect_constraints(mono_tys, tf))
@@ -456,10 +660,10 @@ impl CollectConstraints for Node<HirNode<SourceInfo>, SourceInfo> {
                 let c1 = SkolConstraint::new(mono_tys.clone(), n.ty(), anno_ty.clone())
                     .with_src(src.clone());
                 let b = Ty::Var(tf.with_scope(&src.path));
-                let c2 = InstConstraint::new(b.clone(), anno_ty).with_src(src.clone());
+                let c2 = InstConstraint::new(b.clone(), anno_ty.clone()).with_src(src.clone());
                 (
                     n.value,
-                    b,
+                    anno_ty,
                     aset,
                     AttachTree::new(c2, NodeTree::new(vec![ParentAttachTree::new(c1, ctree)])),
                 )

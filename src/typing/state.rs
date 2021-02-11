@@ -10,18 +10,18 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct TyEnv(HashMap<String, Ty>);
+pub struct TyEnv(HashMap<Path, Ty>);
 
 impl std::fmt::Debug for TyEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map()
-            .entries(self.0.iter().map(|(s, t)| (s, t.to_string())))
+            .entries(self.0.iter().map(|(s, t)| (s.to_string(), t.to_string())))
             .finish()
     }
 }
 
 impl Deref for TyEnv {
-    type Target = HashMap<String, Ty>;
+    type Target = HashMap<Path, Ty>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -34,15 +34,15 @@ impl DerefMut for TyEnv {
     }
 }
 
-impl FromIterator<(String, Ty)> for TyEnv {
-    fn from_iter<T: IntoIterator<Item = (String, Ty)>>(iter: T) -> Self {
+impl FromIterator<(Path, Ty)> for TyEnv {
+    fn from_iter<T: IntoIterator<Item = (Path, Ty)>>(iter: T) -> Self {
         TyEnv(iter.into_iter().collect())
     }
 }
 
 impl IntoIterator for TyEnv {
-    type Item = (String, Ty);
-    type IntoIter = std::collections::hash_map::IntoIter<String, Ty>;
+    type Item = (Path, Ty);
+    type IntoIter = std::collections::hash_map::IntoIter<Path, Ty>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -51,7 +51,7 @@ impl IntoIterator for TyEnv {
 
 impl<'a, I> Sub<I> for TyEnv
 where
-    I: Iterator<Item = &'a String>,
+    I: Iterator<Item = &'a Path>,
 {
     type Output = TyEnv;
 

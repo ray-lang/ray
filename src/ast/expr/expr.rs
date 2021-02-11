@@ -1,8 +1,12 @@
-use std::{collections::HashSet, fmt::Debug};
+use std::fmt::Debug;
 
-use crate::ast::{
-    asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List,
-    Literal, Loop, Name, Node, Path, Range, Sequence, Type, UnaryOp, While,
+use crate::{
+    ast::{
+        asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List,
+        Literal, Loop, Name, Node, PathNode, Range, Sequence, UnaryOp, While,
+    },
+    span::parsed::Parsed,
+    typing::ty::Ty,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,14 +34,14 @@ where
     Literal(Literal),
     Loop(Loop<Info>),
     Name(Name),
-    Path(Path),
+    Path(PathNode),
     Paren(Box<Node<Expr<Info>, Info>>),
     Range(Range<Info>),
     Return(Option<Box<Node<Expr<Info>, Info>>>),
     Sequence(Sequence<Info>),
     Tuple(Sequence<Info>),
-    Type(Type),
-    TypeAnnotated(Box<Node<Expr<Info>, Info>>, Node<Type, Info>),
+    Type(Parsed<Ty>),
+    TypeAnnotated(Box<Node<Expr<Info>, Info>>, Node<Parsed<Ty>, Info>),
     UnaryOp(UnaryOp<Info>),
     Unsafe(Box<Node<Expr<Info>, Info>>),
     While(While<Info>),

@@ -8,6 +8,21 @@ macro_rules! debug {
     ($($arg:tt)*) => (if cfg!(feature = "debug") { eprintln!($($arg)*) })
 }
 
+macro_rules! unless {
+    ($ex:expr, else $else_block:expr) => {
+        match $ex {
+            Some(x) => x,
+            _ => $else_block,
+        }
+    };
+    ($ex:expr) => {
+        match $ex {
+            Some(x) => x,
+            _ => return,
+        }
+    };
+}
+
 macro_rules! variant {
     ($x:expr, if $($p:ident)::+ ($($id:ident),*) , else |$e:ident| $b:block) => {{
         match $x {
@@ -36,7 +51,7 @@ macro_rules! aset {
 
     { $($e:tt : $v:tt),+ } => {{
         $crate::typing::assumptions::AssumptionSet::from(vec![
-            $((stringify!($e).to_string(), Ty::Var(tvar!($v)))),*
+            $(($crate::ast::Path::from(stringify!($e)), Ty::Var(tvar!($v)))),*
         ])
     }};
 }

@@ -1,4 +1,6 @@
-use std::{fmt, hash::Hasher};
+use std::{fmt, hash::Hasher, str::Chars};
+
+use itertools::Itertools;
 
 use crate::{
     pathlib::FilePath,
@@ -6,10 +8,31 @@ use crate::{
     typing::{ty::TyVar, ApplySubst, Subst},
 };
 
-#[derive(Clone, Debug, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PathPart {
+    Name(String),
+    TyArgs(String),
+}
+
+impl std::fmt::Debug for PathPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PathPart::Name(s) | PathPart::TyArgs(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl std::fmt::Display for PathPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PathPart::Name(s) | PathPart::TyArgs(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialOrd, Ord, Hash)]
 pub struct Path {
-    parts: Vec<String>,
-    pub span: Span,
+    parts: Vec<PathPart>,
 }
 
 impl PartialEq for Path {
@@ -18,46 +41,99 @@ impl PartialEq for Path {
     }
 }
 
+impl PartialEq<&str> for Path {
+    fn eq(&self, other: &&str) -> bool {
+        let s = self.to_string();
+        &s.as_str() == other
+    }
+}
+
 impl ApplySubst for Path {
     fn apply_subst(self, subst: &Subst) -> Self {
         let mut parts = vec![];
         for part in self.parts.into_iter() {
-            parts.push(part);
-            let tv = TyVar(Path::from(parts.clone()));
-            if let Some(ty) = subst.get(&tv) {
-                parts = ty
-                    .to_string()
-                    .split("::")
-                    .map(|s| s.to_string())
+            if let PathPart::TyArgs(args) = part {
+                let s = args.trim_matches(|ch| ch == '<' || ch == '>');
+                let mut args = String::new();
+                let mut ret = String::new();
+                let mut paren_stack = 0;
+                let mut is_args = true;
+                for ch in s.chars() {
+                    if is_args {
+                        match ch {
+                            '(' => {
+                                paren_stack += 1;
+                                continue;
+                            }
+                            ')' => {
+                                paren_stack -= 1;
+                                continue;
+                            }
+                            ':' if paren_stack == 0 => {
+                                is_args = false;
+                                continue;
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    if is_args {
+                        args.push(ch);
+                    } else {
+                        ret.push(ch);
+                    }
+                }
+
+                let args = args
+                    .split(',')
+                    .map(|a| {
+                        let tv = TyVar(Path::from(a));
+                        if let Some(ty) = subst.get(&tv) {
+                            ty.clone().to_string()
+                        } else {
+                            a.to_string()
+                        }
+                    })
                     .collect::<Vec<_>>();
+                let ret = {
+                    let tv = TyVar(Path::from(ret.as_str()));
+                    if let Some(ty) = subst.get(&tv) {
+                        ty.clone().to_string()
+                    } else {
+                        ret
+                    }
+                };
+                parts.push(PathPart::TyArgs(format!("<({}):{}>", args.join(","), ret)));
+            } else {
+                parts.push(part);
+                let tv = TyVar(Path {
+                    parts: parts.clone(),
+                });
+                if let Some(ty) = subst.get(&tv) {
+                    parts = ty
+                        .to_string()
+                        .split("::")
+                        .map(|s| PathPart::Name(s.to_string()))
+                        .collect::<Vec<_>>();
+                }
             }
         }
 
-        Path {
-            parts,
-            span: self.span,
-        }
+        Path { parts }
     }
 }
 
 impl Path {
     pub fn new() -> Path {
-        Path {
-            parts: vec![],
-            span: Span::new(),
-        }
+        Path { parts: vec![] }
     }
 
-    pub fn name(&self) -> Option<&String> {
-        self.parts.last()
+    pub fn name(&self) -> Option<String> {
+        self.parts.last().map(PathPart::to_string)
     }
 
     pub fn len(&self) -> usize {
         self.parts.len()
-    }
-
-    pub fn contains(&self, part: &str) -> bool {
-        self.parts.contains(&String::from(part))
     }
 
     pub fn to_id(&self) -> u64 {
@@ -69,110 +145,202 @@ impl Path {
     pub fn to_filepath(&self) -> FilePath {
         let mut fp = FilePath::new();
         for p in self.parts.iter() {
-            fp.push(p)
+            fp.push(p.to_string())
         }
         fp.into()
     }
 
     pub fn with_all(&self) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(String::from("*"));
-        Path {
-            parts,
-            span: self.span,
-        }
+        parts.push(PathPart::Name(String::from("*")));
+        Path { parts }
     }
 
     pub fn append<T: ToString>(&self, s: T) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(s.to_string());
-        Path {
-            parts,
-            span: self.span,
-        }
+        parts.push(PathPart::Name(s.to_string()));
+        Path { parts }
+    }
+
+    pub fn append_tyargs<T: ToString>(&self, s: T) -> Path {
+        let mut parts = self.parts.clone();
+        parts.push(PathPart::TyArgs(s.to_string()));
+        Path { parts }
     }
 
     pub fn with_name<T: ToString>(&self, name: T) -> Path {
         let mut parts = self.parts.clone();
-        let name = name.to_string();
+        let name = PathPart::Name(name.to_string());
         if let Some(last) = parts.last_mut() {
             *last = name;
         } else {
             parts = vec![name];
         }
-        Path {
-            parts,
-            span: self.span,
-        }
+        Path { parts }
+    }
+
+    pub fn without_tyargs(&self) -> Path {
+        let parts = self
+            .parts
+            .iter()
+            .cloned()
+            .filter(|p| !matches!(p, PathPart::TyArgs(_)))
+            .collect::<Vec<_>>();
+
+        Path { parts }
     }
 
     pub fn parent(&self) -> Path {
         let mut parts = self.parts.clone();
         parts.pop();
-        Path {
-            parts,
-            span: self.span,
-        }
+        Path { parts }
     }
 }
 
 impl fmt::Display for Path {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.parts.join("::"))
+        write!(
+            f,
+            "{}",
+            self.parts.iter().map(PathPart::to_string).join("::")
+        )
     }
 }
 
-// impl<T, I> From<T> for Path
-// where
-//     I: Into<Path>,
-//     T: Deref<Target = I>,
-// {
-//     fn from(t: T) -> Self {
-//         todo!()
-//     }
-// }
-
-// impl<T> From<&T> for Path {
-//     fn from(t: &T) -> Self {
-//         Path::from()
-//     }
-// }
+impl fmt::Debug for Path {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.parts.iter().map(PathPart::to_string).join("::")
+        )
+    }
+}
 
 impl From<FilePath> for Path {
     fn from(f: FilePath) -> Path {
         Path {
-            parts: vec![f.file_stem()],
-            span: Span::new(),
+            parts: vec![PathPart::Name(f.file_stem())],
         }
     }
 }
 
 impl From<String> for Path {
     fn from(s: String) -> Path {
-        let parts = s.split("::").map(|s| s.to_string()).collect();
-        Path {
-            parts,
-            span: Span::new(),
-        }
+        let parser = PathParser::new();
+        parser.parse(s)
     }
 }
 
 impl From<&str> for Path {
     fn from(s: &str) -> Path {
-        let parts = s.split("::").map(|s| s.to_string()).collect();
-        Path {
-            parts,
-            span: Span::new(),
-        }
+        Path::from(s.to_string())
     }
 }
 
 impl From<Vec<String>> for Path {
     fn from(parts: Vec<String>) -> Path {
         Path {
-            parts,
-            span: Span::new(),
+            parts: parts.into_iter().map(PathPart::Name).collect(),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PathNode(Path, Span);
+
+impl fmt::Display for PathNode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl PathNode {
+    pub fn empty() -> PathNode {
+        PathNode(Path::new(), Span::new())
+    }
+
+    pub fn new(path: Path, span: Span) -> PathNode {
+        PathNode(path, span)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn span(&self) -> &Span {
+        &self.1
+    }
+}
+
+struct PathParser {
+    parts: Vec<PathPart>,
+    curr_part: String,
+}
+
+impl PathParser {
+    fn new() -> PathParser {
+        PathParser {
+            parts: vec![],
+            curr_part: String::new(),
+        }
+    }
+
+    fn parse(mut self, s: String) -> Path {
+        let mut chars = s.chars();
+        loop {
+            match chars.next() {
+                Some(':') => {
+                    self.maybe_finish_part(&mut chars);
+                }
+                Some('<') => self.parse_ty_args(&mut chars),
+                Some(ch) => self.curr_part.push(ch),
+                _ => {
+                    self.push_part();
+                    break;
+                }
+            }
+        }
+
+        Path { parts: self.parts }
+    }
+
+    fn parse_ty_args(&mut self, chars: &mut Chars) {
+        self.curr_part.push('<');
+        loop {
+            match chars.next() {
+                Some(ch) if ch == '<' || ch == '>' || ch == ':' => {
+                    self.curr_part.push(ch);
+                    break;
+                }
+                Some(ch) => self.curr_part.push(ch),
+                _ => break,
+            }
+        }
+    }
+
+    fn maybe_finish_part(&mut self, chars: &mut Chars) -> bool {
+        match chars.next() {
+            Some(':') | None => {
+                self.push_part();
+                true
+            }
+            Some(ch) => {
+                self.curr_part.push(':');
+                self.curr_part.push(ch);
+                false
+            }
+        }
+    }
+
+    fn push_part(&mut self) {
+        let part = std::mem::take(&mut self.curr_part);
+        let part = if part.starts_with('<') && part.ends_with('>') {
+            PathPart::TyArgs(part)
+        } else {
+            PathPart::Name(part)
+        };
+        self.parts.push(part);
     }
 }
 

@@ -6,11 +6,17 @@ use crate::{
 };
 
 impl Parser {
+    pub(crate) fn parse_pre_block_expr(&mut self, ctx: &ParseContext) -> ExprResult {
+        let mut ctx = ctx.clone();
+        ctx.restrictions |= Restrictions::NO_CURLY_EXPR;
+        self.parse_expr(&ctx)
+    }
+
     pub(crate) fn parse_if(&mut self, ctx: &ParseContext) -> ExprResult {
         let mut ctx = ctx.clone();
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
-        let cond = Box::new(self.parse_expr(&ctx)?);
+        let cond = Box::new(self.parse_pre_block_expr(&ctx)?);
         let then = Box::new(self.parse_block(&ctx)?);
         let mut end = then.info.src.span.unwrap().end;
 
@@ -69,7 +75,7 @@ impl Parser {
         let for_span = self.expect_sp(TokenKind::For)?;
         let pat = self.parse_pattern(ctx)?;
         let in_span = self.expect_sp(TokenKind::In)?;
-        let expr = self.parse_expr(ctx)?;
+        let expr = self.parse_pre_block_expr(ctx)?;
         let body = self.parse_block(ctx)?;
 
         let span = for_span.extend_to(&body.info.src.span.unwrap());
@@ -89,7 +95,7 @@ impl Parser {
 
     pub(crate) fn parse_while(&mut self, ctx: &ParseContext) -> ExprResult {
         let while_span = self.expect_sp(TokenKind::While)?;
-        let cond = self.parse_expr(ctx)?;
+        let cond = self.parse_pre_block_expr(ctx)?;
         let body = self.parse_block(ctx)?;
 
         let span = while_span.extend_to(&body.info.src.span.unwrap());

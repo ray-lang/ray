@@ -3,11 +3,11 @@ use std::{
     ops::{Deref, DerefMut, Sub},
 };
 
-use crate::typing::ty::Ty;
+use crate::{ast::Path, typing::ty::Ty};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AssumptionSet {
-    map: HashMap<String, HashSet<Ty>>,
+    map: HashMap<Path, HashSet<Ty>>,
 }
 
 impl std::fmt::Debug for AssumptionSet {
@@ -21,7 +21,7 @@ impl std::fmt::Debug for AssumptionSet {
 }
 
 impl Deref for AssumptionSet {
-    type Target = HashMap<String, HashSet<Ty>>;
+    type Target = HashMap<Path, HashSet<Ty>>;
 
     fn deref(&self) -> &Self::Target {
         &self.map
@@ -35,16 +35,16 @@ impl DerefMut for AssumptionSet {
 }
 
 impl IntoIterator for AssumptionSet {
-    type Item = (String, HashSet<Ty>);
-    type IntoIter = std::collections::hash_map::IntoIter<String, HashSet<Ty>>;
+    type Item = (Path, HashSet<Ty>);
+    type IntoIter = std::collections::hash_map::IntoIter<Path, HashSet<Ty>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.into_iter()
     }
 }
 
-impl From<Vec<(String, Ty)>> for AssumptionSet {
-    fn from(v: Vec<(String, Ty)>) -> AssumptionSet {
+impl From<Vec<(Path, Ty)>> for AssumptionSet {
+    fn from(v: Vec<(Path, Ty)>) -> AssumptionSet {
         let mut aset = AssumptionSet::new();
         for (x, t) in v {
             aset.add(x, t);
@@ -65,7 +65,7 @@ impl From<Vec<AssumptionSet>> for AssumptionSet {
 
 impl<'a, I> Sub<I> for AssumptionSet
 where
-    I: Iterator<Item = &'a String>,
+    I: Iterator<Item = &'a Path>,
 {
     type Output = AssumptionSet;
 
@@ -85,7 +85,7 @@ impl AssumptionSet {
         }
     }
 
-    pub fn add(&mut self, x: String, ty: Ty) {
+    pub fn add(&mut self, x: Path, ty: Ty) {
         if let Some(v) = self.map.get_mut(&x) {
             v.insert(ty);
         } else {

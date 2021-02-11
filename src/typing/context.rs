@@ -11,11 +11,11 @@ use super::{
     state::TyVarFactory,
     traits::HasFreeVars,
     ty::{ImplTy, StructTy, TraitTy, Ty, TyVar},
-    ApplySubst,
+    ApplySubst, Subst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ctx {
+pub struct TyCtx {
     fqns: HashMap<String, Path>,
     vars: HashMap<String, Ty>,
     struct_tys: HashMap<Path, StructTy>,
@@ -25,7 +25,7 @@ pub struct Ctx {
     sf: Rc<RefCell<TyVarFactory>>,
 }
 
-impl HasFreeVars for Ctx {
+impl HasFreeVars for TyCtx {
     fn free_vars(&self) -> HashSet<&TyVar> {
         self.vars
             .iter()
@@ -34,9 +34,9 @@ impl HasFreeVars for Ctx {
     }
 }
 
-impl Ctx {
-    pub fn new() -> Ctx {
-        Ctx {
+impl TyCtx {
+    pub fn new() -> TyCtx {
+        TyCtx {
             fqns: HashMap::new(),
             vars: HashMap::new(),
             struct_tys: HashMap::new(),
@@ -111,7 +111,7 @@ impl Ctx {
                     log::debug!("super trait: {}", s);
                     let p = s.get_path().unwrap();
                     let name = p.name().unwrap();
-                    let super_fqn = self.lookup_fqn(name).unwrap();
+                    let super_fqn = self.lookup_fqn(&name).unwrap();
                     log::debug!("super fqn: {}", super_fqn);
                     if &fqn == super_fqn {
                         return Some(&t.ty);
@@ -141,6 +141,17 @@ impl Ctx {
         self.impls.get(&fqn)
     }
 
+    pub fn has_member(&self, fqn: &Path, member: &String) -> bool {
+        self.get_struct_ty(&fqn)
+            .and_then(|struct_ty| Some(&struct_ty.fields))
+            .or_else(|| {
+                self.get_trait_ty(&fqn)
+                    .and_then(|trait_ty| Some(&trait_ty.fields))
+            })
+            .map(|fields| fields.iter().find(|(f, _)| f == member).is_some())
+            .unwrap_or_default()
+    }
+
     pub fn tf_mut(&self) -> RefMut<TyVarFactory> {
         self.tf.borrow_mut()
     }
@@ -160,7 +171,17 @@ impl Ctx {
     pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {
         log::debug!("{} instanceof {}", t, u);
         match (t, u) {
-            (Ty::All(_, t), Ty::All(_, u)) => self.instance_of(t, u),
+            (Ty::All(xs, t), Ty::All(ys, u)) => {
+                // let sub = xs
+                //     .iter()
+                //     .zip(ys.iter())
+                //     .map(|(x, y)| (x.clone(), Ty::Var(y.clone())))
+                //     .collect::<Subst>();
+                let sub = t.mgu(u).unwrap_or_default();
+                let t = t.clone().apply_subst(&sub);
+                let u = u.clone().apply_subst(&sub);
+                self.instance_of(&t, &u)
+            }
             (Ty::All(vs, t), _) => {
                 let free_vars = u.free_vars();
                 self.instance_of(t, u) && vs.iter().all(|v| !free_vars.contains(v))
@@ -193,6 +214,7 @@ impl Ctx {
                 .zip(ys.iter())
                 .all(|(x, y)| self.instance_of(x, y)),
             (Ty::Cast(a, b), Ty::Cast(c, d)) => self.instance_of(a, c) && self.instance_of(b, d),
+            // (_, Ty::Var(_)) => true,
             _ => t == u,
         }
     }
