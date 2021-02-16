@@ -1,7 +1,7 @@
 // ---- Add
 
 trait Add['a] {
-    fn +('a, 'a) -> 'a
+    fn +(a: 'a, b: 'a) -> 'a
 }
 
 impl Add[int] {
@@ -57,7 +57,7 @@ impl Add[u64] {
 // ---- Sub
 
 trait Sub['a] {
-    fn -('a, 'a) -> 'a
+    fn -(a: 'a, b: 'a) -> 'a
 }
 
 impl Sub[int] {
@@ -113,7 +113,7 @@ impl Sub[u64] {
 // ---- Mul
 
 trait Mul['a] {
-    fn *('a, 'a) -> 'a
+    fn *(a: 'a, b: 'a) -> 'a
 }
 
 impl Mul[int] {
@@ -169,7 +169,7 @@ impl Mul[u64] {
 // ---- Div
 
 trait Div['a] {
-    fn /('a, 'a) -> 'a
+    fn /(a: 'a, b: 'a) -> 'a
 }
 
 impl Div[int] {
@@ -225,7 +225,7 @@ impl Div[u64] {
 // ---- Mod
 
 trait Mod['a] {
-    fn %('a, 'a) -> 'a
+    fn %(a: 'a, b: 'a) -> 'a
 }
 
 impl Mod[int] {
@@ -282,7 +282,7 @@ impl Mod[u64] {
 // ---- And
 
 trait And['a] {
-    fn &('a, 'a) -> 'a
+    fn &(a: 'a, b: 'a) -> 'a
 }
 
 impl And[int] {
@@ -338,7 +338,7 @@ impl And[u64] {
 // ---- Or
 
 trait Or['a] {
-    fn |('a, 'a) -> 'a
+    fn |(a: 'a, b: 'a) -> 'a
 }
 
 impl Or[int] {
@@ -394,7 +394,7 @@ impl Or[u64] {
 // ---- Xor
 
 trait Xor['a] {
-    fn ^('a, 'a) -> 'a
+    fn ^(a: 'a, b: 'a) -> 'a
 }
 
 impl Xor[int] {
@@ -450,7 +450,7 @@ impl Xor[u64] {
 // ---- Eq
 
 trait Eq['a] {
-    fn ==('a, 'a) -> bool
+    fn ==(a: 'a, b: 'a) -> bool
 }
 
 impl Eq[int] {
@@ -506,7 +506,7 @@ impl Eq[u64] {
 // ---- Neq
 
 trait Neq['a] {
-    fn !=('a, 'a) -> bool
+    fn !=(a: 'a, b: 'a) -> bool
 }
 
 impl Neq[int] {
@@ -562,7 +562,7 @@ impl Neq[u64] {
 // ---- Gt
 
 trait Gt['a] {
-    fn >('a, 'a) -> bool
+    fn >(a: 'a, b: 'a) -> bool
 }
 
 impl Gt[int] {
@@ -618,7 +618,7 @@ impl Gt[u64] {
 // ---- Lt
 
 trait Lt['a] {
-    fn <('a, 'a) -> bool
+    fn <(a: 'a, b: 'a) -> bool
 }
 
 impl Lt[int] {
@@ -674,7 +674,7 @@ impl Lt[u64] {
 // ---- GtEq
 
 trait GtEq['a] {
-    fn >=('a, 'a) -> bool
+    fn >=(a: 'a, b: 'a) -> bool
 }
 
 impl GtEq[int] {
@@ -730,7 +730,7 @@ impl GtEq[u64] {
 // ---- LtEq
 
 trait LtEq['a] {
-    fn <=('a, 'a) -> bool
+    fn <=(a: 'a, b: 'a) -> bool
 }
 
 impl LtEq[int] {

@@ -6,13 +6,14 @@ use crate::{
     ast::{
         asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
-        Call, Curly, CurlyElement, CurlyElementKind, Dot, Expr, Index, Literal, Modifier, Sequence,
-        Trailing, ValueKind,
+        Call, Curly, CurlyElement, Dot, Expr, HasSource, Index, Literal, Modifier, Node, Path,
+        Sequence, Trailing, ValueKind,
     },
-    span::Span,
+    span::{parsed::Parsed, Span},
+    typing::ty::Ty,
 };
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let mut ex = self.parse_infix_expr(0, None, ctx)?;
         if peek!(self, TokenKind::If) {
@@ -34,7 +35,7 @@ impl Parser {
                 let span = self.expect_sp(TokenKind::Break)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&ex.info.src.span.unwrap());
+                    let span = span.extend_to(&self.srcmap.span_of(&ex));
                     (Some(Box::new(ex)), span)
                 } else {
                     (None, span)
@@ -45,15 +46,14 @@ impl Parser {
                 let span = self.expect_sp(TokenKind::Return)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&ex.info.src.span.unwrap());
+                    let span = span.extend_to(&self.srcmap.span_of(&ex));
                     (Some(Box::new(ex)), span)
                 } else {
                     (None, span)
                 };
                 Ok(self.mk_expr(Expr::Return(ex), span, ctx.path.clone()))
             }
-            TokenKind::Fn | TokenKind::Modifier(_) => self.parse_fn(false, ctx).map(|f| {
-                let span = f.span;
+            TokenKind::Fn | TokenKind::Modifier(_) => self.parse_fn(false, ctx).map(|(f, span)| {
                 let path = f.sig.path.clone();
                 self.mk_expr(Expr::Fn(f), span, path)
             }),
@@ -104,21 +104,21 @@ impl Parser {
                 let n = self.parse_name()?;
                 if peek!(self, TokenKind::FatArrow) {
                     // closure expression
-                    let span = n.span;
+                    let span = self.srcmap.span_of(&n);
                     let args = Sequence {
-                        items: vec![self.mk_expr(Expr::Name(n), span, ctx.path.clone())],
+                        items: vec![self.mk_expr(Expr::Name(n.value), span, ctx.path.clone())],
                         trailing: false,
                     };
                     return self.parse_closure_expr_with_seq(args, false, None, span, ctx);
                 }
 
                 if expect_if!(self, TokenKind::DoubleColon) {
-                    let p = self.parse_path_with((n.name, n.span))?;
-                    let span = p.span().clone();
-                    Ok(self.mk_expr(Expr::Path(p), span, ctx.path.clone()))
+                    let p = self.parse_path_with((n.value.to_string(), self.srcmap.span_of(&n)))?;
+                    let span = self.srcmap.span_of(&p);
+                    Ok(self.mk_expr(Expr::Path(p.value), span, ctx.path.clone()))
                 } else {
-                    let span = n.span;
-                    Ok(self.mk_expr(Expr::Name(n), span, ctx.path.clone()))
+                    let span = self.srcmap.span_of(&n);
+                    Ok(self.mk_expr(Expr::Name(n.value), span, ctx.path.clone()))
                 }
             }
             TokenKind::LeftBracket => self.parse_array_expr(ctx),
@@ -161,7 +161,7 @@ impl Parser {
                 && !ctx.restrictions.contains(Restrictions::NO_CURLY_EXPR)
             {
                 // expr { ... }
-                let begin = ex.info.src.span.unwrap();
+                let begin = self.srcmap.span_of(&ex);
                 ex = self.parse_curly_expr(Some(ex), begin, ctx)?;
                 continue;
             }
@@ -178,7 +178,7 @@ impl Parser {
 
         let start = tok.span.start;
         let ex = self.parse_expr(ctx)?;
-        let end = ex.info.src.span.unwrap().end;
+        let end = self.srcmap.span_of(&ex).end;
 
         Ok(self.mk_expr(
             Expr::Unsafe(Box::new(ex)),
@@ -193,9 +193,9 @@ impl Parser {
         dot_tok: Token,
         ctx: &ParseContext,
     ) -> ExprResult {
-        let start = lhs.info.src.span.unwrap().start;
+        let start = self.srcmap.span_of(&lhs).start;
         let rhs = self.parse_name_with_type()?;
-        let end = rhs.span.end;
+        let end = self.srcmap.span_of(&rhs).end;
         Ok(self.mk_expr(
             Expr::Dot(Dot {
                 lhs: Box::new(lhs),
@@ -213,10 +213,10 @@ impl Parser {
         lparen_tok: Token,
         ctx: &ParseContext,
     ) -> ExprResult {
-        let start = lhs.info.src.span.unwrap().start;
+        let start = self.srcmap.span_of(&lhs).start;
 
         let expects_type = if let Expr::Name(n) = &lhs.value {
-            match n.name.as_str() {
+            match n.to_string().as_str() {
                 "sizeof" => true,
                 _ => false,
             }
@@ -239,7 +239,7 @@ impl Parser {
                 let mut ctx = ctx.clone();
                 ctx.stop_token = Some(TokenKind::RightParen);
                 let args = self.parse_expr(&ctx)?;
-                let span = args.info.src.span.unwrap();
+                let span = self.srcmap.span_of(&args);
                 (
                     if let Expr::Sequence(seq) = args.value {
                         seq
@@ -272,7 +272,7 @@ impl Parser {
 
         if peek!(self, TokenKind::LeftCurly) {
             let closure = self.parse_closure_expr(ctx)?;
-            end = closure.info.src.span.unwrap().end;
+            end = self.srcmap.span_of(&closure).end;
             args.items.push(closure);
         }
 
@@ -299,7 +299,7 @@ impl Parser {
     ) -> ExprResult {
         let index = self.parse_expr(ctx)?;
         let rbrack_span = self.expect_sp(TokenKind::RightBracket)?;
-        let span = lhs.info.src.span.unwrap().extend_to(&rbrack_span);
+        let span = self.srcmap.span_of(&lhs).extend_to(&rbrack_span);
         Ok(self.mk_expr(
             Expr::Index(Index {
                 lhs: Box::new(lhs),
@@ -318,13 +318,13 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ExprResult {
         let lhs = if let Some(lhs) = lhs {
+            let span = self.srcmap.span_of(&lhs);
             match lhs.value {
-                Expr::Name(n) => Some(n),
+                Expr::Name(n) => Some(Parsed::new(n.path, self.mk_src(span))),
                 _ => {
-                    return Err(self.parse_error(
-                        str!("expected identifier for struct expression"),
-                        lhs.info.src.span.unwrap(),
-                    ))
+                    return Err(
+                        self.parse_error(str!("expected identifier for struct expression"), span)
+                    )
                 }
             }
         } else {
@@ -342,21 +342,24 @@ impl Parser {
 
         let mut elements = vec![];
         for item in seq.items {
-            let span = item.info.src.span.unwrap();
-            let kind = match item.value {
-                Expr::Name(n) => CurlyElementKind::Name(n),
+            let span = self.srcmap.span_of(&item);
+            let el = match item.value {
+                Expr::Name(n) => CurlyElement::Name(n),
                 Expr::Labeled(label, ex) => {
                     let label = match label.value {
                         Expr::Name(n) => n,
-                        _ => return Err(self.parse_error(format!("expected name for label in curly expression, but found {}", label.value.desc()), label.info.src.span.unwrap())),
+                        _ => return Err(self.parse_error(format!("expected name for label in curly expression, but found {}", label.value.desc()), self.srcmap.span_of(&label))),
                     };
 
-                    CurlyElementKind::Labeled(label, *ex)
+                    CurlyElement::Labeled(label, *ex)
                 },
                 _ => return Err(self.parse_error(format!("expected identifier or labeled expression in curly expression, but found {}", item.value.desc()), span)),
             };
 
-            elements.push(CurlyElement { kind, span })
+            elements.push(Node {
+                id: item.id,
+                value: el,
+            });
         }
 
         let rcurly_span = self.expect_sp(TokenKind::RightCurly)?;
@@ -367,6 +370,7 @@ impl Parser {
                 lhs,
                 elements,
                 curly_span,
+                ty: Ty::unit(),
             }),
             span,
             ctx.path.clone(),

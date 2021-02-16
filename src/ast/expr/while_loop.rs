@@ -4,19 +4,13 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct While<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub cond: Box<Node<Expr<Info>, Info>>,
-    pub body: Box<Node<Expr<Info>, Info>>,
+pub struct While {
+    pub cond: Box<Node<Expr>>,
+    pub body: Box<Node<Expr>>,
     pub while_span: Span,
 }
 
-impl<Info> std::fmt::Display for While<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for While {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

@@ -1,4 +1,4 @@
-use crate::span::Span;
+use crate::span::{SourceMap, Span};
 use crate::strutils;
 use crate::{
     ast::SourceInfo,
@@ -42,7 +42,7 @@ pub fn get_root_module(path: &FilePath) -> Result<FilePath, RayError> {
             ),
             src: vec![Source {
                 filepath: path.clone(),
-                span: None,
+                ..Default::default()
             }],
             kind: RayErrorKind::Import,
         })
@@ -51,7 +51,7 @@ pub fn get_root_module(path: &FilePath) -> Result<FilePath, RayError> {
             msg: format!("{} does not exist or is not a directory", path),
             src: vec![Source {
                 filepath: path.clone(),
-                span: None,
+                ..Default::default()
             }],
             kind: RayErrorKind::IO,
         })
@@ -59,34 +59,33 @@ pub fn get_root_module(path: &FilePath) -> Result<FilePath, RayError> {
 }
 
 #[derive(Debug)]
-pub struct ModuleBuilder<A, B, Info>
+pub struct ModuleBuilder<A, B>
 where
     A: std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Debug + Clone + PartialEq + Eq,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub modules: HashMap<ast::Path, Module<A, B, Info>>,
+    pub modules: HashMap<ast::Path, Module<A, B>>,
+    pub srcmaps: HashMap<ast::Path, SourceMap>,
     input_paths: HashSet<ast::Path>,
     paths: RayPaths,
     c_include_paths: Vec<FilePath>,
 }
 
-impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
-    pub fn new(
-        paths: RayPaths,
-        c_include_paths: Vec<FilePath>,
-    ) -> ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
+impl ModuleBuilder<Expr, Decl> {
+    pub fn new(paths: RayPaths, c_include_paths: Vec<FilePath>) -> ModuleBuilder<Expr, Decl> {
         ModuleBuilder {
             paths,
             c_include_paths,
             modules: HashMap::new(),
+            srcmaps: HashMap::new(),
             input_paths: HashSet::new(),
         }
     }
 
     fn build(
         &mut self,
-        mut root_file: ast::File<SourceInfo>,
+        mut root_file: ast::File,
+        mut srcmap: SourceMap,
         root_fp: &FilePath,
         input_path: &FilePath,
         module_path: ast::Path,
@@ -104,7 +103,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
 
             // parse each file in the module
             for fp in subfile_paths {
-                match self.build_file(&fp, &module_path) {
+                match self.build_file(&mut srcmap, &fp, &module_path) {
                     Ok(f) => {
                         filepaths.push(fp);
                         stmts.extend(f.stmts);
@@ -153,7 +152,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                             }
                         }
                     } else {
-                        match self.build_from_path(&fpath, Some(import.path.path().clone())) {
+                        match self.build_from_path(&fpath, Some(import.path.value.clone())) {
                             Ok(m) => imports.push(m),
                             Err(e) => errs.extend(e),
                         }
@@ -166,6 +165,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
         if errs.len() != 0 {
             Err(errs)
         } else {
+            self.srcmaps.insert(module_path.clone(), srcmap);
             self.modules.insert(
                 module_path.clone(),
                 Module {
@@ -175,6 +175,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                     decls,
                     filepaths,
                     path: module_path.clone(),
+                    root_filepath: root_file.filepath,
                     doc_comment: root_file.doc_comment,
                 },
             );
@@ -196,6 +197,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
 
         self.input_paths.insert(module_path.clone());
 
+        let mut srcmap = SourceMap::new();
         let root_file = Parser::parse_from_src(
             src,
             ParseOptions {
@@ -204,11 +206,12 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                 module_path: module_path.clone(),
                 use_stdin: false,
             },
+            &mut srcmap,
         )?;
 
         // the "filepath"
         let fpath = FilePath::new();
-        self.build(root_file, &fpath, &fpath, module_path)
+        self.build(root_file, srcmap, &fpath, &fpath, module_path)
     }
 
     pub fn build_from_path(
@@ -227,24 +230,29 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
 
         self.input_paths.insert(module_path.clone());
 
-        let root_file = self.build_file(&root_fp, &module_path)?;
-        self.build(root_file, &root_fp, input_path, module_path)
+        let mut srcmap = SourceMap::new();
+        let root_file = self.build_file(&mut srcmap, &root_fp, &module_path)?;
+        self.build(root_file, srcmap, &root_fp, input_path, module_path)
     }
 
     fn build_file(
         &mut self,
+        srcmap: &mut SourceMap,
         input_path: &FilePath,
         module_path: &ast::Path,
-    ) -> Result<ast::File<SourceInfo>, RayError> {
+    ) -> Result<ast::File, RayError> {
         log::debug!("parsing {}", input_path);
         let filepath = input_path.clone();
         let original_filepath = input_path.clone();
-        Parser::parse(ParseOptions {
-            filepath,
-            original_filepath,
-            module_path: module_path.clone(),
-            use_stdin: false,
-        })
+        Parser::parse(
+            ParseOptions {
+                filepath,
+                original_filepath,
+                module_path: module_path.clone(),
+                use_stdin: false,
+            },
+            srcmap,
+        )
     }
 
     fn resolve_import(
@@ -256,7 +264,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
             return self.resolve_c_include(&include, parent_filepath, sp);
         }
 
-        let module_path = import.path.path();
+        let module_path = &import.path.value;
         let curr_dirpath = if parent_filepath.is_dir() {
             parent_filepath.clone()
         } else {
@@ -301,6 +309,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                             src: vec![Source {
                                 filepath: parent_filepath.clone(),
                                 span,
+                                ..Default::default()
                             }],
                             kind: RayErrorKind::Import,
                         })
@@ -315,6 +324,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                 src: vec![Source {
                     filepath: parent_filepath.clone(),
                     span,
+                    ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
             })
@@ -328,6 +338,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
                 src: vec![Source {
                     filepath: parent_filepath.clone(),
                     span,
+                    ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
             })
@@ -363,6 +374,7 @@ impl ModuleBuilder<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo> {
             src: vec![Source {
                 filepath: src_path.clone(),
                 span: Some(span),
+                ..Default::default()
             }],
         })
 

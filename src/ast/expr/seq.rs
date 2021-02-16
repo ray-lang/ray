@@ -1,33 +1,28 @@
 use crate::ast::{Expr, Node};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sequence<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub items: Vec<Node<Expr<Info>, Info>>,
+pub struct Sequence {
+    pub items: Vec<Node<Expr>>,
     pub trailing: bool, // trailing comma
 }
 
-impl<Info> Sequence<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub fn empty() -> Sequence<Info>
-    where
-        Info: std::fmt::Debug + Clone + PartialEq + Eq,
-    {
+impl Sequence {
+    pub fn empty() -> Sequence {
         Sequence {
             items: vec![],
             trailing: false,
         }
     }
+
+    pub fn new(items: Vec<Node<Expr>>) -> Self {
+        Sequence {
+            items,
+            trailing: false,
+        }
+    }
 }
 
-impl<Info> std::fmt::Display for Sequence<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Sequence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.items.len() == 0 {
             write!(f, "(seq)")

@@ -1,3 +1,5 @@
+use std::ops::DerefMut;
+
 use crate::{
     ast::{Assign, Expr, Fn, FnSig, Name, Node, TypeParams},
     span::parsed::Parsed,
@@ -7,26 +9,61 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    Extern(Box<Node<Decl<Info>, Info>>),
-    Mutable(Name),
-    Name(Name),
-    Declare(Assign<Info>),
-    Fn(Fn<Info>),
-    FnSig(FnSig<Info>),
-    Struct(Struct),
-    Trait(Trait<Info>),
-    TypeAlias(Name, Parsed<Ty>),
-    Impl(Impl<Info>),
+pub struct Extern {
+    decl: Box<Node<Decl>>,
+    src: Option<String>,
 }
 
-impl<Info> PartialOrd for Decl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Extern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.decl)
+    }
+}
+
+impl Extern {
+    pub fn new(decl: Node<Decl>) -> Self {
+        Self {
+            decl: Box::new(decl),
+            src: None,
+        }
+    }
+
+    pub fn decl(&self) -> &Decl {
+        &self.decl
+    }
+
+    pub fn decl_mut(&mut self) -> &mut Decl {
+        self.decl.deref_mut()
+    }
+
+    pub fn src(&self) -> &Option<String> {
+        &self.src
+    }
+
+    pub fn src_mut(&mut self) -> &mut Option<String> {
+        &mut self.src
+    }
+
+    pub fn take(self) -> (Node<Decl>, Option<String>) {
+        (*self.decl, self.src)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decl {
+    Extern(Extern),
+    Mutable(Node<Name>),
+    Name(Node<Name>),
+    Declare(Assign),
+    Fn(Fn),
+    FnSig(FnSig),
+    Struct(Struct),
+    Trait(Trait),
+    TypeAlias(Node<Name>, Parsed<Ty>),
+    Impl(Impl),
+}
+
+impl PartialOrd for Decl {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let i: usize = self.into();
         let j: usize = other.into();
@@ -34,10 +71,7 @@ where
     }
 }
 
-impl<Info> Ord for Decl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl Ord for Decl {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let i: usize = self.into();
         let j: usize = other.into();
@@ -45,10 +79,7 @@ where
     }
 }
 
-impl<Info> Into<usize> for &Decl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl Into<usize> for &Decl {
     fn into(self) -> usize {
         match self {
             Decl::Trait(_) => 0,
@@ -63,39 +94,30 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Struct {
-    pub name: Name,
+    pub name: Node<Name>,
     pub ty_params: Option<TypeParams>,
-    pub fields: Option<Vec<Name>>,
+    pub fields: Option<Vec<Node<Name>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Trait<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+pub struct Trait {
     pub ty: Parsed<Ty>,
-    pub funcs: Vec<FnSig<Info>>,
+    pub funcs: Vec<FnSig>,
     pub super_trait: Option<Parsed<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Impl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+pub struct Impl {
     pub ty: Parsed<Ty>,
     pub qualifiers: Vec<Parsed<Ty>>,
-    pub externs: Option<Vec<Node<Decl<Info>, Info>>>,
-    pub funcs: Option<Vec<Node<Decl<Info>, Info>>>,
-    pub consts: Option<Vec<Node<Expr<Info>, Info>>>,
+    pub externs: Option<Vec<Node<Decl>>>,
+    pub funcs: Option<Vec<Node<Decl>>>,
+    pub consts: Option<Vec<Node<Expr>>>,
 }
 
-impl<Info> std::fmt::Display for Decl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Decl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Decl::Extern(ext) => write!(f, "(extern {})", ext),
@@ -181,17 +203,14 @@ where
     }
 }
 
-impl<Info> Decl<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl Decl {
     pub fn get_name(&self) -> Option<String> {
         match &self {
-            Decl::Extern(e) => e.get_name(),
-            Decl::Mutable(n) | Decl::Name(n) => Some(n.name.clone()),
+            Decl::Extern(e) => e.decl.get_name(),
+            Decl::Mutable(n) | Decl::Name(n) => Some(n.path.to_string()),
             Decl::Fn(f) => f.sig.name.clone(),
             Decl::FnSig(sig) => sig.name.clone(),
-            Decl::Struct(s) => Some(s.name.name.clone()),
+            Decl::Struct(s) => Some(s.name.path.to_string()),
             Decl::Trait(t) => Some(t.ty.name()),
             Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) => None,
         }

@@ -1,28 +1,16 @@
 use crate::{
-    ast::{token::TokenKind, FnParam, Name, SourceInfo, TypeParams},
+    ast::{token::TokenKind, FnParam, Name, Node, Path, SourceInfo, TypeParams},
     parse::{ParseResult, Parser},
     span::{parsed::Parsed, Span},
     typing::ty::Ty,
 };
 
-impl Parser {
-    pub(crate) fn parse_trait_fn_param(&mut self) -> ParseResult<FnParam<SourceInfo>> {
-        if let Some(ty) = self.parse_ty_complex()? {
-            return Ok(FnParam::Type(self.parse_ty_with(Some(ty))?));
-        }
-
+impl Parser<'_> {
+    pub(crate) fn parse_trait_fn_param(&mut self) -> ParseResult<Node<FnParam>> {
         let (name, span) = self.expect_id()?;
-        if expect_if!(self, TokenKind::Colon) {
-            let ty = self.parse_ty()?;
-            return Ok(FnParam::Name(Name {
-                name,
-                span,
-                ty: Some(ty),
-            }));
-        }
-
-        let ty = self.parse_ty_with_name(name, span)?;
-        Ok(FnParam::Type(self.parse_ty_with(Some(ty))?))
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_ty()?;
+        Ok(self.mk_node(FnParam::Name(Name::typed(name, ty)), span))
     }
 
     pub(crate) fn parse_ty(&mut self) -> ParseResult<Parsed<Ty>> {

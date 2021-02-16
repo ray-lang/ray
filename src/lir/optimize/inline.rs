@@ -44,8 +44,7 @@ impl Optimize for Inline {
             let mut removed_symbols = HashSet::new();
             while idx < body.len() {
                 let inst = &mut body[idx];
-                let info = inst.info.clone();
-                if let Some((loc, fn_name, args)) = match &mut inst.value {
+                if let Some((loc, fn_name, args)) = match inst {
                     Inst::SetGlobal(loc, Value::Call(c)) => Some((
                         Some(lir::Variable::Global(*loc)),
                         c.fn_name.clone(),
@@ -67,15 +66,9 @@ impl Optimize for Inline {
                     _ => None,
                 } {
                     let args = args;
-                    if let Some(new_inst) = self.inline_call(
-                        &mut inst.value,
-                        &info,
-                        &fn_name,
-                        args,
-                        loc,
-                        &mut locals,
-                        &funcs,
-                    ) {
+                    if let Some(new_inst) =
+                        self.inline_call(inst, &fn_name, args, loc, &mut locals, &funcs)
+                    {
                         removed_symbols.insert(fn_name);
                         body.splice(idx..idx, new_inst);
                     }
@@ -102,17 +95,16 @@ impl Inline {
     fn inline_call(
         &self,
         inst: &mut Inst,
-        info: &SourceInfo,
         fn_name: &Path,
         args: Vec<lir::Variable>,
         loc: Option<lir::Variable>,
         locals: &mut Vec<lir::Local>,
         funcs: &HashMap<Path, Rc<RefCell<lir::Func>>>,
-    ) -> Option<Vec<Node<Inst, SourceInfo>>> {
+    ) -> Option<Vec<Inst>> {
         if let Some(f) = funcs.get(fn_name) {
             if f.borrow().has_inline() {
                 let f = f.borrow().clone();
-                let (new_locs, new_inst, ret_val) = f.inline(args, info.clone(), locals.len());
+                let (new_locs, new_inst, ret_val) = f.inline(args, locals.len());
                 locals.extend(new_locs);
 
                 let src = match loc {

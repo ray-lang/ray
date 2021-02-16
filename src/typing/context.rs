@@ -4,25 +4,36 @@ use std::{
     rc::Rc,
 };
 
-use crate::ast::Path;
+use crate::ast::{Node, Path};
 
 use super::{
     predicate::PredicateEntails,
     state::TyVarFactory,
     traits::HasFreeVars,
     ty::{ImplTy, StructTy, TraitTy, Ty, TyVar},
-    ApplySubst, Subst,
+    ApplySubst, ApplySubstMut, Subst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TyCtx {
+    ty_map: HashMap<u64, Ty>,
+    original_ty_map: HashMap<u64, Ty>,
     fqns: HashMap<String, Path>,
     vars: HashMap<String, Ty>,
     struct_tys: HashMap<Path, StructTy>,
     traits: HashMap<Path, TraitTy>,
     impls: HashMap<Path, Vec<ImplTy>>,
-    tf: Rc<RefCell<TyVarFactory>>,
-    sf: Rc<RefCell<TyVarFactory>>,
+    tf: TyVarFactory,
+    sf: TyVarFactory,
+}
+
+impl ApplySubst for TyCtx {
+    fn apply_subst(mut self, subst: &Subst) -> Self {
+        for ty in self.ty_map.values_mut() {
+            ty.apply_subst_mut(subst);
+        }
+        self
+    }
 }
 
 impl HasFreeVars for TyCtx {
@@ -35,16 +46,31 @@ impl HasFreeVars for TyCtx {
 }
 
 impl TyCtx {
-    pub fn new() -> TyCtx {
-        TyCtx {
+    pub fn new() -> Self {
+        Self {
+            original_ty_map: HashMap::new(),
+            ty_map: HashMap::new(),
             fqns: HashMap::new(),
             vars: HashMap::new(),
             struct_tys: HashMap::new(),
             traits: HashMap::new(),
             impls: HashMap::new(),
-            tf: Rc::new(RefCell::new(TyVarFactory::new("?t"))),
-            sf: Rc::new(RefCell::new(TyVarFactory::new("#"))),
+            tf: TyVarFactory::new("?t"),
+            sf: TyVarFactory::new("#"),
         }
+    }
+
+    pub fn ty_of<T>(&self, node: &Node<T>) -> Ty {
+        self.ty_map.get(&node.id).unwrap().clone()
+    }
+
+    pub fn original_ty_of<T>(&self, node: &Node<T>) -> Ty {
+        self.original_ty_map.get(&node.id).unwrap().clone()
+    }
+
+    pub fn set_ty<T>(&mut self, node: &Node<T>, ty: Ty) {
+        self.original_ty_map.insert(node.id, ty.clone());
+        self.ty_map.insert(node.id, ty);
     }
 
     pub fn bind_var<S: ToString>(&mut self, name: S, ty: Ty) {
@@ -152,20 +178,12 @@ impl TyCtx {
             .unwrap_or_default()
     }
 
-    pub fn tf_mut(&self) -> RefMut<TyVarFactory> {
-        self.tf.borrow_mut()
+    pub fn tf(&mut self) -> &mut TyVarFactory {
+        &mut self.tf
     }
 
-    pub fn sf_mut(&self) -> RefMut<TyVarFactory> {
-        self.sf.borrow_mut()
-    }
-
-    pub fn new_tvar(&mut self) -> TyVar {
-        self.tf_mut().next()
-    }
-
-    pub fn new_svar(&mut self) -> TyVar {
-        self.sf.borrow_mut().next()
+    pub fn sf(&mut self) -> &mut TyVarFactory {
+        &mut self.sf
     }
 
     pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {

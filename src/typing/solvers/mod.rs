@@ -269,7 +269,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                 let s = self.find_ty(&r);
                 self.inst_ty(t.clone(), s.clone());
                 let info = info.inst_ty(&s);
-                let t_sub = s.instantiate(&mut self.get_tf());
+                let t_sub = s.instantiate(&mut self.tf());
                 let (p, t_sub) = t_sub.unpack_qualified_ty();
                 for pred in p {
                     self.add_constraint(ProveConstraint::new(pred).with_info(info.clone()))
@@ -281,7 +281,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                 let (monos, t, r) = c.unpack();
                 let s = self.find_ty(&r);
                 self.skol_ty(t.clone(), s.clone());
-                let (t_sub, skolems) = s.skolemize(&mut self.get_sf());
+                let (t_sub, skolems) = s.skolemize(&mut self.sf());
                 let info = info.skol_ty(&s);
                 self.add_skolems(&info, skolems, monos);
 
@@ -293,7 +293,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
             }
             ConstraintKind::Implicit(c) => {
                 let (tyvars, t1, t2) = c.unpack();
-                let sv = self.new_svar();
+                let sv = self.sf().next();
 
                 self.add_constraints(vec![
                     InstConstraint::new(t1, Ty::Var(sv.clone())).with_info(info.clone()),

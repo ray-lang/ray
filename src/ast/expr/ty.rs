@@ -1,7 +1,7 @@
-use ast::HasExpr;
-
-use crate::span::{parsed::Parsed, Span};
-use crate::{ast, typing::ty::Ty};
+use crate::{
+    span::{parsed::Parsed, Span},
+    typing::ty::Ty,
+};
 
 use std::fmt;
 

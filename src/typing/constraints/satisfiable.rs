@@ -149,7 +149,7 @@ impl Satisfiable for ConstraintKind {
 
 impl Satisfiable for Constraint {
     fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
-        let src = self.info.src.iter().map(|i| i.src.clone()).collect();
+        let src = self.info.src.iter().map(|src| src.clone()).collect();
         self.kind.satisfied_by(solution, ctx).map_err(|mut e| {
             e.src = src;
             e

@@ -3,9 +3,10 @@ use std::collections::{HashMap, HashSet};
 use itertools::Itertools;
 
 use crate::{
-    ast::{Path, SourceInfo},
+    ast::{Path},
     convert::ToSet,
     sort::{topological::TopologicalSort, SortByIndexSlice},
+    span::Source,
     typing::ty::{Ty, TyVar},
 };
 
@@ -182,7 +183,7 @@ impl BindingGroup {
         self
     }
 
-    pub fn with_src(mut self, src: SourceInfo) -> BindingGroup {
+    pub fn with_src(mut self, src: Source) -> BindingGroup {
         self.info.src.push(src);
         self
     }

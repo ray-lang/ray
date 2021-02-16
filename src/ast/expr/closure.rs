@@ -4,20 +4,14 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Closure<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub args: Sequence<Info>,
-    pub body: Box<Node<Expr<Info>, Info>>,
+pub struct Closure {
+    pub args: Sequence,
+    pub body: Box<Node<Expr>>,
     pub arrow_span: Option<Span>,
     pub curly_spans: Option<(Span, Span)>,
 }
 
-impl<Info> std::fmt::Display for Closure<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Closure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(closure {} => {})", self.args, self.body)
     }

@@ -85,6 +85,7 @@ impl Parser {
         Source {
             filepath: self.options.filepath.clone(),
             span: Some(span),
+            ..Default::default()
         }
     }
 
@@ -99,6 +100,7 @@ impl Parser {
             src: vec![Source {
                 span: Some(Span { start, end }),
                 filepath: self.options.filepath.clone(),
+                ..Default::default()
             }],
             kind: RayErrorKind::Parse,
         }
@@ -110,6 +112,7 @@ impl Parser {
             src: vec![Source {
                 span: Some(tok.span),
                 filepath: self.options.filepath.clone(),
+                ..Default::default()
             }],
             kind: RayErrorKind::Parse,
         }
@@ -119,7 +122,7 @@ impl Parser {
         let path = self.options.module_path.clone();
         // let ctx = ParseContext::new(path.clone());
         let filepath = self.options.filepath.clone();
-        let src = Source::new(filepath);
+        let src = Source::from(filepath);
         let nodes = self.parse_nodes(|this| this.is_eof())?;
         let module = Module::new(path, src, nodes);
         Ok(module)

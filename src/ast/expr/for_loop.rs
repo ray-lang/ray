@@ -4,21 +4,15 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct For<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub pat: Pattern<Info>,
-    pub expr: Box<Node<Expr<Info>, Info>>,
-    pub body: Box<Node<Expr<Info>, Info>>,
+pub struct For {
+    pub pat: Node<Pattern>,
+    pub expr: Box<Node<Expr>>,
+    pub body: Box<Node<Expr>>,
     pub for_span: Span,
     pub in_span: Span,
 }
 
-impl<Info> std::fmt::Display for For<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for For {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(for {} in {} {})", self.pat, self.expr, self.body)
     }

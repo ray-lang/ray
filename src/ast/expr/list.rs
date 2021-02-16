@@ -4,19 +4,13 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct List<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub items: Vec<Node<Expr<Info>, Info>>,
+pub struct List {
+    pub items: Vec<Node<Expr>>,
     pub lbrack_span: Span,
     pub rbrack_span: Span,
 }
 
-impl<Info> std::fmt::Display for List<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for List {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

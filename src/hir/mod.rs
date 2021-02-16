@@ -3,10 +3,12 @@ use itertools::Itertools;
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
-    ast::{Decl, Expr, HasSource, Module, Node, Path, SourceInfo, TypeParams},
+    ast::{
+        self, Decl, Expr, HasSource, Literal, LowerAST, Module, Node, Path, SourceInfo, TypeParams,
+    },
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
-    span::Source,
+    span::{Source, SourceMap, Span},
     typing::{
         info::TypeInfo,
         traits::HasType,
@@ -56,6 +58,13 @@ impl ApplySubst for HirInfo {
 }
 
 impl HirInfo {
+    pub fn new(src: SourceInfo, ty: Ty) -> Self {
+        Self {
+            src_info: src,
+            ty_info: TypeInfo::new(ty),
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.src_info.path
     }
@@ -69,170 +78,152 @@ impl HirInfo {
     }
 }
 
-type SourceModule = Module<Expr<SourceInfo>, Decl<SourceInfo>, SourceInfo>;
-type HirModule = Module<HirNode<SourceInfo>, HirDecl<SourceInfo>, SourceInfo>;
+type SourceModule = Module<Expr, Decl>;
 
 pub fn transform_modules(
     module_path: &Path,
-    modules: &HashMap<Path, SourceModule>,
-    ctx: &mut TyCtx,
-) -> Result<HirModule, RayError> {
-    let module = modules.get(module_path).unwrap();
-    let (stmts, decls) = get_root(module, modules, ctx)?;
-    let mut module = Module::new_from(module);
-    module.stmts = stmts;
-    module.decls = decls;
-    Ok(module)
+    modules: &mut HashMap<Path, SourceModule>,
+    srcmaps: &mut HashMap<Path, SourceMap>,
+    tcx: &mut TyCtx,
+) -> Result<(SourceModule, SourceMap), RayError> {
+    let module = modules.remove(module_path).unwrap();
+    let mut srcmap = srcmaps.remove(module_path).unwrap();
+    let mut new_module = Module::new_from(&module);
+    let (mut stmts, mut decls) = get_root(module, &mut srcmap, modules, srcmaps, tcx)?;
+
+    let filepath = new_module.root_filepath.clone();
+
+    let mut span = Span::new();
+    if let Some(first) = stmts.first() {
+        span.start = srcmap.span_of(first).start;
+    }
+
+    if let Some(last) = stmts.last() {
+        span.end = srcmap.span_of(last).end;
+    }
+
+    let end_node = Node::new(Expr::Literal(Literal::Unit));
+    srcmap.set_src(
+        &end_node,
+        Source {
+            filepath: filepath.clone(),
+            ..Default::default()
+        },
+    );
+    stmts.push(end_node);
+
+    let body = Node::new(Expr::Block(ast::Block {
+        stmts,
+        is_top_level: true,
+    }));
+    srcmap.set_src(&body, Source::new(filepath.clone(), span, Path::new()));
+
+    // create a main function for the stmts
+    let main_decl = Node::new(Decl::Fn(ast::Fn::new(Path::from("main"), vec![], body)));
+    srcmap.set_src(&main_decl, Source::new(filepath.clone(), span, Path::new()));
+    decls.insert(0, main_decl);
+
+    new_module.decls = decls;
+    Ok((new_module, srcmap))
 }
 
 fn get_root(
-    module: &SourceModule,
-    modules: &HashMap<Path, SourceModule>,
-    ctx: &mut TyCtx,
-) -> Result<
-    (
-        Vec<Node<HirNode<SourceInfo>, SourceInfo>>,
-        Vec<Node<HirDecl<SourceInfo>, SourceInfo>>,
-    ),
-    RayError,
-> {
-    let (stmts, decls) = collect(module, modules, ctx)?;
-    let mut stmts: VecDeque<_> = stmts.into();
-    let mut nodes = vec![];
-    if stmts.len() != 0 {
-        loop {
-            let ex = stmts.pop_front().unwrap();
-            let id = ex.id;
-            let info = ex.info.clone();
-            let node = ex.to_hir_node_with(&mut stmts, &module.path, id, &info, ctx)?;
-            nodes.push(node);
-            if stmts.len() == 0 {
-                break;
-            }
-        }
+    module: SourceModule,
+    srcmap: &mut SourceMap,
+    modules: &mut HashMap<Path, SourceModule>,
+    srcmaps: &mut HashMap<Path, SourceMap>,
+    tcx: &mut TyCtx,
+) -> Result<(Vec<Node<Expr>>, Vec<Node<Decl>>), RayError> {
+    let (mut stmts, mut decls) = collect(module, srcmap, modules, srcmaps, tcx)?;
+    for stmt in stmts.iter_mut() {
+        stmt.lower(srcmap, tcx)?;
     }
 
-    Ok((nodes, decls))
+    // sorting it by kind will allow a certain order to the collection
+    decls.sort();
+    Ok((stmts, decls))
 }
 
 fn collect(
-    module: &SourceModule,
-    modules: &HashMap<Path, SourceModule>,
-    ctx: &mut TyCtx,
-) -> Result<
-    (
-        Vec<Node<Expr<SourceInfo>, SourceInfo>>,
-        Vec<Node<HirDecl<SourceInfo>, SourceInfo>>,
-    ),
-    RayError,
-> {
+    mut module: SourceModule,
+    srcmap: &mut SourceMap,
+    modules: &mut HashMap<Path, SourceModule>,
+    srcmaps: &mut HashMap<Path, SourceMap>,
+    tcx: &mut TyCtx,
+) -> Result<(Vec<Node<Expr>>, Vec<Node<Decl>>), RayError> {
     let mut stmts = vec![];
     let mut decls = vec![];
     for import_path in module.imports.iter() {
-        let imported_module = modules.get(import_path).unwrap();
-        let (imported_stmts, imported_decls) = collect(imported_module, modules, ctx)?;
+        let imported_module = modules.remove(import_path).unwrap();
+        let mut imported_srcmap = srcmaps.remove(import_path).unwrap();
+        let (imported_stmts, imported_decls) =
+            collect(imported_module, &mut imported_srcmap, modules, srcmaps, tcx)?;
+        srcmap.extend(imported_srcmap);
         decls.extend(imported_decls);
         stmts.extend(imported_stmts);
     }
 
-    decls.extend(collect_decls(module, ctx)?);
+    for decl in module.decls.iter_mut() {
+        decl.lower(srcmap, tcx)?;
+    }
+
+    decls.extend(module.decls);
     stmts.extend(module.stmts.clone());
     Ok((stmts, decls))
 }
 
-fn collect_decls(
-    module: &SourceModule,
-    ctx: &mut TyCtx,
-) -> RayResult<Vec<Node<HirDecl<SourceInfo>, SourceInfo>>> {
-    let mut decls = vec![];
-    // sorting it by kind will allow a certain order to the collection
-    for decl in module.decls.iter().sorted_by_key(|d| &d.value) {
-        decls.extend(decl.to_hir_decl(false, ctx)?);
-    }
+// pub trait IntoHirNode
+// where
+//     Self: Sized,
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     type Output;
 
-    Ok(decls)
-}
+//     #[inline(always)]
+//     fn to_hir_node(
+//         self,
+//         scope: &Path,
+//         id: u64,
+//         info: &Info,
+//         ctx: &mut TyCtx,
+//     ) -> RayResult<Self::Output> {
+//         let mut deq = VecDeque::new();
+//         self.to_hir_node_with(&mut deq, scope, id, info, ctx)
+//     }
 
-fn get_ty_vars(
-    ty_params: Option<&TypeParams>,
-    scope: &Path,
-    filepath: &FilePath,
-    ctx: &mut TyCtx,
-) -> Result<Vec<TyVar>, RayError> {
-    let mut ty_vars = vec![];
-    if let Some(ty_params) = ty_params {
-        for tp in ty_params.tys.iter() {
-            let ty = tp.clone_value().from_ast_ty(scope, ctx);
-            if let Ty::Var(v) = ty {
-                ty_vars.push(v.clone());
-            } else {
-                return Err(RayError {
-                    msg: format!("expected type parameter, but found `{}`", tp),
-                    src: vec![Source {
-                        span: tp.span().copied(),
-                        filepath: filepath.clone(),
-                    }],
-                    kind: RayErrorKind::Type,
-                });
-            }
-        }
-    }
+//     fn to_hir_node_with(
+//         self,
+//         rest: &mut VecDeque<Node<Expr>,
+//         scope: &Path,
+//         id: u64,
+//         info: &Info,
+//         ctx: &mut TyCtx,
+//     ) -> RayResult<Self::Output>;
+// }
 
-    Ok(ty_vars)
-}
+// impl IntoHirNode for Vec<Node<Expr, SourceInfo>> {
+//     type Output = Vec<Node<HirNode>;
 
-pub trait IntoHirNode<Info>
-where
-    Self: Sized,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    type Output;
+//     fn to_hir_node_with(
+//         self,
+//         _: &mut VecDeque<Node<Expr>,
+//         scope: &Path,
+//         id: u64,
+//         info: &SourceInfo,
+//         ctx: &mut TyCtx,
+//     ) -> RayResult<Self::Output> {
+//         self.into_iter()
+//             .map(|e| e.to_hir_node(scope, id, info, ctx))
+//             .collect()
+//     }
+// }
 
-    #[inline(always)]
-    fn to_hir_node(
-        self,
-        scope: &Path,
-        id: u64,
-        info: &Info,
-        ctx: &mut TyCtx,
-    ) -> RayResult<Self::Output> {
-        let mut deq = VecDeque::new();
-        self.to_hir_node_with(&mut deq, scope, id, info, ctx)
-    }
+// pub trait IntoHirDecl
+// where
+//     Self: Sized,
+//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
+// {
+//     type Output;
 
-    fn to_hir_node_with(
-        self,
-        rest: &mut VecDeque<Node<Expr<Info>, Info>>,
-        scope: &Path,
-        id: u64,
-        info: &Info,
-        ctx: &mut TyCtx,
-    ) -> RayResult<Self::Output>;
-}
-
-impl IntoHirNode<SourceInfo> for Vec<Node<Expr<SourceInfo>, SourceInfo>> {
-    type Output = Vec<Node<HirNode<SourceInfo>, SourceInfo>>;
-
-    fn to_hir_node_with(
-        self,
-        _: &mut VecDeque<Node<Expr<SourceInfo>, SourceInfo>>,
-        scope: &Path,
-        id: u64,
-        info: &SourceInfo,
-        ctx: &mut TyCtx,
-    ) -> RayResult<Self::Output> {
-        self.into_iter()
-            .map(|e| e.to_hir_node(scope, id, info, ctx))
-            .collect()
-    }
-}
-
-pub trait IntoHirDecl<Info>
-where
-    Self: Sized,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    type Output;
-
-    fn to_hir_decl(self, is_extern: bool, ctx: &mut TyCtx) -> RayResult<Self::Output>;
-}
+//     fn to_hir_decl(self, is_extern: bool, ctx: &mut TyCtx) -> RayResult<Self::Output>;
+// }

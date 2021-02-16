@@ -4,18 +4,12 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Block<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub stmts: Vec<Node<Expr<Info>, Info>>,
+pub struct Block {
+    pub stmts: Vec<Node<Expr>>,
     pub is_top_level: bool,
 }
 
-impl<Info> std::fmt::Display for Block<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Block {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.stmts.len() == 0 {
             return write!(f, "(block)");

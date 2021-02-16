@@ -181,11 +181,11 @@ impl Monomorphizer {
 
     fn collect<'a, T>(&self, insts: T, poly_refs: &mut Vec<PolyFnRef<'a>>)
     where
-        T: IntoIterator<Item = &'a mut Node<lir::Inst, SourceInfo>>,
+        T: IntoIterator<Item = &'a mut lir::Inst>,
     {
         for inst in insts.into_iter() {
             log::debug!("[monomorphize] collect: {}", inst);
-            match &mut inst.value {
+            match inst {
                 lir::Inst::Value(v)
                 | lir::Inst::SetGlobal(_, v)
                 | lir::Inst::SetLocal(_, v)

@@ -5,19 +5,13 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cast<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub lhs: Box<Node<Expr<Info>, Info>>,
+pub struct Cast {
+    pub lhs: Box<Node<Expr>>,
     pub ty: Parsed<Ty>,
     pub as_span: Span,
 }
 
-impl<Info> std::fmt::Display for Cast<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Cast {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(cast {} as {})", self.lhs, self.ty)
     }

@@ -16,12 +16,12 @@ use std::{fs, io};
 use crate::{
     ast::{
         token::{Token, TokenKind},
-        Decl, Decorator, Expr, File, Import, Node, Path, SourceInfo, SourceNode, ValueKind,
+        Decl, Decorator, Expr, File, Import, Node, Path, SourceInfo, ValueKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
     pathlib::FilePath,
-    span::{parsed::Parsed, Pos, Source, Span},
+    span::{parsed::Parsed, Pos, Source, SourceMap, Span},
     typing::ty::Ty,
 };
 
@@ -32,8 +32,8 @@ fn read_string<R: io::Read>(mut r: R) -> ParseResult<String> {
 }
 
 pub type ParseResult<T> = Result<T, RayError>;
-pub type ParsedExpr = SourceNode<Expr<SourceInfo>>;
-pub type ParsedDecl = SourceNode<Decl<SourceInfo>>;
+pub type ParsedExpr = Node<Expr>;
+pub type ParsedDecl = Node<Decl>;
 pub type ExprResult = ParseResult<ParsedExpr>;
 pub type DeclResult = ParseResult<ParsedDecl>;
 
@@ -106,20 +106,14 @@ pub struct StatementParseOptions {
     allow_externs: bool,
 }
 
-struct Items<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+struct Items {
     imports: Vec<Import>,
-    decls: Vec<Node<Decl<Info>, Info>>,
-    stmts: Vec<Node<Expr<Info>, Info>>,
+    decls: Vec<Node<Decl>>,
+    stmts: Vec<Node<Expr>>,
 }
 
-impl<Info> Items<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    fn new() -> Items<Info> {
+impl Items {
+    fn new() -> Items {
         Items {
             imports: vec![],
             decls: vec![],
@@ -128,20 +122,29 @@ where
     }
 }
 
-pub struct Parser {
+pub struct Parser<'src> {
     lex: Lexer,
     options: ParseOptions,
+    srcmap: &'src mut SourceMap,
 }
 
-impl Parser {
-    pub fn parse(options: ParseOptions) -> ParseResult<File<SourceInfo>> {
-        let src = Parser::get_src(&options)?;
-        Parser::parse_from_src(src, options)
+impl<'src> Parser<'src> {
+    pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseResult<File> {
+        let src = Self::get_src(&options)?;
+        Self::parse_from_src(src, options, srcmap)
     }
 
-    pub fn parse_from_src(src: String, options: ParseOptions) -> ParseResult<File<SourceInfo>> {
+    pub fn parse_from_src(
+        src: String,
+        options: ParseOptions,
+        srcmap: &'src mut SourceMap,
+    ) -> ParseResult<File> {
         let lex = Lexer::new(&src);
-        let mut parser = Parser { lex, options };
+        let mut parser = Self {
+            lex,
+            options,
+            srcmap,
+        };
         parser.parse_into_file()
     }
 
@@ -161,7 +164,7 @@ impl Parser {
         })
     }
 
-    fn parse_into_file(&mut self) -> ParseResult<File<SourceInfo>> {
+    fn parse_into_file(&mut self) -> ParseResult<File> {
         let path = self.options.module_path.clone();
         let ctx = ParseContext::new(path.clone());
         let doc_comment = self.parse_doc_comment();
@@ -183,7 +186,7 @@ impl Parser {
                 | TokenKind::Modifier(_)
                 | TokenKind::Fn => {
                     let decl = this.parse_decl(&kind, &ctx)?;
-                    let end = decl.info.src.span.unwrap().end;
+                    let end = this.srcmap.span_of(&decl).end;
                     items.decls.push(decl);
                     Ok(end)
                 }
@@ -244,62 +247,6 @@ impl Parser {
         Ok(Span { start, end })
     }
 
-    fn parse_stmts(
-        &mut self,
-        pos: Pos,
-        stop_token: Option<&TokenKind>,
-        ctx: &ParseContext,
-        options: StatementParseOptions,
-    ) -> (Vec<ParsedExpr>, Span, Vec<RayError>) {
-        debug!("parser.statements at {:?}", pos);
-
-        let start = pos;
-        let mut end = pos;
-        let mut stmts = vec![];
-        let mut errors = vec![];
-        while !self.is_eof() && (stop_token.is_none() || &self.peek_kind() != stop_token.unwrap()) {
-            let doc = self.parse_doc_comment();
-            let decs = match self.parse_decorators(end, ctx) {
-                Ok((dec, span)) => {
-                    end = span.end;
-                    Some(dec)
-                }
-                Err(e) => {
-                    errors.push(e);
-                    None
-                }
-            };
-
-            match self.parse_stmt(decs, doc, ctx) {
-                Ok(stmt) => {
-                    if options.only_functions && !matches!(stmt.value, Expr::Fn(_)) {
-                        errors.push(
-                            self.parse_error(
-                                "only functions or function signatures are allowed in this block"
-                                    .to_string(),
-                                stmt.info.src.span.unwrap(),
-                            ),
-                        )
-                    }
-                    end = stmt.info.src.span.unwrap().end;
-                    stmts.push(stmt);
-                }
-                Err(e) => errors.push(e),
-            };
-
-            // make sure we're at the end of the line or there's a semi-colon
-            if !self.is_eol() {
-                // get the semi-colon since we're not at the end of the line
-                match self.expect_end(TokenKind::Semi) {
-                    Ok(p) => end = p,
-                    Err(e) => errors.push(e),
-                }
-            }
-        }
-
-        (stmts, Span { start, end }, errors)
-    }
-
     fn parse_doc_comment(&mut self) -> Option<String> {
         let preceding = self.lex.preceding();
         if preceding.len() != 0 {
@@ -341,7 +288,9 @@ impl Parser {
         if let Expr::Fn(f) = &mut expr.value {
             f.sig.decorators = decs;
         }
-        expr.info.doc = doc;
+        if let Some(doc) = doc {
+            self.srcmap.set_doc(&expr, doc);
+        }
         Ok(expr)
     }
 
@@ -418,53 +367,68 @@ impl Parser {
         }
     }
 
-    pub(crate) fn mk_expr(&mut self, expr: Expr<SourceInfo>, span: Span, path: Path) -> ParsedExpr {
-        Node::new(
-            expr,
-            SourceInfo {
-                src: Source {
-                    span: Some(span),
-                    filepath: self.options.filepath.clone(),
-                },
-                path,
-                doc: None,
-            },
-        )
+    pub(crate) fn mk_expr(&mut self, expr: Expr, span: Span, path: Path) -> ParsedExpr {
+        let node = Node::new(expr);
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            path,
+        };
+        self.srcmap.set_src(&node, src);
+
+        node
     }
 
-    pub(crate) fn mk_ty(&mut self, ty: Parsed<Ty>, path: Path) -> SourceNode<Parsed<Ty>> {
+    pub(crate) fn mk_ty(&mut self, ty: Parsed<Ty>, path: Path) -> Node<Parsed<Ty>> {
         let span = *ty.span().unwrap();
-        Node::new(
-            ty,
-            SourceInfo {
-                src: Source {
-                    span: Some(span),
-                    filepath: self.options.filepath.clone(),
-                },
-                path,
-                doc: None,
-            },
-        )
+        let node = Node::new(ty);
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            path,
+        };
+        self.srcmap.set_src(&node, src);
+        node
     }
 
-    pub(crate) fn mk_decl(&self, decl: Decl<SourceInfo>, span: Span, path: Path) -> ParsedDecl {
-        Node::new(
-            decl,
-            SourceInfo {
-                src: Source {
-                    span: Some(span),
-                    filepath: self.options.filepath.clone(),
-                },
-                path,
-                doc: None,
-            },
-        )
+    pub(crate) fn mk_decl(&mut self, decl: Decl, span: Span, path: Path) -> ParsedDecl {
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            path,
+        };
+        let node = Node::new(decl);
+        self.srcmap.set_src(&node, src);
+        node
+    }
+
+    pub(crate) fn mk_node<T>(&mut self, value: T, span: Span) -> Node<T> {
+        let node = Node::new(value);
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            ..Default::default()
+        };
+        self.srcmap.set_src(&node, src);
+        node
+    }
+
+    pub(crate) fn mk_node_with_path<T>(&mut self, value: T, span: Span, path: Path) -> Node<T> {
+        let node = Node::new(value);
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            path,
+        };
+        self.srcmap.set_src(&node, src);
+        node
     }
 
     pub(crate) fn mk_src(&self, span: Span) -> Source {
         Source {
             filepath: self.options.filepath.clone(),
             span: Some(span),
+            ..Default::default()
         }
     }
 
@@ -596,6 +560,7 @@ impl Parser {
             src: vec![Source {
                 span: Some(span),
                 filepath: self.options.filepath.clone(),
+                ..Default::default()
             }],
             kind: RayErrorKind::Parse,
         }
@@ -608,6 +573,7 @@ impl Parser {
             src: vec![Source {
                 span: Some(Span { start, end }),
                 filepath: self.options.filepath.clone(),
+                ..Default::default()
             }],
             kind: RayErrorKind::Parse,
         }
@@ -619,6 +585,7 @@ impl Parser {
             src: vec![Source {
                 span: Some(tok.span),
                 filepath: self.options.filepath.clone(),
+                ..Default::default()
             }],
             kind: RayErrorKind::Parse,
         }

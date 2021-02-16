@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::span::Source;
+use crate::span::{Source, SourceMap};
 
 use super::{
     collect::CollectConstraints,
@@ -26,13 +26,16 @@ impl<'tcx> InferSystem<'tcx> {
         InferSystem { tcx }
     }
 
-    pub fn infer_ty<T, U>(&mut self, v: T) -> Result<(U, Solution), Vec<InferError>>
+    pub fn infer_ty<T, U>(
+        &mut self,
+        v: &T,
+        srcmap: &mut SourceMap,
+    ) -> Result<Solution, Vec<InferError>>
     where
-        T: CollectConstraints<Output = U>,
-        U: std::fmt::Display + ApplySubst,
+        T: CollectConstraints<Output = U> + std::fmt::Display,
     {
         let mono_tys = HashSet::new();
-        let (v, _, c) = v.collect_constraints(&mono_tys, &mut self.tcx.tf_mut());
+        let (_, _, c) = v.collect_constraints(&mono_tys, srcmap, self.tcx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);
         log::debug!("{}", v);
         log::debug!("constraints: {:#?}", constraints);
@@ -45,13 +48,10 @@ impl<'tcx> InferSystem<'tcx> {
         // verify satisibility of the constraints using the solution
         let errs = solution.satisfies(constraints, &self.tcx);
 
-        // apply the substitution
-        let v = v.apply_subst(&solution.subst);
-
         if errs.len() != 0 {
             Err(errs)
         } else {
-            Ok((v, solution))
+            Ok(solution)
         }
     }
 }

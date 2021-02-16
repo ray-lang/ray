@@ -5,29 +5,26 @@ use crate::{
     typing::{ApplySubst, Subst},
 };
 
-use super::HasExpr;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Module<A, B, Info>
+pub struct Module<A, B>
 where
     A: std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Debug + Clone + PartialEq + Eq,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     pub path: Path,
-    pub stmts: Vec<Node<A, Info>>,
-    pub decls: Vec<Node<B, Info>>,
+    pub stmts: Vec<Node<A>>,
+    pub decls: Vec<Node<B>>,
     pub imports: Vec<Path>,
     pub submodules: Vec<Path>,
     pub doc_comment: Option<String>,
+    pub root_filepath: FilePath,
     pub filepaths: Vec<FilePath>,
 }
 
-impl<A, B, Info> std::fmt::Display for Module<A, B, Info>
+impl<A, B> std::fmt::Display for Module<A, B>
 where
     A: std::fmt::Display + std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Display + std::fmt::Debug + Clone + PartialEq + Eq,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let decls = strutils::indent_lines_iter(&self.decls, 2);
@@ -44,11 +41,10 @@ where
     }
 }
 
-impl<A, B, Info> ApplySubst for Module<A, B, Info>
+impl<A, B> ApplySubst for Module<A, B>
 where
     A: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
     B: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
 {
     fn apply_subst(self, subst: &Subst) -> Self {
         Module {
@@ -58,42 +54,18 @@ where
             imports: self.imports,
             submodules: self.submodules,
             doc_comment: self.doc_comment,
+            root_filepath: self.root_filepath,
             filepaths: self.filepaths,
         }
     }
 }
 
-impl<A, B, Info> Module<A, B, Info>
-where
-    A: std::fmt::Debug + Clone + PartialEq + Eq + HasExpr<Info>,
-    B: std::fmt::Debug + Clone + PartialEq + Eq,
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub fn get_expr(&self, id: Id) -> Option<&Expr<Info>> {
-        todo!()
-        // let v = Visitor::from(self);
-        // for ex in v {
-        //     if ex.id == id {
-        //         return Some(ex);
-        //     }
-        // }
-
-        // None
-    }
-}
-
-impl<A, B, X> Module<A, B, X>
+impl<A, B> Module<A, B>
 where
     A: std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Debug + Clone + PartialEq + Eq,
-    X: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub fn new_from<C, D, Y>(other: &Module<A, B, X>) -> Module<C, D, Y>
-    where
-        C: std::fmt::Debug + Clone + PartialEq + Eq,
-        D: std::fmt::Debug + Clone + PartialEq + Eq,
-        Y: std::fmt::Debug + Clone + PartialEq + Eq,
-    {
+    pub fn new_from(other: &Module<A, B>) -> Module<A, B> {
         Module {
             path: other.path.clone(),
             stmts: vec![],
@@ -101,6 +73,7 @@ where
             imports: other.imports.clone(),
             submodules: other.submodules.clone(),
             doc_comment: other.doc_comment.clone(),
+            root_filepath: other.root_filepath.clone(),
             filepaths: other.filepaths.clone(),
         }
     }

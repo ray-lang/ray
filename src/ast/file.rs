@@ -4,13 +4,10 @@ use crate::{
     span::Span,
 };
 
-pub struct File<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+pub struct File {
     pub path: Path,
-    pub stmts: Vec<Node<Expr<Info>, Info>>,
-    pub decls: Vec<Node<Decl<Info>, Info>>,
+    pub stmts: Vec<Node<Expr>>,
+    pub decls: Vec<Node<Decl>>,
     pub imports: Vec<Import>,
     pub doc_comment: Option<String>,
     pub filepath: FilePath,

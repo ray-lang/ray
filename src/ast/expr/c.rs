@@ -17,7 +17,7 @@ pub struct CType {
 }
 
 impl CType {
-    pub fn convert_to_decl(self, span: Span) -> Node<Decl<SourceInfo>, SourceInfo> {
+    pub fn convert_to_decl(self, span: Span) -> Node<Decl> {
         todo!()
         // if let Some(inputs) = self.inputs {
         //     Node::new(

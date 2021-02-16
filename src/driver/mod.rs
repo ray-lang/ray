@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::HashMap, fs};
 
 use crate::{
     ast,
@@ -7,7 +7,8 @@ use crate::{
     hir, lir, parse,
     pathlib::FilePath,
     sema,
-    typing::{InferSystem, TyCtx},
+    span::SourceMap,
+    typing::{ApplySubstMut, InferSystem, TyCtx},
 };
 
 mod build;
@@ -88,12 +89,14 @@ impl Driver {
         }
 
         let mut modules = mod_builder.modules;
+        let mut srcmaps = mod_builder.srcmaps;
         let mut tcx = TyCtx::new();
-        let module = hir::transform_modules(&mod_path, &mut modules, &mut tcx)?;
+        let (module, mut srcmap) =
+            hir::transform_modules(&mod_path, &mut modules, &mut srcmaps, &mut tcx)?;
         log::debug!("{}", module);
         let mut inf = InferSystem::new(&mut tcx);
-        let (module, solution) = match inf.infer_ty(module) {
-            Ok(r) => r,
+        let solution = match inf.infer_ty(&module, &mut srcmap) {
+            Ok(sol) => sol,
             Err(errs) => {
                 return Err(errs
                     .into_iter()
@@ -106,6 +109,8 @@ impl Driver {
             }
         };
 
+        tcx.apply_subst_mut(&solution.subst);
+
         log::debug!("{}", module);
 
         if options.no_compile {
@@ -113,7 +118,7 @@ impl Driver {
         }
 
         // generate IR
-        let mut prog = lir::Program::gen(&module, &solution)?;
+        let mut prog = lir::Program::gen(&module, &solution, &tcx)?;
         prog.monomorphize();
         prog.post_process();
 

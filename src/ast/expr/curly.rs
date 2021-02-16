@@ -1,63 +1,35 @@
 use crate::{
-    ast::{Expr, Name, Node},
-    span::Span,
+    ast::{Expr, Name, Node, Path},
+    span::{parsed::Parsed, Span},
     strutils::indent_lines,
+    typing::ty::Ty,
     utils::join,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CurlyElementKind<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+pub enum CurlyElement {
     Name(Name),
-    Labeled(Name, Node<Expr<Info>, Info>),
+    Labeled(Name, Node<Expr>),
 }
 
-impl<Info> std::fmt::Display for CurlyElementKind<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for CurlyElement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CurlyElementKind::Name(n) => write!(f, "{}", n),
-            CurlyElementKind::Labeled(n, ex) => write!(f, "{}: {}", n, ex),
+            CurlyElement::Name(n) => write!(f, "{}", n),
+            CurlyElement::Labeled(n, ex) => write!(f, "{}: {}", n, ex),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CurlyElement<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub kind: CurlyElementKind<Info>,
-    pub span: Span,
-}
-
-impl<Info> std::fmt::Display for CurlyElement<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Curly<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub lhs: Option<Name>,
-    pub elements: Vec<CurlyElement<Info>>,
+pub struct Curly {
+    pub lhs: Option<Parsed<Path>>,
+    pub elements: Vec<Node<CurlyElement>>,
     pub curly_span: Span,
+    pub ty: Ty,
 }
 
-impl<Info> std::fmt::Display for Curly<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Curly {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (sep, multiline) = if self.elements.len() > 3 {
             (",\n", true)

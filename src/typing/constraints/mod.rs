@@ -7,13 +7,11 @@ pub use satisfiable::*;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     iter::FromIterator,
-    rc::Rc,
 };
 
 use itertools::Itertools;
 
 use crate::{
-    ast::SourceInfo,
     convert::ToSet,
     span::Source,
     typing::{
@@ -21,7 +19,7 @@ use crate::{
         ty::{Ty, TyVar},
         ApplySubst, Subst,
     },
-    utils::{hash_cell::HashCell, join, map_join},
+    utils::{join, map_join},
 };
 
 use super::{
@@ -332,7 +330,7 @@ impl ConstraintKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstraintInfo {
-    pub src: Vec<SourceInfo>,
+    pub src: Vec<Source>,
 }
 
 impl PolymorphismInfo for ConstraintInfo {
@@ -376,11 +374,11 @@ impl std::fmt::Debug for Constraint {
             f,
             "{:?} (src=[{}])",
             self.kind,
-            map_join(&self.info.src, ", ", |info| {
-                if let Some(span) = info.src.span {
-                    format!("{}:{}", info.src.filepath, span)
+            map_join(&self.info.src, ", ", |src| {
+                if let Some(span) = src.span {
+                    format!("{}:{}", src.filepath, span)
                 } else {
-                    info.src.filepath.to_string()
+                    src.filepath.to_string()
                 }
             })
         )
@@ -510,7 +508,7 @@ impl Constraint {
         }
     }
 
-    pub fn with_src(mut self, src: SourceInfo) -> Constraint {
+    pub fn with_src(mut self, src: Source) -> Constraint {
         self.info.src.push(src);
         self
     }

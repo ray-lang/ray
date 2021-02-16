@@ -89,6 +89,7 @@ impl From<lang_c::driver::Error> for RayError {
                         col: syn.column,
                         offset: syn.offset,
                     })),
+                    ..Default::default()
                 }],
                 msg: "unexpected token".to_string(),
             },

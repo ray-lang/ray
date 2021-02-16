@@ -1,59 +1,21 @@
 use std::fmt;
 
-use crate::pathlib::FilePath;
-
 pub mod parsed;
+mod source;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub use source::*;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pos {
     pub lineno: usize,
     pub col: usize,
     pub offset: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,
-}
-
-#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
-pub struct Source {
-    pub filepath: FilePath,
-    pub span: Option<Span>,
-}
-
-impl std::fmt::Display for Source {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(span) = &self.span {
-            write!(f, "{} at {}", self.filepath, span)
-        } else {
-            write!(f, "{}", self.filepath)
-        }
-    }
-}
-
-impl Source {
-    pub fn new(filepath: FilePath) -> Source {
-        Source {
-            filepath,
-            span: None,
-        }
-    }
-
-    pub fn extend_to(&self, other: &Source) -> Source {
-        let span = match (self.span, other.span) {
-            (Some(a), Some(b)) => Some(a.extend_to(&b)),
-            (Some(a), _) => Some(a),
-            (_, Some(b)) => Some(b),
-            _ => None,
-        };
-
-        Source {
-            span,
-            filepath: self.filepath.clone(),
-        }
-    }
 }
 
 impl Span {

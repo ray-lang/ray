@@ -1,25 +1,25 @@
-use std::{fmt::Debug, ops::Deref};
+use std::{
+    fmt::Debug,
+    ops::{Deref, DerefMut},
+};
 
 use rand::Rng;
 
 use crate::{
     ast::{Decorator, Expr, Path},
+    hir::HirInfo,
     pathlib::FilePath,
-    span::Source,
-    typing::{traits::HasType, ty::Ty, ApplySubst, Subst},
+    span::{Source, SourceMap, Span},
+    typing::{traits::HasType, ty::Ty, ApplySubst, Subst, TyCtx},
+    utils::replace,
 };
-
-pub trait HasExpr<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    fn expr(&self) -> &Expr<Info>;
-    fn take_expr(self) -> Expr<Info>;
-}
 
 pub trait HasSource {
     fn src(&self) -> Source;
     fn set_src(&mut self, src: Source);
+    fn span(&self) -> Span {
+        self.src().span.unwrap()
+    }
 }
 
 impl<T> HasSource for Box<T>
@@ -39,9 +39,7 @@ pub trait HasDoc {
     fn doc(&self) -> Option<String>;
 }
 
-pub type SourceNode<T> = Node<T, SourceInfo>;
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceInfo {
     pub src: Source,
     pub path: Path,
@@ -73,10 +71,7 @@ impl ApplySubst for SourceInfo {
 impl SourceInfo {
     pub fn empty() -> SourceInfo {
         SourceInfo {
-            src: Source {
-                filepath: FilePath::new(),
-                span: None,
-            },
+            src: Source::default(),
             path: Path::new(),
             doc: None,
         }
@@ -91,14 +86,12 @@ impl SourceInfo {
     }
 }
 
-#[derive(Eq)]
-pub struct Node<T, U> {
+pub struct Node<T> {
     pub id: u64,
     pub value: T,
-    pub info: U,
 }
 
-impl<T, U> Deref for Node<T, U> {
+impl<T> Deref for Node<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -106,7 +99,13 @@ impl<T, U> Deref for Node<T, U> {
     }
 }
 
-impl<T, U> std::fmt::Display for Node<T, U>
+impl<T> DerefMut for Node<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<T> std::fmt::Display for Node<T>
 where
     T: std::fmt::Display,
 {
@@ -115,101 +114,83 @@ where
     }
 }
 
-impl<T, U> std::fmt::Debug for Node<T, U>
+impl<T> std::fmt::Debug for Node<T>
 where
     T: std::fmt::Debug,
-    U: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node")
             .field("id", &format!("{:x}", self.id))
             .field("value", &self.value)
-            .field("info", &self.info)
             .finish()
     }
 }
 
-impl<T, U> Clone for Node<T, U>
+impl<T> Clone for Node<T>
 where
     T: Clone,
-    U: Clone,
 {
     fn clone(&self) -> Self {
         Node {
             id: self.id.clone(),
             value: self.value.clone(),
-            info: self.info.clone(),
         }
     }
 }
 
-impl<T, U> PartialEq for Node<T, U>
+impl<T> PartialEq for Node<T>
 where
     T: PartialEq,
-    U: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.value == other.value && self.info == other.info
+        self.id == other.id && self.value == other.value
     }
 }
 
-impl<Info> HasExpr<Info> for Node<Expr<Info>, Info>
+impl<T> Eq for Node<T> where T: Eq {}
+
+impl<T> PartialOrd for Node<T>
 where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
+    T: PartialOrd,
 {
-    fn expr(&self) -> &Expr<Info> {
-        &self.value
-    }
-
-    fn take_expr(self) -> Expr<Info> {
-        self.value
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.value.partial_cmp(&other.value)
     }
 }
 
-impl<T, Info> HasSource for Node<T, Info>
+impl<T> Ord for Node<T>
 where
-    Info: HasSource,
+    T: Ord,
 {
-    fn src(&self) -> Source {
-        self.info.src()
-    }
-
-    fn set_src(&mut self, src: Source) {
-        self.info.set_src(src);
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.cmp(&other.value)
     }
 }
 
-impl<T, Info> HasType for Node<T, Info>
-where
-    Info: HasType,
-{
-    fn ty(&self) -> Ty {
-        self.info.ty()
-    }
-}
-
-impl<T, U> ApplySubst for Node<T, U>
+impl<T> ApplySubst for Node<T>
 where
     T: ApplySubst,
-    U: ApplySubst,
 {
     fn apply_subst(self, subst: &Subst) -> Self {
         Node {
             id: self.id,
             value: self.value.apply_subst(subst),
-            info: self.info.apply_subst(subst),
         }
     }
 }
 
-impl<T, U> Node<T, U> {
-    pub fn new(value: T, info: U) -> Node<T, U> {
+impl<T> Node<T> {
+    pub fn new(value: T) -> Node<T> {
         let mut rng = rand::thread_rng();
         let id = rng.gen::<u64>();
-        Node { id, value, info }
+        Node { id, value }
     }
 
-    pub fn unpack(self) -> (u64, T, U) {
-        (self.id, self.value, self.info)
+    pub fn with_id(id: u64, value: T) -> Node<T> {
+        Node { id, value }
+    }
+
+    pub fn unpack(self) -> (u64, T) {
+        (self.id, self.value)
     }
 }

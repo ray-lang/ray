@@ -4,15 +4,15 @@ use super::{
 
 use crate::{
     ast::{
-        token::TokenKind, Decl, Decorator, Expr, Impl, Modifier, Name, SourceInfo, Struct,
-        Trailing, Trait,
+        token::TokenKind, Decl, Decorator, Expr, Extern, HasSource, Impl, Modifier, Name, Node,
+        Path, SourceInfo, Struct, Trailing, Trait,
     },
     errors::{RayError, RayErrorKind},
     span::{parsed::Parsed, Pos, Source, Span},
     typing::ty::Ty,
 };
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_modifiers(&mut self) -> ParseResult<Vec<Modifier>> {
         let mut modifiers = vec![];
         loop {
@@ -45,14 +45,13 @@ impl Parser {
                     // TODO: should this be wrapped in any way?
                     this.expect_sp(TokenKind::Const)?;
                     let ex = this.parse_expr(ctx)?;
-                    let end = ex.info.src.span.unwrap().end;
+                    let end = this.srcmap.span_of(&ex).end;
                     consts.push(ex);
                     Ok(end)
                 }
                 TokenKind::Fn | TokenKind::Modifier(_) => {
-                    let mut f = this.parse_fn(only_sigs, ctx)?;
+                    let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
                     let path = f.sig.path.clone();
-                    let span = f.span;
                     f.sig.doc_comment = doc;
                     f.sig.decorators = decs;
                     let decl = this.mk_decl(Decl::Fn(f), span, path);
@@ -62,7 +61,7 @@ impl Parser {
                 TokenKind::Extern => {
                     let start = this.expect_start(TokenKind::Extern)?;
                     let decl = this.parse_extern_fn_sig(start, ctx)?;
-                    let end = decl.info.src.span.unwrap().end;
+                    let end = this.srcmap.span_of(&decl).end;
                     externs.push(decl);
                     Ok(end)
                 }
@@ -89,8 +88,7 @@ impl Parser {
             }
             TokenKind::Trait => self.parse_trait(ctx)?,
             TokenKind::Fn | TokenKind::Modifier(_) => {
-                let f = self.parse_fn(false, ctx)?;
-                let span = f.span;
+                let (f, span) = self.parse_fn(false, ctx)?;
                 let path = f.sig.path.clone();
                 self.mk_decl(Decl::Fn(f), span, path)
             }
@@ -114,20 +112,20 @@ impl Parser {
             TokenKind::Mut => {
                 let start = self.expect_start(TokenKind::Mut)?;
                 let n = self.parse_name_with_type()?;
-                let mut span = n.span;
+                let mut span = self.srcmap.span_of(&n);
                 span.start = start;
                 (Decl::Mutable(n), span)
             }
             _ => {
                 let n = self.parse_name_with_type()?;
-                let span = n.span;
+                let span = self.srcmap.span_of(&n);
                 (Decl::Name(n), span)
             }
         };
 
-        let e = self.mk_decl(kind, span, ctx.path.clone());
+        let decl = self.mk_decl(kind, span, ctx.path.clone());
         Ok(self.mk_decl(
-            Decl::Extern(Box::new(e)),
+            Decl::Extern(Extern::new(decl)),
             Span {
                 start,
                 end: span.end,
@@ -137,7 +135,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_extern_fn_sig(&mut self, start: Pos, ctx: &ParseContext) -> DeclResult {
-        let e = match self.must_peek_kind()? {
+        let decl = match self.must_peek_kind()? {
             TokenKind::Fn | TokenKind::Modifier(_) => {
                 let sig = self.parse_fn_sig(ctx)?;
                 let span = sig.span;
@@ -150,9 +148,9 @@ impl Parser {
             }
         };
 
-        let end = e.info.src.span.unwrap().end;
+        let end = self.srcmap.span_of(&decl).end;
         Ok(self.mk_decl(
-            Decl::Extern(Box::new(e)),
+            Decl::Extern(Extern::new(decl)),
             Span { start, end },
             ctx.path.clone(),
         ))
@@ -168,8 +166,10 @@ impl Parser {
         };
 
         let mut assign = self.parse_expr(&ctx)?;
+        let mut assign_span = self.srcmap.span_of(&assign);
         if let Some(mut_span) = mut_span {
-            assign.info.src.span.unwrap().start = mut_span.start;
+            assign_span.start = mut_span.start;
+            self.srcmap.respan(&assign, assign_span);
         }
 
         if is_extern {
@@ -181,12 +181,7 @@ impl Parser {
                 a.is_mut = is_mut;
                 a.mut_span = mut_span;
             }
-            _ => {
-                return Err(self.parse_error(
-                    format!("expected assign expression"),
-                    assign.info.src.span.unwrap(),
-                ))
-            }
+            _ => return Err(self.parse_error(format!("expected assign expression"), assign_span)),
         }
 
         Ok(assign)
@@ -232,7 +227,7 @@ impl Parser {
     pub(crate) fn parse_struct(&mut self, ctx: &ParseContext) -> ParseResult<(Struct, Span)> {
         let start = self.expect_start(TokenKind::Struct)?;
         let name = self.parse_name_with_type()?;
-        let mut end = name.span.end;
+        let mut end = self.srcmap.span_of(&name).end;
 
         let ty_params = self.parse_ty_params()?;
         if let Some(ref tp) = ty_params {
@@ -262,7 +257,7 @@ impl Parser {
         only_sigs: bool,
         is_extern: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(Impl<SourceInfo>, Span)> {
+    ) -> ParseResult<(Impl, Span)> {
         let start = self.expect_start(TokenKind::Impl)?;
 
         let ty = self.parse_ty()?;
@@ -354,24 +349,25 @@ impl Parser {
         Ok(qualifiers)
     }
 
-    fn parse_fields(&mut self) -> ParseResult<Vec<Name>> {
+    fn parse_fields(&mut self) -> ParseResult<Vec<Node<Name>>> {
         let mut fields = Vec::new();
         loop {
             if !peek!(self, TokenKind::Identifier { .. }) {
                 break;
             }
             let n = self.parse_name_with_type()?;
-            let end = n.span.end;
+            let end = self.srcmap.span_of(&n).end;
             fields.push(n);
 
             let next_comma = expect_if!(self, TokenKind::Comma);
             if !self.is_eol() && !next_comma {
                 return Err(RayError {
                     msg: format!("{}", "fields must be separated by a newline or comma"),
-                    src: vec![Source {
-                        span: Some(Span { start: end, end }),
-                        filepath: self.options.filepath.clone(),
-                    }],
+                    src: vec![Source::new(
+                        self.options.filepath.clone(),
+                        Span { start: end, end },
+                        Path::new(),
+                    )],
                     kind: RayErrorKind::Parse,
                 });
             }

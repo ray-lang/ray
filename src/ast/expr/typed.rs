@@ -1,43 +1,51 @@
 use std::ops::{Deref, DerefMut};
 
-use super::{Source, Span};
+use crate::typing::ty::Ty;
 
-pub struct Parsed<T> {
+pub struct Typed<T> {
     value: T,
-    src: Source,
+    ty: Option<Ty>,
 }
 
-impl<T> std::fmt::Debug for Parsed<T>
+impl<T> std::fmt::Debug for Typed<T>
 where
     T: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.value, f)
+        if let Some(t) = &self.ty {
+            write!(f, "{:?}: {:?}", self.value, t)
+        } else {
+            write!(f, "{:?}", self.value)
+        }
     }
 }
 
-impl<T> std::fmt::Display for Parsed<T>
+impl<T> std::fmt::Display for Typed<T>
 where
     T: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.value, f)
+        if let Some(t) = &self.ty {
+            write!(f, "{}: {}", self.value, t)
+        } else {
+            write!(f, "{}", self.value)
+        }
     }
 }
 
-impl<T> Clone for Parsed<T>
+impl<T> Clone for Typed<T>
 where
     T: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
-            src: self.src.clone(),
+            ty: self.ty.clone(),
         }
     }
 }
 
-impl<T> Deref for Parsed<T> {
+impl<T> Deref for Typed<T> {
     type Target = T;
 
     #[inline(always)]
@@ -46,13 +54,13 @@ impl<T> Deref for Parsed<T> {
     }
 }
 
-impl<T> DerefMut for Parsed<T> {
+impl<T> DerefMut for Typed<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl<T> PartialEq for Parsed<T>
+impl<T> PartialEq for Typed<T>
 where
     T: PartialEq,
 {
@@ -61,9 +69,9 @@ where
     }
 }
 
-impl<T> Eq for Parsed<T> where T: Eq {}
+impl<T> Eq for Typed<T> where T: Eq {}
 
-impl<T> PartialOrd for Parsed<T>
+impl<T> PartialOrd for Typed<T>
 where
     T: PartialOrd,
 {
@@ -72,7 +80,7 @@ where
     }
 }
 
-impl<T> Ord for Parsed<T>
+impl<T> Ord for Typed<T>
 where
     T: Ord,
 {
@@ -81,7 +89,7 @@ where
     }
 }
 
-impl<T> std::hash::Hash for Parsed<T>
+impl<T> std::hash::Hash for Typed<T>
 where
     T: std::hash::Hash,
 {
@@ -90,21 +98,21 @@ where
     }
 }
 
-impl<T> Parsed<T> {
-    pub fn new(value: T, src: Source) -> Parsed<T> {
-        Parsed { value, src }
+impl<T> Typed<T> {
+    pub fn new(value: T, ty: Option<Ty>) -> Typed<T> {
+        Typed { value, ty }
     }
 
     pub fn value(&self) -> &T {
         &self.value
     }
 
-    pub fn span(&self) -> Option<&Span> {
-        self.src.span.as_ref()
+    pub fn ty(&self) -> Option<&Ty> {
+        self.ty.as_ref()
     }
 
-    pub fn take(self) -> (T, Source) {
-        (self.value, self.src)
+    pub fn take(self) -> (T, Option<Ty>) {
+        (self.value, self.ty)
     }
 
     pub fn take_value(self) -> T {
@@ -112,7 +120,7 @@ impl<T> Parsed<T> {
     }
 }
 
-impl<T> Parsed<T>
+impl<T> Typed<T>
 where
     T: Clone,
 {

@@ -199,20 +199,12 @@ impl<'a> HasSubst for GreedySolver<'a> {
 }
 
 impl<'a> HasState for GreedySolver<'a> {
-    fn new_tvar(&mut self) -> TyVar {
-        self.ctx.new_tvar()
+    fn tf(&mut self) -> &mut TyVarFactory {
+        self.ctx.tf()
     }
 
-    fn new_svar(&mut self) -> TyVar {
-        self.ctx.new_svar()
-    }
-
-    fn get_tf(&mut self) -> RefMut<TyVarFactory> {
-        self.ctx.tf_mut()
-    }
-
-    fn get_sf(&mut self) -> RefMut<TyVarFactory> {
-        self.ctx.sf_mut()
+    fn sf(&mut self) -> &mut TyVarFactory {
+        self.ctx.sf()
     }
 
     fn store_ty(&mut self, v: TyVar, ty: Ty, info: ConstraintInfo) {
@@ -348,7 +340,7 @@ mod greedy_solver_tests {
         ];
 
         let mut ctx = TyCtx::new();
-        ctx.tf_mut().skip_to(7);
+        ctx.tf().skip_to(7);
         let solver = GreedySolver::new(constraints, &mut ctx);
         let (sol, _) = solver.solve();
 
@@ -427,7 +419,7 @@ mod greedy_solver_tests {
                 )],
             },
         );
-        ctx.tf_mut().skip_to(4);
+        ctx.tf().skip_to(4);
         let solver = GreedySolver::new(constraints, &mut ctx);
         let (sol, _) = solver.solve();
         println!("{:#?}", sol);

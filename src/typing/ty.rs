@@ -9,7 +9,7 @@ use crate::{
     errors::{RayError, RayErrorKind},
     lir::Size,
     pathlib::FilePath,
-    span::{Source, Span},
+    span::{Source, SourceMap, Span},
     utils::{join, replace},
 };
 
@@ -71,6 +71,10 @@ impl Polymorphize for TyVar {
 impl TyVar {
     pub fn path(&self) -> &Path {
         &self.0
+    }
+
+    pub fn path_mut(&mut self) -> &mut Path {
+        &mut self.0
     }
 }
 
@@ -256,11 +260,17 @@ impl ApplySubst for Ty {
 impl Generalize for Ty {
     fn generalize(self, m: &Vec<Ty>, preds: &Vec<TyPredicate>) -> Ty {
         // generalize(M, τ) => ∀{a}.τ where {a} = ftv(τ) − ftv(M).
-        let tyvars = self
-            .free_vars()
-            .difference(&m.free_vars())
-            .map(|&t| t.clone())
-            .collect::<Vec<_>>();
+        let freevars = m.free_vars();
+        let mut tyvars = self.collect_tyvars();
+        let mut i = 0;
+        while i < tyvars.len() {
+            let t = &tyvars[i];
+            if freevars.contains(&t) {
+                tyvars.remove(i);
+            } else {
+                i += 1;
+            }
+        }
 
         self.qualify(preds, &tyvars).quantify(tyvars)
     }
@@ -453,38 +463,36 @@ impl Ty {
         })
     }
 
-    pub fn from_sig<Info>(
-        sig: &FnSig<Info>,
+    pub fn from_sig(
+        sig: &FnSig,
         fn_scope: &Path,
         filepath: &FilePath,
         fn_ctx: &mut TyCtx,
         parent_ctx: &mut TyCtx,
-    ) -> Result<Ty, RayError>
-    where
-        Info: std::fmt::Debug + Clone + PartialEq + Eq + HasSource,
-    {
+        srcmap: &SourceMap,
+    ) -> Result<Ty, RayError> {
         let mut param_tys = vec![];
 
         for param in sig.params.iter() {
             if let Some(ty) = param.ty() {
-                param_tys.push(ty.clone().from_ast_ty(&fn_scope, fn_ctx));
+                let mut ty = ty.clone();
+                ty.resolve_ty(&fn_scope, fn_ctx);
+                param_tys.push(ty);
             } else {
                 return Err(RayError {
                     msg: format!("parameter `{}` must have a type annotation", param),
                     src: vec![Source {
-                        span: Some(param.span()),
+                        span: Some(srcmap.span_of(&param)),
                         filepath: filepath.clone(),
+                        ..Default::default()
                     }],
                     kind: RayErrorKind::Type,
                 });
             }
         }
 
-        let ret_ty = sig
-            .ret_ty
-            .as_ref()
-            .map(|t| t.clone_value().from_ast_ty(&fn_scope, fn_ctx))
-            .unwrap_or_else(|| Ty::unit());
+        let mut ret_ty = sig.ret_ty.as_deref().cloned().unwrap_or_default();
+        ret_ty.resolve_ty(&fn_scope, fn_ctx);
 
         let mut ty = Ty::Func(param_tys, Box::new(ret_ty));
 
@@ -510,71 +518,57 @@ impl Ty {
         })
     }
 
-    pub fn from_ast_ty(self, scope: &ast::Path, ctx: &mut TyCtx) -> Ty {
+    pub fn resolve_ty(&mut self, scope: &ast::Path, tcx: &mut TyCtx) {
         match self {
             Ty::Projection(name, ty_params, fields) => {
-                let ty_params = ty_params
-                    .into_iter()
-                    .map(|t| t.from_ast_ty(scope, ctx))
-                    .collect();
+                ty_params.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
 
-                if let Some(fqn) = ctx.lookup_fqn(&name) {
-                    if let Some((parent_ty, fields)) = ctx
+                if let Some(fqn) = tcx.lookup_fqn(name) {
+                    if let Some((parent_ty, struct_fields)) = tcx
                         .get_struct_ty(fqn)
                         .and_then(|s| Some((&s.ty, s.field_tys())))
                         .or_else(|| {
-                            ctx.get_trait_ty(fqn)
+                            tcx.get_trait_ty(fqn)
                                 .and_then(|t| Some((&t.ty, t.field_tys())))
                         })
                     {
-                        return Ty::Projection(fqn.to_string(), ty_params, fields);
+                        *name = fqn.to_string();
+                        *fields = struct_fields;
+                        return;
                     }
                 }
 
-                if let Some(ty) = ctx.get_var(&name) {
-                    ty.clone()
+                if let Some(ty) = tcx.get_var(&name) {
+                    let _ = std::mem::replace(self, ty.clone());
                 } else {
-                    let fields = fields
-                        .into_iter()
-                        .map(|t| t.from_ast_ty(scope, ctx))
-                        .collect();
-                    Ty::Projection(name.to_string(), ty_params, fields)
+                    fields.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
                 }
             }
             Ty::Var(tv) => {
                 let fqn = scope.append(format!("'{}", tv));
                 let fqn_string = fqn.to_string();
-                if let Some(ty) = ctx.get_var(&fqn_string) {
-                    ty.clone()
+                if let Some(ty) = tcx.get_var(&fqn_string) {
+                    let _ = std::mem::replace(self, ty.clone());
                 } else {
-                    let ty = Ty::var(fqn);
-                    ctx.bind_var(fqn_string, ty.clone());
-                    ty
+                    *tv.path_mut() = fqn;
+                    tcx.bind_var(fqn_string, self.clone());
                 }
             }
-            Ty::Ptr(t) => Ty::Ptr(Box::new(t.from_ast_ty(scope, ctx))),
-            Ty::Tuple(tys) => {
-                Ty::Tuple(tys.into_iter().map(|t| t.from_ast_ty(scope, ctx)).collect())
+            Ty::Tuple(tys) | Ty::Union(tys) => {
+                tys.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
             }
-            Ty::Union(tys) => {
-                Ty::Union(tys.into_iter().map(|t| t.from_ast_ty(scope, ctx)).collect())
+            Ty::Ptr(t) | Ty::Array(t, _) => t.resolve_ty(scope, tcx),
+            Ty::Func(params, ret) => {
+                params.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
+                ret.resolve_ty(scope, tcx);
             }
-            Ty::Array(t, s) => Ty::Array(Box::new(t.from_ast_ty(scope, ctx)), s),
-            Ty::Func(params, ret) => Ty::Func(
-                params
-                    .into_iter()
-                    .map(|t| t.from_ast_ty(scope, ctx))
-                    .collect(),
-                Box::new(ret.from_ast_ty(scope, ctx)),
-            ),
-            Ty::Cast(s, t) => Ty::Cast(
-                Box::new(s.from_ast_ty(scope, ctx)),
-                Box::new(t.from_ast_ty(scope, ctx)),
-            ),
-            Ty::Qualified(qs, t) => Ty::Qualified(qs, Box::new(t.from_ast_ty(scope, ctx))),
-            Ty::All(xs, t) => Ty::All(xs, Box::new(t.from_ast_ty(scope, ctx))),
-            Ty::Never => Ty::Never,
-            Ty::Any => Ty::Any,
+            Ty::Cast(s, t) => {
+                s.resolve_ty(scope, tcx);
+                t.resolve_ty(scope, tcx);
+            }
+            Ty::Qualified(qs, t) => t.resolve_ty(scope, tcx),
+            Ty::All(xs, t) => t.resolve_ty(scope, tcx),
+            Ty::Never | Ty::Any => {}
         }
     }
 

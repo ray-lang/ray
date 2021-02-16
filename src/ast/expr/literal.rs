@@ -1,5 +1,8 @@
 use crate::{
-    ast::token::{IntegerBase, Token, TokenKind},
+    ast::{
+        token::{IntegerBase, Token, TokenKind},
+        Path,
+    },
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
     span::Source,
@@ -60,10 +63,7 @@ impl Literal {
                     let size = parsed.as_ref().map_err(|e| RayError {
                         msg: e.to_string(),
                         kind: RayErrorKind::Parse,
-                        src: vec![Source {
-                            span: Some(span),
-                            filepath: fp.clone(),
-                        }],
+                        src: vec![Source::new(fp.clone(), span, Path::new())],
                     })?;
                     (*size, s.starts_with("i"))
                 } else {
@@ -83,10 +83,7 @@ impl Literal {
                         return Err(RayError {
                             msg: format!("invalid prefix for float {}", s),
                             kind: RayErrorKind::Parse,
-                            src: vec![Source {
-                                span: Some(token.span),
-                                filepath: fp.clone(),
-                            }],
+                            src: vec![Source::new(fp.clone(), token.span, Path::new())],
                         });
                     }
 
@@ -95,10 +92,7 @@ impl Literal {
                     *parsed.as_ref().map_err(|e| RayError {
                         msg: e.to_string(),
                         kind: RayErrorKind::Parse,
-                        src: vec![Source {
-                            span: Some(span),
-                            filepath: fp.clone(),
-                        }],
+                        src: vec![Source::new(fp.clone(), span, Path::new())],
                     })?
                 } else {
                     0

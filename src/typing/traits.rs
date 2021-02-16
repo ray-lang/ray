@@ -60,13 +60,9 @@ pub trait HasSubst {
 }
 
 pub trait HasState {
-    fn new_tvar(&mut self) -> TyVar;
+    fn tf(&mut self) -> &mut TyVarFactory;
 
-    fn new_svar(&mut self) -> TyVar;
-
-    fn get_tf(&mut self) -> RefMut<TyVarFactory>;
-
-    fn get_sf(&mut self) -> RefMut<TyVarFactory>;
+    fn sf(&mut self) -> &mut TyVarFactory;
 
     fn store_ty(&mut self, v: TyVar, ty: Ty, info: ConstraintInfo);
 

@@ -86,7 +86,7 @@ impl RedundantAssignElim {
     ) {
         let insts = block.instructions.drain(..).collect::<Vec<_>>();
         for mut i in insts {
-            if self.visit_inst(&mut i.value, params, local_map) {
+            if self.visit_inst(&mut i, params, local_map) {
                 block.instructions.push(i);
             }
         }

@@ -30,7 +30,7 @@ impl std::fmt::Display for PathPart {
     }
 }
 
-#[derive(Clone, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Eq, Default, PartialOrd, Ord, Hash)]
 pub struct Path {
     parts: Vec<PathPart>,
 }

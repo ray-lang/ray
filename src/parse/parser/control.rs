@@ -5,7 +5,7 @@ use crate::{
     span::Span,
 };
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_pre_block_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let mut ctx = ctx.clone();
         ctx.restrictions |= Restrictions::NO_CURLY_EXPR;
@@ -18,7 +18,7 @@ impl Parser {
         let start = self.expect_start(TokenKind::If)?;
         let cond = Box::new(self.parse_pre_block_expr(&ctx)?);
         let then = Box::new(self.parse_block(&ctx)?);
-        let mut end = then.info.src.span.unwrap().end;
+        let mut end = self.srcmap.span_of(&then).end;
 
         let els = if peek!(self, TokenKind::Else) {
             self.expect(TokenKind::Else)?;
@@ -27,7 +27,7 @@ impl Parser {
             } else {
                 self.parse_block(&ctx)?
             };
-            end = e.info.src.span.unwrap().end;
+            end = self.srcmap.span_of(&e).end;
             Some(Box::new(e))
         } else {
             None
@@ -49,12 +49,12 @@ impl Parser {
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
         let cond = Box::new(self.parse_expr(&ctx)?);
-        let mut end = cond.info.src.span.unwrap().end;
+        let mut end = self.srcmap.span_of(&cond).end;
 
         let els = if peek!(self, TokenKind::Else) {
             self.expect(TokenKind::Else)?;
             let e = self.parse_expr(&ctx)?;
-            end = e.info.src.span.unwrap().end;
+            end = self.srcmap.span_of(&e).end;
             Some(Box::new(e))
         } else {
             None
@@ -78,7 +78,8 @@ impl Parser {
         let expr = self.parse_pre_block_expr(ctx)?;
         let body = self.parse_block(ctx)?;
 
-        let span = for_span.extend_to(&body.info.src.span.unwrap());
+        let body_span = self.srcmap.span_of(&body);
+        let span = for_span.extend_to(&body_span);
 
         Ok(self.mk_expr(
             Expr::For(For {
@@ -98,7 +99,8 @@ impl Parser {
         let cond = self.parse_pre_block_expr(ctx)?;
         let body = self.parse_block(ctx)?;
 
-        let span = while_span.extend_to(&body.info.src.span.unwrap());
+        let body_span = self.srcmap.span_of(&body);
+        let span = while_span.extend_to(&body_span);
 
         Ok(self.mk_expr(
             Expr::While(While {
@@ -114,7 +116,9 @@ impl Parser {
     pub(crate) fn parse_loop(&mut self, ctx: &ParseContext) -> ExprResult {
         let loop_span = self.expect_sp(TokenKind::Loop)?;
         let body = self.parse_block(ctx)?;
-        let span = loop_span.extend_to(&body.info.src.span.unwrap());
+
+        let body_span = self.srcmap.span_of(&body);
+        let span = loop_span.extend_to(&body_span);
 
         Ok(self.mk_expr(
             Expr::Loop(Loop {

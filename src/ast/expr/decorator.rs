@@ -1,11 +1,15 @@
-use ast::PathNode;
+use crate::{
+    ast::{Node, Path, SourceInfo},
+    span::Span,
+    utils::join,
+};
 
-use crate::{ast, span::Span, utils::join};
+use super::Name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decorator {
-    pub path: ast::PathNode,
-    pub args: Vec<ast::Name>,
+    pub path: Node<Path>,
+    pub args: Vec<Node<Name>>,
     pub paren_sp: Span,
 }
 

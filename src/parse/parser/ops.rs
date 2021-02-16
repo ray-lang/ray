@@ -2,13 +2,13 @@ use super::{ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Restricti
 
 use crate::{
     ast::{
-        token::TokenKind, Assign, Associativity, BinOp, Cast, Expr, InfixOp, PrefixOp, Range,
-        RangeLimits, Sequence, UnaryOp,
+        token::TokenKind, Assign, Associativity, BinOp, Cast, Expr, InfixOp, Node, Pattern,
+        PrefixOp, Range, RangeLimits, Sequence, UnaryOp,
     },
     span::Span,
 };
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_infix_expr(
         &mut self,
         min_prec: usize,
@@ -42,7 +42,7 @@ impl Parser {
                         if let Expr::Sequence(seq) = &mut lhs.value {
                             seq.trailing = true;
                         } else {
-                            let span = lhs.info.src.span.unwrap().extend_to(&op_span);
+                            let span = self.srcmap.span_of(&lhs).extend_to(&op_span);
                             lhs = self.mk_expr(
                                 Expr::Sequence(Sequence {
                                     items: vec![lhs],
@@ -76,9 +76,7 @@ impl Parser {
 
             if matches!(op, InfixOp::Assign | InfixOp::AssignOp(_)) {
                 ctx.restrictions |= Restrictions::RVALUE;
-            }
-
-            if matches!(op, InfixOp::Comma) {
+            } else if matches!(op, InfixOp::Comma) {
                 ctx = ctx.clone();
                 ctx.restrictions |= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
             } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
@@ -86,12 +84,10 @@ impl Parser {
                 let ty = self.parse_ty()?;
                 let ty_span = ty.span().unwrap();
                 let rhs = self.mk_ty(ty, ctx.path.clone());
-                let span = lhs
-                    .info
-                    .src
-                    .span
-                    .unwrap()
-                    .extend_to(&rhs.info.src.span.unwrap());
+                let span = self
+                    .srcmap
+                    .span_of(&lhs)
+                    .extend_to(&self.srcmap.span_of(&rhs));
                 lhs = self.mk_expr(
                     Expr::TypeAnnotated(Box::new(lhs), rhs),
                     span,
@@ -103,12 +99,10 @@ impl Parser {
             let rhs = self.parse_infix_expr(prec + prec_adjustment, None, &ctx)?;
             ctx.restrictions -= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
 
-            let span = lhs
-                .info
-                .src
-                .span
-                .unwrap()
-                .extend_to(&rhs.info.src.span.unwrap());
+            let span = self
+                .srcmap
+                .span_of(&lhs)
+                .extend_to(&self.srcmap.span_of(&rhs));
 
             if matches!(op, InfixOp::Colon) && matches!(lhs.value, Expr::Name(_)) {
                 lhs = self.mk_expr(
@@ -120,14 +114,18 @@ impl Parser {
             }
 
             let kind = match op {
-                InfixOp::Assign | InfixOp::AssignOp(_) => Expr::Assign(Assign {
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                    is_mut: false,
-                    mut_span: None,
-                    op,
-                    op_span,
-                }),
+                InfixOp::Assign | InfixOp::AssignOp(_) => {
+                    let (lhs, id) = (lhs.value, lhs.id);
+                    let pat = Pattern::from(lhs);
+                    Expr::Assign(Assign {
+                        lhs: Node { id, value: pat },
+                        rhs: Box::new(rhs),
+                        is_mut: false,
+                        mut_span: None,
+                        op,
+                        op_span,
+                    })
+                }
                 InfixOp::Comma => {
                     let mut items = if let Expr::Sequence(lhs_seq) = lhs.value {
                         lhs_seq.items
@@ -164,7 +162,7 @@ impl Parser {
         if let Some((op, tok_count)) = self.peek_prefix_op()? {
             let (_, op_span) = self.lex.consume_count(tok_count);
             let expr = self.parse_prefix_expr(ctx)?;
-            let span = op_span.extend_to(&expr.info.src.span.unwrap());
+            let span = op_span.extend_to(&self.srcmap.span_of(&expr));
             Ok(self.mk_expr(
                 Expr::UnaryOp(UnaryOp {
                     expr: Box::new(expr),
@@ -188,12 +186,10 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ExprResult {
         let end = self.parse_infix_expr(prec + 1, None, ctx)?;
-        let span = start
-            .info
-            .src
-            .span
-            .unwrap()
-            .extend_to(&end.info.src.span.unwrap());
+        let span = self
+            .srcmap
+            .span_of(&start)
+            .extend_to(&self.srcmap.span_of(&end));
         let limits = match op {
             InfixOp::RangeInclusive => RangeLimits::Inclusive,
             InfixOp::RangeExclusive => RangeLimits::Exclusive,
@@ -219,7 +215,7 @@ impl Parser {
         ctx: &ParseContext,
     ) -> ExprResult {
         let ty = self.parse_ty()?;
-        let span = lhs.info.src.span.unwrap().extend_to(ty.span().unwrap());
+        let span = self.srcmap.span_of(&lhs).extend_to(ty.span().unwrap());
         Ok(self.mk_expr(
             Expr::Cast(Cast {
                 lhs: Box::new(lhs),

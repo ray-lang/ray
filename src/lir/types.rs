@@ -45,12 +45,6 @@ where
     }
 }
 
-impl<'a, I> GetLocals<'a> for Node<Inst, I> {
-    fn get_locals(&'a self) -> Vec<&'a usize> {
-        self.value.get_locals()
-    }
-}
-
 pub trait GetLocalsMut<'a> {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize>;
 }
@@ -61,12 +55,6 @@ where
 {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
         self.iter_mut().flat_map(|t| t.get_locals_mut()).collect()
-    }
-}
-
-impl<'a, I> GetLocalsMut<'a> for Node<Inst, I> {
-    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        self.value.get_locals_mut()
     }
 }
 
@@ -901,7 +889,7 @@ impl ApplySubst for Param {
 #[derive(Clone, Debug)]
 pub struct Block {
     pub name: String,
-    pub instructions: Vec<Node<Inst, SourceInfo>>,
+    pub instructions: Vec<Inst>,
 }
 
 impl std::fmt::Display for Block {
@@ -1018,7 +1006,7 @@ impl Func {
     pub fn has_decorator(&self, p: &Path) -> bool {
         self.decorators
             .as_ref()
-            .map(|v| v.iter().any(|d| d.path.path() == p))
+            .map(|v| v.iter().any(|d| &d.path.value == p))
             .unwrap_or_default()
     }
 
@@ -1027,28 +1015,19 @@ impl Func {
         self.has_decorator(&path)
     }
 
-    pub fn inline(
-        mut self,
-        args: Vec<Variable>,
-        info: SourceInfo,
-        offset: usize,
-    ) -> (Vec<Local>, Vec<Node<Inst, SourceInfo>>, Value) {
+    pub fn inline(mut self, args: Vec<Variable>, offset: usize) -> (Vec<Local>, Vec<Inst>, Value) {
         self.offset_locals(offset);
 
         let mut insts = self
             .params
             .iter()
             .zip(args.into_iter())
-            .map(|(p, a)| Node::new(Inst::SetLocal(p.idx, Atom::new(a).into()), info.clone()))
+            .map(|(p, a)| Inst::SetLocal(p.idx, Atom::new(a).into()))
             .collect::<Vec<_>>();
 
         insts.extend(self.body.instructions);
         let last = insts.pop();
-        let ret_val = if let Some(Node {
-            value: Inst::Return(v),
-            ..
-        }) = last
-        {
+        let ret_val = if let Some(Inst::Return(v)) = last {
             v
         } else {
             if let Some(last) = last {

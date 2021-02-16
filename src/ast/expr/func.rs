@@ -1,54 +1,29 @@
 use crate::{
-    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Path, TypeParams},
-    span::{parsed::Parsed, Span},
+    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Path, SourceInfo, TypeParams},
+    span::{parsed::Parsed, Source, Span},
     typing::ty::Ty,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FnParam<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+pub enum FnParam {
     Name(Name),
-    Type(Parsed<Ty>),
-    DefaultValue(Box<FnParam<Info>>, Box<Node<Expr<Info>, Info>>),
+    DefaultValue(Box<Node<FnParam>>, Box<Node<Expr>>),
 }
 
-impl<Info> std::fmt::Display for FnParam<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for FnParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FnParam::Name(n) => write!(f, "{}", n),
-            FnParam::Type(t) => write!(f, "{}", t),
             FnParam::DefaultValue(p, v) => write!(f, "{} = {}", p, v),
         }
     }
 }
 
-impl<Info> FnParam<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq + HasSource,
-{
-    pub fn span(&self) -> Span {
-        match self {
-            FnParam::DefaultValue(p, e) => p.span().extend_to(&e.info.src().span.unwrap()),
-            FnParam::Name(n) => n.span,
-            FnParam::Type(t) => *t.span().unwrap(),
-        }
-    }
-}
-
-impl<Info> FnParam<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub fn name(&self) -> Option<&String> {
+impl FnParam {
+    pub fn name(&self) -> Option<&Path> {
         match self {
             FnParam::DefaultValue(p, _) => p.name(),
-            FnParam::Name(n) => Some(&n.name),
-            FnParam::Type(_) => None,
+            FnParam::Name(n) => Some(&n.path),
         }
     }
 
@@ -56,22 +31,27 @@ where
         match self {
             FnParam::DefaultValue(p, _) => p.ty(),
             FnParam::Name(n) => n.ty.as_deref(),
-            FnParam::Type(t) => Some(t),
+        }
+    }
+
+    pub fn set_ty(&mut self, ty: Ty) {
+        match self {
+            FnParam::DefaultValue(p, _) => p.set_ty(ty),
+            FnParam::Name(n) => {
+                n.ty = Some(Parsed::new(ty, Source::default()));
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FnSig<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+pub struct FnSig {
     pub path: Path,
     pub name: Option<String>,
-    pub params: Vec<FnParam<Info>>,
+    pub params: Vec<Node<FnParam>>,
     pub ty_params: Option<TypeParams>,
     pub ret_ty: Option<Parsed<Ty>>,
-    pub ty: Option<Parsed<Ty>>,
+    pub ty: Option<Ty>,
     pub modifiers: Vec<Modifier>,
     pub qualifiers: Vec<Parsed<Ty>>,
     pub doc_comment: Option<String>,
@@ -80,19 +60,33 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Fn<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub sig: FnSig<Info>,
-    pub body: Option<Box<Node<Expr<Info>, Info>>>,
-    pub span: Span,
+pub struct Fn {
+    pub sig: FnSig,
+    pub body: Option<Box<Node<Expr>>>,
 }
 
-impl<Info> std::fmt::Display for FnSig<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl Fn {
+    pub fn new(path: Path, params: Vec<Node<FnParam>>, body: Node<Expr>) -> Self {
+        Self {
+            sig: FnSig {
+                path,
+                name: None,
+                params,
+                ty_params: None,
+                ret_ty: None,
+                ty: None,
+                modifiers: vec![],
+                qualifiers: vec![],
+                doc_comment: None,
+                decorators: None,
+                span: Span::new(),
+            },
+            body: Some(Box::new(body)),
+        }
+    }
+}
+
+impl std::fmt::Display for FnSig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ty_params = if let Some(ref ty_params) = self.ty_params {
             ty_params.to_string()
@@ -120,10 +114,7 @@ where
     }
 }
 
-impl<Info> std::fmt::Display for Fn<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Fn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let body = self.body.as_ref();
         write!(

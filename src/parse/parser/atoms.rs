@@ -2,13 +2,13 @@ use super::{ExprResult, ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
     ast::{
-        token::TokenKind, Block, Closure, Expr, HasExpr, Literal, Name, Path, PathNode, Pattern,
-        PatternKind, Sequence, SourceInfo, Trailing, ValueKind,
+        token::TokenKind, Block, Closure, Expr, HasSource, Literal, Name, Node, Path, PathNode,
+        Pattern, Sequence, SourceInfo, Trailing, Tuple, ValueKind,
     },
     span::{Pos, Span},
 };
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_atom(&mut self, ctx: &ParseContext) -> ExprResult {
         let tok = self.token()?;
         match tok.kind {
@@ -37,16 +37,16 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_path(&mut self) -> ParseResult<PathNode> {
+    pub(crate) fn parse_path(&mut self) -> ParseResult<Node<Path>> {
         let (id, span) = self.expect_id()?;
         if expect_if!(self, TokenKind::DoubleColon) {
             self.parse_path_with((id, span))
         } else {
-            Ok(PathNode::new(Path::from(vec![id]), span))
+            Ok(self.mk_node(Path::from(vec![id]), span))
         }
     }
 
-    pub(crate) fn parse_path_with(&mut self, first: (String, Span)) -> ParseResult<PathNode> {
+    pub(crate) fn parse_path_with(&mut self, first: (String, Span)) -> ParseResult<Node<Path>> {
         // This assumes that the double colon after `first` has been consumed
         let (id, mut span) = first;
         let mut parts = vec![id];
@@ -60,10 +60,10 @@ impl Parser {
             }
         }
 
-        Ok(PathNode::new(Path::from(parts), span))
+        Ok(self.mk_node(Path::from(parts), span))
     }
 
-    pub(crate) fn parse_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Pattern<SourceInfo>> {
+    pub(crate) fn parse_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Node<Pattern>> {
         Ok(if peek!(self, TokenKind::LeftParen) {
             self.parse_paren_pattern(ctx)?
         } else {
@@ -77,42 +77,28 @@ impl Parser {
                     span,
                 ));
             }
-            let kind = if seq.items.len() == 1 {
-                match seq.items.pop().unwrap().value {
-                    Expr::Name(n) => PatternKind::Name(n),
-                    Expr::Tuple(t) => PatternKind::Tuple(t),
-                    _ => unreachable!(),
-                }
-            } else {
-                PatternKind::Sequence(seq)
-            };
-            Pattern { kind, span }
+            self.mk_node(Pattern::from(seq), span)
         })
     }
 
-    pub(crate) fn parse_name(&mut self) -> ParseResult<Name> {
+    pub(crate) fn parse_name(&mut self) -> ParseResult<Node<Name>> {
         let (name, span) = self.expect_id()?;
-        Ok(Name {
-            name,
-            span,
-            ty: None,
-        })
+        Ok(self.mk_node(Name::new(name), span))
     }
 
-    pub(crate) fn parse_name_with_type(&mut self) -> ParseResult<Name> {
+    pub(crate) fn parse_name_with_type(&mut self) -> ParseResult<Node<Name>> {
         let (name, span) = self.expect_id()?;
-        let ty = if expect_if!(self, TokenKind::Colon) {
+        let mut name = Name::new(name);
+        name.ty = if expect_if!(self, TokenKind::Colon) {
             Some(self.parse_ty()?)
         } else {
             None
         };
-        Ok(Name { name, span, ty })
+
+        Ok(self.mk_node(name, span))
     }
 
-    pub(crate) fn parse_paren_pattern(
-        &mut self,
-        ctx: &ParseContext,
-    ) -> ParseResult<Pattern<SourceInfo>> {
+    pub(crate) fn parse_paren_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Node<Pattern>> {
         // '('
         let (start_tok, start_sp) = self.expect(TokenKind::LeftParen)?;
         let start = start_sp.start;
@@ -127,21 +113,18 @@ impl Parser {
 
         // ')'
         let end = self.expect_matching(&start_tok, TokenKind::RightParen)?;
-        Ok(if seq.items.len() == 1 && !seq.trailing {
+        let pattern = if seq.items.len() == 1 && !seq.trailing {
             let item = seq.items.pop().unwrap();
             match item.value {
-                Expr::Name(n) => Pattern {
-                    kind: PatternKind::Name(n),
-                    span: Span { start, end },
-                },
+                Expr::Name(n) => Pattern::Name(n),
                 _ => unreachable!(),
             }
         } else {
-            Pattern {
-                kind: PatternKind::Tuple(seq),
-                span: Span { start, end },
-            }
-        })
+            Pattern::tuple(seq)
+        };
+
+        let span = Span { start, end };
+        Ok(self.mk_node(pattern, span))
     }
 
     pub(crate) fn parse_paren_expr(&mut self, ctx: &ParseContext) -> ExprResult {
@@ -154,14 +137,16 @@ impl Parser {
             ctx.stop_token = Some(TokenKind::RightParen);
             let ex = self.parse_expr(&ctx)?;
             if let Expr::Sequence(seq) = ex.value {
-                Expr::Tuple(seq)
+                Expr::Tuple(Tuple { seq })
             } else {
                 Expr::Paren(Box::new(ex))
             }
         } else {
-            Expr::Tuple(Sequence {
-                items: vec![],
-                trailing: false,
+            Expr::Tuple(Tuple {
+                seq: Sequence {
+                    items: vec![],
+                    trailing: false,
+                },
             })
         };
         // ')'
@@ -170,7 +155,7 @@ impl Parser {
         if peek!(self, TokenKind::FatArrow) {
             // closure expression!
             let args = match kind {
-                Expr::Tuple(seq) => seq,
+                Expr::Tuple(tuple) => tuple.seq,
                 Expr::Paren(ex) => Sequence {
                     items: vec![*ex],
                     trailing: false,
@@ -187,16 +172,17 @@ impl Parser {
         &mut self,
         trail: Trailing,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<Name>, Span)> {
+    ) -> ParseResult<(Vec<Node<Name>>, Span)> {
         let mut names = vec![];
         let mut start = Pos::new();
         let mut end: Pos;
         loop {
             let n = self.parse_name_with_type()?;
+            let span = self.srcmap.span_of(&n);
             if start.empty() {
-                start = n.span.start;
+                start = span.start;
             }
-            end = n.span.end;
+            end = span.end;
             names.push(n);
 
             if !peek!(self, TokenKind::Identifier(_)) {
@@ -224,7 +210,7 @@ impl Parser {
         trail: Trailing,
         stop_token: Option<TokenKind>,
         ctx: &ParseContext,
-    ) -> ParseResult<Sequence<SourceInfo>> {
+    ) -> ParseResult<Sequence> {
         let mut items = vec![];
         let mut trailing = false;
         loop {
@@ -232,8 +218,8 @@ impl Parser {
                 (_, k, Some(t)) if &k == t => break,
                 (ValueKind::LValue, TokenKind::Identifier(_), _) => {
                     let n = self.parse_name_with_type()?;
-                    let span = n.span;
-                    items.push(self.mk_expr(Expr::Name(n), span, ctx.path.clone()))
+                    let span = self.srcmap.span_of(&n);
+                    items.push(self.mk_expr(Expr::Name(n.value), span, ctx.path.clone()))
                 }
                 (ValueKind::RValue, _, _) => {
                     let ex = self.parse_expr(ctx)?;
@@ -260,7 +246,7 @@ impl Parser {
 
     pub(crate) fn parse_closure_expr_with_seq(
         &mut self,
-        args: Sequence<SourceInfo>,
+        args: Sequence,
         has_curly: bool,
         mut curly_spans: Option<(Span, Span)>,
         mut span: Span,
@@ -303,8 +289,13 @@ impl Parser {
                 let r = self.expect_sp(TokenKind::RightCurly)?;
                 span.end = r.end;
                 curly_spans = Some((l, r));
-                let body =
-                    Box::new(self.mk_expr(Expr::Tuple(Sequence::empty()), span, ctx.path.clone()));
+                let body = Box::new(self.mk_expr(
+                    Expr::Tuple(Tuple {
+                        seq: Sequence::empty(),
+                    }),
+                    span,
+                    ctx.path.clone(),
+                ));
                 return Ok(self.mk_expr(
                     Expr::Closure(Closure {
                         args: Sequence::empty(),
@@ -339,14 +330,14 @@ impl Parser {
         } else {
             // single arg or underscore
             let name = self.parse_name_with_type()?;
-            let name_span = name.span;
+            let name_span = self.srcmap.span_of(&name);
             if !has_curly {
                 span.start = name_span.start;
             }
 
             span.end = name_span.end;
             Sequence {
-                items: vec![self.mk_expr(Expr::Name(name), name_span, ctx.path.clone())],
+                items: vec![self.mk_expr(Expr::Name(name.value), name_span, ctx.path.clone())],
                 trailing: false,
             }
         };

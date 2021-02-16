@@ -1,25 +1,19 @@
 use crate::{
-    ast::{Expr, HasExpr, InfixOp, Node},
+    ast::{Expr, InfixOp, Node, Pattern},
     span::Span,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Assign<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub lhs: Box<Node<Expr<Info>, Info>>,
-    pub rhs: Box<Node<Expr<Info>, Info>>,
+pub struct Assign {
+    pub lhs: Node<Pattern>,
+    pub rhs: Box<Node<Expr>>,
     pub is_mut: bool,
     pub mut_span: Option<Span>,
     pub op: InfixOp,
     pub op_span: Span,
 }
 
-impl<Info> std::fmt::Display for Assign<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Assign {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -32,12 +26,9 @@ where
     }
 }
 
-impl<Info> Assign<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl Assign {
     pub fn get_ty_span(&self) -> Option<Span> {
-        if let Expr::Name(n) = &self.lhs.expr() {
+        if let Pattern::Name(n) = &self.lhs.value {
             n.ty.as_ref().and_then(|t| t.span().copied())
         } else {
             None

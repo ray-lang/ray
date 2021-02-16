@@ -1,10 +1,10 @@
 use crate::{
-    ast::{token::TokenKind, Import, Path, PathNode, Trailing},
+    ast::{token::TokenKind, HasSource, Import, Node, Path, PathNode, SourceInfo, Trailing},
     parse::{ParseContext, ParseResult, Parser},
     span::Span,
 };
 
-impl Parser {
+impl Parser<'_> {
     /// Parses an import statement
     ///
     /// Examples:
@@ -26,14 +26,14 @@ impl Parser {
             let (c_import, sp) = self.expect_string()?;
             let end = sp.end;
             Import {
-                path: PathNode::empty(),
+                path: Node::new(Path::new()),
                 with: None,
                 span: Span { start, end },
                 c_import: Some((c_import, sp)),
             }
         } else {
             let path = self.parse_path()?;
-            let mut end = path.span().end;
+            let mut end = self.srcmap.span_of(&path).end;
             let with = if expect_if!(self, TokenKind::With) {
                 let (names, span) = self.parse_name_seq(Trailing::Disallow, ctx)?;
                 end = span.end;

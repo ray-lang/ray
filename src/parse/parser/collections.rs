@@ -2,7 +2,7 @@ use super::{ExprResult, ParseContext, Parser};
 
 use crate::ast::{token::TokenKind, Expr, List, Trailing, ValueKind};
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_array_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let lbrack_span = self.expect_sp(TokenKind::LeftBracket)?;
         let seq = self.parse_expr_seq(

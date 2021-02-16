@@ -6,7 +6,7 @@ use std::ops::Div;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::str::FromStr;
 
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct FilePath {
     buf: PathBuf,
 }

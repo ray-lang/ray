@@ -185,14 +185,20 @@ impl TyPredicate {
         filepath: &FilePath,
         ctx: &mut TyCtx,
     ) -> Result<TyPredicate, RayError> {
-        let (s, v) = match q.clone_value().from_ast_ty(scope, ctx) {
+        // resolve the type
+        let ty_span = *q.span().unwrap();
+        let mut q = q.clone_value();
+        q.resolve_ty(scope, ctx);
+
+        let (s, v) = match q {
             Ty::Projection(s, v, _) => (s, v),
             _ => {
                 return Err(RayError {
                     msg: str!("qualifier must be a trait type"),
                     src: vec![Source {
-                        span: Some(*q.span().unwrap()),
+                        span: Some(ty_span),
                         filepath: filepath.clone(),
+                        ..Default::default()
                     }],
                     kind: RayErrorKind::Type,
                 })
@@ -203,8 +209,9 @@ impl TyPredicate {
             return Err(RayError {
                 msg: format!("traits must have one type argument, but found {}", v.len()),
                 src: vec![Source {
-                    span: Some(*q.span().unwrap()),
+                    span: Some(ty_span),
                     filepath: filepath.clone(),
+                    ..Default::default()
                 }],
                 kind: RayErrorKind::Type,
             });
@@ -218,8 +225,9 @@ impl TyPredicate {
                 return Err(RayError {
                     msg: format!("trait `{}` is not defined", fqn),
                     src: vec![Source {
-                        span: Some(*q.span().unwrap()),
+                        span: Some(ty_span),
                         filepath: filepath.clone(),
+                        ..Default::default()
                     }],
                     kind: RayErrorKind::Type,
                 })

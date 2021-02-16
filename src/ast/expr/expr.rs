@@ -3,48 +3,47 @@ use std::fmt::Debug;
 use crate::{
     ast::{
         asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List,
-        Literal, Loop, Name, Node, PathNode, Range, Sequence, UnaryOp, While,
+        Literal, Loop, Name, Node, Path, Range, Sequence, UnaryOp, While,
     },
     span::parsed::Parsed,
     typing::ty::Ty,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Expr<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    Assign(Assign<Info>),
+use super::Tuple;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expr {
+    Assign(Assign),
     Asm(Asm),
-    BinOp(BinOp<Info>),
-    Block(Block<Info>),
-    Break(Option<Box<Node<Expr<Info>, Info>>>),
-    Call(Call<Info>),
-    Cast(Cast<Info>),
-    Closure(Closure<Info>),
-    Curly(Curly<Info>),
-    DefaultValue(Box<Node<Expr<Info>, Info>>),
-    Dot(Dot<Info>),
-    Fn(Fn<Info>),
-    For(For<Info>),
-    If(If<Info>),
-    Index(Index<Info>),
-    Labeled(Box<Node<Expr<Info>, Info>>, Box<Node<Expr<Info>, Info>>),
-    List(List<Info>),
+    BinOp(BinOp),
+    Block(Block),
+    Break(Option<Box<Node<Expr>>>),
+    Call(Call),
+    Cast(Cast),
+    Closure(Closure),
+    Curly(Curly),
+    DefaultValue(Box<Node<Expr>>),
+    Dot(Dot),
+    Fn(Fn),
+    For(For),
+    If(If),
+    Index(Index),
+    Labeled(Box<Node<Expr>>, Box<Node<Expr>>),
+    List(List),
     Literal(Literal),
-    Loop(Loop<Info>),
+    Loop(Loop),
     Name(Name),
-    Path(PathNode),
-    Paren(Box<Node<Expr<Info>, Info>>),
-    Range(Range<Info>),
-    Return(Option<Box<Node<Expr<Info>, Info>>>),
-    Sequence(Sequence<Info>),
-    Tuple(Sequence<Info>),
+    Path(Path),
+    Paren(Box<Node<Expr>>),
+    Range(Range),
+    Return(Option<Box<Node<Expr>>>),
+    Sequence(Sequence),
+    Tuple(Tuple),
     Type(Parsed<Ty>),
-    TypeAnnotated(Box<Node<Expr<Info>, Info>>, Node<Parsed<Ty>, Info>),
-    UnaryOp(UnaryOp<Info>),
-    Unsafe(Box<Node<Expr<Info>, Info>>),
-    While(While<Info>),
+    TypeAnnotated(Box<Node<Expr>>, Node<Parsed<Ty>>),
+    UnaryOp(UnaryOp),
+    Unsafe(Box<Node<Expr>>),
+    While(While),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,10 +59,7 @@ pub enum Trailing {
     Warn,
 }
 
-impl<Info> std::fmt::Display for Expr<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -110,13 +106,46 @@ where
     }
 }
 
-impl<Info> Expr<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl Expr {
+    pub fn path(&self) -> Option<Path> {
+        match &self {
+            Expr::Name(n) => Some(n.path.clone()),
+            Expr::Fn(f) => Some(f.sig.path.clone()),
+            Expr::Path(p) => Some(p.clone()),
+            Expr::Assign(_)
+            | Expr::Asm(_)
+            | Expr::BinOp(_)
+            | Expr::Block(_)
+            | Expr::Break(_)
+            | Expr::Call(_)
+            | Expr::Cast(_)
+            | Expr::Closure(_)
+            | Expr::Curly(_)
+            | Expr::DefaultValue(_)
+            | Expr::Dot(_)
+            | Expr::For(_)
+            | Expr::If(_)
+            | Expr::Index(_)
+            | Expr::Labeled(_, _)
+            | Expr::Literal(_)
+            | Expr::List(_)
+            | Expr::Loop(_)
+            | Expr::Paren(_)
+            | Expr::Range(_)
+            | Expr::Return(_)
+            | Expr::Sequence(_)
+            | Expr::Tuple(_)
+            | Expr::Type(_)
+            | Expr::TypeAnnotated(..)
+            | Expr::UnaryOp(_)
+            | Expr::Unsafe(_)
+            | Expr::While(_) => None,
+        }
+    }
+
     pub fn get_name(&self) -> Option<String> {
         match &self {
-            Expr::Name(n) => Some(n.name.clone()),
+            Expr::Name(n) => Some(n.path.to_string()),
             Expr::Fn(f) => f.sig.name.clone(),
             Expr::Path(p) => Some(p.to_string()),
             Expr::Assign(_)

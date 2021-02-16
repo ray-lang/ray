@@ -23,20 +23,14 @@ impl std::fmt::Display for RangeLimits {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Range<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub start: Box<Node<Expr<Info>, Info>>,
-    pub end: Box<Node<Expr<Info>, Info>>,
+pub struct Range {
+    pub start: Box<Node<Expr>>,
+    pub end: Box<Node<Expr>>,
     pub limits: RangeLimits,
     pub op_span: Span,
 }
 
-impl<Info> std::fmt::Display for Range<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Range {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(range {} {} {})", self.start, self.limits, self.end)
     }

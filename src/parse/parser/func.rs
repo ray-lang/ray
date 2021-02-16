@@ -1,16 +1,16 @@
 use super::{ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
-    ast::{self, token::TokenKind, FnParam, FnSig, SourceInfo},
+    ast::{self, token::TokenKind, FnParam, FnSig, HasSource, Node, Path, SourceInfo},
     span::Span,
 };
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_fn(
         &mut self,
         only_sigs: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<ast::Fn<SourceInfo>> {
+    ) -> ParseResult<(ast::Fn, Span)> {
         let sig = self.parse_fn_sig(ctx)?;
         let start = sig.span.start;
         let mut end = sig.span.end;
@@ -24,28 +24,26 @@ impl Parser {
             } else {
                 self.parse_block(&ctx)?
             };
-            end = b.info.src.span.unwrap().end;
+            end = self.srcmap.span_of(&b).end;
             Some(b)
         } else {
             None
         };
 
-        let span = Span { start, end };
-        Ok(ast::Fn {
-            sig,
-            body: body.map(|b| Box::new(b)),
-            span,
-        })
+        Ok((
+            ast::Fn {
+                sig,
+                body: body.map(|b| Box::new(b)),
+            },
+            Span { start, end },
+        ))
     }
 
-    pub(crate) fn parse_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FnSig<SourceInfo>> {
+    pub(crate) fn parse_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FnSig> {
         self.parse_fn_sig_with_param(ctx, |this| this.parse_params(ctx))
     }
 
-    pub(crate) fn parse_trait_fn_sig(
-        &mut self,
-        ctx: &ParseContext,
-    ) -> ParseResult<FnSig<SourceInfo>> {
+    pub(crate) fn parse_trait_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FnSig> {
         self.parse_fn_sig_with_param(ctx, |this| this.parse_trait_fn_params(ctx))
     }
 
@@ -53,9 +51,9 @@ impl Parser {
         &mut self,
         ctx: &ParseContext,
         f: F,
-    ) -> ParseResult<FnSig<SourceInfo>>
+    ) -> ParseResult<FnSig>
     where
-        F: Fn(&mut Parser) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)>,
+        F: Fn(&mut Parser) -> ParseResult<(Vec<Node<FnParam>>, Span)>,
     {
         let modifiers = self.parse_modifiers()?;
         let start = self.expect_start(TokenKind::Fn)?;
@@ -111,14 +109,19 @@ impl Parser {
     pub(crate) fn parse_params(
         &mut self,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)> {
-        self.parse_params_with(ctx, |this| Ok(FnParam::Name(this.parse_name_with_type()?)))
+    ) -> ParseResult<(Vec<Node<FnParam>>, Span)> {
+        let path = ctx.path.clone();
+        self.parse_params_with(ctx, |this| {
+            let name = this.parse_name_with_type()?;
+            let span = this.srcmap.span_of(&name);
+            Ok(this.mk_node_with_path(FnParam::Name(name.value), span, path.clone()))
+        })
     }
 
     pub(crate) fn parse_trait_fn_params(
         &mut self,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)> {
+    ) -> ParseResult<(Vec<Node<FnParam>>, Span)> {
         self.parse_params_with(ctx, |this| Ok(this.parse_trait_fn_param()?))
     }
 
@@ -126,9 +129,9 @@ impl Parser {
         &mut self,
         ctx: &ParseContext,
         f: F,
-    ) -> ParseResult<(Vec<FnParam<SourceInfo>>, Span)>
+    ) -> ParseResult<(Vec<Node<FnParam>>, Span)>
     where
-        F: Fn(&mut Parser) -> ParseResult<FnParam<SourceInfo>>,
+        F: Fn(&mut Parser) -> ParseResult<Node<FnParam>>,
     {
         let (lparen_tok, lp_span) = self.expect(TokenKind::LeftParen)?;
         let start = lp_span.start;
@@ -144,7 +147,11 @@ impl Parser {
             let mut param = f(self)?;
             if expect_if!(self, TokenKind::Equals) {
                 let d = self.parse_expr(&ctx)?;
-                param = FnParam::DefaultValue(Box::new(param), Box::new(d));
+                let span = self
+                    .srcmap
+                    .span_of(&param)
+                    .extend_to(&self.srcmap.span_of(&d));
+                param = self.mk_node(FnParam::DefaultValue(Box::new(param), Box::new(d)), span);
             }
             params.push(param);
 

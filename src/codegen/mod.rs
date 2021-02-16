@@ -229,7 +229,7 @@ where
     }
 }
 
-impl<T, I> Codegen for Node<T, SourceInfo>
+impl<T, I> Codegen for Node<T>
 where
     T: Codegen<Output = I>,
 {

@@ -225,7 +225,7 @@ pub trait ApplySubstMut {
     fn apply_subst_mut(&mut self, subst: &Subst);
 }
 
-impl<T: ApplySubst + Clone> ApplySubstMut for T {
+impl<T: ApplySubst> ApplySubstMut for T {
     fn apply_subst_mut(&mut self, subst: &Subst) {
         unsafe {
             let old_t = std::mem::replace(self, std::mem::MaybeUninit::uninit().assume_init());
@@ -243,6 +243,13 @@ impl ApplySubst for Subst {
             v.apply_subst_mut(subst);
         }
         this
+    }
+}
+
+impl<'a, T: ApplySubst> ApplySubst for &'a mut T {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        self.apply_subst_mut(subst);
+        self
     }
 }
 

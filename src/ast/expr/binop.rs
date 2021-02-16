@@ -4,20 +4,14 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinOp<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
-    pub lhs: Box<Node<Expr<Info>, Info>>,
-    pub rhs: Box<Node<Expr<Info>, Info>>,
+pub struct BinOp {
+    pub lhs: Box<Node<Expr>>,
+    pub rhs: Box<Node<Expr>>,
     pub op: InfixOp,
     pub op_span: Span,
 }
 
-impl<Info> std::fmt::Display for BinOp<Info>
-where
-    Info: std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for BinOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(binop {} {} {})", self.lhs, self.op, self.rhs)
     }
