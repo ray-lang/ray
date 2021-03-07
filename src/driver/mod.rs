@@ -1,13 +1,12 @@
-use std::{collections::HashMap, fs};
+use std::fs;
 
 use crate::{
-    ast,
+    ast::{self},
     codegen::{codegen, wasm},
     errors::{RayError, RayErrorKind},
     hir, lir, parse,
     pathlib::FilePath,
     sema,
-    span::SourceMap,
     typing::{ApplySubstMut, InferSystem, TyCtx},
 };
 
@@ -91,7 +90,7 @@ impl Driver {
         let mut modules = mod_builder.modules;
         let mut srcmaps = mod_builder.srcmaps;
         let mut tcx = TyCtx::new();
-        let (module, mut srcmap) =
+        let (module, mut srcmap, scope_map) =
             hir::transform_modules(&mod_path, &mut modules, &mut srcmaps, &mut tcx)?;
         log::debug!("{}", module);
         let mut inf = InferSystem::new(&mut tcx);

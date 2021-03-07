@@ -6,13 +6,13 @@ use lir::{SymbolSet, Variable};
 use crate::{
     ast::{Node, Path, SourceInfo},
     lir,
-    typing::{self, ty::Ty},
+    typing::{self, ty::Ty, TyCtx},
     utils::join,
 };
 
 pub mod wasm;
 
-pub fn codegen(prog: &lir::Program, tcx: &typing::TyCtx) -> wasm::Module {
+pub fn codegen(prog: &lir::Program, tcx: &TyCtx) -> wasm::Module {
     let mut ctx = CodegenCtx::new();
     prog.codegen(&mut ctx, tcx);
     ctx.module
@@ -215,7 +215,7 @@ impl GetLocals for Vec<wasm::Instruction> {
 trait Codegen {
     type Output;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output;
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output;
 }
 
 impl<T> Codegen for Vec<T>
@@ -224,7 +224,7 @@ where
 {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         self.iter().flat_map(|t| t.codegen(ctx, tcx)).collect()
     }
 }
@@ -235,7 +235,7 @@ where
 {
     type Output = I;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         self.value.codegen(ctx, tcx)
     }
 }
@@ -243,13 +243,14 @@ where
 impl Codegen for lir::Program {
     type Output = ();
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         // collect the function symbols
         let fn_map = self
             .funcs
             .iter()
             .map(|f| (f.name.clone(), f))
             .collect::<HashMap<_, _>>();
+        log::debug!("fn_map: {:#?}", fn_map.keys());
 
         let mut symbols = HashSet::new();
         let start_fn = &self.funcs[self.start_idx as usize];
@@ -409,7 +410,7 @@ impl Codegen for lir::Program {
 impl Codegen for lir::Func {
     type Output = ();
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         // generate the instructions for the body of the function
         let mut inst = self.body.codegen(ctx, tcx).simplify();
         inst.push(wasm::Instruction::End);
@@ -438,7 +439,7 @@ impl Codegen for lir::Func {
 impl Codegen for lir::Block {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         self.instructions.codegen(ctx, tcx)
     }
 }
@@ -446,7 +447,7 @@ impl Codegen for lir::Block {
 impl Codegen for lir::Inst {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         match self {
             lir::Inst::Value(v) => v.codegen(ctx, tcx),
             lir::Inst::Free(_) => todo!("codegen lir::Inst: {}", self),
@@ -458,7 +459,7 @@ impl Codegen for lir::Inst {
             }
             lir::Inst::Block(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Func(_) => todo!("codegen lir::Inst: {}", self),
-            lir::Inst::IfBlock(_) => todo!("codegen lir::Inst: {}", self),
+            lir::Inst::IfBlock(if_block) => if_block.codegen(ctx, tcx),
             lir::Inst::Loop(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::MemCopy(dst, src, size) => {
                 let mut inst = dst.codegen(ctx, tcx);
@@ -484,15 +485,16 @@ impl Codegen for lir::Inst {
 impl Codegen for lir::Value {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         match self {
             lir::Value::Empty => vec![],
             lir::Value::Atom(a) => a.codegen(ctx, tcx),
             lir::Value::Malloc(m) => m.codegen(ctx, tcx),
             lir::Value::Call(c) => c.codegen(ctx, tcx),
             lir::Value::CExternCall(_) => todo!("codegen lir::Value: {}", self),
-            lir::Value::Branch(_) => todo!("codegen lir::Value: {}", self),
+            lir::Value::Branch(br) => br.codegen(ctx, tcx),
             lir::Value::Select(_) => todo!("codegen lir::Value: {}", self),
+            lir::Value::Phi(_) => todo!("codegen lir::Value: {}", self),
             lir::Value::Load(l) => l.codegen(ctx, tcx),
             lir::Value::Lea(_) => todo!("codegen lir::Value: {}", self),
             lir::Value::GetField(g) => g.codegen(ctx, tcx),
@@ -505,7 +507,7 @@ impl Codegen for lir::Value {
 impl Codegen for lir::Malloc {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         let lir::Malloc(size) = self;
         let idx = ctx.global("heap_ptr");
         let mut inst = vec![
@@ -554,7 +556,7 @@ impl Codegen for lir::Malloc {
 impl Codegen for lir::Load {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         let size = size_to_bytes(&self.size);
         let offset = size_to_bytes(&self.offset) as u32;
         let mut inst = self.src.codegen(ctx, tcx);
@@ -572,7 +574,7 @@ impl Codegen for lir::Load {
 impl Codegen for lir::Store {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         let size = size_to_bytes(&self.size);
         let offset = size_to_bytes(&self.offset) as u32;
         let mut insts = self.dst.codegen(ctx, tcx);
@@ -590,10 +592,53 @@ impl Codegen for lir::Store {
     }
 }
 
+impl Codegen for lir::IfBlock {
+    type Output = Vec<wasm::Instruction>;
+
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
+        let mut insts = vec![
+            wasm::Instruction::Block(wasm::BlockType::NoResult),
+            wasm::Instruction::Block(wasm::BlockType::NoResult),
+        ];
+
+        let (if_loc, phi) = &self.phi;
+        insts.extend(self.cond_block.codegen(ctx, tcx));
+        insts.extend(self.then_block.codegen(ctx, tcx));
+        insts.extend(phi.then.codegen(ctx, tcx));
+        insts.push(wasm::Instruction::SetLocal(*if_loc as u32));
+        insts.push(wasm::Instruction::Br(1));
+        insts.push(wasm::Instruction::End);
+        insts.extend(self.else_block.codegen(ctx, tcx));
+        insts.extend(phi.els.codegen(ctx, tcx));
+        insts.push(wasm::Instruction::SetLocal(*if_loc as u32));
+        insts.push(wasm::Instruction::End);
+        insts
+    }
+}
+
+impl Codegen for lir::Branch {
+    type Output = Vec<wasm::Instruction>;
+
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
+        let mut inst = self.operand.codegen(ctx, tcx);
+        match self.op {
+            lir::BranchOp::BranchNZ => {
+                inst.push(wasm::Instruction::I32Eqz);
+            }
+            lir::BranchOp::BranchZ => {
+                inst.push(wasm::Instruction::I32Const(0));
+                inst.push(wasm::Instruction::I32Ne);
+            }
+        }
+        inst.push(wasm::Instruction::BrIf(0));
+        inst
+    }
+}
+
 impl Codegen for lir::GetField {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         // get the field offset and size
         let lhs_ty = ctx.type_of(&self.src);
         let lhs_fqn = lhs_ty.get_path().unwrap();
@@ -625,7 +670,7 @@ impl Codegen for lir::GetField {
 impl Codegen for lir::Call {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         let mut insts = self.args.codegen(ctx, tcx);
         let (idx, _) = ctx
             .fn_index
@@ -639,7 +684,7 @@ impl Codegen for lir::Call {
 impl Codegen for lir::BasicOp {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         // convert the lir op and size into a wasm op
         let op = match (self.op, self.size, self.signed) {
             // int sizes: ptrsize, 8, 16, 32
@@ -742,7 +787,7 @@ impl Codegen for lir::BasicOp {
 impl Codegen for lir::Atom {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         match self {
             lir::Atom::Variable(v) => v.codegen(ctx, tcx),
             lir::Atom::FuncRef(_) => todo!("codegen lir::Atom: {}", self),
@@ -776,7 +821,7 @@ impl Codegen for lir::Atom {
 impl Codegen for lir::Variable {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &typing::TyCtx) -> Self::Output {
+    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx) -> Self::Output {
         match self {
             lir::Variable::Data(i) => {
                 let addr = ctx.data_addrs.get(i).unwrap();

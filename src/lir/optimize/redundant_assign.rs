@@ -105,10 +105,9 @@ impl RedundantAssignElim {
                 true
             }
             lir::Inst::IfBlock(b) => {
-                self.visit_block(&mut b.cond, params, local_map);
-                self.visit_block(&mut b.then, params, local_map);
-                self.visit_block(&mut b.els, params, local_map);
-                self.visit_block(&mut b.end, params, local_map);
+                self.visit_block(&mut b.cond_block, params, local_map);
+                self.visit_block(&mut b.then_block, params, local_map);
+                self.visit_block(&mut b.else_block, params, local_map);
                 true
             }
             lir::Inst::Loop(l) => {

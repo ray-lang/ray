@@ -51,10 +51,9 @@ impl Parser<'_> {
                 }
                 TokenKind::Fn | TokenKind::Modifier(_) => {
                     let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
-                    let path = f.sig.path.clone();
                     f.sig.doc_comment = doc;
                     f.sig.decorators = decs;
-                    let decl = this.mk_decl(Decl::Fn(f), span, path);
+                    let decl = this.mk_decl(Decl::Fn(f), span, ctx.path.clone());
                     funcs.push(decl);
                     Ok(span.end)
                 }
@@ -89,8 +88,7 @@ impl Parser<'_> {
             TokenKind::Trait => self.parse_trait(ctx)?,
             TokenKind::Fn | TokenKind::Modifier(_) => {
                 let (f, span) = self.parse_fn(false, ctx)?;
-                let path = f.sig.path.clone();
-                self.mk_decl(Decl::Fn(f), span, path)
+                self.mk_decl(Decl::Fn(f), span, ctx.path.clone())
             }
             _ => unreachable!(),
         })
@@ -363,11 +361,7 @@ impl Parser<'_> {
             if !self.is_eol() && !next_comma {
                 return Err(RayError {
                     msg: format!("{}", "fields must be separated by a newline or comma"),
-                    src: vec![Source::new(
-                        self.options.filepath.clone(),
-                        Span { start: end, end },
-                        Path::new(),
-                    )],
+                    src: vec![self.mk_src(Span { start: end, end })],
                     kind: RayErrorKind::Parse,
                 });
             }

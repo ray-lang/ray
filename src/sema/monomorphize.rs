@@ -74,12 +74,13 @@ impl Monomorphizer {
     fn monomorphize_func(&mut self, func: &mut lir::Func, funcs: &mut Vec<lir::Func>) {
         let mut symbols = func.symbols.clone();
         let mut poly_refs = vec![];
+        let func_name = func.name.clone();
         self.collect(func.iter_calls(), &mut poly_refs);
 
         for mut poly_ref in poly_refs {
             log::debug!("[monomorphize] {:?}", poly_ref);
             let (poly_name, mono_name) = self.monomorphize_ref(&mut poly_ref, funcs);
-            log::debug!("symbols: {:?}", symbols);
+            log::debug!("symbols for `{}`: {:?}", func_name, symbols);
             log::debug!("poly_name: {}", poly_name);
             log::debug!("mono_name: {}", mono_name);
             symbols.remove(&poly_name);
@@ -172,6 +173,11 @@ impl Monomorphizer {
 
         // apply the substitution to the function
         mono_fn = mono_fn.apply_subst(&subst);
+        log::debug!(
+            "symbols for `{}` after subst: {:?}",
+            mono_name,
+            mono_fn.symbols
+        );
 
         // collect further polymorphic functions from the new monomorphized function
         self.monomorphize_func(&mut mono_fn, funcs);

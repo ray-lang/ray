@@ -270,6 +270,7 @@ pub enum Value {
     CExternCall(CExternCall),
     Branch(Branch),
     Select(Select),
+    Phi(Phi),
     Load(Load),
     Lea(Lea),
     GetField(GetField),
@@ -289,6 +290,7 @@ impl std::fmt::Display for Value {
             Value::CExternCall(a) => write!(f, "{}", a),
             Value::Branch(a) => write!(f, "{}", a),
             Value::Select(a) => write!(f, "{}", a),
+            Value::Phi(a) => write!(f, "{}", a),
             Value::Load(a) => write!(f, "{}", a),
             Value::Lea(a) => write!(f, "{}", a),
             Value::GetField(a) => write!(f, "{}", a),
@@ -306,6 +308,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::CExternCall(c) => c.get_locals_mut(),
             Value::Branch(b) => b.get_locals_mut(),
             Value::Select(s) => s.get_locals_mut(),
+            Value::Phi(p) => p.get_locals_mut(),
             Value::Load(l) => l.get_locals_mut(),
             Value::Malloc(m) => m.get_locals_mut(),
             Value::Lea(l) => l.get_locals_mut(),
@@ -325,6 +328,7 @@ impl<'a> GetLocals<'a> for Value {
             Value::CExternCall(c) => c.get_locals(),
             Value::Branch(b) => b.get_locals(),
             Value::Select(s) => s.get_locals(),
+            Value::Phi(p) => p.get_locals(),
             Value::Load(l) => l.get_locals(),
             Value::Lea(l) => l.get_locals(),
             Value::GetField(g) => g.get_locals(),
@@ -345,6 +349,7 @@ impl ApplySubst for Value {
             Value::CExternCall(_) => todo!(),
             Value::Branch(b) => Value::Branch(b.apply_subst(subst)),
             Value::Select(s) => Value::Select(s.apply_subst(subst)),
+            Value::Phi(phi) => Value::Phi(phi.apply_subst(subst)),
             Value::Load(l) => Value::Load(l.apply_subst(subst)),
             Value::Lea(l) => Value::Lea(l.apply_subst(subst)),
             Value::GetField(g) => Value::GetField(g.apply_subst(subst)),
@@ -1166,54 +1171,68 @@ impl<'a> GetLocals<'a> for CExternCall {
 
 #[derive(Clone, Debug)]
 pub struct IfBlock {
-    pub name: String,
-    pub cond: Block,
-    pub then: Block,
-    pub els: Block,
-    pub end: Block,
+    pub cond_block: Block,
+    pub then_block: Block,
+    pub else_block: Block,
+    pub phi: (usize, Phi),
 }
+
+LirImplInto!(Inst for IfBlock);
 
 impl std::fmt::Display for IfBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "(if (\n{}) then: (\n{}) else: (\n{}) end: (\n{})\n)",
-            indent_lines(&self.cond, 2),
-            indent_lines(&self.then, 2),
-            indent_lines(&self.els, 2),
-            indent_lines(&self.end, 2)
+            "if (\n{}\n) then: (\n{}\n) else: (\n{}\n)\n${} = {}",
+            indent_lines(&self.cond_block, 2),
+            indent_lines(&self.then_block, 2),
+            indent_lines(&self.else_block, 2),
+            self.phi.0,
+            self.phi.1,
         )
     }
 }
 
 impl<'a> GetLocalsMut<'a> for IfBlock {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        let mut locs = self.cond.get_locals_mut();
-        locs.extend(self.then.get_locals_mut());
-        locs.extend(self.els.get_locals_mut());
-        locs.extend(self.end.get_locals_mut());
+        let mut locs = self.cond_block.get_locals_mut();
+        locs.extend(self.then_block.get_locals_mut());
+        locs.extend(self.else_block.get_locals_mut());
+        locs.push(&mut self.phi.0);
+        locs.extend(self.phi.1.get_locals_mut());
         locs
     }
 }
 
 impl<'a> GetLocals<'a> for IfBlock {
     fn get_locals(&'a self) -> Vec<&'a usize> {
-        let mut locs = self.cond.get_locals();
-        locs.extend(self.then.get_locals());
-        locs.extend(self.els.get_locals());
-        locs.extend(self.end.get_locals());
+        let mut locs = self.cond_block.get_locals();
+        locs.extend(self.then_block.get_locals());
+        locs.extend(self.else_block.get_locals());
+        locs.push(&self.phi.0);
+        locs.extend(self.phi.1.get_locals());
         locs
     }
 }
 
 impl ApplySubst for IfBlock {
     fn apply_subst(self, subst: &Subst) -> Self {
-        IfBlock {
-            name: self.name,
-            cond: self.cond.apply_subst(subst),
-            then: self.then.apply_subst(subst),
-            els: self.els.apply_subst(subst),
-            end: self.end.apply_subst(subst),
+        Self {
+            cond_block: self.cond_block.apply_subst(subst),
+            then_block: self.then_block.apply_subst(subst),
+            else_block: self.else_block.apply_subst(subst),
+            phi: (self.phi.0, self.phi.1.apply_subst(subst)),
+        }
+    }
+}
+
+impl IfBlock {
+    pub fn new(cond: Block, then: Block, els: Block, phi: (usize, Phi)) -> Self {
+        Self {
+            cond_block: cond,
+            then_block: then,
+            else_block: els,
+            phi,
         }
     }
 }
@@ -1274,10 +1293,10 @@ impl std::fmt::Display for Loop {
 
 #[derive(Clone, Debug)]
 pub struct Branch {
-    op: BranchOp,
-    operand: Atom,
-    then_label: String,
-    else_label: String,
+    pub op: BranchOp,
+    pub operand: Atom,
+    pub then_label: String,
+    pub else_label: String,
 }
 
 LirImplInto!(Value for Branch);
@@ -1315,11 +1334,67 @@ impl ApplySubst for Branch {
     }
 }
 
+impl Branch {
+    pub fn new(op: BranchOp, operand: Atom, then_label: String, else_label: String) -> Self {
+        Self {
+            op,
+            operand,
+            then_label,
+            else_label,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Phi {
+    pub then: Variable,
+    pub els: Variable,
+}
+
+LirImplInto!(Value for Phi);
+
+impl std::fmt::Display for Phi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "phi({}, {})", self.then, self.els)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for Phi {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        let mut loc = self.then.get_locals_mut();
+        loc.extend(self.els.get_locals_mut());
+        loc
+    }
+}
+
+impl<'a> GetLocals<'a> for Phi {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        let mut loc = self.then.get_locals();
+        loc.extend(self.els.get_locals());
+        loc
+    }
+}
+
+impl ApplySubst for Phi {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Self {
+            then: self.then.apply_subst(subst),
+            els: self.els.apply_subst(subst),
+        }
+    }
+}
+
+impl Phi {
+    pub fn new(then: Variable, els: Variable) -> Self {
+        Self { then, els }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Select {
-    cond: Variable,
-    then: Atom,
-    els: Atom,
+    pub cond: Variable,
+    pub then: Variable,
+    pub els: Variable,
 }
 
 LirImplInto!(Value for Select);
@@ -1355,6 +1430,12 @@ impl ApplySubst for Select {
             then: self.then.apply_subst(subst),
             els: self.els.apply_subst(subst),
         }
+    }
+}
+
+impl Select {
+    pub fn new(cond: Variable, then: Variable, els: Variable) -> Self {
+        Self { cond, then, els }
     }
 }
 

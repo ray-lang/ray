@@ -79,7 +79,7 @@ impl<T: Hash + Eq + Clone> TopologicalSort<T> {
     /// assert!(ts.pop_all().is_empty());
     /// # }
     /// ```
-    #[inline]
+    #[inline(always)]
     pub fn new() -> TopologicalSort<T> {
         TopologicalSort {
             top: HashMap::new(),
@@ -87,13 +87,13 @@ impl<T: Hash + Eq + Clone> TopologicalSort<T> {
     }
 
     /// Returns the number of elements in the `TopologicalSort`.
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.top.len()
     }
 
     /// Returns true if the `TopologicalSort` contains no elements.
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.top.is_empty()
     }

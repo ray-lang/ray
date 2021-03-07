@@ -77,6 +77,16 @@ pub struct TyVarFactory {
     scope: Option<Path>,
 }
 
+impl<'a> From<&'a TyVarFactory> for TyVarFactory {
+    fn from(tf: &'a TyVarFactory) -> Self {
+        Self {
+            value: tf.value,
+            prefix: tf.prefix,
+            scope: tf.scope.clone(),
+        }
+    }
+}
+
 impl TyVarFactory {
     pub fn new(prefix: &'static str) -> TyVarFactory {
         TyVarFactory {
@@ -94,6 +104,10 @@ impl TyVarFactory {
         }
     }
 
+    pub fn curr(&self) -> u64 {
+        self.value
+    }
+
     pub fn skip_to(&mut self, value: u64) {
         self.value = value;
     }
@@ -101,6 +115,9 @@ impl TyVarFactory {
     pub fn next(&mut self) -> TyVar {
         let v = self.value;
         self.value += 1;
+        // if v == 46 {
+        //     panic!("v = 46")
+        // }
         let name = format!("{}{}", self.prefix, v);
         if let Some(scope) = &self.scope {
             let path = scope.append(name);
@@ -113,6 +130,9 @@ impl TyVarFactory {
     pub fn with_scope(&mut self, scope: &Path) -> TyVar {
         let v = self.value;
         self.value += 1;
+        // if v == 46 {
+        //     panic!("v = 46")
+        // }
         let path = scope.append(format!("{}{}", self.prefix, v));
         TyVar(path)
     }

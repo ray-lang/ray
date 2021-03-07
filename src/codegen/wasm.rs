@@ -9,10 +9,8 @@ pub fn to_wasm_ty(ty: &Ty) -> ValueType {
         Ty::Any => ValueType::I32,
         Ty::Var(_) => todo!("to_wasm_ty: {}", ty),
         Ty::Tuple(_) => ValueType::I32,
-        Ty::Union(_) => todo!("to_wasm_ty: {}", ty),
         Ty::Func(_, _) => todo!("to_wasm_ty: {}", ty),
-        Ty::Ptr(_) => ValueType::I32,
-        Ty::Array(..) => ValueType::I32,
+        Ty::Union(_) | Ty::Array(..) | Ty::Ptr(_) => ValueType::I32,
         Ty::Projection(s, ..) => match s.as_str() {
             "i8" | "i16" | "i32" | "int" | "u8" | "u16" | "u32" | "uint" => ValueType::I32,
             "u64" | "i64" => ValueType::I64,

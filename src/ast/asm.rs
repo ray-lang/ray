@@ -651,7 +651,7 @@ impl std::fmt::Display for AsmOp {
 }
 
 impl AsmOp {
-    pub fn ret_ty(&self) -> Ty {
+    pub fn ret_ty(&self, scope: &Path) -> Ty {
         match self {
             AsmOp::ISizeEq
             | AsmOp::I8Eq
@@ -833,7 +833,7 @@ impl AsmOp {
             | AsmOp::U64Shr
             | AsmOp::U64Rotl
             | AsmOp::U64Rotr => Ty::u64(),
-            AsmOp::Malloc => Ty::ptr(Ty::Var(TyVar(Path::from("'a")))),
+            AsmOp::Malloc => Ty::ptr(Ty::Var(TyVar(scope.append("'a")))),
         }
     }
 }

@@ -34,6 +34,13 @@ impl FnParam {
         }
     }
 
+    pub fn ty_mut(&mut self) -> Option<&mut Ty> {
+        match self {
+            FnParam::DefaultValue(p, _) => p.ty_mut(),
+            FnParam::Name(n) => n.ty.as_deref_mut(),
+        }
+    }
+
     pub fn set_ty(&mut self, ty: Ty) {
         match self {
             FnParam::DefaultValue(p, _) => p.set_ty(ty),

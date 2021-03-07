@@ -185,7 +185,7 @@ impl Parser<'_> {
 
         let ty = if let Some(mut ty) = Ty::from_str(&name) {
             match &mut ty {
-                Ty::Projection(name, el_tys, _) if name.as_str() == "list" => {
+                Ty::Projection(name, el_tys) if name.as_str() == "list" => {
                     *el_tys = ty_params
                         .unwrap()
                         .tys
@@ -202,7 +202,6 @@ impl Parser<'_> {
                 ty_params
                     .map(|p| p.tys.into_iter().map(|t| t.take_value()).collect())
                     .unwrap_or_default(),
-                vec![],
             )
         };
 

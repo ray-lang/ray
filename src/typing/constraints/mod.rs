@@ -71,6 +71,31 @@ impl EqConstraint {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+pub struct VarConstraint(TyVar, Ty);
+
+impl Into<ConstraintKind> for VarConstraint {
+    fn into(self) -> ConstraintKind {
+        ConstraintKind::Var(self)
+    }
+}
+
+impl std::fmt::Debug for VarConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ⤇ {}", self.0, self.1)
+    }
+}
+
+impl VarConstraint {
+    pub fn new(v: TyVar, ty: Ty) -> Constraint {
+        Constraint::new(VarConstraint(v, ty))
+    }
+
+    pub fn unpack(self) -> (TyVar, Ty) {
+        (self.0, self.1)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct GenConstraint(Vec<Ty>, TyVar, Ty);
 
 impl Into<ConstraintKind> for GenConstraint {
@@ -283,6 +308,7 @@ impl AssumeConstraint {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ConstraintKind {
     Eq(EqConstraint),
+    Var(VarConstraint),
     Gen(GenConstraint),
     Inst(InstConstraint),
     Skol(SkolConstraint),
@@ -295,6 +321,7 @@ impl std::fmt::Debug for ConstraintKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConstraintKind::Eq(c) => write!(f, "{:?}", c),
+            ConstraintKind::Var(c) => write!(f, "{:?}", c),
             ConstraintKind::Gen(c) => write!(f, "{:?}", c),
             ConstraintKind::Inst(c) => write!(f, "{:?}", c),
             ConstraintKind::Skol(c) => write!(f, "{:?}", c),
@@ -321,6 +348,7 @@ impl ConstraintKind {
             ConstraintKind::Gen(GenConstraint(m, _, t)) => {
                 m.iter_mut().chain(std::iter::once(t)).collect()
             }
+            ConstraintKind::Var(VarConstraint(_, ty)) => vec![ty],
             ConstraintKind::Prove(ProveConstraint(_))
             | ConstraintKind::Assume(AssumeConstraint(_)) => vec![],
         };
@@ -391,6 +419,12 @@ impl HasFreeVars for Constraint {
             ConstraintKind::Eq(EqConstraint(s, t)) | ConstraintKind::Inst(InstConstraint(s, t)) => {
                 s.free_vars().union(&t.free_vars()).map(|&v| v).collect()
             }
+            ConstraintKind::Var(VarConstraint(v, t)) => {
+                let mut h = HashSet::new();
+                h.insert(v);
+                h.extend(t.free_vars());
+                h
+            }
             ConstraintKind::Gen(GenConstraint(m, s, t)) => {
                 let mut h = HashSet::new();
                 h.insert(s);
@@ -417,6 +451,9 @@ impl ApplySubst for Constraint {
         let kind = match self.kind {
             ConstraintKind::Eq(EqConstraint(s, t)) => {
                 EqConstraint(s.apply_subst(subst), t.apply_subst(subst)).into()
+            }
+            ConstraintKind::Var(VarConstraint(v, t)) => {
+                VarConstraint(v.apply_subst(subst), t.apply_subst(subst)).into()
             }
             ConstraintKind::Inst(InstConstraint(s, t)) => {
                 InstConstraint(s.apply_subst(subst), t.apply_subst(subst)).into()
@@ -473,6 +510,11 @@ impl CollectTyVars for Constraint {
         match &self.kind {
             ConstraintKind::Eq(EqConstraint(s, t)) | ConstraintKind::Inst(InstConstraint(s, t)) => {
                 let mut vars = s.collect_tyvars();
+                vars.extend(t.collect_tyvars());
+                vars
+            }
+            ConstraintKind::Var(VarConstraint(v, t)) => {
+                let mut vars = vec![v.clone()];
                 vars.extend(t.collect_tyvars());
                 vars
             }
@@ -612,6 +654,92 @@ impl ConstraintList {
         v
     }
 
+    pub fn simplify(&mut self) {
+        enum Side {
+            Left,
+            Right,
+        }
+
+        fn cs_match(lhs: &Constraint, rhs: &Constraint) -> Option<Side> {
+            match (&lhs.kind, &rhs.kind) {
+                (
+                    ConstraintKind::Eq(EqConstraint(lhs_a, lhs_b)),
+                    ConstraintKind::Eq(EqConstraint(rhs_a, rhs_b)),
+                ) => {
+                    if matches!((lhs_a, rhs_a), (Ty::Var(lhs_tv), Ty::Var(rhs_tv)) if lhs_tv == rhs_tv)
+                    {
+                        Some(Side::Left)
+                    } else if matches!((lhs_b, rhs_b), (Ty::Var(lhs_tv), Ty::Var(rhs_tv)) if lhs_tv == rhs_tv)
+                    {
+                        Some(Side::Right)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        let mut i = 0;
+        while i < self.constraints.len() {
+            let lhs_id = self.constraints[i];
+            if !matches!(
+                &self.index.get(&lhs_id).unwrap().kind,
+                ConstraintKind::Eq(_)
+            ) {
+                i += 1;
+                continue;
+            }
+
+            let mut lhs_cs = vec![];
+            let mut rhs_cs = vec![];
+            let mut j = i + 1;
+            while j < self.constraints.len() {
+                let rhs_id = self.constraints[j];
+                if !matches!(
+                    &self.index.get(&rhs_id).unwrap().kind,
+                    ConstraintKind::Eq(_)
+                ) {
+                    j += 1;
+                    continue;
+                }
+
+                if let Some(side) = cs_match(
+                    &self.index.get(&lhs_id).unwrap(),
+                    &self.index.get(&rhs_id).unwrap(),
+                ) {
+                    let eq = variant!(self.remove(j).kind, if ConstraintKind::Eq(e));
+                    match side {
+                        Side::Left => lhs_cs.push(eq),
+                        Side::Right => rhs_cs.push(eq),
+                    }
+                }
+
+                j += 1;
+            }
+
+            if lhs_cs.len() != 0 {
+                let EqConstraint(_, t) = variant!(&mut self.index.get_mut(&lhs_id).unwrap().kind, if ConstraintKind::Eq(eq));
+                for c in lhs_cs {
+                    let (_, u) = c.unpack();
+                    t.union(u);
+                }
+                log::debug!("union ty: {}", t);
+            }
+
+            if rhs_cs.len() != 0 {
+                let EqConstraint(t, _) = variant!(&mut self.index.get_mut(&lhs_id).unwrap().kind, if ConstraintKind::Eq(eq));
+                for c in rhs_cs {
+                    let (u, _) = c.unpack();
+                    t.union(u);
+                }
+                log::debug!("union ty: {}", t);
+            }
+
+            i += 1;
+        }
+    }
+
     fn index_constraint(&mut self, id: u64) {
         let c = self.index.get(&id).unwrap();
         let tyvars = c.collect_tyvars();
@@ -626,6 +754,16 @@ impl ConstraintList {
         }
 
         self.reverse_map.insert(id, tyvars.to_set());
+    }
+
+    fn remove(&mut self, idx: usize) -> Constraint {
+        let id = self.constraints.remove(idx).unwrap();
+        for v in self.reverse_map.remove(&id).unwrap() {
+            if let Some(cs) = self.var_map.get_mut(&v) {
+                cs.remove(&id);
+            }
+        }
+        self.index.remove(&id).unwrap()
     }
 
     pub fn push(&mut self, c: Constraint) {

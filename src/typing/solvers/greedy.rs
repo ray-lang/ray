@@ -104,6 +104,10 @@ impl<'a> HasBasic for GreedySolver<'a> {
         &self.ctx
     }
 
+    fn get_constraints_mut(&mut self) -> &mut ConstraintList {
+        &mut self.constraints
+    }
+
     fn add_constraint(&mut self, c: Constraint) {
         self.constraints.push_front(c);
     }
@@ -167,8 +171,17 @@ impl<'a> HasSubst for GreedySolver<'a> {
             b,
             |sub| {
                 let mut new_sub = self.subst.clone();
-                new_sub.union_on_conflict(sub, |x, y| {
-                    self.unify_terms(x, y, info);
+                new_sub.union_on_conflict(sub, |new_ty, existing_ty| {
+                    // if new_ty.is_nullary() && existing_ty.is_nullary() {
+                    //     log::debug!("new_ty = {}; existing_ty = {}", new_ty, existing_ty);
+                    //     let mut ty = existing_ty.clone();
+                    //     ty.union(new_ty.clone());
+                    //     log::debug!("union ty = {}", ty);
+                    //     Some(ty)
+                    // } else {
+                    self.unify_terms(new_ty, existing_ty, info);
+                    None
+                    // }
                 });
                 self.subst = new_sub;
             },
@@ -306,7 +319,7 @@ mod greedy_solver_tests {
     use crate::{
         ast::Path,
         typing::{
-            constraints::{EqConstraint, ImplicitConstraint, SkolConstraint},
+            constraints::{EqConstraint, ImplicitConstraint, SkolConstraint, VarConstraint},
             predicate::TyPredicate,
             solvers::Solver,
             ty::{TraitTy, Ty},
@@ -395,7 +408,6 @@ mod greedy_solver_tests {
                         vec![TyPredicate::Trait(Ty::Projection(
                             str!("ToStr"),
                             vec![Ty::Var(tvar!('a))],
-                            vec![],
                         ))],
                         Box::new(Ty::Func(vec![Ty::Var(tvar!('a))], Box::new(Ty::unit()))),
                     )),
@@ -408,7 +420,7 @@ mod greedy_solver_tests {
             str!("ToStr"),
             TraitTy {
                 path: Path::from("ToStr"),
-                ty: Ty::Projection(str!("ToStr"), vec![Ty::Var(tvar!('a))], vec![]),
+                ty: Ty::Projection(str!("ToStr"), vec![Ty::Var(tvar!('a))]),
                 super_traits: vec![],
                 fields: vec![(
                     str!("to_str"),
@@ -420,6 +432,34 @@ mod greedy_solver_tests {
             },
         );
         ctx.tf().skip_to(4);
+        let solver = GreedySolver::new(constraints, &mut ctx);
+        let (sol, _) = solver.solve();
+        println!("{:#?}", sol);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_union_type() -> Result<(), InferError> {
+        fern::Dispatch::new()
+            .level(log::LevelFilter::Debug)
+            .chain(io::stderr())
+            .apply()
+            .unwrap();
+
+        let constraints = vec![
+            // v0 ≡ string
+            VarConstraint::new(tvar!(v0), Ty::string()),
+            // v1 ≡ nil
+            VarConstraint::new(tvar!(v1), Ty::nil()),
+            // v2 ≡ v0
+            VarConstraint::new(tvar!(v2), Ty::Var(tvar!(v0))),
+            // v2 ≡ v1
+            VarConstraint::new(tvar!(v2), Ty::Var(tvar!(v1))),
+        ];
+
+        let mut ctx = TyCtx::new();
+        ctx.tf().skip_to(3);
         let solver = GreedySolver::new(constraints, &mut ctx);
         let (sol, _) = solver.solve();
         println!("{:#?}", sol);

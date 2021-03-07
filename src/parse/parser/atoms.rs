@@ -18,7 +18,7 @@ impl Parser<'_> {
             | TokenKind::Nil => {
                 let span = tok.span;
                 Ok(self.mk_expr(
-                    Expr::Literal(Literal::from_token(tok, &self.options.filepath)?),
+                    Expr::Literal(Literal::from_token(tok, &self.options.filepath, &ctx.path)?),
                     span,
                     ctx.path.clone(),
                 ))

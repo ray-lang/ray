@@ -17,7 +17,7 @@
                 "filter": {
                     "name": "ray",
                     "kind": "bin"
-                }
+                },
             },
             "args": [
                 "--log-level",

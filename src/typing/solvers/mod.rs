@@ -104,10 +104,7 @@ impl Solution {
             match self.subst.get(var).cloned() {
                 Some(other_ty) if other_ty.has_unknowns() => {
                     let sub = other_ty.mgu(ty).unwrap_or_default();
-                    log::debug!("sub = {:#?}", sub);
-                    log::debug!("self.subst = {:#?}", self.subst);
                     self.subst.union_inplace(sub);
-                    log::debug!("self.subst = {:#?}", self.subst);
                 }
                 _ => continue,
             }
@@ -117,17 +114,13 @@ impl Solution {
             match self.subst.get(var).cloned() {
                 Some(other_ty) if other_ty.has_unknowns() => {
                     let sub = other_ty.mgu(ty).unwrap_or_default();
-                    log::debug!("sub = {:#?}", sub);
-                    log::debug!("self.subst = {:#?}", self.subst);
                     self.subst.union_inplace(sub);
-                    log::debug!("self.subst = {:#?}", self.subst);
                 }
                 _ => continue,
             }
         }
 
         let subst = self.subst.clone();
-        log::debug!("subst = {:#?}", subst);
         self.apply_subst_mut(&subst);
     }
 
@@ -147,8 +140,8 @@ impl Solution {
         })
     }
 
-    pub fn get_var(&self, v: TyVar) -> Result<Ty, InferError> {
-        if let Some(s) = self.subst.get(&v) {
+    pub fn get_var(&self, v: &TyVar) -> Result<Ty, InferError> {
+        if let Some(s) = self.subst.get(v) {
             Ok(s.clone())
         } else {
             Err(InferError {
@@ -176,13 +169,13 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         for (pred, info) in self.get_preds() {
             match pred {
                 TyPredicate::Trait(t) => match t {
-                    Ty::Projection(x, p, _) => {
+                    Ty::Projection(x, p) => {
                         if x == "core::Int" || x == "core::Float" {
-                            let base_ty = p[0].clone();
+                            let base_ty = &p[0];
                             if base_ty.is_tyvar() {
                                 cs.push(
                                     EqConstraint::new(
-                                        p[0].clone(),
+                                        base_ty.clone(),
                                         if x == "core::Int" {
                                             Ty::int()
                                         } else {
@@ -196,19 +189,31 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                     }
                     _ => continue,
                 },
-                // TyPredicate::HasMember(t, m) => {
-                //     let fqn = match t.get_path() {
-                //         Some(p) => p,
-                //         _ => continue,
-                //     };
-                //     let st = match self.ctx().get_struct_ty(&fqn) {
-                //         Some(st) => st,
-                //         _ => continue,
-                //     };
-                //     if let Some((idx, f)) = st.get_field(m) {
-                //         cs.push(EqConstraint::new(u.clone(), f.clone()).with_info(info.clone()));
-                //     }
-                // }
+                _ => continue,
+            }
+        }
+
+        self.add_constraints(cs);
+        self.solve_constraints(&mut check);
+
+        let mut cs = vec![];
+        for (pred, info) in self.get_preds() {
+            match pred {
+                TyPredicate::HasMember(ty, member_name, member_ty) => {
+                    let fqn = match ty.get_path() {
+                        Some(p) => p,
+                        _ => continue,
+                    };
+                    let st = match self.ctx().get_struct_ty(&fqn) {
+                        Some(st) => st,
+                        _ => continue,
+                    };
+                    if let Some((_, f)) = st.get_field(member_name) {
+                        cs.push(
+                            EqConstraint::new(member_ty.clone(), f.clone()).with_info(info.clone()),
+                        );
+                    }
+                }
                 _ => continue,
             }
         }
@@ -239,6 +244,7 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
     }
 
     fn solve_constraints(&mut self, check: &mut Vec<Constraint>) {
+        // self.get_constraints_mut().simplify();
         while let Some(c) = self.pop_constraint() {
             self.solve_constraint(c, check);
             self.apply_subst();
@@ -253,6 +259,12 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
             ConstraintKind::Eq(c) => {
                 let (s, t) = c.unpack();
                 if self.unify_terms(&s, &t, &info) {
+                    return;
+                }
+            }
+            ConstraintKind::Var(c) => {
+                let (v, t) = c.unpack();
+                if self.unify_terms(&Ty::Var(v), &t, &info) {
                     return;
                 }
             }

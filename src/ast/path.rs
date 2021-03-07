@@ -142,6 +142,10 @@ impl Path {
         h.finish()
     }
 
+    pub fn to_vec(&self) -> Vec<String> {
+        self.parts.iter().map(|p| p.to_string()).collect()
+    }
+
     pub fn to_filepath(&self) -> FilePath {
         let mut fp = FilePath::new();
         for p in self.parts.iter() {
@@ -243,6 +247,16 @@ impl From<Vec<String>> for Path {
         Path {
             parts: parts.into_iter().map(PathPart::Name).collect(),
         }
+    }
+}
+
+impl<T> From<&T> for Path
+where
+    T: Clone,
+    Path: From<T>,
+{
+    fn from(v: &T) -> Self {
+        Path::from(v.clone())
     }
 }
 

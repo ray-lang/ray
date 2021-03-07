@@ -12,6 +12,7 @@ pub struct Source {
     pub filepath: FilePath,
     pub span: Option<Span>,
     pub path: Path,
+    pub src_module: Path,
 }
 
 impl std::fmt::Display for Source {
@@ -26,8 +27,10 @@ impl std::fmt::Display for Source {
 
 impl From<FilePath> for Source {
     fn from(filepath: FilePath) -> Self {
+        let src_module = Path::from(filepath.clone());
         Self {
             filepath,
+            src_module,
             span: None,
             path: Path::new(),
         }
@@ -35,11 +38,12 @@ impl From<FilePath> for Source {
 }
 
 impl Source {
-    pub fn new(filepath: FilePath, span: Span, path: Path) -> Source {
+    pub fn new(filepath: FilePath, span: Span, path: Path, src_module: Path) -> Source {
         Source {
             filepath,
             span: Some(span),
             path,
+            src_module,
         }
     }
 
@@ -55,6 +59,7 @@ impl Source {
             span,
             filepath: self.filepath.clone(),
             path: Path::new(),
+            src_module: self.src_module.clone(),
         }
     }
 
@@ -63,6 +68,7 @@ impl Source {
             filepath: self.filepath.clone(),
             span: Some(span),
             path: self.path.clone(),
+            src_module: self.src_module.clone(),
         }
     }
 }

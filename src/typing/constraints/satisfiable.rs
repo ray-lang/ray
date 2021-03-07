@@ -8,7 +8,7 @@ use crate::typing::{
 
 use super::{
     AssumeConstraint, Constraint, ConstraintKind, EqConstraint, GenConstraint, ImplicitConstraint,
-    InstConstraint, ProveConstraint, SkolConstraint,
+    InstConstraint, ProveConstraint, SkolConstraint, VarConstraint,
 };
 
 pub trait Satisfiable {
@@ -26,6 +26,26 @@ impl Satisfiable for EqConstraint {
             );
             Err(InferError {
                 msg: format!("types `{}` and `{}` are not equal", s, t),
+                src: vec![],
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Satisfiable for VarConstraint {
+    fn satisfied_by(self, solution: &Solution, _: &TyCtx) -> Result<(), InferError> {
+        let VarConstraint(v, t) = self;
+        let u = solution.get_var(&v)?;
+        if t != u {
+            log::debug!(
+                "variable constraint not satisified for types {} and {}",
+                t,
+                u
+            );
+            Err(InferError {
+                msg: format!("types `{}` and `{}` are not equal", t, u),
                 src: vec![],
             })
         } else {
@@ -137,6 +157,7 @@ impl Satisfiable for ConstraintKind {
     fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
         match self {
             ConstraintKind::Eq(c) => c.satisfied_by(solution, ctx),
+            ConstraintKind::Var(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Gen(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Inst(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Skol(c) => c.satisfied_by(solution, ctx),

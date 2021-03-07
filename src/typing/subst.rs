@@ -118,12 +118,7 @@ impl Subst {
                 } else {
                     ty = t.clone();
                     let unknowns = t.collect_tyvars();
-                    // .into_iter()
-                    // .filter(|u| !checked.contains(u))
-                    // .collect::<Vec<_>>();
                     if unknowns.len() != 0 {
-                        // log::debug!("ty = {}", t);
-                        // log::debug!("unknowns: [{}]", join(&unknowns, ", "));
                         let sub = unknowns
                             .into_iter()
                             .map(|v| {
@@ -131,7 +126,6 @@ impl Subst {
                                 (v, u)
                             })
                             .collect::<Subst>();
-                        // log::debug!("sub: {:?}", sub);
                         ty = ty.apply_subst(&sub);
                     }
                     break;
@@ -166,17 +160,28 @@ impl Subst {
         v
     }
 
+    // pub fn insert(&mut self, v: TyVar, t: Ty) {
+    //     let map = self.deref_mut();
+    //     if let Some(u) = map.get_mut(&v) {
+    //         if !t.is_func() && !u.is_func() {
+    //             u.union(t);
+    //             log::debug!("union result: {}", u);
+    //             return;
+    //         }
+    //     }
+
+    //     map.insert(v, t);
+    // }
+
     pub fn union(mut self, other: Subst) -> Subst {
         self.union_inplace(other);
         self
     }
 
     pub fn union_inplace(&mut self, other: Subst) {
-        for (tv, ty) in other.0 {
+        for (tv, ty) in other {
             let ty = ty.apply_subst(&self);
-            log::debug!("union_inplace: {} => {}", tv, ty);
             let other_ty = self.get_ty_for_var(&tv);
-            log::debug!("union_inplace: {} => {}", tv, other_ty);
             if !matches!(&other_ty, Ty::Var(other_var) if other_var == &tv) {
                 if let Ty::Var(other_tv) = other_ty {
                     self.insert(other_tv, ty.clone());
@@ -191,13 +196,16 @@ impl Subst {
 
     pub fn union_on_conflict<F>(&mut self, other: Subst, mut on_conflict: F)
     where
-        F: FnMut(&Ty, &Ty),
+        F: FnMut(&Ty, &Ty) -> Option<Ty>,
     {
-        for (tv, ty) in other.0 {
+        for (tv, ty) in other {
             let mut ty = ty.apply_subst(&self);
             if let Some(other_ty) = self.get(&tv) {
-                on_conflict(&ty, &other_ty);
-                ty = ty.apply_subst(&self);
+                if let Some(t) = on_conflict(&ty, &other_ty) {
+                    ty = t;
+                } else {
+                    ty = ty.apply_subst(&self);
+                }
             }
 
             self.insert(tv, ty);

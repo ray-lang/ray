@@ -190,6 +190,24 @@ impl<T> Node<T> {
         Node { id, value }
     }
 
+    pub fn take_map<F, U>(self, f: F) -> Node<U>
+    where
+        F: Fn(T) -> U,
+    {
+        let id = self.id;
+        let value = f(self.value);
+        Node { id, value }
+    }
+
+    pub fn map<F, U>(&self, f: F) -> Node<U>
+    where
+        F: Fn(&T) -> U,
+    {
+        let id = self.id;
+        let value = f(&self.value);
+        Node { id, value }
+    }
+
     pub fn unpack(self) -> (u64, T) {
         (self.id, self.value)
     }

@@ -48,7 +48,7 @@ where
         mono_tys: &HashSet<TyVar>,
         srcmap: &SourceMap,
         tcx: &mut TyCtx,
-    ) -> (BindingGroup, TyEnv);
+    ) -> (Ty, BindingGroup, TyEnv);
 }
 
 impl<V, T> CollectDeclarations for (&V, &Node<T>, &Source)
@@ -62,7 +62,7 @@ where
         mono_tys: &HashSet<TyVar>,
         srcmap: &SourceMap,
         tcx: &mut TyCtx,
-    ) -> (BindingGroup, TyEnv) {
+    ) -> (Ty, BindingGroup, TyEnv) {
         let &(var, rhs, src) = self;
 
         // E,Tc1 ⊢p p : τ1
@@ -72,13 +72,13 @@ where
         let (rhs_ty, a, ct2) = rhs.collect_constraints(mono_tys, srcmap, tcx);
 
         // c = (τ1 ≡ τ2)
-        let c = EqConstraint::new(lhs_ty, rhs_ty).with_src(src.clone());
+        let c = EqConstraint::new(lhs_ty.clone(), rhs_ty).with_src(src.clone());
 
         // B = (E, A, c ▹ [Ct1, Ct2])
         let bg = BindingGroup::new(env, a, AttachTree::new(c, NodeTree::new(vec![ct1, ct2])))
             .with_src(src.clone());
 
-        (bg, TyEnv::new())
+        (lhs_ty, bg, TyEnv::new())
     }
 }
 

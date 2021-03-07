@@ -373,6 +373,7 @@ impl<'src> Parser<'src> {
             span: Some(span),
             filepath: self.options.filepath.clone(),
             path,
+            src_module: self.options.module_path.clone(),
         };
         self.srcmap.set_src(&node, src);
 
@@ -386,6 +387,7 @@ impl<'src> Parser<'src> {
             span: Some(span),
             filepath: self.options.filepath.clone(),
             path,
+            src_module: self.options.module_path.clone(),
         };
         self.srcmap.set_src(&node, src);
         node
@@ -396,6 +398,7 @@ impl<'src> Parser<'src> {
             span: Some(span),
             filepath: self.options.filepath.clone(),
             path,
+            src_module: self.options.module_path.clone(),
         };
         let node = Node::new(decl);
         self.srcmap.set_src(&node, src);
@@ -419,6 +422,7 @@ impl<'src> Parser<'src> {
             span: Some(span),
             filepath: self.options.filepath.clone(),
             path,
+            src_module: self.options.module_path.clone(),
         };
         self.srcmap.set_src(&node, src);
         node
@@ -428,6 +432,7 @@ impl<'src> Parser<'src> {
         Source {
             filepath: self.options.filepath.clone(),
             span: Some(span),
+            src_module: self.options.module_path.clone(),
             ..Default::default()
         }
     }

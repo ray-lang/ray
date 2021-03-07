@@ -232,6 +232,15 @@ impl ConstraintTree {
         ConstraintTree::new(NodeTree(vec![]))
     }
 
+    pub fn from_vec(ctrees: Vec<ConstraintTree>) -> ConstraintTree {
+        let mut ct = ConstraintTree::empty();
+        for t in ctrees.into_iter().rev() {
+            let nodes = if ct.is_empty() { vec![t] } else { vec![t, ct] };
+            ct = NodeTree::new::<ConstraintTree>(nodes);
+        }
+        ct
+    }
+
     pub fn list(cs: Vec<Constraint>, t: ConstraintTree) -> ConstraintTree {
         cs.into_iter()
             .rev()

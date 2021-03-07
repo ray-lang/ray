@@ -53,10 +53,9 @@ impl Parser<'_> {
                 };
                 Ok(self.mk_expr(Expr::Return(ex), span, ctx.path.clone()))
             }
-            TokenKind::Fn | TokenKind::Modifier(_) => self.parse_fn(false, ctx).map(|(f, span)| {
-                let path = f.sig.path.clone();
-                self.mk_expr(Expr::Fn(f), span, path)
-            }),
+            TokenKind::Fn | TokenKind::Modifier(_) => self
+                .parse_fn(false, ctx)
+                .map(|(f, span)| self.mk_expr(Expr::Fn(f), span, ctx.path.clone())),
             TokenKind::LeftParen => self.parse_paren_expr(ctx),
             TokenKind::LeftCurly => self.parse_block(ctx),
             TokenKind::Mut => self.parse_local(false, ctx),

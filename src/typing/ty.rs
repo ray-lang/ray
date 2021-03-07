@@ -144,7 +144,7 @@ pub enum Ty {
     Union(Vec<Ty>),
     Array(Box<Ty>, usize),
     Func(Vec<Ty>, Box<Ty>),
-    Projection(String, Vec<Ty>, Vec<Ty>),
+    Projection(String, Vec<Ty>),
     Cast(Box<Ty>, Box<Ty>),
     Qualified(Vec<TyPredicate>, Box<Ty>),
     All(Vec<TyVar>, Box<Ty>),
@@ -175,7 +175,7 @@ impl std::fmt::Display for Ty {
                 write!(f, "[{}; {}]", ty, size)
             }
             Ty::Func(a, r) => write!(f, "({}) -> {}", join(a, ", "), r),
-            Ty::Projection(n, t, _) => {
+            Ty::Projection(n, t) => {
                 if t.len() != 0 {
                     write!(f, "{}[{}]", n, join(t, ", "))
                 } else {
@@ -213,18 +213,27 @@ impl ApplySubst for Ty {
             Ty::Ptr(ty) => Ty::Ptr(ty.apply_subst(subst)),
             Ty::Union(tys) => {
                 let mut tys = tys.apply_subst(subst);
-                tys.sort();
-                tys.dedup(); // remove any duplicates
+                let mut i = 0;
+                while i < tys.len() {
+                    let mut j = i + 1;
+                    while j < tys.len() {
+                        if &tys[i] == &tys[j] {
+                            tys.remove(j);
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    i += 1;
+                }
+
                 if tys.len() == 1 {
                     tys.pop().unwrap()
                 } else {
-                    Ty::Union(tys.apply_subst(subst))
+                    Ty::Union(tys)
                 }
             }
             Ty::Func(a, r) => Ty::Func(a.apply_subst(subst), r.apply_subst(subst)),
-            Ty::Projection(n, t, f) => {
-                Ty::Projection(n, t.apply_subst(subst), f.apply_subst(subst))
-            }
+            Ty::Projection(n, t) => Ty::Projection(n, t.apply_subst(subst)),
             Ty::Cast(f, t) => Ty::Cast(f.apply_subst(subst), t.apply_subst(subst)),
             Ty::Qualified(p, ty) => {
                 let mut preds = p.apply_subst(subst);
@@ -313,7 +322,7 @@ impl CollectTyVars for Ty {
                 .flat_map(|t| t.collect_tyvars())
                 .collect(),
             Ty::Var(v) => vec![v.clone()].into_iter().collect(),
-            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t, _) => {
+            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => {
                 t.iter().flat_map(|t| t.collect_tyvars()).collect()
             }
             Ty::Cast(src, dst) => {
@@ -371,7 +380,7 @@ impl Instantiate for Ty {
             Ty::Cast(src, dst) => Ty::Cast(src.instantiate(tf), dst.instantiate(tf)),
             Ty::Ptr(t) => Ty::Ptr(t.instantiate(tf)),
             Ty::Array(t, size) => Ty::Array(t.instantiate(tf), size),
-            Ty::Projection(s, tys, f) => Ty::Projection(s, tys.instantiate(tf), f.instantiate(tf)),
+            Ty::Projection(s, tys) => Ty::Projection(s, tys.instantiate(tf)),
             Ty::Qualified(p, t) => Ty::Qualified(p.instantiate(tf), t.instantiate(tf)),
             Ty::All(xs, t) => {
                 let new_xs = (0..xs.len()).into_iter().map(|_| Ty::Var(tf.next()));
@@ -467,8 +476,8 @@ impl Ty {
         sig: &FnSig,
         fn_scope: &Path,
         filepath: &FilePath,
-        fn_ctx: &mut TyCtx,
-        parent_ctx: &mut TyCtx,
+        fn_tcx: &mut TyCtx,
+        parent_tcx: &mut TyCtx,
         srcmap: &SourceMap,
     ) -> Result<Ty, RayError> {
         let mut param_tys = vec![];
@@ -476,7 +485,7 @@ impl Ty {
         for param in sig.params.iter() {
             if let Some(ty) = param.ty() {
                 let mut ty = ty.clone();
-                ty.resolve_ty(&fn_scope, fn_ctx);
+                ty.resolve_ty(&fn_scope, fn_tcx);
                 param_tys.push(ty);
             } else {
                 return Err(RayError {
@@ -492,19 +501,19 @@ impl Ty {
         }
 
         let mut ret_ty = sig.ret_ty.as_deref().cloned().unwrap_or_default();
-        ret_ty.resolve_ty(&fn_scope, fn_ctx);
+        ret_ty.resolve_ty(&fn_scope, fn_tcx);
 
         let mut ty = Ty::Func(param_tys, Box::new(ret_ty));
 
         if sig.qualifiers.len() != 0 {
             let mut p = vec![];
             for q in sig.qualifiers.iter() {
-                p.push(TyPredicate::from_ast_ty(q, &fn_scope, &filepath, fn_ctx)?);
+                p.push(TyPredicate::from_ast_ty(q, &fn_scope, &filepath, fn_tcx)?);
             }
             ty = Ty::Qualified(p, Box::new(ty));
         }
 
-        let free_vars = parent_ctx.free_vars();
+        let free_vars = parent_tcx.free_vars();
         let ty_vars = ty
             .collect_tyvars()
             .into_iter()
@@ -520,28 +529,16 @@ impl Ty {
 
     pub fn resolve_ty(&mut self, scope: &ast::Path, tcx: &mut TyCtx) {
         match self {
-            Ty::Projection(name, ty_params, fields) => {
+            Ty::Projection(name, ty_params) => {
                 ty_params.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
 
                 if let Some(fqn) = tcx.lookup_fqn(name) {
-                    if let Some((parent_ty, struct_fields)) = tcx
-                        .get_struct_ty(fqn)
-                        .and_then(|s| Some((&s.ty, s.field_tys())))
-                        .or_else(|| {
-                            tcx.get_trait_ty(fqn)
-                                .and_then(|t| Some((&t.ty, t.field_tys())))
-                        })
-                    {
-                        *name = fqn.to_string();
-                        *fields = struct_fields;
-                        return;
-                    }
+                    *name = fqn.to_string();
+                    return;
                 }
 
                 if let Some(ty) = tcx.get_var(&name) {
                     let _ = std::mem::replace(self, ty.clone());
-                } else {
-                    fields.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
                 }
             }
             Ty::Var(tv) => {
@@ -592,7 +589,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn con<S: Into<String>>(s: S) -> Ty {
-        Ty::Projection(s.into(), vec![], vec![])
+        Ty::Projection(s.into(), vec![])
     }
 
     #[inline(always)]
@@ -602,7 +599,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn ty_type(ty: Ty) -> Ty {
-        Ty::Projection(str!("type"), vec![ty], vec![])
+        Ty::Projection(str!("type"), vec![ty])
     }
 
     #[inline(always)]
@@ -622,7 +619,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn string() -> Ty {
-        Ty::Projection(str!("string"), vec![], vec![Ty::ptr(Ty::u8()), Ty::uint()])
+        Ty::Projection(str!("string"), vec![])
     }
 
     #[inline(always)]
@@ -632,17 +629,12 @@ impl Ty {
 
     #[inline(always)]
     pub fn range(el: Ty) -> Ty {
-        Ty::Projection(
-            str!("range"),
-            vec![el.clone()],
-            vec![el.clone(), el.clone(), Ty::bool()],
-        )
+        Ty::Projection(str!("range"), vec![el.clone()])
     }
 
     #[inline(always)]
     pub fn list(el: Ty) -> Ty {
-        let fields = vec![Ty::ptr(el.clone()), Ty::uint(), Ty::uint()];
-        Ty::Projection(str!("list"), vec![el], fields)
+        Ty::Projection(str!("list"), vec![el])
     }
 
     #[inline(always)]
@@ -728,7 +720,7 @@ impl Ty {
     #[inline(always)]
     pub fn is_int_ty(&self) -> bool {
         match self {
-            Ty::Projection(a, _, _)
+            Ty::Projection(a, _)
                 if matches!(
                     a.as_str(),
                     "int"
@@ -754,9 +746,7 @@ impl Ty {
     #[inline(always)]
     pub fn is_float_ty(&self) -> bool {
         match self {
-            Ty::Projection(a, _, _) if matches!(a.as_str(), "float" | "f32" | "f64" | "f128") => {
-                true
-            }
+            Ty::Projection(a, _) if matches!(a.as_str(), "float" | "f32" | "f64" | "f128") => true,
             _ => false,
         }
     }
@@ -767,7 +757,7 @@ impl Ty {
             Ty::Never => Some(Path::from("never")),
             Ty::Any => Some(Path::from("any")),
             Ty::Var(v) => Some(v.path().clone()),
-            Ty::Projection(s, _, _) => Some(Path::from(s.clone())),
+            Ty::Projection(s, _) => Some(Path::from(s.clone())),
             Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.get_path(),
             Ty::Array(..) | Ty::Ptr(_) | Ty::Tuple(_) | Ty::Union(_) | Ty::Func(_, _) => None,
         }
@@ -779,7 +769,7 @@ impl Ty {
             Ty::Any => str!("any"),
             Ty::Tuple(_) => str!("tuple"),
             Ty::Var(v) => v.path().name().unwrap(),
-            Ty::Projection(s, _, _) => s.clone(),
+            Ty::Projection(s, _) => s.clone(),
             Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.name(),
             Ty::Array(..) | Ty::Ptr(_) | Ty::Union(_) | Ty::Func(_, _) => {
                 str!("")
@@ -798,7 +788,7 @@ impl Ty {
                 Size::bytes(tag_size) + max_size
             }
             Ty::Func(_, _) | Ty::Ptr(_) => Size::ptr(),
-            Ty::Projection(n, _, _) => match n.as_str() {
+            Ty::Projection(n, _) => match n.as_str() {
                 "int" | "uint" => Size::ptr(),
                 "i8" | "u8" | "bool" => Size::bytes(1),
                 "i16" | "u16" => Size::bytes(2),
@@ -1008,12 +998,9 @@ impl Ty {
                 Ok((f(Subst::new()), z))
             }
             (Ty::Ptr(a), Ty::Ptr(b)) => a.unify_with(b, f, g),
-            (Ty::Projection(a, s, u), Ty::Projection(b, t, v)) if a == b => {
+            (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
                 let mut b = vec![];
                 for (x, y) in s.iter().zip(t.iter()) {
-                    b.push(g(x, y));
-                }
-                for (x, y) in u.iter().zip(v.iter()) {
                     b.push(g(x, y));
                 }
                 Ok((f(Subst::new()), b))
@@ -1026,6 +1013,27 @@ impl Ty {
                 b.push(g(s, u));
                 Ok((f(Subst::new()), b))
             }
+            (Ty::Union(s), Ty::Union(t)) if s.len() == t.len() => {
+                let mut b = vec![];
+                for (x, y) in s.iter().zip(t.iter()) {
+                    b.push(g(x, y));
+                }
+                Ok((f(Subst::new()), b))
+            }
+            // (Ty::Union(tys), t) if !matches!(t, Ty::Union(_)) => {
+            //     let mut b = vec![];
+            //     for s in tys {
+            //         b.push(g(s, t));
+            //     }
+            //     Ok((f(Subst::new()), b))
+            // }
+            // (s, Ty::Union(tys)) if !matches!(s, Ty::Union(_)) => {
+            //     let mut b = vec![];
+            //     for t in tys {
+            //         b.push(g(t, s));
+            //     }
+            //     Ok((f(Subst::new()), b))
+            // }
             (Ty::Qualified(p, s), Ty::Qualified(q, t)) if p == q => {
                 Ok((f(Subst::new()), vec![g(s, t)]))
             }
@@ -1062,7 +1070,7 @@ impl Ty {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.is_subtype(y))
             }
             (Ty::Ptr(a), Ty::Ptr(b)) => a.is_subtype(b),
-            (Ty::Projection(a, s, _), Ty::Projection(b, t, _)) => {
+            (Ty::Projection(a, s), Ty::Projection(b, t)) => {
                 a == b && s.len() == t.len() && s.iter().zip(t.iter()).all(|(x, y)| x.is_subtype(y))
             }
             (Ty::Func(r, s), Ty::Func(t, u)) => {
@@ -1078,6 +1086,15 @@ impl Ty {
 
     pub fn is_unit(&self) -> bool {
         matches!(self, Ty::Tuple(tys) if tys.is_empty())
+    }
+
+    pub fn is_nullary(&self) -> bool {
+        match self {
+            Ty::Never | Ty::Any | Ty::Union(_) | Ty::Var(_) => true,
+            Ty::Projection(_, tys) | Ty::Tuple(tys) => tys.len() == 0,
+            Ty::Cast(_, t) | Ty::Qualified(_, t) | Ty::All(_, t) => t.is_nullary(),
+            Ty::Func(_, _) | Ty::Array(_, _) | Ty::Ptr(_) => false,
+        }
     }
 
     pub fn is_polymorphic(&self) -> bool {
@@ -1125,7 +1142,7 @@ impl Ty {
             Ty::Qualified(_, t) => t.get_ty_params(),
             Ty::Cast(_, dst) => dst.get_ty_params(),
             Ty::Array(t, _) | Ty::Ptr(t) => vec![t.as_ref()],
-            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t, _) => t.iter().collect(),
+            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => t.iter().collect(),
             Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => vec![],
         }
     }
@@ -1149,10 +1166,55 @@ impl Ty {
 
                 t.as_ref()
             }
-            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t, _) => t.iter().nth(idx).unwrap(),
+            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => t.iter().nth(idx).unwrap(),
             Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => {
                 panic!("no type parameters: {}", self)
             }
+        }
+    }
+
+    pub fn union(&mut self, ty: Ty) {
+        log::debug!("union: {} | {}", self, ty);
+        match (self, ty) {
+            (Ty::All(xs, t), Ty::All(ys, u)) => {
+                for y in ys {
+                    if !xs.contains(&y) {
+                        xs.push(y);
+                    }
+                }
+                t.union(*u);
+            }
+            (Ty::All(_, t), u) => t.union(u),
+            (t, Ty::All(xs, u)) => replace(t, |mut t| {
+                t.union(*u);
+                Ty::All(xs, Box::new(t))
+            }),
+            (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
+                p.extend(q);
+                t.union(*u);
+            }
+            (Ty::Qualified(_, t), u) => {
+                t.union(u);
+            }
+            (t, Ty::Qualified(p, u)) => replace(t, |mut t| {
+                t.union(*u);
+                Ty::Qualified(p, Box::new(t))
+            }),
+            (Ty::Union(tys), ty) => {
+                if !tys.contains(&ty) {
+                    tys.push(ty);
+                }
+            }
+            (ty, Ty::Union(mut tys)) => replace(ty, |t| {
+                if !tys.contains(&t) {
+                    tys.insert(0, t);
+                }
+                Ty::Union(tys)
+            }),
+            (Ty::Func(..), Ty::Func(..)) => {}
+            (Ty::Projection(a, x), Ty::Projection(b, y)) if a == &b && x == &y => {}
+            (t, u) if t != &u => replace(t, |t| Ty::Union(vec![t, u])),
+            _ => {}
         }
     }
 

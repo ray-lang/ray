@@ -80,11 +80,11 @@ impl<'a> IntoIterator for &'a mut lir::Func {
             } else if matches!(&inst, lir::Inst::IfBlock(_)) {
                 if let lir::Inst::IfBlock(b) = inst {
                     for i in b
-                        .cond
+                        .cond_block
                         .instructions
                         .iter_mut()
-                        .chain(b.then.instructions.iter_mut())
-                        .chain(b.els.instructions.iter_mut())
+                        .chain(b.then_block.instructions.iter_mut())
+                        .chain(b.else_block.instructions.iter_mut())
                     {
                         append(i, v);
                     }

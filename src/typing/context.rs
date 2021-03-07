@@ -4,7 +4,10 @@ use std::{
     rc::Rc,
 };
 
-use crate::ast::{Node, Path};
+use crate::{
+    ast::{Node, Path},
+    collections::nametree::NameTree,
+};
 
 use super::{
     predicate::PredicateEntails,
@@ -25,6 +28,7 @@ pub struct TyCtx {
     impls: HashMap<Path, Vec<ImplTy>>,
     tf: TyVarFactory,
     sf: TyVarFactory,
+    nametree: NameTree,
 }
 
 impl ApplySubst for TyCtx {
@@ -57,20 +61,27 @@ impl TyCtx {
             impls: HashMap::new(),
             tf: TyVarFactory::new("?t"),
             sf: TyVarFactory::new("#"),
+            nametree: NameTree::new(),
         }
     }
 
-    pub fn ty_of<T>(&self, node: &Node<T>) -> Ty {
-        self.ty_map.get(&node.id).unwrap().clone()
+    pub fn ty_of(&self, id: u64) -> Ty {
+        self.ty_map.get(&id).unwrap().clone()
     }
 
     pub fn original_ty_of<T>(&self, node: &Node<T>) -> Ty {
         self.original_ty_map.get(&node.id).unwrap().clone()
     }
 
-    pub fn set_ty<T>(&mut self, node: &Node<T>, ty: Ty) {
-        self.original_ty_map.insert(node.id, ty.clone());
-        self.ty_map.insert(node.id, ty);
+    pub fn set_ty(&mut self, id: u64, ty: Ty) {
+        self.original_ty_map.insert(id, ty.clone());
+        self.ty_map.insert(id, ty);
+    }
+
+    pub fn mk_tvar(&mut self, id: u64) -> Ty {
+        let ty = Ty::Var(self.tf().next());
+        self.set_ty(id, ty.clone());
+        ty
     }
 
     pub fn bind_var<S: ToString>(&mut self, name: S, ty: Ty) {
@@ -87,6 +98,15 @@ impl TyCtx {
         }
 
         self.vars.insert(s, ty);
+    }
+
+    pub fn resolve_name(&self, scopes: &Vec<Path>, name: &String) -> Option<Path> {
+        let scopes = scopes.iter().map(Path::to_vec).collect::<Vec<_>>();
+        self.nametree.find_in_scopes(&scopes, name).map(|parts| {
+            let mut parts = parts.clone();
+            parts.push(name.clone());
+            Path::from(parts)
+        })
     }
 
     pub fn lookup_fqn(&self, name: &String) -> Option<&Path> {
@@ -186,6 +206,14 @@ impl TyCtx {
         &mut self.sf
     }
 
+    pub fn nametree(&self) -> &NameTree {
+        &self.nametree
+    }
+
+    pub fn nametree_mut(&mut self) -> &mut NameTree {
+        &mut self.nametree
+    }
+
     pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {
         log::debug!("{} instanceof {}", t, u);
         match (t, u) {
@@ -220,13 +248,10 @@ impl TyCtx {
                     && self.instance_of(q, s)
             }
             (Ty::Ptr(t), Ty::Ptr(u)) => self.instance_of(t, u),
-            (Ty::Projection(s, xs, _), Ty::Projection(t, ys, _))
-                if s == t && xs.len() == ys.len() =>
-            {
-                xs.iter()
-                    .zip(ys.iter())
-                    .all(|(x, y)| self.instance_of(x, y))
-            }
+            (Ty::Projection(s, xs), Ty::Projection(t, ys)) if s == t && xs.len() == ys.len() => xs
+                .iter()
+                .zip(ys.iter())
+                .all(|(x, y)| self.instance_of(x, y)),
             (Ty::Union(xs), Ty::Union(ys)) if xs.len() == ys.len() => xs
                 .iter()
                 .zip(ys.iter())

@@ -7,6 +7,7 @@ mod module;
 mod node;
 mod path;
 mod subst;
+mod to_ssa;
 
 pub mod asm;
 pub mod token;
@@ -19,6 +20,7 @@ pub use modifier::*;
 pub use module::*;
 pub use node::*;
 pub use subst::*;
+pub use to_ssa::*;
 
 #[macro_use]
 pub use path::*;

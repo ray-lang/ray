@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use itertools::Itertools;
 
 use crate::{
-    ast::{Path},
+    ast::Path,
     convert::ToSet,
     sort::{topological::TopologicalSort, SortByIndexSlice},
     span::Source,
@@ -398,251 +398,251 @@ mod binding_tests {
         };
     }
 
-    #[test]
-    fn test_combine() {
-        let b1 = BG!(env! {}, aset! { x:v0 });
-        let b2 = BG!(env! { y:v1 }, aset! { x:v2 });
+    // #[test]
+    // fn test_combine() {
+    //     let b1 = BG!(env! {}, aset! { x:v0 });
+    //     let b2 = BG!(env! { y:v1 }, aset! { x:v2 });
 
-        let mut b = b1.clone();
-        b.combine(b2);
-        assert_eq!(b, BG!(env! { y:v1 }, aset! { x:v0, x:v2 }));
+    //     let mut b = b1.clone();
+    //     b.combine(b2);
+    //     assert_eq!(b, BG!(env! { y:v1 }, aset! { x:v0, x:v2 }));
 
-        let b1 = BG!(env! { f:v0 }, aset! { x:v1 });
-        let b2 = BG!(env! { y:v2 }, aset! { x:v3 });
+    //     let b1 = BG!(env! { f:v0 }, aset! { x:v1 });
+    //     let b2 = BG!(env! { y:v2 }, aset! { x:v3 });
 
-        let mut b = b1.clone();
-        b.combine(b2);
-        assert_eq!(b, BG!(env! { f:v0, y:v2 }, aset! { x:v1, x:v3 }));
-    }
+    //     let mut b = b1.clone();
+    //     b.combine(b2);
+    //     assert_eq!(b, BG!(env! { f:v0, y:v2 }, aset! { x:v1, x:v3 }));
+    // }
 
-    #[test]
-    fn test_organize() {
-        let b1 = BG!(env! {}, aset! { x:v0 });
-        let b2 = BG!(env! { f:v1 }, aset! { y:v2 , f:v3 });
-        let b3 = BG!(env! { x:v4 }, aset! { g:v5 , x:v6 , y:v7 });
-        let b4 = BG!(env! { y:v8 }, aset! { f:v9 , x:v10 , y:v11 , z:v12 });
-        let b5 = BG!(env! { g:v13 , h:v14 }, aset! {});
+    // #[test]
+    // fn test_organize() {
+    //     let b1 = BG!(env! {}, aset! { x:v0 });
+    //     let b2 = BG!(env! { f:v1 }, aset! { y:v2 , f:v3 });
+    //     let b3 = BG!(env! { x:v4 }, aset! { g:v5 , x:v6 , y:v7 });
+    //     let b4 = BG!(env! { y:v8 }, aset! { f:v9 , x:v10 , y:v11 , z:v12 });
+    //     let b5 = BG!(env! { g:v13 , h:v14 }, aset! {});
 
-        let b3_4 = BG!(
-            env! { y:v8, x:v4 },
-            aset! { g:v5 , x:v6 , y:v7, f:v9 , x:v10 , y:v11 , z:v12 }
-        );
+    //     let b3_4 = BG!(
+    //         env! { y:v8, x:v4 },
+    //         aset! { g:v5 , x:v6 , y:v7, f:v9 , x:v10 , y:v11 , z:v12 }
+    //     );
 
-        let mut sigs = TyEnv::new();
-        sigs.insert(
-            Path::from("f"),
-            Ty::All(
-                vec![tvar!(a)],
-                Box::new(Ty::Func(
-                    vec![Ty::Var(tvar!(a))],
-                    Box::new(Ty::Var(tvar!(a))),
-                )),
-            ),
-        );
+    //     let mut sigs = TyEnv::new();
+    //     sigs.insert(
+    //         Path::from("f"),
+    //         Ty::All(
+    //             vec![tvar!(a)],
+    //             Box::new(Ty::Func(
+    //                 vec![Ty::Var(tvar!(a))],
+    //                 Box::new(Ty::Var(tvar!(a))),
+    //             )),
+    //         ),
+    //     );
 
-        let mut tvar_factory = TyVarFactory::new("v");
-        tvar_factory.skip_to(15);
-        let mono_tys = HashSet::new();
-        let mut bga = BindingGroupAnalysis::new(
-            vec![b1.clone(), b2.clone(), b3, b4, b5.clone()],
-            &sigs,
-            &mut tvar_factory,
-            &mono_tys,
-        );
-        bga.organize_groups();
+    //     let mut tvar_factory = TyVarFactory::new("v");
+    //     tvar_factory.skip_to(15);
+    //     let mono_tys = HashSet::new();
+    //     let mut bga = BindingGroupAnalysis::new(
+    //         vec![b1.clone(), b2.clone(), b3, b4, b5.clone()],
+    //         &sigs,
+    //         &mut tvar_factory,
+    //         &mono_tys,
+    //     );
+    //     bga.organize_groups();
 
-        for g in bga.groups.iter() {
-            println!("{:?}", g);
-        }
+    //     for g in bga.groups.iter() {
+    //         println!("{:?}", g);
+    //     }
 
-        assert!(
-            bga.groups
-                .iter()
-                .zip(vec![&b5, &b3_4, &b1, &b2])
-                .all(|(a, b)| a == b)
-                || bga
-                    .groups
-                    .iter()
-                    .zip(vec![&b5, &b3_4, &b2, &b1])
-                    .all(|(a, b)| a == b)
-        );
-    }
+    //     assert!(
+    //         bga.groups
+    //             .iter()
+    //             .zip(vec![&b5, &b3_4, &b1, &b2])
+    //             .all(|(a, b)| a == b)
+    //             || bga
+    //                 .groups
+    //                 .iter()
+    //                 .zip(vec![&b5, &b3_4, &b2, &b1])
+    //                 .all(|(a, b)| a == b)
+    //     );
+    // }
 
-    #[test]
-    fn test_analyze() {
-        let id_fn_ty = || {
-            Ty::All(
-                vec![tvar!(a)],
-                Box::new(Ty::Func(
-                    vec![Ty::Var(tvar!(a))],
-                    Box::new(Ty::Var(tvar!(a))),
-                )),
-            )
-        };
+    // #[test]
+    // fn test_analyze() {
+    //     let id_fn_ty = || {
+    //         Ty::All(
+    //             vec![tvar!(a)],
+    //             Box::new(Ty::Func(
+    //                 vec![Ty::Var(tvar!(a))],
+    //                 Box::new(Ty::Var(tvar!(a))),
+    //             )),
+    //         )
+    //     };
 
-        let b1 = BG!(env! {}, aset! { x:v0 });
-        let b2 = BG!(env! { f:v1 }, aset! { y:v2 , f:v3 });
-        let b3_4 = BG!(
-            env! { y:v8, x:v4 },
-            aset! { g:v5 , x:v6 , y:v7, f:v9 , x:v10 , y:v11 , z:v12 }
-        );
-        let b5 = BG!(env! { g:v13 , h:v14 }, aset! {});
+    //     let b1 = BG!(env! {}, aset! { x:v0 });
+    //     let b2 = BG!(env! { f:v1 }, aset! { y:v2 , f:v3 });
+    //     let b3_4 = BG!(
+    //         env! { y:v8, x:v4 },
+    //         aset! { g:v5 , x:v6 , y:v7, f:v9 , x:v10 , y:v11 , z:v12 }
+    //     );
+    //     let b5 = BG!(env! { g:v13 , h:v14 }, aset! {});
 
-        // Σ = [f:∀a.a→a]
-        let mut sigs = TyEnv::new();
-        sigs.insert(Path::from("f"), id_fn_ty());
+    //     // Σ = [f:∀a.a→a]
+    //     let mut sigs = TyEnv::new();
+    //     sigs.insert(Path::from("f"), id_fn_ty());
 
-        // let mut bga =
-        //     BindingGroupAnalysis::new(vec![b5, b3_4, b1, b2], &sigs, &mut tf, &mono_tys);
+    //     // let mut bga =
+    //     //     BindingGroupAnalysis::new(vec![b5, b3_4, b1, b2], &sigs, &mut tf, &mono_tys);
 
-        let mut svf = TyVarFactory::new("s");
-        let mono_tys = HashSet::new();
-        let aset = AssumptionSet::new();
-        let ctree = ConstraintTree::empty();
+    //     let mut svf = TyVarFactory::new("s");
+    //     let mono_tys = HashSet::new();
+    //     let aset = AssumptionSet::new();
+    //     let ctree = ConstraintTree::empty();
 
-        // We start our binding group analysis with B2, which is the
-        // last triple in the ordered list. Two new labeled constraints
-        // are created using f's type signature in Σ, because f is in
-        // the pattern environment and in the assumption set.
-        let (mono_tys, aset, ctree) = b2.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
+    //     // We start our binding group analysis with B2, which is the
+    //     // last triple in the ordered list. Two new labeled constraints
+    //     // are created using f's type signature in Σ, because f is in
+    //     // the pattern environment and in the assumption set.
+    //     let (mono_tys, aset, ctree) = b2.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
-        // TcA = (l(v3), v3 := Inst(∀a.a → a))
-        //      ≪◦ (l(v1), v1 := Skol(M, ∀a.a → a)) ◃◦ Tc2
-        let actual_tree = StrictSpreadTree::new(
-            str!("f"),
-            InstConstraint::new(Ty::Var(tvar!(v3)), id_fn_ty()),
-            SpreadTree::new(
-                str!("f"),
-                SkolConstraint::new(vec![], Ty::Var(tvar!(v1)), id_fn_ty()),
-                ConstraintTree::empty(),
-            ),
-        );
+    //     // TcA = (l(v3), v3 := Inst(∀a.a → a))
+    //     //      ≪◦ (l(v1), v1 := Skol(M, ∀a.a → a)) ◃◦ Tc2
+    //     let actual_tree = StrictSpreadTree::new(
+    //         str!("f"),
+    //         InstConstraint::new(Ty::Var(tvar!(v3)), id_fn_ty()),
+    //         SpreadTree::new(
+    //             str!("f"),
+    //             SkolConstraint::new(vec![], Ty::Var(tvar!(v1)), id_fn_ty()),
+    //             ConstraintTree::empty(),
+    //         ),
+    //     );
 
-        assert_eq!(ctree, actual_tree);
+    //     assert_eq!(ctree, actual_tree);
 
-        // A = [y:v2]
-        assert_eq!(aset, aset! {y: v2});
+    //     // A = [y:v2]
+    //     assert_eq!(aset, aset! {y: v2});
 
-        // TcB = Tc1 ≪ TcA
-        let tc1 = b1.tree().clone();
-        let (mono_tys, aset, ctree) = b1.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
+    //     // TcB = Tc1 ≪ TcA
+    //     let tc1 = b1.tree().clone();
+    //     let (mono_tys, aset, ctree) = b1.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
-        let actual_tree = StrictTree::new(tc1, actual_tree);
-        assert_eq!(ctree, actual_tree);
+    //     let actual_tree = StrictTree::new(tc1, actual_tree);
+    //     assert_eq!(ctree, actual_tree);
 
-        // A = [x:v0, y:v2]
-        assert_eq!(aset, aset! { x:v0, y:v2 });
+    //     // A = [x:v0, y:v2]
+    //     assert_eq!(aset, aset! { x:v0, y:v2 });
 
-        // Next, we consider the combined triples of B3 and B4.
-        // At this point, various things happen. The type variable
-        // v9 must be an instance of f's type signature, and an
-        // equality constraint is generated for all uses of x in
-        // B3 and B4, and also for y. Because x and y do not have
-        // an explicit type signature, we assign two fresh type
-        // scheme variables to them, and create two generalization
-        // constraints. Finally, the assumptions about x and y in
-        // Ab must be instances of the generalized types of x and y,
-        // respectively. Hence, we get the following constraint tree
-        let tc3_4 = b3_4.tree().clone();
-        let mono_ty_vec = mono_tys
-            .clone()
-            .into_iter()
-            .map(|t| Ty::Var(t))
-            .collect::<Vec<_>>();
-        let (mono_tys, aset, ctree) = b3_4.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
+    //     // Next, we consider the combined triples of B3 and B4.
+    //     // At this point, various things happen. The type variable
+    //     // v9 must be an instance of f's type signature, and an
+    //     // equality constraint is generated for all uses of x in
+    //     // B3 and B4, and also for y. Because x and y do not have
+    //     // an explicit type signature, we assign two fresh type
+    //     // scheme variables to them, and create two generalization
+    //     // constraints. Finally, the assumptions about x and y in
+    //     // Ab must be instances of the generalized types of x and y,
+    //     // respectively. Hence, we get the following constraint tree
+    //     let tc3_4 = b3_4.tree().clone();
+    //     let mono_ty_vec = mono_tys
+    //         .clone()
+    //         .into_iter()
+    //         .map(|t| Ty::Var(t))
+    //         .collect::<Vec<_>>();
+    //     let (mono_tys, aset, ctree) = b3_4.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
-        let actual_tree = StrictTree::new(
-            // TcC = (
-            //     ( l(v9), v9 := Inst(∀a.a → a) ) ≪◦
-            //     ([ (l(v6), v4 ≡ v6), (l(v10), v4 ≡ v10), (l(v7), v8 ≡ v7), (l(v11), v8 ≡ v11) ] ≥◦ [Tc3, Tc4])
-            // )
-            tc3_4
-                .spread_list(vec![
-                    (
-                        str!("x"),
-                        EqConstraint::new(Ty::Var(tvar!(v4)), Ty::Var(tvar!(v10))),
-                    ),
-                    (
-                        str!("x"),
-                        EqConstraint::new(Ty::Var(tvar!(v4)), Ty::Var(tvar!(v6))),
-                    ),
-                    (
-                        str!("y"),
-                        EqConstraint::new(Ty::Var(tvar!(v8)), Ty::Var(tvar!(v11))),
-                    ),
-                    (
-                        str!("y"),
-                        EqConstraint::new(Ty::Var(tvar!(v8)), Ty::Var(tvar!(v7))),
-                    ),
-                ])
-                .strict_spread_list(vec![(
-                    str!("f"),
-                    InstConstraint::new(Ty::Var(tvar!(v9)), id_fn_ty()),
-                )]),
-            // ≪
-            StrictTree::new(
-                // [ (l(v4), s0 := Gen(M,v4)), (l(v8), s1 := Gen(M,v8)) ]•
-                ConstraintTree::list(
-                    vec![
-                        GenConstraint::new(mono_ty_vec.clone(), tvar!(s0), Ty::Var(tvar!(v4))),
-                        GenConstraint::new(mono_ty_vec.clone(), tvar!(s1), Ty::Var(tvar!(v8))),
-                    ],
-                    ConstraintTree::empty(),
-                ),
-                // ≪ ([ (l(v0), v0 := Inst(s0)), (l(v2), v2 := Inst(s1))] ≪◦ TcB)
-                actual_tree.strict_spread_list(vec![
-                    (
-                        str!("x"),
-                        InstConstraint::new(Ty::Var(tvar!(v0)), Ty::Var(tvar!(s0))),
-                    ),
-                    (
-                        str!("y"),
-                        InstConstraint::new(Ty::Var(tvar!(v2)), Ty::Var(tvar!(s1))),
-                    ),
-                ]),
-            ),
-        );
+    //     let actual_tree = StrictTree::new(
+    //         // TcC = (
+    //         //     ( l(v9), v9 := Inst(∀a.a → a) ) ≪◦
+    //         //     ([ (l(v6), v4 ≡ v6), (l(v10), v4 ≡ v10), (l(v7), v8 ≡ v7), (l(v11), v8 ≡ v11) ] ≥◦ [Tc3, Tc4])
+    //         // )
+    //         tc3_4
+    //             .spread_list(vec![
+    //                 (
+    //                     str!("x"),
+    //                     EqConstraint::new(Ty::Var(tvar!(v4)), Ty::Var(tvar!(v10))),
+    //                 ),
+    //                 (
+    //                     str!("x"),
+    //                     EqConstraint::new(Ty::Var(tvar!(v4)), Ty::Var(tvar!(v6))),
+    //                 ),
+    //                 (
+    //                     str!("y"),
+    //                     EqConstraint::new(Ty::Var(tvar!(v8)), Ty::Var(tvar!(v11))),
+    //                 ),
+    //                 (
+    //                     str!("y"),
+    //                     EqConstraint::new(Ty::Var(tvar!(v8)), Ty::Var(tvar!(v7))),
+    //                 ),
+    //             ])
+    //             .strict_spread_list(vec![(
+    //                 str!("f"),
+    //                 InstConstraint::new(Ty::Var(tvar!(v9)), id_fn_ty()),
+    //             )]),
+    //         // ≪
+    //         StrictTree::new(
+    //             // [ (l(v4), s0 := Gen(M,v4)), (l(v8), s1 := Gen(M,v8)) ]•
+    //             ConstraintTree::list(
+    //                 vec![
+    //                     GenConstraint::new(mono_ty_vec.clone(), tvar!(s0), Ty::Var(tvar!(v4))),
+    //                     GenConstraint::new(mono_ty_vec.clone(), tvar!(s1), Ty::Var(tvar!(v8))),
+    //                 ],
+    //                 ConstraintTree::empty(),
+    //             ),
+    //             // ≪ ([ (l(v0), v0 := Inst(s0)), (l(v2), v2 := Inst(s1))] ≪◦ TcB)
+    //             actual_tree.strict_spread_list(vec![
+    //                 (
+    //                     str!("x"),
+    //                     InstConstraint::new(Ty::Var(tvar!(v0)), Ty::Var(tvar!(s0))),
+    //                 ),
+    //                 (
+    //                     str!("y"),
+    //                     InstConstraint::new(Ty::Var(tvar!(v2)), Ty::Var(tvar!(s1))),
+    //                 ),
+    //             ]),
+    //         ),
+    //     );
 
-        assert_eq!(ctree, actual_tree);
+    //     assert_eq!(ctree, actual_tree);
 
-        // A = [g:v5, z:v12]
-        assert_eq!(aset, aset! { g:v5, z:v12 });
+    //     // A = [g:v5, z:v12]
+    //     assert_eq!(aset, aset! { g:v5, z:v12 });
 
-        // The last binding group to deal with is B5. This group defines g and h,
-        // which we assign the type scheme variables σ2 and σ3, respectively.
-        // We create an instantiation constraint for the assumption about g in A
+    //     // The last binding group to deal with is B5. This group defines g and h,
+    //     // which we assign the type scheme variables σ2 and σ3, respectively.
+    //     // We create an instantiation constraint for the assumption about g in A
 
-        let tc5 = b5.tree().clone();
-        let mono_ty_vec = mono_tys
-            .clone()
-            .into_iter()
-            .map(|t| Ty::Var(t))
-            .collect::<Vec<_>>();
-        let (_, aset, ctree) = b5.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
+    //     let tc5 = b5.tree().clone();
+    //     let mono_ty_vec = mono_tys
+    //         .clone()
+    //         .into_iter()
+    //         .map(|t| Ty::Var(t))
+    //         .collect::<Vec<_>>();
+    //     let (_, aset, ctree) = b5.combine_with(&mono_tys, aset, ctree, &sigs, &mut svf);
 
-        let actual_tree = StrictTree::new(
-            // Tc5 ≪
-            tc5,
-            StrictTree::new(
-                // [(l(v13), σ2 := Gen(M,v13)), (l(v14), σ3 := Gen(M,v14))]• ≪
-                ConstraintTree::list(
-                    vec![
-                        GenConstraint::new(mono_ty_vec.clone(), tvar!(s2), Ty::Var(tvar!(v13))),
-                        GenConstraint::new(mono_ty_vec.clone(), tvar!(s3), Ty::Var(tvar!(v14))),
-                    ],
-                    ConstraintTree::empty(),
-                ),
-                // ((l(v5), v5 := Inst(σ2)) ≪◦ TcC)
-                actual_tree.strict_spread_list(vec![(
-                    str!("g"),
-                    InstConstraint::new(Ty::Var(tvar!(v5)), Ty::Var(tvar!(s2))),
-                )]),
-            ),
-        );
+    //     let actual_tree = StrictTree::new(
+    //         // Tc5 ≪
+    //         tc5,
+    //         StrictTree::new(
+    //             // [(l(v13), σ2 := Gen(M,v13)), (l(v14), σ3 := Gen(M,v14))]• ≪
+    //             ConstraintTree::list(
+    //                 vec![
+    //                     GenConstraint::new(mono_ty_vec.clone(), tvar!(s2), Ty::Var(tvar!(v13))),
+    //                     GenConstraint::new(mono_ty_vec.clone(), tvar!(s3), Ty::Var(tvar!(v14))),
+    //                 ],
+    //                 ConstraintTree::empty(),
+    //             ),
+    //             // ((l(v5), v5 := Inst(σ2)) ≪◦ TcC)
+    //             actual_tree.strict_spread_list(vec![(
+    //                 str!("g"),
+    //                 InstConstraint::new(Ty::Var(tvar!(v5)), Ty::Var(tvar!(s2))),
+    //             )]),
+    //         ),
+    //     );
 
-        assert_eq!(ctree, actual_tree);
+    //     assert_eq!(ctree, actual_tree);
 
-        // A = [z:v12]
-        assert_eq!(aset, aset! { z:v12 })
-    }
+    //     // A = [z:v12]
+    //     assert_eq!(aset, aset! { z:v12 })
+    // }
 }

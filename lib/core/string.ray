@@ -2,3 +2,7 @@ struct string {
     raw_ptr: *u8
     len: uint
 }
+
+impl ToStr[string] {
+    fn to_str(self) => self
+}

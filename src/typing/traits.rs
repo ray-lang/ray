@@ -34,6 +34,8 @@ where
 pub trait HasBasic {
     fn ctx(&self) -> &TyCtx;
 
+    fn get_constraints_mut(&mut self) -> &mut ConstraintList;
+
     fn add_constraint(&mut self, c: Constraint);
 
     fn add_constraints(&mut self, cs: Vec<Constraint>);
