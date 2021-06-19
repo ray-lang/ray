@@ -1,0 +1,2 @@
+# Ray's syntax is similar enough to Rust that we can use this
+*.ray linguist-language=Rust
