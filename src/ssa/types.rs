@@ -1,8 +1,5 @@
-use std::collections::HashSet;
-
 use crate::{
     ast::{Node, Path},
-    graph::Graph,
     typing::ty::Ty,
     utils::{indent, join, map_join, replace},
 };
@@ -226,7 +223,6 @@ pub struct Func {
     pub locals: Vec<Local>,
     pub blocks: Vec<Block>,
     pub data: Vec<Vec<u8>>,
-    pub cfg: Graph<usize, HashSet<usize>>,
 }
 
 impl std::fmt::Display for Func {
@@ -241,17 +237,6 @@ impl std::fmt::Display for Func {
             )),
             join(&self.blocks, "\n")
         )
-    }
-}
-
-impl Func {
-    #[allow(dead_code)]
-    pub fn calculate_dominators(&mut self) {
-        for (idx, block) in self.blocks.iter().enumerate() {
-            log::debug!("block = {}", block);
-            let dom = self.cfg.dominates(&idx);
-            log::debug!("dom = {:?}", dom);
-        }
     }
 }
 
@@ -284,11 +269,6 @@ impl Block {
             def_set: vec![],
             use_set: vec![],
         }
-    }
-
-    #[inline(always)]
-    pub fn get_expr(&self) -> &Vec<Node<Expr>> {
-        &self.expr
     }
 
     #[inline(always)]
@@ -325,24 +305,4 @@ impl Block {
             self.def_set.push(loc);
         }
     }
-
-    #[inline(always)]
-    pub fn used_vars(&self) -> &Vec<usize> {
-        &self.use_set
-    }
-
-    // #[inline(always)]
-    // pub fn vars(&self) -> &HashMap<String, usize> {
-    //     &self.vars
-    // }
-
-    // #[inline(always)]
-    // pub fn get_var(&mut self, name: &String) -> Option<&usize> {
-    //     self.vars.get(name)
-    // }
-
-    // #[inline(always)]
-    // pub fn set_var(&mut self, name: String, idx: usize) {
-    //     self.vars.insert(name, idx);
-    // }
 }

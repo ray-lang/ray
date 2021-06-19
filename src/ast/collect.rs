@@ -292,10 +292,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::Paren(ex) => (ex, src).collect_constraints(ctx),
             Expr::Range(ex) => (ex, src).collect_constraints(ctx),
             Expr::Return(_) => todo!(),
-            Expr::Sequence(seq) => {
-                let mut tys: Vec<Ty> = vec![];
-                todo!()
-            }
+            Expr::Sequence(_) => todo!(),
             Expr::Tuple(ex) => (ex, src).collect_constraints(ctx),
             Expr::Type(_) => todo!(),
             Expr::TypeAnnotated(ex, ty) => {
@@ -320,19 +317,6 @@ impl CollectConstraints for Node<Expr> {
         (ty, aset, ct)
     }
 }
-
-// impl CollectConstraints for (&Assign, &Source) {
-//     type Output = Ty;
-
-//     fn collect_constraints(
-//         &self,
-//         mono_tys: &HashSet<TyVar>,
-//         srcmap: &SourceMap,
-//         tcx: &mut TyCtx,
-//     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-//         todo!()
-//     }
-// }
 
 impl CollectConstraints for (&Asm, &Source) {
     type Output = Ty;

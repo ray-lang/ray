@@ -1,11 +1,10 @@
-use itertools::Itertools;
 use std::collections::HashMap;
 
 use lir::{GetLocals, MapLocals};
 
 use crate::lir;
 
-use super::{reindex_locals, Optimize};
+use super::Optimize;
 
 pub(super) struct MinimizeLocals();
 
@@ -74,18 +73,8 @@ impl Optimize for MinimizeLocals {
         func.map_locals(&local_map);
         // remove all unncessary locals
         func.locals.drain(total_locals..);
-
-        // reindex_locals(func, &local_map.into_iter().map(|(k, _)| k).collect());
         log::debug!("minimize locals: {}", func);
     }
-}
-
-fn resolve_local(local: usize, local_map: &HashMap<usize, usize>) -> usize {
-    local_map
-        .get(&local)
-        .copied()
-        .map(|local| resolve_local(local, local_map))
-        .unwrap_or(local)
 }
 
 fn expire_intervals(

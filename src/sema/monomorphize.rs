@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::DerefMut,
-};
+use std::collections::{HashMap, HashSet};
 
 use lir::IterCalls;
 

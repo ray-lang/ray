@@ -10,11 +10,9 @@ use crate::{
 };
 
 mod build;
-mod parse_cst;
 
 pub use build::BuildOptions;
 use itertools::Itertools;
-pub use parse_cst::CSTOptions;
 
 #[derive(Debug)]
 pub struct RayPaths {

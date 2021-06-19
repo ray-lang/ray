@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::{graph::Graph, target, typing::ty::Ty};
+use crate::typing::ty::Ty;
 
-use super::{Atom, Block, Break, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
+use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
 pub type VarMap = HashMap<String, HashMap<usize, usize>>;
 
@@ -76,42 +76,13 @@ impl Builder {
     pub fn local(&mut self, ty: Ty) -> usize {
         let idx = self.locals.len();
         let loc = Local { idx, ty };
-        // if self.blocks.len() != 0 {
-        //     self.block().def_var(idx);
-        // }
         self.locals.push(loc);
         idx
     }
 
-    // pub fn var(&mut self, name: String, ty: Ty) -> &Vec<(usize, usize)> {
-    //     if let Some(locs) = self.vars.get(&name) {
-    //         locs
-    //     } else {
-    //         let idx = self.local(ty);
-    //         self.vars.insert(name.clone(), vec![(self.curr_block, idx)]);
-    //         self.vars.get(&name).unwrap()
-    //     }
-    // }
-
-    // #[inline(always)]
-    // pub fn set_var_loc(&mut self, name: String, loc: usize) {
-    //     self.vars.insert(name, loc);
-    // }
-
-    // #[inline(always)]
-    // pub fn get_var_loc(&mut self, name: &String) -> Option<usize> {
-    //     self.vars.get(name).copied()
-    // }
-
     #[inline(always)]
     pub fn get_var(&mut self, name: &String) -> Option<&usize> {
         self.vars.get(name).and_then(|m| m.get(&self.curr_block))
-    }
-
-    #[inline(always)]
-    pub fn get_var_mut(&mut self, name: &String) -> Option<&mut usize> {
-        let curr_block = self.curr_block;
-        self.vars.get_mut(name).and_then(|m| m.get_mut(&curr_block))
     }
 
     #[inline(always)]
@@ -131,18 +102,8 @@ impl Builder {
     }
 
     #[inline(always)]
-    pub fn has_block(&mut self) -> &mut Block {
-        &mut self.blocks[self.curr_block]
-    }
-
-    #[inline(always)]
     pub fn block(&mut self) -> &mut Block {
         &mut self.blocks[self.curr_block]
-    }
-
-    #[inline(always)]
-    pub fn block_at(&mut self, label: usize) -> &mut Block {
-        &mut self.blocks[label]
     }
 
     pub fn new_block(&mut self) -> usize {
@@ -188,11 +149,6 @@ impl Builder {
         self.branch(label);
         self.block().push(Inst::Goto(label));
         None
-    }
-
-    pub fn breakz(&mut self, operand: Atom, label: usize) {
-        self.branch(label);
-        self.block().push(Break::zero(operand, label).into());
     }
 
     pub fn branch(&mut self, label: usize) {

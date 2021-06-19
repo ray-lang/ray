@@ -493,12 +493,6 @@ impl QualifyTypes for Constraint {
     }
 }
 
-// impl QualifyTypes for Vec<Constraint> {
-//     fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
-//         todo!()
-//     }
-// }
-
 impl QuantifyTypes for Constraint {
     fn quantify_tys(&mut self) {
         self.kind.get_tys_mut().quantify_tys();

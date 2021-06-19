@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    ops::DerefMut,
     rc::Rc,
 };
 
@@ -67,7 +66,7 @@ impl Optimize for Inline {
 impl Inline {
     fn inline_call(
         &self,
-        inst: &mut Inst,
+        _: &mut Inst,
         fn_name: &Path,
         args: Vec<lir::Variable>,
         result_local: Option<lir::Variable>,
@@ -122,7 +121,7 @@ impl Inline {
                 }) => Some((None, c.fn_name.clone(), c.args.clone())),
                 _ => None,
             } {
-                if let Some(new_blocks) =
+                if let Some(_) =
                     self.inline_call(inst, &fn_name, args, local, locals, funcs, srcmap)
                 {
                     removed_symbols.insert(fn_name);

@@ -645,7 +645,7 @@ impl LowerAST for Node<Expr> {
             Expr::Labeled(_, _) => todo!("lower: Expr::Labeled: {:?}", self),
             Expr::List(l) => return l.lower(srcmap, scope_map, tcx),
             Expr::Literal(_) => return Ok(()),
-            Expr::Loop(loop_stmt) => return Ok(()),
+            Expr::Loop(_) => return Ok(()),
             Expr::Name(n) => return Sourced(n, &src).lower(srcmap, scope_map, tcx),
             Expr::Pattern(p) => return Sourced(p, &src).lower(srcmap, scope_map, tcx),
             Expr::Path(_) => return Ok(()),

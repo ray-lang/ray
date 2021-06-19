@@ -14,7 +14,7 @@ impl Optimize for BranchElim {
     }
 
     fn optimize_func(&self, func: &mut lir::Func) {
-        fn optimize_inst<'a, I>(it: I, use_map: &mut HashMap<usize, usize>)
+        fn optimize_inst<'a, I>(it: I, _: &mut HashMap<usize, usize>)
         where
             I: IntoIterator<Item = &'a mut lir::Inst>,
         {

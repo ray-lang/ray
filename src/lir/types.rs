@@ -6,8 +6,6 @@ use petgraph::{
 use crate::{
     ast::{self, asm::AsmOp, Node, Path},
     convert::ToSet,
-    graph::{Graph, TopologicalSort},
-    sort::SortByIndexSlice,
     span::SourceMap,
     strutils::indent_lines,
     typing::{ty::Ty, ApplySubst, Subst},
@@ -17,7 +15,6 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet},
     iter::Sum,
-    ops::Deref,
     usize,
 };
 
@@ -899,9 +896,6 @@ impl Program {
     pub fn post_process(&mut self, srcmap: &SourceMap) {
         to_ssa(self);
         optimize(self, srcmap, 0);
-        // for func in self.funcs.iter_mut() {
-        //     Stackify::new().stackify(func)
-        // }
     }
 }
 
@@ -1307,7 +1301,7 @@ impl Func {
     pub fn inline(
         mut self,
         args: Vec<Variable>,
-        result_local: Option<Variable>,
+        _: Option<Variable>,
         local_offset: usize,
     ) -> (Vec<Local>, Vec<Block>) {
         self.offset_locals(local_offset);
@@ -1422,138 +1416,7 @@ impl Func {
         }
 
         frontiers
-
-        // fn strictly_dominates(g: &ControlFlowGraph, idx: usize) -> HashSet<usize> {
-        //     let doms = petgraph::algo::dominators::simple_fast(g, idx);
-        //     doms.strict_dominators(node)
-
-        // }
-
-        // fn dominates<'a, 'b>(g: &ControlFlowGraph, idx: usize, set: &mut HashSet<usize>) {
-        //     for v in strictly_dominates(g, idx) {
-        //         if !set.contains(v) {
-        //             set.insert(v);
-        //             dominates(g, v, set);
-        //         }
-        //     }
-        // }
-
-        // let doms = petgraph::algo::dominators::simple_fast(g, 0);
-        // fn dominates(g: &ControlFlowGraph, idx: usize) -> Vec<usize> {
-        //     for d in doms {}
-        // }
-
-        // let mut frontiers = DominatorMap::new();
-        // for (idx, _) in self.blocks.iter().enumerate() {
-        //     let dom = dominates(&self.cfg, idx);
-        //     for &other in dom {
-        //         if other == idx {
-        //             continue;
-        //         }
-
-        //         frontiers.entry(other).or_default().insert(idx);
-        //     }
-        // }
-        // frontiers
     }
-
-    pub fn calculate_strict_dominators(&self) -> DominatorMap {
-        todo!()
-        // let mut frontiers = DominatorMap::new();
-        // for (idx, _) in self.blocks.iter().enumerate() {
-        //     let dom = self.cfg.strictly_dominates(&idx);
-        //     for &other in dom {
-        //         if other == idx {
-        //             continue;
-        //         }
-
-        //         frontiers.entry(other).or_default().insert(idx);
-        //     }
-        // }
-        // frontiers
-    }
-
-    pub fn calculate_common_successor(&self, mut preds: Vec<usize>) -> Option<usize> {
-        todo!()
-        // log::debug!("calculate common successor for: {:?}", preds);
-        // if preds.len() == 0 {
-        //     return None;
-        // }
-
-        // let idx = preds.pop().unwrap();
-        // let mut result = vec![];
-        // result.extend(self.cfg.dominates(&idx).into_iter().map(|&l| l));
-        // for idx in preds {
-        //     let succs = self.cfg.dominates(&idx);
-        //     log::debug!("{} dominates {:?}", idx, succs);
-        //     let mut succ_idx = 0;
-        //     while succ_idx < result.len() {
-        //         let succ = result[succ_idx];
-        //         if !succs.contains(&succ) {
-        //             result.remove(succ_idx);
-        //         } else {
-        //             succ_idx += 1;
-        //         }
-        //     }
-        // }
-
-        // // find the greatest dominator
-        // let mut greatest = None;
-        // for i in result.iter() {
-        //     let succs = self.cfg.dominates(i);
-        //     log::debug!("{} dominates {:?}", i, succs);
-        //     for j in result.iter() {
-        //         if i != j && succs.contains(j) {
-        //             greatest = Some(*i);
-        //             break;
-        //         }
-        //     }
-        // }
-
-        // greatest
-    }
-
-    // pub fn get_topological_ordering(&self) -> Vec<usize> {
-    //     let mut cfg = self.cfg.clone();
-    //     let mut last = None;
-    //     let mut curr = vec![];
-    //     loop {
-    //         log::debug!("curr = {:?}", curr);
-    //         let blocks = cfg.toposort();
-    //         if blocks.len() == 0 {
-    //             if cfg.len() == 0 {
-    //                 break;
-    //             }
-
-    //             // there is a cycle: we must find it and break it
-    //             if let Some(block) =
-    //                 last.and_then(|idx| -> Option<&Block> { self.blocks.get(idx + 1) })
-    //             {
-    //                 // this is the start of a loop
-    //                 let label = block.label();
-    //                 if cfg.remove(&label).is_some() {
-    //                     // unless it has already been removed add it
-    //                     curr.push(label);
-    //                     last = Some(label);
-    //                 }
-    //                 continue;
-    //             }
-
-    //             break;
-    //         }
-
-    //         curr.extend(blocks);
-    //         last = curr.last().copied();
-    //     }
-    //     log::debug!("curr = {:?}", curr);
-    //     curr
-    // }
-
-    // pub fn sort_topologically(&mut self) {
-    //     let indices = self.get_topological_ordering();
-    //     self.blocks.sort_by_index_slice(indices);
-    //     self.reindex_blocks();
-    // }
 }
 
 #[derive(Clone, Debug)]

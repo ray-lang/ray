@@ -10,7 +10,6 @@ mod to_ssa;
 
 pub mod asm;
 pub mod token;
-pub mod visitor;
 
 pub use expr::*;
 pub use file::*;

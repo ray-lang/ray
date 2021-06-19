@@ -792,27 +792,11 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                         )
                     });
 
-                let mut real_end_label = end_label;
-                if let Some(label) = ctx.with_block(then_label, |ctx| ctx.goto(end_label)) {
-                    real_end_label = label;
-                }
-
-                if let Some(label) = ctx.with_block(else_label, |ctx| ctx.goto(end_label)) {
-                    real_end_label = label;
-                }
-
                 // use this block for the next instructions
                 ctx.use_block(end_label);
                 ctx.block()
                     .markers_mut()
                     .push(lir::ControlMarker::End(cond_label));
-
-                // // use the "real" end label (meaning the actual exit block of the if/else)
-                // ctx.with_block(real_end_label, |ctx| {
-                //     ctx.block()
-                //         .markers_mut()
-                //         .push(lir::ControlMarker::End(cond_label));
-                // });
 
                 if_loc?
                     .map(|l| lir::Atom::Variable(lir::Variable::Local(l)).into())

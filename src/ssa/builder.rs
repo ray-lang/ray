@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::{ast::Node, graph::Graph, typing::ty::Ty};
+use crate::{ast::Node, typing::ty::Ty};
 
 use super::{Block, Callable, Expr, Local, Op, Value};
 
@@ -14,7 +14,6 @@ pub struct SSABuilder {
     exit_block: Option<usize>,
     blocks: Vec<Block>,
     data: Vec<Vec<u8>>,
-    cfg: Graph<usize, HashSet<usize>>,
 }
 
 impl SSABuilder {
@@ -28,19 +27,10 @@ impl SSABuilder {
             exit_block: None,
             blocks: vec![],
             data: vec![],
-            cfg: Graph::new(),
         }
     }
 
-    pub fn done(
-        mut self,
-    ) -> (
-        Vec<(String, Ty)>,
-        Vec<Local>,
-        Vec<Block>,
-        Vec<Vec<u8>>,
-        Graph<usize, HashSet<usize>>,
-    ) {
+    pub fn done(mut self) -> (Vec<(String, Ty)>, Vec<Local>, Vec<Block>, Vec<Vec<u8>>) {
         // ensure that each block has a final control flow instruction
         let num_blocks = self.blocks.len();
         let mut new_edges = vec![];
@@ -56,11 +46,7 @@ impl SSABuilder {
             }
         }
 
-        for (prec, succ) in new_edges {
-            self.cfg.add_edge(prec, succ, None);
-        }
-
-        (self.params, self.locals, self.blocks, self.data, self.cfg)
+        (self.params, self.locals, self.blocks, self.data)
     }
 
     pub fn local(&mut self, ty: Ty) -> usize {
@@ -201,11 +187,6 @@ impl SSABuilder {
         idx
     }
 
-    #[allow(dead_code)]
-    pub fn cfg(&mut self) -> &mut Graph<usize, HashSet<usize>> {
-        &mut self.cfg
-    }
-
     pub fn push(&mut self, value: Node<Expr>) {
         self.block().push(value)
     }
@@ -235,7 +216,6 @@ impl SSABuilder {
     }
 
     pub fn goto(&mut self, label: usize) {
-        self.cfg.add_edge(self.curr_block, label, None);
         self.block().push(Node::new(Expr::Goto(Node::new(label))))
     }
 
@@ -246,8 +226,6 @@ impl SSABuilder {
     }
 
     pub fn cond_branch(&mut self, cond_loc: Node<usize>, then_label: usize, else_label: usize) {
-        self.cfg.add_edge(self.curr_block, then_label, None);
-        self.cfg.add_edge(self.curr_block, else_label, None);
         self.push(Node::new(Expr::If(
             cond_loc,
             Node::new(then_label),

@@ -7,7 +7,6 @@ use crate::{
         token::IntegerBase,
         CurlyElement, Decl, Expr, Literal, Module, Node, Path, Pattern,
     },
-    graph::Graph,
     ssa::{self, SSABuilder},
     typing::{ty::Ty, TyCtx},
 };
@@ -65,8 +64,8 @@ impl ToSSAForm<SSAGlobalCtx> for Node<Decl> {
                 tcx.set_ty(id, ty);
 
                 let name = func.sig.path.clone();
-                let (params, locals, blocks, data, cfg) = ctx.done();
-                gcx.add_func(id, name, params, locals, blocks, data, cfg);
+                let (params, locals, blocks, data) = ctx.done();
+                gcx.add_func(id, name, params, locals, blocks, data);
             }
             Decl::Mutable(_) | Decl::Name(_) => {
                 todo!()
@@ -114,7 +113,6 @@ impl SSAGlobalCtx {
         locals: Vec<ssa::Local>,
         blocks: Vec<ssa::Block>,
         data: Vec<Vec<u8>>,
-        cfg: Graph<usize, HashSet<usize>>,
     ) {
         self.funcs.push(Node::with_id(
             id,
@@ -124,7 +122,6 @@ impl SSAGlobalCtx {
                 locals,
                 blocks,
                 data,
-                cfg,
             },
         ));
     }

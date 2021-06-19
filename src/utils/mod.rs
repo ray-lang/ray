@@ -57,17 +57,3 @@ where
         Ok(())
     }
 }
-
-// pub fn replace_result<F, T>(dest: &mut T, f: F)
-// where
-//     F: FnOnce(T) -> (T, U),
-// {
-//     let old = unsafe {
-//         std::mem::replace(dest, std::mem::MaybeUninit::uninit().assume_init())
-//     };
-
-//     let src = f(old);
-//     let uninit = std::mem::replace(dest, src);
-//     std::mem::forget(uninit);
-
-// }

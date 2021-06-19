@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{lir, span::SourceMap};
 
-use inline::Inline;
 use redundant_assign::RedundantAssignElim;
 use simplify_phi::SimplifyPhiNodes;
 

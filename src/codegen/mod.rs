@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::Deref,
 };
 
@@ -56,7 +56,6 @@ struct CodegenCtx {
     globals: HashMap<String, u32>,
     local_tys: Vec<Ty>,
     local_hp: Option<u32>,
-    block_depth: u32,
 }
 
 impl CodegenCtx {
@@ -69,7 +68,6 @@ impl CodegenCtx {
             globals: HashMap::new(),
             local_tys: vec![],
             local_hp: None,
-            block_depth: 0,
         }
     }
 
@@ -914,77 +912,16 @@ impl Codegen for lir::Store {
 impl Codegen for lir::If {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output {
+    fn codegen(&self, _: &mut CodegenCtx, _: &TyCtx, _: &SourceMap) -> Self::Output {
         vec![]
-        // ctx.block_depth += 2;
-        // let mut insts = vec![
-        //     wasm::Instruction::Block(wasm::BlockType::NoResult),
-        //     wasm::Instruction::Block(wasm::BlockType::NoResult),
-        // ];
-
-        // insts.extend(self.cond_block.codegen(ctx, tcx, srcmap));
-        // insts.extend(self.then_block.codegen(ctx, tcx, srcmap));
-        // if let Some((if_loc, phi)) = &self.phi {
-        //     insts.push(wasm::Instruction::GetLocal(phi.then_loc as u32));
-        //     insts.push(wasm::Instruction::SetLocal(*if_loc as u32));
-        // }
-        // insts.push(wasm::Instruction::Br(1));
-        // insts.push(wasm::Instruction::End);
-        // ctx.block_depth -= 1;
-        // insts.extend(self.else_block.codegen(ctx, tcx, srcmap));
-        // if let Some((if_loc, phi)) = &self.phi {
-        //     insts.push(wasm::Instruction::GetLocal(phi.else_loc as u32));
-        //     insts.push(wasm::Instruction::SetLocal(*if_loc as u32));
-        // }
-        // insts.push(wasm::Instruction::End);
-        // ctx.block_depth -= 1;
-        // insts
     }
 }
-
-// impl Codegen for lir::Loop {
-//     type Output = Vec<wasm::Instruction>;
-
-//     fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output {
-//         ctx.block_depth += 1;
-//         let mut insts = vec![
-//             wasm::Instruction::Block(wasm::BlockType::NoResult),
-//             wasm::Instruction::Loop(wasm::BlockType::NoResult),
-//         ];
-//         insts.extend(self.instructions.codegen(ctx, tcx, srcmap));
-//         insts.push(wasm::Instruction::Br(0)); // break to the top of the loop
-//         insts.push(wasm::Instruction::End);
-//         insts.push(wasm::Instruction::End);
-//         ctx.block_depth -= 1;
-//         insts
-//     }
-// }
 
 impl Codegen for lir::Break {
     type Output = Vec<wasm::Instruction>;
 
-    fn codegen(&self, ctx: &mut CodegenCtx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output {
+    fn codegen(&self, _: &mut CodegenCtx, _: &TyCtx, _: &SourceMap) -> Self::Output {
         unimplemented!("lir::Break::codegen")
-        // let mut inst = self
-        //     .operand
-        //     .as_ref()
-        //     .map(|o| o.codegen(ctx, tcx, srcmap))
-        //     .unwrap_or_default();
-        // match self.op {
-        //     lir::BreakOp::Break => {
-        //         inst.push(wasm::Instruction::Br(ctx.block_depth));
-        //     }
-        //     lir::BreakOp::BreakZ => {
-        //         inst.push(wasm::Instruction::I32Eqz);
-        //         inst.push(wasm::Instruction::BrIf(0));
-        //     }
-        //     lir::BreakOp::BreakNZ => {
-        //         inst.push(wasm::Instruction::I32Const(0));
-        //         inst.push(wasm::Instruction::I32Ne);
-        //         inst.push(wasm::Instruction::BrIf(0));
-        //     }
-        // }
-        // inst
     }
 }
 

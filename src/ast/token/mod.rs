@@ -1,6 +1,3 @@
-mod stream;
-mod tree;
-
 use std::cmp::PartialEq;
 use std::fmt;
 use std::string::String;
