@@ -446,10 +446,8 @@ impl Codegen for lir::Func {
             let block = &func.blocks[label];
             let block_insts = match blocks.remove(&label) {
                 Some(i) => i,
-                _ => panic!(
-                    "COMPILER BUG: block[{}] for func {} has already been codegen'd",
-                    label, func.name
-                ),
+                // TODO: is this okay?
+                _ => vec![], // already been codegen'd
             };
 
             let mut insts = vec![];
@@ -631,135 +629,6 @@ impl Codegen for lir::Func {
 
         let mut insts = new_codegen_block(self, 0, 0, None, &mut blocks, &loops, None);
         insts.push(wasm::Instruction::End);
-
-        // fn codegen_block(
-        //     func: &lir::Func,
-        //     label: usize,
-        //     stop_labels: &mut HashSet<usize>,
-        //     insts: &mut Vec<wasm::Instruction>,
-        //     blocks: &mut BTreeMap<usize, Vec<wasm::Instruction>>,
-        // ) -> Option<(usize, usize)> {
-        //     if label >= func.blocks.len() {
-        //         // we must've gone past the end
-        //         return None;
-        //     }
-
-        //     log::debug!("current label: {}", label);
-        //     log::debug!("stop labels: {:?}", stop_labels);
-        //     let block = &func.blocks[label];
-        //     if let Some(&parent) = stop_labels.iter().find(|&&l| block.is_end(l)) {
-        //         stop_labels.remove(&parent);
-        //         return Some((parent, label));
-        //     }
-
-        //     let block_insts = match blocks.remove(&label) {
-        //         Some(i) => i,
-        //         _ => return None
-
-        //         // panic!(
-        //         //     "COMPILER BUG: block[{}] for func {} has already been codegen'd",
-        //         //     label, func.name
-        //         // ),
-        //     };
-
-        //     // add the appropriate instructions if the block is a loop or if/else header
-        //     if block.is_loop_header() {
-        //         insts.push(wasm::Instruction::Block(wasm::BlockType::NoResult));
-        //         insts.push(wasm::Instruction::Loop(wasm::BlockType::NoResult));
-        //     } else if block.is_if_header() {
-        //         insts.push(wasm::Instruction::Block(wasm::BlockType::NoResult));
-        //         insts.push(wasm::Instruction::Block(wasm::BlockType::NoResult));
-        //     }
-
-        //     // add the current block's instructions
-        //     insts.extend(block_insts);
-
-        //     // check the final control instruction to determine what to codegen next
-        //     if let Some(last) = block.last() {
-        //         match last {
-        //             &lir::Inst::If(lir::If {
-        //                 cond_loc,
-        //                 then_label,
-        //                 else_label,
-        //             }) => {
-        //                 insts.push(wasm::Instruction::GetLocal(cond_loc as u32));
-        //                 insts.push(wasm::Instruction::I32Eqz);
-
-        //                 if block.is_loop_header() {
-        //                     // loops break to the outer block
-        //                     insts.push(wasm::Instruction::BrIf(1));
-        //                 } else {
-        //                     // if/else breaks to the inner block (skipping the then block)
-        //                     insts.push(wasm::Instruction::BrIf(0));
-        //                 }
-
-        //                 // generate the code for following the then label
-        //                 stop_labels.insert(label);
-        //                 let mut end_label = None;
-        //                 let mut break_depth = 0;
-        //                 let stop_label = codegen_block(func, then_label, stop_labels, insts, blocks);
-        //                 if let Some((parent, end)) = stop_label {
-        //                     if parent == label {
-        //                         // this label is the end of the if/else block
-        //                         end_label = Some(end);
-        //                     } else {
-        //                         // otherwise, we're exiting the if/else block to somewhere else
-        //                         log::debug!("parent = {}, end = {}", parent, end);
-        //                         break_depth += 2;
-        //                     }
-        //                 }
-
-        //                 if block.is_loop_header() {
-        //                     // loops break to the inner block
-        //                     insts.push(wasm::Instruction::Br(0));
-        //                 } else {
-        //                     // otherwise, if/else breaks to the outer block
-        //                     insts.push(wasm::Instruction::Br(break_depth + 1));
-        //                 }
-
-        //                 insts.push(wasm::Instruction::End);
-
-        //                 // then the else label
-        //                 stop_labels.insert(label);
-        //                 let stop_label = codegen_block(func, else_label, stop_labels, insts, blocks);
-        //                 if let Some((parent, end)) = stop_label {
-        //                     if parent == label {
-        //                         // this label is the end of the if/else block
-        //                         end_label = Some(end);
-        //                     } else {
-        //                         // otherwise, we're exiting the if/else block to somewhere else
-        //                         log::debug!("parent = {}, end = {}", parent, end);
-        //                     }
-        //                 }
-
-        //                 insts.push(wasm::Instruction::End);
-
-        //                 // then continue using the end label
-        //                 if let Some(end_label) = end_label {
-        //                     log::debug!("found end label for {} => {}", label, end_label);
-        //                     return codegen_block(func, end_label, stop_labels, insts, blocks);
-        //                 }
-
-        //                 None
-        //             }
-        //             lir::Inst::Break(_) => todo!("codegen Break"),
-        //             lir::Inst::Goto(label) => {
-        //                 codegen_block(func, *label, stop_labels, insts, blocks)
-        //             }
-        //             lir::Inst::Halt | lir::Inst::Return(_) => None, /* do nothing */
-        //             i => panic!("COMPILER BUG: instruction is not a control {}", i),
-        //         }
-        //     } else {
-        //         // ignore the empty block
-        //         codegen_block(func, label + 1, stop_labels, insts, blocks)
-        //     }
-        // }
-
-        // // then go through each block to link the blocks together
-        // let mut insts = vec![];
-        // codegen_block(self, 0, &mut HashSet::new(), &mut insts, &mut blocks);
-
-        // insts.push(wasm::Instruction::End);
 
         // add the instructions to the code body
         ctx.get_body(&self.name)

@@ -1046,16 +1046,6 @@ impl std::ops::DerefMut for Block {
     }
 }
 
-// impl IntoIterator for Block {
-//     type Item = Inst;
-
-//     type IntoIter = std::vec::IntoIter<Inst>;
-
-//     fn into_iter(self) -> Self::IntoIter {
-//         self.instructions.into_iter()
-//     }
-// }
-
 impl Extend<Inst> for Block {
     fn extend<T: IntoIterator<Item = Inst>>(&mut self, iter: T) {
         self.instructions.extend(iter);
