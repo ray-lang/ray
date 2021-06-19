@@ -333,7 +333,7 @@ impl std::fmt::Debug for ConstraintKind {
 }
 
 impl QualifyTypes for ConstraintKind {
-    fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
+    fn qualify_tys(&mut self, _: &Vec<TyPredicate>) {
         todo!()
     }
 }
@@ -362,14 +362,14 @@ pub struct ConstraintInfo {
 }
 
 impl PolymorphismInfo for ConstraintInfo {
-    fn inst_ty(self, ty: &Ty) -> Self
+    fn inst_ty(self, _: &Ty) -> Self
     where
         Self: Sized,
     {
         self
     }
 
-    fn skol_ty(self, ty: &Ty) -> Self
+    fn skol_ty(self, _: &Ty) -> Self
     where
         Self: Sized,
     {

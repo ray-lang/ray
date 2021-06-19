@@ -1,15 +1,11 @@
-use std::collections::HashSet;
-
 use crate::{
     ast::{Node, Path},
-    span::SourceMap,
-    ssa::{BasicOp, BasicOpKind, Op, Size},
+    ssa::{BasicOpKind, Op, Size},
     typing::{
         assumptions::AssumptionSet,
-        collect::CollectConstraints,
+        collect::{CollectConstraints, CollectCtx},
         constraints::tree::{ConstraintTree, ReceiverTree},
-        ty::{Ty, TyVar},
-        TyCtx,
+        ty::Ty,
     },
     utils::{indent, join, map_join},
 };
@@ -110,18 +106,15 @@ impl CollectConstraints for Node<Value> {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        let src = srcmap.get(self);
         match &self.value {
             Value::Unit => (Ty::unit(), AssumptionSet::new(), ConstraintTree::empty()),
             Value::Size(_) | Value::Sizeof(_) | Value::PointerSize => {
                 (Ty::uint(), AssumptionSet::new(), ConstraintTree::empty())
             }
             Value::Var(loc) => {
-                let ty = tcx.ty_of(self.id);
+                let ty = ctx.tcx.ty_of(self.id);
                 let label = ty.to_string();
                 let mut aset = AssumptionSet::new();
                 aset.add(Path::from(format!("${}", loc)), ty.clone());

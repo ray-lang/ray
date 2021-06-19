@@ -2,7 +2,7 @@ use std::ops::Add;
 
 use crate::{typing::traits::TreeWalk, utils::replace};
 
-use super::{Constraint, ConstraintList};
+use super::Constraint;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhaseMap(Vec<(u64, ConstraintTree)>);
@@ -50,6 +50,7 @@ impl Add for PhaseMap {
     }
 }
 
+#[allow(dead_code)]
 impl PhaseMap {
     pub fn new<T: Into<ConstraintTree>>(v: Vec<(u64, T)>) -> PhaseMap {
         PhaseMap(v.into_iter().map(|(p, t)| (p, t.into())).collect())
@@ -180,6 +181,7 @@ impl Into<ConstraintTree> for PhaseTree {
 }
 
 impl PhaseTree {
+    #[allow(dead_code)]
     pub fn new<T: Into<ConstraintTree>>(p: u64, t: T) -> ConstraintTree {
         ConstraintTree::Phase(PhaseTree(p, Box::new(t.into())))
     }
@@ -200,11 +202,9 @@ pub enum ConstraintTree {
 impl From<PhaseMap> for ConstraintTree {
     fn from(pm: PhaseMap) -> ConstraintTree {
         let PhaseMap(v) = pm;
-        v.into_iter()
-            .rev()
-            .fold(ConstraintTree::empty(), |t2, (_, t1)| {
-                ConstraintTree::new(StrictTree(Box::new(t1), Box::new(t2)))
-            })
+        v.into_iter().rfold(ConstraintTree::empty(), |t2, (_, t1)| {
+            ConstraintTree::new(StrictTree(Box::new(t1), Box::new(t2)))
+        })
     }
 }
 
@@ -243,12 +243,12 @@ impl ConstraintTree {
 
     pub fn list(cs: Vec<Constraint>, t: ConstraintTree) -> ConstraintTree {
         cs.into_iter()
-            .rev()
-            .fold(t, |t, c| ConstraintTree::new(AttachTree(c, Box::new(t))))
+            .rfold(t, |t, c| ConstraintTree::new(AttachTree(c, Box::new(t))))
     }
 
+    #[allow(dead_code)]
     pub fn labeled_list(cs: Vec<(String, Constraint)>, t: ConstraintTree) -> ConstraintTree {
-        cs.into_iter().rev().fold(t, |t, (l, c)| {
+        cs.into_iter().rfold(t, |t, (l, c)| {
             ConstraintTree::new(SpreadTree(l, c, Box::new(t)))
         })
     }
@@ -312,14 +312,18 @@ impl ConstraintTree {
                 let t = ConstraintTree::Attach(AttachTree(c, t));
                 t.flatten_rec(walker, down)
             }
-            ConstraintTree::StrictSpread(StrictSpreadTree(_, c, t)) => {
+            ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => {
+                log::debug!("({}, {:?})", l, c);
                 let t = ConstraintTree::Strict(StrictTree(
                     Box::new(AttachTree(c, Box::new(ConstraintTree::empty())).into()),
                     t,
                 ));
                 t.flatten_rec(walker, down)
             }
-            ConstraintTree::Receiver(_) => ConstraintTree::empty().flatten_rec(walker, down),
+            ConstraintTree::Receiver(ReceiverTree(l)) => {
+                log::debug!("receiver: {}", l);
+                ConstraintTree::empty().flatten_rec(walker, down)
+            }
             ConstraintTree::Phase(PhaseTree(_, t)) => t.flatten_rec(walker, down),
         }
     }
@@ -335,7 +339,12 @@ impl ConstraintTree {
     }
 
     pub fn spread(self) -> ConstraintTree {
-        self.spread_with(&mut vec![])
+        let mut list = vec![];
+        let ct = self.spread_with(&mut list);
+        if list.len() != 0 {
+            panic!("COMPILER ERROR!!!\nnon-empty spread list (missing ReceiveTrees for the following type variables): {:#?}", list);
+        }
+        ct
     }
 
     fn spread_with(self, list: &mut Vec<(String, Constraint)>) -> ConstraintTree {
@@ -355,6 +364,7 @@ impl ConstraintTree {
             )),
             ConstraintTree::Spread(SpreadTree(l, c, t))
             | ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => {
+                log::debug!("spread tree: ({}, {:?})", l, c);
                 list.insert(0, (l, c));
                 t.spread_with(list)
             }
@@ -394,9 +404,7 @@ impl ConstraintTree {
                     trees.into_iter().map(|t| t.phase_rec()).unzip();
                 (
                     NodeTree(trees).into(),
-                    pms.into_iter()
-                        .rev()
-                        .fold(PhaseMap(vec![]), |pm, p0| pm + p0),
+                    pms.into_iter().rfold(PhaseMap(vec![]), |pm, p0| pm + p0),
                 )
             }
             ConstraintTree::Attach(AttachTree(c, t)) => {
@@ -450,10 +458,9 @@ impl TreeWalk for BottomUpWalk {
 mod tree_tests {
     use crate::typing::{
         constraints::{EqConstraint, ImplicitConstraint},
-        solvers::{GreedySolver, Solver},
-        state::TyVarFactory,
+        solvers::GreedySolver,
         traits::HasSubst,
-        ty::{Ty, TyVar},
+        ty::Ty,
         InferError, TyCtx,
     };
 
@@ -507,7 +514,7 @@ mod tree_tests {
         let walker = BottomUpWalk {};
         let cs = t.flatten(walker);
         let mut ctx = TyCtx::new();
-        let mut solver = GreedySolver::new(cs, &mut ctx);
+        let solver = GreedySolver::new(cs, &mut ctx);
         // solver.solve()?;
         println!("{:#?}", solver.get_subst());
         Ok(())

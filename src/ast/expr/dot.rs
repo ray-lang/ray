@@ -1,4 +1,4 @@
-use crate::ast::{token::Token, Expr, Name, Node, SourceInfo};
+use crate::ast::{token::Token, Expr, Name, Node};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dot {

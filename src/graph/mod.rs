@@ -40,6 +40,11 @@ impl<V: Hash + Eq + Clone, E> Graph<V, E> {
         }
     }
 
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn add_edge<P, S>(&mut self, prec: P, succ: S, value: Option<E>)
     where
         P: Into<V>,
@@ -78,7 +83,7 @@ impl<V: Hash + Eq + Clone, E> Graph<V, E> {
         }
     }
 
-    fn remove(&mut self, prec: &V) -> Option<Dependency<V>> {
+    pub fn remove(&mut self, prec: &V) -> Option<Dependency<V>> {
         let result = self.map.remove(prec);
         if let Some(ref p) = result {
             for s in &p.succ {
@@ -99,14 +104,18 @@ impl<V: Hash + Eq + Clone, E> Graph<V, E> {
             .unwrap_or_default()
     }
 
-    pub fn dominates(&self, value: &V) -> HashSet<&V> {
-        let mut set = HashSet::new();
+    fn _dominates<'a, 'b>(&'a self, value: &'a V, set: &'b mut HashSet<&'a V>) {
         for v in self.strictly_dominates(value) {
             if !set.contains(v) {
                 set.insert(v);
-                set.extend(self.dominates(v));
+                self._dominates(v, set);
             }
         }
+    }
+
+    pub fn dominates<'a>(&'a self, value: &'a V) -> HashSet<&'a V> {
+        let mut set = HashSet::new();
+        self._dominates(value, &mut set);
         set
     }
 }

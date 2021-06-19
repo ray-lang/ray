@@ -4,7 +4,6 @@ use itertools::Itertools;
 
 use crate::{
     pathlib::FilePath,
-    span::Span,
     typing::{ty::TyVar, ApplySubst, Subst},
 };
 
@@ -257,33 +256,6 @@ where
 {
     fn from(v: &T) -> Self {
         Path::from(v.clone())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PathNode(Path, Span);
-
-impl fmt::Display for PathNode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl PathNode {
-    pub fn empty() -> PathNode {
-        PathNode(Path::new(), Span::new())
-    }
-
-    pub fn new(path: Path, span: Span) -> PathNode {
-        PathNode(path, span)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-
-    pub fn span(&self) -> &Span {
-        &self.1
     }
 }
 

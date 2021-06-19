@@ -4,12 +4,12 @@ use std::{
 };
 
 use crate::{
-    ast::{self, FnSig, HasSource, Path},
+    ast::{self, FnSig, Path},
     convert::ToSet,
     errors::{RayError, RayErrorKind},
     lir::Size,
     pathlib::FilePath,
-    span::{Source, SourceMap, Span},
+    span::{Source, SourceMap},
     utils::{join, replace},
 };
 
@@ -563,8 +563,21 @@ impl Ty {
                 s.resolve_ty(scope, tcx);
                 t.resolve_ty(scope, tcx);
             }
-            Ty::Qualified(qs, t) => t.resolve_ty(scope, tcx),
-            Ty::All(xs, t) => t.resolve_ty(scope, tcx),
+            Ty::Qualified(qs, t) => {
+                for pred in qs.iter_mut() {
+                    match pred {
+                        TyPredicate::Trait(t) | TyPredicate::Literal(t, _) => {
+                            t.resolve_ty(scope, tcx)
+                        }
+                        TyPredicate::HasMember(s, _, t) => {
+                            s.resolve_ty(scope, tcx);
+                            t.resolve_ty(scope, tcx);
+                        }
+                    }
+                }
+                t.resolve_ty(scope, tcx);
+            }
+            Ty::All(_, t) => t.resolve_ty(scope, tcx),
             Ty::Never | Ty::Any => {}
         }
     }

@@ -1,4 +1,10 @@
-use crate::utils::join;
+use std::convert::TryFrom;
+
+use crate::{
+    ast::{Node, Path, PrefixOp},
+    errors::{RayError, RayErrorKind},
+    utils::join,
+};
 
 use super::{Expr, Name, Sequence};
 
@@ -7,30 +13,46 @@ pub enum Pattern {
     Name(Name),
     Sequence(Vec<Pattern>),
     Tuple(Vec<Pattern>),
+    Deref(Name),
 }
 
-impl From<Expr> for Pattern {
-    fn from(expr: Expr) -> Self {
-        match expr {
-            Expr::Name(n) => Pattern::Name(n),
+impl TryFrom<Node<Expr>> for Pattern {
+    type Error = RayError;
+
+    fn try_from(expr: Node<Expr>) -> Result<Self, Self::Error> {
+        match expr.value {
+            Expr::Name(n) => Ok(Pattern::Name(n)),
             Expr::Tuple(tuple) => Pattern::tuple(tuple.seq),
-            Expr::Sequence(seq) => Pattern::from(seq),
-            _ => unreachable!(),
+            Expr::Sequence(seq) => Pattern::try_from(seq),
+            Expr::UnaryOp(unop)
+                if matches!(unop.op, PrefixOp::Deref)
+                    && matches!(unop.expr.value, Expr::Name(_)) =>
+            {
+                let name = variant!(unop.expr.value, if Expr::Name(n));
+                Ok(Pattern::Deref(name))
+            }
+            _ => Err(RayError {
+                kind: RayErrorKind::Parse,
+                msg: format!("{} is an invalid pattern", expr.desc()),
+                src: vec![],
+            }),
         }
     }
 }
 
-impl From<Sequence> for Pattern {
-    fn from(mut seq: Sequence) -> Self {
+impl TryFrom<Sequence> for Pattern {
+    type Error = RayError;
+
+    fn try_from(mut seq: Sequence) -> Result<Self, Self::Error> {
         if seq.items.len() == 1 {
-            Pattern::from(seq.items.pop().unwrap().value)
+            Pattern::try_from(seq.items.pop().unwrap())
         } else {
-            Pattern::Sequence(
+            Ok(Pattern::Sequence(
                 seq.items
                     .into_iter()
-                    .map(|i| Pattern::from(i.value))
-                    .collect(),
-            )
+                    .map(|i| Pattern::try_from(i))
+                    .collect::<Result<_, _>>()?,
+            ))
         }
     }
 }
@@ -40,22 +62,37 @@ impl std::fmt::Display for Pattern {
         write!(
             f,
             "{}",
-            match &self {
+            match self {
                 Pattern::Name(n) => n.to_string(),
                 Pattern::Sequence(seq) => join(seq, ", "),
                 Pattern::Tuple(seq) => format!("(tuple ({}))", join(seq, ", ")),
+                Pattern::Deref(n) => format!("(deref {})", n),
             }
         )
     }
 }
 
 impl Pattern {
-    pub fn tuple(seq: Sequence) -> Self {
-        Pattern::Tuple(
+    pub fn tuple(seq: Sequence) -> Result<Self, RayError> {
+        Ok(Pattern::Tuple(
             seq.items
                 .into_iter()
-                .map(|i| Pattern::from(i.value))
-                .collect(),
-        )
+                .map(|i| Pattern::try_from(i))
+                .collect::<Result<_, _>>()?,
+        ))
+    }
+
+    pub fn path(&self) -> Option<Path> {
+        match self {
+            Pattern::Name(n) | Pattern::Deref(n) => Some(n.path.clone()),
+            Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+        }
+    }
+
+    pub fn get_name(&self) -> Option<String> {
+        match self {
+            Pattern::Name(n) | Pattern::Deref(n) => Some(n.path.to_string()),
+            Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+        }
     }
 }

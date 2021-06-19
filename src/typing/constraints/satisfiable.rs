@@ -120,7 +120,7 @@ impl Satisfiable for SkolConstraint {
 }
 
 impl Satisfiable for ImplicitConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, _: &Solution, _: &TyCtx) -> Result<(), InferError> {
         todo!()
     }
 }

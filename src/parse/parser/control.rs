@@ -40,6 +40,7 @@ impl Parser<'_> {
         ))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn parse_ternary_expr(
         &mut self,
         then: ParsedExpr,

@@ -30,7 +30,6 @@ mod seq;
 mod symbol;
 mod tuple;
 mod ty;
-mod typed;
 mod unaryop;
 mod while_loop;
 
@@ -66,6 +65,5 @@ pub use seq::*;
 pub use symbol::*;
 pub use tuple::*;
 pub use ty::*;
-pub use typed::*;
 pub use unaryop::*;
 pub use while_loop::*;

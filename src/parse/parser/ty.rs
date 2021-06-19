@@ -1,5 +1,5 @@
 use crate::{
-    ast::{token::TokenKind, FnParam, Name, Node, Path, SourceInfo, TypeParams},
+    ast::{token::TokenKind, FnParam, Name, Node, TypeParams},
     parse::{ParseResult, Parser},
     span::{parsed::Parsed, Span},
     typing::ty::Ty,
@@ -17,7 +17,7 @@ impl Parser<'_> {
         self.parse_ty_with(None)
     }
 
-    fn parse_ty_with(&mut self, mut ty: Option<Parsed<Ty>>) -> ParseResult<Parsed<Ty>> {
+    fn parse_ty_with(&mut self, ty: Option<Parsed<Ty>>) -> ParseResult<Parsed<Ty>> {
         let ty = if let Some(ty) = ty {
             ty
         } else {
@@ -60,8 +60,7 @@ impl Parser<'_> {
                 tys.push(ty);
                 Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
             }
-            (ty, Ty::Union(rhs)) => {
-                let mut tys = rhs;
+            (ty, Ty::Union(tys)) => {
                 Parsed::new(ty, self.mk_src(span));
                 Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
             }

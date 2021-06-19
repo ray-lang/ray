@@ -1,20 +1,11 @@
-use crate::span::{SourceMap, Span};
-use crate::strutils;
 use crate::{
-    ast::SourceInfo,
-    parse::{self, ParseOptions, Parser},
-};
-use crate::{
-    ast::{self, Import, Module},
-    span::Source,
-};
-use crate::{
-    ast::{Decl, Expr},
-    pathlib::FilePath,
-};
-use crate::{
+    ast::{self, Decl, Expr, Import, Module},
     driver::RayPaths,
     errors::{RayError, RayErrorKind},
+    parse::{self, ParseOptions, Parser},
+    pathlib::FilePath,
+    span::{Source, SourceMap, Span},
+    strutils,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -183,13 +174,12 @@ impl ModuleBuilder<Expr, Decl> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn build_from_src(
         &mut self,
         src: String,
         module_path: ast::Path,
     ) -> Result<ast::Path, Vec<RayError>> {
-        let mut next_ast_id = 1_u64;
-
         // check if module has already been built
         if self.input_paths.contains(&module_path) {
             return Ok(module_path);

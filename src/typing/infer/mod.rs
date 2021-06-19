@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 
-use crate::span::{Source, SourceMap};
+use crate::{
+    span::{Source, SourceMap},
+    typing::state::TyEnv,
+};
 
 use super::{
-    collect::CollectConstraints,
+    collect::{CollectConstraints, CollectCtx},
     constraints::tree::BottomUpWalk,
     context::TyCtx,
     solvers::{GreedySolver, Solution, Solver},
-    ApplySubst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +37,13 @@ impl<'tcx> InferSystem<'tcx> {
         T: CollectConstraints<Output = U> + std::fmt::Display,
     {
         let mono_tys = HashSet::new();
-        let (_, _, c) = v.collect_constraints(&mono_tys, srcmap, self.tcx);
+        let mut ctx = CollectCtx {
+            mono_tys: &mono_tys,
+            srcmap: &srcmap,
+            tcx: self.tcx,
+            defs: TyEnv::new(),
+        };
+        let (_, _, c) = v.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);
         log::debug!("{}", v);
         log::debug!("constraints: {:#?}", constraints);

@@ -2,15 +2,10 @@ mod greedy;
 
 pub use greedy::*;
 
-use std::collections::{HashMap, HashSet};
-
-use crate::{
-    typing::{
-        predicate::TyPredicate,
-        ty::{LiteralKind, Ty, TyVar},
-        ApplySubst, InferError, Subst, TyCtx,
-    },
-    utils::join,
+use crate::typing::{
+    predicate::TyPredicate,
+    ty::{Ty, TyVar},
+    ApplySubst, InferError, Subst, TyCtx,
 };
 
 use super::{

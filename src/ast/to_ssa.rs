@@ -1,25 +1,15 @@
-use std::{
-    cell::{RefCell, RefMut},
-    collections::{HashMap, HashSet},
-    ops::Deref,
-    rc::Rc,
-};
+use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     ast::{
         self,
         asm::{AsmOp, AsmOperand},
         token::IntegerBase,
-        CurlyElement, Decl, Expr, Extern, Literal, Module, Node, Path, Pattern, RangeLimits,
-        SourceInfo,
+        CurlyElement, Decl, Expr, Literal, Module, Node, Path, Pattern,
     },
-    errors::RayResult,
     graph::Graph,
-    hir::HirInfo,
-    lir, sema,
-    sort::topological::TopologicalSort,
     ssa::{self, SSABuilder},
-    typing::{solvers::Solution, state::TyVarFactory, traits::HasType, ty::Ty, Subst, TyCtx},
+    typing::{ty::Ty, TyCtx},
 };
 
 pub trait ToSSAForm<Ctx = SSABuilder> {
@@ -62,7 +52,6 @@ impl ToSSAForm<SSAGlobalCtx> for Node<Decl> {
                     body.to_ssa(&mut ctx, tcx)
                 };
                 let ret_ty = if loc.id != 0 {
-                    log::debug!("body={}", body);
                     tcx.ty_of(loc.id)
                 } else {
                     Ty::unit()
@@ -87,6 +76,7 @@ impl ToSSAForm<SSAGlobalCtx> for Node<Decl> {
                     gcx.add_trait_member(func.path.clone());
                 }
             }
+            Decl::Impl(_) => todo!(),
             Decl::Extern(ext) => {
                 let ty = tcx.mk_tvar(id);
                 let decl = ext.decl();
@@ -104,7 +94,7 @@ impl ToSSAForm<SSAGlobalCtx> for Node<Decl> {
             } // TODO?
             Decl::Declare(_) => todo!(),
             Decl::FnSig(_) => todo!(),
-            Decl::TypeAlias(_, _) | Decl::Struct(_) | Decl::Impl(_) => {}
+            Decl::TypeAlias(_, _) | Decl::Struct(_) => {}
         }
     }
 }
@@ -116,14 +106,6 @@ pub struct SSAGlobalCtx {
 }
 
 impl SSAGlobalCtx {
-    pub fn new() -> Self {
-        Self {
-            funcs: vec![],
-            externs: vec![],
-            trait_member_set: HashSet::new(),
-        }
-    }
-
     fn add_func(
         &mut self,
         id: u64,
@@ -167,6 +149,7 @@ impl ToSSAForm for Node<Expr> {
     fn to_ssa(&self, ctx: &mut SSABuilder, tcx: &mut TyCtx) -> Self::Output {
         let id = self.id;
         match &self.value {
+            Expr::Pattern(_) => todo!(),
             Expr::Path(v) => (id, v).to_ssa(ctx, tcx),
             Expr::Name(n) => (id, &n.path).to_ssa(ctx, tcx),
             Expr::Literal(lit) => (id, lit).to_ssa(ctx, tcx),
@@ -599,6 +582,7 @@ impl ToSSAForm for (&Node<Pattern>, &Node<Expr>) {
                     ctx.set_var_loc(name, *rhs_loc);
                 }
             }
+            Pattern::Deref(_) => todo!(),
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
         }
@@ -663,7 +647,7 @@ impl ToSSAForm for (u64, &Literal) {
                 IntegerBase::Octal => todo!(),
                 IntegerBase::Hex => todo!(),
             },
-            Literal::Float { value, size } => todo!(),
+            Literal::Float { .. } => todo!(),
             Literal::String(s) => {
                 // convert the string to bytes and add a `Data` to the program
                 let bytes = s.as_bytes().to_vec();

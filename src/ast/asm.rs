@@ -2,10 +2,7 @@ use std::convert::TryFrom;
 
 use crate::{
     span::parsed::Parsed,
-    typing::{
-        ty::{Ty, TyVar},
-        ApplySubst, Subst,
-    },
+    typing::ty::{Ty, TyVar},
     utils::{indent, join, map_join},
 };
 
@@ -15,6 +12,7 @@ use super::Path;
 pub enum AsmOp {
     // memory ops
     Malloc,
+    MemCopy,
 
     // eq
     ISizeEq,
@@ -240,6 +238,7 @@ impl<'a> TryFrom<&'a str> for AsmOp {
         Ok(match s {
             // memory
             "malloc" => AsmOp::Malloc,
+            "memcopy" | "memcpy" => AsmOp::MemCopy,
 
             // eq
             "int_eq" => AsmOp::ISizeEq,
@@ -466,6 +465,7 @@ impl std::fmt::Display for AsmOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             AsmOp::Malloc => "malloc",
+            AsmOp::MemCopy => "memcopy",
             AsmOp::ISizeEq => "int_eq",
             AsmOp::I8Eq => "i8_eq",
             AsmOp::I16Eq => "i16_eq",
@@ -834,6 +834,7 @@ impl AsmOp {
             | AsmOp::U64Rotl
             | AsmOp::U64Rotr => Ty::u64(),
             AsmOp::Malloc => Ty::ptr(Ty::Var(TyVar(scope.append("'a")))),
+            AsmOp::MemCopy => Ty::unit(),
         }
     }
 }

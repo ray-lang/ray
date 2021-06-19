@@ -20,16 +20,3 @@ impl ApplySubst for TypeInfo {
         }
     }
 }
-
-impl TypeInfo {
-    pub fn new(ty: Ty) -> TypeInfo {
-        TypeInfo {
-            original_ty: ty.clone(),
-            ty,
-        }
-    }
-
-    pub fn original_ty(&self) -> &Ty {
-        &self.original_ty
-    }
-}

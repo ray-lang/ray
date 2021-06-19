@@ -1,5 +1,3 @@
-pub mod hash_cell;
-
 pub fn indent(s: String, n: usize) -> String {
     let mut dst = String::new();
     for (i, line) in s.lines().enumerate() {

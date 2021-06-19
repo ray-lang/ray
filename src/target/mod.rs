@@ -8,6 +8,7 @@ pub enum Target {
 }
 
 impl Target {
+    #[allow(dead_code)]
     pub fn available() -> Vec<Target> {
         vec![Target::Wasm32, Target::Wasm]
     }

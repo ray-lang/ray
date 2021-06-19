@@ -88,12 +88,14 @@ impl<T: Hash + Eq + Clone> TopologicalSort<T> {
 
     /// Returns the number of elements in the `TopologicalSort`.
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.top.len()
     }
 
     /// Returns true if the `TopologicalSort` contains no elements.
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.top.is_empty()
     }
@@ -178,6 +180,7 @@ impl<T: Hash + Eq + Clone> TopologicalSort<T> {
     /// vector if there are no such items.
     ///
     /// If `pop_all` returns an empty vector and `len` is not 0, there is cyclic dependencies.
+    #[allow(dead_code)]
     pub fn pop_all(&mut self) -> Vec<T> {
         let keys = self
             .top
@@ -203,6 +206,7 @@ impl<T: Hash + Eq + Clone> TopologicalSort<T> {
 
     /// Return a vector of references to all items that do not depend on any other items, or an
     /// empty vector if there are no such items.
+    #[allow(dead_code)]
     pub fn peek_all(&self) -> Vec<&T> {
         self.top
             .iter()

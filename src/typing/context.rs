@@ -1,8 +1,4 @@
-use std::{
-    cell::{RefCell, RefMut},
-    collections::{HashMap, HashSet},
-    rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast::{Node, Path},
@@ -67,6 +63,10 @@ impl TyCtx {
 
     pub fn ty_of(&self, id: u64) -> Ty {
         self.ty_map.get(&id).unwrap().clone()
+    }
+
+    pub fn maybe_ty_of(&self, id: u64) -> Option<&Ty> {
+        self.ty_map.get(&id)
     }
 
     pub fn original_ty_of<T>(&self, node: &Node<T>) -> Ty {
@@ -217,12 +217,7 @@ impl TyCtx {
     pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {
         log::debug!("{} instanceof {}", t, u);
         match (t, u) {
-            (Ty::All(xs, t), Ty::All(ys, u)) => {
-                // let sub = xs
-                //     .iter()
-                //     .zip(ys.iter())
-                //     .map(|(x, y)| (x.clone(), Ty::Var(y.clone())))
-                //     .collect::<Subst>();
+            (Ty::All(_, t), Ty::All(_, u)) => {
                 let sub = t.mgu(u).unwrap_or_default();
                 let t = t.clone().apply_subst(&sub);
                 let u = u.clone().apply_subst(&sub);

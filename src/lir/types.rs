@@ -1,21 +1,27 @@
-use ast::Decorator;
-use itertools::Itertools;
+use petgraph::{
+    graphmap::DiGraphMap,
+    visit::{depth_first_search, Dfs, DfsEvent},
+};
 
 use crate::{
-    ast::{self, asm::AsmOp, Node, Path, SourceInfo},
+    ast::{self, asm::AsmOp, Node, Path},
+    convert::ToSet,
+    graph::{Graph, TopologicalSort},
+    sort::SortByIndexSlice,
+    span::SourceMap,
     strutils::indent_lines,
     typing::{ty::Ty, ApplySubst, Subst},
     utils::{join, map_join},
 };
 
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
     iter::Sum,
-    rc::Rc,
+    ops::Deref,
+    usize,
 };
 
-use super::optimize;
+use super::{optimize, to_ssa};
 
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {
@@ -34,6 +40,16 @@ pub trait NamedInst {
 
 pub trait GetLocals<'a> {
     fn get_locals(&'a self) -> Vec<&'a usize>;
+
+    fn count_local_uses(&'a self) -> HashMap<usize, usize> {
+        let locals = self.get_locals();
+        let mut map = HashMap::new();
+        for &loc in locals {
+            let count = map.entry(loc).or_default();
+            *count += 1;
+        }
+        map
+    }
 }
 
 impl<'a, T> GetLocals<'a> for Vec<T>
@@ -75,6 +91,7 @@ where
 
 pub trait MapLocals<'a> {
     fn map_locals(&'a mut self, local_map: &HashMap<usize, usize>);
+    fn replace_local(&'a mut self, old: usize, new: usize);
 }
 
 impl<'a, T> MapLocals<'a> for T
@@ -87,6 +104,88 @@ where
                 *local = *i;
             }
         }
+    }
+
+    fn replace_local(&'a mut self, old: usize, new: usize) {
+        for local in self.get_locals_mut() {
+            if *local == old {
+                *local = new;
+            }
+        }
+    }
+}
+
+pub trait ReindexLabels {
+    fn reindex_labels(self, label_map: &HashMap<usize, usize>);
+}
+
+impl<'a, I> ReindexLabels for I
+where
+    I: IntoIterator<Item = &'a mut Inst>,
+{
+    fn reindex_labels(self, label_map: &HashMap<usize, usize>) {
+        for inst in self.into_iter() {
+            match inst {
+                Inst::Goto(label) => {
+                    if let Some(new_label) = label_map.get(label).copied() {
+                        *label = new_label
+                    }
+                }
+                Inst::If(If {
+                    then_label,
+                    else_label,
+                    ..
+                }) => {
+                    if let Some(new_label) = label_map.get(then_label).copied() {
+                        *then_label = new_label
+                    }
+                    if let Some(new_label) = label_map.get(else_label).copied() {
+                        *else_label = new_label
+                    }
+                }
+                Inst::Free(_)
+                | Inst::Call(_)
+                | Inst::CExternCall(_)
+                | Inst::SetGlobal(_, _)
+                | Inst::SetLocal(_, _)
+                | Inst::Store(_)
+                | Inst::MemCopy(_, _, _)
+                | Inst::IncRef(_, _)
+                | Inst::DecRef(_)
+                | Inst::Return(_)
+                | Inst::Break(_)
+                | Inst::Halt => continue,
+            }
+        }
+    }
+}
+
+pub type ControlFlowGraph = DiGraphMap<usize, ()>;
+
+pub trait LCA<N> {
+    fn lowest_common_ancestor(&self, a: N, b: N, ignore: &Vec<N>) -> Option<N>;
+}
+
+impl LCA<usize> for ControlFlowGraph {
+    fn lowest_common_ancestor(&self, a: usize, b: usize, ignore: &Vec<usize>) -> Option<usize> {
+        let mut dfs_a = Dfs::new(&self, a);
+        while let Some(x) = dfs_a.next(&self) {
+            if ignore.contains(&x) {
+                continue;
+            }
+
+            let mut dfs_b = Dfs::new(&self, b);
+            while let Some(y) = dfs_b.next(&self) {
+                if ignore.contains(&y) {
+                    continue;
+                }
+
+                if x == y {
+                    return Some(x);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -106,6 +205,7 @@ pub enum Variable {
     Data(usize),
     Global(usize),
     Local(usize),
+    Unit,
 }
 
 LirImplInto!(Atom for Variable);
@@ -122,6 +222,7 @@ impl std::fmt::Display for Variable {
             Variable::Data(s) => write!(f, "$data[{}]", s),
             Variable::Global(s) => write!(f, "$global[{}]", s),
             Variable::Local(s) => write!(f, "${}", s),
+            Variable::Unit => write!(f, "unit"),
         }
     }
 }
@@ -147,7 +248,7 @@ impl<'a> GetLocals<'a> for Variable {
 }
 
 impl ApplySubst for Variable {
-    fn apply_subst(self, subst: &Subst) -> Self {
+    fn apply_subst(self, _: &Subst) -> Self {
         self
     }
 }
@@ -250,7 +351,7 @@ impl<'a> GetLocalsMut<'a> for Malloc {
 }
 
 impl ApplySubst for Malloc {
-    fn apply_subst(self, subst: &Subst) -> Self {
+    fn apply_subst(self, _: &Subst) -> Self {
         self
     }
 }
@@ -264,11 +365,11 @@ impl Malloc {
 #[derive(Clone, Debug)]
 pub enum Value {
     Empty,
+    VarRef(String),
     Atom(Atom),
     Malloc(Malloc),
     Call(Call),
     CExternCall(CExternCall),
-    Branch(Branch),
     Select(Select),
     Phi(Phi),
     Load(Load),
@@ -278,17 +379,15 @@ pub enum Value {
     IntConvert(IntConvert),
 }
 
-LirImplInto!(Inst for Value);
-
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Empty => write!(f, ""),
+            Value::VarRef(n) => write!(f, "${}", n),
             Value::Atom(a) => write!(f, "{}", a),
             Value::Malloc(a) => write!(f, "{}", a),
             Value::Call(a) => write!(f, "{}", a),
             Value::CExternCall(a) => write!(f, "{}", a),
-            Value::Branch(a) => write!(f, "{}", a),
             Value::Select(a) => write!(f, "{}", a),
             Value::Phi(a) => write!(f, "{}", a),
             Value::Load(a) => write!(f, "{}", a),
@@ -300,13 +399,18 @@ impl std::fmt::Display for Value {
     }
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Value::Empty
+    }
+}
+
 impl<'a> GetLocalsMut<'a> for Value {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
         match self {
             Value::Atom(a) => a.get_locals_mut(),
             Value::Call(c) => c.get_locals_mut(),
             Value::CExternCall(c) => c.get_locals_mut(),
-            Value::Branch(b) => b.get_locals_mut(),
             Value::Select(s) => s.get_locals_mut(),
             Value::Phi(p) => p.get_locals_mut(),
             Value::Load(l) => l.get_locals_mut(),
@@ -315,7 +419,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::GetField(g) => g.get_locals_mut(),
             Value::BasicOp(b) => b.get_locals_mut(),
             Value::IntConvert(_) => todo!(),
-            Value::Empty => vec![],
+            Value::VarRef(_) | Value::Empty => vec![],
         }
     }
 }
@@ -326,15 +430,15 @@ impl<'a> GetLocals<'a> for Value {
             Value::Atom(a) => a.get_locals(),
             Value::Call(c) => c.get_locals(),
             Value::CExternCall(c) => c.get_locals(),
-            Value::Branch(b) => b.get_locals(),
             Value::Select(s) => s.get_locals(),
             Value::Phi(p) => p.get_locals(),
             Value::Load(l) => l.get_locals(),
+            Value::Malloc(m) => m.get_locals(),
             Value::Lea(l) => l.get_locals(),
             Value::GetField(g) => g.get_locals(),
             Value::BasicOp(b) => b.get_locals(),
             Value::IntConvert(_) => todo!(),
-            Value::Malloc(_) | Value::Empty => vec![],
+            Value::VarRef(_) | Value::Empty => vec![],
         }
     }
 }
@@ -343,11 +447,11 @@ impl ApplySubst for Value {
     fn apply_subst(self, subst: &Subst) -> Value {
         match self {
             Value::Empty => Value::Empty,
+            Value::VarRef(n) => Value::VarRef(n),
             Value::Atom(a) => Value::Atom(a.apply_subst(subst)),
             Value::Malloc(m) => Value::Malloc(m.apply_subst(subst)),
             Value::Call(c) => Value::Call(c.apply_subst(subst)),
             Value::CExternCall(_) => todo!(),
-            Value::Branch(b) => Value::Branch(b.apply_subst(subst)),
             Value::Select(s) => Value::Select(s.apply_subst(subst)),
             Value::Phi(phi) => Value::Phi(phi.apply_subst(subst)),
             Value::Load(l) => Value::Load(l.apply_subst(subst)),
@@ -382,46 +486,62 @@ impl Value {
     {
         v.into()
     }
+
+    pub fn to_inst(self) -> Option<Inst> {
+        match self {
+            Value::Call(c) => Some(Inst::Call(c)),
+            Value::CExternCall(c) => Some(Inst::CExternCall(c)),
+            Value::Empty
+            | Value::VarRef(_)
+            | Value::Atom(_)
+            | Value::Malloc(_)
+            | Value::Select(_)
+            | Value::Phi(_)
+            | Value::Load(_)
+            | Value::Lea(_)
+            | Value::GetField(_)
+            | Value::BasicOp(_)
+            | Value::IntConvert(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Inst {
-    Value(Value),
     Free(usize),
+    Call(Call),
+    CExternCall(CExternCall),
     SetGlobal(usize, Value),
     SetLocal(usize, Value),
-    Block(Block),
-    Func(Func),
-    IfBlock(IfBlock),
-    Loop(Loop),
+    If(If),
     Store(Store),
-    MemCopy(Variable, Variable, Variable),
+    MemCopy(Variable, Variable, Atom),
     IncRef(Value, i8),
     DecRef(Value),
     Return(Value),
-    Break,
+    Break(Break),
+    Goto(usize),
     Halt,
 }
 
 impl std::fmt::Display for Inst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Inst::Value(v) => write!(f, "{}", v),
             Inst::Free(s) => write!(f, "free ${}", s),
+            Inst::Call(c) => write!(f, "{}", c),
+            Inst::CExternCall(_) => todo!(),
             Inst::SetGlobal(s, v) => write!(f, "$global[{}] = {}", s, v),
             Inst::SetLocal(s, v) => write!(f, "${} = {}", s, v),
-            Inst::Block(b) => write!(f, "{}", b),
-            Inst::Func(func) => write!(f, "{}", func),
-            Inst::IfBlock(b) => write!(f, "{}", b),
-            Inst::Loop(l) => write!(f, "{}", l),
+            Inst::If(b) => write!(f, "{}", b),
             Inst::Store(s) => write!(f, "{}", s),
             Inst::IncRef(v, i) => write!(f, "incref {} {}", v, i),
             Inst::DecRef(v) => write!(f, "decref {}", v),
             Inst::Return(v) => write!(f, "ret {}", v),
+            Inst::Goto(idx) => write!(f, "goto B{}", idx),
             Inst::MemCopy(dst, src, size) => {
                 write!(f, "memcpy dst={} src={} size={}", dst, src, size)
             }
-            Inst::Break => write!(f, "break"),
+            Inst::Break(b) => write!(f, "{}", b),
             Inst::Halt => write!(f, "halt"),
         }
     }
@@ -439,10 +559,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
                 locs.extend(v.get_locals_mut());
                 locs
             }
-            Inst::Block(b) => b.get_locals_mut(),
-            Inst::Func(f) => f.get_locals_mut(),
-            Inst::IfBlock(b) => b.get_locals_mut(),
-            Inst::Loop(b) => b.get_locals_mut(),
+            Inst::If(b) => b.get_locals_mut(),
             Inst::Store(s) => s.get_locals_mut(),
             Inst::MemCopy(d, s, z) => {
                 let mut locs = d.get_locals_mut();
@@ -450,10 +567,11 @@ impl<'a> GetLocalsMut<'a> for Inst {
                 locs.extend(z.get_locals_mut());
                 locs
             }
-            Inst::Value(v) | Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => {
-                v.get_locals_mut()
-            }
-            Inst::Break | Inst::Halt => vec![],
+            Inst::Call(c) => c.get_locals_mut(),
+            Inst::CExternCall(c) => c.get_locals_mut(),
+            Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => v.get_locals_mut(),
+            Inst::Break(b) => b.get_locals_mut(),
+            Inst::Goto(_) | Inst::Halt => vec![],
         }
     }
 }
@@ -470,10 +588,7 @@ impl<'a> GetLocals<'a> for Inst {
                 locs.extend(v.get_locals());
                 locs
             }
-            Inst::Block(b) => b.get_locals(),
-            Inst::Func(f) => f.get_locals(),
-            Inst::IfBlock(b) => b.get_locals(),
-            Inst::Loop(b) => b.get_locals(),
+            Inst::If(b) => b.get_locals(),
             Inst::Store(s) => s.get_locals(),
             Inst::MemCopy(d, s, z) => {
                 let mut locs = d.get_locals();
@@ -481,10 +596,11 @@ impl<'a> GetLocals<'a> for Inst {
                 locs.extend(z.get_locals());
                 locs
             }
-            Inst::Value(v) | Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => {
-                v.get_locals()
-            }
-            Inst::Break | Inst::Halt => vec![],
+            Inst::Call(c) => c.get_locals(),
+            Inst::CExternCall(c) => c.get_locals(),
+            Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => v.get_locals(),
+            Inst::Break(b) => b.get_locals(),
+            Inst::Goto(_) | Inst::Halt => vec![],
         }
     }
 }
@@ -492,37 +608,20 @@ impl<'a> GetLocals<'a> for Inst {
 impl ApplySubst for Inst {
     fn apply_subst(self, subst: &Subst) -> Self {
         match self {
-            Inst::Value(v) => Inst::Value(v.apply_subst(subst)),
+            Inst::Call(c) => Inst::Call(c.apply_subst(subst)),
+            Inst::CExternCall(_) => todo!(),
             Inst::Free(i) => Inst::Free(i),
             Inst::SetGlobal(i, v) => Inst::SetGlobal(i, v.apply_subst(subst)),
             Inst::SetLocal(i, v) => Inst::SetLocal(i, v.apply_subst(subst)),
-            Inst::Block(b) => Inst::Block(b.apply_subst(subst)),
-            Inst::Func(f) => Inst::Func(f.apply_subst(subst)),
-            Inst::IfBlock(b) => Inst::IfBlock(b.apply_subst(subst)),
-            Inst::Loop(l) => Inst::Loop(l.apply_subst(subst)),
+            Inst::If(b) => Inst::If(b.apply_subst(subst)),
             Inst::Store(s) => Inst::Store(s.apply_subst(subst)),
             Inst::MemCopy(d, s, z) => Inst::MemCopy(d, s, z),
             Inst::IncRef(v, i) => Inst::IncRef(v.apply_subst(subst), i),
             Inst::DecRef(v) => Inst::DecRef(v.apply_subst(subst)),
             Inst::Return(v) => Inst::Return(v.apply_subst(subst)),
-            Inst::Break => Inst::Break,
+            Inst::Break(b) => Inst::Break(b.apply_subst(subst)),
+            Inst::Goto(idx) => Inst::Goto(idx),
             Inst::Halt => Inst::Halt,
-        }
-    }
-}
-
-impl NamedInst for Inst {
-    fn get_name(&self) -> &Path {
-        match self {
-            Inst::Value(v) => v.get_name(),
-            _ => panic!("{} is unnamed", self),
-        }
-    }
-
-    fn set_name(&mut self, name: Path) {
-        match self {
-            Inst::Value(v) => v.set_name(name),
-            _ => panic!("{} is unnamed", self),
         }
     }
 }
@@ -533,6 +632,23 @@ impl Inst {
         T: Into<Inst>,
     {
         t.into()
+    }
+
+    pub fn is_control(&self) -> bool {
+        matches!(
+            self,
+            Inst::Break(_) | Inst::Goto(_) | Inst::If(_) | Inst::Return(_) | Inst::Halt
+        )
+    }
+
+    pub fn is_jump(&self) -> bool {
+        matches!(
+            self,
+            Inst::Goto(_) | Inst::If(_) | Inst::Return(_) | Inst::Halt
+        ) || matches!(
+            self,
+            Inst::Break(b) if b.operand.is_none()
+        )
     }
 }
 
@@ -592,16 +708,18 @@ impl std::fmt::Display for Op {
 }
 
 #[derive(Clone, Debug)]
-pub enum BranchOp {
-    BranchNZ,
-    BranchZ,
+pub enum BreakOp {
+    Break,
+    BreakNZ,
+    BreakZ,
 }
 
-impl std::fmt::Display for BranchOp {
+impl std::fmt::Display for BreakOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BranchOp::BranchNZ => write!(f, "branchnz"),
-            BranchOp::BranchZ => write!(f, "branchz"),
+            BreakOp::Break => write!(f, "break"),
+            BreakOp::BreakNZ => write!(f, "breaknz"),
+            BreakOp::BreakZ => write!(f, "breakz"),
         }
     }
 }
@@ -733,7 +851,7 @@ pub struct Program {
     pub module_path: ast::Path,
     pub globals: Vec<Global>,
     pub data: Vec<Data>,
-    pub funcs: Vec<Func>,
+    pub funcs: Vec<Node<Func>>,
     pub externs: Vec<Extern>,
     pub extern_set: HashSet<Path>,
     pub trait_member_set: HashSet<Path>,
@@ -778,8 +896,12 @@ impl Program {
         }
     }
 
-    pub fn post_process(&mut self) {
-        optimize(self, 0);
+    pub fn post_process(&mut self, srcmap: &SourceMap) {
+        to_ssa(self);
+        optimize(self, srcmap, 0);
+        // for func in self.funcs.iter_mut() {
+        //     Stackify::new().stackify(func)
+        // }
     }
 }
 
@@ -812,16 +934,11 @@ pub struct Global {
 pub struct Local {
     pub idx: usize,
     pub ty: Ty,
-    pub name: Option<String>,
 }
 
 impl std::fmt::Display for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(name) = &self.name {
-            write!(f, "${}", name)
-        } else {
-            write!(f, "${}", self.idx)
-        }
+        write!(f, "${}", self.idx)
     }
 }
 
@@ -846,25 +963,19 @@ impl<'a> GetLocals<'a> for Local {
 
 impl Local {
     pub fn new(idx: usize, ty: Ty) -> Local {
-        Local {
-            idx,
-            ty,
-            name: None,
-        }
+        Local { idx, ty }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Param {
     pub idx: usize,
-    pub name: String,
     pub ty: Ty,
-    pub size: Size,
 }
 
 impl std::fmt::Display for Param {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${}: {}", self.name, self.ty)
+        write!(f, "${}: {}", self.idx, self.ty)
     }
 }
 
@@ -884,22 +995,76 @@ impl ApplySubst for Param {
     fn apply_subst(self, subst: &Subst) -> Self {
         Param {
             idx: self.idx,
-            name: self.name,
             ty: self.ty.apply_subst(subst),
-            size: self.size,
         }
     }
 }
 
+impl Param {
+    pub fn new(idx: usize, ty: Ty) -> Param {
+        Param { idx, ty }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum ControlMarker {
+    If,
+    Else(usize),
+    Loop,
+    End(usize),
+}
+
 #[derive(Clone, Debug)]
 pub struct Block {
-    pub name: String,
-    pub instructions: Vec<Inst>,
+    label: usize,
+    instructions: Vec<Inst>,
+    defined_vars: HashMap<String, usize>,
+    markers: Vec<ControlMarker>,
 }
 
 impl std::fmt::Display for Block {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", indent_lines(join(&self.instructions, "\n"), 2))
+        let lines = indent_lines(join(&self.instructions, "\n"), 2);
+        let mut markers = map_join(&self.markers, ", ", |marker| match marker {
+            ControlMarker::If => str!("#if"),
+            ControlMarker::Else(label) => format!("#else({})", label),
+            ControlMarker::Loop => str!("#loop"),
+            ControlMarker::End(label) => format!("#end({})", label),
+        });
+        if markers.len() != 0 {
+            markers.insert_str(0, "  ");
+        }
+        write!(f, "B{}:{}\n{}", self.label, markers, lines)
+    }
+}
+
+impl std::ops::Deref for Block {
+    type Target = Vec<Inst>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.instructions
+    }
+}
+
+impl std::ops::DerefMut for Block {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.instructions
+    }
+}
+
+// impl IntoIterator for Block {
+//     type Item = Inst;
+
+//     type IntoIter = std::vec::IntoIter<Inst>;
+
+//     fn into_iter(self) -> Self::IntoIter {
+//         self.instructions.into_iter()
+//     }
+// }
+
+impl Extend<Inst> for Block {
+    fn extend<T: IntoIterator<Item = Inst>>(&mut self, iter: T) {
+        self.instructions.extend(iter);
     }
 }
 
@@ -918,18 +1083,130 @@ impl<'a> GetLocals<'a> for Block {
 impl ApplySubst for Block {
     fn apply_subst(self, subst: &Subst) -> Self {
         Block {
-            name: self.name,
+            label: self.label,
             instructions: self.instructions.apply_subst(subst),
+            defined_vars: self.defined_vars,
+            markers: self.markers,
         }
     }
 }
 
 impl Block {
-    pub fn new() -> Block {
+    pub fn new(label: usize) -> Block {
         Block {
-            name: str!(""),
+            label,
             instructions: vec![],
+            defined_vars: HashMap::new(),
+            markers: vec![],
         }
+    }
+
+    #[inline(always)]
+    pub fn label(&self) -> usize {
+        self.label
+    }
+
+    #[inline(always)]
+    pub fn label_mut(&mut self) -> &mut usize {
+        &mut self.label
+    }
+
+    #[inline(always)]
+    pub fn markers(&self) -> &Vec<ControlMarker> {
+        &self.markers
+    }
+
+    #[inline(always)]
+    pub fn markers_mut(&mut self) -> &mut Vec<ControlMarker> {
+        &mut self.markers
+    }
+
+    #[inline(always)]
+    pub fn is_loop_header(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|&marker| matches!(marker, ControlMarker::Loop))
+    }
+
+    #[inline(always)]
+    pub fn is_if_header(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|&marker| matches!(marker, ControlMarker::If))
+    }
+
+    #[inline(always)]
+    pub fn is_else(&self, label: usize) -> bool {
+        self.markers
+            .iter()
+            .any(|&marker| matches!(marker, ControlMarker::Else(l) if l == label))
+    }
+
+    #[inline(always)]
+    pub fn is_end(&self, label: usize) -> bool {
+        self.markers
+            .iter()
+            .any(|&marker| matches!(marker, ControlMarker::End(l) if l == label))
+    }
+
+    #[inline(always)]
+    pub fn defined_vars(&self) -> &HashMap<String, usize> {
+        &self.defined_vars
+    }
+
+    #[inline(always)]
+    pub fn define_var(&mut self, var: String, idx: usize) {
+        self.defined_vars.insert(var, idx);
+    }
+
+    pub fn split_off(&mut self, idx: usize) -> Block {
+        let instructions = self.instructions.split_off(idx + 1);
+
+        // create a map of indices to names
+        let mut reverse_map = HashMap::new();
+        let mut defined_vars = self.defined_vars.drain().collect::<HashMap<_, _>>();
+        for (k, v) in defined_vars.iter() {
+            reverse_map.insert(*v, k.clone());
+        }
+
+        // find all of the defined variables
+        for inst in self.instructions.iter() {
+            if let Inst::SetLocal(idx, _) = inst {
+                if let Some(name) = reverse_map.remove(idx) {
+                    defined_vars.remove(&name);
+                    self.defined_vars.insert(name, *idx);
+                }
+            }
+        }
+
+        // create the new block with an undefined label
+        Block {
+            label: usize::MAX,
+            instructions,
+            defined_vars,
+            markers: self.markers.clone(),
+        }
+    }
+}
+
+pub type DominatorMap = HashMap<usize, HashSet<usize>>;
+
+#[derive(Debug)]
+pub struct Loop {
+    pub back_edge: (usize, usize),
+    pub nodes: Vec<usize>,
+    pub exit_edges: Vec<(usize, usize)>,
+    pub common_exit: usize,
+}
+
+impl Loop {
+    #[inline(always)]
+    pub fn header(&self) -> usize {
+        self.back_edge.1
+    }
+
+    pub fn is_exit_node(&self, n: usize) -> bool {
+        self.exit_edges.iter().any(|(_, a)| a == &n)
     }
 }
 
@@ -939,9 +1216,9 @@ pub struct Func {
     pub params: Vec<Param>,
     pub locals: Vec<Local>,
     pub ty: Ty,
-    pub body: Block,
-    pub decorators: Option<Vec<Decorator>>,
+    pub blocks: Vec<Block>,
     pub symbols: SymbolSet,
+    pub cfg: ControlFlowGraph,
 }
 
 impl std::fmt::Display for Func {
@@ -958,7 +1235,7 @@ impl std::fmt::Display for Func {
             } else {
                 str!("")
             },
-            self.body
+            indent_lines(join(&self.blocks, "\n"), 2)
         )
     }
 }
@@ -967,7 +1244,7 @@ impl<'a> GetLocalsMut<'a> for Func {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
         let mut locs = self.locals.get_locals_mut();
         locs.extend(self.params.get_locals_mut());
-        locs.extend(self.body.get_locals_mut());
+        locs.extend(self.blocks.get_locals_mut());
         locs
     }
 }
@@ -976,7 +1253,7 @@ impl<'a> GetLocals<'a> for Func {
     fn get_locals(&'a self) -> Vec<&'a usize> {
         let mut locs = self.locals.get_locals();
         locs.extend(self.params.get_locals());
-        locs.extend(self.body.get_locals());
+        locs.extend(self.blocks.get_locals());
         locs
     }
 }
@@ -988,60 +1265,295 @@ impl ApplySubst for Func {
             params: self.params.apply_subst(subst),
             locals: self.locals.apply_subst(subst),
             ty: self.ty.apply_subst(subst),
-            body: self.body.apply_subst(subst),
-            decorators: self.decorators,
+            blocks: self.blocks.apply_subst(subst),
             symbols: self.symbols.apply_subst(subst),
+            cfg: self.cfg,
         }
     }
 }
 
 impl Func {
-    pub fn new(name: Path, ty: Ty) -> Func {
+    pub fn new(name: Path, ty: Ty, symbols: SymbolSet, cfg: ControlFlowGraph) -> Func {
         Func {
             name,
             ty,
+            symbols,
+            cfg,
             params: vec![],
             locals: vec![],
-            body: Block::new(),
-            decorators: None,
-            symbols: SymbolSet::new(),
+            blocks: vec![],
         }
     }
 
-    pub fn has_decorator(&self, p: &Path) -> bool {
-        self.decorators
-            .as_ref()
-            .map(|v| v.iter().any(|d| &d.path.value == p))
-            .unwrap_or_default()
-    }
-
-    pub fn has_inline(&self) -> bool {
-        let path = Path::from("inline");
-        self.has_decorator(&path)
-    }
-
-    pub fn inline(mut self, args: Vec<Variable>, offset: usize) -> (Vec<Local>, Vec<Inst>, Value) {
-        self.offset_locals(offset);
-
-        let mut insts = self
-            .params
-            .iter()
-            .zip(args.into_iter())
-            .map(|(p, a)| Inst::SetLocal(p.idx, Atom::new(a).into()))
-            .collect::<Vec<_>>();
-
-        insts.extend(self.body.instructions);
-        let last = insts.pop();
-        let ret_val = if let Some(Inst::Return(v)) = last {
-            v
-        } else {
-            if let Some(last) = last {
-                insts.push(last);
+    pub fn reindex_blocks(&mut self) {
+        let mut label_map = HashMap::new();
+        for new_label in 0..self.blocks.len() {
+            let block = &mut self.blocks[new_label];
+            let label = block.label_mut();
+            let prev_label = *label;
+            if new_label == prev_label {
+                continue;
             }
-            Value::Empty
-        };
-        (self.locals, insts, ret_val)
+
+            *label = new_label;
+            label_map.insert(prev_label, new_label);
+        }
+
+        for block in self.blocks.iter_mut() {
+            block.reindex_labels(&label_map);
+        }
     }
+
+    pub fn inline(
+        mut self,
+        args: Vec<Variable>,
+        result_local: Option<Variable>,
+        local_offset: usize,
+    ) -> (Vec<Local>, Vec<Block>) {
+        self.offset_locals(local_offset);
+
+        let mut params_block = Block::new(usize::MAX);
+        params_block.instructions.extend(
+            self.params
+                .iter()
+                .zip(args.into_iter())
+                .map(|(p, a)| Inst::SetLocal(p.idx, Atom::new(a).into())),
+        );
+
+        // TODO: we need to somehow to find all of the returns and then
+        // set the result local to a phi node based on the returns...?
+        todo!()
+    }
+
+    pub fn find_loops(&self) -> HashMap<usize, Loop> {
+        // using the CFG, find the loops
+        let mut loops = HashMap::new();
+        let sccs = petgraph::algo::tarjan_scc(&self.cfg);
+
+        // first, find all of the back edges
+        let mut back_edges = vec![];
+        depth_first_search(&self.cfg, Some(0), |event| {
+            if let DfsEvent::BackEdge(b, h) = event {
+                back_edges.push((b, h));
+            }
+        });
+
+        // the order of the sccs is their postorder, so iterate in reverse
+        for nodes in sccs.into_iter().rev() {
+            // SCCs with more than one node are loops
+            if nodes.len() <= 1 {
+                continue;
+            }
+
+            // create set from the nodes
+            let node_set = nodes.iter().copied().to_set();
+
+            // find the back edge of the loop
+            let back_edge = match back_edges
+                .iter()
+                .find(|(b, h)| node_set.contains(b) && node_set.contains(h))
+            {
+                Some(&edge) => edge,
+                _ => panic!("COMPILER BUG: this loop does not have a back edge"),
+            };
+
+            // determine which nodes are exit nodes
+            let exit_edges = nodes
+                .iter()
+                .flat_map(|&n| {
+                    // if the node N has a successor that is not contained in the loop
+                    self.cfg.edges(n).filter_map(|(n, m, _)| {
+                        if !node_set.contains(&m) {
+                            Some((n, m))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect::<Vec<(usize, usize)>>();
+
+            // get the path from the header to the back
+            let (back, header) = back_edge;
+            let (_, nodes) =
+                petgraph::algo::astar(&self.cfg, header, |n| n == back, |_| 1, |_| 0).unwrap();
+
+            // find the common exit node
+            let &(mut common_exit, _) = exit_edges.first().unwrap();
+            for &(node, _) in exit_edges.iter().skip(1) {
+                common_exit = self
+                    .cfg
+                    .lowest_common_ancestor(common_exit, node, &nodes)
+                    .unwrap();
+            }
+
+            loops.insert(
+                header,
+                Loop {
+                    back_edge,
+                    nodes,
+                    exit_edges,
+                    common_exit,
+                },
+            );
+        }
+
+        log::debug!("loops: {:?}", loops);
+        loops
+    }
+
+    pub fn calculate_dominators(&self) -> DominatorMap {
+        let mut frontiers = DominatorMap::new();
+        for i in self.blocks.iter() {
+            let doms = petgraph::algo::dominators::simple_fast(&self.cfg, i.label());
+            for j in self.blocks.iter() {
+                if i.label() != j.label() {
+                    if let Some(doms) = doms.dominators(j.label()) {
+                        for other_label in doms {
+                            if other_label == j.label() {
+                                continue;
+                            }
+
+                            log::debug!("{} dominates {}", other_label, j.label());
+                            frontiers.entry(j.label()).or_default().insert(other_label);
+                        }
+                    }
+                }
+            }
+        }
+
+        frontiers
+
+        // fn strictly_dominates(g: &ControlFlowGraph, idx: usize) -> HashSet<usize> {
+        //     let doms = petgraph::algo::dominators::simple_fast(g, idx);
+        //     doms.strict_dominators(node)
+
+        // }
+
+        // fn dominates<'a, 'b>(g: &ControlFlowGraph, idx: usize, set: &mut HashSet<usize>) {
+        //     for v in strictly_dominates(g, idx) {
+        //         if !set.contains(v) {
+        //             set.insert(v);
+        //             dominates(g, v, set);
+        //         }
+        //     }
+        // }
+
+        // let doms = petgraph::algo::dominators::simple_fast(g, 0);
+        // fn dominates(g: &ControlFlowGraph, idx: usize) -> Vec<usize> {
+        //     for d in doms {}
+        // }
+
+        // let mut frontiers = DominatorMap::new();
+        // for (idx, _) in self.blocks.iter().enumerate() {
+        //     let dom = dominates(&self.cfg, idx);
+        //     for &other in dom {
+        //         if other == idx {
+        //             continue;
+        //         }
+
+        //         frontiers.entry(other).or_default().insert(idx);
+        //     }
+        // }
+        // frontiers
+    }
+
+    pub fn calculate_strict_dominators(&self) -> DominatorMap {
+        todo!()
+        // let mut frontiers = DominatorMap::new();
+        // for (idx, _) in self.blocks.iter().enumerate() {
+        //     let dom = self.cfg.strictly_dominates(&idx);
+        //     for &other in dom {
+        //         if other == idx {
+        //             continue;
+        //         }
+
+        //         frontiers.entry(other).or_default().insert(idx);
+        //     }
+        // }
+        // frontiers
+    }
+
+    pub fn calculate_common_successor(&self, mut preds: Vec<usize>) -> Option<usize> {
+        todo!()
+        // log::debug!("calculate common successor for: {:?}", preds);
+        // if preds.len() == 0 {
+        //     return None;
+        // }
+
+        // let idx = preds.pop().unwrap();
+        // let mut result = vec![];
+        // result.extend(self.cfg.dominates(&idx).into_iter().map(|&l| l));
+        // for idx in preds {
+        //     let succs = self.cfg.dominates(&idx);
+        //     log::debug!("{} dominates {:?}", idx, succs);
+        //     let mut succ_idx = 0;
+        //     while succ_idx < result.len() {
+        //         let succ = result[succ_idx];
+        //         if !succs.contains(&succ) {
+        //             result.remove(succ_idx);
+        //         } else {
+        //             succ_idx += 1;
+        //         }
+        //     }
+        // }
+
+        // // find the greatest dominator
+        // let mut greatest = None;
+        // for i in result.iter() {
+        //     let succs = self.cfg.dominates(i);
+        //     log::debug!("{} dominates {:?}", i, succs);
+        //     for j in result.iter() {
+        //         if i != j && succs.contains(j) {
+        //             greatest = Some(*i);
+        //             break;
+        //         }
+        //     }
+        // }
+
+        // greatest
+    }
+
+    // pub fn get_topological_ordering(&self) -> Vec<usize> {
+    //     let mut cfg = self.cfg.clone();
+    //     let mut last = None;
+    //     let mut curr = vec![];
+    //     loop {
+    //         log::debug!("curr = {:?}", curr);
+    //         let blocks = cfg.toposort();
+    //         if blocks.len() == 0 {
+    //             if cfg.len() == 0 {
+    //                 break;
+    //             }
+
+    //             // there is a cycle: we must find it and break it
+    //             if let Some(block) =
+    //                 last.and_then(|idx| -> Option<&Block> { self.blocks.get(idx + 1) })
+    //             {
+    //                 // this is the start of a loop
+    //                 let label = block.label();
+    //                 if cfg.remove(&label).is_some() {
+    //                     // unless it has already been removed add it
+    //                     curr.push(label);
+    //                     last = Some(label);
+    //                 }
+    //                 continue;
+    //             }
+
+    //             break;
+    //         }
+
+    //         curr.extend(blocks);
+    //         last = curr.last().copied();
+    //     }
+    //     log::debug!("curr = {:?}", curr);
+    //     curr
+    // }
+
+    // pub fn sort_topologically(&mut self) {
+    //     let indices = self.get_topological_ordering();
+    //     self.blocks.sort_by_index_slice(indices);
+    //     self.reindex_blocks();
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -1075,6 +1587,7 @@ pub struct Call {
     pub poly_ty: Option<Ty>,
 }
 
+LirImplInto!(Inst for Call);
 LirImplInto!(Value for Call);
 
 impl std::fmt::Display for Call {
@@ -1119,26 +1632,26 @@ impl NamedInst for Call {
 }
 
 impl Call {
-    pub fn new(fn_name: Path, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Value {
-        Value::Call(Call {
+    pub fn new(fn_name: Path, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Call {
+        Call {
             original_fn: fn_name.clone(),
             fn_ref: None,
             ty,
             poly_ty,
             args,
             fn_name,
-        })
+        }
     }
 
-    pub fn new_ref(fn_ref: usize, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Value {
-        Value::Call(Call {
+    pub fn new_ref(fn_ref: usize, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Call {
+        Call {
             original_fn: Path::new(),
             fn_name: Path::new(),
             fn_ref: Some(fn_ref),
             ty,
             poly_ty,
             args,
-        })
+        }
     }
 }
 
@@ -1170,175 +1683,46 @@ impl<'a> GetLocals<'a> for CExternCall {
 }
 
 #[derive(Clone, Debug)]
-pub struct IfBlock {
-    pub cond_block: Block,
-    pub then_block: Block,
-    pub else_block: Block,
-    pub phi: (usize, Phi),
+pub struct If {
+    pub cond_loc: usize,
+    pub then_label: usize,
+    pub else_label: usize,
 }
 
-LirImplInto!(Inst for IfBlock);
+LirImplInto!(Inst for If);
 
-impl std::fmt::Display for IfBlock {
+impl std::fmt::Display for If {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "if (\n{}\n) then: (\n{}\n) else: (\n{}\n)\n${} = {}",
-            indent_lines(&self.cond_block, 2),
-            indent_lines(&self.then_block, 2),
-            indent_lines(&self.else_block, 2),
-            self.phi.0,
-            self.phi.1,
+            "if ${} then B{} else B{}",
+            self.cond_loc, self.then_label, self.else_label,
         )
     }
 }
 
-impl<'a> GetLocalsMut<'a> for IfBlock {
+impl<'a> GetLocalsMut<'a> for If {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        let mut locs = self.cond_block.get_locals_mut();
-        locs.extend(self.then_block.get_locals_mut());
-        locs.extend(self.else_block.get_locals_mut());
-        locs.push(&mut self.phi.0);
-        locs.extend(self.phi.1.get_locals_mut());
-        locs
+        vec![&mut self.cond_loc]
     }
 }
 
-impl<'a> GetLocals<'a> for IfBlock {
+impl<'a> GetLocals<'a> for If {
     fn get_locals(&'a self) -> Vec<&'a usize> {
-        let mut locs = self.cond_block.get_locals();
-        locs.extend(self.then_block.get_locals());
-        locs.extend(self.else_block.get_locals());
-        locs.push(&self.phi.0);
-        locs.extend(self.phi.1.get_locals());
-        locs
+        vec![&self.cond_loc]
     }
 }
 
-impl ApplySubst for IfBlock {
-    fn apply_subst(self, subst: &Subst) -> Self {
+impl ApplySubst for If {
+    fn apply_subst(self, _: &Subst) -> Self {
+        self
+    }
+}
+
+impl If {
+    pub fn new(cond_loc: usize, then_label: usize, else_label: usize) -> Self {
         Self {
-            cond_block: self.cond_block.apply_subst(subst),
-            then_block: self.then_block.apply_subst(subst),
-            else_block: self.else_block.apply_subst(subst),
-            phi: (self.phi.0, self.phi.1.apply_subst(subst)),
-        }
-    }
-}
-
-impl IfBlock {
-    pub fn new(cond: Block, then: Block, els: Block, phi: (usize, Phi)) -> Self {
-        Self {
-            cond_block: cond,
-            then_block: then,
-            else_block: els,
-            phi,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Loop {
-    pub name: String,
-    pub begin: Block,
-    pub cond: Block,
-    pub body: Block,
-    pub end: Block,
-}
-
-impl<'a> GetLocalsMut<'a> for Loop {
-    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        let mut locs = self.begin.get_locals_mut();
-        locs.extend(self.cond.get_locals_mut());
-        locs.extend(self.body.get_locals_mut());
-        locs.extend(self.end.get_locals_mut());
-        locs
-    }
-}
-
-impl<'a> GetLocals<'a> for Loop {
-    fn get_locals(&'a self) -> Vec<&'a usize> {
-        let mut locs = self.begin.get_locals();
-        locs.extend(self.cond.get_locals());
-        locs.extend(self.body.get_locals());
-        locs.extend(self.end.get_locals());
-        locs
-    }
-}
-
-impl ApplySubst for Loop {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Loop {
-            name: self.name,
-            begin: self.begin.apply_subst(subst),
-            cond: self.cond.apply_subst(subst),
-            body: self.body.apply_subst(subst),
-            end: self.end.apply_subst(subst),
-        }
-    }
-}
-
-impl std::fmt::Display for Loop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "(loop begin: (\n{}) cond: (\n{}) body: (\n{}) end: (\n{})\n)",
-            indent_lines(&self.begin, 2),
-            indent_lines(&self.cond, 2),
-            indent_lines(&self.body, 2),
-            indent_lines(&self.end, 2)
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Branch {
-    pub op: BranchOp,
-    pub operand: Atom,
-    pub then_label: String,
-    pub else_label: String,
-}
-
-LirImplInto!(Value for Branch);
-
-impl std::fmt::Display for Branch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {} {} {}",
-            self.op, self.operand, self.then_label, self.else_label
-        )
-    }
-}
-
-impl<'a> GetLocalsMut<'a> for Branch {
-    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        self.operand.get_locals_mut()
-    }
-}
-
-impl<'a> GetLocals<'a> for Branch {
-    fn get_locals(&'a self) -> Vec<&'a usize> {
-        self.operand.get_locals()
-    }
-}
-
-impl ApplySubst for Branch {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Branch {
-            op: self.op,
-            operand: self.operand.apply_subst(subst),
-            then_label: self.then_label,
-            else_label: self.else_label,
-        }
-    }
-}
-
-impl Branch {
-    pub fn new(op: BranchOp, operand: Atom, then_label: String, else_label: String) -> Self {
-        Self {
-            op,
-            operand,
+            cond_loc,
             then_label,
             else_label,
         }
@@ -1346,47 +1730,123 @@ impl Branch {
 }
 
 #[derive(Clone, Debug)]
-pub struct Phi {
-    pub then: Variable,
-    pub els: Variable,
+pub struct Break {
+    pub op: BreakOp,
+    pub operand: Option<Atom>,
+    pub label: Option<usize>,
 }
+
+LirImplInto!(Inst for Break);
+
+impl std::fmt::Display for Break {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = self
+            .label
+            .as_ref()
+            .map(|l| format!(" B{}", l))
+            .unwrap_or_default();
+        let operand = self
+            .operand
+            .as_ref()
+            .map(|a| format!(" {}", a))
+            .unwrap_or_default();
+
+        write!(f, "{}{}{}", self.op, operand, label)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for Break {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        self.operand
+            .as_mut()
+            .map(|o| o.get_locals_mut())
+            .unwrap_or_default()
+    }
+}
+
+impl<'a> GetLocals<'a> for Break {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        self.operand
+            .as_ref()
+            .map(|o| o.get_locals())
+            .unwrap_or_default()
+    }
+}
+
+impl ApplySubst for Break {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Break {
+            op: self.op,
+            operand: self.operand.apply_subst(subst),
+            label: self.label,
+        }
+    }
+}
+
+impl Break {
+    pub fn new() -> Self {
+        Self {
+            op: BreakOp::Break,
+            operand: None,
+            label: None,
+        }
+    }
+
+    pub fn zero(operand: Atom, label: usize) -> Self {
+        Self {
+            op: BreakOp::BreakZ,
+            operand: Some(operand),
+            label: Some(label),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Phi(Vec<(usize, usize)>);
 
 LirImplInto!(Value for Phi);
 
 impl std::fmt::Display for Phi {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "phi({}, {})", self.then, self.els)
+        write!(
+            f,
+            "phi({})",
+            map_join(self.values(), ", ", |(x, y)| format!("B{}: ${}", x, y))
+        )
     }
 }
 
 impl<'a> GetLocalsMut<'a> for Phi {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        let mut loc = self.then.get_locals_mut();
-        loc.extend(self.els.get_locals_mut());
-        loc
+        self.values_mut().iter_mut().map(|(_, l)| l).collect()
     }
 }
 
 impl<'a> GetLocals<'a> for Phi {
     fn get_locals(&'a self) -> Vec<&'a usize> {
-        let mut loc = self.then.get_locals();
-        loc.extend(self.els.get_locals());
-        loc
+        self.values().iter().map(|(_, l)| l).collect()
     }
 }
 
 impl ApplySubst for Phi {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Self {
-            then: self.then.apply_subst(subst),
-            els: self.els.apply_subst(subst),
-        }
+    fn apply_subst(self, _: &Subst) -> Self {
+        self
     }
 }
 
 impl Phi {
-    pub fn new(then: Variable, els: Variable) -> Self {
-        Self { then, els }
+    pub fn new(values: Vec<(usize, usize)>) -> Self {
+        Self(values)
+    }
+
+    #[inline(always)]
+    pub fn values(&self) -> &Vec<(usize, usize)> {
+        &self.0
+    }
+
+    #[inline(always)]
+    fn values_mut(&mut self) -> &mut Vec<(usize, usize)> {
+        &mut self.0
     }
 }
 
@@ -1670,6 +2130,7 @@ impl From<AsmOp> for BasicOp {
     fn from(op: AsmOp) -> Self {
         match op {
             AsmOp::Malloc => unreachable!(),
+            AsmOp::MemCopy => unreachable!(),
             AsmOp::ISizeEq => BasicOp {
                 op: Op::Eq,
                 size: Size::ptr(),

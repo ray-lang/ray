@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Decl, Node, SourceInfo, TypeParams},
+    ast::{Decl, Node},
     pathlib::FilePath,
     span::Span,
     typing::ty::Ty,
@@ -17,7 +17,7 @@ pub struct CType {
 }
 
 impl CType {
-    pub fn convert_to_decl(self, span: Span) -> Node<Decl> {
+    pub fn convert_to_decl(self, _: Span) -> Node<Decl> {
         todo!()
         // if let Some(inputs) = self.inputs {
         //     Node::new(

@@ -90,6 +90,7 @@ impl From<ast::asm::AsmOp> for BasicOp {
     fn from(op: ast::asm::AsmOp) -> Self {
         match op {
             ast::asm::AsmOp::Malloc => unreachable!(),
+            ast::asm::AsmOp::MemCopy => unreachable!(),
             ast::asm::AsmOp::ISizeEq => BasicOp {
                 op: BasicOpKind::Eq,
                 size: Size::ptr(),

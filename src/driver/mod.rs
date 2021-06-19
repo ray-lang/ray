@@ -1,10 +1,9 @@
 use std::fs;
 
 use crate::{
-    ast::{self},
     codegen::{codegen, wasm},
     errors::{RayError, RayErrorKind},
-    hir, lir, parse,
+    link, lir,
     pathlib::FilePath,
     sema,
     typing::{ApplySubstMut, InferSystem, TyCtx},
@@ -25,10 +24,6 @@ pub struct RayPaths {
 impl RayPaths {
     pub fn get_stdlib_path(&self) -> FilePath {
         &self.root / "lib"
-    }
-
-    pub fn get_src_path(&self) -> FilePath {
-        &self.root / "src"
     }
 
     pub fn get_c_includes_path(&self) -> FilePath {
@@ -59,20 +54,6 @@ impl Driver {
         }
     }
 
-    pub fn cst(&self, options: CSTOptions) -> Result<(), Vec<RayError>> {
-        let fp = sema::get_root_module(&options.input_path)?;
-        let module_path = ast::Path::from(options.input_path);
-        let cst_mod = parse::cst::Parser::parse(parse::ParseOptions {
-            module_path,
-            use_stdin: false,
-            filepath: fp.clone(),
-            original_filepath: fp.clone(),
-        })?;
-
-        eprintln!("{:#?}", cst_mod);
-        Ok(())
-    }
-
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
         let paths = RayPaths {
             root: self.ray_path.clone(),
@@ -90,8 +71,8 @@ impl Driver {
         let mut modules = mod_builder.modules;
         let mut srcmaps = mod_builder.srcmaps;
         let mut tcx = TyCtx::new();
-        let (module, mut srcmap, scope_map) =
-            hir::transform_modules(&mod_path, &mut modules, &mut srcmaps, &mut tcx)?;
+        let (module, mut srcmap, _) =
+            link::transform_modules(&mod_path, &mut modules, &mut srcmaps, &mut tcx)?;
         log::debug!("{}", module);
         let mut inf = InferSystem::new(&mut tcx);
         let solution = match inf.infer_ty(&module, &mut srcmap) {
@@ -119,12 +100,13 @@ impl Driver {
         // generate IR
         let mut prog = lir::Program::gen(&module, &solution, &tcx)?;
         prog.monomorphize();
-        prog.post_process();
+        log::debug!("{}", prog);
+        prog.post_process(&srcmap);
 
         log::debug!("{}", prog);
 
         // compile to wasm
-        let wasm_mod = codegen(&prog, &tcx);
+        let wasm_mod = codegen(&prog, &tcx, &srcmap);
 
         // serialize the wasm module
         let bytes = match wasm::serialize(wasm_mod) {

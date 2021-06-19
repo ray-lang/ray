@@ -7,3 +7,7 @@ fn malloc(size: uint) -> *'a => asm(*'a) { $malloc size }
 @inline()
 fn ptr_add(ptr: *'a, n: uint) -> *'a =>
     ((ptr as uint) + n) as *'a
+
+@inline()
+fn ptr_sub(ptr: *'a, n: uint) -> *'a =>
+    ((ptr as uint) - n) as *'a

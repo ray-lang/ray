@@ -1,82 +1,11 @@
-use itertools::Itertools;
-
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use crate::{
-    ast::{
-        self, Decl, Expr, HasSource, Literal, LowerAST, Module, Node, Path, SourceInfo, TypeParams,
-    },
-    errors::{RayError, RayErrorKind, RayResult},
-    pathlib::FilePath,
+    ast::{self, Decl, Expr, Literal, LowerAST, Module, Node, Path},
+    errors::RayError,
     span::{Source, SourceMap, Span},
-    typing::{
-        info::TypeInfo,
-        traits::HasType,
-        ty::{Ty, TyVar},
-        ApplySubst, Subst, TyCtx,
-    },
+    typing::TyCtx,
 };
-
-mod collect;
-mod convert_decl;
-mod convert_expr;
-mod node;
-pub use collect::*;
-pub use convert_decl::*;
-pub use convert_expr::*;
-pub use node::*;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HirInfo {
-    src_info: SourceInfo,
-    ty_info: TypeInfo,
-}
-
-impl HasSource for HirInfo {
-    fn src(&self) -> Source {
-        self.src_info.src()
-    }
-
-    fn set_src(&mut self, src: Source) {
-        self.src_info.set_src(src)
-    }
-}
-
-impl HasType for HirInfo {
-    fn ty(&self) -> Ty {
-        self.ty_info.ty()
-    }
-}
-
-impl ApplySubst for HirInfo {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        HirInfo {
-            src_info: self.src_info.apply_subst(subst),
-            ty_info: self.ty_info.apply_subst(subst),
-        }
-    }
-}
-
-impl HirInfo {
-    pub fn new(src: SourceInfo, ty: Ty) -> Self {
-        Self {
-            src_info: src,
-            ty_info: TypeInfo::new(ty),
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.src_info.path
-    }
-
-    pub fn src_info(&self) -> &SourceInfo {
-        &self.src_info
-    }
-
-    pub fn original_ty(&self) -> &Ty {
-        self.ty_info.original_ty()
-    }
-}
 
 type SourceModule = Module<Expr, Decl>;
 
@@ -192,59 +121,3 @@ fn collect(
     stmts.extend(module.stmts);
     Ok((stmts, decls))
 }
-
-// pub trait IntoHirNode
-// where
-//     Self: Sized,
-//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
-// {
-//     type Output;
-
-//     #[inline(always)]
-//     fn to_hir_node(
-//         self,
-//         scope: &Path,
-//         id: u64,
-//         info: &Info,
-//         ctx: &mut TyCtx,
-//     ) -> RayResult<Self::Output> {
-//         let mut deq = VecDeque::new();
-//         self.to_hir_node_with(&mut deq, scope, id, info, ctx)
-//     }
-
-//     fn to_hir_node_with(
-//         self,
-//         rest: &mut VecDeque<Node<Expr>,
-//         scope: &Path,
-//         id: u64,
-//         info: &Info,
-//         ctx: &mut TyCtx,
-//     ) -> RayResult<Self::Output>;
-// }
-
-// impl IntoHirNode for Vec<Node<Expr, SourceInfo>> {
-//     type Output = Vec<Node<HirNode>;
-
-//     fn to_hir_node_with(
-//         self,
-//         _: &mut VecDeque<Node<Expr>,
-//         scope: &Path,
-//         id: u64,
-//         info: &SourceInfo,
-//         ctx: &mut TyCtx,
-//     ) -> RayResult<Self::Output> {
-//         self.into_iter()
-//             .map(|e| e.to_hir_node(scope, id, info, ctx))
-//             .collect()
-//     }
-// }
-
-// pub trait IntoHirDecl
-// where
-//     Self: Sized,
-//     Info: std::fmt::Debug + Clone + PartialEq + Eq,
-// {
-//     type Output;
-
-//     fn to_hir_decl(self, is_extern: bool, ctx: &mut TyCtx) -> RayResult<Self::Output>;
-// }

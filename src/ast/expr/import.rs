@@ -1,4 +1,4 @@
-use crate::ast::{Name, Node, Path, SourceInfo};
+use crate::ast::{Name, Node, Path};
 use crate::span::Span;
 
 pub struct Import {

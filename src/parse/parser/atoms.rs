@@ -1,9 +1,11 @@
+use std::convert::TryFrom;
+
 use super::{ExprResult, ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
     ast::{
-        token::TokenKind, Block, Closure, Expr, HasSource, Literal, Name, Node, Path, PathNode,
-        Pattern, Sequence, SourceInfo, Trailing, Tuple, ValueKind,
+        token::TokenKind, Block, Closure, Expr, Literal, Name, Node, Path, Pattern, Sequence,
+        Trailing, Tuple, ValueKind,
     },
     span::{Pos, Span},
 };
@@ -68,7 +70,7 @@ impl Parser<'_> {
             self.parse_paren_pattern(ctx)?
         } else {
             let start = self.lex.position();
-            let mut seq = self.parse_expr_seq(ValueKind::LValue, Trailing::Warn, None, ctx)?;
+            let seq = self.parse_expr_seq(ValueKind::LValue, Trailing::Warn, None, ctx)?;
             let end = self.lex.position();
             let span = Span { start, end };
             if seq.items.len() == 0 {
@@ -77,7 +79,14 @@ impl Parser<'_> {
                     span,
                 ));
             }
-            self.mk_node(Pattern::from(seq), span)
+            self.mk_node(
+                Pattern::try_from(seq).map_err(|mut e| {
+                    let src = self.mk_src(span);
+                    e.src.push(src);
+                    e
+                })?,
+                span,
+            )
         })
     }
 
@@ -113,6 +122,7 @@ impl Parser<'_> {
 
         // ')'
         let end = self.expect_matching(&start_tok, TokenKind::RightParen)?;
+        let span = Span { start, end };
         let pattern = if seq.items.len() == 1 && !seq.trailing {
             let item = seq.items.pop().unwrap();
             match item.value {
@@ -120,10 +130,13 @@ impl Parser<'_> {
                 _ => unreachable!(),
             }
         } else {
-            Pattern::tuple(seq)
+            Pattern::tuple(seq).map_err(|mut e| {
+                let src = self.mk_src(span);
+                e.src.push(src);
+                e
+            })?
         };
 
-        let span = Span { start, end };
         Ok(self.mk_node(pattern, span))
     }
 
@@ -171,7 +184,7 @@ impl Parser<'_> {
     pub(crate) fn parse_name_seq(
         &mut self,
         trail: Trailing,
-        ctx: &ParseContext,
+        _: &ParseContext,
     ) -> ParseResult<(Vec<Node<Name>>, Span)> {
         let mut names = vec![];
         let mut start = Pos::new();

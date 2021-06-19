@@ -1,0 +1,212 @@
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use crate::{graph::Graph, target, typing::ty::Ty};
+
+use super::{Atom, Block, Break, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
+
+pub type VarMap = HashMap<String, HashMap<usize, usize>>;
+
+#[derive(Clone, Debug)]
+pub struct Builder {
+    pub(super) curr_block: usize,
+    pub(super) control_block: Option<usize>,
+    pub(super) params: Vec<Param>,
+    pub(super) locals: Vec<Local>,
+    pub(super) vars: VarMap,
+    pub(super) entry_block: Option<usize>,
+    pub(super) exit_block: Option<usize>,
+    pub(super) blocks: Vec<Block>,
+    pub(super) symbols: SymbolSet,
+    pub(super) cfg: ControlFlowGraph,
+}
+
+impl Builder {
+    pub fn new() -> Builder {
+        Builder {
+            curr_block: 0,
+            control_block: None,
+            params: vec![],
+            locals: vec![],
+            vars: HashMap::new(),
+            entry_block: None,
+            exit_block: None,
+            blocks: vec![],
+            symbols: SymbolSet::new(),
+            cfg: ControlFlowGraph::new(),
+        }
+    }
+
+    pub fn done(
+        mut self,
+    ) -> (
+        Vec<Param>,
+        Vec<Local>,
+        Vec<Block>,
+        SymbolSet,
+        ControlFlowGraph,
+    ) {
+        // ensure that each block has a final control flow instruction
+        let num_blocks = self.blocks.len();
+        let mut new_edges = vec![];
+        for (idx, block) in self.blocks.iter_mut().enumerate() {
+            if matches!(block.last(), Some(inst) if inst.is_control()) {
+                continue;
+            }
+
+            // add a goto to the next block
+            if idx + 1 < num_blocks {
+                block.push(Inst::Goto(idx + 1));
+                new_edges.push((idx, idx + 1));
+            }
+        }
+
+        for (prec, succ) in new_edges {
+            self.cfg.add_edge(prec, succ, ());
+        }
+
+        (
+            self.params,
+            self.locals,
+            self.blocks,
+            self.symbols,
+            self.cfg,
+        )
+    }
+
+    pub fn local(&mut self, ty: Ty) -> usize {
+        let idx = self.locals.len();
+        let loc = Local { idx, ty };
+        // if self.blocks.len() != 0 {
+        //     self.block().def_var(idx);
+        // }
+        self.locals.push(loc);
+        idx
+    }
+
+    // pub fn var(&mut self, name: String, ty: Ty) -> &Vec<(usize, usize)> {
+    //     if let Some(locs) = self.vars.get(&name) {
+    //         locs
+    //     } else {
+    //         let idx = self.local(ty);
+    //         self.vars.insert(name.clone(), vec![(self.curr_block, idx)]);
+    //         self.vars.get(&name).unwrap()
+    //     }
+    // }
+
+    // #[inline(always)]
+    // pub fn set_var_loc(&mut self, name: String, loc: usize) {
+    //     self.vars.insert(name, loc);
+    // }
+
+    // #[inline(always)]
+    // pub fn get_var_loc(&mut self, name: &String) -> Option<usize> {
+    //     self.vars.get(name).copied()
+    // }
+
+    #[inline(always)]
+    pub fn get_var(&mut self, name: &String) -> Option<&usize> {
+        self.vars.get(name).and_then(|m| m.get(&self.curr_block))
+    }
+
+    #[inline(always)]
+    pub fn get_var_mut(&mut self, name: &String) -> Option<&mut usize> {
+        let curr_block = self.curr_block;
+        self.vars.get_mut(name).and_then(|m| m.get_mut(&curr_block))
+    }
+
+    #[inline(always)]
+    pub fn set_var(&mut self, name: String, idx: usize) {
+        self.block().define_var(name.clone(), idx);
+        self.vars
+            .entry(name)
+            .or_default()
+            .insert(self.curr_block, idx);
+    }
+
+    pub fn param(&mut self, name: String, ty: Ty) -> usize {
+        let idx = self.local(ty.clone());
+        self.params.push(Param::new(idx, ty));
+        self.set_var(name, idx);
+        idx
+    }
+
+    #[inline(always)]
+    pub fn has_block(&mut self) -> &mut Block {
+        &mut self.blocks[self.curr_block]
+    }
+
+    #[inline(always)]
+    pub fn block(&mut self) -> &mut Block {
+        &mut self.blocks[self.curr_block]
+    }
+
+    #[inline(always)]
+    pub fn block_at(&mut self, label: usize) -> &mut Block {
+        &mut self.blocks[label]
+    }
+
+    pub fn new_block(&mut self) -> usize {
+        let label = self.blocks.len();
+        self.blocks.push(Block::new(label));
+        label
+    }
+
+    #[allow(dead_code)]
+    pub fn add_entry_block(&mut self) -> usize {
+        let idx = self.new_block();
+        self.entry_block = Some(idx);
+        idx
+    }
+
+    pub fn use_block(&mut self, label: usize) -> usize {
+        let prev = self.curr_block;
+        self.curr_block = label;
+        prev
+    }
+
+    pub fn cfg(&mut self) -> &mut ControlFlowGraph {
+        &mut self.cfg
+    }
+
+    pub fn push(&mut self, value: Inst) {
+        self.block().push(value)
+    }
+
+    pub fn goto(&mut self, label: usize) -> Option<usize> {
+        if label == self.block().label() {
+            return None;
+        }
+
+        if let Some(inst) = self.block().last() {
+            match inst {
+                &Inst::Goto(label) => return Some(label),
+                Inst::If(_) | Inst::Return(_) | Inst::Halt => return None,
+                _ => {}
+            }
+        }
+
+        self.branch(label);
+        self.block().push(Inst::Goto(label));
+        None
+    }
+
+    pub fn breakz(&mut self, operand: Atom, label: usize) {
+        self.branch(label);
+        self.block().push(Break::zero(operand, label).into());
+    }
+
+    pub fn branch(&mut self, label: usize) {
+        let prec = self.block().label();
+        self.cfg().add_edge(prec, label, ());
+    }
+
+    pub fn ret(&mut self, value: Value) {
+        self.block().push(Inst::Return(value))
+    }
+
+    pub fn cond(&mut self, cond_loc: usize, then_label: usize, else_label: usize) {
+        self.branch(then_label);
+        self.branch(else_label);
+        self.push(If::new(cond_loc, then_label, else_label).into());
+    }
+}

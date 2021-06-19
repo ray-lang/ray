@@ -1,7 +1,7 @@
 use super::{ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
-    ast::{self, token::TokenKind, FnParam, FnSig, HasSource, Node, Path, SourceInfo},
+    ast::{self, token::TokenKind, FnParam, FnSig, Node},
     span::Span,
 };
 
@@ -85,14 +85,14 @@ impl Parser<'_> {
             modifiers,
             qualifiers,
             ty: None, // this will be populated later
-            decorators: None,
             doc_comment: None,
+            is_method: false,
             span: Span { start, end },
         })
     }
 
     pub(crate) fn parse_fn_name(&mut self, ctx: &ParseContext) -> ParseResult<Option<String>> {
-        Ok(if peek!(self, TokenKind::Identifier {..}) {
+        Ok(if peek!(self, TokenKind::Identifier { .. }) {
             let (n, _) = self.expect_id()?;
             Some(n)
         } else if let Some((op, tok_count)) = self.peek_infix_op(ctx)? {

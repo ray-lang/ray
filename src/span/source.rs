@@ -1,7 +1,7 @@
-use std::collections::{self, HashMap};
+use std::collections::HashMap;
 
 use crate::{
-    ast::{Node, Path},
+    ast::{Decorator, Node, Path},
     pathlib::FilePath,
 };
 
@@ -77,6 +77,7 @@ impl Source {
 pub struct SourceMap {
     map: HashMap<u64, Source>,
     docs: HashMap<u64, String>,
+    decorators: HashMap<u64, Vec<Decorator>>,
 }
 
 impl Extend<(u64, Source)> for SourceMap {
@@ -99,6 +100,7 @@ impl SourceMap {
         Self {
             map: HashMap::new(),
             docs: HashMap::new(),
+            decorators: HashMap::new(),
         }
     }
 
@@ -128,5 +130,25 @@ impl SourceMap {
 
     pub fn set_doc<T>(&mut self, node: &Node<T>, doc: String) {
         self.docs.insert(node.id, doc);
+    }
+
+    pub fn set_decorators<T>(&mut self, node: &Node<T>, decorators: Vec<Decorator>) {
+        self.decorators.insert(node.id, decorators);
+    }
+
+    pub fn get_decorators<T>(&self, node: &Node<T>) -> Option<&Vec<Decorator>> {
+        self.decorators.get(&node.id)
+    }
+
+    pub fn has_decorator<T>(&self, node: &Node<T>, p: &Path) -> bool {
+        self.decorators
+            .get(&node.id)
+            .map(|v| v.iter().any(|d| &d.path.value == p))
+            .unwrap_or_default()
+    }
+
+    pub fn has_inline<T>(&self, node: &Node<T>) -> bool {
+        let path = Path::from("inline");
+        self.has_decorator(node, &path)
     }
 }

@@ -268,7 +268,7 @@ fn make_type(ty_specs: Vec<&TypeSpecifier>) -> Ty {
                         .as_ref()
                         .map_or_else(|| "".to_string(), |id| id.node.name.clone());
                     let mut ty_params = vec![];
-                    let fields = struct_ty
+                    let _ = struct_ty
                         .node
                         .declarations
                         .as_ref()

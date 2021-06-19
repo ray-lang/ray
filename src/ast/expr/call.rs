@@ -1,8 +1,6 @@
 use crate::{
     ast::{Expr, Node, Sequence},
     span::Span,
-    typing::ty::Ty,
-    utils::join,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

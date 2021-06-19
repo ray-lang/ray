@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Expr, Id, Node, Path},
+    ast::{Node, Path},
     pathlib::FilePath,
     strutils,
     typing::{ApplySubst, Subst},

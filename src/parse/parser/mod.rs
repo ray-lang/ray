@@ -16,7 +16,7 @@ use std::{fs, io};
 use crate::{
     ast::{
         token::{Token, TokenKind},
-        Decl, Decorator, Expr, File, Import, Node, Path, SourceInfo, ValueKind,
+        Decl, Decorator, Expr, File, Import, Node, Path, ValueKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
@@ -87,16 +87,6 @@ pub struct ParseOptions {
     pub use_stdin: bool,
     pub filepath: FilePath,
     pub original_filepath: FilePath,
-}
-
-impl ParseOptions {
-    pub fn module_dir(&self) -> FilePath {
-        if self.filepath.is_dir() {
-            self.filepath.clone()
-        } else {
-            self.filepath.dir()
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -284,9 +274,9 @@ impl<'src> Parser<'src> {
         doc: Option<String>,
         ctx: &ParseContext,
     ) -> ExprResult {
-        let mut expr = self.parse_expr(ctx)?;
-        if let Expr::Fn(f) = &mut expr.value {
-            f.sig.decorators = decs;
+        let expr = self.parse_expr(ctx)?;
+        if let Some(decs) = decs {
+            self.srcmap.set_decorators(&expr, decs)
         }
         if let Some(doc) = doc {
             self.srcmap.set_doc(&expr, doc);
@@ -320,19 +310,6 @@ impl<'src> Parser<'src> {
         match self.peek_kind() {
             TokenKind::EOF => Err(self.unexpected_eof(start)),
             k => Ok(k),
-        }
-    }
-
-    fn peek(&mut self) -> ParseResult<Token> {
-        self.peek_at(0)
-    }
-
-    fn peek_at(&mut self, idx: usize) -> ParseResult<Token> {
-        let start = self.lex.position();
-        let tok = self.lex.peek_token_at(idx);
-        match tok.kind {
-            TokenKind::EOF => Err(self.unexpected_eof(start)),
-            _ => Ok(tok.clone()),
         }
     }
 

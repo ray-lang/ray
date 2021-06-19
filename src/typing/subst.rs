@@ -4,10 +4,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::{
-    typing::ty::{Ty, TyVar},
-    utils::join,
-};
+use crate::typing::ty::{Ty, TyVar};
 
 use super::{
     predicate::TyPredicate,

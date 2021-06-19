@@ -6,8 +6,8 @@ use crate::{
     ast::{
         asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
-        Call, Curly, CurlyElement, Dot, Expr, HasSource, Index, Literal, Modifier, Node, Path,
-        Sequence, Trailing, ValueKind,
+        Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, Node, Sequence, Trailing,
+        ValueKind,
     },
     span::{parsed::Parsed, Span},
     typing::ty::Ty,
@@ -15,11 +15,11 @@ use crate::{
 
 impl Parser<'_> {
     pub(crate) fn parse_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        let mut ex = self.parse_infix_expr(0, None, ctx)?;
-        if peek!(self, TokenKind::If) {
-            // expr if ... else ...
-            ex = self.parse_ternary_expr(ex, ctx)?;
-        }
+        let ex = self.parse_infix_expr(0, None, ctx)?;
+        // if peek!(self, TokenKind::If) {
+        //     // expr if ... else ...
+        //     ex = self.parse_ternary_expr(ex, ctx)?;
+        // }
         Ok(ex)
     }
 
@@ -208,7 +208,7 @@ impl Parser<'_> {
 
     pub(crate) fn parse_fn_call_expr(
         &mut self,
-        mut lhs: ParsedExpr,
+        lhs: ParsedExpr,
         lparen_tok: Token,
         ctx: &ParseContext,
     ) -> ExprResult {

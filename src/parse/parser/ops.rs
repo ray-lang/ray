@@ -1,3 +1,5 @@
+use std::convert::TryFrom;
+
 use super::{ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Restrictions};
 
 use crate::{
@@ -23,6 +25,7 @@ impl Parser<'_> {
 
         let mut ctx = ctx.clone();
         while let Some((op, tok_count)) = self.peek_infix_op(&ctx)? {
+            log::debug!("infix op = {:?}", op);
             let prec = op.precedence();
             if prec < min_prec {
                 break;
@@ -82,7 +85,6 @@ impl Parser<'_> {
             } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
                 // this is a typed expression
                 let ty = self.parse_ty()?;
-                let ty_span = ty.span().unwrap();
                 let rhs = self.mk_ty(ty, ctx.path.clone());
                 let span = self
                     .srcmap
@@ -115,8 +117,12 @@ impl Parser<'_> {
 
             let kind = match op {
                 InfixOp::Assign | InfixOp::AssignOp(_) => {
-                    let (lhs, id) = (lhs.value, lhs.id);
-                    let pat = Pattern::from(lhs);
+                    let id = lhs.id;
+                    let src = self.srcmap.get(&lhs);
+                    let pat = Pattern::try_from(lhs).map_err(|mut e| {
+                        e.src.push(src);
+                        e
+                    })?;
                     Expr::Assign(Assign {
                         lhs: Node { id, value: pat },
                         rhs: Box::new(rhs),

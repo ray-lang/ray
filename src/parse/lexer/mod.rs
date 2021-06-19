@@ -168,29 +168,6 @@ impl Lexer {
         (s, false)
     }
 
-    pub fn quoted_char(&mut self, quote: char) -> (String, bool) {
-        // first rewind the lexer, so there's nothing in the stash, so
-        // we can get the raw characters back
-        self.rewind_tokens();
-
-        let mut s = String::new();
-        while let Some(ch) = self.next_char() {
-            match ch {
-                c if c == quote => {
-                    return (s, true);
-                }
-                c if c.is_whitespace() && s.len() > 0 => {
-                    return (s, false);
-                }
-                '\\' if self.first() == '\\' || self.first() == quote => {
-                    s.push(self.next_char().unwrap());
-                }
-                _ => s.push(ch),
-            }
-        }
-        (s, false)
-    }
-
     fn suffix(&mut self) -> (Option<String>, bool) {
         let mut is_float = false;
         match self.first() {
@@ -535,10 +512,6 @@ impl Lexer {
 
     pub fn position(&self) -> Pos {
         self.curr_pos
-    }
-
-    pub fn prev_position(&self) -> Pos {
-        self.last_tok_span.start
     }
 
     pub fn peek_token(&mut self) -> &Token {

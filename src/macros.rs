@@ -4,10 +4,6 @@ macro_rules! str {
     };
 }
 
-macro_rules! debug {
-    ($($arg:tt)*) => (if cfg!(feature = "debug") { eprintln!($($arg)*) })
-}
-
 macro_rules! unless {
     ($ex:expr, else $else_block:expr) => {
         match $ex {
@@ -43,15 +39,5 @@ macro_rules! variant {
             $($p)::+($($id),*) => ($($id),*),
             _ => panic!("Unexpected value found inside '{}'", stringify!($x)),
         }
-    }};
-}
-
-macro_rules! aset {
-    {} => ($crate::typing::assumptions::AssumptionSet::new());
-
-    { $($e:tt : $v:tt),+ } => {{
-        $crate::typing::assumptions::AssumptionSet::from(vec![
-            $(($crate::ast::Path::from(stringify!($e)), Ty::Var(tvar!($v)))),*
-        ])
     }};
 }

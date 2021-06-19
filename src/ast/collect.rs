@@ -1,33 +1,29 @@
 use std::{collections::HashSet, ops::Deref};
 
-use ast::{Extern, Module, Sequence};
-use itertools::{Either, Itertools};
+use ast::Module;
 
 use crate::{
     ast,
-    hir::HirInfo,
-    span::{Source, SourceMap, Span},
+    span::{Source, SourceMap},
     typing::{
         assumptions::AssumptionSet,
         binding::{BindingGroup, BindingGroupAnalysis},
-        collect::{CollectConstraints, CollectDeclarations, CollectPatterns},
+        collect::{CollectConstraints, CollectCtx, CollectDeclarations, CollectPatterns},
         constraints::{
             tree::{AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree},
-            EqConstraint, InstConstraint, ProveConstraint, SkolConstraint, VarConstraint,
+            EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
         },
-        info::TypeInfo,
         predicate::TyPredicate,
-        state::{TyEnv, TyVarFactory},
-        traits::HasType,
-        ty::{LiteralKind, Ty, TyVar},
+        state::TyEnv,
+        ty::{LiteralKind, Ty},
         TyCtx,
     },
 };
 
 use super::{
     asm::{Asm, AsmOperand},
-    Assign, BinOp, Block, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal,
-    Name, Node, Path, Pattern, Range, Tuple, While,
+    BinOp, Block, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal, Name,
+    Node, Path, Pattern, Range, Tuple, While,
 };
 
 impl CollectPatterns for Node<Pattern> {
@@ -36,18 +32,21 @@ impl CollectPatterns for Node<Pattern> {
             Pattern::Name(n) => n.path.collect_patterns(srcmap, tcx),
             Pattern::Sequence(_) => todo!("collect patterns: {}", self),
             Pattern::Tuple(_) => todo!("collect patterns: {}", self),
+            Pattern::Deref(n) => {
+                let src = srcmap.get(self);
+                let (ptr_ty, env, ctree) = n.path.collect_patterns(srcmap, tcx);
+                let ty = Ty::Var(tcx.tf().next());
+                let c = EqConstraint::new(ptr_ty, Ty::ptr(ty.clone())).with_src(src);
+                tcx.set_ty(self.id, ty.clone());
+                (ty, env, AttachTree::new(c, ctree))
+            }
         }
     }
 }
 
 impl CollectDeclarations for Node<Decl> {
-    fn collect_decls(
-        &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
-    ) -> (Ty, BindingGroup, TyEnv) {
-        let src = srcmap.get(self);
+    fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
+        let src = ctx.srcmap.get(self);
         let (ty, bg, env) = match &self.value {
             Decl::Extern(ext) => {
                 // B = (∅,∅,•) Σ = [x1 :σ,...,xn :σ]
@@ -75,7 +74,7 @@ impl CollectDeclarations for Node<Decl> {
 
                 (ty, BindingGroup::empty().with_src(src.clone()), env)
             }
-            Decl::Fn(func) => (func, &src, None).collect_decls(mono_tys, srcmap, tcx),
+            Decl::Fn(func) => (func, &src, None).collect_decls(ctx),
             Decl::Mutable(d) => todo!("collect_decls: Decl::Mutable: {:?}", d),
             Decl::Name(d) => todo!("collect_decls: Decl::Name: {:?}", d),
             Decl::Declare(d) => todo!("collect_decls: Decl::Declare: {:?}", d),
@@ -90,6 +89,7 @@ impl CollectDeclarations for Node<Decl> {
                 for func in tr.funcs.iter() {
                     env.insert(func.path.clone(), func.ty.clone().unwrap());
                 }
+
                 (Ty::unit(), BindingGroup::empty().with_src(src.clone()), env)
             }
             Decl::TypeAlias(d, _) => todo!("collect_decls: Decl::TypeAlias: {:?}", d),
@@ -99,11 +99,12 @@ impl CollectDeclarations for Node<Decl> {
                 let self_ty = imp.ty.get_ty_param_at(0);
                 if let Some(funcs) = &imp.funcs {
                     for func_node in funcs {
-                        let src = srcmap.get(func_node);
+                        let src = ctx.srcmap.get(func_node);
                         let func = variant!(&func_node.value, if Decl::Fn(f));
-                        let (fn_ty, fn_bg, fn_env) =
-                            (func, &src, Some(self_ty)).collect_decls(mono_tys, srcmap, tcx);
-                        tcx.set_ty(func_node.id, fn_ty);
+                        let (fn_ty, fn_bg, fn_env) = (func, &src, Some(self_ty)).collect_decls(ctx);
+                        ctx.tcx.set_ty(func_node.id, fn_ty);
+                        log::debug!("bg = {:#?}", bg);
+                        log::debug!("fn_bg = {:#?}", fn_bg);
                         bg.combine(fn_bg);
                         env.extend(fn_env);
                     }
@@ -111,49 +112,47 @@ impl CollectDeclarations for Node<Decl> {
 
                 if let Some(ext) = &imp.externs {
                     for e in ext {
-                        let (_, ext_bg, ext_env) = e.collect_decls(mono_tys, srcmap, tcx);
+                        let (_, ext_bg, ext_env) = e.collect_decls(ctx);
                         bg.combine(ext_bg);
                         env.extend(ext_env);
                     }
                 }
 
+                log::debug!("bg = {:#?}", bg);
                 (Ty::unit(), bg, env)
             }
         };
 
-        tcx.set_ty(self.id, ty.clone());
+        ctx.tcx.set_ty(self.id, ty.clone());
         (ty, bg, env)
     }
 }
 
 impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
-    fn collect_decls(
-        &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
-    ) -> (Ty, BindingGroup, TyEnv) {
+    fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
         let &(func, src, maybe_self_ty) = self;
 
         // name, mut params, body, decs
         let name = &func.sig.path;
 
         // ⟨M⟩, id, A\dom(E),Cl ◃◦•[ TC1,TC2 •] ⊢fb lhs = rhs : {|τ1,...,τn,τ|}
-        let fn_tv = tcx.tf().next();
+        let fn_tv = ctx.tcx.tf().next();
         log::debug!("type of {} = {}", name, fn_tv);
 
         // LHS
-        let mut mono_tys = mono_tys.clone();
+        let mut mono_tys = ctx.mono_tys.clone();
         let mut param_tys = vec![];
         let mut param_cts = vec![];
         let mut lhs_env = TyEnv::new();
         for param in func.sig.params.iter() {
             let param_name = param.name().unwrap();
-            let (param_ty, param_env, mut param_ct) = param_name.collect_patterns(srcmap, tcx);
+            let (param_ty, param_env, mut param_ct) =
+                param_name.collect_patterns(ctx.srcmap, ctx.tcx);
 
             if let Some(self_ty) = maybe_self_ty {
                 if param_name.name().unwrap().as_str() == "self" {
-                    let c = EqConstraint::new(param_ty.clone(), self_ty.clone());
+                    let src = ctx.srcmap.get(param);
+                    let c = EqConstraint::new(param_ty.clone(), self_ty.clone()).with_src(src);
                     param_ct = AttachTree::new(c, param_ct);
                 }
             }
@@ -164,16 +163,18 @@ impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
             param_tys.push(param_ty.clone());
             param_cts.push(param_ct);
             lhs_env.extend(param_env);
-            tcx.set_ty(param.id, param_ty);
+            ctx.tcx.set_ty(param.id, param_ty);
         }
 
         // RHS
         // ⟨M + ftv(Cl)⟩,A,TC2 ⊢rhs rhs : τ
-        let (body_ty, aset, body_ct) = func
-            .body
-            .as_deref()
-            .unwrap()
-            .collect_constraints(&mono_tys, srcmap, tcx);
+        let mut ctx = CollectCtx {
+            mono_tys: &mono_tys,
+            srcmap: ctx.srcmap,
+            tcx: ctx.tcx,
+            defs: ctx.defs.clone(),
+        };
+        let (body_ty, aset, body_ct) = func.body.as_deref().unwrap().collect_constraints(&mut ctx);
 
         let fn_ty = Ty::Func(param_tys, Box::new(body_ty));
 
@@ -186,7 +187,7 @@ impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
         let ct = NodeTree::new(vec![
             ReceiverTree::new(fn_tv.to_string()),
             ParentAttachTree::new(
-                EqConstraint::new(Ty::Var(fn_tv.clone()), fn_ty),
+                EqConstraint::new(Ty::Var(fn_tv.clone()), fn_ty).with_src(src.clone()),
                 NodeTree::new(vec![params_ct, body_ct]).spread_list(cl),
             ),
         ]);
@@ -208,23 +209,19 @@ impl<'a> CollectConstraints for Module<Expr, Decl> {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let mut bgroups = vec![];
         let mut sigs = TyEnv::new();
-        for (_, bg, decl_env) in self
-            .decls
-            .iter()
-            .map(|d| d.collect_decls(mono_tys, srcmap, tcx))
-        {
+        for (_, bg, decl_env) in self.decls.iter().map(|d| d.collect_decls(ctx)) {
+            log::debug!("bg = {:#?}", bg);
+            log::debug!("decl_env = {:#?}", decl_env);
             bgroups.push(bg);
             sigs.extend(decl_env);
         }
 
         let mono_tys = HashSet::new();
-        let mut bga = BindingGroupAnalysis::new(bgroups, &sigs, tcx.tf(), &mono_tys);
+        let mut bga = BindingGroupAnalysis::new(bgroups, &sigs, ctx.tcx.tf(), &mono_tys);
         let (_, aset, ct) = bga.analyze();
         log::debug!("module aset: {:?}", aset);
         log::debug!("sigs: {:?}", sigs);
@@ -243,12 +240,10 @@ where
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        let &(b, src) = self;
-        let (out, aset, ct) = b.collect_constraints(mono_tys, srcmap, tcx);
+        let &(b, _) = self;
+        let (out, aset, ct) = b.collect_constraints(ctx);
         (out, aset, ct)
     }
 }
@@ -258,48 +253,57 @@ impl CollectConstraints for Node<Expr> {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        let src = &srcmap.get(self);
+        let src = &ctx.srcmap.get(self);
         let (ty, aset, ct) = match &self.value {
-            Expr::Assign(ex) => unreachable!(), // (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Asm(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::BinOp(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Block(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Break(ex) => todo!(),
-            Expr::Call(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Cast(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Closure(ex) => todo!(),
-            Expr::Curly(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::DefaultValue(ex) => todo!(),
-            Expr::Dot(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Fn(ex) => todo!(),
-            Expr::For(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::If(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Index(ex) => {
-                todo!()
-                // (ex, src).collect_constraints(mono_tys, srcmap, tcx)
+            Expr::Assign(_) => unreachable!(),
+            Expr::Asm(ex) => (ex, src).collect_constraints(ctx),
+            Expr::BinOp(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Block(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Break(ex) => {
+                if let Some(ex) = ex {
+                    let src = &ctx.srcmap.get(ex);
+                    (ex, src).collect_constraints(ctx)
+                } else {
+                    (Ty::unit(), AssumptionSet::new(), ConstraintTree::empty())
+                }
             }
-            Expr::Labeled(lhs, rhs) => todo!(),
-            Expr::List(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Literal(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Loop(ex) => todo!(),
-            Expr::Name(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Path(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Paren(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Range(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Return(ex) => todo!(),
-            Expr::Sequence(ex) => todo!(),
-            Expr::Tuple(ex) => (ex, src).collect_constraints(mono_tys, srcmap, tcx),
-            Expr::Type(ex) => todo!(),
+            Expr::Call(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Cast(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Closure(_) => todo!(),
+            Expr::Curly(ex) => (ex, src).collect_constraints(ctx),
+            Expr::DefaultValue(_) => todo!(),
+            Expr::Dot(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Fn(_) => todo!(),
+            Expr::For(ex) => (ex, src).collect_constraints(ctx),
+            Expr::If(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Index(_) => {
+                todo!()
+                // (ex, src).collect_constraints(ctx)
+            }
+            Expr::Labeled(_, _) => todo!(),
+            Expr::List(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Literal(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Loop(_) => todo!(),
+            Expr::Name(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Pattern(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Path(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Paren(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Range(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Return(_) => todo!(),
+            Expr::Sequence(seq) => {
+                let mut tys: Vec<Ty> = vec![];
+                todo!()
+            }
+            Expr::Tuple(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Type(_) => todo!(),
             Expr::TypeAnnotated(ex, ty) => {
                 let anno_ty = ty.deref().deref().clone();
-                let (ty, aset, ctree) = ex.collect_constraints(mono_tys, srcmap, tcx);
-                let c1 = SkolConstraint::new(mono_tys.clone(), ty, anno_ty.clone())
+                let (ty, aset, ctree) = ex.collect_constraints(ctx);
+                let c1 = SkolConstraint::new(ctx.mono_tys.clone(), ty, anno_ty.clone())
                     .with_src(src.clone());
-                let b = Ty::Var(tcx.tf().with_scope(&src.path));
+                let b = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
                 let c2 = InstConstraint::new(b.clone(), anno_ty.clone()).with_src(src.clone());
                 (
                     anno_ty,
@@ -307,12 +311,12 @@ impl CollectConstraints for Node<Expr> {
                     AttachTree::new(c2, NodeTree::new(vec![ParentAttachTree::new(c1, ctree)])),
                 )
             }
-            Expr::UnaryOp(ex) => todo!(),
-            Expr::Unsafe(ex) => todo!(),
-            Expr::While(ex) => todo!(),
+            Expr::UnaryOp(_) => todo!(),
+            Expr::Unsafe(_) => todo!(),
+            Expr::While(ex) => (ex, src).collect_constraints(ctx),
         };
 
-        tcx.set_ty(self.id, ty.clone());
+        ctx.tcx.set_ty(self.id, ty.clone());
         (ty, aset, ct)
     }
 }
@@ -335,16 +339,14 @@ impl CollectConstraints for (&Asm, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(asm, src) = self;
         let mut aset = AssumptionSet::new();
         let mut cts = vec![];
-        for (op, rands) in asm.inst.iter() {
+        for (_, rands) in asm.inst.iter() {
             for v in rands.iter() {
-                let t = Ty::Var(tcx.tf().with_scope(&src.path));
+                let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
                 match v {
                     AsmOperand::Var(v) => {
                         let label = t.to_string();
@@ -361,7 +363,7 @@ impl CollectConstraints for (&Asm, &Source) {
             .last()
             .map(|(op, _)| op.ret_ty(&src.path))
             .unwrap_or_default();
-        let v = Ty::Var(tcx.tf().with_scope(&src.path));
+        let v = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let mut cs = vec![];
         if let Some(ty) = asm.ret_ty.as_deref() {
             cs.push(EqConstraint::new(ty.clone(), v.clone()).with_src(src.clone()));
@@ -385,20 +387,13 @@ impl CollectConstraints for (&BinOp, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        _: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         panic!("this should be desugared into a call")
     }
 }
 
-fn collect_expr_seq<'a, I>(
-    exprs: I,
-    mono_tys: &HashSet<TyVar>,
-    srcmap: &SourceMap,
-    tcx: &mut TyCtx,
-) -> (Ty, AssumptionSet, ConstraintTree)
+fn collect_expr_seq<'a, I>(exprs: I, ctx: &mut CollectCtx) -> (Ty, AssumptionSet, ConstraintTree)
 where
     I: Iterator<Item = &'a Node<Expr>>,
 {
@@ -409,19 +404,47 @@ where
     }
 
     let mut aset = AssumptionSet::new();
-    let mut env = TyEnv::new();
     let mut ty = Ty::unit();
     let mut groups = vec![];
     let mut ctrees = vec![];
     let mut state = State::Assigns;
 
     for expr in exprs {
-        let src = srcmap.get(expr);
+        let src = ctx.srcmap.get(expr);
         if let Expr::Assign(assign) = &expr.value {
+            let (lhs_ty, bg, _) = (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
+            ctx.tcx.set_ty(expr.id, Ty::unit());
+            ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
+
+            // then check if there are any variables in the group
+            // that have already been defined and create constraints
+            let mut ctree = ConstraintTree::empty();
+            let lhs_src = ctx.srcmap.get(&assign.lhs);
+            for (var, ty) in bg.env().iter() {
+                if let Some(other_ty) = ctx.defs.get(&var) {
+                    log::debug!("already defined: {} :: {}", var, other_ty);
+                    log::debug!("creating equality constraint: {} == {}", ty, other_ty);
+
+                    // create an equality constraint
+                    ctree = AttachTree::new(
+                        EqConstraint::new(ty.clone(), other_ty.clone()).with_src(lhs_src.clone()),
+                        ctree,
+                    );
+                } else {
+                    // otherwise, add them to the definitions
+                    ctx.defs.insert(var.clone(), ty.clone());
+                }
+            }
+
+            groups.push(bg);
+            ctrees.push(ctree);
+
             if matches!(state, State::Exprs) {
                 let ctree = ConstraintTree::from_vec(ctrees);
                 groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
-                let mut bga = BindingGroupAnalysis::new(groups, &env, tcx.tf(), mono_tys);
+                log::debug!("env = {:#?}", ctx.defs);
+                let mut bga =
+                    BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
                 let (_, groups_aset, ctree) = bga.analyze();
                 log::debug!("groups aset = {:#?}", groups_aset);
                 log::debug!("ctree = {:#?}", ctree);
@@ -429,20 +452,11 @@ where
                 groups = vec![];
                 ctrees = vec![ctree];
                 state = State::Assigns;
-                continue;
             }
-
-            let (lhs_ty, bg, e) =
-                (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(mono_tys, srcmap, tcx);
-            tcx.set_ty(expr.id, Ty::unit());
-            tcx.set_ty(assign.lhs.id, lhs_ty);
-
-            groups.push(bg);
-            env.extend(e);
         } else {
-            let (expr_ty, a, ct) = expr.collect_constraints(mono_tys, srcmap, tcx);
-            ty = Ty::Var(tcx.tf().with_scope(&src.path));
-            tcx.set_ty(expr.id, ty.clone());
+            let (expr_ty, a, ct) = expr.collect_constraints(ctx);
+            ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+            ctx.tcx.set_ty(expr.id, ty.clone());
             let c = EqConstraint::new(ty.clone(), expr_ty).with_src(src);
             aset.extend(a);
             ctrees.push(AttachTree::new(c, ct));
@@ -451,13 +465,22 @@ where
     }
 
     let ctree = ConstraintTree::from_vec(ctrees);
+    let ty = if matches!(state, State::Exprs) {
+        ty
+    } else {
+        Ty::unit()
+    };
+
     if groups.len() != 0 {
+        log::debug!("aset = {:#?}", aset);
+        log::debug!("env = {:#?}", ctx.defs);
+        log::debug!("groups = {:#?}", groups);
         groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
-        let mut bga = BindingGroupAnalysis::new(groups, &env, tcx.tf(), mono_tys);
+        let mut bga = BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
         let (_, aset, ctree) = bga.analyze();
         log::debug!("bga aset = {:#?}", aset);
         log::debug!("bga ctree = {:#?}", ctree);
-        (Ty::unit(), aset, ctree)
+        (ty, aset, ctree)
     } else {
         (ty, aset, ctree)
     }
@@ -466,9 +489,9 @@ where
     // let mut env = TyEnv::new();
     // while let Some(expr) = exprs.next() {
     //     if let Expr::Assign(assign) = &expr.value {
-    //         let src = srcmap.get(expr);
+    //         let src = ctx.srcmap.get(expr);
     //         let (_, bg, e) =
-    //             (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(mono_tys, srcmap, tcx);
+    //             (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
     //         groups.push(bg);
     //         env.extend(e);
     //         continue;
@@ -477,7 +500,7 @@ where
     //     let mut exprs = std::iter::once(expr).chain(exprs);
     //     let (ty, aset, ctree) = collect_expr_seq(&mut exprs, mono_tys, srcmap, tcx);
     //     groups.insert(0, BindingGroup::new(TyEnv::new(), aset, ctree));
-    //     let mut bga = BindingGroupAnalysis::new(groups, &env, tcx.tf(), mono_tys);
+    //     let mut bga = BindingGroupAnalysis::new(groups, &env, ctx.tcx.tf(), mono_tys);
     //     let (_, aset, ctree) = bga.analyze();
     //     return (ty, aset, ctree);
     // }
@@ -511,9 +534,9 @@ where
     //     // let mut aset = AssumptionSet::new();
     //     // let mut ctree = ConstraintTree::empty();
     //     // for stmt in rest {
-    //     //     let (stmt_ty, a, ct) = stmt.collect_constraints(mono_tys, srcmap, tcx);
-    //     //     let b = Ty::Var(tcx.tf().with_scope(&src.path));
-    //     //     let src = srcmap.get(stmt);
+    //     //     let (stmt_ty, a, ct) = stmt.collect_constraints(ctx);
+    //     //     let b = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+    //     //     let src = ctx.srcmap.get(stmt);
     //     //     let c = EqConstraint::new(b.clone(), stmt_ty).with_src(src);
     //     //     ty = b;
     //     //     aset.extend(a);
@@ -525,24 +548,24 @@ where
     // let mut groups = vec![];
     // let mut env = TyEnv::new();
     // for assign in assigns {
-    //     let src = srcmap.get(&assign);
+    //     let src = ctx.srcmap.get(&assign);
     //     let (_, bg, e) =
-    //         (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(mono_tys, srcmap, tcx);
+    //         (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
     //     groups.push(bg);
     //     env.extend(e);
     // }
 
     // let (ty, aset, ctree) = collect_expr_seq(rest.into_iter(), mono_tys, srcmap, tcx);
     // groups.insert(0, BindingGroup::new(TyEnv::new(), aset, ctree));
-    // let mut bga = BindingGroupAnalysis::new(groups, &env, tcx.tf(), mono_tys);
+    // let mut bga = BindingGroupAnalysis::new(groups, &env, ctx.tcx.tf(), mono_tys);
     // let (_, aset, ctree) = bga.analyze();
     // (ty, aset, ctree)
 
-    // let src = srcmap.get(head);
+    // let src = ctx.srcmap.get(head);
     // if let Expr::Assign(assign) = &head.value {
     //     let (lhs_ty, bg, env) =
-    //         (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(mono_tys, srcmap, tcx);
-    //     tcx.set_ty(assign.lhs.id, lhs_ty);
+    //         (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
+    //     ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
 
     //     let (ty, aset, ctree) = if let Some((next, tail)) = tail.split_first() {
     //         collect_block(next, tail, aset, mono_tys, srcmap, tcx)
@@ -554,14 +577,14 @@ where
     //         BindingGroup::new(TyEnv::new(), aset, ctree).with_src(src.clone()),
     //         bg,
     //     ];
-    //     let mut bga = BindingGroupAnalysis::new(groups, &env, tcx.tf(), mono_tys);
+    //     let mut bga = BindingGroupAnalysis::new(groups, &env, ctx.tcx.tf(), mono_tys);
     //     let (_, aset, ctree) = bga.analyze();
     //     (ty, aset, ctree)
     // } else {
-    //     let (ty, a, ct) = head.collect_constraints(mono_tys, srcmap, tcx);
+    //     let (ty, a, ct) = head.collect_constraints(ctx);
     //     aset.extend(a);
 
-    //     let v = Ty::Var(tcx.tf().with_scope(&src.path));
+    //     let v = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
     //     let ctree = AttachTree::new(EqConstraint::new(v.clone(), ty).with_src(src), ct);
 
     //     if let Some((head, tail)) = tail.split_first() {
@@ -577,12 +600,10 @@ impl CollectConstraints for (&Block, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(block, _) = self;
-        collect_expr_seq(block.stmts.iter(), mono_tys, srcmap, tcx)
+        ctx.with_ctx(|ctx| collect_expr_seq(block.stmts.iter(), ctx))
     }
 }
 
@@ -591,9 +612,7 @@ impl CollectConstraints for (&Call, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(call, src) = self;
         let mut aset = AssumptionSet::new();
@@ -601,42 +620,42 @@ impl CollectConstraints for (&Call, &Source) {
         let mut arg_cts = vec![];
 
         let (lhs_ty, ct1) = if let Expr::Dot(dot) = &call.lhs.value {
-            let (self_ty, self_aset, ct1) = dot.lhs.collect_constraints(mono_tys, srcmap, tcx);
+            let (self_ty, self_aset, mut ct1) = dot.lhs.collect_constraints(ctx);
             arg_tys.push(self_ty.clone());
             aset.extend(self_aset);
-            let fqn = Path::from(format!(
-                "{}::{}",
-                self_ty.clone().get_path().unwrap(),
-                dot.rhs.path
-            ));
 
-            let src = srcmap.get(&dot.lhs);
-            let member_ty = Ty::Var(tcx.tf().with_scope(&src.path));
-            let node = Node {
-                id: call.lhs.id,
-                value: Expr::Path(fqn),
+            let src = ctx.srcmap.get(&dot.lhs);
+            let member_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+            let name = dot.rhs.path.to_string();
+            let fqn = if let Some(fqn) = ctx.tcx.lookup_fqn(&name) {
+                fqn.clone()
+            } else {
+                Path::from(format!(
+                    "{}::{}",
+                    self_ty.clone().get_path().unwrap(),
+                    dot.rhs.path
+                ))
             };
-            tcx.set_ty(node.id, member_ty.clone());
+
+            aset.add(fqn.clone(), member_ty.clone());
+            ct1 = NodeTree::new(vec![ReceiverTree::new(member_ty.to_string()), ct1]);
+            ctx.tcx.set_ty(call.lhs.id, member_ty.clone());
             (member_ty, ct1)
         } else {
-            let (lhs_ty, fun_aset, ct1) = call.lhs.collect_constraints(mono_tys, srcmap, tcx);
+            let (lhs_ty, fun_aset, ct1) = call.lhs.collect_constraints(ctx);
             log::debug!("type of {}: {}", call.lhs, lhs_ty);
+            log::debug!("fun_aset = {:#?}", fun_aset);
             aset.extend(fun_aset);
             (lhs_ty, ct1)
         };
 
-        for (arg_ty, a, ct) in call
-            .args
-            .items
-            .iter()
-            .map(|a| a.collect_constraints(mono_tys, srcmap, tcx))
-        {
+        for (arg_ty, a, ct) in call.args.items.iter().map(|a| a.collect_constraints(ctx)) {
             aset.extend(a);
             arg_tys.push(arg_ty);
             arg_cts.push(ct);
         }
 
-        let ret_ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let ret_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let c = EqConstraint::new(lhs_ty, Ty::Func(arg_tys, Box::new(ret_ty.clone())))
             .with_src(src.clone());
 
@@ -653,13 +672,11 @@ impl CollectConstraints for (&Cast, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(cast, src) = self;
-        let (from_ty, a, ct) = cast.lhs.collect_constraints(mono_tys, srcmap, tcx);
-        let v = Ty::Var(tcx.tf().with_scope(&src.path));
+        let (_, a, ct) = cast.lhs.collect_constraints(ctx);
+        let v = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         // TODO: should there be a cast constraint?
         let c = EqConstraint::new(v.clone(), cast.ty.deref().clone()).with_src(src.clone());
         (v, a, AttachTree::new(c, ct))
@@ -671,20 +688,16 @@ impl CollectConstraints for (&Curly, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(curly, src) = self;
-        let ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let c1 = InstConstraint::new(ty.clone(), curly.ty.clone()).with_src(src.clone());
         let mut cts = vec![AttachTree::new(c1, ConstraintTree::empty())];
         let mut aset = AssumptionSet::new();
         for el in curly.elements.iter() {
             let (name, (field_ty, a, ct)) = match &el.value {
-                CurlyElement::Labeled(name, field) => {
-                    (name, field.collect_constraints(mono_tys, srcmap, tcx))
-                }
+                CurlyElement::Labeled(name, field) => (name, field.collect_constraints(ctx)),
                 _ => unreachable!("all elements should be labeled at this point"),
             };
             aset.extend(a);
@@ -697,12 +710,12 @@ impl CollectConstraints for (&Curly, &Source) {
                 .with_src(src.clone()),
                 ct,
             ));
-            tcx.set_ty(el.id, field_ty);
+            ctx.tcx.set_ty(el.id, field_ty);
         }
 
         let ty_args = (0..curly.ty.get_ty_params().len())
             .into_iter()
-            .map(|_| Ty::Var(tcx.tf().with_scope(&src.path)))
+            .map(|_| Ty::Var(ctx.tcx.tf().with_scope(&src.path)))
             .collect();
 
         let fqn = curly.lhs.as_ref().unwrap().to_string();
@@ -719,13 +732,11 @@ impl CollectConstraints for (&Dot, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(dot, src) = self;
-        let (lhs_ty, aset, ct) = dot.lhs.collect_constraints(mono_tys, srcmap, tcx);
-        let member_ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let (lhs_ty, aset, ct) = dot.lhs.collect_constraints(ctx);
+        let member_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let c = ProveConstraint::new(TyPredicate::HasMember(
             lhs_ty,
             dot.rhs.path.to_string(),
@@ -742,9 +753,7 @@ impl CollectConstraints for (&ast::Fn, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        _: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         todo!()
     }
@@ -755,9 +764,7 @@ impl CollectConstraints for (&For, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        _: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         todo!()
     }
@@ -768,42 +775,43 @@ impl CollectConstraints for (&If, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(if_ex, src) = self;
         let mut cts = vec![];
         let mut aset = AssumptionSet::new();
-        let ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         log::debug!("if ty = {}", ty);
 
-        let (cond_ty, cond_aset, cond_ct) = if_ex.cond.collect_constraints(mono_tys, srcmap, tcx);
+        let (cond_ty, cond_aset, cond_ct) = if_ex.cond.collect_constraints(ctx);
         aset.extend(cond_aset);
 
+        let cond_src = ctx.srcmap.get(&if_ex.cond);
         cts.push(ParentAttachTree::new(
-            EqConstraint::new(cond_ty, Ty::bool()).with_src(src.clone()),
+            EqConstraint::new(cond_ty, Ty::bool()).with_src(cond_src),
             cond_ct,
         ));
-        let (then_ty, then_aset, then_ct) = if_ex.then.collect_constraints(mono_tys, srcmap, tcx);
+        let (then_ty, then_aset, then_ct) = if_ex.then.collect_constraints(ctx);
         aset.extend(then_aset);
         log::debug!("then_ty = {}", then_ty);
 
+        let then_src = ctx.srcmap.get(&if_ex.then);
         if let Some(els) = if_ex.els.as_deref() {
-            let (else_ty, else_aset, else_ct) = els.collect_constraints(mono_tys, srcmap, tcx);
+            let (else_ty, else_aset, else_ct) = els.collect_constraints(ctx);
+            let else_src = ctx.srcmap.get(els);
             aset.extend(else_aset);
             log::debug!("else_ty = {}", else_ty);
             cts.push(ParentAttachTree::new(
-                EqConstraint::new(then_ty, ty.clone()).with_src(src.clone()),
+                EqConstraint::new(then_ty, ty.clone()).with_src(then_src),
                 then_ct,
             ));
             cts.push(ParentAttachTree::new(
-                EqConstraint::new(else_ty, ty.clone()).with_src(src.clone()),
+                EqConstraint::new(else_ty, ty.clone()).with_src(else_src),
                 else_ct,
             ));
         } else {
             cts.push(ParentAttachTree::new(
-                EqConstraint::new(Ty::nilable(then_ty), ty.clone()).with_src(src.clone()),
+                EqConstraint::new(Ty::nilable(then_ty), ty.clone()).with_src(then_src),
                 then_ct,
             ));
         }
@@ -817,24 +825,22 @@ impl CollectConstraints for (&List, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(list, src) = self;
-        let ty = Ty::Var(tcx.tf().with_scope(&src.path));
-        let el_ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+        let el_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let mut aset = AssumptionSet::new();
         let mut cts = vec![];
 
         for item in list.items.iter() {
-            let (item_ty, item_aset, item_ct) = item.collect_constraints(mono_tys, srcmap, tcx);
+            let (item_ty, item_aset, item_ct) = item.collect_constraints(ctx);
             let c = EqConstraint::new(el_ty.clone(), item_ty).with_src(src.clone());
             cts.push(ParentAttachTree::new(c, item_ct));
             aset.extend(item_aset);
         }
 
-        let c = EqConstraint::new(ty.clone(), Ty::list(el_ty));
+        let c = EqConstraint::new(ty.clone(), Ty::list(el_ty)).with_src(src.clone());
         let ct = AttachTree::new(c, NodeTree::new(cts));
         (ty, aset, ct)
     }
@@ -845,9 +851,7 @@ impl CollectConstraints for (&Literal, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(lit, src) = self;
         let mut ctree = ConstraintTree::empty();
@@ -857,7 +861,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     let sign = if !signed { "u" } else { "i" };
                     Ty::con(format!("{}{}", sign, size))
                 } else {
-                    let t = Ty::Var(tcx.tf().with_scope(&src.path));
+                    let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
                     ctree = ConstraintTree::list(
                         vec![ProveConstraint::new(TyPredicate::Trait(Ty::Projection(
                             str!("core::Int"),
@@ -873,7 +877,7 @@ impl CollectConstraints for (&Literal, &Source) {
                 if *size != 0 {
                     Ty::con(format!("f{}", size))
                 } else {
-                    let t = Ty::Var(tcx.tf().with_scope(&src.path));
+                    let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
                     ctree = ConstraintTree::list(
                         vec![ProveConstraint::new(TyPredicate::Literal(
                             t.clone(),
@@ -895,7 +899,7 @@ impl CollectConstraints for (&Literal, &Source) {
             Literal::UnicodeEscSeq(_) => unimplemented!("unicode escape sequence"),
         };
 
-        let ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let c = EqConstraint::new(ty.clone(), t.clone()).with_src(src.clone());
         (ty, AssumptionSet::new(), AttachTree::new(c, ctree))
     }
@@ -906,16 +910,38 @@ impl CollectConstraints for (&Name, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(name, src) = self;
-        let t = Ty::Var(tcx.tf().with_scope(&src.path));
+        let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let label = t.to_string();
         let mut aset = AssumptionSet::new();
         aset.add(name.path.clone(), t.clone());
         (t, aset, ReceiverTree::new(label))
+    }
+}
+
+impl CollectConstraints for (&Pattern, &Source) {
+    type Output = Ty;
+
+    fn collect_constraints(
+        &self,
+        ctx: &mut CollectCtx,
+    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        let &(pattern, src) = self;
+        let mut aset = AssumptionSet::new();
+        let (ty, ctree) = match pattern {
+            Pattern::Name(name) | Pattern::Deref(name) => {
+                let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                let label = ty.to_string();
+                aset.add(name.path.clone(), ty.clone());
+                let ctree = ReceiverTree::new(label);
+                (ty, ctree)
+            }
+            Pattern::Sequence(_) => todo!(),
+            Pattern::Tuple(_) => todo!(),
+        };
+        (ty, aset, ctree)
     }
 }
 
@@ -924,12 +950,10 @@ impl CollectConstraints for (&Path, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(path, src) = self;
-        let t = Ty::Var(tcx.tf().with_scope(&src.path));
+        let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let label = t.to_string();
         let mut aset = AssumptionSet::new();
         aset.add(path.clone(), t.clone());
@@ -942,16 +966,13 @@ impl CollectConstraints for (&Range, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(range, src) = self;
-        let (start_ty, start_aset, start_ct) =
-            range.start.collect_constraints(mono_tys, srcmap, tcx);
-        let (end_ty, end_aset, end_ct) = range.end.collect_constraints(mono_tys, srcmap, tcx);
-        let ty = Ty::Var(tcx.tf().with_scope(&src.path));
-        let el_ty = Ty::Var(tcx.tf().with_scope(&src.path));
+        let (start_ty, start_aset, start_ct) = range.start.collect_constraints(ctx);
+        let (end_ty, end_aset, end_ct) = range.end.collect_constraints(ctx);
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+        let el_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let ct = AttachTree::new(
             EqConstraint::new(ty.clone(), Ty::range(el_ty.clone())).with_src(src.clone()),
             NodeTree::new(vec![
@@ -979,22 +1000,20 @@ impl CollectConstraints for (&Tuple, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(tuple, src) = self;
         let mut aset = AssumptionSet::new();
         let mut cts = vec![];
         let mut tys = vec![];
         for el in tuple.seq.items.iter() {
-            let (el_ty, a, ct) = el.collect_constraints(mono_tys, srcmap, tcx);
+            let (el_ty, a, ct) = el.collect_constraints(ctx);
             tys.push(el_ty);
             aset.extend(a);
             cts.push(ct);
         }
-        let ty = Ty::Var(tcx.tf().with_scope(&src.path));
-        let c = EqConstraint::new(ty.clone(), Ty::Tuple(tys));
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+        let c = EqConstraint::new(ty.clone(), Ty::Tuple(tys)).with_src(src.clone());
         let ct = AttachTree::new(c, NodeTree::new(cts));
         (ty, aset, ct)
     }
@@ -1005,10 +1024,24 @@ impl CollectConstraints for (&While, &Source) {
 
     fn collect_constraints(
         &self,
-        mono_tys: &HashSet<TyVar>,
-        srcmap: &SourceMap,
-        tcx: &mut TyCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        todo!()
+        let &(while_stmt, _) = self;
+        let mut aset = AssumptionSet::new();
+
+        let (cond_ty, cond_aset, cond_tree) = while_stmt.cond.collect_constraints(ctx);
+        aset.extend(cond_aset);
+
+        let cond_src = ctx.srcmap.get(&while_stmt.cond);
+        let cond_tree = ParentAttachTree::new(
+            EqConstraint::new(cond_ty, Ty::bool()).with_src(cond_src),
+            cond_tree,
+        );
+
+        let (_, body_aset, body_tree) = while_stmt.body.collect_constraints(ctx);
+        aset.extend(body_aset);
+
+        let ctree = NodeTree::new(vec![cond_tree, body_tree]);
+        (Ty::unit(), aset, ctree)
     }
 }

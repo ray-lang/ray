@@ -1,8 +1,4 @@
-use crate::{
-    ast::Path,
-    span::{parsed::Parsed, Span},
-    typing::ty::Ty,
-};
+use crate::{ast::Path, span::parsed::Parsed, typing::ty::Ty};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {

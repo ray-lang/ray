@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Decorator, Expr, HasSource, Modifier, Name, Node, Path, SourceInfo, TypeParams},
+    ast::{Expr, Modifier, Name, Node, Path, TypeParams},
     span::{parsed::Parsed, Source, Span},
     typing::ty::Ty,
 };
@@ -62,7 +62,7 @@ pub struct FnSig {
     pub modifiers: Vec<Modifier>,
     pub qualifiers: Vec<Parsed<Ty>>,
     pub doc_comment: Option<String>,
-    pub decorators: Option<Vec<Decorator>>,
+    pub is_method: bool,
     pub span: Span,
 }
 
@@ -85,7 +85,7 @@ impl Fn {
                 modifiers: vec![],
                 qualifiers: vec![],
                 doc_comment: None,
-                decorators: None,
+                is_method: false,
                 span: Span::new(),
             },
             body: Some(Box::new(body)),

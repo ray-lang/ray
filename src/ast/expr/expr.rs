@@ -9,7 +9,7 @@ use crate::{
     typing::ty::Ty,
 };
 
-use super::Tuple;
+use super::{Pattern, Tuple};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -34,6 +34,7 @@ pub enum Expr {
     Loop(Loop),
     Name(Name),
     Path(Path),
+    Pattern(Pattern),
     Paren(Box<Node<Expr>>),
     Range(Range),
     Return(Option<Box<Node<Expr>>>),
@@ -89,6 +90,7 @@ impl std::fmt::Display for Expr {
                 Expr::Loop(ex) => ex.to_string(),
                 Expr::Name(ex) => ex.to_string(),
                 Expr::Path(ex) => ex.to_string(),
+                Expr::Pattern(ex) => ex.to_string(),
                 Expr::Paren(ex) => ex.to_string(),
                 Expr::Range(ex) => ex.to_string(),
                 Expr::Return(ex) => ex
@@ -108,9 +110,10 @@ impl std::fmt::Display for Expr {
 
 impl Expr {
     pub fn path(&self) -> Option<Path> {
-        match &self {
+        match self {
             Expr::Name(n) => Some(n.path.clone()),
             Expr::Fn(f) => Some(f.sig.path.clone()),
+            Expr::Pattern(p) => p.path(),
             Expr::Path(p) => Some(p.clone()),
             Expr::Assign(_)
             | Expr::Asm(_)
@@ -144,9 +147,10 @@ impl Expr {
     }
 
     pub fn get_name(&self) -> Option<String> {
-        match &self {
+        match self {
             Expr::Name(n) => Some(n.path.to_string()),
             Expr::Fn(f) => f.sig.name.clone(),
+            Expr::Pattern(p) => p.get_name(),
             Expr::Path(p) => Some(p.to_string()),
             Expr::Assign(_)
             | Expr::Asm(_)
@@ -201,6 +205,7 @@ impl Expr {
             Expr::Literal(..) => "literal",
             Expr::Loop(..) => "loop",
             Expr::Name(..) => "name",
+            Expr::Pattern(..) => "pattern",
             Expr::Path(..) => "path",
             Expr::Paren(..) => "paren",
             Expr::Range(..) => "range",

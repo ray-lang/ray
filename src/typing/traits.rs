@@ -1,7 +1,4 @@
-use std::{
-    cell::RefMut,
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     convert::ToSet,

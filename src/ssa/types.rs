@@ -1,9 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::{
     ast::{Node, Path},
     graph::Graph,
-    sort::topological::TopologicalSort,
     typing::ty::Ty,
     utils::{indent, join, map_join, replace},
 };
@@ -246,6 +245,7 @@ impl std::fmt::Display for Func {
 }
 
 impl Func {
+    #[allow(dead_code)]
     pub fn calculate_dominators(&mut self) {
         for (idx, block) in self.blocks.iter().enumerate() {
             log::debug!("block = {}", block);
@@ -302,6 +302,7 @@ impl Block {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn last_mut(&mut self) -> Option<&mut Node<Expr>> {
         self.expr.last_mut()
     }

@@ -6,12 +6,9 @@ use std::{
 use rand::Rng;
 
 use crate::{
-    ast::{Decorator, Expr, Path},
-    hir::HirInfo,
-    pathlib::FilePath,
-    span::{Source, SourceMap, Span},
-    typing::{traits::HasType, ty::Ty, ApplySubst, Subst, TyCtx},
-    utils::replace,
+    ast::Path,
+    span::{Source, Span},
+    typing::{ApplySubst, Subst},
 };
 
 pub trait HasSource {
@@ -65,24 +62,6 @@ impl HasSource for SourceInfo {
 impl ApplySubst for SourceInfo {
     fn apply_subst(self, _: &Subst) -> Self {
         self
-    }
-}
-
-impl SourceInfo {
-    pub fn empty() -> SourceInfo {
-        SourceInfo {
-            src: Source::default(),
-            path: Path::new(),
-            doc: None,
-        }
-    }
-
-    pub fn new(src: Source) -> SourceInfo {
-        SourceInfo {
-            src,
-            path: Path::new(),
-            doc: None,
-        }
     }
 }
 
@@ -197,6 +176,15 @@ impl<T> Node<T> {
         let id = self.id;
         let value = f(self.value);
         Node { id, value }
+    }
+
+    pub fn try_take_map<F, U, E>(self, f: F) -> Result<Node<U>, E>
+    where
+        F: FnOnce(T) -> Result<U, E>,
+    {
+        let id = self.id;
+        let value = f(self.value)?;
+        Ok(Node { id, value })
     }
 
     pub fn map<F, U>(&self, f: F) -> Node<U>

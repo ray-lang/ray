@@ -1,4 +1,4 @@
-use crate::driver::{BuildOptions, CSTOptions, Driver};
+use crate::driver::{BuildOptions, Driver};
 use crate::pathlib::FilePath;
 
 use colored::{Color, ColoredString, Colorize};
@@ -10,7 +10,6 @@ use std::io::{self, Write};
 use structopt::StructOpt;
 
 mod build;
-mod cst;
 
 #[derive(Debug, StructOpt)]
 pub struct Cli {
@@ -47,7 +46,6 @@ pub struct Cli {
 #[derive(Debug, StructOpt)]
 pub enum Command {
     Build(BuildOptions),
-    ParseCST(CSTOptions),
 }
 
 pub struct CmdError {
@@ -107,7 +105,6 @@ pub fn run() {
     let mut driver = Driver::new(ray_path);
     match cli.cmd {
         Command::Build(options) => build::action(&mut driver, options),
-        Command::ParseCST(options) => cst::action(&mut driver, options),
     }
 
     if let Some(prof) = prof {

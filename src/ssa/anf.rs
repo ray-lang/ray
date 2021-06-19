@@ -1,13 +1,8 @@
-use std::collections::{HashMap, HashSet};
-
-use crate::{
-    anf,
-    ast::{Module, Node},
-    graph::Graph,
-};
+use crate::{anf, ast::Node};
 
 use super::{Block, Callable, Expr, Func, Value};
 
+#[allow(dead_code)]
 pub fn to_anf_module(funcs: &Vec<Node<Func>>) -> Node<anf::Value> {
     let funcs = funcs
         .iter()
@@ -91,33 +86,29 @@ impl ToANF for Node<Func> {
                 })
                 .chain(block.used_vars().iter().map(|&loc| Node::new(loc)))
                 .collect();
-            let body =
-                block
-                    .get_expr()
-                    .iter()
-                    .rev()
-                    .fold(Node::new(anf::Value::Unit), |mut body, ex| {
-                        match &ex.value {
-                            Expr::Set(lhs, rhs) => {
-                                let def = (lhs.map(|&loc| anf::LValue::Var(loc)), rhs.to_anf());
-                                if let anf::Value::Let(defs, _) = &mut body.value {
-                                    defs.insert(0, def);
-                                } else {
-                                    return Node::new(anf::Value::Let(vec![def], Box::new(body)));
-                                }
-
-                                body
-                            }
-                            Expr::Phi(..) => body,
-                            Expr::Goto(other_label) => mk_apply(blocks, other_label.value, label),
-                            Expr::Ret(v) => v.to_anf(),
-                            Expr::If(cond, then_label, else_label) => Node::new(anf::Value::If(
-                                cond.clone(),
-                                Box::new(mk_apply(blocks, then_label.value, label)),
-                                Box::new(mk_apply(blocks, else_label.value, label)),
-                            )),
+            let body = block.get_expr().iter().rfold(
+                Node::new(anf::Value::Unit),
+                |mut body, ex| match &ex.value {
+                    Expr::Set(lhs, rhs) => {
+                        let def = (lhs.map(|&loc| anf::LValue::Var(loc)), rhs.to_anf());
+                        if let anf::Value::Let(defs, _) = &mut body.value {
+                            defs.insert(0, def);
+                        } else {
+                            return Node::new(anf::Value::Let(vec![def], Box::new(body)));
                         }
-                    });
+
+                        body
+                    }
+                    Expr::Phi(..) => body,
+                    Expr::Goto(other_label) => mk_apply(blocks, other_label.value, label),
+                    Expr::Ret(v) => v.to_anf(),
+                    Expr::If(cond, then_label, else_label) => Node::new(anf::Value::If(
+                        cond.clone(),
+                        Box::new(mk_apply(blocks, then_label.value, label)),
+                        Box::new(mk_apply(blocks, else_label.value, label)),
+                    )),
+                },
+            );
             (
                 Node::new(anf::LValue::Label(label)),
                 Node::new(anf::Value::Lambda(params, Box::new(body))),

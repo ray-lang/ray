@@ -1,7 +1,4 @@
-use crate::{
-    ast::{Node, SourceInfo},
-    lir,
-};
+use crate::lir;
 
 pub trait IterCalls<'a> {
     fn iter_calls(self) -> std::vec::IntoIter<&'a mut lir::Inst>;
@@ -14,9 +11,8 @@ where
     fn iter_calls(self) -> std::vec::IntoIter<&'a mut lir::Inst> {
         let mut calls = vec![];
         for inst in self {
-            let inst = match &inst {
-                lir::Inst::Value(v)
-                | lir::Inst::SetGlobal(_, v)
+            let inst = match inst {
+                lir::Inst::SetGlobal(_, v)
                 | lir::Inst::SetLocal(_, v)
                 | lir::Inst::IncRef(v, _)
                 | lir::Inst::DecRef(v)
@@ -34,7 +30,16 @@ where
                         continue;
                     }
                 }
-                _ => continue,
+                lir::Inst::Call(_) => inst,
+
+                lir::Inst::CExternCall(_) => todo!(),
+
+                lir::Inst::Free(_)
+                | lir::Inst::MemCopy(_, _, _)
+                | lir::Inst::If(_)
+                | lir::Inst::Break(_)
+                | lir::Inst::Goto(_)
+                | lir::Inst::Halt => continue,
             };
 
             calls.push(inst);
@@ -64,52 +69,11 @@ impl<'a> IntoIterator for &'a mut lir::Func {
     type IntoIter = std::vec::IntoIter<&'a mut lir::Inst>;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn append<'a>(inst: &'a mut lir::Inst, v: &mut Vec<&'a mut lir::Inst>) {
-            if matches!(&inst, lir::Inst::Block(_)) {
-                if let lir::Inst::Block(b) = inst {
-                    for i in b.instructions.iter_mut() {
-                        append(i, v);
-                    }
-                }
-            } else if matches!(&inst, lir::Inst::Func(_)) {
-                if let lir::Inst::Func(f) = inst {
-                    for i in f.body.instructions.iter_mut() {
-                        append(i, v);
-                    }
-                }
-            } else if matches!(&inst, lir::Inst::IfBlock(_)) {
-                if let lir::Inst::IfBlock(b) = inst {
-                    for i in b
-                        .cond_block
-                        .instructions
-                        .iter_mut()
-                        .chain(b.then_block.instructions.iter_mut())
-                        .chain(b.else_block.instructions.iter_mut())
-                    {
-                        append(i, v);
-                    }
-                }
-            } else if matches!(&inst, lir::Inst::Loop(_)) {
-                if let lir::Inst::Loop(l) = inst {
-                    for i in l
-                        .begin
-                        .instructions
-                        .iter_mut()
-                        .chain(l.cond.instructions.iter_mut())
-                        .chain(l.body.instructions.iter_mut())
-                        .chain(l.end.instructions.iter_mut())
-                    {
-                        append(i, v);
-                    }
-                }
-            } else {
-                v.push(inst);
-            }
-        }
-
         let mut result = vec![];
-        for inst in self.body.instructions.iter_mut() {
-            append(inst, &mut result);
+        for block in self.blocks.iter_mut() {
+            for inst in block.iter_mut() {
+                result.push(inst);
+            }
         }
         result.into_iter()
     }

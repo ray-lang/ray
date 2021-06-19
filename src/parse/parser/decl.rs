@@ -4,11 +4,11 @@ use super::{
 
 use crate::{
     ast::{
-        token::TokenKind, Decl, Decorator, Expr, Extern, HasSource, Impl, Modifier, Name, Node,
-        Path, SourceInfo, Struct, Trailing, Trait,
+        token::TokenKind, Decl, Decorator, Expr, Extern, Impl, Modifier, Name, Node, Struct,
+        Trailing, Trait,
     },
     errors::{RayError, RayErrorKind},
-    span::{parsed::Parsed, Pos, Source, Span},
+    span::{parsed::Parsed, Pos, Span},
     typing::ty::Ty,
 };
 
@@ -40,7 +40,7 @@ impl Parser<'_> {
             start,
             Some(TokenKind::RightCurly),
             &ctx,
-            |this, kind, doc, decs| match kind {
+            |this, kind, doc, _| match kind {
                 TokenKind::Const => {
                     // TODO: should this be wrapped in any way?
                     this.expect_sp(TokenKind::Const)?;
@@ -52,7 +52,7 @@ impl Parser<'_> {
                 TokenKind::Fn | TokenKind::Modifier(_) => {
                     let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
                     f.sig.doc_comment = doc;
-                    f.sig.decorators = decs;
+                    f.sig.is_method = true;
                     let decl = this.mk_decl(Decl::Fn(f), span, ctx.path.clone());
                     funcs.push(decl);
                     Ok(span.end)
@@ -222,7 +222,7 @@ impl Parser<'_> {
         ))
     }
 
-    pub(crate) fn parse_struct(&mut self, ctx: &ParseContext) -> ParseResult<(Struct, Span)> {
+    pub(crate) fn parse_struct(&mut self, _: &ParseContext) -> ParseResult<(Struct, Span)> {
         let start = self.expect_start(TokenKind::Struct)?;
         let name = self.parse_name_with_type()?;
         let mut end = self.srcmap.span_of(&name).end;

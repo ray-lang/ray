@@ -4,10 +4,7 @@ use crate::{ast::Node, graph::Graph, typing::ty::Ty};
 
 use super::{Block, Callable, Expr, Local, Op, Value};
 
-pub struct Vars {
-    map: HashMap<String, (usize, usize)>,
-}
-
+#[allow(dead_code)]
 pub struct SSABuilder {
     curr_block: usize,
     params: Vec<(String, Ty)>,
@@ -76,6 +73,7 @@ impl SSABuilder {
         idx
     }
 
+    #[allow(dead_code)]
     pub fn var(&mut self, name: String, ty: Ty) -> usize {
         let idx = self.local(ty);
         self.vars.insert(name, idx);
@@ -119,6 +117,7 @@ impl SSABuilder {
         label
     }
 
+    #[allow(dead_code)]
     pub fn add_entry_block(&mut self) -> usize {
         let idx = self.new_block();
         self.entry_block = Some(idx);
@@ -159,6 +158,7 @@ impl SSABuilder {
         self.curr_block = prev_block;
     }
 
+    #[allow(dead_code)]
     pub fn with_entry_block<F>(&mut self, f: F)
     where
         F: FnOnce(&mut SSABuilder),
@@ -201,6 +201,7 @@ impl SSABuilder {
         idx
     }
 
+    #[allow(dead_code)]
     pub fn cfg(&mut self) -> &mut Graph<usize, HashSet<usize>> {
         &mut self.cfg
     }

@@ -1033,6 +1033,7 @@ dependencies = [
  "lang-c",
  "log",
  "parity-wasm",
+ "petgraph",
  "pprof",
  "rand 0.8.2",
  "structopt",

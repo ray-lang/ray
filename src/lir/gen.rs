@@ -1,21 +1,15 @@
-use std::{
-    cell::{RefCell, RefMut},
-    collections::HashMap,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::{
     ast::{
         self,
         asm::{AsmOp, AsmOperand},
         token::IntegerBase,
-        CurlyElement, Decl, Expr, Extern, Literal, Module, Node, Path, Pattern, RangeLimits,
-        SourceInfo,
+        CurlyElement, Decl, Expr, Literal, Module, Node, Path, Pattern, RangeLimits,
     },
     errors::RayResult,
-    hir::HirInfo,
     lir, sema,
-    typing::{solvers::Solution, traits::HasType, ty::Ty, Subst, TyCtx},
+    typing::{solvers::Solution, ty::Ty, Subst, TyCtx},
 };
 
 impl lir::Program {
@@ -30,25 +24,35 @@ impl lir::Program {
             let mut ctx = GenCtx::new(Rc::clone(&prog), solution.inst_map.clone());
             module.decls.lir_gen(&mut ctx, tcx)?;
 
+            ctx.with_builder(lir::Builder::new());
+            ctx.with_new_block(|ctx| {
+                ctx.push(
+                    lir::Call::new(
+                        Path::from("main::<():()>"),
+                        vec![],
+                        Ty::Func(vec![], Box::new(Ty::unit())),
+                        None,
+                    )
+                    .into(),
+                );
+
+                ctx.ret(lir::Value::Empty);
+            });
+
             // add the _start function
-            let start_idx =
-                ctx.new_func(Path::from("_start"), Ty::Func(vec![], Box::new(Ty::unit())));
-            ctx.fx = start_idx;
-
-            let mut start_fn = ctx.borrow_func_mut();
+            let builder = ctx.builder.take().unwrap();
+            let (params, locals, blocks, symbols, cfg) = builder.done();
+            let mut start_fn = Node::new(lir::Func::new(
+                "_start".into(),
+                Ty::Func(vec![], Box::new(Ty::unit())),
+                symbols,
+                cfg,
+            ));
+            start_fn.params = params;
+            start_fn.locals = locals;
+            start_fn.blocks = blocks;
             start_fn.symbols.insert(Path::from("main::<():()>"));
-            start_fn.body.instructions = vec![
-                lir::Call::new(
-                    Path::from("main::<():()>"),
-                    vec![],
-                    Ty::Func(vec![], Box::new(Ty::unit())),
-                    None,
-                )
-                .into(),
-                lir::Inst::Return(lir::Value::Empty).into(),
-            ];
-
-            start_idx
+            ctx.new_func(start_fn)
         };
 
         // take the prog out of the pointer
@@ -92,13 +96,24 @@ pub trait LirGen<T> {
 #[derive(Clone, Debug)]
 pub struct GenCtx {
     prog: Rc<RefCell<lir::Program>>,
-    // scope: Path,
-    fx: usize,
-    label_idx: usize,
+    builder: Option<lir::Builder>,
     fn_idx: HashMap<String, usize>,
     data_idx: HashMap<Vec<u8>, usize>,
-    vars: HashMap<String, usize>,
     inst_map: Subst,
+}
+
+impl std::ops::Deref for GenCtx {
+    type Target = lir::Builder;
+
+    fn deref(&self) -> &Self::Target {
+        self.builder.as_ref().unwrap()
+    }
+}
+
+impl std::ops::DerefMut for GenCtx {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.builder.as_mut().unwrap()
+    }
 }
 
 impl GenCtx {
@@ -106,35 +121,18 @@ impl GenCtx {
         // let scope = prog.borrow().module_path.clone();
         GenCtx {
             prog,
-            // scope,
-            fx: 0,
-            label_idx: 0,
+            builder: None,
             fn_idx: HashMap::new(),
             data_idx: HashMap::new(),
-            vars: HashMap::new(),
             inst_map,
         }
     }
 
-    fn new_loc_with(
-        locals: &mut Vec<lir::Local>,
-        ty: Ty,
-        name: Option<String>,
-    ) -> (usize, lir::Size) {
-        let idx = locals.len();
-        let size = ty.size_of();
-        let mut loc = lir::Local::new(idx, ty);
-        loc.name = name;
-        locals.push(loc);
-        (idx, size)
+    fn with_builder(&mut self, builder: lir::Builder) {
+        self.builder = Some(builder);
     }
 
-    fn new_loc(&mut self, ty: Ty) -> (usize, lir::Size) {
-        let mut prog = self.prog.borrow_mut();
-        let func = prog.funcs.get_mut(self.fx).unwrap();
-        GenCtx::new_loc_with(&mut func.locals, ty, None)
-    }
-
+    #[allow(dead_code)]
     fn set_loc(&mut self, loc: usize, value: lir::Value, ty: Ty, value_ty: Ty) -> Vec<lir::Inst> {
         let mut inst = vec![];
         if let Ty::Union(tys) = ty {
@@ -176,59 +174,54 @@ impl GenCtx {
         inst
     }
 
-    fn new_param(&mut self, name: String, ty: Ty) -> (usize, lir::Size) {
-        let mut prog = self.prog.borrow_mut();
-        let func = prog.funcs.get_mut(self.fx).unwrap();
-        let (idx, size) = GenCtx::new_loc_with(&mut func.locals, ty.clone(), Some(name.clone()));
-        self.vars.insert(name.clone(), idx);
-        func.params.push(lir::Param {
-            idx,
-            size,
-            name,
-            ty,
-        });
+    // fn new_param(&mut self, name: String, ty: Ty) -> (usize, lir::Size) {
+    //     let mut prog = self.prog.borrow_mut();
+    //     let func = prog.funcs.get_mut(self.fx).unwrap();
+    //     let (idx, size) = GenCtx::new_loc_with(&mut func.locals, ty.clone());
+    //     self.vars.insert(name.clone(), idx);
+    //     func.params.push(lir::Param {
+    //         idx,
+    //         size,
+    //         name,
+    //         ty,
+    //     });
 
-        (idx, size)
-    }
+    //     (idx, size)
+    // }
 
-    fn new_var(&mut self, v: String, ty: Ty) -> (usize, lir::Size) {
-        let (idx, size) = self.new_loc(ty);
-        self.vars.insert(v, idx);
-        (idx, size)
-    }
+    // fn new_var(&mut self, v: String, ty: Ty) -> (usize, lir::Size) {
+    //     let (idx, size) = self.new_loc(ty);
+    //     self.vars.insert(v, idx);
+    //     (idx, size)
+    // }
 
-    fn new_label(&mut self) -> String {
-        let idx = self.label_idx;
-        self.label_idx += 1;
-        let mut prog = self.prog.borrow_mut();
-        let func = prog.funcs.get_mut(self.fx).unwrap();
-        format!("{}::__label{}", func.name, idx)
-    }
+    // fn new_label(&mut self) -> String {
+    //     let idx = self.label_idx;
+    //     self.label_idx += 1;
+    //     let mut prog = self.prog.borrow_mut();
+    //     let func = prog.funcs.get_mut(self.fx).unwrap();
+    //     format!("{}::__label{}", func.name, idx)
+    // }
 
     fn add_sym(&mut self, sym: Path) {
-        self.borrow_func_mut().symbols.insert(sym);
+        self.builder.as_mut().unwrap().symbols.insert(sym);
     }
 
-    fn new_func(&mut self, name: Path, ty: Ty) -> usize {
+    fn new_func(&mut self, func: Node<lir::Func>) -> usize {
         let mut prog = self.prog.borrow_mut();
         let idx = prog.funcs.len();
-        if ty.is_polymorphic() {
-            prog.poly_fn_map.insert(name.clone(), idx);
+        if func.ty.is_polymorphic() {
+            prog.poly_fn_map.insert(func.name.clone(), idx);
         }
 
-        prog.funcs.push(lir::Func::new(name, ty));
+        prog.funcs.push(func);
         idx
     }
 
-    fn is_poly_func(&self, name: &Path) -> bool {
-        let prog = self.prog.borrow();
-        prog.poly_fn_map.contains_key(name)
-    }
-
-    fn borrow_func_mut(&mut self) -> RefMut<'_, lir::Func> {
-        let prog = self.prog.borrow_mut();
-        RefMut::map(prog, |p| p.funcs.get_mut(self.fx).unwrap())
-    }
+    // fn borrow_func_mut(&mut self) -> RefMut<'_, Node<lir::Func>> {
+    //     let prog = self.prog.borrow_mut();
+    //     RefMut::map(prog, |p| p.funcs.get_mut(self.fx).unwrap())
+    // }
 
     fn new_extern(&mut self, name: Path, ty: Ty, is_mutable: bool, src: Option<String>) {
         let mut prog = self.prog.borrow_mut();
@@ -265,18 +258,89 @@ impl GenCtx {
         idx
     }
 
-    fn get_or_set_local(&mut self, value: lir::Value, ty: Ty, inst: &mut Vec<lir::Inst>) -> usize {
-        if let lir::Value::Atom(lir::Atom::Variable(lir::Variable::Local(idx))) = value {
-            idx
+    fn get_or_set_local(&mut self, value: lir::Value, ty: Ty) -> Option<usize> {
+        if ty.is_unit() {
+            if let Some(i) = value.to_inst() {
+                self.push(i);
+            }
+            None
+        } else if let lir::Value::Atom(lir::Atom::Variable(lir::Variable::Local(idx))) = value {
+            Some(idx)
         } else {
-            let (idx, _) = self.new_loc(ty.clone());
-            inst.push(lir::Inst::SetLocal(idx, value).into());
-            idx
+            let idx = self.local(ty.clone());
+            self.push(lir::Inst::SetLocal(idx, value));
+            Some(idx)
         }
+    }
+
+    pub fn with_new_block<F, T>(&mut self, f: F) -> (usize, T)
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
+        // to prevent nested blocks, don't create a new block if the current is empty
+        let (label, prev_block) = if self.blocks.len() != 0 && self.block().is_empty() {
+            (self.curr_block, self.curr_block)
+        } else {
+            let label = self.new_block();
+            (label, self.curr_block)
+        };
+
+        self.curr_block = label;
+        let t = f(self);
+        self.curr_block = prev_block;
+        (label, t)
+    }
+
+    pub fn with_block<F, T>(&mut self, label: usize, f: F) -> T
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
+        let prev_block = self.curr_block;
+        self.curr_block = label;
+        let v = f(self);
+        self.curr_block = prev_block;
+        v
+    }
+
+    pub fn with_entry_block<F, T>(&mut self, f: F) -> T
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
+        let entry_label = if let Some(label) = self.entry_block {
+            label
+        } else {
+            let label = self.new_block();
+            self.entry_block = Some(label);
+            label
+        };
+
+        let prev_block = self.curr_block;
+        self.curr_block = entry_label;
+        let result = f(self);
+        self.curr_block = prev_block;
+        result
+    }
+
+    pub fn with_exit_block<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        let exit_block = if let Some(label) = self.exit_block {
+            label
+        } else {
+            let label = self.new_block();
+            self.exit_block = Some(label);
+            label
+        };
+
+        let prev_block = self.curr_block;
+        self.curr_block = exit_block;
+        f(self);
+        self.curr_block = prev_block;
     }
 }
 
-pub type GenResult = (Vec<lir::Inst>, lir::Value);
+pub type GenResult = lir::Value;
 
 impl LirGen<GenResult> for (&Expr, &Ty) {
     fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
@@ -284,27 +348,27 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
         Ok(match ex {
             Expr::Path(v) => (v, ty).lir_gen(ctx, tcx)?,
             Expr::Name(n) => (&n.path, ty).lir_gen(ctx, tcx)?,
+            Expr::Pattern(p) => (p, ty).lir_gen(ctx, tcx)?,
             Expr::Literal(lit) => (lit, ty).lir_gen(ctx, tcx)?,
             Expr::Cast(c) => c.lhs.lir_gen(ctx, tcx)?,
             Expr::Paren(ex) | Expr::TypeAnnotated(ex, _) => ex.lir_gen(ctx, tcx)?,
             Expr::Range(range) => {
-                let mut inst = vec![];
                 // create a `range` struct
                 //  - start: T
                 //  - end: T
                 //  - inclusive: bool
-                let (loc, _) = ctx.new_loc(ty.clone());
+                let loc = ctx.local(ty.clone());
                 let el_ty = tcx.ty_of(range.start.id);
                 let el_size = el_ty.size_of();
                 let size = (el_size * 2) + lir::Size::bytes(1);
                 let ptr = lir::Malloc::new(size);
-                inst.push(lir::Inst::SetLocal(loc, ptr.into()));
+                ctx.push(lir::Inst::SetLocal(loc, ptr.into()));
 
                 // store the start value
-                let (start_inst, start_val) = range.start.lir_gen(ctx, tcx)?;
-                inst.extend(start_inst);
-                let start_loc = ctx.get_or_set_local(start_val, el_ty.clone(), &mut inst);
-                inst.push(lir::Store::new(
+                let start_val = range.start.lir_gen(ctx, tcx)?;
+                let start_loc = ctx.get_or_set_local(start_val, el_ty.clone()).unwrap();
+
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(loc),
                     lir::Variable::Local(start_loc).into(),
                     lir::Size::zero(),
@@ -312,10 +376,9 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                 ));
 
                 // store the end value
-                let (end_inst, end_val) = range.end.lir_gen(ctx, tcx)?;
-                inst.extend(end_inst);
-                let end_loc = ctx.get_or_set_local(end_val, el_ty.clone(), &mut inst);
-                inst.push(lir::Store::new(
+                let end_val = range.end.lir_gen(ctx, tcx)?;
+                let end_loc = ctx.get_or_set_local(end_val, el_ty.clone()).unwrap();
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(loc),
                     lir::Variable::Local(end_loc).into(),
                     el_size,
@@ -323,8 +386,8 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                 ));
 
                 // store the inclusive flag
-                let (bool_loc, bool_size) = ctx.new_loc(Ty::bool());
-                inst.push(lir::Inst::SetLocal(
+                let bool_loc = ctx.local(Ty::bool());
+                ctx.push(lir::Inst::SetLocal(
                     bool_loc,
                     lir::Atom::UintConst(
                         if matches!(range.limits, RangeLimits::Inclusive) {
@@ -332,45 +395,44 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                         } else {
                             0
                         },
-                        bool_size,
+                        lir::Size::bytes(1),
                     )
                     .into(),
                 ));
-                inst.push(lir::Store::new(
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(loc),
                     lir::Variable::Local(bool_loc).into(),
                     el_size * 2,
-                    bool_size,
+                    lir::Size::bytes(1),
                 ));
 
-                (inst, lir::Atom::new(lir::Variable::Local(loc)).into())
+                lir::Atom::new(lir::Variable::Local(loc)).into()
             }
             Expr::Tuple(tuple) => {
-                let mut inst = vec![];
                 let tys = variant!(ty, if Ty::Tuple(tys));
 
                 // create a new local for the tuple and then make an allocation
-                let (tuple_loc, size) = ctx.new_loc(ty.clone());
-                let value = if !size.is_zero() {
+                let tuple_loc = ctx.local(ty.clone());
+                let size = ty.size_of();
+                if !size.is_zero() {
                     let ptr = lir::Malloc::new(size);
-                    inst.push(lir::Inst::SetLocal(tuple_loc, ptr.into()));
+                    ctx.push(lir::Inst::SetLocal(tuple_loc, ptr.into()));
 
-                    // for each element of the tuple, store it on the stack
+                    // for each element of the tuple
                     let mut offset = lir::Size::zero();
                     for (el, ty) in tuple.seq.items.iter().zip(tys.iter().cloned()) {
                         // generate the lir for the element
-                        let (el_inst, val) = el.lir_gen(ctx, tcx)?;
+                        let val = el.lir_gen(ctx, tcx)?;
                         let size = ty.size_of();
-                        inst.extend(el_inst);
-                        let el_loc = ctx.get_or_set_local(val, ty, &mut inst);
-
-                        // store the element on the stack
-                        inst.push(lir::Store::new(
-                            lir::Variable::Local(tuple_loc),
-                            lir::Atom::new(lir::Variable::Local(el_loc)).into(),
-                            offset,
-                            size,
-                        ));
+                        if let Some(el_loc) = ctx.get_or_set_local(val, ty) {
+                            // store the element
+                            ctx.push(lir::Store::new(
+                                lir::Variable::Local(tuple_loc),
+                                lir::Atom::new(lir::Variable::Local(el_loc)).into(),
+                                offset,
+                                size,
+                            ));
+                        }
 
                         offset += size;
                     }
@@ -378,32 +440,30 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                     lir::Value::new(lir::Variable::Local(tuple_loc))
                 } else {
                     lir::Value::new(lir::Atom::NilConst)
-                };
-
-                (inst, value)
+                }
             }
             Expr::List(list) => {
-                let mut inst = vec![];
                 let item_count = list.items.len();
                 let capacity = item_count * 3;
 
                 // allocate memory for the values
                 let el_ty = ty.get_ty_param_at(0);
-                let (values_loc, el_size) = ctx.new_loc(el_ty.clone());
+                let el_size = el_ty.size_of();
+                let values_loc = ctx.local(el_ty.clone());
                 let values_ptr = lir::Malloc::new(el_size * capacity);
-                inst.push(lir::Inst::SetLocal(values_loc, values_ptr.into()));
+                ctx.push(lir::Inst::SetLocal(values_loc, values_ptr.into()));
 
                 let mut offset = lir::Size::zero();
                 for item in list.items.iter() {
-                    let (item_inst, item_val) = item.lir_gen(ctx, tcx)?;
-                    inst.extend(item_inst);
-                    let item_loc = ctx.get_or_set_local(item_val, tcx.ty_of(item.id), &mut inst);
-                    inst.push(lir::Store::new(
-                        lir::Variable::Local(values_loc),
-                        lir::Variable::Local(item_loc).into(),
-                        offset,
-                        el_size,
-                    ));
+                    let item_val = item.lir_gen(ctx, tcx)?;
+                    if let Some(item_loc) = ctx.get_or_set_local(item_val, tcx.ty_of(item.id)) {
+                        ctx.push(lir::Store::new(
+                            lir::Variable::Local(values_loc),
+                            lir::Variable::Local(item_loc).into(),
+                            offset,
+                            el_size,
+                        ));
+                    }
 
                     offset += el_size;
                 }
@@ -412,12 +472,12 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                 //   - values ptr: *'a
                 //   - len: uint
                 //   - capacity: uint
-                let (list_loc, _) = ctx.new_loc(ty.clone());
+                let list_loc = ctx.local(ty.clone());
                 let list_ptr = lir::Malloc::new(lir::Size::ptrs(3));
-                inst.push(lir::Inst::SetLocal(list_loc, list_ptr.into()));
+                ctx.push(lir::Inst::SetLocal(list_loc, list_ptr.into()));
 
                 // store the values ptr
-                inst.push(lir::Store::new(
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(list_loc),
                     lir::Variable::Local(values_loc).into(),
                     lir::Size::zero(),
@@ -425,7 +485,7 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                 ));
 
                 // store the length
-                inst.push(lir::Store::new(
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(list_loc),
                     lir::Atom::UintConst(item_count as u64, lir::Size::ptr()).into(),
                     lir::Size::ptr(),
@@ -433,162 +493,166 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                 ));
 
                 // store the capacity
-                inst.push(lir::Store::new(
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(list_loc),
                     lir::Atom::UintConst(capacity as u64, lir::Size::ptr()).into(),
                     lir::Size::ptrs(2),
                     lir::Size::ptr(),
                 ));
 
-                (inst, lir::Variable::Local(list_loc).into())
+                lir::Variable::Local(list_loc).into()
             }
             Expr::Asm(asm) => {
+                fn convert_var(operand: &AsmOperand, ty: Ty, ctx: &mut GenCtx) -> lir::Variable {
+                    match operand {
+                        AsmOperand::Var(name) => {
+                            let loc = ctx.get_var(name).copied().unwrap_or_else(|| {
+                                // variable is not defined in the current block, so create a ref
+                                let loc = ctx.local(ty);
+                                ctx.push(lir::Inst::SetLocal(
+                                    loc,
+                                    lir::Value::VarRef(name.clone()),
+                                ));
+                                loc
+                            });
+                            lir::Variable::Local(loc)
+                        }
+                        AsmOperand::Int(_) => panic!("not a variable: {:?}", operand),
+                    }
+                }
+
+                fn convert_operand(operand: &AsmOperand, ty: Ty, ctx: &mut GenCtx) -> lir::Atom {
+                    match operand {
+                        AsmOperand::Var(_) => convert_var(operand, ty, ctx).into(),
+                        AsmOperand::Int(i) => lir::Atom::UintConst(*i, lir::Size::ptr()),
+                    }
+                }
+
+                // TODO: This is a terrible way to hanlde this
                 let mut binops = asm
                     .inst
                     .iter()
-                    .map(|(op, rands)| match op {
-                        AsmOp::Malloc => lir::Malloc::new(match &rands[0] {
-                            AsmOperand::Var(v) => {
-                                if let Some(loc) = ctx.vars.get(v) {
-                                    lir::Atom::new(lir::Variable::Local(*loc))
-                                } else {
-                                    let (idx, _) = ctx.new_var(v.clone(), ty.clone());
-                                    lir::Atom::new(lir::Variable::Local(idx))
-                                }
-                            }
-                            AsmOperand::Int(i) => lir::Size::bytes((*i) as usize).into(),
-                        }),
+                    .flat_map(|(op, rands)| match op {
+                        AsmOp::Malloc => Some(lir::Malloc::new(convert_operand(
+                            &rands[0],
+                            Ty::uint(),
+                            ctx,
+                        ))),
+
+                        AsmOp::MemCopy => {
+                            let dst = convert_var(&rands[0], Ty::uint(), ctx);
+                            let src = convert_var(&rands[1], Ty::uint(), ctx);
+                            let size = convert_operand(&rands[2], Ty::uint(), ctx);
+                            ctx.push(lir::Inst::MemCopy(dst, src, size));
+                            None
+                        }
+
                         _ => {
                             let mut binop = lir::BasicOp::from(*op);
-                            binop.operands.extend(rands.iter().map(|rand| match rand {
-                                AsmOperand::Var(v) => {
-                                    if let Some(loc) = ctx.vars.get(v) {
-                                        lir::Atom::new(lir::Variable::Local(*loc))
-                                    } else {
-                                        let (idx, _) = ctx.new_var(v.clone(), ty.clone());
-                                        lir::Atom::new(lir::Variable::Local(idx))
-                                    }
-                                }
-                                AsmOperand::Int(i) => lir::Atom::UintConst(*i, lir::Size::ptr()),
-                            }));
-                            lir::Value::BasicOp(binop)
+                            binop.operands.extend(
+                                rands
+                                    .iter()
+                                    .map(|operand| convert_operand(operand, ty.clone(), ctx)),
+                            );
+                            Some(lir::Value::BasicOp(binop))
                         }
                     })
                     .collect::<Vec<_>>();
 
-                let mut inst = vec![];
-                let value = if let Some(value) = binops.pop() {
-                    let idx = ctx.get_or_set_local(value, ty.clone(), &mut inst);
+                if let Some(value) = binops.pop() {
+                    let idx = ctx.get_or_set_local(value, ty.clone()).unwrap();
                     lir::Value::new(lir::Variable::Local(idx))
                 } else {
                     lir::Value::Empty
-                };
-
-                (inst, value)
+                }
             }
             Expr::Curly(curly) => {
                 let ty = &curly.ty;
-                let (loc, _) = ctx.new_loc(ty.clone());
+                let loc = ctx.local(ty.clone());
                 let mut size = lir::Size::zero();
                 let mut field_insts = vec![];
                 for field in curly.elements.iter() {
                     let (_, field_value) = variant!(&field.value, if CurlyElement::Labeled(x, y));
                     let field_ty = tcx.ty_of(field.id);
                     let field_size = field_ty.size_of();
-                    let (inst, val) = field_value.lir_gen(ctx, tcx)?;
+                    let val = field_value.lir_gen(ctx, tcx)?;
                     // note: since we're calculating the whole size, `size` is also the offset
-                    field_insts.push((inst, val, field_ty, size, field_size));
+                    field_insts.push((val, field_ty, size, field_size));
                     size += field_size;
                 }
 
-                let mut inst = vec![];
-                inst.push(lir::Inst::SetLocal(loc, lir::Malloc::new(size).into()));
+                ctx.push(lir::Inst::SetLocal(loc, lir::Malloc::new(size).into()));
 
-                for (i, val, ty, offset, size) in field_insts {
-                    inst.extend(i);
-                    let field_loc = ctx.get_or_set_local(val, ty, &mut inst);
-                    inst.push(lir::Store::new(
-                        lir::Variable::Local(loc),
-                        lir::Variable::Local(field_loc).into(),
-                        offset,
-                        size,
-                    ));
+                for (val, ty, offset, size) in field_insts {
+                    if let Some(field_loc) = ctx.get_or_set_local(val, ty) {
+                        ctx.push(lir::Store::new(
+                            lir::Variable::Local(loc),
+                            lir::Variable::Local(field_loc).into(),
+                            offset,
+                            size,
+                        ));
+                    }
                 }
 
-                (inst, lir::Variable::Local(loc).into())
+                lir::Variable::Local(loc).into()
             }
             Expr::Block(block) => {
-                let (insts, mut vals): (Vec<_>, Vec<_>) =
-                    block.stmts.lir_gen(ctx, tcx)?.into_iter().unzip();
-                let val = vals.pop().unwrap_or_else(|| lir::Value::Empty);
-                let mut inst = insts.concat();
-                inst.extend(vals.into_iter().flat_map(|v| {
-                    if !matches!(v, lir::Value::Empty) {
-                        Some(v.into())
-                    } else {
-                        None
+                let mut values = block.stmts.lir_gen(ctx, tcx)?;
+                let last = values.pop();
+                for value in values {
+                    if let Some(i) = value.to_inst() {
+                        ctx.push(i);
                     }
-                }));
-                (inst, val)
+                }
+
+                last.unwrap_or_default()
             }
-            // HirNode::DerefAssign(lhs, rhs) => {
-            //     let info = info.src_info().clone();
-            //     let (mut inst, rhs_val) = rhs.lir_gen(ctx, tcx)?;
-            //     let rhs_loc = ctx.get_or_set_local(rhs_val, info.clone(), rhs.ty(), &mut inst);
-            //     let (lhs_inst, lhs_val) = lhs.lir_gen(ctx, tcx)?;
-            //     inst.extend(lhs_inst);
-            //     let size = rhs.ty().size_of();
-            //     let lhs_loc = ctx.get_or_set_local(lhs_val, info.clone(), lhs.ty(), &mut inst);
-            //     inst.push(Node::new(
-            //         lir::Store::new(
-            //             lir::Variable::Local(lhs_loc),
-            //             lir::Variable::Local(rhs_loc).into(),
-            //             lir::Size::zero(),
-            //             size,
-            //         ),
-            //         info,
-            //     ));
-            //     (inst, lir::Value::Empty)
-            // }
             Expr::Assign(assign) => {
-                // generate the RHS
-                let (mut inst, rhs_val) = assign.rhs.lir_gen(ctx, tcx)?;
+                // get types of both sides
+                let lhs_ty = tcx.ty_of(assign.lhs.id);
                 let rhs_ty = tcx.ty_of(assign.rhs.id);
-                let rhs_loc = ctx.get_or_set_local(rhs_val, rhs_ty, &mut inst);
 
-                // then the LHS
-                let ty = tcx.ty_of(assign.lhs.id);
-                let (lhs_inst, lhs_val) = (&assign.lhs.value, &ty).lir_gen(ctx, tcx)?;
-                inst.extend(lhs_inst);
-                let lhs_loc = ctx.get_or_set_local(lhs_val, ty.clone(), &mut inst);
+                let lhs_val = (&assign.lhs.value, &lhs_ty).lir_gen(ctx, tcx)?;
+                let rhs_val = assign.rhs.lir_gen(ctx, tcx)?;
+                let maybe_lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone());
+                let maybe_rhs_loc = ctx.get_or_set_local(rhs_val, rhs_ty);
 
-                inst.push(lir::Inst::SetLocal(
-                    lhs_loc,
-                    lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
-                ));
-                (inst, lir::Value::Empty)
+                if let (Some(lhs_loc), Some(rhs_loc)) = (maybe_lhs_loc, maybe_rhs_loc) {
+                    if let Pattern::Deref(_) = &assign.lhs.value {
+                        let rhs_ty = tcx.ty_of(assign.rhs.id);
+                        ctx.push(lir::Store::new(
+                            lir::Variable::Local(lhs_loc),
+                            lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
+                            lir::Size::zero(),
+                            rhs_ty.size_of(),
+                        ))
+                    } else {
+                        ctx.push(lir::Inst::SetLocal(
+                            lhs_loc,
+                            lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
+                        ));
+                    }
+                }
+                lir::Value::Empty
             }
             Expr::Fn(_) => todo!(),
             Expr::Dot(dot) => {
-                let (mut inst, lhs_val) = dot.lhs.lir_gen(ctx, tcx)?;
+                let lhs_val = dot.lhs.lir_gen(ctx, tcx)?;
                 let lhs_ty = tcx.ty_of(dot.lhs.id);
-                let lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone(), &mut inst);
+                let lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone()).unwrap();
 
-                (
-                    inst,
-                    lir::GetField {
-                        src: lir::Variable::Local(lhs_loc),
-                        field: dot.rhs.path.to_string(),
-                    }
-                    .into(),
-                )
+                lir::GetField {
+                    src: lir::Variable::Local(lhs_loc),
+                    field: dot.rhs.path.to_string(),
+                }
+                .into()
             }
             Expr::Call(call) => {
                 let fn_ty = tcx.ty_of(call.lhs.id);
                 let poly_ty = if let Ty::Var(original_ty) = tcx.original_ty_of(&call.lhs) {
-                    ctx.inst_map.get(&original_ty).cloned().and_then(|t| {
+                    ctx.inst_map.get(&original_ty).and_then(|t| {
                         if t.is_polymorphic() {
-                            Some(t)
+                            Some(t.clone())
                         } else {
                             None
                         }
@@ -597,28 +661,30 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                     None
                 };
 
-                let mut inst = vec![];
                 let mut call_args: Vec<lir::Variable> = vec![];
                 let base = if let Expr::Dot(dot) = &call.lhs.value {
                     let self_ty = tcx.ty_of(dot.lhs.id);
-                    let (self_inst, self_val) = dot.lhs.lir_gen(ctx, tcx)?;
-                    inst.extend(self_inst);
+                    let self_val = dot.lhs.lir_gen(ctx, tcx)?;
 
                     let self_path = self_ty.get_path().unwrap();
-                    let self_loc = ctx.get_or_set_local(self_val, self_ty, &mut inst);
+                    log::debug!("self path: {}", self_path);
+                    let self_loc = ctx.get_or_set_local(self_val, self_ty).unwrap();
                     call_args.push(lir::Variable::Local(self_loc));
-
-                    Some(self_path.append(dot.rhs.path.name().unwrap()))
+                    let path = self_path.append(dot.rhs.path.name().unwrap());
+                    log::debug!("path: {}", path);
+                    Some(path)
                 } else {
                     call.lhs.path()
                 };
 
                 let fn_name = base.map(|base| {
+                    log::debug!("base_name: {}", base);
                     if !ctx.is_extern(&base) {
-                        if let Some(poly_ty) = &poly_ty {
-                            sema::fn_name(&base, poly_ty)
-                        } else {
-                            sema::fn_name(&base, &fn_ty)
+                        match &poly_ty {
+                            Some(poly_ty) if fn_ty.is_polymorphic() => {
+                                sema::fn_name(&base, poly_ty)
+                            }
+                            _ => sema::fn_name(&base, &fn_ty),
                         }
                     } else {
                         base
@@ -627,10 +693,13 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
 
                 for arg in call.args.items.iter() {
                     let arg_ty = tcx.ty_of(arg.id);
-                    let (arg_inst, arg_val) = arg.lir_gen(ctx, tcx)?;
-                    inst.extend(arg_inst);
-                    let arg_loc = ctx.get_or_set_local(arg_val, arg_ty, &mut inst);
-                    call_args.push(lir::Variable::Local(arg_loc));
+                    let arg_val = arg.lir_gen(ctx, tcx)?;
+
+                    if let Some(arg_loc) = ctx.get_or_set_local(arg_val, arg_ty) {
+                        call_args.push(lir::Variable::Local(arg_loc));
+                    } else {
+                        call_args.push(lir::Variable::Unit)
+                    }
                 }
 
                 let val = if let Some(fn_name) = fn_name {
@@ -638,82 +707,116 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                     ctx.add_sym(fn_name.clone());
                     lir::Call::new(fn_name, call_args, fn_ty.clone(), poly_ty)
                 } else {
-                    let (mut inst, val) = call.lhs.lir_gen(ctx, tcx)?;
-                    let fun_loc = ctx.get_or_set_local(val, fn_ty.clone(), &mut inst);
+                    let val = call.lhs.lir_gen(ctx, tcx)?;
+                    let fun_loc = ctx.get_or_set_local(val, fn_ty.clone()).unwrap();
                     lir::Call::new_ref(fun_loc, call_args, fn_ty.clone(), poly_ty)
                 };
 
-                (inst, val)
+                val.into()
             }
             Expr::BinOp(_) => todo!("lir_gen: Expr::BinOp: {}", ex),
-            Expr::Break(_) => todo!("lir_gen: Expr::Break: {}", ex),
+            Expr::Break(ex) => {
+                if let Some(_) = ex {
+                    todo!()
+                } else {
+                    if let Some(label) = ctx.control_block {
+                        ctx.goto(label);
+                    } else {
+                        // TODO: should this even be valid if there is no control block?
+                        ctx.push(lir::Break::new().into());
+                    }
+                    lir::Value::Empty
+                }
+            }
             Expr::Closure(_) => todo!("lir_gen: Expr::Closure: {}", ex),
             Expr::DefaultValue(_) => todo!("lir_gen: Expr::DefaultValue: {}", ex),
             Expr::For(_) => todo!("lir_gen: Expr::For: {}", ex),
             Expr::If(if_ex) => {
                 log::debug!("type of: {}", ty);
-                let (mut cond_inst, cond_val) = if_ex.cond.lir_gen(ctx, tcx)?;
-                let cond_loc = ctx.get_or_set_local(cond_val, Ty::bool(), &mut cond_inst);
 
-                let cond_label = ctx.new_label();
-                let then_label = ctx.new_label();
-                let else_label = ctx.new_label();
+                let (cond_label, cond_loc) = ctx.with_new_block(|ctx| {
+                    ctx.block().markers_mut().push(lir::ControlMarker::If);
+                    let cond_val = if_ex.cond.lir_gen(ctx, tcx)?;
+                    RayResult::Ok(ctx.get_or_set_local(cond_val, Ty::bool()).unwrap())
+                });
+
+                // in the _current_ block, goto the condition
+                ctx.goto(cond_label);
 
                 let then_ty = tcx.ty_of(if_ex.then.id);
-                log::debug!("then_ty = {}", then_ty);
-                let (mut then_inst, then_val) = if_ex.then.lir_gen(ctx, tcx)?;
-                let then_loc = ctx.get_or_set_local(then_val, then_ty.clone(), &mut then_inst);
+                let (then_label, then_loc) = ctx.with_new_block(|ctx| {
+                    let then_val = if_ex.then.lir_gen(ctx, tcx)?;
+                    RayResult::Ok(ctx.get_or_set_local(then_val, then_ty.clone()))
+                });
 
-                let (mut else_inst, else_loc, else_ty) = if let Some(else_ex) = if_ex.els.as_deref()
-                {
-                    let else_ty = tcx.ty_of(else_ex.id);
-                    let (mut else_inst, else_val) = else_ex.lir_gen(ctx, tcx)?;
-                    let else_loc = ctx.get_or_set_local(else_val, else_ty.clone(), &mut else_inst);
-                    (else_inst, else_loc, else_ty)
-                } else {
-                    let (else_loc, _) = ctx.new_loc(Ty::nil());
-                    let else_inst = vec![lir::Inst::SetLocal(
-                        else_loc,
-                        lir::Atom::UintConst(0, lir::Size::bytes(1)).into(),
-                    )];
-                    (else_inst, else_loc, Ty::nil())
-                };
+                let then_loc = then_loc?;
+                let (else_label, else_loc): (usize, RayResult<Option<usize>>) =
+                    ctx.with_new_block(|ctx| {
+                        Ok(if let Some(else_ex) = if_ex.els.as_deref() {
+                            let else_ty = tcx.ty_of(else_ex.id);
+                            let else_val = else_ex.lir_gen(ctx, tcx)?;
+                            ctx.get_or_set_local(else_val, else_ty.clone())
+                        } else if then_loc.is_some() {
+                            let else_loc = ctx.local(Ty::nil());
+                            ctx.push(lir::Inst::SetLocal(
+                                else_loc,
+                                lir::Atom::UintConst(0, lir::Size::bytes(1)).into(),
+                            ));
+                            Some(else_loc)
+                        } else {
+                            None
+                        })
+                    });
 
-                cond_inst.push(
-                    lir::Value::new(lir::Branch::new(
-                        lir::BranchOp::BranchNZ,
-                        lir::Variable::Local(cond_loc).into(),
-                        then_label.clone(),
-                        else_label.clone(),
-                    ))
-                    .into(),
-                );
+                // branch to the then and else blocks
+                let cond_loc = cond_loc?;
+                ctx.with_block(cond_label, |ctx| ctx.cond(cond_loc, then_label, else_label));
 
-                let cond_block = lir::Block {
-                    name: cond_label,
-                    instructions: cond_inst,
-                };
+                let (end_label, if_loc): (usize, RayResult<Option<usize>>) =
+                    ctx.with_new_block(|ctx| {
+                        Ok(
+                            if let (Some(then_loc), Some(else_loc)) = (then_loc, else_loc?) {
+                                let if_loc = ctx.local(ty.clone());
+                                ctx.push(lir::Inst::SetLocal(
+                                    if_loc,
+                                    lir::Phi::new(vec![
+                                        (then_label, then_loc),
+                                        (else_label, else_loc),
+                                    ])
+                                    .into(),
+                                ));
+                                Some(if_loc)
+                            } else {
+                                None
+                            },
+                        )
+                    });
 
-                let then_block = lir::Block {
-                    name: then_label,
-                    instructions: then_inst,
-                };
+                let mut real_end_label = end_label;
+                if let Some(label) = ctx.with_block(then_label, |ctx| ctx.goto(end_label)) {
+                    real_end_label = label;
+                }
 
-                let else_block = lir::Block {
-                    name: else_label,
-                    instructions: else_inst,
-                };
+                if let Some(label) = ctx.with_block(else_label, |ctx| ctx.goto(end_label)) {
+                    real_end_label = label;
+                }
 
-                let (if_loc, _) = ctx.new_loc(ty.clone());
-                let phi = (
-                    if_loc,
-                    lir::Phi::new(
-                        lir::Variable::Local(then_loc),
-                        lir::Variable::Local(else_loc),
-                    ),
-                );
-                let inst = vec![lir::IfBlock::new(cond_block, then_block, else_block, phi).into()];
-                (inst, lir::Variable::Local(if_loc).into())
+                // use this block for the next instructions
+                ctx.use_block(end_label);
+                ctx.block()
+                    .markers_mut()
+                    .push(lir::ControlMarker::End(cond_label));
+
+                // // use the "real" end label (meaning the actual exit block of the if/else)
+                // ctx.with_block(real_end_label, |ctx| {
+                //     ctx.block()
+                //         .markers_mut()
+                //         .push(lir::ControlMarker::End(cond_label));
+                // });
+
+                if_loc?
+                    .map(|l| lir::Atom::Variable(lir::Variable::Local(l)).into())
+                    .unwrap_or_default()
             }
             Expr::Index(_) => todo!("lir_gen: Expr::Index: {}", ex),
             Expr::Labeled(_, _) => todo!("lir_gen: Expr::Labeled: {}", ex),
@@ -723,23 +826,68 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
             Expr::Type(_) => todo!("lir_gen: Expr::Type: {}", ex),
             Expr::UnaryOp(_) => todo!("lir_gen: Expr::UnaryOp: {}", ex),
             Expr::Unsafe(_) => todo!("lir_gen: Expr::Unsafe: {}", ex),
-            Expr::While(_) => todo!("lir_gen: Expr::While: {}", ex),
+            Expr::While(while_stmt) => {
+                let cond_label = ctx.new_block();
+                let body_label = ctx.new_block();
+                let end_label = ctx.new_block();
+
+                let prev_control = ctx.control_block;
+                ctx.control_block = Some(end_label);
+
+                ctx.with_block(cond_label, |ctx| {
+                    ctx.block().markers_mut().push(lir::ControlMarker::Loop);
+
+                    let cond_val = while_stmt.cond.lir_gen(ctx, tcx)?;
+                    let cond_loc = ctx.get_or_set_local(cond_val, Ty::bool()).unwrap();
+                    ctx.cond(cond_loc, body_label, end_label);
+
+                    ctx.with_block(body_label, |ctx| {
+                        let body_val = while_stmt.body.lir_gen(ctx, tcx)?;
+                        if let Some(i) = body_val.to_inst() {
+                            ctx.push(i);
+                        }
+                        ctx.goto(cond_label);
+                        RayResult::Ok(())
+                    })?;
+
+                    RayResult::Ok(())
+                })?;
+
+                ctx.use_block(end_label);
+                ctx.block()
+                    .markers_mut()
+                    .push(lir::ControlMarker::End(cond_label));
+
+                ctx.control_block = prev_control;
+
+                lir::Value::Empty
+            }
         })
     }
 }
 
 impl LirGen<GenResult> for (&Pattern, &Ty) {
-    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
+    fn lir_gen(&self, ctx: &mut GenCtx, _: &TyCtx) -> RayResult<GenResult> {
         let &(pat, ty) = self;
         match pat {
             Pattern::Name(v) => {
-                let var = v.to_string();
-                Ok(if let Some(loc) = ctx.vars.get(&var) {
-                    (vec![], lir::Value::new(lir::Variable::Local(*loc)))
-                } else {
-                    let (idx, _) = ctx.new_var(var, ty.clone());
-                    (vec![], lir::Value::new(lir::Variable::Local(idx)))
-                })
+                let name = v.to_string();
+                let idx = ctx.local(ty.clone());
+                ctx.set_var(name.clone(), idx);
+                ctx.push(lir::Inst::SetLocal(idx, lir::Value::VarRef(name)));
+
+                Ok(lir::Variable::Local(idx).into())
+            }
+            Pattern::Deref(name) => {
+                let name = name.to_string();
+                let loc = ctx.get_var(&name).copied().unwrap_or_else(|| {
+                    // this variable is not referenced in the current block
+                    let idx = ctx.local(ty.clone());
+                    ctx.set_var(name.clone(), idx);
+                    ctx.push(lir::Inst::SetLocal(idx, lir::Value::VarRef(name)));
+                    idx
+                });
+                Ok(lir::Value::new(lir::Variable::Local(loc)))
             }
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
@@ -748,22 +896,24 @@ impl LirGen<GenResult> for (&Pattern, &Ty) {
 }
 
 impl LirGen<GenResult> for (&Path, &Ty) {
-    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        let &(v, ty) = self;
-        let var = v.to_string();
-        Ok(if let Some(loc) = ctx.vars.get(&var) {
-            (vec![], lir::Value::new(lir::Variable::Local(*loc)))
-        } else {
-            let (idx, _) = ctx.new_var(var, ty.clone());
-            (vec![], lir::Value::new(lir::Variable::Local(idx)))
-        })
+    fn lir_gen(&self, ctx: &mut GenCtx, _: &TyCtx) -> RayResult<GenResult> {
+        let &(path, ty) = self;
+        let name = path.to_string();
+        let loc = ctx.get_var(&name).copied().unwrap_or_else(|| {
+            // variable not defined in the current block
+            let idx = ctx.local(ty.clone());
+            ctx.set_var(name.clone(), idx);
+            ctx.push(lir::Inst::SetLocal(idx, lir::Value::VarRef(name)));
+            idx
+        });
+        Ok(lir::Variable::Local(loc).into())
     }
 }
 
 impl LirGen<GenResult> for (&Literal, &Ty) {
-    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        let &(lit, ty) = self;
-        let val = match lit {
+    fn lir_gen(&self, ctx: &mut GenCtx, _: &TyCtx) -> RayResult<GenResult> {
+        let &(lit, _) = self;
+        Ok(match lit {
             Literal::Integer {
                 value,
                 base,
@@ -784,41 +934,36 @@ impl LirGen<GenResult> for (&Literal, &Ty) {
                 IntegerBase::Octal => todo!(),
                 IntegerBase::Hex => todo!(),
             },
-            Literal::Float { value, size } => todo!(),
+            Literal::Float { .. } => todo!(),
             Literal::String(s) => {
-                let mut inst = vec![];
                 // convert the string to bytes and add a `Data` to the program
                 let bytes = s.as_bytes().to_vec();
                 let len = bytes.len();
+                let string_size = lir::Size::bytes(len);
                 let idx = ctx.data(bytes);
 
-                // store the size in a variable so we can re-use it
-                let (size_loc, _) = ctx.new_loc(Ty::uint());
-                let size = lir::Size::bytes(len);
-                inst.push(lir::Inst::SetLocal(size_loc, lir::Atom::Size(size).into()));
-
                 // allocate a pointer to store the string bytes
-                let (data_loc, _) = ctx.new_loc(Ty::ptr(Ty::u8()));
-                let ptr = lir::Malloc::new(lir::Variable::Local(size_loc));
-                inst.push(lir::Inst::SetLocal(data_loc, ptr.into()));
+                let data_loc = ctx.local(Ty::ptr(Ty::u8()));
+                let ptr = lir::Malloc::new(string_size);
+                ctx.push(lir::Inst::SetLocal(data_loc, ptr.into()));
 
                 // make a call to `memcpy` to copy the bytes
-                inst.push(lir::Inst::MemCopy(
+                ctx.push(lir::Inst::MemCopy(
                     lir::Variable::Local(data_loc), // dst
                     lir::Variable::Data(idx),       // src
-                    lir::Variable::Local(size_loc), // size
+                    string_size.into(),             // size
                 ));
 
                 // create a `string` struct
                 //  - raw_ptr: *u8
                 //  - size: usize
-                let (loc, _) = ctx.new_loc(Ty::string());
+                let loc = ctx.local(Ty::string());
                 let size = lir::Size::ptrs(2);
                 let ptr = lir::Malloc::new(size);
-                inst.push(lir::Inst::SetLocal(loc, ptr.into()));
+                ctx.push(lir::Inst::SetLocal(loc, ptr.into()));
 
                 // store the pointer to the bytes
-                inst.push(lir::Store::new(
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(loc),
                     lir::Variable::Local(data_loc).into(),
                     lir::Size::zero(),
@@ -826,14 +971,14 @@ impl LirGen<GenResult> for (&Literal, &Ty) {
                 ));
 
                 // store the size of the string
-                inst.push(lir::Store::new(
+                ctx.push(lir::Store::new(
                     lir::Variable::Local(loc),
-                    lir::Variable::Local(size_loc).into(),
+                    lir::Atom::Size(string_size).into(),
                     lir::Size::ptr(),
                     lir::Size::ptr(),
                 ));
 
-                return Ok((inst, lir::Atom::new(lir::Variable::Local(loc)).into()));
+                lir::Atom::new(lir::Variable::Local(loc)).into()
             }
             Literal::ByteString(_) => todo!(),
             Literal::Byte(_) => todo!(),
@@ -844,28 +989,105 @@ impl LirGen<GenResult> for (&Literal, &Ty) {
             Literal::UnicodeEscSeq(_) => todo!(),
             Literal::Unit => lir::Value::Empty,
             Literal::Nil => lir::Atom::UintConst(0, lir::Size::bytes(1)).into(),
-        };
-
-        Ok((vec![], val))
+        })
     }
 }
 
-// impl LirGen<GenResult> for HirNode {
-//     fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-//         if let HirNode::Typed(t) = &self {
-//             let ty = t.ty();
-//             (&t.value, &t.info, &ty).lir_gen(ctx, tcx)
-//         } else {
-//             unreachable!("unexpected untyped HirNode: {}", self)
-//         }
-//     }
-// }
-
-impl LirGen<GenResult> for (&Decl, &Ty) {
+impl LirGen<GenResult> for (&Node<&ast::Fn>, &Ty) {
     fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        let &(decl, ty) = self;
-        match decl {
-            Decl::Fn(func) => return (func, ty).lir_gen(ctx, tcx),
+        let &(func, fn_ty) = self;
+
+        ctx.with_builder(lir::Builder::new());
+
+        ctx.with_entry_block(|ctx| {
+            // add the parameters to the function
+            for p in func.sig.params.iter() {
+                let name = p.name().unwrap().to_string();
+                let ty = tcx.ty_of(p.id);
+                ctx.param(name, ty);
+            }
+        });
+
+        let body = func.body.as_ref().unwrap();
+        let body_val = if !matches!(body.value, Expr::Block(_)) {
+            let (_, value) = ctx.with_new_block(|ctx| body.lir_gen(ctx, tcx));
+            value?
+        } else {
+            body.lir_gen(ctx, tcx)?
+        };
+
+        ctx.with_exit_block(|ctx| {
+            let (_, _, _, ret_ty) = fn_ty.try_borrow_fn().unwrap();
+            let value = if !ret_ty.is_unit() {
+                let body_loc = ctx.get_or_set_local(body_val, tcx.ty_of(body.id)).unwrap();
+                lir::Variable::Local(body_loc).into()
+            } else {
+                if let Some(i) = body_val.to_inst() {
+                    ctx.push(i);
+                }
+                lir::Value::Empty
+            };
+
+            ctx.ret(value);
+        });
+
+        let builder = ctx.builder.take().unwrap();
+        let (params, locals, blocks, symbols, cfg) = builder.done();
+
+        let base = &func.sig.path;
+        log::debug!("base function path: {}", base);
+        log::debug!("function type: {}", fn_ty);
+        let name = if !fn_ty.is_polymorphic() {
+            sema::fn_name(base, &fn_ty)
+        } else {
+            base.clone()
+        };
+
+        println!(
+            "{}: {:?}",
+            name,
+            petgraph::dot::Dot::with_config(&cfg, &[petgraph::dot::Config::EdgeNoLabel])
+        );
+
+        let mut func = Node::with_id(
+            func.id,
+            lir::Func::new(base.clone(), fn_ty.clone(), symbols, cfg),
+        );
+        func.name = name;
+        func.params = params;
+        func.locals = locals;
+        func.blocks = blocks;
+
+        ctx.new_func(func);
+
+        Ok(lir::Value::Empty)
+    }
+}
+
+impl LirGen<GenResult> for Node<Expr> {
+    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
+        // let scope = tcx.get(self).path;
+        // let prev_scope = std::mem::replace(&mut ctx.scope, scope);
+        let ty = tcx.maybe_ty_of(self.id);
+        if ty.is_none() {
+            panic!("COMPILER BUG!!! cannot find type of {}", self);
+        }
+
+        let ty = ty.unwrap();
+        let res = (&self.value, ty).lir_gen(ctx, tcx);
+        // ctx.scope = prev_scope;
+        res
+    }
+}
+
+impl LirGen<GenResult> for Node<Decl> {
+    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
+        let ty = tcx.ty_of(self.id);
+        match &self.value {
+            Decl::Fn(func) => {
+                let node = Node::with_id(self.id, func);
+                return (&node, &ty).lir_gen(ctx, tcx);
+            }
             Decl::Mutable(_) | Decl::Name(_) => {
                 todo!()
             }
@@ -879,7 +1101,8 @@ impl LirGen<GenResult> for (&Decl, &Ty) {
                     for func in funcs {
                         let ty = tcx.ty_of(func.id);
                         let func = variant!(&func.value, if Decl::Fn(f));
-                        (func, &ty).lir_gen(ctx, tcx)?;
+                        let node = Node::with_id(self.id, func);
+                        (&node, &ty).lir_gen(ctx, tcx)?;
                     }
                 }
             }
@@ -903,87 +1126,7 @@ impl LirGen<GenResult> for (&Decl, &Ty) {
             Decl::TypeAlias(_, _) | Decl::Struct(_) => {}
         }
 
-        Ok((vec![], lir::Value::Empty))
-    }
-}
-
-impl LirGen<GenResult> for (&ast::Fn, &Ty) {
-    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        let &(func, fn_ty) = self;
-
-        let base = &func.sig.path;
-        log::debug!("base function path: {}", base);
-        log::debug!("function type: {}", fn_ty);
-        let name = if !fn_ty.is_polymorphic() {
-            sema::fn_name(base, &fn_ty)
-        } else {
-            base.clone()
-        };
-
-        log::debug!("full name: {}", name);
-        let mut ctx = ctx.clone();
-        ctx.fx = ctx.new_func(base.clone(), fn_ty.clone());
-        ctx.label_idx = 0;
-
-        // add the parameters to the function
-        let mut inst = vec![];
-        for p in func.sig.params.iter() {
-            let name = p.name().unwrap().to_string();
-            let ty = tcx.ty_of(p.id);
-            ctx.new_param(name, ty);
-        }
-
-        let body = func.body.as_ref().unwrap();
-        let (body_inst, body_val) = body.lir_gen(&mut ctx, tcx)?;
-        inst.extend(body_inst);
-
-        let (_, _, _, ret_ty) = fn_ty.try_borrow_fn().unwrap();
-        if !ret_ty.is_unit() {
-            let body_loc = ctx.get_or_set_local(body_val, tcx.ty_of(body.id), &mut inst);
-            inst.push(lir::Inst::Return(lir::Variable::Local(body_loc).into()).into());
-        } else {
-            if !matches!(body_val, lir::Value::Empty) {
-                inst.push(lir::Inst::Value(body_val));
-            }
-            inst.push(lir::Inst::Return(lir::Value::Empty).into());
-        }
-
-        let decs = func.sig.decorators.clone();
-        let mut func = ctx.borrow_func_mut();
-        func.name = name;
-        func.body.instructions = inst;
-        func.decorators = decs;
-
-        Ok((vec![], lir::Value::Empty))
-    }
-}
-
-// impl LirGen<GenResult> for (&Extern, &HirInfo) {
-//     fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-//         let &(ext, info) = self;
-//         todo!();
-//     }
-// }
-
-impl LirGen<GenResult> for Node<Expr> {
-    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        // let scope = tcx.get(self).path;
-        // let prev_scope = std::mem::replace(&mut ctx.scope, scope);
-        let ty = tcx.ty_of(self.id);
-        let res = (&self.value, &ty).lir_gen(ctx, tcx);
-        // ctx.scope = prev_scope;
-        res
-    }
-}
-
-impl LirGen<GenResult> for Node<Decl> {
-    fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        // let scope = tcx.get(self).path;
-        // let prev_scope = std::mem::replace(&mut ctx.scope, scope);
-        let ty = tcx.ty_of(self.id);
-        let res = (&self.value, &ty).lir_gen(ctx, tcx);
-        // ctx.scope = prev_scope;
-        res
+        Ok(lir::Value::Empty)
     }
 }
 

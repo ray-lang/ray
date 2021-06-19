@@ -143,8 +143,7 @@ impl InfixOp {
     pub fn precedence(&self) -> usize {
         use InfixOp::*;
         match self {
-            Colon => 18,
-            Comma => 17,
+            Colon => 17,
             As => 16,
             Pow => 15,
             Mul | Div | Mod => 14,
@@ -158,6 +157,7 @@ impl InfixOp {
             And => 6,
             Or => 5,
             RangeExclusive | RangeInclusive => 4,
+            Comma => 3,
             Assign | AssignOp(_) => 2,
         }
     }

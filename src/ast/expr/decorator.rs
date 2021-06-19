@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Node, Path, SourceInfo},
+    ast::{Node, Path},
     span::Span,
     utils::join,
 };
