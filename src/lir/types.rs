@@ -1,10 +1,11 @@
 use petgraph::{
-    graphmap::DiGraphMap,
-    visit::{depth_first_search, Dfs, DfsEvent},
+    graph::NodeIndex,
+    visit::{depth_first_search, Dfs, DfsEvent, EdgeRef},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    ast::{self, asm::AsmOp, Node, Path},
+    ast::{self, asm::AsmOp, Modifier, Node, Path},
     convert::ToSet,
     span::SourceMap,
     strutils::indent_lines,
@@ -146,18 +147,18 @@ where
                 | Inst::SetGlobal(_, _)
                 | Inst::SetLocal(_, _)
                 | Inst::Store(_)
+                | Inst::SetField(_)
                 | Inst::MemCopy(_, _, _)
                 | Inst::IncRef(_, _)
                 | Inst::DecRef(_)
                 | Inst::Return(_)
-                | Inst::Break(_)
-                | Inst::Halt => continue,
+                | Inst::Break(_) => continue,
             }
         }
     }
 }
 
-pub type ControlFlowGraph = DiGraphMap<usize, ()>;
+pub type ControlFlowGraph = petgraph::stable_graph::StableDiGraph<usize, (), usize>;
 
 pub trait LCA<N> {
     fn lowest_common_ancestor(&self, a: N, b: N, ignore: &Vec<N>) -> Option<N>;
@@ -165,20 +166,20 @@ pub trait LCA<N> {
 
 impl LCA<usize> for ControlFlowGraph {
     fn lowest_common_ancestor(&self, a: usize, b: usize, ignore: &Vec<usize>) -> Option<usize> {
-        let mut dfs_a = Dfs::new(&self, a);
+        let mut dfs_a = Dfs::new(&self, NodeIndex::new(a));
         while let Some(x) = dfs_a.next(&self) {
-            if ignore.contains(&x) {
+            if ignore.contains(&x.index()) {
                 continue;
             }
 
-            let mut dfs_b = Dfs::new(&self, b);
+            let mut dfs_b = Dfs::new(&self, NodeIndex::new(b));
             while let Some(y) = dfs_b.next(&self) {
-                if ignore.contains(&y) {
+                if ignore.contains(&y.index()) {
                     continue;
                 }
 
                 if x == y {
-                    return Some(x);
+                    return Some(x.index());
                 }
             }
         }
@@ -194,10 +195,10 @@ impl ApplySubst for SymbolSet {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TypeMetadata;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Variable {
     Data(usize),
     Global(usize),
@@ -206,6 +207,13 @@ pub enum Variable {
 }
 
 LirImplInto!(Atom for Variable);
+
+impl Variable {
+    #[inline(always)]
+    pub fn is_local(&self) -> bool {
+        matches!(self, Variable::Local(_))
+    }
+}
 
 impl Into<Value> for Variable {
     fn into(self) -> Value {
@@ -250,11 +258,13 @@ impl ApplySubst for Variable {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Atom {
     Variable(Variable),
     FuncRef(FuncRef),
     Size(Size),
+    BoolConst(bool),
+    CharConst(char),
     UintConst(u64, Size),
     IntConst(i64, Size),
     FloatConst(f64, Size),
@@ -270,6 +280,8 @@ impl std::fmt::Display for Atom {
             Atom::Variable(v) => write!(f, "{}", v),
             Atom::FuncRef(r) => write!(f, "{}", r),
             Atom::Size(s) => write!(f, "{}", s),
+            Atom::BoolConst(b) => write!(f, "{}", b),
+            Atom::CharConst(ch) => write!(f, "`{}`", ch),
             Atom::UintConst(u, _) => write!(f, "{}", u),
             Atom::IntConst(i, _) => write!(f, "{}", i),
             Atom::FloatConst(c, _) => write!(f, "{}", c),
@@ -285,6 +297,8 @@ impl<'a> GetLocalsMut<'a> for Atom {
             Atom::Variable(v) => v.get_locals_mut(),
             Atom::FuncRef(_)
             | Atom::Size(_)
+            | Atom::BoolConst(_)
+            | Atom::CharConst(_)
             | Atom::UintConst(_, _)
             | Atom::IntConst(_, _)
             | Atom::FloatConst(_, _)
@@ -300,6 +314,8 @@ impl<'a> GetLocals<'a> for Atom {
             Atom::Variable(v) => v.get_locals(),
             Atom::FuncRef(_)
             | Atom::Size(_)
+            | Atom::BoolConst(_)
+            | Atom::CharConst(_)
             | Atom::UintConst(_, _)
             | Atom::IntConst(_, _)
             | Atom::FloatConst(_, _)
@@ -325,25 +341,28 @@ impl Atom {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Malloc(pub Atom);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Malloc {
+    pub ty: Ty,
+    pub count: Atom,
+}
 LirImplInto!(Value for Malloc);
 
 impl std::fmt::Display for Malloc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "malloc({})", self.0)
+        write!(f, "new({}, {})", self.ty, self.count)
     }
 }
 
 impl<'a> GetLocals<'a> for Malloc {
     fn get_locals(&'a self) -> Vec<&'a usize> {
-        self.0.get_locals()
+        vec![]
     }
 }
 
 impl<'a> GetLocalsMut<'a> for Malloc {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        self.0.get_locals_mut()
+        vec![]
     }
 }
 
@@ -354,12 +373,12 @@ impl ApplySubst for Malloc {
 }
 
 impl Malloc {
-    pub fn new<A: Into<Atom>>(a: A) -> Value {
-        Malloc(a.into()).into()
+    pub fn new(ty: Ty, count: Atom) -> Value {
+        Malloc { ty, count }.into()
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Value {
     Empty,
     VarRef(String),
@@ -373,7 +392,18 @@ pub enum Value {
     Lea(Lea),
     GetField(GetField),
     BasicOp(BasicOp),
+    Cast(Cast),
     IntConvert(IntConvert),
+}
+
+impl Value {
+    pub fn local(&self) -> Option<usize> {
+        if let &Value::Atom(Atom::Variable(Variable::Local(idx))) = self {
+            Some(idx)
+        } else {
+            None
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -391,6 +421,7 @@ impl std::fmt::Display for Value {
             Value::Lea(a) => write!(f, "{}", a),
             Value::GetField(a) => write!(f, "{}", a),
             Value::BasicOp(a) => write!(f, "{}", a),
+            Value::Cast(c) => write!(f, "{}", c),
             Value::IntConvert(a) => write!(f, "{}", a),
         }
     }
@@ -415,6 +446,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::Lea(l) => l.get_locals_mut(),
             Value::GetField(g) => g.get_locals_mut(),
             Value::BasicOp(b) => b.get_locals_mut(),
+            Value::Cast(c) => c.get_locals_mut(),
             Value::IntConvert(_) => todo!(),
             Value::VarRef(_) | Value::Empty => vec![],
         }
@@ -434,6 +466,7 @@ impl<'a> GetLocals<'a> for Value {
             Value::Lea(l) => l.get_locals(),
             Value::GetField(g) => g.get_locals(),
             Value::BasicOp(b) => b.get_locals(),
+            Value::Cast(c) => c.get_locals(),
             Value::IntConvert(_) => todo!(),
             Value::VarRef(_) | Value::Empty => vec![],
         }
@@ -455,6 +488,7 @@ impl ApplySubst for Value {
             Value::Lea(l) => Value::Lea(l.apply_subst(subst)),
             Value::GetField(g) => Value::GetField(g.apply_subst(subst)),
             Value::BasicOp(b) => Value::BasicOp(b.apply_subst(subst)),
+            Value::Cast(c) => Value::Cast(c.apply_subst(subst)),
             Value::IntConvert(i) => Value::IntConvert(i.apply_subst(subst)),
         }
     }
@@ -498,12 +532,13 @@ impl Value {
             | Value::Lea(_)
             | Value::GetField(_)
             | Value::BasicOp(_)
+            | Value::Cast(_)
             | Value::IntConvert(_) => None,
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Inst {
     Free(usize),
     Call(Call),
@@ -512,13 +547,13 @@ pub enum Inst {
     SetLocal(usize, Value),
     If(If),
     Store(Store),
+    SetField(SetField),
     MemCopy(Variable, Variable, Atom),
     IncRef(Value, i8),
     DecRef(Value),
     Return(Value),
     Break(Break),
     Goto(usize),
-    Halt,
 }
 
 impl std::fmt::Display for Inst {
@@ -531,6 +566,7 @@ impl std::fmt::Display for Inst {
             Inst::SetLocal(s, v) => write!(f, "${} = {}", s, v),
             Inst::If(b) => write!(f, "{}", b),
             Inst::Store(s) => write!(f, "{}", s),
+            Inst::SetField(s) => write!(f, "{}", s),
             Inst::IncRef(v, i) => write!(f, "incref {} {}", v, i),
             Inst::DecRef(v) => write!(f, "decref {}", v),
             Inst::Return(v) => write!(f, "ret {}", v),
@@ -539,7 +575,6 @@ impl std::fmt::Display for Inst {
                 write!(f, "memcpy dst={} src={} size={}", dst, src, size)
             }
             Inst::Break(b) => write!(f, "{}", b),
-            Inst::Halt => write!(f, "halt"),
         }
     }
 }
@@ -558,6 +593,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             }
             Inst::If(b) => b.get_locals_mut(),
             Inst::Store(s) => s.get_locals_mut(),
+            Inst::SetField(s) => s.get_locals_mut(),
             Inst::MemCopy(d, s, z) => {
                 let mut locs = d.get_locals_mut();
                 locs.extend(s.get_locals_mut());
@@ -568,7 +604,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             Inst::CExternCall(c) => c.get_locals_mut(),
             Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => v.get_locals_mut(),
             Inst::Break(b) => b.get_locals_mut(),
-            Inst::Goto(_) | Inst::Halt => vec![],
+            Inst::Goto(_) => vec![],
         }
     }
 }
@@ -586,6 +622,7 @@ impl<'a> GetLocals<'a> for Inst {
                 locs
             }
             Inst::If(b) => b.get_locals(),
+            Inst::SetField(s) => s.get_locals(),
             Inst::Store(s) => s.get_locals(),
             Inst::MemCopy(d, s, z) => {
                 let mut locs = d.get_locals();
@@ -597,7 +634,7 @@ impl<'a> GetLocals<'a> for Inst {
             Inst::CExternCall(c) => c.get_locals(),
             Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => v.get_locals(),
             Inst::Break(b) => b.get_locals(),
-            Inst::Goto(_) | Inst::Halt => vec![],
+            Inst::Goto(_) => vec![],
         }
     }
 }
@@ -611,6 +648,7 @@ impl ApplySubst for Inst {
             Inst::SetGlobal(i, v) => Inst::SetGlobal(i, v.apply_subst(subst)),
             Inst::SetLocal(i, v) => Inst::SetLocal(i, v.apply_subst(subst)),
             Inst::If(b) => Inst::If(b.apply_subst(subst)),
+            Inst::SetField(s) => Inst::SetField(s.apply_subst(subst)),
             Inst::Store(s) => Inst::Store(s.apply_subst(subst)),
             Inst::MemCopy(d, s, z) => Inst::MemCopy(d, s, z),
             Inst::IncRef(v, i) => Inst::IncRef(v.apply_subst(subst), i),
@@ -618,7 +656,6 @@ impl ApplySubst for Inst {
             Inst::Return(v) => Inst::Return(v.apply_subst(subst)),
             Inst::Break(b) => Inst::Break(b.apply_subst(subst)),
             Inst::Goto(idx) => Inst::Goto(idx),
-            Inst::Halt => Inst::Halt,
         }
     }
 }
@@ -634,22 +671,20 @@ impl Inst {
     pub fn is_control(&self) -> bool {
         matches!(
             self,
-            Inst::Break(_) | Inst::Goto(_) | Inst::If(_) | Inst::Return(_) | Inst::Halt
+            Inst::Break(_) | Inst::Goto(_) | Inst::If(_) | Inst::Return(_)
         )
     }
 
     pub fn is_jump(&self) -> bool {
-        matches!(
-            self,
-            Inst::Goto(_) | Inst::If(_) | Inst::Return(_) | Inst::Halt
-        ) || matches!(
-            self,
-            Inst::Break(b) if b.operand.is_none()
-        )
+        matches!(self, Inst::Goto(_) | Inst::If(_) | Inst::Return(_))
+            || matches!(
+                self,
+                Inst::Break(b) if b.operand.is_none()
+            )
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum Op {
     Malloc,
     Add,
@@ -704,7 +739,7 @@ impl std::fmt::Display for Op {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BreakOp {
     Break,
     BreakNZ,
@@ -721,7 +756,7 @@ impl std::fmt::Display for BreakOp {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Size {
     pub ptrs: usize,
     pub bytes: usize,
@@ -829,11 +864,12 @@ impl Size {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Extern {
     pub name: Path,
     pub ty: Ty,
     pub is_mutable: bool,
+    pub modifiers: Vec<Modifier>,
     pub src: Option<String>,
 }
 
@@ -843,22 +879,18 @@ impl std::fmt::Display for Extern {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Program {
     pub module_path: ast::Path,
     pub globals: Vec<Global>,
     pub data: Vec<Data>,
     pub funcs: Vec<Node<Func>>,
     pub externs: Vec<Extern>,
-    pub extern_set: HashSet<Path>,
+    pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
     pub poly_fn_map: HashMap<Path, usize>,
-    pub type_metadata: HashMap<String, TypeMetadata>,
-    pub module_map_idx: i64,    // data index for __module_map
-    pub type_metadata_idx: i64, // data index for __type_metadata
-    pub init_func: String,      // module init func
-    pub start_idx: i64,         // index in Funcs for _start
-    pub main_idx: i64,          // index in Funcs for main
+    pub start_idx: i64, // index in Funcs for _start
+    pub main_idx: i64,  // index in Funcs for main
 }
 
 impl std::fmt::Display for Program {
@@ -882,24 +914,38 @@ impl Program {
             funcs: vec![],
             externs: vec![],
             poly_fn_map: HashMap::new(),
-            extern_set: HashSet::new(),
+            extern_map: HashMap::new(),
             trait_member_set: HashSet::new(),
-            type_metadata: HashMap::new(),
-            init_func: "".to_string(),
             start_idx: -1,
             main_idx: -1,
-            module_map_idx: 0,
-            type_metadata_idx: 0,
         }
+    }
+
+    pub fn extend(&mut self, other: Program) {
+        for (p, i) in other.poly_fn_map {
+            // offset the function indices
+            self.poly_fn_map.insert(p, self.funcs.len() + i);
+        }
+
+        self.globals.extend(other.globals);
+        self.data.extend(other.data);
+        self.funcs.extend(other.funcs);
+        self.externs.extend(other.externs);
+        self.extern_map.extend(other.extern_map);
+        self.trait_member_set.extend(other.trait_member_set);
     }
 
     pub fn post_process(&mut self, srcmap: &SourceMap) {
         to_ssa(self);
         optimize(self, srcmap, 0);
     }
+
+    pub fn main_path(&self) -> Path {
+        self.module_path.append("main").append_tyargs("<():()>")
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Data {
     idx: usize,
     name: String,
@@ -911,12 +957,20 @@ impl Data {
         Data { idx, name, value }
     }
 
+    pub fn index(&self) -> usize {
+        self.idx
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     pub fn value(&self) -> Vec<u8> {
         self.value.clone()
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Global {
     idx: usize,
     name: String,
@@ -924,7 +978,7 @@ pub struct Global {
     size: Size,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Local {
     pub idx: usize,
     pub ty: Ty,
@@ -961,8 +1015,9 @@ impl Local {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Param {
+    pub name: String,
     pub idx: usize,
     pub ty: Ty,
 }
@@ -988,6 +1043,7 @@ impl<'a> GetLocals<'a> for Param {
 impl ApplySubst for Param {
     fn apply_subst(self, subst: &Subst) -> Self {
         Param {
+            name: self.name,
             idx: self.idx,
             ty: self.ty.apply_subst(subst),
         }
@@ -995,12 +1051,12 @@ impl ApplySubst for Param {
 }
 
 impl Param {
-    pub fn new(idx: usize, ty: Ty) -> Param {
-        Param { idx, ty }
+    pub fn new(name: String, idx: usize, ty: Ty) -> Param {
+        Param { name, idx, ty }
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum ControlMarker {
     If,
     Else(usize),
@@ -1008,7 +1064,7 @@ pub enum ControlMarker {
     End(usize),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
     label: usize,
     instructions: Vec<Inst>,
@@ -1143,6 +1199,24 @@ impl Block {
         self.defined_vars.insert(var, idx);
     }
 
+    pub fn phi(&mut self, idx: usize, value: (usize, usize)) {
+        let mut inst_idx = 0;
+        while inst_idx < self.len() {
+            match &mut self[inst_idx] {
+                Inst::SetLocal(loc, Value::Phi(Phi(values))) if loc == &idx => {
+                    // the value here unless it already exists
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
+                    return;
+                }
+                Inst::SetLocal(_, Value::Phi(_)) => inst_idx += 1,
+                _ => break,
+            }
+        }
+        self.insert(inst_idx, Inst::SetLocal(idx, Phi::new(vec![value]).into()));
+    }
+
     pub fn split_off(&mut self, idx: usize) -> Block {
         let instructions = self.instructions.split_off(idx + 1);
 
@@ -1173,7 +1247,7 @@ impl Block {
     }
 }
 
-pub type DominatorMap = HashMap<usize, HashSet<usize>>;
+pub type DominatorFrontiers = HashMap<usize, HashSet<usize>>;
 
 #[derive(Debug)]
 pub struct Loop {
@@ -1194,7 +1268,7 @@ impl Loop {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Func {
     pub name: Path,
     pub params: Vec<Param>,
@@ -1202,6 +1276,7 @@ pub struct Func {
     pub ty: Ty,
     pub blocks: Vec<Block>,
     pub symbols: SymbolSet,
+    pub modifiers: Vec<Modifier>,
     pub cfg: ControlFlowGraph,
 }
 
@@ -1251,16 +1326,24 @@ impl ApplySubst for Func {
             ty: self.ty.apply_subst(subst),
             blocks: self.blocks.apply_subst(subst),
             symbols: self.symbols.apply_subst(subst),
+            modifiers: self.modifiers,
             cfg: self.cfg,
         }
     }
 }
 
 impl Func {
-    pub fn new(name: Path, ty: Ty, symbols: SymbolSet, cfg: ControlFlowGraph) -> Func {
+    pub fn new(
+        name: Path,
+        ty: Ty,
+        modifiers: Vec<Modifier>,
+        symbols: SymbolSet,
+        cfg: ControlFlowGraph,
+    ) -> Func {
         Func {
             name,
             ty,
+            modifiers,
             symbols,
             cfg,
             params: vec![],
@@ -1316,11 +1399,13 @@ impl Func {
 
         // first, find all of the back edges
         let mut back_edges = vec![];
-        depth_first_search(&self.cfg, Some(0), |event| {
-            if let DfsEvent::BackEdge(b, h) = event {
-                back_edges.push((b, h));
-            }
-        });
+        if self.cfg.edge_count() != 0 {
+            depth_first_search(&self.cfg, Some(NodeIndex::new(0)), |event| {
+                if let DfsEvent::BackEdge(b, h) = event {
+                    back_edges.push((b.index(), h.index()));
+                }
+            });
+        }
 
         // the order of the sccs is their postorder, so iterate in reverse
         for nodes in sccs.into_iter().rev() {
@@ -1330,7 +1415,7 @@ impl Func {
             }
 
             // create set from the nodes
-            let node_set = nodes.iter().copied().to_set();
+            let node_set = nodes.iter().map(|n| n.index()).to_set();
 
             // find the back edge of the loop
             let back_edge = match back_edges
@@ -1346,7 +1431,9 @@ impl Func {
                 .iter()
                 .flat_map(|&n| {
                     // if the node N has a successor that is not contained in the loop
-                    self.cfg.edges(n).filter_map(|(n, m, _)| {
+                    self.cfg.edges(n).filter_map(|edge| {
+                        let n = edge.source().index();
+                        let m = edge.target().index();
                         if !node_set.contains(&m) {
                             Some((n, m))
                         } else {
@@ -1358,10 +1445,17 @@ impl Func {
 
             // get the path from the header to the back
             let (back, header) = back_edge;
-            let (_, nodes) =
-                petgraph::algo::astar(&self.cfg, header, |n| n == back, |_| 1, |_| 0).unwrap();
+            let (_, nodes) = petgraph::algo::astar(
+                &self.cfg,
+                NodeIndex::new(header),
+                |n| n.index() == back,
+                |_| 1,
+                |_| 0,
+            )
+            .unwrap();
 
             // find the common exit node
+            let nodes = nodes.into_iter().map(NodeIndex::index).collect();
             let &(mut common_exit, _) = exit_edges.first().unwrap();
             for &(node, _) in exit_edges.iter().skip(1) {
                 common_exit = self
@@ -1385,22 +1479,34 @@ impl Func {
         loops
     }
 
-    pub fn calculate_dominators(&self) -> DominatorMap {
-        let mut frontiers = DominatorMap::new();
-        for i in self.blocks.iter() {
-            let doms = petgraph::algo::dominators::simple_fast(&self.cfg, i.label());
-            for j in self.blocks.iter() {
-                if i.label() != j.label() {
-                    if let Some(doms) = doms.dominators(j.label()) {
-                        for other_label in doms {
-                            if other_label == j.label() {
-                                continue;
-                            }
+    pub fn calculate_dom_frontiers(&self) -> DominatorFrontiers {
+        let mut frontiers = DominatorFrontiers::new();
+        if self.cfg.edge_count() == 0 {
+            // there are no dominators for a graph with no edges
+            return frontiers;
+        }
 
-                            log::debug!("{} dominates {}", other_label, j.label());
-                            frontiers.entry(j.label()).or_default().insert(other_label);
-                        }
-                    }
+        let entry = unless!(self.blocks.get(0), else return frontiers);
+        let doms = petgraph::algo::dominators::simple_fast(&self.cfg, entry.label().into());
+
+        for block in self.blocks.iter() {
+            let index = block.label().into();
+            let preds = self
+                .cfg
+                .neighbors_directed(index, petgraph::EdgeDirection::Incoming)
+                .collect::<Vec<_>>();
+            if preds.len() <= 1 {
+                continue;
+            }
+
+            for pred in preds {
+                let mut runner = pred;
+                while Some(runner) != doms.immediate_dominator(index) {
+                    frontiers
+                        .entry(runner.index())
+                        .or_default()
+                        .insert(block.label());
+                    runner = unless!(doms.immediate_dominator(runner), else break);
                 }
             }
         }
@@ -1409,7 +1515,7 @@ impl Func {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FuncRef {
     pub name: String,
     pub ty: Ty,
@@ -1430,7 +1536,7 @@ impl ApplySubst for FuncRef {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Call {
     pub fn_name: Path,
     pub original_fn: Path,
@@ -1508,7 +1614,7 @@ impl Call {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CExternCall {
     fn_name: String,
     args: Vec<Atom>,
@@ -1535,7 +1641,7 @@ impl<'a> GetLocals<'a> for CExternCall {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct If {
     pub cond_loc: usize,
     pub then_label: usize,
@@ -1582,7 +1688,7 @@ impl If {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Break {
     pub op: BreakOp,
     pub operand: Option<Atom>,
@@ -1654,7 +1760,7 @@ impl Break {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Phi(Vec<(usize, usize)>);
 
 LirImplInto!(Value for Phi);
@@ -1698,12 +1804,12 @@ impl Phi {
     }
 
     #[inline(always)]
-    fn values_mut(&mut self) -> &mut Vec<(usize, usize)> {
+    pub fn values_mut(&mut self) -> &mut Vec<(usize, usize)> {
         &mut self.0
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Select {
     pub cond: Variable,
     pub then: Variable,
@@ -1752,7 +1858,7 @@ impl Select {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Store {
     pub dst: Variable,
     pub value: Value,
@@ -1808,7 +1914,7 @@ impl Store {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Load {
     pub src: Variable,
     pub offset: Size,
@@ -1849,7 +1955,7 @@ impl ApplySubst for Load {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lea {
     value: Atom,
     src_offset: Size,
@@ -1890,7 +1996,7 @@ impl ApplySubst for Lea {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GetField {
     pub src: Variable,
     pub field: String,
@@ -1925,7 +2031,52 @@ impl ApplySubst for GetField {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetField {
+    pub dst: Variable,
+    pub field: String,
+    pub value: Value,
+}
+
+impl std::fmt::Display for SetField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "setfield {} {} {}", self.dst, self.field, self.value,)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for SetField {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        let mut locs = self.dst.get_locals_mut();
+        locs.extend(self.value.get_locals_mut());
+        locs
+    }
+}
+
+impl<'a> GetLocals<'a> for SetField {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        let mut locs = self.dst.get_locals();
+        locs.extend(self.value.get_locals());
+        locs
+    }
+}
+
+impl ApplySubst for SetField {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        SetField {
+            dst: self.dst.apply_subst(subst),
+            field: self.field,
+            value: self.value.apply_subst(subst),
+        }
+    }
+}
+
+impl SetField {
+    pub fn new(dst: Variable, field: String, value: Value) -> Inst {
+        Inst::SetField(SetField { dst, field, value })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BasicOp {
     pub op: Op,
     pub size: Size,
@@ -1982,7 +2133,6 @@ impl ApplySubst for BasicOp {
 impl From<AsmOp> for BasicOp {
     fn from(op: AsmOp) -> Self {
         match op {
-            AsmOp::Malloc => unreachable!(),
             AsmOp::MemCopy => unreachable!(),
             AsmOp::ISizeEq => BasicOp {
                 op: Op::Eq,
@@ -3068,7 +3218,48 @@ impl From<AsmOp> for BasicOp {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Cast {
+    pub src: Variable,
+    pub ty: Ty,
+}
+
+LirImplInto!(Value for Cast);
+
+impl Cast {
+    pub fn new(src: Variable, ty: Ty) -> Value {
+        Value::Cast(Cast { src, ty })
+    }
+}
+
+impl std::fmt::Display for Cast {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} as {}", self.src, self.ty)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for Cast {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        self.src.get_locals_mut()
+    }
+}
+
+impl<'a> GetLocals<'a> for Cast {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        self.src.get_locals()
+    }
+}
+
+impl ApplySubst for Cast {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        Cast {
+            src: self.src.apply_subst(subst),
+            ty: self.ty.apply_subst(subst),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IntConvert {
     value: Atom,
     src: (Size, bool),

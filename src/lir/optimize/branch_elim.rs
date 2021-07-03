@@ -26,14 +26,14 @@ impl Optimize for BranchElim {
                     | lir::Inst::SetGlobal(_, _)
                     | lir::Inst::SetLocal(_, _)
                     | lir::Inst::Store(_)
+                    | lir::Inst::SetField(_)
                     | lir::Inst::MemCopy(_, _, _)
                     | lir::Inst::IncRef(_, _)
                     | lir::Inst::DecRef(_)
                     | lir::Inst::Return(_)
                     | lir::Inst::If(_)
                     | lir::Inst::Break(_)
-                    | lir::Inst::Goto(_)
-                    | lir::Inst::Halt => todo!(),
+                    | lir::Inst::Goto(_) => todo!(),
                 }
             }
         }

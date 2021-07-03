@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast::{self, Decl, Expr, Literal, LowerAST, Module, Node, Path},
@@ -9,18 +9,26 @@ use crate::{
 
 type SourceModule = Module<Expr, Decl>;
 
-pub fn transform_modules(
+pub fn combine(
     module_path: &Path,
     modules: &mut HashMap<Path, SourceModule>,
     srcmaps: &mut HashMap<Path, SourceMap>,
+    lib_set: &HashSet<Path>,
     tcx: &mut TyCtx,
 ) -> Result<(SourceModule, SourceMap, HashMap<Path, Vec<Path>>), RayError> {
     let module = modules.remove(module_path).unwrap();
     let mut srcmap = srcmaps.remove(module_path).unwrap();
     let mut new_module = Module::new_from(&module);
     let mut scope_map = HashMap::new();
-    let (mut stmts, mut decls) =
-        get_root(module, &mut srcmap, modules, srcmaps, &mut scope_map, tcx)?;
+    let (mut stmts, mut decls) = get_root(
+        module,
+        &mut srcmap,
+        modules,
+        srcmaps,
+        &mut scope_map,
+        lib_set,
+        tcx,
+    )?;
 
     let filepath = new_module.root_filepath.clone();
 
@@ -52,8 +60,9 @@ pub fn transform_modules(
         Source::new(filepath.clone(), span, Path::new(), module_path.clone()),
     );
 
-    // create a main function for the stmts
-    let main_decl = Node::new(Decl::Fn(ast::Fn::new(Path::from("main"), vec![], body)));
+    // create a "main" function for the stmts
+    let main_path = module_path.append("main");
+    let main_decl = Node::new(Decl::Fn(ast::Fn::new(main_path, vec![], body)));
     srcmap.set_src(
         &main_decl,
         Source::new(filepath.clone(), span, Path::new(), module_path.clone()),
@@ -70,9 +79,10 @@ fn get_root(
     modules: &mut HashMap<Path, SourceModule>,
     srcmaps: &mut HashMap<Path, SourceMap>,
     scope_map: &mut HashMap<Path, Vec<Path>>,
+    lib_set: &HashSet<Path>,
     tcx: &mut TyCtx,
 ) -> Result<(Vec<Node<Expr>>, Vec<Node<Decl>>), RayError> {
-    let (mut stmts, mut decls) = collect(module, srcmap, modules, srcmaps, scope_map, tcx)?;
+    let (mut stmts, mut decls) = collect(module, srcmap, modules, srcmaps, scope_map, lib_set)?;
     // sorting it by kind will allow a certain order to the collection
     decls.sort();
 
@@ -93,7 +103,7 @@ fn collect(
     modules: &mut HashMap<Path, SourceModule>,
     srcmaps: &mut HashMap<Path, SourceMap>,
     scope_map: &mut HashMap<Path, Vec<Path>>,
-    tcx: &mut TyCtx,
+    lib_set: &HashSet<Path>,
 ) -> Result<(Vec<Node<Expr>>, Vec<Node<Decl>>), RayError> {
     let mut stmts = vec![];
     let mut decls = vec![];
@@ -102,6 +112,10 @@ fn collect(
     scopes.extend(module.imports.clone());
     scope_map.insert(module.path.clone(), scopes);
     for import_path in module.imports.iter() {
+        if lib_set.contains(import_path) {
+            continue;
+        }
+
         let imported_module = modules.remove(import_path).unwrap();
         let mut imported_srcmap = srcmaps.remove(import_path).unwrap();
         let (imported_stmts, imported_decls) = collect(
@@ -110,7 +124,7 @@ fn collect(
             modules,
             srcmaps,
             scope_map,
-            tcx,
+            lib_set,
         )?;
         srcmap.extend(imported_srcmap);
         decls.extend(imported_decls);

@@ -4,7 +4,7 @@ use crate::typing::ty::Ty;
 
 use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
-pub type VarMap = HashMap<String, HashMap<usize, usize>>;
+pub type VarMap = HashMap<String, usize>;
 
 #[derive(Clone, Debug)]
 pub struct Builder {
@@ -32,7 +32,7 @@ impl Builder {
             exit_block: None,
             blocks: vec![],
             symbols: SymbolSet::new(),
-            cfg: ControlFlowGraph::new(),
+            cfg: ControlFlowGraph::default(),
         }
     }
 
@@ -60,9 +60,7 @@ impl Builder {
             }
         }
 
-        for (prec, succ) in new_edges {
-            self.cfg.add_edge(prec, succ, ());
-        }
+        self.cfg.extend_with_edges(new_edges);
 
         (
             self.params,
@@ -77,26 +75,24 @@ impl Builder {
         let idx = self.locals.len();
         let loc = Local { idx, ty };
         self.locals.push(loc);
+        log::debug!("locals: {:?}", self.locals);
         idx
     }
 
     #[inline(always)]
-    pub fn get_var(&mut self, name: &String) -> Option<&usize> {
-        self.vars.get(name).and_then(|m| m.get(&self.curr_block))
+    pub fn get_var(&self, name: &String) -> Option<&usize> {
+        self.vars.get(name)
     }
 
     #[inline(always)]
     pub fn set_var(&mut self, name: String, idx: usize) {
         self.block().define_var(name.clone(), idx);
-        self.vars
-            .entry(name)
-            .or_default()
-            .insert(self.curr_block, idx);
+        self.vars.insert(name, idx);
     }
 
     pub fn param(&mut self, name: String, ty: Ty) -> usize {
         let idx = self.local(ty.clone());
-        self.params.push(Param::new(idx, ty));
+        self.params.push(Param::new(name.clone(), idx, ty));
         self.set_var(name, idx);
         idx
     }
@@ -125,10 +121,6 @@ impl Builder {
         prev
     }
 
-    pub fn cfg(&mut self) -> &mut ControlFlowGraph {
-        &mut self.cfg
-    }
-
     pub fn push(&mut self, value: Inst) {
         self.block().push(value)
     }
@@ -141,7 +133,7 @@ impl Builder {
         if let Some(inst) = self.block().last() {
             match inst {
                 &Inst::Goto(label) => return Some(label),
-                Inst::If(_) | Inst::Return(_) | Inst::Halt => return None,
+                Inst::If(_) | Inst::Return(_) => return None,
                 _ => {}
             }
         }
@@ -153,7 +145,7 @@ impl Builder {
 
     pub fn branch(&mut self, label: usize) {
         let prec = self.block().label();
-        self.cfg().add_edge(prec, label, ());
+        self.cfg.extend_with_edges(&[(prec, label)]);
     }
 
     pub fn ret(&mut self, value: Value) {

@@ -22,7 +22,7 @@ use super::{
 
 pub struct BindingGroupAnalysis<'a> {
     groups: Vec<BindingGroup>,
-    sigs: &'a TyEnv,
+    defs: &'a TyEnv,
     svar_factory: &'a mut TyVarFactory,
     mono_tys: &'a HashSet<TyVar>,
 }
@@ -30,13 +30,13 @@ pub struct BindingGroupAnalysis<'a> {
 impl<'a> BindingGroupAnalysis<'a> {
     pub fn new(
         groups: Vec<BindingGroup>,
-        sigs: &'a TyEnv,
+        defs: &'a TyEnv,
         svar_factory: &'a mut TyVarFactory,
         mono_tys: &'a HashSet<TyVar>,
     ) -> BindingGroupAnalysis<'a> {
         BindingGroupAnalysis {
             groups,
-            sigs,
+            defs,
             svar_factory,
             mono_tys,
         }
@@ -55,7 +55,7 @@ impl<'a> BindingGroupAnalysis<'a> {
                 let is_mutually_recursive = {
                     let x = &self.groups[i];
                     let y = &self.groups[j];
-                    x.is_mutually_recursive(y, self.sigs)
+                    x.is_mutually_recursive(y, self.defs)
                 };
 
                 if is_mutually_recursive {
@@ -71,7 +71,7 @@ impl<'a> BindingGroupAnalysis<'a> {
         }
 
         // create a topology of the binding groups
-        let sigs = self.sigs;
+        let sigs = self.defs;
         let mut ts = TopologicalSort::<usize>::new();
         for ((i, lhs), (j, rhs)) in self.groups.iter().enumerate().tuple_combinations() {
             let (lhs_sigs, lhs_use, _) = lhs.borrow();
@@ -122,7 +122,7 @@ impl<'a> BindingGroupAnalysis<'a> {
         let mut ctree = ConstraintTree::empty();
         while let Some(g) = self.groups.pop() {
             let (new_m, new_a, new_t) =
-                g.combine_with(&mono_tys, aset, ctree, self.sigs, self.svar_factory);
+                g.combine_with(&mono_tys, aset, ctree, self.defs, self.svar_factory);
             mono_tys = new_m;
             aset = new_a;
             ctree = new_t;

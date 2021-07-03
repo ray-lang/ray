@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{ast::Path, span::parsed::Parsed, typing::ty::Ty};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Name {
     pub path: Path,
     pub ty: Option<Parsed<Ty>>,

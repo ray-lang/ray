@@ -1,5 +1,5 @@
 fn puts(s: string) {
-    nwritten = malloc(4) : *uint
+    nwritten = malloc(4) as *uint
     io = IOVec { base: s.raw_ptr, len: s.len }
     _ = fd_write(1, io, 1, nwritten)
 }

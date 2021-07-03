@@ -1,18 +1,24 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 pub mod parsed;
 mod source;
 
 pub use source::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct Pos {
     pub lineno: usize,
     pub col: usize,
     pub offset: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,

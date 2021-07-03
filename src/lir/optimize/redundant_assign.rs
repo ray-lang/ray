@@ -53,45 +53,26 @@ impl RedundantAssignElim {
         params: usize,
     ) -> Option<(usize, usize)> {
         // if RHS is a local, then this instruction is unecessary
-        if let lir::Value::Atom(lir::Atom::Variable(lir::Variable::Local(rhs))) = val {
+        if let &lir::Value::Atom(lir::Atom::Variable(lir::Variable::Local(rhs))) = val {
             // if the LHS and RHS are not the same local
-            if lhs != *rhs {
-                // if LHS and RHS are _not_ parameters
-                if lhs >= params && *rhs >= params {
+            if lhs != rhs {
+                if rhs >= params {
+                    // LHS is a parameter and RHS is not
+                    // replace RHS with LHS instead
+                    Some((rhs, lhs))
+                } else if lhs >= params {
+                    // if LHS is not a parameter and RHS is either
                     // replace all instances of LHS local with RHS
-                    Some((lhs, *rhs))
+                    Some((lhs, rhs))
                 } else {
-                    // LHS is a parameter
-                    if *rhs < params {
-                        // RHS is a parameter too; do nothing
-                        return None;
-                    }
-
-                    // replace RHS with LHS instead (if RHS is not ALSO a parameter)
-                    Some((*rhs, lhs))
+                    // both are parameters; do nothing
+                    None
                 }
             } else {
-                Some((lhs, *rhs))
+                Some((lhs, rhs))
             }
         } else {
             None
         }
     }
-
-    // fn visit_block(
-    //     &self,
-    //     insts: &mut Vec<lir::Inst>,
-    //     params: usize,
-    //     local_map: &mut HashMap<usize, usize>,
-    // ) {
-    //     let iter = insts.drain(..).collect::<Vec<_>>();
-    //     for mut inst in iter {
-    //         if match &mut inst {
-    //             lir::Inst::SetLocal(lhs, val) => self.visit_set_local(lhs, val, params, local_map),
-    //             _ => true,
-    //         } {
-    //             insts.push(inst);
-    //         }
-    //     }
-    // }
 }

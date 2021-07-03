@@ -3,6 +3,8 @@ use std::{
     ops::BitOr,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ast::{self, FnSig, Path},
     convert::ToSet,
@@ -22,7 +24,7 @@ use super::{
     InferError,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TyVar(pub Path);
 
 impl<P> From<P> for TyVar
@@ -78,7 +80,7 @@ impl TyVar {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StructTy {
     pub path: ast::Path,
     pub ty: Ty,
@@ -98,7 +100,7 @@ impl StructTy {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TraitTy {
     pub path: ast::Path,
     pub ty: Ty,
@@ -112,14 +114,14 @@ impl TraitTy {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ImplTy {
     pub base_ty: Ty,
     pub trait_ty: Ty,
     pub predicates: Vec<TyPredicate>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LiteralKind {
     Int,
     Float,
@@ -134,7 +136,7 @@ impl std::fmt::Display for LiteralKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Ty {
     Never,
     Any,

@@ -2,7 +2,7 @@ use crate::{
     ast::{Node, Path},
     pathlib::FilePath,
     strutils,
-    typing::{ApplySubst, Subst},
+    typing::{state::TyEnv, ApplySubst, Subst},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,9 +16,11 @@ where
     pub decls: Vec<Node<B>>,
     pub imports: Vec<Path>,
     pub submodules: Vec<Path>,
+    pub defs: TyEnv,
     pub doc_comment: Option<String>,
     pub root_filepath: FilePath,
     pub filepaths: Vec<FilePath>,
+    pub is_lib: bool,
 }
 
 impl<A, B> std::fmt::Display for Module<A, B>
@@ -53,9 +55,11 @@ where
             decls: self.decls.apply_subst(subst),
             imports: self.imports,
             submodules: self.submodules,
+            defs: self.defs,
             doc_comment: self.doc_comment,
             root_filepath: self.root_filepath,
             filepaths: self.filepaths,
+            is_lib: self.is_lib,
         }
     }
 }
@@ -72,9 +76,11 @@ where
             decls: vec![],
             imports: other.imports.clone(),
             submodules: other.submodules.clone(),
+            defs: other.defs.clone(),
             doc_comment: other.doc_comment.clone(),
             root_filepath: other.root_filepath.clone(),
             filepaths: other.filepaths.clone(),
+            is_lib: other.is_lib,
         }
     }
 }

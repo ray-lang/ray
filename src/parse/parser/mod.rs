@@ -176,6 +176,10 @@ impl<'src> Parser<'src> {
                 | TokenKind::Modifier(_)
                 | TokenKind::Fn => {
                     let decl = this.parse_decl(&kind, &ctx)?;
+                    if let Some(decs) = decs {
+                        this.srcmap.set_decorators(&decl, decs);
+                    }
+
                     let end = this.srcmap.span_of(&decl).end;
                     items.decls.push(decl);
                     Ok(end)

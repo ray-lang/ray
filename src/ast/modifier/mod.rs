@@ -1,6 +1,8 @@
 use std::fmt;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Modifier {
     /// pub
     Pub,

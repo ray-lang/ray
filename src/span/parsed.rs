@@ -1,7 +1,10 @@
 use std::ops::{Deref, DerefMut};
 
+use serde::{Deserialize, Serialize};
+
 use super::{Source, Span};
 
+#[derive(Serialize, Deserialize)]
 pub struct Parsed<T> {
     value: T,
     src: Source,

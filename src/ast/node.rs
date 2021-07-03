@@ -4,6 +4,7 @@ use std::{
 };
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::Path,
@@ -65,6 +66,7 @@ impl ApplySubst for SourceInfo {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Node<T> {
     pub id: u64,
     pub value: T,

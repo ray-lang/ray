@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ast::{Decorator, Node, Path},
     pathlib::FilePath,
@@ -7,7 +9,7 @@ use crate::{
 
 use super::Span;
 
-#[derive(Clone, Debug, Default, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Source {
     pub filepath: FilePath,
     pub span: Option<Span>,
@@ -73,7 +75,7 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMap {
     map: HashMap<u64, Source>,
     docs: HashMap<u64, String>,
@@ -141,6 +143,7 @@ impl SourceMap {
     }
 
     pub fn has_decorator<T>(&self, node: &Node<T>, p: &Path) -> bool {
+        log::debug!("looking for decorator {} in {:?}", p, self.decorators);
         self.decorators
             .get(&node.id)
             .map(|v| v.iter().any(|d| &d.path.value == p))

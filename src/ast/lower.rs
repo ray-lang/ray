@@ -647,6 +647,7 @@ impl LowerAST for Node<Expr> {
             Expr::Literal(_) => return Ok(()),
             Expr::Loop(_) => return Ok(()),
             Expr::Name(n) => return Sourced(n, &src).lower(srcmap, scope_map, tcx),
+            Expr::New(n) => return Sourced(n, &src).lower(srcmap, scope_map, tcx),
             Expr::Pattern(p) => return Sourced(p, &src).lower(srcmap, scope_map, tcx),
             Expr::Path(_) => return Ok(()),
             Expr::Paren(ex) => return ex.lower(srcmap, scope_map, tcx),
@@ -967,6 +968,22 @@ impl LowerAST for Sourced<'_, ast::Name> {
     }
 }
 
+impl LowerAST for Sourced<'_, ast::New> {
+    type Output = ();
+
+    fn lower(
+        &mut self,
+        _: &mut SourceMap,
+        _: &HashMap<Path, Vec<Path>>,
+        tcx: &mut TyCtx,
+    ) -> RayResult<Self::Output> {
+        let (new, src) = self.unpack_mut();
+        let scope = &src.path;
+        new.ty.resolve_ty(scope, tcx);
+        Ok(())
+    }
+}
+
 impl LowerAST for Sourced<'_, ast::Pattern> {
     type Output = ();
 
@@ -1043,12 +1060,6 @@ impl LowerAST for Sourced<'_, ast::UnaryOp> {
         expr.lower(srcmap, scope_map, tcx)?;
         let name = unop.op.to_string();
         let fqn = Path::from(name);
-        // let fqn = if let Some(fqn) = tcx.lookup_fqn(&name) {
-        //     fqn.clone()
-        // } else {
-        //     Path::from(name)
-        // };
-
         let op_var = Node::new(Expr::Path(fqn));
         srcmap.set_src(&op_var, src.respan(unop.op_span));
 

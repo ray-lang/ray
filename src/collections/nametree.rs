@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NameTree {
     names: HashSet<String>,
     children: HashMap<String, Box<NameTree>>,
@@ -12,6 +14,11 @@ impl NameTree {
             names: HashSet::new(),
             children: HashMap::new(),
         }
+    }
+
+    pub fn extend(&mut self, other: NameTree) {
+        self.names.extend(other.names);
+        self.children.extend(other.children);
     }
 
     pub fn add_name(&mut self, name: String) {

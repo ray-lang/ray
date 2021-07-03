@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ast::{Node, Path},
     span::Span,
@@ -6,7 +8,7 @@ use crate::{
 
 use super::Name;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decorator {
     pub path: Node<Path>,
     pub args: Vec<Node<Name>>,

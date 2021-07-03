@@ -36,9 +36,9 @@ pub fn optimize(prog: &mut lir::Program, srcmap: &SourceMap, _max_level: usize) 
 
     // add passes
     // opt.passes.push(&Inline());
-    opt.passes.push(&SimplifyPhiNodes());
-    opt.passes.push(&RedundantAssignElim());
-    opt.passes.push(&MinimizeLocals());
+    // opt.passes.push(&SimplifyPhiNodes());
+    // opt.passes.push(&RedundantAssignElim());
+    // opt.passes.push(&MinimizeLocals());
 
     opt.optimize(prog, srcmap);
 }
@@ -50,13 +50,25 @@ fn reindex_locals(func: &mut lir::Func, replaced: &HashSet<usize>) {
     for (i, loc) in locals.into_iter().enumerate() {
         if !replaced.contains(&i) {
             let new_idx = func.locals.len();
+            reindex.insert(loc.idx, new_idx);
             func.locals.push(loc);
-            reindex.insert(i, new_idx);
         }
     }
 
     // reindex the locals
+    log::debug!(
+        "reindex (before): {:?}\n{:?}\n{}",
+        replaced,
+        func.locals,
+        func
+    );
     func.map_locals(&reindex);
+    log::debug!(
+        "reindex (after): {:?}\n{:?}\n{}",
+        replaced,
+        func.locals,
+        func
+    );
 }
 
 impl<'a> Optimizer<'a> {

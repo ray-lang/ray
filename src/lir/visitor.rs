@@ -30,6 +30,13 @@ where
                         continue;
                     }
                 }
+                lir::Inst::SetField(s) => {
+                    if matches!(s.value, lir::Value::Call(_)) {
+                        inst
+                    } else {
+                        continue;
+                    }
+                }
                 lir::Inst::Call(_) => inst,
 
                 lir::Inst::CExternCall(_) => todo!(),
@@ -38,8 +45,7 @@ where
                 | lir::Inst::MemCopy(_, _, _)
                 | lir::Inst::If(_)
                 | lir::Inst::Break(_)
-                | lir::Inst::Goto(_)
-                | lir::Inst::Halt => continue,
+                | lir::Inst::Goto(_) => continue,
             };
 
             calls.push(inst);

@@ -6,8 +6,8 @@ use crate::{
     ast::{
         asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
-        Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, Node, Sequence, Trailing,
-        ValueKind,
+        Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
+        Trailing, ValueKind,
     },
     span::{parsed::Parsed, Span},
     typing::ty::Ty,
@@ -16,10 +16,6 @@ use crate::{
 impl Parser<'_> {
     pub(crate) fn parse_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         let ex = self.parse_infix_expr(0, None, ctx)?;
-        // if peek!(self, TokenKind::If) {
-        //     // expr if ... else ...
-        //     ex = self.parse_ternary_expr(ex, ctx)?;
-        // }
         Ok(ex)
     }
 
@@ -31,6 +27,7 @@ impl Parser<'_> {
             TokenKind::Loop => self.parse_loop(ctx),
             TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
             TokenKind::Asm => self.parse_asm(ctx),
+            TokenKind::New => self.parse_new_expr(ctx),
             TokenKind::Break => {
                 let span = self.expect_sp(TokenKind::Break)?;
                 let (ex, span) = if self.is_next_expr_begin() {
@@ -370,6 +367,34 @@ impl Parser<'_> {
                 elements,
                 curly_span,
                 ty: Ty::unit(),
+            }),
+            span,
+            ctx.path.clone(),
+        ))
+    }
+
+    pub fn parse_new_expr(&mut self, ctx: &ParseContext) -> ExprResult {
+        let new_span = self.expect_sp(TokenKind::New)?;
+        let lparen_span = self.expect_sp(TokenKind::LeftParen)?;
+
+        let parsed_ty = self.parse_ty()?;
+        let ty = self.mk_ty(parsed_ty, ctx.path.clone());
+
+        let count = if expect_if!(self, TokenKind::Comma) {
+            Some(Box::new(self.parse_expr(ctx)?))
+        } else {
+            None
+        };
+        let rparen_span = self.expect_sp(TokenKind::RightParen)?;
+
+        let paren_span = lparen_span.extend_to(&rparen_span);
+        let span = new_span.extend_to(&rparen_span);
+        Ok(self.mk_expr(
+            Expr::New(New {
+                ty,
+                count,
+                new_span,
+                paren_span,
             }),
             span,
             ctx.path.clone(),

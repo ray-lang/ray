@@ -7,18 +7,22 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bincode = "1.3"
 bitflags = "1.2"
 clap = "2.33"
 colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
 fnv = "1.0"
 home = "0.5"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
 itertools = "0.9"
 lang-c = "0.9"
+lld = { path = "./crates/lld" }
 log = "0.4"
 parity-wasm = { git = "https://github.com/ray-lang/parity-wasm", features = ["bulk"] }
-petgraph = "0.5.1"
+petgraph = { version = "0.5.1", features = ["serde-1"] }
 pprof = { version = "0.3", features = ["protobuf", "flamegraph"] }
 rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
 structopt = "0.3"
 wasmer = "1.0"

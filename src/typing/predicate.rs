@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ast::{self, Path},
     errors::{RayError, RayErrorKind},
@@ -18,7 +20,7 @@ pub trait PredicateEntails<Other = Self> {
     fn entails(&self, other: &Other, ctx: &TyCtx) -> bool;
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TyPredicate {
     Trait(Ty),
     Literal(Ty, LiteralKind),

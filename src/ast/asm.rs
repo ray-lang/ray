@@ -11,7 +11,6 @@ use super::Path;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AsmOp {
     // memory ops
-    Malloc,
     MemCopy,
 
     // eq
@@ -237,7 +236,6 @@ impl<'a> TryFrom<&'a str> for AsmOp {
     fn try_from(s: &'a str) -> Result<AsmOp, &'a str> {
         Ok(match s {
             // memory
-            "malloc" => AsmOp::Malloc,
             "memcopy" | "memcpy" => AsmOp::MemCopy,
 
             // eq
@@ -464,7 +462,6 @@ impl<'a> TryFrom<&'a str> for AsmOp {
 impl std::fmt::Display for AsmOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            AsmOp::Malloc => "malloc",
             AsmOp::MemCopy => "memcopy",
             AsmOp::ISizeEq => "int_eq",
             AsmOp::I8Eq => "i8_eq",
@@ -833,7 +830,6 @@ impl AsmOp {
             | AsmOp::U64Shr
             | AsmOp::U64Rotl
             | AsmOp::U64Rotr => Ty::u64(),
-            AsmOp::Malloc => Ty::ptr(Ty::Var(TyVar(scope.append("'a")))),
             AsmOp::MemCopy => Ty::unit(),
         }
     }

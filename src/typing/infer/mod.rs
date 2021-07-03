@@ -32,7 +32,8 @@ impl<'tcx> InferSystem<'tcx> {
         &mut self,
         v: &T,
         srcmap: &mut SourceMap,
-    ) -> Result<Solution, Vec<InferError>>
+        defs: TyEnv,
+    ) -> Result<(Solution, TyEnv), Vec<InferError>>
     where
         T: CollectConstraints<Output = U> + std::fmt::Display,
     {
@@ -41,13 +42,14 @@ impl<'tcx> InferSystem<'tcx> {
             mono_tys: &mono_tys,
             srcmap: &srcmap,
             tcx: self.tcx,
-            defs: TyEnv::new(),
+            defs,
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);
         log::debug!("{}", v);
         log::debug!("constraints: {:#?}", constraints);
 
+        let defs = ctx.defs;
         let solver = GreedySolver::new(constraints, &mut self.tcx);
         let (solution, constraints) = solver.solve();
 
@@ -59,7 +61,7 @@ impl<'tcx> InferSystem<'tcx> {
         if errs.len() != 0 {
             Err(errs)
         } else {
-            Ok(solution)
+            Ok((solution, defs))
         }
     }
 }

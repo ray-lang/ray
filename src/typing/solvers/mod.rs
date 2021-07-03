@@ -239,7 +239,6 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
     }
 
     fn solve_constraints(&mut self, check: &mut Vec<Constraint>) {
-        // self.get_constraints_mut().simplify();
         while let Some(c) = self.pop_constraint() {
             self.solve_constraint(c, check);
             self.apply_subst();

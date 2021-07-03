@@ -1,15 +1,15 @@
 use std::fmt::Debug;
 
 use crate::{
-    ast::{
-        asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List,
-        Literal, Loop, Name, Node, Path, Range, Sequence, UnaryOp, While,
-    },
+    ast::{asm::Asm, Node, Path},
     span::parsed::Parsed,
     typing::ty::Ty,
 };
 
-use super::{Pattern, Tuple};
+use super::{
+    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List, Literal, Loop,
+    Name, New, Pattern, Range, Sequence, Tuple, UnaryOp, While,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -33,6 +33,7 @@ pub enum Expr {
     Literal(Literal),
     Loop(Loop),
     Name(Name),
+    New(New),
     Path(Path),
     Pattern(Pattern),
     Paren(Box<Node<Expr>>),
@@ -89,6 +90,7 @@ impl std::fmt::Display for Expr {
                 Expr::Literal(ex) => ex.to_string(),
                 Expr::Loop(ex) => ex.to_string(),
                 Expr::Name(ex) => ex.to_string(),
+                Expr::New(ex) => ex.to_string(),
                 Expr::Path(ex) => ex.to_string(),
                 Expr::Pattern(ex) => ex.to_string(),
                 Expr::Paren(ex) => ex.to_string(),
@@ -133,6 +135,7 @@ impl Expr {
             | Expr::Literal(_)
             | Expr::List(_)
             | Expr::Loop(_)
+            | Expr::New(_)
             | Expr::Paren(_)
             | Expr::Range(_)
             | Expr::Return(_)
@@ -170,6 +173,7 @@ impl Expr {
             | Expr::Literal(_)
             | Expr::List(_)
             | Expr::Loop(_)
+            | Expr::New(_)
             | Expr::Paren(_)
             | Expr::Range(_)
             | Expr::Return(_)
@@ -205,6 +209,7 @@ impl Expr {
             Expr::Literal(..) => "literal",
             Expr::Loop(..) => "loop",
             Expr::Name(..) => "name",
+            Expr::New(..) => "new",
             Expr::Pattern(..) => "pattern",
             Expr::Path(..) => "path",
             Expr::Paren(..) => "paren",

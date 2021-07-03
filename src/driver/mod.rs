@@ -1,18 +1,21 @@
-use std::fs;
+use std::{collections::HashSet, fs};
+
+use itertools::Itertools;
 
 use crate::{
-    codegen::{codegen, wasm},
-    errors::{RayError, RayErrorKind},
-    link, lir,
+    codegen::{llvm, wasm},
+    errors::{RayError, RayErrorKind, RayResult},
+    libgen, lir,
     pathlib::FilePath,
-    sema,
-    typing::{ApplySubstMut, InferSystem, TyCtx},
+    sema, transform,
+    typing::{state::TyEnv, ApplySubstMut, InferSystem, TyCtx},
 };
 
 mod build;
 
 pub use build::BuildOptions;
-use itertools::Itertools;
+
+type FileWriter = dyn FnOnce(FilePath) -> Result<(), Vec<RayError>>;
 
 #[derive(Debug)]
 pub struct RayPaths {
@@ -56,7 +59,7 @@ impl Driver {
         let paths = RayPaths {
             root: self.ray_path.clone(),
         };
-        let mut c_include_paths = options.c_include_paths.unwrap_or_else(|| vec![]);
+        let mut c_include_paths = options.c_include_paths.clone().unwrap_or_else(|| vec![]);
         c_include_paths.insert(0, paths.get_c_includes_path());
         let mut mod_builder = sema::ModuleBuilder::new(paths, c_include_paths);
         let mod_path = mod_builder.build_from_path(&options.input_path, None)?;
@@ -66,15 +69,28 @@ impl Driver {
             }
         }
 
+        let mut libs = vec![];
         let mut modules = mod_builder.modules;
         let mut srcmaps = mod_builder.srcmaps;
+        let mut lib_set = HashSet::new();
+        let mut lib_defs = TyEnv::new();
         let mut tcx = TyCtx::new();
-        let (module, mut srcmap, _) =
-            link::transform_modules(&mod_path, &mut modules, &mut srcmaps, &mut tcx)?;
+        for (lib_path, lib) in mod_builder.libs {
+            lib_set.insert(lib_path.clone());
+            tcx.extend(lib.tcx);
+            srcmaps.insert(lib_path, lib.srcmap);
+            libs.push(lib.program);
+            lib_defs.extend(lib.defs);
+        }
+
+        let (mut module, mut srcmap, _) =
+            transform::combine(&mod_path, &mut modules, &mut srcmaps, &lib_set, &mut tcx)?;
+        module.is_lib = options.build_lib;
+
         log::debug!("{}", module);
         let mut inf = InferSystem::new(&mut tcx);
-        let solution = match inf.infer_ty(&module, &mut srcmap) {
-            Ok(sol) => sol,
+        let (solution, defs) = match inf.infer_ty(&module, &mut srcmap, lib_defs) {
+            Ok(result) => result,
             Err(errs) => {
                 return Err(errs
                     .into_iter()
@@ -96,100 +112,45 @@ impl Driver {
         }
 
         // generate IR
-        let mut prog = lir::Program::gen(&module, &solution, &tcx)?;
-        prog.monomorphize();
-        log::debug!("{}", prog);
-        prog.post_process(&srcmap);
-
-        log::debug!("{}", prog);
-
-        // compile to wasm
-        let wasm_mod = codegen(&prog, &tcx, &srcmap);
-
-        // serialize the wasm module
-        let bytes = match wasm::serialize(wasm_mod) {
-            Ok(b) => b,
-            Err(e) => {
-                return Err(vec![RayError {
-                    msg: format!("failed to serialize WASM module\n{}", e),
-                    src: vec![],
-                    kind: RayErrorKind::Compile,
-                }])
-            }
-        };
+        let mut program = lir::Program::gen(&module, &solution, &tcx, libs)?;
+        log::debug!("{}", program);
 
         // determine the output path
-        let outpath = if let Some(outpath) = options.output_path {
-            if outpath.is_dir() {
-                let filename = mod_path.name().unwrap();
-                (outpath / filename).with_extension("wasm")
+        let output_path = |ext| {
+            if let Some(outpath) = &options.output_path {
+                if outpath.is_dir() {
+                    let filename = mod_path.name().unwrap();
+                    (outpath / filename).with_extension(ext)
+                } else {
+                    outpath.clone()
+                }
+            } else if options.build_lib && options.input_path.is_dir() {
+                &options.input_path / format!(".{}", ext)
             } else {
-                outpath
+                let filename = mod_path.name().unwrap();
+                FilePath::from(filename).with_extension(ext)
             }
-        } else {
-            let filename = mod_path.name().unwrap();
-            FilePath::from(filename).with_extension("wasm")
         };
 
-        // write to output path
-        if let Some(err) = fs::write(outpath, bytes).err() {
-            return Err(vec![err.into()]);
+        // if we're building a library, write the program to a .raylib file
+        if options.build_lib {
+            let lib = libgen::serialize(program, tcx, srcmap, defs);
+            let path = output_path("raylib");
+            log::info!("writing to {}", path);
+            if let Some(err) = fs::write(path, lib).err() {
+                let ray_err: RayError = err.into();
+                Err(vec![ray_err])
+            } else {
+                Ok(())
+            }
+        } else {
+            program.monomorphize();
+            program.post_process(&srcmap);
+
+            log::debug!("{}", program);
+
+            let lcx = inkwell::context::Context::create();
+            llvm::codegen(&program, &tcx, &srcmap, &lcx, output_path)
         }
-        Ok(())
-
-        // parseOpts := &parse.ParseOptions{
-        //     FilePath:      options.InputFilename,
-        //     Cache:         parse.NewModuleCache(),
-        //     Target:        tgt,
-        //     UseStdin:      false,
-        //     StdlibPath:    r.getStdlibPath(),
-        //     NoStdlib:      options.NoStdlib,
-        //     CursorLoc:     nil,
-        //     CIncludePaths: append(r.defaultCIncludesPaths(), options.CIncludePaths...),
-        // }
-        // mod, _, err := r.ParseAndTypeCheck(options.InputFilename, parseOpts)
-        // if err != nil {
-        //     return err
-        // }
-
-        // if options.PrintAST {
-        //     if options.OutputPath != "" {
-        //         f, err := os.OpenFile(options.OutputPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-        //         if err != nil {
-        //             return err
-        //         }
-        //         return astprinter.Fprint(f, mod)
-        //     }
-        //     return astprinter.Print(mod)
-        // }
-
-        // if options.NoCompile {
-        //     return nil
-        // }
-
-        // // gen := ir.NewGen(mod, options.BuildLib)
-        // // prog := gen.Compile(mod, tcx)
-        // // prog.WriteTo(os.Stdout)
-
-        // panic("compile unimplemented")
-
-        // // var c compile.Compiler
-        // // switch tgt {
-        // // case target.WASM:
-        // // 	// TODO: make stack size configurable
-        // // 	linkModules := append(r.defaultWASIModules(), options.LinkModules...)
-        // // 	c = wasm.NewCompiler(options.InputFilename, linkModules, uint32(math.Pow(2, 16))) // 64 KiB
-        // // default:
-        // // 	panic(fmt.Sprintf("Unsupported target %s", tgt))
-        // // }
-
-        // // copts := compile.NewOptions()
-        // // copts.BuildLib = options.BuildLib
-        // // copts.ToStdout = options.ToStdout
-        // // copts.WriteAssembly = options.WriteAssembly
-        // // copts.OutputPath = options.OutputPath
-        // // copts.EmitIR = options.EmitIR
-        // // copts.MaxOptimizeLevel = options.MaxOptimizeLevel
-        // // return compile.Compile(c, m, tcx, copts)
     }
 }

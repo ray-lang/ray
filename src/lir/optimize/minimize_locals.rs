@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use lir::{GetLocals, MapLocals};
 
-use crate::lir;
+use crate::lir::{self, optimize::reindex_locals};
 
 use super::Optimize;
 
@@ -70,10 +70,17 @@ impl Optimize for MinimizeLocals {
             }
         }
 
+        let locals = func.locals.drain(..).collect::<Vec<_>>();
+        for (i, loc) in locals.into_iter().enumerate() {
+            if !local_map.contains_key(&i) {
+                func.locals.push(loc);
+            }
+        }
+
         func.map_locals(&local_map);
         // remove all unncessary locals
-        func.locals.drain(total_locals..);
-        log::debug!("minimize locals: {}", func);
+        // func.locals.drain(total_locals..);
+        log::debug!("minimize locals: {:?}\n{}", func.locals, func);
     }
 }
 

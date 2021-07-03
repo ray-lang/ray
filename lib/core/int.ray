@@ -21,7 +21,7 @@ impl ToStr[int] {
             len += 1
         }
 
-        raw_ptr = malloc(len) : *u8
+        raw_ptr = new(u8, len)
         i = abs(self)
         ptr = ptr_add(raw_ptr, len - 1)
         while true {

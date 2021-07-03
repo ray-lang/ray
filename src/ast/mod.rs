@@ -6,7 +6,6 @@ mod modifier;
 mod module;
 mod node;
 mod path;
-mod to_ssa;
 
 pub mod asm;
 pub mod token;
@@ -17,6 +16,5 @@ pub use lower::*;
 pub use modifier::*;
 pub use module::*;
 pub use node::*;
-pub use to_ssa::*;
 
 pub use path::*;

@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ast::{Node, Path},
     collections::nametree::NameTree,
@@ -13,7 +15,7 @@ use super::{
     ApplySubst, ApplySubstMut, Subst,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TyCtx {
     ty_map: HashMap<u64, Ty>,
     original_ty_map: HashMap<u64, Ty>,
@@ -59,6 +61,16 @@ impl TyCtx {
             sf: TyVarFactory::new("#"),
             nametree: NameTree::new(),
         }
+    }
+
+    pub fn extend(&mut self, other: TyCtx) {
+        self.original_ty_map.extend(other.original_ty_map);
+        self.ty_map.extend(other.ty_map);
+        self.fqns.extend(other.fqns);
+        self.struct_tys.extend(other.struct_tys);
+        self.traits.extend(other.traits);
+        self.impls.extend(other.impls);
+        self.nametree.extend(other.nametree);
     }
 
     pub fn ty_of(&self, id: u64) -> Ty {

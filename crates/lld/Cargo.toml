@@ -1,0 +1,14 @@
+[package]
+name = "lld"
+version = "0.1.0"
+authors = ["Jeremy Jacobson <me@jjacobson.io>"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2.97"
+
+[build-dependencies]
+cc = "1.0.68"
+lazy_static = "1.4.0"
+regex = "1.5.4"
+semver = "1.0.3"

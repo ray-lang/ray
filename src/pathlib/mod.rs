@@ -6,7 +6,9 @@ use std::ops::Div;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::str::FromStr;
 
-#[derive(Clone, Debug, Default, Hash, Ord, PartialOrd, Eq, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FilePath {
     buf: PathBuf,
 }

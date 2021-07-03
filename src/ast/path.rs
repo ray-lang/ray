@@ -1,13 +1,14 @@
 use std::{fmt, hash::Hasher, str::Chars};
 
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     pathlib::FilePath,
     typing::{ty::TyVar, ApplySubst, Subst},
 };
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 enum PathPart {
     Name(String),
     TyArgs(String),
@@ -29,7 +30,7 @@ impl std::fmt::Display for PathPart {
     }
 }
 
-#[derive(Clone, Eq, Default, PartialOrd, Ord, Hash)]
+#[derive(Clone, Eq, Default, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Path {
     parts: Vec<PathPart>,
 }
@@ -151,6 +152,35 @@ impl Path {
             fp.push(p.to_string())
         }
         fp.into()
+    }
+
+    pub fn to_mangled(&self) -> String {
+        let s = self
+            .parts
+            .iter()
+            .map(|p| {
+                let n = match p {
+                    PathPart::Name(n) | PathPart::TyArgs(n) => n.clone(),
+                };
+
+                let mut n = n
+                    .replace("$", "$u24")
+                    .replace("::", "$CC")
+                    .replace(":", "$u3a")
+                    .replace(",", "$u2c")
+                    .replace("<", "$LT")
+                    .replace(">", "$GT")
+                    .replace("(", "$LP")
+                    .replace(")", "$RP");
+                if !n.starts_with("$") {
+                    n.insert(0, '$');
+                }
+                n
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        format!("_ZN{}_{}E", s.len(), s)
     }
 
     pub fn with_all(&self) -> Path {

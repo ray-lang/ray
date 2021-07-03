@@ -10,7 +10,7 @@ impl ToStr[string] {
 impl Add[string] {
     fn +(a: string, b: string) -> string {
         len = a.len + b.len
-        raw_ptr = malloc(len) : *u8
+        raw_ptr = malloc(len) as *u8
 
         src_len = a.len
         src_ptr = a.raw_ptr

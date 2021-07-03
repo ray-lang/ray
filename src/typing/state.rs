@@ -4,12 +4,14 @@ use std::{
     ops::{Deref, DerefMut, Sub},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ast::Path,
     typing::ty::{Ty, TyVar},
 };
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TyEnv(HashMap<Path, Ty>);
 
 impl std::fmt::Debug for TyEnv {
@@ -70,10 +72,10 @@ impl TyEnv {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TyVarFactory {
     value: u64,
-    prefix: &'static str,
+    prefix: String,
     scope: Option<Path>,
 }
 
@@ -81,7 +83,7 @@ impl<'a> From<&'a TyVarFactory> for TyVarFactory {
     fn from(tf: &'a TyVarFactory) -> Self {
         Self {
             value: tf.value,
-            prefix: tf.prefix,
+            prefix: tf.prefix.clone(),
             scope: tf.scope.clone(),
         }
     }
@@ -92,7 +94,7 @@ impl TyVarFactory {
         TyVarFactory {
             value: 0,
             scope: None,
-            prefix,
+            prefix: prefix.to_string(),
         }
     }
 
@@ -100,7 +102,7 @@ impl TyVarFactory {
         TyVarFactory {
             value: 0,
             scope: Some(scope),
-            prefix,
+            prefix: prefix.to_string(),
         }
     }
 
