@@ -1101,6 +1101,7 @@ dependencies = [
  "inkwell",
  "itertools 0.9.0",
  "lang-c",
+ "lazy_static",
  "lld",
  "log",
  "parity-wasm",

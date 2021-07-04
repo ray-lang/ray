@@ -17,6 +17,7 @@ home = "0.5"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
 itertools = "0.9"
 lang-c = "0.9"
+lazy_static = "1.4.0"
 lld = { path = "./crates/lld" }
 log = "0.4"
 parity-wasm = { git = "https://github.com/ray-lang/parity-wasm", features = ["bulk"] }
@@ -26,4 +27,4 @@ rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 structopt = "0.3"
 wasmer = "1.0"
-xxhash-rust = { version = "0.8.2", features = ["const_xxh3"] }
+xxhash-rust = { version = "0.8.2", features = ["xxh3"] }

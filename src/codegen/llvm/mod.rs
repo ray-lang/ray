@@ -40,7 +40,9 @@ use attr::Attribute;
 
 static MALLOC_BUF: &'static [u8] = include_bytes!("../../../lib/libc/wasi_malloc.wasm");
 
-static MALLOC_BUF_HASH: u64 = xxhash_rust::const_xxh3::xxh3_64(MALLOC_BUF);
+lazy_static! {
+    static ref MALLOC_BUF_HASH: u64 = xxhash_rust::xxh3::xxh3_64(MALLOC_BUF);
+}
 
 pub fn codegen<'a, 'ctx, P>(
     program: &lir::Program,
@@ -101,7 +103,7 @@ where
         .write_to_file(&module, FileType::Object, obj_path.as_ref())
         .unwrap();
 
-    let malloc_path = tmp_dir.clone() / format!("wasi_malloc.{}.a", MALLOC_BUF_HASH);
+    let malloc_path = tmp_dir.clone() / format!("wasi_malloc.{}.a", *MALLOC_BUF_HASH);
     if !malloc_path.exists() {
         let mut f = fs::File::create(&malloc_path).unwrap();
         f.write_all(MALLOC_BUF).unwrap();
