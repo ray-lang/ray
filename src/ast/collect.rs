@@ -23,7 +23,7 @@ use crate::{
 use super::{
     asm::{Asm, AsmOperand},
     BinOp, Block, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal, Name,
-    New, Node, Path, Pattern, Range, Tuple, While,
+    New, Node, Path, Pattern, Range, Tuple, UnaryOp, While,
 };
 
 impl CollectPatterns for Node<Pattern> {
@@ -87,6 +87,7 @@ impl CollectDeclarations for Node<Decl> {
             Decl::Trait(tr) => {
                 let mut env = TyEnv::new();
                 for func in tr.funcs.iter() {
+                    log::debug!("trait func: {}", func.path);
                     env.insert(func.path.clone(), func.ty.clone().unwrap());
                 }
 
@@ -310,7 +311,7 @@ impl CollectConstraints for Node<Expr> {
                     AttachTree::new(c2, NodeTree::new(vec![ParentAttachTree::new(c1, ctree)])),
                 )
             }
-            Expr::UnaryOp(_) => todo!(),
+            Expr::UnaryOp(ex) => (ex, src).collect_constraints(ctx),
             Expr::Unsafe(_) => todo!(),
             Expr::While(ex) => (ex, src).collect_constraints(ctx),
         };
@@ -356,7 +357,7 @@ impl CollectConstraints for (&Asm, &Source) {
         }
 
         cs.push(EqConstraint::new(last_ty, v.clone()).with_src(src.clone()));
-        cts.push(ConstraintTree::list(cs, ConstraintTree::empty()));
+        cts.push(ConstraintTree::list(cs));
 
         let mut ct = ConstraintTree::empty();
         for t in cts.into_iter().rev() {
@@ -373,9 +374,39 @@ impl CollectConstraints for (&BinOp, &Source) {
 
     fn collect_constraints(
         &self,
-        _: &mut CollectCtx,
+        ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        panic!("this should be desugared into a call")
+        let &(binop, src) = self;
+        let (lhs_ty, lhs_aset, lhs_ct) = binop.lhs.collect_constraints(ctx);
+        let (rhs_ty, rhs_aset, rhs_ct) = binop.rhs.collect_constraints(ctx);
+
+        let op_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+        ctx.tcx.set_ty(binop.op.id, op_ty.clone());
+
+        let result_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        let name = binop.op.to_string();
+        let (fqn, _) = ctx.tcx.lookup_infix_op(&name).cloned().unwrap();
+
+        log::debug!("binop fqn: {}", fqn);
+
+        let mut aset = lhs_aset;
+        aset.add(fqn, op_ty.clone());
+        aset.extend(rhs_aset);
+
+        let op_src = ctx.srcmap.get(&binop.op);
+        let op_ct = ReceiverTree::new(op_ty.to_string());
+        let eq = EqConstraint::new(
+            op_ty,
+            Ty::Func(vec![lhs_ty, rhs_ty], Box::new(result_ty.clone())),
+        )
+        .with_src(op_src);
+
+        (
+            result_ty,
+            aset,
+            AttachTree::new(eq, NodeTree::new(vec![lhs_ct, op_ct, rhs_ct])),
+        )
     }
 }
 
@@ -504,6 +535,7 @@ impl CollectConstraints for (&Call, &Source) {
             let src = ctx.srcmap.get(&dot.lhs);
             let member_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
             let name = dot.rhs.path.to_string();
+            log::debug!("name: {}", name);
             let fqn = if let Some(fqn) = ctx.tcx.lookup_fqn(&name) {
                 fqn.clone()
             } else {
@@ -513,6 +545,8 @@ impl CollectConstraints for (&Call, &Source) {
                     dot.rhs.path
                 ))
             };
+
+            log::debug!("fqn: {}", fqn);
 
             aset.add(fqn.clone(), member_ty.clone());
             ct1 = NodeTree::new(vec![ReceiverTree::new(member_ty.to_string()), ct1]);
@@ -739,7 +773,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("{}{}", sign, size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    ctree = ConstraintTree::list(
+                    ctree = AttachTree::list(
                         vec![ProveConstraint::new(TyPredicate::Trait(Ty::Projection(
                             str!("core::Int"),
                             vec![t.clone()],
@@ -755,7 +789,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("f{}", size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    ctree = ConstraintTree::list(
+                    ctree = AttachTree::list(
                         vec![ProveConstraint::new(TyPredicate::Literal(
                             t.clone(),
                             LiteralKind::Float,
@@ -916,6 +950,42 @@ impl CollectConstraints for (&Tuple, &Source) {
         let c = EqConstraint::new(ty.clone(), Ty::Tuple(tys)).with_src(src.clone());
         let ct = AttachTree::new(c, NodeTree::new(cts));
         (ty, aset, ct)
+    }
+}
+
+impl CollectConstraints for (&UnaryOp, &Source) {
+    type Output = Ty;
+
+    fn collect_constraints(
+        &self,
+        ctx: &mut CollectCtx,
+    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        let &(unop, src) = self;
+        let (expr_ty, expr_aset, expr_ct) = unop.expr.collect_constraints(ctx);
+
+        let op_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+        ctx.tcx.set_ty(unop.op.id, op_ty.clone());
+
+        let result_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        let name = unop.op.to_string();
+        let (fqn, _) = ctx.tcx.lookup_prefix_op(&name).cloned().unwrap();
+
+        log::debug!("unop fqn: {}", fqn);
+
+        let mut aset = expr_aset;
+        aset.add(fqn, op_ty.clone());
+
+        let op_src = ctx.srcmap.get(&unop.op);
+        let op_ct = ReceiverTree::new(op_ty.to_string());
+        let eq = EqConstraint::new(op_ty, Ty::Func(vec![expr_ty], Box::new(result_ty.clone())))
+            .with_src(op_src);
+
+        (
+            result_ty,
+            aset,
+            AttachTree::new(eq, NodeTree::new(vec![expr_ct, op_ct])),
+        )
     }
 }
 

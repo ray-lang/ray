@@ -278,6 +278,36 @@ impl Mod[u64] {
     fn %(a: u64, b: u64) -> u64 => asm { $u64_mod a b }
 }
 
+// ---- Neg
+
+trait Neg['a] {
+    fn -(a: 'a) -> 'a
+}
+
+impl Neg[int] {
+    @inline()
+    fn -(a: int) -> int => asm { $int_neg a }
+}
+
+impl Neg[i8] {
+    @inline()
+    fn -(a: i8) -> i8 => asm { $i8_neg a }
+}
+
+impl Neg[i16] {
+    @inline()
+    fn -(a: i16) -> i16 => asm { $i16_neg a }
+}
+
+impl Neg[i32] {
+    @inline()
+    fn -(a: i32) -> i32 => asm { $i32_neg a }
+}
+
+impl Neg[i64] {
+    @inline()
+    fn -(a: i64) -> i64 => asm { $i64_neg a }
+}
 
 // ---- And
 

@@ -1,2 +1,0 @@
-extern fn make_struct<T>(value: RawPointer, ty: Type<T>, deinit: fn(T) -> () :: Type<T>) -> T
-extern fn typepath<T>(value: Type<T>) -> String

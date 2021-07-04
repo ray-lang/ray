@@ -7,8 +7,7 @@ use crate::{
 pub struct BinOp {
     pub lhs: Box<Node<Expr>>,
     pub rhs: Box<Node<Expr>>,
-    pub op: InfixOp,
-    pub op_span: Span,
+    pub op: Node<InfixOp>,
 }
 
 impl std::fmt::Display for BinOp {

@@ -1,4 +1,4 @@
-use std::convert::TryFrom;
+use std::{convert::TryFrom, ops::Deref};
 
 use crate::{
     ast::{Node, Path, PrefixOp},
@@ -25,7 +25,7 @@ impl TryFrom<Node<Expr>> for Pattern {
             Expr::Tuple(tuple) => Pattern::tuple(tuple.seq),
             Expr::Sequence(seq) => Pattern::try_from(seq),
             Expr::UnaryOp(unop)
-                if matches!(unop.op, PrefixOp::Deref)
+                if matches!(unop.op.deref(), PrefixOp::Deref)
                     && matches!(unop.expr.value, Expr::Name(_)) =>
             {
                 let name = variant!(unop.expr.value, if Expr::Name(n));

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
+    errors::{RayError, RayErrorKind},
     span::{Source, SourceMap},
     typing::state::TyEnv,
 };
@@ -16,6 +17,16 @@ use super::{
 pub struct InferError {
     pub msg: String,
     pub src: Vec<Source>,
+}
+
+impl From<InferError> for RayError {
+    fn from(err: InferError) -> Self {
+        RayError {
+            msg: err.msg,
+            src: err.src,
+            kind: RayErrorKind::Type,
+        }
+    }
 }
 
 #[derive(Debug)]

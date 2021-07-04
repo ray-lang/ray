@@ -85,6 +85,11 @@ impl AttachTree {
     pub fn new<T: Into<ConstraintTree>>(c: Constraint, t: T) -> ConstraintTree {
         ConstraintTree::Attach(AttachTree(c, Box::new(t.into())))
     }
+
+    pub fn list(cs: Vec<Constraint>, t: ConstraintTree) -> ConstraintTree {
+        cs.into_iter()
+            .rfold(t, |t, c| ConstraintTree::Attach(AttachTree(c, Box::new(t))))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,9 +246,10 @@ impl ConstraintTree {
         ct
     }
 
-    pub fn list(cs: Vec<Constraint>, t: ConstraintTree) -> ConstraintTree {
-        cs.into_iter()
-            .rfold(t, |t, c| ConstraintTree::new(AttachTree(c, Box::new(t))))
+    pub fn list(cs: Vec<Constraint>) -> ConstraintTree {
+        cs.into_iter().rfold(ConstraintTree::empty(), |t, c| {
+            ConstraintTree::new(AttachTree(c, Box::new(t)))
+        })
     }
 
     #[allow(dead_code)]
@@ -381,7 +387,7 @@ impl ConstraintTree {
                 }
 
                 if cs.len() > 0 {
-                    ConstraintTree::list(cs, ConstraintTree::empty())
+                    ConstraintTree::list(cs)
                 } else {
                     ConstraintTree::Receiver(ReceiverTree(l))
                 }
@@ -509,7 +515,7 @@ mod tree_tests {
         // constraint: sq ≤m l1
         let c5 = ImplicitConstraint::new(vec![p0], Ty::Var(sq), Ty::Var(l1));
 
-        let t = ConstraintTree::list(vec![c1, c2, c3, c4, c5], ConstraintTree::empty());
+        let t = ConstraintTree::list(vec![c1, c2, c3, c4, c5]);
 
         let walker = BottomUpWalk {};
         let cs = t.flatten(walker);

@@ -19,7 +19,9 @@ use super::{
 pub struct TyCtx {
     ty_map: HashMap<u64, Ty>,
     original_ty_map: HashMap<u64, Ty>,
-    fqns: HashMap<String, Path>,
+    fqns: HashMap<String, (Path, Option<Path>)>,
+    infix_ops: HashMap<String, (Path, Path)>,
+    prefix_ops: HashMap<String, (Path, Path)>,
     vars: HashMap<String, Ty>,
     struct_tys: HashMap<Path, StructTy>,
     traits: HashMap<Path, TraitTy>,
@@ -53,6 +55,8 @@ impl TyCtx {
             original_ty_map: HashMap::new(),
             ty_map: HashMap::new(),
             fqns: HashMap::new(),
+            infix_ops: HashMap::new(),
+            prefix_ops: HashMap::new(),
             vars: HashMap::new(),
             struct_tys: HashMap::new(),
             traits: HashMap::new(),
@@ -122,11 +126,31 @@ impl TyCtx {
     }
 
     pub fn lookup_fqn(&self, name: &String) -> Option<&Path> {
+        self.fqns.get(name).map(|(p, _)| p)
+    }
+
+    pub fn lookup_fqn_with_trait(&self, name: &String) -> Option<&(Path, Option<Path>)> {
         self.fqns.get(name)
     }
 
-    pub fn add_fqn(&mut self, name: String, fqn: Path) {
-        self.fqns.insert(name, fqn);
+    pub fn lookup_infix_op(&self, name: &String) -> Option<&(Path, Path)> {
+        self.infix_ops.get(name)
+    }
+
+    pub fn lookup_prefix_op(&self, name: &String) -> Option<&(Path, Path)> {
+        self.prefix_ops.get(name)
+    }
+
+    pub fn add_fqn(&mut self, name: String, fqn: Path, trait_fqn: Option<Path>) {
+        self.fqns.insert(name, (fqn, trait_fqn));
+    }
+
+    pub fn add_infix_op(&mut self, name: String, infix_op: Path, trait_fqn: Path) {
+        self.infix_ops.insert(name, (infix_op, trait_fqn));
+    }
+
+    pub fn add_prefix_op(&mut self, name: String, prefix_op: Path, trait_fqn: Path) {
+        self.prefix_ops.insert(name, (prefix_op, trait_fqn));
     }
 
     pub fn get_var(&self, name: &String) -> Option<&Ty> {
@@ -139,7 +163,7 @@ impl TyCtx {
 
     pub fn add_struct_ty(&mut self, name: String, struct_ty: StructTy) {
         let fqn = struct_ty.path.clone();
-        self.add_fqn(name, fqn.clone());
+        self.add_fqn(name, fqn.clone(), None);
         self.struct_tys.insert(fqn, struct_ty);
     }
 
@@ -180,9 +204,18 @@ impl TyCtx {
             .collect()
     }
 
+    pub fn get_trait_fn(&self, trait_fqn: &Path, fn_name: &String) -> Option<&Ty> {
+        self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
+            trait_ty
+                .fields
+                .iter()
+                .find_map(|(field, ty)| if field == fn_name { Some(ty) } else { None })
+        })
+    }
+
     pub fn add_trait_ty(&mut self, name: String, trait_ty: TraitTy) {
         let fqn = trait_ty.path.clone();
-        self.add_fqn(name, fqn.clone());
+        self.add_fqn(name, fqn.clone(), None);
         self.traits.insert(fqn, trait_ty);
     }
 

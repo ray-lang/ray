@@ -1132,6 +1132,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::BasicOp {
                 operands[1].into_int_value(),
                 "",
             ),
+            (lir::Op::Neg, true) => ctx.builder.build_int_neg(operands[0].into_int_value(), ""),
             (lir::Op::Lt, true) => ctx.builder.build_int_compare(
                 IntPredicate::SLT,
                 operands[0].into_int_value(),

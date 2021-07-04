@@ -6,7 +6,7 @@ use std::io;
 use std::io::prelude::*;
 use std::{fmt, num::ParseIntError};
 
-pub type RayResult<T> = Result<T, RayError>;
+pub type RayResult<T = ()> = Result<T, RayError>;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RayErrorKind {

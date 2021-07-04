@@ -97,7 +97,7 @@ impl Monomorphizer {
                 continue;
             }
 
-            let base_poly_name = poly_name.without_tyargs();
+            let base_poly_name = poly_name.without_func_type();
 
             // remove from the name set
             self.name_set.remove(&base_poly_name);
@@ -132,7 +132,7 @@ impl Monomorphizer {
         }
 
         // get the polymorphic name
-        let poly_fqn = poly_ref.value.get_name().without_tyargs();
+        let poly_fqn = poly_ref.value.get_name().without_func_type();
         let poly_base_name = poly_fqn.clone();
         let poly_name = sema::fn_name(&poly_base_name, &poly_ref.poly_ty);
 

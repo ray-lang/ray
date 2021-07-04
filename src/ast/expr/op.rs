@@ -1,4 +1,6 @@
-use std::fmt;
+use std::{fmt, ops::Deref};
+
+use crate::ast::Node;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Associativity {
@@ -83,7 +85,7 @@ pub enum InfixOp {
     /// =
     Assign,
     // ?=
-    AssignOp(Box<InfixOp>),
+    AssignOp(Box<Node<InfixOp>>),
 }
 
 impl fmt::Display for InfixOp {
@@ -93,6 +95,30 @@ impl fmt::Display for InfixOp {
 }
 
 impl InfixOp {
+    pub fn is(name: &str) -> bool {
+        matches!(
+            name,
+            "==" | "!="
+                | "<"
+                | ">"
+                | ">="
+                | "<="
+                | "+"
+                | "-"
+                | "/"
+                | "%"
+                | "*"
+                | "**"
+                | "&&"
+                | "||"
+                | "&"
+                | "|"
+                | "^"
+                | "<<"
+                | ">>"
+        )
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             InfixOp::Eq => "==",
@@ -121,7 +147,7 @@ impl InfixOp {
             InfixOp::Comma => ",",
             InfixOp::Colon => ":",
             InfixOp::Assign => "=",
-            InfixOp::AssignOp(op) => match op.as_ref() {
+            InfixOp::AssignOp(op) => match op.as_ref().deref() {
                 InfixOp::Add => "+=",
                 InfixOp::Sub => "-=",
                 InfixOp::Div => "/=",
@@ -182,6 +208,10 @@ impl fmt::Display for PrefixOp {
 }
 
 impl PrefixOp {
+    pub fn is(name: &str) -> bool {
+        matches!(name, "+" | "-" | "*" | "&" | "!" | "~" | "<-")
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             PrefixOp::Positive => "+",

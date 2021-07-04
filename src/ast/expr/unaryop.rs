@@ -1,13 +1,9 @@
-use crate::{
-    ast::{Expr, Node, PrefixOp},
-    span::Span,
-};
+use crate::ast::{Expr, Node, PrefixOp};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnaryOp {
     pub expr: Box<Node<Expr>>,
-    pub op: PrefixOp,
-    pub op_span: Span,
+    pub op: Node<PrefixOp>,
 }
 
 impl std::fmt::Display for UnaryOp {

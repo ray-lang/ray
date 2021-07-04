@@ -322,7 +322,7 @@ impl BindingGroup {
         tsub0 = tsub0.strict_spread_list(cl1);
 
         // T0 ≪ C4• ≪ (Cl5 ≪◦ TC2)
-        let tsub1 = ConstraintTree::list(c4, ConstraintTree::empty());
+        let tsub1 = ConstraintTree::list(c4);
 
         // T0 ≪ T1 ≪ (Cl5 ≪◦ TC2)
         let tsub2 = rhs_tree.strict_spread_list(cl5);

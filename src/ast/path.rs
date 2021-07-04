@@ -11,13 +11,14 @@ use crate::{
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 enum PathPart {
     Name(String),
-    TyArgs(String),
+    TypeArgs(String),
+    FuncType(String),
 }
 
 impl std::fmt::Debug for PathPart {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PathPart::Name(s) | PathPart::TyArgs(s) => write!(f, "{}", s),
+            PathPart::Name(s) | PathPart::TypeArgs(s) | PathPart::FuncType(s) => write!(f, "{}", s),
         }
     }
 }
@@ -25,7 +26,7 @@ impl std::fmt::Debug for PathPart {
 impl std::fmt::Display for PathPart {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PathPart::Name(s) | PathPart::TyArgs(s) => write!(f, "{}", s),
+            PathPart::Name(s) | PathPart::TypeArgs(s) | PathPart::FuncType(s) => write!(f, "{}", s),
         }
     }
 }
@@ -52,8 +53,8 @@ impl ApplySubst for Path {
     fn apply_subst(self, subst: &Subst) -> Self {
         let mut parts = vec![];
         for part in self.parts.into_iter() {
-            if let PathPart::TyArgs(args) = part {
-                let s = args.trim_matches(|ch| ch == '<' || ch == '>');
+            if let PathPart::FuncType(func_ty) = part {
+                let s = func_ty.trim_matches(|ch| ch == '<' || ch == '>');
                 let mut args = String::new();
                 let mut ret = String::new();
                 let mut paren_stack = 0;
@@ -103,7 +104,27 @@ impl ApplySubst for Path {
                         ret
                     }
                 };
-                parts.push(PathPart::TyArgs(format!("<({}):{}>", args.join(","), ret)));
+                parts.push(PathPart::FuncType(format!(
+                    "<({}):{}>",
+                    args.join(","),
+                    ret
+                )));
+            } else if let PathPart::TypeArgs(args) = part {
+                let args = args
+                    .trim_matches(|ch| ch == '[' || ch == ']')
+                    .split(',')
+                    .map(|a| {
+                        let tv = TyVar(Path::from(a));
+                        if let Some(ty) = subst.get(&tv) {
+                            ty.clone().to_string()
+                        } else {
+                            a.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let args = format!("[{}]", args.join(","));
+                log::debug!("args: {}", args);
+                parts.push(PathPart::TypeArgs(args));
             } else {
                 parts.push(part);
                 let tv = TyVar(Path {
@@ -160,7 +181,7 @@ impl Path {
             .iter()
             .map(|p| {
                 let n = match p {
-                    PathPart::Name(n) | PathPart::TyArgs(n) => n.clone(),
+                    PathPart::Name(n) | PathPart::TypeArgs(n) | PathPart::FuncType(n) => n.clone(),
                 };
 
                 let mut n = n
@@ -171,7 +192,9 @@ impl Path {
                     .replace("<", "$LT")
                     .replace(">", "$GT")
                     .replace("(", "$LP")
-                    .replace(")", "$RP");
+                    .replace(")", "$RP")
+                    .replace("[", "$LB")
+                    .replace("]", "$RB");
                 if !n.starts_with("$") {
                     n.insert(0, '$');
                 }
@@ -195,9 +218,42 @@ impl Path {
         Path { parts }
     }
 
-    pub fn append_tyargs<T: ToString>(&self, s: T) -> Path {
+    pub fn append_func_type<T: ToString>(&self, s: T) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(PathPart::TyArgs(s.to_string()));
+        parts.push(PathPart::FuncType(s.to_string()));
+        Path { parts }
+    }
+
+    pub fn append_type_args<T: ToString>(&self, args: &[T]) -> Path {
+        let mut parts = self.parts.clone();
+        parts.push(PathPart::TypeArgs(format!(
+            "[{}]",
+            args.iter().map(|s| s.to_string()).join(",")
+        )));
+        Path { parts }
+    }
+
+    pub fn merge(&self, rhs: &Path) -> Path {
+        let mut parts = vec![];
+        let mut idx = 0;
+        while idx < self.parts.len() && idx < rhs.parts.len() {
+            let lhs_part = &self.parts[idx];
+            let rhs_part = &rhs.parts[idx];
+            if lhs_part != rhs_part {
+                break;
+            }
+
+            parts.push(lhs_part.clone());
+            idx += 1;
+        }
+
+        parts.extend(
+            self.parts
+                .iter()
+                .skip(idx)
+                .cloned()
+                .chain(rhs.parts.iter().skip(idx).cloned()),
+        );
         Path { parts }
     }
 
@@ -212,12 +268,12 @@ impl Path {
         Path { parts }
     }
 
-    pub fn without_tyargs(&self) -> Path {
+    pub fn without_func_type(&self) -> Path {
         let parts = self
             .parts
             .iter()
             .cloned()
-            .filter(|p| !matches!(p, PathPart::TyArgs(_)))
+            .filter(|p| !matches!(p, PathPart::FuncType(_)))
             .collect::<Vec<_>>();
 
         Path { parts }
@@ -306,10 +362,9 @@ impl PathParser {
         let mut chars = s.chars();
         loop {
             match chars.next() {
-                Some(':') => {
-                    self.maybe_finish_part(&mut chars);
-                }
-                Some('<') => self.parse_ty_args(&mut chars),
+                Some(':') => self.maybe_finish_part(&mut chars),
+                Some('<') => self.parse_func_type(&mut chars),
+                Some('[') => self.parse_type_args(&mut chars),
                 Some(ch) => self.curr_part.push(ch),
                 _ => {
                     self.push_part();
@@ -321,7 +376,7 @@ impl PathParser {
         Path { parts: self.parts }
     }
 
-    fn parse_ty_args(&mut self, chars: &mut Chars) {
+    fn parse_func_type(&mut self, chars: &mut Chars) {
         self.curr_part.push('<');
         loop {
             match chars.next() {
@@ -335,16 +390,26 @@ impl PathParser {
         }
     }
 
-    fn maybe_finish_part(&mut self, chars: &mut Chars) -> bool {
-        match chars.next() {
-            Some(':') | None => {
-                self.push_part();
-                true
+    fn parse_type_args(&mut self, chars: &mut Chars) {
+        self.curr_part.push('[');
+        loop {
+            match chars.next() {
+                Some(ch) if ch == '[' || ch == ']' || ch == ':' => {
+                    self.curr_part.push(ch);
+                    break;
+                }
+                Some(ch) => self.curr_part.push(ch),
+                _ => break,
             }
+        }
+    }
+
+    fn maybe_finish_part(&mut self, chars: &mut Chars) {
+        match chars.next() {
+            Some(':') | None => self.push_part(),
             Some(ch) => {
                 self.curr_part.push(':');
                 self.curr_part.push(ch);
-                false
             }
         }
     }
@@ -352,7 +417,9 @@ impl PathParser {
     fn push_part(&mut self) {
         let part = std::mem::take(&mut self.curr_part);
         let part = if part.starts_with('<') && part.ends_with('>') {
-            PathPart::TyArgs(part)
+            PathPart::FuncType(part)
+        } else if part.starts_with('[') && part.ends_with(']') {
+            PathPart::TypeArgs(part)
         } else {
             PathPart::Name(part)
         };

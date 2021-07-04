@@ -686,12 +686,12 @@ impl Inst {
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum Op {
-    Malloc,
     Add,
     Sub,
     Mul,
     Div,
     Mod,
+    Neg,
     BitXor,
     BitAnd,
     BitOr,
@@ -713,12 +713,12 @@ pub enum Op {
 impl std::fmt::Display for Op {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Op::Malloc => write!(f, "malloc"),
             Op::Add => write!(f, "add"),
             Op::Sub => write!(f, "sub"),
             Op::Mul => write!(f, "mul"),
             Op::Div => write!(f, "div"),
             Op::Mod => write!(f, "mod"),
+            Op::Neg => write!(f, "neg"),
             Op::BitXor => write!(f, "xor"),
             Op::BitAnd => write!(f, "bitand"),
             Op::BitOr => write!(f, "bitor"),
@@ -941,7 +941,7 @@ impl Program {
     }
 
     pub fn main_path(&self) -> Path {
-        self.module_path.append("main").append_tyargs("<():()>")
+        self.module_path.append("main").append_func_type("<():()>")
     }
 }
 
@@ -2552,6 +2552,36 @@ impl From<AsmOp> for BasicOp {
                 op: Op::Mod,
                 size: Size::bytes(8),
                 signed: false,
+                operands: vec![],
+            },
+            AsmOp::ISizeNeg => BasicOp {
+                op: Op::Neg,
+                size: Size::ptr(),
+                signed: true,
+                operands: vec![],
+            },
+            AsmOp::I8Neg => BasicOp {
+                op: Op::Neg,
+                size: Size::bytes(1),
+                signed: true,
+                operands: vec![],
+            },
+            AsmOp::I16Neg => BasicOp {
+                op: Op::Neg,
+                size: Size::bytes(2),
+                signed: true,
+                operands: vec![],
+            },
+            AsmOp::I32Neg => BasicOp {
+                op: Op::Neg,
+                size: Size::bytes(4),
+                signed: true,
+                operands: vec![],
+            },
+            AsmOp::I64Neg => BasicOp {
+                op: Op::Neg,
+                size: Size::bytes(8),
+                signed: true,
                 operands: vec![],
             },
             AsmOp::ISizeAnd => BasicOp {

@@ -40,6 +40,15 @@ impl Span {
         self.end.offset - self.start.offset
     }
 
+    pub fn sub(&self, offset: usize) -> Span {
+        let mut end = self.end;
+        end.offset -= offset;
+        Span {
+            start: self.start,
+            end,
+        }
+    }
+
     /// Create a new span with the start of this one and end of another one
     pub fn extend_to(&self, other: &Span) -> Span {
         Span {

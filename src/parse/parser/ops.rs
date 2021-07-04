@@ -38,6 +38,10 @@ impl Parser<'_> {
             }
 
             let (_, op_span) = self.lex.consume_count(tok_count);
+            if let InfixOp::AssignOp(op) = &op {
+                let src = self.mk_src(op_span.sub(1));
+                self.srcmap.set_src(op.as_ref(), src)
+            }
 
             match (self.peek_kind(), &ctx.stop_token) {
                 (k, Some(t)) if &k == t => {
@@ -153,8 +157,7 @@ impl Parser<'_> {
                 _ => Expr::BinOp(BinOp {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
-                    op,
-                    op_span,
+                    op: self.mk_node(op, op_span),
                 }),
             };
 
@@ -167,13 +170,13 @@ impl Parser<'_> {
     pub(crate) fn parse_prefix_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         if let Some((op, tok_count)) = self.peek_prefix_op()? {
             let (_, op_span) = self.lex.consume_count(tok_count);
+            let op = self.mk_node(op, op_span);
             let expr = self.parse_prefix_expr(ctx)?;
             let span = op_span.extend_to(&self.srcmap.span_of(&expr));
             Ok(self.mk_expr(
                 Expr::UnaryOp(UnaryOp {
                     expr: Box::new(expr),
                     op,
-                    op_span,
                 }),
                 span,
                 ctx.path.clone(),
@@ -244,19 +247,31 @@ impl Parser<'_> {
         use TokenKind::*;
         Ok(Some(
             match (self.peek_kind(), self.peek_kind_at(1), self.peek_kind_at(2)) {
-                (Asterisk, Asterisk, Equals) => (InfixOp::AssignOp(Box::new(InfixOp::Pow)), 3),
-                (Ampersand, Ampersand, Equals) => (InfixOp::AssignOp(Box::new(InfixOp::And)), 3),
-                (Lt, Lt, Equals) => (InfixOp::AssignOp(Box::new(InfixOp::ShiftLeft)), 3),
-                (Gt, Gt, Equals) => (InfixOp::AssignOp(Box::new(InfixOp::ShiftRight)), 3),
-                (Pipe, Pipe, Equals) => (InfixOp::AssignOp(Box::new(InfixOp::Or)), 3),
-                (Plus, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::Add)), 2),
-                (Minus, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::Sub)), 2),
-                (Slash, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::Div)), 2),
-                (Percent, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::Mod)), 2),
-                (Asterisk, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::Mul)), 2),
-                (Ampersand, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::BitAnd)), 2),
-                (Pipe, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::BitOr)), 2),
-                (Caret, Equals, _) => (InfixOp::AssignOp(Box::new(InfixOp::BitXor)), 2),
+                (Asterisk, Asterisk, Equals) => {
+                    (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Pow))), 3)
+                }
+                (Ampersand, Ampersand, Equals) => {
+                    (InfixOp::AssignOp(Box::new(Node::new(InfixOp::And))), 3)
+                }
+                (Lt, Lt, Equals) => (
+                    InfixOp::AssignOp(Box::new(Node::new(InfixOp::ShiftLeft))),
+                    3,
+                ),
+                (Gt, Gt, Equals) => (
+                    InfixOp::AssignOp(Box::new(Node::new(InfixOp::ShiftRight))),
+                    3,
+                ),
+                (Pipe, Pipe, Equals) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Or))), 3),
+                (Plus, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Add))), 2),
+                (Minus, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Sub))), 2),
+                (Slash, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Div))), 2),
+                (Percent, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Mod))), 2),
+                (Asterisk, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::Mul))), 2),
+                (Ampersand, Equals, _) => {
+                    (InfixOp::AssignOp(Box::new(Node::new(InfixOp::BitAnd))), 2)
+                }
+                (Pipe, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::BitOr))), 2),
+                (Caret, Equals, _) => (InfixOp::AssignOp(Box::new(Node::new(InfixOp::BitXor))), 2),
                 (Equals, Equals, _) => (InfixOp::Eq, 2),
                 (Exclamation, Equals, _) => (InfixOp::NotEq, 2),
                 (Asterisk, Asterisk, _) => (InfixOp::Pow, 2),

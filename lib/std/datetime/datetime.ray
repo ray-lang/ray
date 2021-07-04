@@ -1,12 +1,12 @@
 struct DateTime {
-    year: Int
-    month: Int
-    day: Int
-    hour: Int
-    minute: Int
-    second: Int
-    millisecond: Int
-    offset: Int
+    year: usize
+    month: usize
+    day: usize
+    hour: usize
+    minute: usize
+    second: usize
+    millisecond: usize
+    offset: usize
 }
 
 impl DateTime {

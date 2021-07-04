@@ -97,6 +97,13 @@ pub enum AsmOp {
     U32Mod,
     U64Mod,
 
+    // neg
+    ISizeNeg,
+    I8Neg,
+    I16Neg,
+    I32Neg,
+    I64Neg,
+
     // and
     ISizeAnd,
     I8And,
@@ -322,6 +329,13 @@ impl<'a> TryFrom<&'a str> for AsmOp {
             "u32_mod" => AsmOp::U32Mod,
             "u64_mod" => AsmOp::U64Mod,
 
+            // neg
+            "int_neg" => AsmOp::ISizeNeg,
+            "i8_neg" => AsmOp::I8Neg,
+            "i16_neg" => AsmOp::I16Neg,
+            "i32_neg" => AsmOp::I32Neg,
+            "i64_neg" => AsmOp::I64Neg,
+
             // and
             "int_and" => AsmOp::ISizeAnd,
             "i8_and" => AsmOp::I8And,
@@ -533,6 +547,11 @@ impl std::fmt::Display for AsmOp {
             AsmOp::U16Mod => "u16_mod",
             AsmOp::U32Mod => "u32_mod",
             AsmOp::U64Mod => "u64_mod",
+            AsmOp::ISizeNeg => "int_neg",
+            AsmOp::I8Neg => "i8_neg",
+            AsmOp::I16Neg => "i16_neg",
+            AsmOp::I32Neg => "i32_neg",
+            AsmOp::I64Neg => "i64_neg",
             AsmOp::ISizeAnd => "int_and",
             AsmOp::I8And => "i8_and",
             AsmOp::I16And => "i16_and",
@@ -648,7 +667,7 @@ impl std::fmt::Display for AsmOp {
 }
 
 impl AsmOp {
-    pub fn ret_ty(&self, scope: &Path) -> Ty {
+    pub fn ret_ty(&self, _: &Path) -> Ty {
         match self {
             AsmOp::ISizeEq
             | AsmOp::I8Eq
@@ -715,6 +734,7 @@ impl AsmOp {
             | AsmOp::ISizeMul
             | AsmOp::ISizeDiv
             | AsmOp::ISizeMod
+            | AsmOp::ISizeNeg
             | AsmOp::ISizeAnd
             | AsmOp::ISizeOr
             | AsmOp::ISizeXor
@@ -727,6 +747,7 @@ impl AsmOp {
             | AsmOp::I8Mul
             | AsmOp::I8Div
             | AsmOp::I8Mod
+            | AsmOp::I8Neg
             | AsmOp::I8And
             | AsmOp::I8Or
             | AsmOp::I8Xor
@@ -739,6 +760,7 @@ impl AsmOp {
             | AsmOp::I16Mul
             | AsmOp::I16Div
             | AsmOp::I16Mod
+            | AsmOp::I16Neg
             | AsmOp::I16And
             | AsmOp::I16Or
             | AsmOp::I16Xor
@@ -751,6 +773,7 @@ impl AsmOp {
             | AsmOp::I32Mul
             | AsmOp::I32Div
             | AsmOp::I32Mod
+            | AsmOp::I32Neg
             | AsmOp::I32And
             | AsmOp::I32Or
             | AsmOp::I32Xor
@@ -763,6 +786,7 @@ impl AsmOp {
             | AsmOp::I64Mul
             | AsmOp::I64Div
             | AsmOp::I64Mod
+            | AsmOp::I64Neg
             | AsmOp::I64And
             | AsmOp::I64Or
             | AsmOp::I64Xor

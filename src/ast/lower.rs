@@ -305,10 +305,10 @@ impl LowerAST for Sourced<'_, Trait> {
         tcx: &mut TyCtx,
     ) -> RayResult<Self::Output> {
         let (tr, src) = self.unpack_mut();
-        let scope = &src.path;
+        let trait_fqn = &src.path;
         let ty_span = *tr.ty.span().unwrap();
-        let parent_scope = scope.parent();
-        tr.ty.resolve_ty(scope, tcx);
+        let parent_scope = trait_fqn.parent();
+        tr.ty.resolve_ty(trait_fqn, tcx);
 
         let (name, ty_params) = match tr.ty.deref() {
             Ty::Projection(n, tp) => (n.clone(), tp.clone()),
@@ -330,7 +330,7 @@ impl LowerAST for Sourced<'_, Trait> {
             });
         }
 
-        let fqn = scope.to_string();
+        let fqn = trait_fqn.to_string();
         let mut trait_ctx = tcx.clone();
         let mut ty_vars = vec![];
         let tp = &ty_params[0];
@@ -348,7 +348,7 @@ impl LowerAST for Sourced<'_, Trait> {
         let base_ty = tp.clone();
         let base_ty_fqn = base_ty.get_path().unwrap();
         log::debug!("base_ty_fqn = {}", base_ty_fqn);
-        let trait_ty = Ty::Projection(fqn.clone(), ty_params);
+        let trait_ty = Ty::Projection(fqn.clone(), ty_params.clone());
 
         let mut fields = vec![];
         for func in tr.funcs.iter_mut() {
@@ -364,15 +364,24 @@ impl LowerAST for Sourced<'_, Trait> {
             };
 
             let mut fn_ctx = tcx.clone();
-            let ty = Ty::from_sig(func, scope, &src.filepath, &mut fn_ctx, tcx, srcmap)?;
+            let ty = Ty::from_sig(func, trait_fqn, &src.filepath, &mut fn_ctx, tcx, srcmap)?;
             let (mut q, ty) = ty.unpack_qualified_ty();
             // add the trait type to the qualifiers
             q.insert(0, TyPredicate::Trait(trait_ty.clone()));
             let ty = ty.qualify(&q, &ty_vars.clone()).quantify(ty_vars.clone());
 
-            let func_fqn = base_ty_fqn.append(&func_name);
+            let (_, _, param_tys, _) = ty.try_borrow_fn()?;
+            let func_fqn = trait_fqn.append_type_args(&ty_params).append(&func_name);
             log::debug!("add fqn: {} => {}", func_name, func_fqn);
-            tcx.add_fqn(func_name.clone(), func_fqn.clone());
+
+            if param_tys.len() == 2 && ast::InfixOp::is(&func_name) {
+                tcx.add_infix_op(func_name.clone(), func_fqn.clone(), trait_fqn.clone());
+            } else if param_tys.len() == 1 && ast::PrefixOp::is(&func_name) {
+                tcx.add_prefix_op(func_name.clone(), func_fqn.clone(), trait_fqn.clone());
+            } else {
+                tcx.add_fqn(func_name.clone(), func_fqn.clone(), Some(trait_fqn.clone()));
+            }
+
             tcx.bind_var(func_fqn.to_string(), ty.clone());
 
             fields.push((func_name.clone(), ty.clone()));
@@ -390,7 +399,7 @@ impl LowerAST for Sourced<'_, Trait> {
         tcx.add_trait_ty(
             name,
             TraitTy {
-                path: scope.clone(),
+                path: trait_fqn.clone(),
                 ty: trait_ty,
                 super_traits: super_trait.map(|s| vec![s]).unwrap_or_default(),
                 fields,
@@ -462,6 +471,7 @@ impl LowerAST for Sourced<'_, Impl> {
 
         let base_ty = ty_params[0].clone();
         let impl_scope = base_ty.get_path().unwrap();
+        log::debug!("impl fqn: {}", impl_scope);
         let mut impl_ctx = tcx.clone();
         let mut impl_set = HashSet::new();
         if let Some(funcs) = &mut imp.funcs {
@@ -486,7 +496,8 @@ impl LowerAST for Sourced<'_, Impl> {
 
                 if let Decl::Fn(f) = &mut func.value {
                     // make this a fully-qualified name
-                    f.sig.path = impl_scope.append(&func_name);
+                    f.sig.path = trait_fqn.append_type_args(&ty_params).append(&func_name);
+                    log::debug!("func fqn: {}", f.sig.path);
                 }
 
                 impl_set.insert(func_name);
@@ -563,7 +574,7 @@ impl LowerAST for Sourced<'_, Fn> {
         let func_fqn = if !func.sig.is_method {
             let fqn = src.path.append(name.clone());
             log::debug!("add fqn: {} => {}", name, fqn);
-            tcx.add_fqn(name, fqn.clone());
+            tcx.add_fqn(name, fqn.clone(), None);
             tcx.nametree_mut().add_full_name(&fqn.to_vec());
             fqn
         } else {
@@ -618,86 +629,50 @@ impl LowerAST for Node<Expr> {
         tcx: &mut TyCtx,
     ) -> RayResult<()> {
         let src = srcmap.get(self);
-        let new_value = match &mut self.value {
-            Expr::Assign(assign) => return assign.lower(srcmap, scope_map, tcx),
-            Expr::Asm(asm) => return Sourced(asm, &src).lower(srcmap, scope_map, tcx),
-            Expr::BinOp(b) => {
-                let call = Sourced(b, &src).lower(srcmap, scope_map, tcx)?;
-                Expr::Call(call)
-            }
-            Expr::Block(b) => return b.lower(srcmap, scope_map, tcx),
+        match &mut self.value {
+            Expr::Assign(assign) => assign.lower(srcmap, scope_map, tcx),
+            Expr::Asm(asm) => Sourced(asm, &src).lower(srcmap, scope_map, tcx),
+            Expr::BinOp(b) => Sourced(b, &src).lower(srcmap, scope_map, tcx),
+            Expr::Block(b) => b.lower(srcmap, scope_map, tcx),
             Expr::Break(value) => {
                 if let Some(value) = value {
                     value.lower(srcmap, scope_map, tcx)?;
                 }
-                return Ok(());
+                Ok(())
             }
-            Expr::Call(c) => return c.lower(srcmap, scope_map, tcx),
-            Expr::Cast(c) => return Sourced(c, &src).lower(srcmap, scope_map, tcx),
+            Expr::Call(c) => c.lower(srcmap, scope_map, tcx),
+            Expr::Cast(c) => Sourced(c, &src).lower(srcmap, scope_map, tcx),
             Expr::Closure(_) => todo!("lower: Expr::Closure: {:?}", self),
-            Expr::Curly(c) => return Sourced(c, &src).lower(srcmap, scope_map, tcx),
+            Expr::Curly(c) => Sourced(c, &src).lower(srcmap, scope_map, tcx),
             Expr::DefaultValue(_) => todo!("lower: Expr::DefaultValue: {:?}", self),
-            Expr::Dot(d) => return d.lower(srcmap, scope_map, tcx),
+            Expr::Dot(d) => d.lower(srcmap, scope_map, tcx),
             Expr::Fn(_) => todo!("lower: Expr::Fn: {:?}", self),
             Expr::For(_) => todo!("lower: Expr::For: {:?}", self),
-            Expr::If(if_ex) => return Sourced(if_ex, &src).lower(srcmap, scope_map, tcx),
+            Expr::If(if_ex) => Sourced(if_ex, &src).lower(srcmap, scope_map, tcx),
             Expr::Index(_) => todo!("lower: Expr::Index: {:?}", self),
             Expr::Labeled(_, _) => todo!("lower: Expr::Labeled: {:?}", self),
-            Expr::List(l) => return l.lower(srcmap, scope_map, tcx),
-            Expr::Literal(_) => return Ok(()),
-            Expr::Loop(_) => return Ok(()),
-            Expr::Name(n) => return Sourced(n, &src).lower(srcmap, scope_map, tcx),
-            Expr::New(n) => return Sourced(n, &src).lower(srcmap, scope_map, tcx),
-            Expr::Pattern(p) => return Sourced(p, &src).lower(srcmap, scope_map, tcx),
-            Expr::Path(_) => return Ok(()),
-            Expr::Paren(ex) => return ex.lower(srcmap, scope_map, tcx),
-            Expr::Range(r) => return r.lower(srcmap, scope_map, tcx),
+            Expr::List(l) => l.lower(srcmap, scope_map, tcx),
+            Expr::Literal(_) => Ok(()),
+            Expr::Loop(_) => Ok(()),
+            Expr::Name(n) => Sourced(n, &src).lower(srcmap, scope_map, tcx),
+            Expr::New(n) => Sourced(n, &src).lower(srcmap, scope_map, tcx),
+            Expr::Pattern(p) => Sourced(p, &src).lower(srcmap, scope_map, tcx),
+            Expr::Path(_) => Ok(()),
+            Expr::Paren(ex) => ex.lower(srcmap, scope_map, tcx),
+            Expr::Range(r) => r.lower(srcmap, scope_map, tcx),
             Expr::Return(_) => todo!("lower: Expr::Return: {:?}", self),
-            Expr::Sequence(seq) => return seq.lower(srcmap, scope_map, tcx),
-            Expr::Tuple(t) => return t.lower(srcmap, scope_map, tcx),
+            Expr::Sequence(seq) => seq.lower(srcmap, scope_map, tcx),
+            Expr::Tuple(t) => t.lower(srcmap, scope_map, tcx),
             Expr::Type(_) => todo!("lower: Expr::Type: {:?}", self),
             Expr::TypeAnnotated(ex, ty) => {
                 ty.resolve_ty(&src.path, tcx);
-                return ex.lower(srcmap, scope_map, tcx);
+                ex.lower(srcmap, scope_map, tcx)
             }
-            Expr::UnaryOp(u) => {
-                let call = Sourced(u, &src).lower(srcmap, scope_map, tcx)?;
-                Expr::Call(call)
-            }
+            Expr::UnaryOp(u) => Sourced(u, &src).lower(srcmap, scope_map, tcx),
             Expr::Unsafe(_) => todo!("lower: Expr::Unsafe: {:?}", self),
-            Expr::While(w) => return Sourced(w, &src).lower(srcmap, scope_map, tcx),
-        };
-
-        let _ = std::mem::replace(&mut self.value, new_value);
-        Ok(())
+            Expr::While(w) => Sourced(w, &src).lower(srcmap, scope_map, tcx),
+        }
     }
-}
-
-fn convert_binop(
-    op: &ast::InfixOp,
-    op_span: Span,
-    lhs: Node<Expr>,
-    rhs: Node<Expr>,
-    srcmap: &mut SourceMap,
-) -> RayResult<Call> {
-    let lhs_src = srcmap.get(&lhs);
-    let name = op.to_string();
-    let op_var = Node::new(ast::Name::new(name));
-    srcmap.set_src(&op_var, lhs_src.respan(op_span));
-
-    let lhs_span = lhs_src.span.unwrap();
-    let lhs = Node::new(Expr::Dot(ast::Dot {
-        lhs: Box::new(lhs),
-        rhs: op_var,
-        dot: Token {
-            kind: TokenKind::Dot,
-            span: op_span,
-        },
-    }));
-
-    srcmap.set_src(&lhs, lhs_src.respan(lhs_span.extend_to(&op_span)));
-
-    Ok(Call::new(lhs, vec![rhs]))
 }
 
 impl LowerAST for ast::Assign {
@@ -709,7 +684,7 @@ impl LowerAST for ast::Assign {
         scope_map: &HashMap<Path, Vec<Path>>,
         tcx: &mut TyCtx,
     ) -> RayResult<()> {
-        if let ast::InfixOp::AssignOp(op) = self.op.clone() {
+        if let ast::InfixOp::AssignOp(op) = &mut self.op {
             let lhs_src = srcmap.get(&self.lhs);
             let lhs = self.lhs.clone().try_take_map(|pat| match pat {
                 ast::Pattern::Name(n) => Ok(Expr::Name(n)),
@@ -722,15 +697,22 @@ impl LowerAST for ast::Assign {
                 }
             })?;
 
-            let op_span = self.op_span;
+            let new_op = Node::new(ast::InfixOp::Assign);
+            let op_src = srcmap.get(op);
+            srcmap.set_src(&new_op, op_src);
+
+            let op = std::mem::replace(op.as_mut(), new_op);
             try_replace::<_, _, RayError>(&mut self.rhs, |mut rhs| {
                 rhs.lower(srcmap, scope_map, tcx)?;
 
                 let lhs_src = srcmap.get(&lhs);
                 let rhs_src = srcmap.get(&rhs);
                 let src = lhs_src.extend_to(&rhs_src);
-                let call = convert_binop(&op, op_span, lhs, *rhs, srcmap)?;
-                let node = Node::new(Expr::Call(call));
+                let node = Node::new(Expr::BinOp(ast::BinOp {
+                    lhs: Box::new(lhs),
+                    rhs,
+                    op,
+                }));
                 srcmap.set_src(&node, src);
                 Ok(Box::new(node))
             })?;
@@ -763,7 +745,7 @@ impl LowerAST for Sourced<'_, ast::asm::Asm> {
 }
 
 impl LowerAST for Sourced<'_, ast::BinOp> {
-    type Output = ast::Call;
+    type Output = ();
 
     fn lower(
         &mut self,
@@ -776,8 +758,7 @@ impl LowerAST for Sourced<'_, ast::BinOp> {
         lhs.lower(srcmap, scope_map, tcx)?;
         let mut rhs = binop.rhs.as_ref().clone();
         rhs.lower(srcmap, scope_map, tcx)?;
-
-        convert_binop(&binop.op, binop.op_span, lhs, rhs, srcmap)
+        Ok(())
     }
 }
 
@@ -1047,7 +1028,7 @@ impl LowerAST for ast::Tuple {
 }
 
 impl LowerAST for Sourced<'_, ast::UnaryOp> {
-    type Output = ast::Call;
+    type Output = ();
 
     fn lower(
         &mut self,
@@ -1058,12 +1039,7 @@ impl LowerAST for Sourced<'_, ast::UnaryOp> {
         let (unop, src) = self.unpack_mut();
         let mut expr = unop.expr.as_ref().clone();
         expr.lower(srcmap, scope_map, tcx)?;
-        let name = unop.op.to_string();
-        let fqn = Path::from(name);
-        let op_var = Node::new(Expr::Path(fqn));
-        srcmap.set_src(&op_var, src.respan(unop.op_span));
-
-        Ok(Call::new(op_var, vec![expr]))
+        Ok(())
     }
 }
 
