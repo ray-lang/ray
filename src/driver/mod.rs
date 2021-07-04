@@ -3,8 +3,8 @@ use std::{collections::HashSet, fs};
 use itertools::Itertools;
 
 use crate::{
-    codegen::{llvm, wasm},
-    errors::{RayError, RayErrorKind, RayResult},
+    codegen::llvm,
+    errors::{RayError, RayErrorKind},
     libgen, lir,
     pathlib::FilePath,
     sema, transform,
@@ -14,8 +14,6 @@ use crate::{
 mod build;
 
 pub use build::BuildOptions;
-
-type FileWriter = dyn FnOnce(FilePath) -> Result<(), Vec<RayError>>;
 
 #[derive(Debug)]
 pub struct RayPaths {
@@ -145,7 +143,6 @@ impl Driver {
             }
         } else {
             program.monomorphize();
-            program.post_process(&srcmap);
 
             log::debug!("{}", program);
 

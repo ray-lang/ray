@@ -1,5 +1,5 @@
 use crate::{
-    ast::{token::Token, Expr, Name, Node},
+    ast::{Expr, Node},
     span::{parsed::Parsed, Span},
     typing::ty::Ty,
 };

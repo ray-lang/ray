@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ast::{self, asm::AsmOp, Modifier, Node, Path},
     convert::ToSet,
-    span::SourceMap,
     strutils::indent_lines,
     typing::{ty::Ty, ApplySubst, Subst},
     utils::{join, map_join},
@@ -18,8 +17,6 @@ use std::{
     iter::Sum,
     usize,
 };
-
-use super::{optimize, to_ssa};
 
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {
@@ -933,11 +930,6 @@ impl Program {
         self.externs.extend(other.externs);
         self.extern_map.extend(other.extern_map);
         self.trait_member_set.extend(other.trait_member_set);
-    }
-
-    pub fn post_process(&mut self, srcmap: &SourceMap) {
-        to_ssa(self);
-        optimize(self, srcmap, 0);
     }
 
     pub fn main_path(&self) -> Path {

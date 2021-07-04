@@ -1,11 +1,10 @@
 mod attr;
 
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     env::{self, temp_dir},
-    ffi::OsStr,
     fs,
-    io::{Read, Write},
+    io::Write,
     ops::Deref,
 };
 
@@ -13,13 +12,13 @@ use inkwell as llvm;
 use llvm::{
     attributes::AttributeLoc,
     basic_block::BasicBlock,
-    module::{Linkage, Module},
+    module::Linkage,
     passes::{PassManager, PassManagerBuilder},
-    targets::{FileType, InitializationConfig, Target, TargetData, TargetMachine, TargetTriple},
-    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, IntType, PointerType, StructType},
+    targets::{FileType, InitializationConfig, Target, TargetMachine, TargetTriple},
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, IntType, StructType},
     values::{
-        AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue,
-        InstructionOpcode, InstructionValue, IntValue, PointerValue,
+        AnyValue, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
+        InstructionValue, IntValue, PointerValue,
     },
     AddressSpace, IntPredicate, OptimizationLevel,
 };
@@ -28,19 +27,20 @@ use rand::Rng;
 use crate::{
     ast::{Modifier, Path},
     codegen::collect_symbols,
-    errors::{RayError, RayResult},
-    lir::{self, LCA},
+    errors::RayError,
+    lir,
     pathlib::FilePath,
     span::SourceMap,
     typing::{ty::Ty, TyCtx},
-    utils::join,
 };
 
-use super::{Codegen, CodegenCtx};
+use super::Codegen;
 
 use attr::Attribute;
 
 static MALLOC_BUF: &'static [u8] = include_bytes!("../../../lib/libc/wasi_malloc.wasm");
+
+static MALLOC_BUF_HASH: u64 = xxhash_rust::const_xxh3::xxh3_64(MALLOC_BUF);
 
 pub fn codegen<'a, 'ctx, P>(
     program: &lir::Program,
@@ -91,8 +91,6 @@ where
         );
     }
 
-    module.print_to_file("./debug.ll").unwrap();
-
     // write out the object to a temp file
     let mut rng = rand::thread_rng();
     let id = rng.gen::<u64>();
@@ -103,9 +101,11 @@ where
         .write_to_file(&module, FileType::Object, obj_path.as_ref())
         .unwrap();
 
-    let malloc_path = tmp_dir.clone() / format!("wasi_malloc.{}.a", id);
-    let mut f = fs::File::create(&malloc_path).unwrap();
-    f.write_all(MALLOC_BUF).unwrap();
+    let malloc_path = tmp_dir.clone() / format!("wasi_malloc.{}.a", MALLOC_BUF_HASH);
+    if !malloc_path.exists() {
+        let mut f = fs::File::create(&malloc_path).unwrap();
+        f.write_all(MALLOC_BUF).unwrap();
+    }
 
     let wasm_path = output_path("wasm");
     log::info!("writing to {}", wasm_path);
@@ -141,7 +141,6 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     builder: &'a llvm::builder::Builder<'ctx>,
     target_machine: TargetMachine,
     curr_fn: Option<FunctionValue<'ctx>>,
-    fn_types: HashMap<String, u32>,
     fn_index: HashMap<Path, FunctionValue<'ctx>>,
     struct_types: HashMap<String, StructType<'ctx>>,
     data_addrs: HashMap<usize, GlobalValue<'ctx>>,
@@ -149,7 +148,6 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     locals: HashMap<usize, PointerValue<'ctx>>,
     local_tys: Vec<Ty>,
     blocks: HashMap<usize, BasicBlock<'ctx>>,
-    local_hp: Option<u32>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -182,7 +180,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             builder,
             target_machine,
             curr_fn: None,
-            fn_types: HashMap::new(),
             fn_index: HashMap::new(),
             struct_types: HashMap::new(),
             data_addrs: HashMap::new(),
@@ -190,7 +187,17 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             locals: HashMap::new(),
             local_tys: vec![],
             blocks: HashMap::new(),
-            local_hp: None,
+        }
+    }
+
+    fn type_of(&self, var: &lir::Variable) -> &Ty {
+        match var {
+            lir::Variable::Unit => panic!("unit is untyped"),
+            lir::Variable::Data(_) => panic!("data is untyped"),
+            lir::Variable::Global(idx) => {
+                todo!("type of global: {}", idx)
+            }
+            lir::Variable::Local(idx) => &self.local_tys[*idx],
         }
     }
 
@@ -201,10 +208,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
     fn unit_type(&self) -> StructType<'ctx> {
         self.lcx.struct_type(&[], false)
-    }
-
-    fn ptr_size(&self) -> IntValue<'ctx> {
-        self.ptr_type().size_of()
     }
 
     fn zero(&self) -> IntValue<'ctx> {
@@ -223,12 +226,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .size_of()
             .const_mul(ptr_type.const_int(s.ptrs as u64, false))
             .const_add(ptr_type.const_int(s.bytes as u64, false))
-    }
-
-    fn size_to_bytes(&self, s: &lir::Size) -> u32 {
-        let ptr_type = self.ptr_type();
-        let ptr = ptr_type.get_bit_width() / 8;
-        ((s.ptrs as u32) * ptr) + (s.bytes as u32)
     }
 
     fn size_to_type(&self, s: &lir::Size) -> IntType<'ctx> {
@@ -431,57 +428,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 }
 
-impl<'a, 'ctx> CodegenCtx for LLVMCodegenCtx<'a, 'ctx> {
-    type GenTy = ();
-    type Func = ();
-    type FuncBody = ();
-
-    fn global(&mut self, name: &str) -> u32 {
-        todo!()
-    }
-
-    fn add_global(
-        &mut self,
-        name: String,
-        init_value: i32,
-        ty: Self::GenTy,
-        is_mutable: bool,
-    ) -> u32 {
-        todo!()
-    }
-
-    fn type_of(&self, var: &lir::Variable) -> &Ty {
-        match var {
-            lir::Variable::Unit => panic!("unit is untyped"),
-            lir::Variable::Data(_) => panic!("data is untyped"),
-            lir::Variable::Global(idx) => {
-                todo!("type of global: {}", idx)
-            }
-            lir::Variable::Local(idx) => &self.local_tys[*idx],
-        }
-    }
-
-    fn get_type_ref(&mut self, param_tys: &Vec<Ty>, ret_ty: &Ty) -> u32 {
-        todo!()
-    }
-
-    fn add_func_name(&mut self, idx: u32, name: &Path) {
-        todo!()
-    }
-
-    fn add_func(&mut self, name: &Path, func: Self::Func, body: Self::FuncBody) -> u32 {
-        todo!()
-    }
-
-    fn add_func_import(&mut self, name: Path) {
-        todo!()
-    }
-
-    fn get_body(&mut self, name: &Path) -> &mut Self::FuncBody {
-        todo!()
-    }
-}
-
 impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
     type Output = ();
 
@@ -588,7 +534,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             if srcmap.has_inline(f) {
                 let inline_attr = ctx
                     .lcx
-                    .create_enum_attribute(0, Attribute::AlwaysInline.bits());
+                    .create_enum_attribute(0, Attribute::ALWAYS_INLINE.bits());
                 fn_val.add_attribute(AttributeLoc::Function, inline_attr);
             }
 
@@ -967,7 +913,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::GetField {
         &self,
         ctx: &mut LLVMCodegenCtx<'a, '_>,
         tcx: &TyCtx,
-        srcmap: &SourceMap,
+        _: &SourceMap,
     ) -> Self::Output {
         ctx.get_field_ptr(&self.src, &self.field, tcx)
             .as_basic_value_enum()

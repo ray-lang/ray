@@ -6,11 +6,10 @@ use crate::{
     ast::{Node, Path},
     lir,
     span::SourceMap,
-    typing::{ty::Ty, TyCtx},
+    typing::TyCtx,
 };
 
 pub mod llvm;
-pub mod wasm;
 
 pub(self) fn collect_symbols(
     func: &lir::Func,
@@ -31,42 +30,11 @@ pub(self) fn collect_symbols(
     }
 }
 
-trait CodegenCtx {
-    type GenTy;
-    type Func;
-    type FuncBody;
-
-    fn global(&mut self, name: &str) -> u32;
-
-    fn add_global(
-        &mut self,
-        name: String,
-        init_value: i32,
-        ty: Self::GenTy,
-        is_mutable: bool,
-    ) -> u32;
-
-    fn type_of(&self, var: &lir::Variable) -> &Ty;
-
-    fn get_type_ref(&mut self, param_tys: &Vec<Ty>, ret_ty: &Ty) -> u32;
-
-    fn add_func_name(&mut self, idx: u32, name: &Path);
-
-    fn add_func(&mut self, name: &Path, func: Self::Func, body: Self::FuncBody) -> u32;
-
-    fn add_func_import(&mut self, name: Path);
-
-    fn get_body(&mut self, name: &Path) -> &mut Self::FuncBody;
-}
-
 trait GetLocals {
     fn get_locals(&self) -> HashSet<u32>;
 }
 
-trait Codegen<Ctx>
-where
-    Ctx: CodegenCtx,
-{
+trait Codegen<Ctx> {
     type Output;
 
     fn codegen(&self, ctx: &mut Ctx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output;
@@ -74,7 +42,6 @@ where
 
 impl<T, I, Ctx> Codegen<Ctx> for Vec<T>
 where
-    Ctx: CodegenCtx,
     T: Codegen<Ctx, Output = I>,
 {
     type Output = Vec<I>;
@@ -87,7 +54,6 @@ where
 impl<T, I, Ctx> Codegen<Ctx> for Node<T>
 where
     T: Codegen<Ctx, Output = I>,
-    Ctx: CodegenCtx,
 {
     type Output = I;
 

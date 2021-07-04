@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 
 use crate::{
     span::parsed::Parsed,
-    typing::ty::{Ty, TyVar},
+    typing::ty::Ty,
     utils::{indent, join, map_join},
 };
 

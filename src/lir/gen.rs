@@ -10,7 +10,7 @@ use crate::{
     },
     errors::RayResult,
     lir, sema,
-    typing::{solvers::Solution, ty::Ty, ApplySubst, ApplySubstMut, Subst, TyCtx},
+    typing::{solvers::Solution, ty::Ty, ApplySubstMut, Subst, TyCtx},
 };
 
 impl lir::Program {
@@ -375,8 +375,6 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
                 //  - inclusive: bool
                 let loc = ctx.local(ty.clone());
                 let el_ty = tcx.ty_of(range.start.id);
-                let el_size = el_ty.size_of();
-                let size = (el_size * 2) + lir::Size::bytes(1);
                 let ptr = lir::Malloc::new(ty.clone(), lir::Atom::UintConst(1, lir::Size::ptr()));
                 ctx.push(lir::Inst::SetLocal(loc.into(), ptr.into()));
 
@@ -995,7 +993,6 @@ impl LirGen<GenResult> for (&Literal, &Ty) {
                 //  - raw_ptr: *u8
                 //  - size: usize
                 let loc = ctx.local(Ty::string());
-                let size = lir::Size::ptrs(2);
                 let ptr = lir::Malloc::new(Ty::string(), lir::Atom::UintConst(1, lir::Size::ptr()));
                 ctx.push(lir::Inst::SetLocal(loc.into(), ptr.into()));
 

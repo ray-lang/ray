@@ -3,16 +3,13 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use ast::{
-    token::{Token, TokenKind},
-    Call, Impl,
-};
+use ast::Impl;
 
 use crate::{
     ast,
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
-    span::{parsed::Parsed, Source, SourceMap, Span},
+    span::{parsed::Parsed, Source, SourceMap},
     subst,
     typing::{
         predicate::TyPredicate,
@@ -1036,7 +1033,7 @@ impl LowerAST for Sourced<'_, ast::UnaryOp> {
         scope_map: &HashMap<Path, Vec<Path>>,
         tcx: &mut TyCtx,
     ) -> RayResult<Self::Output> {
-        let (unop, src) = self.unpack_mut();
+        let (unop, _) = self.unpack_mut();
         let mut expr = unop.expr.as_ref().clone();
         expr.lower(srcmap, scope_map, tcx)?;
         Ok(())

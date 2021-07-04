@@ -1,7 +1,4 @@
-use crate::{
-    ast::{Expr, InfixOp, Node},
-    span::Span,
-};
+use crate::ast::{Expr, InfixOp, Node};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinOp {
