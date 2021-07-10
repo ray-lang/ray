@@ -49,10 +49,12 @@ impl<'tcx> InferSystem<'tcx> {
         T: CollectConstraints<Output = U> + std::fmt::Display,
     {
         let mono_tys = HashSet::new();
+        let mut new_defs = TyEnv::new();
         let mut ctx = CollectCtx {
             mono_tys: &mono_tys,
             srcmap: &srcmap,
             tcx: self.tcx,
+            new_defs: &mut new_defs,
             defs,
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
@@ -60,7 +62,10 @@ impl<'tcx> InferSystem<'tcx> {
         log::debug!("{}", v);
         log::debug!("constraints: {:#?}", constraints);
 
-        let defs = ctx.defs;
+        // combine with the new definitions collected from constraints
+        let mut defs = ctx.defs;
+        defs.extend(new_defs);
+
         let solver = GreedySolver::new(constraints, &mut self.tcx);
         let (solution, constraints) = solver.solve();
 

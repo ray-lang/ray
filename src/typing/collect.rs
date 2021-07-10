@@ -22,6 +22,7 @@ pub struct CollectCtx<'a> {
     pub srcmap: &'a SourceMap,
     pub tcx: &'a mut TyCtx,
     pub defs: TyEnv,
+    pub new_defs: &'a mut TyEnv,
 }
 
 impl CollectCtx<'_> {
@@ -34,6 +35,7 @@ impl CollectCtx<'_> {
             srcmap: self.srcmap,
             tcx: self.tcx,
             defs: self.defs.clone(),
+            new_defs: self.new_defs,
         };
 
         f(&mut ctx)

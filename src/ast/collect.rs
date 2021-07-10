@@ -204,6 +204,7 @@ impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
             srcmap: ctx.srcmap,
             tcx: ctx.tcx,
             defs: ctx.defs.clone(),
+            new_defs: ctx.new_defs,
         };
         let (body_ty, aset, body_ct) = func.body.as_deref().unwrap().collect_constraints(&mut ctx);
 
@@ -230,6 +231,8 @@ impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
         let mut env = TyEnv::new();
         if let Some(ty) = &func.sig.ty {
             env.insert(name.clone(), ty.clone());
+        } else {
+            ctx.new_defs.insert(name.clone(), Ty::Var(fn_tv.clone()));
         }
         (Ty::Var(fn_tv), bg, env)
     }
