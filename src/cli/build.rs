@@ -1,6 +1,8 @@
-use crate::driver::{BuildOptions, Driver};
-use log;
 use std::time::Instant;
+
+use log;
+
+use crate::driver::{BuildOptions, Driver};
 
 pub(super) fn action(driver: &mut Driver, options: BuildOptions) {
     let start_time = Instant::now();

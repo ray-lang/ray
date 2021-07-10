@@ -65,7 +65,9 @@ pub trait CollectDeclarations
 where
     Self: Sized,
 {
-    fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv);
+    type Output;
+
+    fn collect_decls(&self, ctx: &mut CollectCtx) -> Self::Output;
 }
 
 impl<V, T> CollectDeclarations for (&V, &Node<T>, &Source)
@@ -74,6 +76,8 @@ where
     V: CollectPatterns,
     Node<T>: CollectConstraints<Output = Ty>,
 {
+    type Output = (Ty, BindingGroup, TyEnv);
+
     fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
         let &(var, rhs, src) = self;
 

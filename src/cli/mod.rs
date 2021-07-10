@@ -13,6 +13,15 @@ mod build;
 
 #[derive(Debug, StructOpt)]
 pub struct Cli {
+    #[structopt(flatten)]
+    global_options: GlobalOptions,
+
+    #[structopt(subcommand)]
+    cmd: Command,
+}
+
+#[derive(Debug, StructOpt)]
+pub struct GlobalOptions {
     #[structopt(
         name = "root-path",
         long = "root-path",
@@ -28,7 +37,8 @@ pub struct Cli {
         help = "Sets the log level",
         default_value = "info",
         possible_values = &["off", "error", "warn", "info", "debug"],
-        global = true
+        hidden = true,
+        global = true,
     )]
     log_level: log::LevelFilter,
 
@@ -38,9 +48,6 @@ pub struct Cli {
         global = true
     )]
     profile: bool,
-
-    #[structopt(subcommand)]
-    cmd: Command,
 }
 
 #[derive(Debug, StructOpt)]
@@ -81,13 +88,13 @@ pub fn run() {
                 message
             ))
         })
-        .level(cli.log_level)
+        .level(cli.global_options.log_level)
         .chain(io::stderr())
         .apply()
         .unwrap();
 
     // get the ray_path
-    let ray_path = if let Some(p) = cli.ray_path {
+    let ray_path = if let Some(p) = cli.global_options.ray_path {
         p
     } else {
         match home::home_dir() {
@@ -96,7 +103,7 @@ pub fn run() {
         }
     };
 
-    let prof = if cli.profile {
+    let prof = if cli.global_options.profile {
         Some(pprof::ProfilerGuard::new(100).unwrap())
     } else {
         None

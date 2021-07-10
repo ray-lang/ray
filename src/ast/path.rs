@@ -157,6 +157,13 @@ impl Path {
         self.parts.len()
     }
 
+    pub fn join<S: AsRef<str>>(&self, sep: S) -> String {
+        self.parts
+            .iter()
+            .map(PathPart::to_string)
+            .join(sep.as_ref())
+    }
+
     pub fn to_id(&self) -> u64 {
         let mut h = fnv::FnvHasher::default();
         h.write(self.to_string().as_bytes());
@@ -218,6 +225,10 @@ impl Path {
         Path { parts }
     }
 
+    pub fn append_mut<T: ToString>(&mut self, s: T) {
+        self.parts.push(PathPart::Name(s.to_string()));
+    }
+
     pub fn append_func_type<T: ToString>(&self, s: T) -> Path {
         let mut parts = self.parts.clone();
         parts.push(PathPart::FuncType(s.to_string()));
@@ -231,6 +242,10 @@ impl Path {
             args.iter().map(|s| s.to_string()).join(",")
         )));
         Path { parts }
+    }
+
+    pub fn extend_mut<T: ToString, I: Iterator<Item = T>>(&mut self, i: I) {
+        self.parts.extend(i.map(|s| PathPart::Name(s.to_string())));
     }
 
     pub fn merge(&self, rhs: &Path) -> Path {
@@ -288,21 +303,13 @@ impl Path {
 
 impl fmt::Display for Path {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.parts.iter().map(PathPart::to_string).join("::")
-        )
+        write!(f, "{}", self.join("::"))
     }
 }
 
 impl fmt::Debug for Path {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.parts.iter().map(PathPart::to_string).join("::")
-        )
+        write!(f, "{}", self.join("::"))
     }
 }
 

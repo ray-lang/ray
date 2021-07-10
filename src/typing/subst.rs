@@ -99,7 +99,6 @@ impl Subst {
             return t.clone();
         }
 
-        // log::debug!("get ty for var: {}", v);
         let mut checked = HashSet::new();
         let mut var = v.clone();
         let mut ty = Ty::Var(var.clone());
@@ -118,9 +117,13 @@ impl Subst {
                     if unknowns.len() != 0 {
                         let sub = unknowns
                             .into_iter()
-                            .map(|v| {
-                                let u = self.get_ty_for_var(&v);
-                                (v, u)
+                            .flat_map(|v| {
+                                if v != var {
+                                    let u = self.get_ty_for_var_(&v, cache);
+                                    Some((v, u))
+                                } else {
+                                    None
+                                }
                             })
                             .collect::<Subst>();
                         ty = ty.apply_subst(&sub);

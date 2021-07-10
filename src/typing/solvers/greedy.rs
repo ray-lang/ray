@@ -22,6 +22,7 @@ pub struct GreedySolver<'a> {
     ctx: &'a mut TyCtx,
     subst: Subst,
     skolems: Vec<(Vec<TyVar>, Vec<TyVar>, ConstraintInfo)>,
+    skolem_subst: Subst,
     original_preds: Vec<TyPredicate>,
     assume_preds: Vec<(TyPredicate, ConstraintInfo)>,
     prove_preds: Vec<(TyPredicate, ConstraintInfo)>,
@@ -38,6 +39,7 @@ impl<'a> GreedySolver<'a> {
             ctx,
             constraints: constraints.into(),
             subst: Subst::new(),
+            skolem_subst: Subst::new(),
             skolems: vec![],
             original_preds: vec![],
             assume_preds: vec![],
@@ -61,6 +63,7 @@ impl<'a> Solver for GreedySolver<'a> {
             ty_map,
             inst_map,
             skol_map,
+            skolem_subst,
             ..
         } = self;
 
@@ -91,7 +94,9 @@ impl<'a> Solver for GreedySolver<'a> {
             ty_map,
             inst_map,
             skol_map,
+            skolem_subst,
             preds,
+            unformalized_inst_map: Subst::new(),
         }
     }
 }
@@ -222,7 +227,7 @@ impl<'a> HasState for GreedySolver<'a> {
     }
 
     fn lookup_ty(&self, tv: &TyVar) -> Option<Ty> {
-        self.ty_map.get(tv).cloned().map(|(t, _)| t)
+        self.ty_map.get(tv).map(|(t, _)| t.clone())
     }
 
     fn inst_ty(&mut self, v: Ty, u: Ty) {
@@ -246,8 +251,15 @@ impl<'a> HasState for GreedySolver<'a> {
         }
     }
 
-    fn add_skolems(&mut self, info: &ConstraintInfo, skolems: Vec<TyVar>, monos: Vec<TyVar>) {
+    fn add_skolems(
+        &mut self,
+        info: &ConstraintInfo,
+        skolems: Vec<TyVar>,
+        monos: Vec<TyVar>,
+        skolem_subst: Subst,
+    ) {
         self.skolems.push((skolems, monos, info.clone()));
+        self.skolem_subst.extend(skolem_subst);
     }
 }
 

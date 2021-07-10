@@ -25,7 +25,9 @@ pub struct Solution {
     pub subst: Subst,
     pub ty_map: Subst,
     pub inst_map: Subst,
+    pub unformalized_inst_map: Subst,
     pub skol_map: Subst,
+    pub skolem_subst: Subst,
     pub preds: Vec<TyPredicate>,
 }
 
@@ -35,7 +37,9 @@ impl std::fmt::Debug for Solution {
             .field("subst", &self.subst)
             .field("ty_map", &self.ty_map)
             .field("inst_map", &self.inst_map)
+            .field("unformalized_inst_map", &self.unformalized_inst_map)
             .field("skol_map", &self.skol_map)
+            .field("skolem_subst", &self.skolem_subst)
             .field("preds", &self.preds)
             .finish()
     }
@@ -70,15 +74,20 @@ impl Solution {
         c.satisfied_by(self, ctx)
     }
 
+    pub fn apply_subst_changes(&mut self) {
+        let subst = self.subst.clone();
+        self.apply_subst_mut(&subst);
+        self.ty_map.qualify_tys(&self.preds);
+    }
+
     pub fn formalize_types(&mut self) {
         // formalize any unbound type variables
+        let mut subst = Subst::new();
         for ty in self.ty_map.values() {
             let ty: Ty = ty.clone().apply_subst(&self.subst);
             if ty.is_func() {
-                let subst = ty.formalize();
-                self.subst.extend(subst);
+                subst.extend(ty.formalize());
             } else if let Ty::All(_, t) = ty {
-                let mut subst = Subst::new();
                 let (preds, ty) = t.unpack_qualified_ty();
                 for p in preds {
                     if let Ty::Var(v) = &ty {
@@ -91,32 +100,59 @@ impl Solution {
                         }
                     }
                 }
-                self.subst.extend(subst);
             }
         }
 
-        for (var, ty) in self.inst_map.iter() {
-            match self.subst.get(var).cloned() {
-                Some(other_ty) if other_ty.has_unknowns() => {
-                    let sub = other_ty.mgu(ty).unwrap_or_default();
-                    self.subst.union_inplace(sub);
-                }
-                _ => continue,
-            }
+        // add to substitution from the original skolem variables
+        for (sk, ty) in self.skolem_subst.iter() {
+            // get the current type variable from the substitution
+            let tv = sk.clone().apply_subst(&self.subst);
+            // add this to the substitution
+            subst.insert(tv, ty.clone());
         }
 
-        for (var, ty) in self.skol_map.iter() {
-            match self.subst.get(var).cloned() {
-                Some(other_ty) if other_ty.has_unknowns() => {
-                    let sub = other_ty.mgu(ty).unwrap_or_default();
-                    self.subst.union_inplace(sub);
-                }
-                _ => continue,
-            }
-        }
+        // let subst = self.subst.clone();
+        log::debug!("apply subst: {:#?}", subst);
+        self.subst.extend(subst);
+        self.apply_subst_changes();
 
-        let subst = self.subst.clone();
-        self.apply_subst_mut(&subst);
+        self.unformalized_inst_map.extend(self.inst_map.clone());
+
+        // for (var, ty) in self.skol_map.iter() {
+        //     match self.subst.get(var).cloned() {
+        //         Some(other_ty) if other_ty.has_unknowns() => {
+        //             log::debug!("ty: {}", ty);
+        //             log::debug!("other_ty: {}", other_ty);
+        //             let ty = ty.clone().apply_subst(&self.subst);
+        //             let other_ty = other_ty.apply_subst(&self.subst);
+        //             let sub = other_ty.mgu(&ty).unwrap_or_default();
+        //             log::debug!("sub: {}", sub);
+        //             self.subst.union_inplace(sub);
+        //         }
+        //         _ => continue,
+        //     }
+        // }
+
+        // let subst = self.subst.clone();
+        // self.apply_subst_mut(&subst);
+
+        // for (var, ty) in self.inst_map.iter() {
+        //     match self.subst.get(var).cloned() {
+        //         Some(other_ty) if other_ty.has_unknowns() => {
+        //             let ty = ty.clone().apply_subst(&self.subst);
+        //             let other_ty = other_ty.apply_subst(&self.subst);
+        //             log::debug!("ty: {}", ty);
+        //             log::debug!("other_ty: {}", other_ty);
+        //             let sub = other_ty.mgu(&ty).unwrap_or_default();
+        //             log::debug!("sub: {}", sub);
+        //             self.subst.union_inplace(sub);
+        //         }
+        //         _ => continue,
+        //     }
+        // }
+
+        // let subst = self.subst.clone();
+        // self.apply_subst_mut(&subst);
     }
 
     pub fn get_ty(&self, r: Ty) -> Result<Ty, InferError> {
@@ -220,8 +256,8 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         log::debug!("------------- Before constraint apply_subst ---------------");
         log::debug!("solution: {:#?}", solution);
         let mut check = check.apply_subst(&solution.subst);
-        check.qualify_tys(&solution.preds);
-        check.quantify_tys();
+        // check.qualify_tys(&solution.preds);
+        // check.quantify_tys();
 
         log::debug!("------------- Before formalization ---------------");
         log::debug!("constraints to check: {:#?}", check);
@@ -230,6 +266,8 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         solution.formalize_types();
 
         check = check.apply_subst(&solution.subst);
+        check.qualify_tys(&solution.preds);
+        check.quantify_tys();
 
         log::debug!("------------- After formalization ---------------");
         log::debug!("constraints to check: {:#?}", check);
@@ -288,8 +326,12 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
                 let s = self.find_ty(&r);
                 self.skol_ty(t.clone(), s.clone());
                 let (t_sub, skolems) = s.skolemize(&mut self.sf());
+                log::debug!("t_sub = {}", t_sub);
+                log::debug!("s = {}", s);
+                let skolem_subst = t_sub.mgu(&s).unwrap();
+                log::debug!("skolem_subst = {:#?}", skolem_subst);
                 let info = info.skol_ty(&s);
-                self.add_skolems(&info, skolems, monos);
+                self.add_skolems(&info, skolems, monos, skolem_subst);
 
                 let (p, t_sub) = t_sub.unpack_qualified_ty();
                 for pred in p {

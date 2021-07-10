@@ -58,6 +58,8 @@ pub enum TokenKind {
     Trait,
     /// impl
     Impl,
+    /// object
+    Object,
     /// type
     TypeAlias,
     /// nil
@@ -227,6 +229,7 @@ impl TokenKind {
             TokenKind::Enum => "`enum`",
             TokenKind::Trait => "`trait`",
             TokenKind::Impl => "`impl`",
+            TokenKind::Object => "`object`",
             TokenKind::Nil => "`nil`",
             TokenKind::With => "`with`",
             TokenKind::Import => "`import`",
@@ -343,6 +346,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Enum => "enum".to_string(),
             TokenKind::Trait => "trait".to_string(),
             TokenKind::Impl => "impl".to_string(),
+            TokenKind::Object => "object".to_string(),
             TokenKind::TypeAlias => "typealias".to_string(),
             TokenKind::With => "with".to_string(),
             TokenKind::Nil => "nil".to_string(),

@@ -23,7 +23,7 @@ impl lir::Program {
         let path = module.path.clone();
         let prog = Rc::new(RefCell::new(lir::Program::new(path)));
         let start_idx = {
-            let mut ctx = GenCtx::new(Rc::clone(&prog), solution.inst_map.clone());
+            let mut ctx = GenCtx::new(Rc::clone(&prog), solution.unformalized_inst_map.clone());
             module.decls.lir_gen(&mut ctx, tcx)?;
 
             if !module.is_lib {
@@ -151,6 +151,7 @@ pub struct GenCtx {
     builder: Option<lir::Builder>,
     fn_idx: HashMap<String, usize>,
     data_idx: HashMap<Vec<u8>, usize>,
+    global_idx: HashMap<String, usize>,
     inst_map: Subst,
 }
 
@@ -176,6 +177,7 @@ impl GenCtx {
             builder: None,
             fn_idx: HashMap::new(),
             data_idx: HashMap::new(),
+            global_idx: HashMap::new(),
             inst_map,
         }
     }
@@ -222,6 +224,20 @@ impl GenCtx {
     fn is_extern(&self, name: &Path) -> bool {
         let prog = self.prog.borrow();
         prog.extern_map.contains_key(name)
+    }
+
+    fn new_global(&mut self, name: &Path, init_value: lir::Value, ty: Ty, mutable: bool) {
+        let mut prog = self.prog.borrow_mut();
+        let idx = prog.globals.len();
+        let name = name.to_string();
+        self.global_idx.insert(name.clone(), idx);
+        prog.globals.push(lir::Global {
+            idx,
+            name,
+            ty,
+            init_value,
+            mutable,
+        });
     }
 
     fn add_trait_member(&mut self, name: Path) {
@@ -330,6 +346,7 @@ pub type GenResult = lir::Value;
 
 fn get_poly_ty<T>(callee: &Node<T>, ctx: &mut GenCtx, tcx: &TyCtx) -> Option<Ty> {
     if let Ty::Var(original_ty) = tcx.original_ty_of(callee) {
+        log::debug!("looking for {} in\n{:#?}", original_ty, ctx.inst_map);
         ctx.inst_map.get(&original_ty).and_then(|t| {
             if t.is_polymorphic() {
                 Some(t.clone())
@@ -722,6 +739,7 @@ impl LirGen<GenResult> for (&Expr, &Ty) {
 
                 let val = if let Some(fn_name) = fn_name {
                     log::debug!("add sym: {}", fn_name);
+                    log::debug!("poly_ty: {:?}", poly_ty);
                     ctx.add_sym(fn_name.clone());
                     lir::Call::new(fn_name, call_args, fn_ty.clone(), poly_ty)
                 } else {
@@ -934,6 +952,10 @@ impl LirGen<GenResult> for (&Path, &Ty) {
     fn lir_gen(&self, ctx: &mut GenCtx, _: &TyCtx) -> RayResult<GenResult> {
         let &(path, ty) = self;
         let name = path.to_string();
+        if let Some(&global) = ctx.global_idx.get(&name) {
+            return Ok(lir::Variable::Global(global).into());
+        }
+
         let loc = ctx.get_var(&name).copied().unwrap_or_else(|| {
             // variable not defined in the current block
             let idx = ctx.local(ty.clone());
@@ -1153,9 +1175,10 @@ impl LirGen<GenResult> for Node<Expr> {
 
 impl LirGen<GenResult> for Node<Decl> {
     fn lir_gen(&self, ctx: &mut GenCtx, tcx: &TyCtx) -> RayResult<GenResult> {
-        let ty = tcx.ty_of(self.id);
+        log::debug!("getting type of: {:?}", self);
         match &self.value {
             Decl::Fn(func) => {
+                let ty = tcx.ty_of(self.id);
                 let node = Node::with_id(self.id, func);
                 return (&node, &ty).lir_gen(ctx, tcx);
             }
@@ -1168,6 +1191,15 @@ impl LirGen<GenResult> for Node<Decl> {
                 }
             }
             Decl::Impl(imp) => {
+                if let Some(consts) = &imp.consts {
+                    for const_node in consts {
+                        let ty = tcx.ty_of(const_node.lhs.id);
+                        let name = const_node.lhs.path().unwrap();
+                        let init_value = const_node.rhs.lir_gen(ctx, tcx)?;
+                        ctx.new_global(name, init_value, ty, false);
+                    }
+                }
+
                 if let Some(funcs) = &imp.funcs {
                     for func in funcs {
                         let ty = tcx.ty_of(func.id);
@@ -1187,6 +1219,7 @@ impl LirGen<GenResult> for Node<Decl> {
                         ctx.new_extern(name.path.clone(), ty, is_mutable, vec![], src.clone());
                     }
                     Decl::FnSig(sig) => {
+                        let ty = tcx.ty_of(self.id);
                         ctx.new_extern(
                             sig.path.clone(),
                             ty.clone(),

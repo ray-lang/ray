@@ -201,6 +201,7 @@ impl Lexer {
             "enum" => TokenKind::Enum,
             "trait" => TokenKind::Trait,
             "impl" => TokenKind::Impl,
+            "object" => TokenKind::Object,
             "typealias" => TokenKind::TypeAlias,
             "with" => TokenKind::With,
             "import" => TokenKind::Import,

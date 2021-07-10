@@ -82,9 +82,16 @@ impl Pattern {
         ))
     }
 
-    pub fn path(&self) -> Option<Path> {
+    pub fn path(&self) -> Option<&Path> {
         match self {
-            Pattern::Name(n) | Pattern::Deref(n) => Some(n.path.clone()),
+            Pattern::Name(n) | Pattern::Deref(n) => Some(&n.path),
+            Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+        }
+    }
+
+    pub fn path_mut(&mut self) -> Option<&mut Path> {
+        match self {
+            Pattern::Name(n) | Pattern::Deref(n) => Some(&mut n.path),
             Pattern::Sequence(_) | Pattern::Tuple(_) => None,
         }
     }

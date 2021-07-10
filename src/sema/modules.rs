@@ -17,52 +17,8 @@ use std::{
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
-pub fn get_root_module(path: &FilePath, is_entrypoint: bool) -> Result<FilePath, RayError> {
-    if path.exists() && !path.is_dir() {
-        Ok(path.clone())
-    } else if path.is_dir() {
-        // we found a directory matching the name of the module
-        // let's look for a .raylib, mod.ray, module.ray, or BASE.ray file
-        // note: .raylib must be first
-        let base = path.file_name();
-        for name in [".raylib", "module.ray", "mod.ray", &format!("{}.ray", base)].iter() {
-            if *name == ".raylib" && is_entrypoint {
-                // we want to ignore .raylib in the case that we're building
-                // the module that is contained in the .raylib itself
-                continue;
-            }
-
-            let fp = path / name;
-            if fp.exists() {
-                return Ok(fp);
-            }
-        }
-
-        Err(RayError {
-            msg: format!(
-                "No root module file. mod.ray, module.ray, or {base}.ray should exist in the directory {path}",
-                base=base, path=path
-            ),
-            src: vec![Source {
-                filepath: path.clone(),
-                ..Default::default()
-            }],
-            kind: RayErrorKind::Import,
-        })
-    } else {
-        Err(RayError {
-            msg: format!("{} does not exist or is not a directory", path),
-            src: vec![Source {
-                filepath: path.clone(),
-                ..Default::default()
-            }],
-            kind: RayErrorKind::IO,
-        })
-    }
-}
-
 #[derive(Debug)]
-pub struct ModuleBuilder<A, B>
+pub struct ModuleBuilder<'a, A, B>
 where
     A: std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Debug + Clone + PartialEq + Eq,
@@ -70,16 +26,22 @@ where
     pub modules: HashMap<ast::Path, Module<A, B>>,
     pub srcmaps: HashMap<ast::Path, SourceMap>,
     pub libs: HashMap<ast::Path, RayLib>,
+    no_core: bool,
     input_paths: HashSet<ast::Path>,
-    paths: RayPaths,
+    paths: &'a RayPaths,
     c_include_paths: Vec<FilePath>,
 }
 
-impl ModuleBuilder<Expr, Decl> {
-    pub fn new(paths: RayPaths, c_include_paths: Vec<FilePath>) -> ModuleBuilder<Expr, Decl> {
+impl ModuleBuilder<'_, Expr, Decl> {
+    pub fn new(
+        paths: &RayPaths,
+        c_include_paths: Vec<FilePath>,
+        no_core: bool,
+    ) -> ModuleBuilder<Expr, Decl> {
         ModuleBuilder {
             paths,
             c_include_paths,
+            no_core,
             modules: HashMap::new(),
             srcmaps: HashMap::new(),
             libs: HashMap::new(),
@@ -130,13 +92,15 @@ impl ModuleBuilder<Expr, Decl> {
         // collect from imports
         let mut imports = vec![];
 
-        // first add the core if it hasn't been added already
-        let core_path = ast::Path::from(vec![str!("core")]);
-        if !self.input_paths.contains(&core_path) {
-            let core_fp = &self.paths.get_stdlib_path() / "core";
-            match self.build_from_path(&core_fp, Some(core_path)) {
-                Ok(m) => imports.push(m),
-                Err(e) => errs.extend(e),
+        if !self.no_core {
+            // first add the core if it hasn't been added already
+            let core_path = ast::Path::from(vec![str!("core")]);
+            if !self.input_paths.contains(&core_path) {
+                let core_fp = &self.paths.get_stdlib_path() / "core";
+                match self.build_from_path(&core_fp, Some(core_path)) {
+                    Ok(m) => imports.push(m),
+                    Err(e) => errs.extend(e),
+                }
             }
         }
 
@@ -225,8 +189,7 @@ impl ModuleBuilder<Expr, Decl> {
         input_path: &FilePath,
         module_path: Option<ast::Path>,
     ) -> Result<ast::Path, Vec<RayError>> {
-        let is_entrypoint = module_path.is_none();
-        let root_fp = get_root_module(input_path, is_entrypoint)?;
+        let root_fp = self.get_root_module(input_path, &module_path)?;
         let module_path = module_path.unwrap_or_else(|| ast::Path::from(input_path.clone()));
 
         // check if module has already been built
@@ -265,6 +228,67 @@ impl ModuleBuilder<Expr, Decl> {
             },
             srcmap,
         )
+    }
+
+    pub fn get_root_module(
+        &self,
+        path: &FilePath,
+        module_path: &Option<ast::Path>,
+    ) -> Result<FilePath, RayError> {
+        // first if not an entrypoint, check if there's a
+        // pre-built .raylib in the build cache on disk
+        let is_entrypoint = module_path.is_none();
+        if let Some(module_path) = module_path {
+            let build_path = self.paths.get_build_path();
+            log::debug!("build_path: {}", build_path);
+            let lib_path = (build_path / module_path.join("#")).with_extension("raylib");
+            log::debug!("lib_path: {}", lib_path);
+            if lib_path.exists() {
+                return Ok(lib_path);
+            }
+        }
+
+        if path.exists() && !path.is_dir() {
+            Ok(path.clone())
+        } else if path.is_dir() {
+            // we found a directory matching the name of the module
+            // let's look for a .raylib, mod.ray, module.ray, or BASE.ray file
+            // note: .raylib must be first
+            let base = path.file_name();
+            for name in [".raylib", "module.ray", "mod.ray", &format!("{}.ray", base)].iter() {
+                if *name == ".raylib" && is_entrypoint {
+                    // we want to ignore .raylib in the case that we're building
+                    // the module that is contained in the .raylib itself
+                    continue;
+                }
+
+                let fp = path / name;
+                if fp.exists() {
+                    return Ok(fp);
+                }
+            }
+
+            Err(RayError {
+                msg: format!(
+                    "No root module file. mod.ray, module.ray, or {base}.ray should exist in the directory {path}",
+                    base=base, path=path
+                ),
+                src: vec![Source {
+                    filepath: path.clone(),
+                    ..Default::default()
+                }],
+                kind: RayErrorKind::Import,
+            })
+        } else {
+            Err(RayError {
+                msg: format!("{} does not exist or is not a directory", path),
+                src: vec![Source {
+                    filepath: path.clone(),
+                    ..Default::default()
+                }],
+                kind: RayErrorKind::IO,
+            })
+        }
     }
 
     fn load_library(&mut self, lib_path: FilePath, module_path: &ast::Path) -> RayResult<()> {

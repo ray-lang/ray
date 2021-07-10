@@ -35,6 +35,9 @@ pub struct BuildOptions {
     #[structopt(long = "skip-compile", short = "K", help = "Skip compilation step")]
     pub no_compile: bool,
 
+    #[structopt(long, help = "Disable automatic import of `core` library")]
+    pub no_core: bool,
+
     #[structopt(
         long,
         short,

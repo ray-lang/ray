@@ -9,9 +9,12 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ast::Path,
     typing::ty::{Ty, TyVar},
+    utils::replace,
 };
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+use super::{ApplySubst, Subst};
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TyEnv(HashMap<Path, Ty>);
 
 impl std::fmt::Debug for TyEnv {
@@ -63,6 +66,15 @@ where
             env.remove(k);
         }
         env
+    }
+}
+
+impl ApplySubst for TyEnv {
+    fn apply_subst(mut self, subst: &Subst) -> Self {
+        for (_, ty) in self.iter_mut() {
+            replace(ty, |ty| ty.apply_subst(&subst));
+        }
+        self
     }
 }
 

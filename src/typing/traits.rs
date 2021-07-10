@@ -73,7 +73,13 @@ pub trait HasState {
 
     fn find_ty(&self, r: &Ty) -> Ty;
 
-    fn add_skolems(&mut self, info: &ConstraintInfo, skolems: Vec<TyVar>, monos: Vec<TyVar>);
+    fn add_skolems(
+        &mut self,
+        info: &ConstraintInfo,
+        skolems: Vec<TyVar>,
+        monos: Vec<TyVar>,
+        skolem_subst: Subst,
+    );
 }
 
 pub trait HasPredicates {

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     errors::{RayError, RayErrorKind},
     span::{Source, SourceMap},
-    typing::state::TyEnv,
+    typing::{state::TyEnv, subst::ApplySubst},
 };
 
 use super::{
@@ -72,6 +72,9 @@ impl<'tcx> InferSystem<'tcx> {
         if errs.len() != 0 {
             Err(errs)
         } else {
+            log::debug!("defs before apply: {:#?}", defs);
+            let defs = defs.apply_subst(&solution.subst);
+            log::debug!("defs after apply: {:#?}", defs);
             Ok((solution, defs))
         }
     }

@@ -71,12 +71,19 @@ impl Polymorphize for TyVar {
 }
 
 impl TyVar {
+    #[inline(always)]
     pub fn path(&self) -> &Path {
         &self.0
     }
 
+    #[inline(always)]
     pub fn path_mut(&mut self) -> &mut Path {
         &mut self.0
+    }
+
+    #[inline(always)]
+    pub fn is_ret_placeholder(&self) -> bool {
+        matches!(self.path().name().as_deref(), Some("'%r"))
     }
 }
 
@@ -256,7 +263,7 @@ impl ApplySubst for Ty {
                 let xs = xs
                     .apply_subst(subst)
                     .into_iter()
-                    .filter(|x| freevars.contains(x))
+                    .filter(|x| !x.is_ret_placeholder() && freevars.contains(x))
                     .collect::<Vec<_>>();
                 if xs.len() == 0 {
                     *ty
@@ -276,7 +283,7 @@ impl Generalize for Ty {
         let mut i = 0;
         while i < tyvars.len() {
             let t = &tyvars[i];
-            if freevars.contains(&t) {
+            if t.is_ret_placeholder() || freevars.contains(&t) {
                 tyvars.remove(i);
             } else {
                 i += 1;
@@ -502,7 +509,11 @@ impl Ty {
             }
         }
 
-        let mut ret_ty = sig.ret_ty.as_deref().cloned().unwrap_or_default();
+        let mut ret_ty = sig
+            .ret_ty
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| Ty::Var(TyVar("%r".into())));
         ret_ty.resolve_ty(&fn_scope, fn_tcx);
 
         let mut ty = Ty::Func(param_tys, Box::new(ret_ty));
@@ -515,18 +526,8 @@ impl Ty {
             ty = Ty::Qualified(p, Box::new(ty));
         }
 
-        let free_vars = parent_tcx.free_vars();
-        let ty_vars = ty
-            .collect_tyvars()
-            .into_iter()
-            .filter(|tv| !free_vars.contains(tv))
-            .collect::<Vec<_>>();
-
-        Ok(if ty_vars.len() != 0 {
-            Ty::All(ty_vars, Box::new(ty))
-        } else {
-            ty
-        })
+        let freevars = parent_tcx.free_vars();
+        Ok(ty.quantify_with_freevars(&freevars))
     }
 
     pub fn resolve_ty(&mut self, scope: &ast::Path, tcx: &mut TyCtx) {
@@ -849,17 +850,35 @@ impl Ty {
     pub fn quantify_in_place(&mut self) {
         let tyvars = self.collect_tyvars();
         if tyvars.len() != 0 {
-            replace(self, |old_ty| {
-                Ty::All(
-                    tyvars,
-                    if let Ty::All(_, old_ty) = old_ty {
-                        old_ty
-                    } else {
-                        Box::new(old_ty)
-                    },
-                )
-            });
+            let freevars = HashSet::new();
+            replace(self, |ty| ty.quantify_with_freevars(&freevars));
+
+            // replace(self, |old_ty| {
+            //     Ty::All(
+            //         tyvars,
+            //         if let Ty::All(_, old_ty) = old_ty {
+            //             old_ty
+            //         } else {
+            //             Box::new(old_ty)
+            //         },
+            //     )
+            // });
         }
+    }
+
+    pub fn quantify_with_freevars(self, freevars: &HashSet<&TyVar>) -> Ty {
+        let mut tyvars = self.collect_tyvars();
+        let mut i = 0;
+        while i < tyvars.len() {
+            let t = &tyvars[i];
+            if t.is_ret_placeholder() || freevars.contains(&t) {
+                tyvars.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        self.quantify(tyvars)
     }
 
     pub fn unquantify(self) -> Ty {
@@ -1059,6 +1078,7 @@ impl Ty {
             }
             (Ty::All(_, s), t) => s.unify_with(t, f, g),
             (s, Ty::All(_, t)) => s.unify_with(t, f, g),
+            (s, t) if s == t => Ok((f(Subst::new()), vec![])),
             _ => {
                 return Err(InferError {
                     msg: format!("type mismatch `{}` and `{}`", self, other),

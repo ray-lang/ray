@@ -23,9 +23,18 @@
                 "--log-level",
                 "debug",
                 "build",
+                // "--no-core",
                 "--print-ast",
-                "examples/scratch.ray"
+                "examples/ptrs.ray"
             ],
+            // "args": [
+            //     "--log-level",
+            //     "debug",
+            //     "build",
+            //     "--print-ast",
+            //     "--lib",
+            //     "lib/core"
+            // ],
             "cwd": "${workspaceFolder}"
         },
         {

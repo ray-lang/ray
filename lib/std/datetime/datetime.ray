@@ -1,45 +1,45 @@
 struct DateTime {
-    year: usize
-    month: usize
-    day: usize
-    hour: usize
-    minute: usize
-    second: usize
-    millisecond: usize
-    offset: usize
+    year: uint
+    month: uint
+    day: uint
+    hour: uint
+    minute: uint
+    second: uint
+    millisecond: uint
+    offset: uint
 }
 
 impl DateTime {
     const ONE_MINUTE = 60
     const ONE_HOUR = 60 * ONE_MINUTE
 
-    static fn now() -> DateTime {
+    fn now() -> DateTime {
         y, mo, day, hr, min, sec, ms, offset = _builtin_now()
         DateTime(y, mo, day, hr, min, sec, ms, offset)
     }
 
-    static fn utc() -> DateTime {
+    fn utc() -> DateTime {
         y, mo, day, hr, min, sec, ms, offset = _builtin_utcnow()
         DateTime(y, mo, day, hr, min, sec, ms, offset)
     }
 
-    fn iso() -> String {
+    fn iso(self) -> string {
         ONE_MINUTE = 60
         ONE_HOUR = 60 * ONE_MINUTE
 
-        y = self.year.to_string()
-        mo = self.month.to_string().lpad("0", 2)
-        day = self.day.to_string().lpad("0", 2)
-        hr = self.hour.to_string().lpad("0", 2)
-        min = self.minute.to_string().lpad("0", 2)
-        sec = self.second.to_string().lpad("0", 2)
-        ms = self.millisecond.to_string().lpad("0", 3)
+        y = self.year.to_str()
+        mo = self.month.to_str().lpad("0", 2)
+        day = self.day.to_str().lpad("0", 2)
+        hr = self.hour.to_str().lpad("0", 2)
+        min = self.minute.to_str().lpad("0", 2)
+        sec = self.second.to_str().lpad("0", 2)
+        ms = self.millisecond.to_str().lpad("0", 3)
 
         mut o = self.offset
         offset = if o != 0 {
             // offset is in seconds, convert to +/-HH:MM:SS
             sign = if o < 0 {
-                o = o * -1 // TODO: abs(...)?
+                o = abs(o)
                 "-"
             } else {
                 "+"
@@ -69,6 +69,6 @@ impl DateTime {
     }
 }
 
-impl DateTime: ToString {
-    fn to_string() -> String => self.iso()
+impl ToStr[DateTime] {
+    fn to_str() -> string => self.iso()
 }

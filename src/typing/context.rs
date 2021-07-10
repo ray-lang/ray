@@ -71,6 +71,8 @@ impl TyCtx {
         self.original_ty_map.extend(other.original_ty_map);
         self.ty_map.extend(other.ty_map);
         self.fqns.extend(other.fqns);
+        self.infix_ops.extend(other.infix_ops);
+        self.prefix_ops.extend(other.prefix_ops);
         self.struct_tys.extend(other.struct_tys);
         self.traits.extend(other.traits);
         self.impls.extend(other.impls);
@@ -123,6 +125,18 @@ impl TyCtx {
             parts.push(name.clone());
             Path::from(parts)
         })
+    }
+
+    pub fn resolve_path(&self, scopes: &Vec<Path>, path: &Path) -> Option<Path> {
+        let scopes = scopes.iter().map(Path::to_vec).collect::<Vec<_>>();
+        let parts = path.to_vec();
+        self.nametree
+            .find_from_parts_in_scopes(&scopes, &parts)
+            .map(|scope_parts| {
+                let mut new_path = Path::from(scope_parts.clone());
+                new_path.extend_mut(parts.into_iter());
+                new_path
+            })
     }
 
     pub fn lookup_fqn(&self, name: &String) -> Option<&Path> {

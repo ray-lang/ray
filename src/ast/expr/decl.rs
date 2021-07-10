@@ -114,7 +114,8 @@ pub struct Impl {
     pub qualifiers: Vec<Parsed<Ty>>,
     pub externs: Option<Vec<Node<Decl>>>,
     pub funcs: Option<Vec<Node<Decl>>>,
-    pub consts: Option<Vec<Node<Expr>>>,
+    pub consts: Option<Vec<Node<Assign>>>,
+    pub is_object: bool,
 }
 
 impl std::fmt::Display for Decl {

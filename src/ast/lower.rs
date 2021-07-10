@@ -424,7 +424,11 @@ impl LowerAST for Sourced<'_, Impl> {
             Ty::Projection(name, ty_params) => (name.clone(), ty_params.clone()),
             t => {
                 return Err(RayError {
-                    msg: format!("`{}` is not a valid trait", t),
+                    msg: format!(
+                        "`{}` is not a valid {}",
+                        t,
+                        if imp.is_object { "class" } else { "trait" }
+                    ),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
                 })
@@ -432,7 +436,7 @@ impl LowerAST for Sourced<'_, Impl> {
         };
 
         // traits should only have one type parameter
-        if ty_params.len() != 1 {
+        if !imp.is_object && ty_params.len() != 1 {
             return Err(RayError {
                 msg: format!("expected one type argument but found {}", ty_params.len()),
                 src: vec![src.respan(*imp.ty.span().unwrap())],
@@ -443,14 +447,24 @@ impl LowerAST for Sourced<'_, Impl> {
         // lookup the trait in the context
         let trait_fqn = Path::from(trait_name.as_str());
         log::debug!("found fqn: {}", trait_fqn);
-        let trait_ty = match tcx.get_trait_ty(&trait_fqn) {
-            Some(t) => t.clone(),
-            _ => {
-                return Err(RayError {
-                    msg: format!("trait `{}` is not defined", trait_fqn),
-                    src: vec![src.respan(*imp.ty.span().unwrap())],
-                    kind: RayErrorKind::Type,
-                })
+        let trait_ty = if imp.is_object {
+            // we construct a special "object" trait for object implementations
+            TraitTy {
+                path: Path::from("core::object"),
+                ty: Ty::Projection(str!("object"), vec![Ty::var("core::object::'a")]),
+                super_traits: vec![],
+                fields: vec![],
+            }
+        } else {
+            match tcx.get_trait_ty(&trait_fqn) {
+                Some(t) => t.clone(),
+                _ => {
+                    return Err(RayError {
+                        msg: format!("trait `{}` is not defined", trait_fqn),
+                        src: vec![src.respan(*imp.ty.span().unwrap())],
+                        kind: RayErrorKind::Type,
+                    })
+                }
             }
         };
 
@@ -466,11 +480,27 @@ impl LowerAST for Sourced<'_, Impl> {
             }
         };
 
-        let base_ty = ty_params[0].clone();
+        let base_ty = if imp.is_object {
+            imp.ty.deref().clone()
+        } else {
+            ty_params[0].clone()
+        };
         let impl_scope = base_ty.get_path().unwrap();
         log::debug!("impl fqn: {}", impl_scope);
         let mut impl_ctx = tcx.clone();
         let mut impl_set = HashSet::new();
+
+        // consts have to be first in case they're used inside of functions
+        if let Some(consts) = &mut imp.consts {
+            for const_node in consts {
+                const_node.lower(srcmap, scope_map, tcx)?;
+                let path = const_node.lhs.path_mut().unwrap();
+                let name = path.name().unwrap();
+                *path = impl_scope.append(&name);
+                tcx.nametree_mut().add_full_name(&path.to_vec());
+            }
+        }
+
         if let Some(funcs) = &mut imp.funcs {
             for func in funcs {
                 let func_name = if let Decl::Fn(f) = &func.value {
@@ -493,8 +523,13 @@ impl LowerAST for Sourced<'_, Impl> {
 
                 if let Decl::Fn(f) = &mut func.value {
                     // make this a fully-qualified name
-                    f.sig.path = trait_fqn.append_type_args(&ty_params).append(&func_name);
+                    f.sig.path = if imp.is_object {
+                        trait_fqn.append(&func_name)
+                    } else {
+                        trait_fqn.append_type_args(&ty_params).append(&func_name)
+                    };
                     log::debug!("func fqn: {}", f.sig.path);
+                    tcx.nametree_mut().add_full_name(&f.sig.path.to_vec());
                 }
 
                 impl_set.insert(func_name);
@@ -520,8 +555,6 @@ impl LowerAST for Sourced<'_, Impl> {
                 });
             }
         }
-
-        // TODO: consts
 
         // create a subst mapping the type parameter to the argument
         let sub = subst! { ty_param => base_ty.clone() };
@@ -599,7 +632,7 @@ impl LowerAST for Sourced<'_, Fn> {
             panic!("cannot infer type of only some parameters");
         }
 
-        if num_typed == func.sig.params.len() {
+        if num_typed != 0 && num_typed == func.sig.params.len() {
             func.sig.ty = Some(Ty::from_sig(
                 &func.sig,
                 &func_fqn,
@@ -654,7 +687,7 @@ impl LowerAST for Node<Expr> {
             Expr::Name(n) => Sourced(n, &src).lower(srcmap, scope_map, tcx),
             Expr::New(n) => Sourced(n, &src).lower(srcmap, scope_map, tcx),
             Expr::Pattern(p) => Sourced(p, &src).lower(srcmap, scope_map, tcx),
-            Expr::Path(_) => Ok(()),
+            Expr::Path(p) => Sourced(p, &src).lower(srcmap, scope_map, tcx),
             Expr::Paren(ex) => ex.lower(srcmap, scope_map, tcx),
             Expr::Range(r) => r.lower(srcmap, scope_map, tcx),
             Expr::Return(_) => todo!("lower: Expr::Return: {:?}", self),
@@ -751,10 +784,9 @@ impl LowerAST for Sourced<'_, ast::BinOp> {
         tcx: &mut TyCtx,
     ) -> RayResult<Self::Output> {
         let (binop, _) = self.unpack_mut();
-        let mut lhs = binop.lhs.as_ref().clone();
-        lhs.lower(srcmap, scope_map, tcx)?;
-        let mut rhs = binop.rhs.as_ref().clone();
-        rhs.lower(srcmap, scope_map, tcx)?;
+        binop.lhs.lower(srcmap, scope_map, tcx)?;
+        binop.rhs.lower(srcmap, scope_map, tcx)?;
+        log::debug!("lowered binop: {:?}", binop);
         Ok(())
     }
 }
@@ -962,6 +994,29 @@ impl LowerAST for Sourced<'_, ast::New> {
     }
 }
 
+impl LowerAST for Sourced<'_, ast::Path> {
+    type Output = ();
+
+    fn lower(
+        &mut self,
+        _: &mut SourceMap,
+        scope_map: &HashMap<Path, Vec<Path>>,
+        tcx: &mut TyCtx,
+    ) -> RayResult<Self::Output> {
+        let scopes = scope_map.get(self.src_module()).unwrap();
+        log::debug!(
+            "looking for name `{}` in scopes: {:?}",
+            self.deref().deref(),
+            scopes
+        );
+        if let Some(fqn) = tcx.resolve_path(scopes, &self) {
+            log::debug!("fqn for `{}`: {}", self.deref().deref(), fqn);
+            *self.deref_mut() = fqn.clone();
+        }
+        Ok(())
+    }
+}
+
 impl LowerAST for Sourced<'_, ast::Pattern> {
     type Output = ();
 
@@ -1034,8 +1089,7 @@ impl LowerAST for Sourced<'_, ast::UnaryOp> {
         tcx: &mut TyCtx,
     ) -> RayResult<Self::Output> {
         let (unop, _) = self.unpack_mut();
-        let mut expr = unop.expr.as_ref().clone();
-        expr.lower(srcmap, scope_map, tcx)?;
+        unop.expr.lower(srcmap, scope_map, tcx)?;
         Ok(())
     }
 }

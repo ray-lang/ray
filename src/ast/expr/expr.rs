@@ -115,7 +115,7 @@ impl Expr {
         match self {
             Expr::Name(n) => Some(n.path.clone()),
             Expr::Fn(f) => Some(f.sig.path.clone()),
-            Expr::Pattern(p) => p.path(),
+            Expr::Pattern(p) => p.path().cloned(),
             Expr::Path(p) => Some(p.clone()),
             Expr::Assign(_)
             | Expr::Asm(_)

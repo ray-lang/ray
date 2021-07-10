@@ -15,12 +15,16 @@ mod build;
 
 pub use build::BuildOptions;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RayPaths {
     root: FilePath,
 }
 
 impl RayPaths {
+    pub fn get_build_path(&self) -> FilePath {
+        &self.root / "build"
+    }
+
     pub fn get_stdlib_path(&self) -> FilePath {
         &self.root / "lib"
     }
@@ -59,7 +63,7 @@ impl Driver {
         };
         let mut c_include_paths = options.c_include_paths.clone().unwrap_or_else(|| vec![]);
         c_include_paths.insert(0, paths.get_c_includes_path());
-        let mut mod_builder = sema::ModuleBuilder::new(paths, c_include_paths);
+        let mut mod_builder = sema::ModuleBuilder::new(&paths, c_include_paths, options.no_core);
         let mod_path = mod_builder.build_from_path(&options.input_path, None)?;
         if options.print_ast {
             for m in mod_builder.modules.values() {
@@ -87,6 +91,7 @@ impl Driver {
 
         log::debug!("{}", module);
         let mut inf = InferSystem::new(&mut tcx);
+        log::info!("type checking module...");
         let (solution, defs) = match inf.infer_ty(&module, &mut srcmap, lib_defs) {
             Ok(result) => result,
             Err(errs) => {
@@ -134,13 +139,17 @@ impl Driver {
         if options.build_lib {
             let lib = libgen::serialize(program, tcx, srcmap, defs);
             let path = output_path("raylib");
-            log::info!("writing to {}", path);
-            if let Some(err) = fs::write(path, lib).err() {
-                let ray_err: RayError = err.into();
-                Err(vec![ray_err])
-            } else {
-                Ok(())
+            let build_path = paths.get_build_path();
+            if !build_path.exists() {
+                fs::create_dir_all(build_path).map_err(|err| vec![err.into()])?;
             }
+
+            let cache_path = (paths.get_build_path() / mod_path.join("#")).with_extension("raylib");
+            log::info!("writing to {}", path);
+            // write to the build cache first
+            fs::write(cache_path, &lib)
+                .and_then(|_| fs::write(path, lib))
+                .map_err(|err| vec![err.into()])
         } else {
             program.monomorphize();
 

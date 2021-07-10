@@ -162,7 +162,7 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
                             self.entails(&i.predicates, ctx)
                         })
                 } else {
-                    false
+                    self.iter().all(|p| p == q)
                 }
             }
             TyPredicate::Literal(t, k) => match k {

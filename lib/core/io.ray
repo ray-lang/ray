@@ -4,7 +4,7 @@ fn puts(s: string) {
     _ = fd_write(1, io, 1, nwritten)
 }
 
-fn print(v: 'a) where ToStr['a] {
+fn print(v) {
     puts(v.to_str())
     puts("\n")
 }

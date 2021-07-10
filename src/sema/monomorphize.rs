@@ -244,9 +244,10 @@ impl Monomorphizer {
         if call.fn_ref.is_some() {
             return;
         }
+        let path = call.fn_name.clone();
+        log::debug!("path = {}", path);
         let callee_ty = call.ty.clone();
         let poly_ty = unless!(&call.poly_ty).clone();
-        let path = call.fn_name.clone();
         poly_refs.push(PolyFnRef {
             value: call,
             path,

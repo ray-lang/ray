@@ -1,11 +1,11 @@
-use super::{
-    DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, ParsedExpr, Parser, Restrictions,
-};
+use std::ops::Deref;
+
+use super::{DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, Parser, Restrictions};
 
 use crate::{
     ast::{
-        token::TokenKind, Decl, Decorator, Expr, Extern, Impl, Modifier, Name, Node, Struct,
-        Trailing, Trait,
+        token::TokenKind, Assign, Decl, Decorator, Expr, Extern, Impl, Modifier, Name, Node,
+        Pattern, Struct, Trailing, Trait,
     },
     errors::{RayError, RayErrorKind},
     span::{parsed::Parsed, Pos, Span},
@@ -32,7 +32,7 @@ impl Parser<'_> {
         start: Pos,
         only_sigs: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<ParsedDecl>, Vec<ParsedDecl>, Vec<ParsedExpr>)> {
+    ) -> ParseResult<(Vec<ParsedDecl>, Vec<ParsedDecl>, Vec<Node<Assign>>)> {
         let mut funcs = vec![];
         let mut externs = vec![];
         let mut consts = vec![];
@@ -45,8 +45,30 @@ impl Parser<'_> {
                     // TODO: should this be wrapped in any way?
                     this.expect_sp(TokenKind::Const)?;
                     let ex = this.parse_expr(ctx)?;
-                    let end = this.srcmap.span_of(&ex).end;
-                    consts.push(ex);
+                    let span = this.srcmap.span_of(&ex);
+                    let ex_desc = ex.desc().to_string();
+                    let assign_node = ex.try_take_map(|ex| {
+                        maybe_variant!(ex, if Expr::Assign(a))
+                            .and_then(|assign| {
+                                if matches!(assign.lhs.deref(), Pattern::Name(_)) {
+                                    Some(assign)
+                                } else {
+                                    None
+                                }
+                            })
+                            .ok_or_else(|| {
+                                this.parse_error(
+                                    format!(
+                                        "expected a constant assignment expression, but found {}",
+                                        ex_desc,
+                                    ),
+                                    span,
+                                )
+                            })
+                    })?;
+
+                    let end = this.srcmap.span_of(&assign_node).end;
+                    consts.push(assign_node);
                     Ok(end)
                 }
                 TokenKind::Fn | TokenKind::Modifier(_) => {
@@ -258,6 +280,8 @@ impl Parser<'_> {
     ) -> ParseResult<(Impl, Span)> {
         let start = self.expect_start(TokenKind::Impl)?;
 
+        let is_object = expect_if!(self, TokenKind::Object);
+
         let ty = self.parse_ty()?;
         let mut end = ty.span().unwrap().end;
 
@@ -279,6 +303,7 @@ impl Parser<'_> {
                 funcs,
                 externs,
                 consts,
+                is_object,
             },
             Span { start, end },
         ))

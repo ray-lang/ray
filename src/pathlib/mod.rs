@@ -32,6 +32,13 @@ impl FilePath {
         self.buf.exists()
     }
 
+    pub fn split(&self) -> Vec<String> {
+        self.buf
+            .into_iter()
+            .map(|os_str| os_str.to_owned().into_string().unwrap())
+            .collect::<Vec<_>>()
+    }
+
     pub fn push<P: AsRef<Path>>(&mut self, path: P) {
         self.buf.push(path);
     }

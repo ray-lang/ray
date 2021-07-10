@@ -1,6 +1,7 @@
-use std::{collections::HashSet, ops::Deref};
+use std::{collections::HashSet, iter::Peekable, ops::Deref};
 
 use ast::Module;
+use itertools::Itertools;
 
 use crate::{
     ast,
@@ -45,7 +46,9 @@ impl CollectPatterns for Node<Pattern> {
 }
 
 impl CollectDeclarations for Node<Decl> {
-    fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
+    type Output = Vec<(BindingGroup, TyEnv)>;
+
+    fn collect_decls(&self, ctx: &mut CollectCtx) -> Vec<(BindingGroup, TyEnv)> {
         let src = ctx.srcmap.get(self);
         let (ty, bg, env) = match &self.value {
             Decl::Extern(ext) => {
@@ -95,41 +98,68 @@ impl CollectDeclarations for Node<Decl> {
             }
             Decl::TypeAlias(d, _) => todo!("collect_decls: Decl::TypeAlias: {:?}", d),
             Decl::Impl(imp) => {
-                let mut env = TyEnv::new();
-                let mut bg = BindingGroup::empty().with_src(src.clone());
-                let self_ty = imp.ty.get_ty_param_at(0);
+                let mut decl_pairs = vec![];
+
+                let self_ty = if imp.is_object {
+                    imp.ty.deref()
+                } else {
+                    imp.ty.get_ty_param_at(0)
+                };
                 if let Some(funcs) = &imp.funcs {
                     for func_node in funcs {
                         let src = ctx.srcmap.get(func_node);
                         let func = variant!(&func_node.value, if Decl::Fn(f));
-                        let (fn_ty, fn_bg, fn_env) = (func, &src, Some(self_ty)).collect_decls(ctx);
+                        let self_ty = if func.sig.params.len() != 0 {
+                            Some(self_ty)
+                        } else {
+                            // a impl function with no parameters is static
+                            None
+                        };
+                        let (fn_ty, fn_bg, fn_env) = (func, &src, self_ty).collect_decls(ctx);
                         ctx.tcx.set_ty(func_node.id, fn_ty);
-                        log::debug!("bg = {:#?}", bg);
-                        log::debug!("fn_bg = {:#?}", fn_bg);
-                        bg.combine(fn_bg);
-                        env.extend(fn_env);
+                        log::debug!("fn_bg = {:?}", fn_bg);
+                        log::debug!("fn_env = {:?}", fn_env);
+
+                        decl_pairs.push((fn_bg, fn_env));
+                    }
+                }
+
+                if let Some(consts) = &imp.consts {
+                    for const_node in consts {
+                        let src = ctx.srcmap.get(const_node);
+                        let (const_ty, const_bg, const_env) =
+                            (&const_node.lhs, const_node.rhs.as_ref(), &src).collect_decls(ctx);
+                        // if let Some(path) = const_node.lhs.path() {
+                        //     const_env.insert(path.clone(), const_ty.clone());
+                        // }
+
+                        ctx.tcx.set_ty(const_node.id, Ty::unit());
+                        ctx.tcx.set_ty(const_node.lhs.id, const_ty);
+                        log::debug!("const_bg = {:?}", const_bg);
+                        log::debug!("const_env = {:?}", const_env);
+                        decl_pairs.push((const_bg, const_env));
                     }
                 }
 
                 if let Some(ext) = &imp.externs {
-                    for e in ext {
-                        let (_, ext_bg, ext_env) = e.collect_decls(ctx);
-                        bg.combine(ext_bg);
-                        env.extend(ext_env);
+                    for (ext_bg, ext_env) in ext.iter().flat_map(|e| e.collect_decls(ctx)) {
+                        decl_pairs.push((ext_bg, ext_env));
                     }
                 }
 
-                log::debug!("bg = {:#?}", bg);
-                (Ty::unit(), bg, env)
+                return decl_pairs;
             }
         };
 
-        ctx.tcx.set_ty(self.id, ty.clone());
-        (ty, bg, env)
+        log::debug!("set type of: {:?}", self);
+        ctx.tcx.set_ty(self.id, ty);
+        vec![(bg, env)]
     }
 }
 
 impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
+    type Output = (Ty, BindingGroup, TyEnv);
+
     fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
         let &(func, src, maybe_self_ty) = self;
 
@@ -214,7 +244,7 @@ impl<'a> CollectConstraints for Module<Expr, Decl> {
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let mut bgroups = vec![];
         let mut defs = TyEnv::new();
-        for (_, bg, decl_env) in self.decls.iter().map(|d| d.collect_decls(ctx)) {
+        for (bg, decl_env) in self.decls.iter().flat_map(|d| d.collect_decls(ctx)) {
             log::debug!("bg = {:#?}", bg);
             log::debug!("decl_env = {:#?}", decl_env);
             bgroups.push(bg);
@@ -222,6 +252,7 @@ impl<'a> CollectConstraints for Module<Expr, Decl> {
         }
 
         let mono_tys = HashSet::new();
+        log::debug!("defs: {:?}", defs);
         ctx.defs.extend(defs);
         let mut bga = BindingGroupAnalysis::new(bgroups, &ctx.defs, ctx.tcx.tf(), &mono_tys);
         let (_, aset, ct) = bga.analyze();
@@ -410,98 +441,98 @@ impl CollectConstraints for (&BinOp, &Source) {
     }
 }
 
-fn collect_expr_seq<'a, I>(exprs: I, ctx: &mut CollectCtx) -> (Ty, AssumptionSet, ConstraintTree)
-where
-    I: Iterator<Item = &'a Node<Expr>>,
-{
-    // SEQ = assign SEQ | expr SEQ | empty
-    enum State {
-        Exprs,
-        Assigns,
-    }
+// fn collect_expr_seq<'a, I>(exprs: I, ctx: &mut CollectCtx) -> (Ty, AssumptionSet, ConstraintTree)
+// where
+//     I: Iterator<Item = &'a Node<Expr>>,
+// {
+//     // SEQ = assign SEQ | expr SEQ | empty
+//     enum State {
+//         Exprs,
+//         Assigns,
+//     }
 
-    let mut aset = AssumptionSet::new();
-    let mut ty = Ty::unit();
-    let mut groups = vec![];
-    let mut ctrees = vec![];
-    let mut state = State::Assigns;
+//     let mut aset = AssumptionSet::new();
+//     let mut ty = Ty::unit();
+//     let mut groups = vec![];
+//     let mut ctrees = vec![];
+//     let mut state = State::Assigns;
 
-    for expr in exprs {
-        let src = ctx.srcmap.get(expr);
-        if let Expr::Assign(assign) = &expr.value {
-            let (lhs_ty, bg, _) = (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
-            ctx.tcx.set_ty(expr.id, Ty::unit());
-            ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
+//     for expr in exprs {
+//         let src = ctx.srcmap.get(expr);
+//         if let Expr::Assign(assign) = &expr.value {
+//             let (lhs_ty, bg, _) = (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
+//             ctx.tcx.set_ty(expr.id, Ty::unit());
+//             ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
 
-            // then check if there are any variables in the group
-            // that have already been defined and create constraints
-            let mut ctree = ConstraintTree::empty();
-            let lhs_src = ctx.srcmap.get(&assign.lhs);
-            for (var, ty) in bg.env().iter() {
-                if let Some(other_ty) = ctx.defs.get(&var) {
-                    log::debug!("already defined: {} :: {}", var, other_ty);
-                    log::debug!("creating equality constraint: {} == {}", ty, other_ty);
+//             // then check if there are any variables in the group
+//             // that have already been defined and create constraints
+//             let mut ctree = ConstraintTree::empty();
+//             let lhs_src = ctx.srcmap.get(&assign.lhs);
+//             for (var, ty) in bg.env().iter() {
+//                 if let Some(other_ty) = ctx.defs.get(&var) {
+//                     log::debug!("already defined: {} :: {}", var, other_ty);
+//                     log::debug!("creating equality constraint: {} == {}", ty, other_ty);
 
-                    // create an equality constraint
-                    ctree = AttachTree::new(
-                        EqConstraint::new(ty.clone(), other_ty.clone()).with_src(lhs_src.clone()),
-                        ctree,
-                    );
-                } else {
-                    // otherwise, add them to the definitions
-                    ctx.defs.insert(var.clone(), ty.clone());
-                }
-            }
+//                     // create an equality constraint
+//                     ctree = AttachTree::new(
+//                         EqConstraint::new(ty.clone(), other_ty.clone()).with_src(lhs_src.clone()),
+//                         ctree,
+//                     );
+//                 } else {
+//                     // otherwise, add them to the definitions
+//                     ctx.defs.insert(var.clone(), ty.clone());
+//                 }
+//             }
 
-            groups.push(bg);
-            ctrees.push(ctree);
+//             if matches!(state, State::Exprs) {
+//                 let ctree = ConstraintTree::from_vec(ctrees);
+//                 groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
+//                 log::debug!("env = {:#?}", ctx.defs);
+//                 let mut bga =
+//                     BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
+//                 let (_, groups_aset, ctree) = bga.analyze();
+//                 log::debug!("groups aset = {:#?}", groups_aset);
+//                 log::debug!("ctree = {:#?}", ctree);
+//                 aset = groups_aset;
+//                 groups = vec![];
+//                 ctrees = vec![ctree];
+//                 state = State::Assigns;
+//             }
 
-            if matches!(state, State::Exprs) {
-                let ctree = ConstraintTree::from_vec(ctrees);
-                groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
-                log::debug!("env = {:#?}", ctx.defs);
-                let mut bga =
-                    BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
-                let (_, groups_aset, ctree) = bga.analyze();
-                log::debug!("groups aset = {:#?}", groups_aset);
-                log::debug!("ctree = {:#?}", ctree);
-                aset = groups_aset;
-                groups = vec![];
-                ctrees = vec![ctree];
-                state = State::Assigns;
-            }
-        } else {
-            let (expr_ty, a, ct) = expr.collect_constraints(ctx);
-            ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-            ctx.tcx.set_ty(expr.id, ty.clone());
-            let c = EqConstraint::new(ty.clone(), expr_ty).with_src(src);
-            aset.extend(a);
-            ctrees.push(AttachTree::new(c, ct));
-            state = State::Exprs;
-        }
-    }
+//             groups.push(bg);
+//             ctrees.push(ctree);
+//         } else {
+//             let (expr_ty, a, ct) = expr.collect_constraints(ctx);
+//             ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+//             ctx.tcx.set_ty(expr.id, ty.clone());
+//             let c = EqConstraint::new(ty.clone(), expr_ty).with_src(src);
+//             aset.extend(a);
+//             ctrees.push(AttachTree::new(c, ct));
+//             state = State::Exprs;
+//         }
+//     }
 
-    let ctree = ConstraintTree::from_vec(ctrees);
-    let ty = if matches!(state, State::Exprs) {
-        ty
-    } else {
-        Ty::unit()
-    };
+//     let ctree = ConstraintTree::from_vec(ctrees);
+//     let ty = if matches!(state, State::Exprs) {
+//         ty
+//     } else {
+//         Ty::unit()
+//     };
 
-    if groups.len() != 0 {
-        log::debug!("aset = {:#?}", aset);
-        log::debug!("env = {:#?}", ctx.defs);
-        log::debug!("groups = {:#?}", groups);
-        groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
-        let mut bga = BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
-        let (_, aset, ctree) = bga.analyze();
-        log::debug!("bga aset = {:#?}", aset);
-        log::debug!("bga ctree = {:#?}", ctree);
-        (ty, aset, ctree)
-    } else {
-        (ty, aset, ctree)
-    }
-}
+//     if groups.len() != 0 {
+//         log::debug!("aset = {:#?}", aset);
+//         log::debug!("env = {:#?}", ctx.defs);
+//         log::debug!("groups = {:#?}", groups);
+//         groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
+//         let mut bga = BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
+//         let (_, aset, ctree) = bga.analyze();
+//         log::debug!("bga aset = {:#?}", aset);
+//         log::debug!("bga ctree = {:#?}", ctree);
+//         (ty, aset, ctree)
+//     } else {
+//         (ty, aset, ctree)
+//     }
+// }
 
 impl CollectConstraints for (&Block, &Source) {
     type Output = Ty;
@@ -510,8 +541,134 @@ impl CollectConstraints for (&Block, &Source) {
         &self,
         ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        // fn collect_expr_seq<'a, I>(
+        //     mut seq: Peekable<I>,
+        //     ctx: &mut CollectCtx,
+        // ) -> (Option<Ty>, AssumptionSet, ConstraintTree)
+        // where
+        //     I: Iterator<Item = &'a Node<Expr>>,
+        // {
+        //     // peek the next element
+        //     let next = unless!(seq.peek(), else {
+        //         return (None, AssumptionSet::new(), ConstraintTree::empty());
+        //     });
+
+        //     // check if the next element is not an assignment
+        //     if !matches!(next.value, Expr::Assign(_)) {
+        //         let (expr_ty, mut aset, expr_ct) = seq.next().unwrap().collect_constraints(ctx);
+        //         log::debug!("aset = {:?}", aset);
+        //         let (seq_ty, rest_aset, seq_ct) = collect_expr_seq(seq, ctx);
+        //         aset.extend(rest_aset);
+        //         return (
+        //             Some(seq_ty.unwrap_or(expr_ty)),
+        //             aset,
+        //             NodeTree::new(vec![expr_ct, seq_ct]),
+        //         );
+        //     }
+
+        //     // collect binding groups and environments from declarations
+        //     let (decl_bgroups, decl_envs): (Vec<_>, Vec<_>) = seq
+        //         .peeking_take_while(|node| matches!(node.value, Expr::Assign(_)))
+        //         .map(|node| {
+        //             let src = ctx.srcmap.get(node);
+        //             let assign = variant!(&node.value, if Expr::Assign(assign));
+        //             let (lhs_ty, bg, env) =
+        //                 (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
+        //             log::debug!("lhs_ty = {:?}", lhs_ty);
+        //             log::debug!("bg = {:?}", bg);
+        //             log::debug!("env = {:?}", env);
+
+        //             ctx.tcx.set_ty(node.id, Ty::unit());
+        //             ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
+        //             (bg, env)
+        //         })
+        //         .unzip();
+
+        //     // then collect the rest
+        //     let (ty, aset, ctree) = collect_expr_seq(seq, ctx);
+        //     let mut bg_groups = vec![BindingGroup::new(TyEnv::new(), aset, ctree)];
+        //     bg_groups.extend(decl_bgroups);
+
+        //     let mut defs = ctx.defs.clone();
+        //     for env in decl_envs {
+        //         defs.extend(env);
+        //     }
+
+        //     let mut bga = BindingGroupAnalysis::new(bg_groups, &defs, ctx.tcx.tf(), ctx.mono_tys);
+        //     let (_, aset, ctree) = bga.analyze();
+        //     log::debug!("ty = {:?}", ty);
+        //     log::debug!("aset = {:?}", aset);
+        //     (ty, aset, ctree)
+        // }
+        fn collect_expr_seq<'a, I>(
+            mut seq: Peekable<I>,
+            ctx: &mut CollectCtx,
+        ) -> (Option<Ty>, AssumptionSet, ConstraintTree)
+        where
+            I: Iterator<Item = &'a Node<Expr>>,
+        {
+            // peek the next element
+            let next = unless!(seq.peek(), else {
+                return (None, AssumptionSet::new(), ConstraintTree::empty());
+            });
+
+            // check if the next element is not an assignment
+            if !matches!(next.value, Expr::Assign(_)) {
+                let (expr_ty, mut aset, expr_ct) = seq.next().unwrap().collect_constraints(ctx);
+                log::debug!("aset = {:?}", aset);
+                let (seq_ty, rest_aset, seq_ct) = collect_expr_seq(seq, ctx);
+                aset.extend(rest_aset);
+                return (
+                    Some(seq_ty.unwrap_or(expr_ty)),
+                    aset,
+                    NodeTree::new(vec![expr_ct, seq_ct]),
+                );
+            }
+
+            // collect binding groups and environments from declarations
+            let node = seq.next().unwrap();
+            ctx.tcx.set_ty(node.id, Ty::unit());
+
+            let src = ctx.srcmap.get(node);
+            let assign = variant!(&node.value, if Expr::Assign(assign));
+
+            let (lhs_ty, env, ct1) = assign.lhs.collect_patterns(ctx.srcmap, ctx.tcx);
+            let (rhs_ty, mut rhs_aset, ct2) = assign.rhs.collect_constraints(ctx);
+            log::debug!("rhs_aset: {:?}", rhs_aset);
+            let eq = EqConstraint::new(lhs_ty.clone(), rhs_ty).with_src(src);
+            log::debug!("eq: {:?}", eq);
+            ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
+
+            // then collect the rest
+            let (ty, rest_aset, ct3) = collect_expr_seq(seq, ctx);
+            let cl = EqConstraint::lift(&rest_aset, &env);
+            rhs_aset.extend(rest_aset - env.keys());
+            log::debug!("rhs_aset: {:?}", rhs_aset);
+
+            let ctree = AttachTree::new(eq, NodeTree::new(vec![ct1, ct2, ct3]).spread_list(cl));
+
+            (Some(ty.unwrap_or_default()), rhs_aset, ctree)
+
+            // let mut bg_groups = vec![BindingGroup::new(TyEnv::new(), aset, ctree)];
+            // bg_groups.extend(decl_bgroups);
+
+            // let mut defs = ctx.defs.clone();
+            // for env in decl_envs {
+            //     defs.extend(env);
+            // }
+
+            // let mut bga = BindingGroupAnalysis::new(bg_groups, &defs, ctx.tcx.tf(), ctx.mono_tys);
+            // let (_, aset, ctree) = bga.analyze();
+            // log::debug!("ty = {:?}", ty);
+            // log::debug!("aset = {:?}", aset);
+            // (ty, aset, ctree)
+        }
+
         let &(block, _) = self;
-        ctx.with_ctx(|ctx| collect_expr_seq(block.stmts.iter(), ctx))
+        let (ty, aset, ctree) =
+            ctx.with_ctx(|ctx| collect_expr_seq(block.stmts.iter().peekable(), ctx));
+        log::debug!("aset = {:?}", aset);
+        (ty.unwrap_or_default(), aset, ctree)
     }
 }
 
@@ -766,7 +923,7 @@ impl CollectConstraints for (&Literal, &Source) {
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(lit, src) = self;
         let mut ctree = ConstraintTree::empty();
-        let t = match &lit {
+        let literal_ty = match &lit {
             Literal::Integer { size, signed, .. } => {
                 if *size != 0 {
                     let sign = if !signed { "u" } else { "i" };
@@ -811,7 +968,9 @@ impl CollectConstraints for (&Literal, &Source) {
         };
 
         let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-        let c = EqConstraint::new(ty.clone(), t.clone()).with_src(src.clone());
+        log::debug!("ty = {}", ty);
+        log::debug!("literal_ty = {}", literal_ty);
+        let c = EqConstraint::new(ty.clone(), literal_ty).with_src(src.clone());
         (ty, AssumptionSet::new(), AttachTree::new(c, ctree))
     }
 }
@@ -824,6 +983,7 @@ impl CollectConstraints for (&Name, &Source) {
         ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(name, src) = self;
+        log::debug!("path: {}", name.path);
         let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let label = t.to_string();
         let mut aset = AssumptionSet::new();
@@ -842,16 +1002,27 @@ impl CollectConstraints for (&New, &Source) {
         let &(new, src) = self;
         let result_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let pointee_ty = new.ty.deref().deref().clone();
-        let eq = EqConstraint::new(result_ty.clone(), Ty::Ptr(Box::new(pointee_ty)));
-        let mut ct = AttachTree::new(eq, ConstraintTree::empty());
+        let mut cs = vec![];
+        // let mut ct = AttachTree::new(eq, ConstraintTree::empty());
         let mut aset = AssumptionSet::new();
+        let mut cts = vec![];
         if let Some(count) = &new.count {
-            let (_, count_aset, count_ct) = count.collect_constraints(ctx);
+            let count_src = ctx.srcmap.get(count);
+            let (count_ty, count_aset, count_ct) = count.collect_constraints(ctx);
+            let c = EqConstraint::new(count_ty, Ty::uint()).with_src(count_src);
+            log::debug!("count constraint: {:?}", c);
+            log::debug!("count ctree: {:#?}", count_ct);
             aset.extend(count_aset);
-            ct = NodeTree::new(vec![ct, count_ct]);
+            cs.push(c);
+            cts.push(count_ct)
         }
 
-        (result_ty, aset, ct)
+        cs.push(EqConstraint::new(
+            result_ty.clone(),
+            Ty::Ptr(Box::new(pointee_ty)),
+        ));
+
+        (result_ty, aset, AttachTree::list(cs, NodeTree::new(cts)))
     }
 }
 
@@ -887,6 +1058,7 @@ impl CollectConstraints for (&Path, &Source) {
         ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(path, src) = self;
+        log::debug!("path = {}", path);
         let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let label = t.to_string();
         let mut aset = AssumptionSet::new();

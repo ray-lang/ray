@@ -964,10 +964,11 @@ impl Data {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Global {
-    idx: usize,
-    name: String,
-    ty: Ty,
-    size: Size,
+    pub idx: usize,
+    pub name: String,
+    pub ty: Ty,
+    pub init_value: Value,
+    pub mutable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

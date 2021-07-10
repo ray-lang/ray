@@ -72,7 +72,9 @@ impl<'a> BindingGroupAnalysis<'a> {
 
         // create a topology of the binding groups
         let sigs = self.defs;
-        let mut ts = TopologicalSort::<usize>::new();
+        let mut ts = petgraph::graphmap::DiGraphMap::new();
+
+        // TopologicalSort::<usize>::new();
         for ((i, lhs), (j, rhs)) in self.groups.iter().enumerate().tuple_combinations() {
             let (lhs_sigs, lhs_use, _) = lhs.borrow();
             let (rhs_sigs, rhs_use, _) = rhs.borrow();
@@ -82,7 +84,9 @@ impl<'a> BindingGroupAnalysis<'a> {
                 .any(|p| rhs_use.contains_key(p) && !sigs.contains_key(p))
             {
                 // LHS defines variables used in RHS, so RHS depends on LHS
-                ts.add_dependency(i, j);
+                // ts.add_dependency(i, j);
+                log::debug!("{:#?} depends on {:#?}", rhs, lhs);
+                ts.add_edge(i, j, ());
             }
 
             if rhs_sigs
@@ -90,11 +94,15 @@ impl<'a> BindingGroupAnalysis<'a> {
                 .any(|p| lhs_use.contains_key(p) && !sigs.contains_key(p))
             {
                 // RHS defines variables used in LHS, LHS depends on RHS
-                ts.add_dependency(j, i);
+                // ts.add_dependency(j, i);
+                log::debug!("{:#?} depends on {:#?}", lhs, rhs);
+                ts.add_edge(j, i, ());
             }
         }
 
-        let mut indices = ts.collect::<Vec<_>>();
+        log::debug!("graph: {:?}", petgraph::dot::Dot::with_config(&ts, &[]));
+
+        let mut indices = petgraph::algo::toposort(&ts, None).unwrap();
         if indices.len() == 0 {
             return;
         }
@@ -115,8 +123,9 @@ impl<'a> BindingGroupAnalysis<'a> {
     }
 
     pub fn analyze(&mut self) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
+        log::debug!("groups: {:#?}", self.groups);
         self.organize_groups();
-
+        log::debug!("groups: {:#?}", self.groups);
         let mut mono_tys = self.mono_tys.clone();
         let mut aset = AssumptionSet::new();
         let mut ctree = ConstraintTree::empty();
@@ -241,6 +250,10 @@ impl BindingGroup {
         let lhs_aset = self.aset;
         let lhs_tree = self.ctree;
 
+        log::debug!("next env: {:?}", env);
+        log::debug!("next aset: {:?}", lhs_aset);
+        log::debug!("current aset: {:?}", rhs_aset);
+
         // Cl1 = A1 ≼ Σ;
         // We create an instantiation constraint for assumptions in A1
         // for which we have a type scheme in Σ.
@@ -260,8 +273,8 @@ impl BindingGroup {
             .collect::<Vec<_>>();
 
         // A1' = A1\dom(Σ); E' = E\dom(Σ)
-        let lhs_aset = lhs_aset.clone() - sigs.keys();
-        let env = env.clone() - sigs.keys();
+        let lhs_aset = lhs_aset - sigs.keys();
+        let env = env - sigs.keys();
 
         // Cl3 = A1' ≡ E'
         let cl3 = EqConstraint::lift(&lhs_aset, &env)
@@ -270,7 +283,7 @@ impl BindingGroup {
             .collect::<Vec<_>>();
 
         // A1'' = A1'\dom(E')
-        let lhs_aset = lhs_aset.clone() - env.keys();
+        let lhs_aset = lhs_aset - env.keys();
 
         // implicits = zip (dom(E')) [σv1,σv2,...] -- fresh type scheme vars
         let implicits = env
@@ -303,7 +316,7 @@ impl BindingGroup {
             .collect::<Vec<_>>();
 
         // A2' = A2\dom(E')
-        let rhs_aset = rhs_aset.clone() - env.keys();
+        let rhs_aset = rhs_aset - env.keys();
 
         let mut m = mono_tys.clone();
         m.extend(cl3.free_vars().iter().map(|&t| t.clone()));
@@ -336,6 +349,7 @@ impl BindingGroup {
         let mut aset = lhs_aset.clone();
         aset.extend(rhs_aset);
 
+        log::debug!("new aset: {:?}", aset);
         (m, aset, tree)
     }
 }

@@ -502,6 +502,17 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             ctx.data_addrs.insert(d.index(), global);
         }
 
+        for global in self.globals.iter() {
+            let global_type = ctx.to_llvm_type(&global.ty, tcx);
+            let global_val =
+                ctx.module
+                    .add_global(global_type, Some(AddressSpace::Generic), &global.name);
+            let init_value = global.init_value.codegen(ctx, tcx, srcmap);
+            global_val.set_initializer(&init_value);
+
+            ctx.globals.insert(global.idx, global_val);
+        }
+
         let mut funcs = vec![];
         for (i, f) in self.funcs.iter().enumerate() {
             if !symbols.contains(&f.name) {
@@ -564,7 +575,6 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
         if let Some(malloc_fn) = ctx.module.get_function("malloc") {
             // use the __wasi_malloc import for malloc
             malloc_fn.as_global_value().set_name("__wasi_malloc");
-            // ctx.fn_attr(malloc_fn, "wasm-import-name", "__wasi_malloc");
         }
     }
 }
