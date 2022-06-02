@@ -463,7 +463,8 @@ impl<'src> Parser<'src> {
 
     fn expect_ty_var_ident(&mut self) -> ParseResult<(String, Span)> {
         let start = self.expect_start(TokenKind::SingleQuote)?;
-        let (ident, Span { end, .. }) = self.expect_id()?;
+        let (mut ident, Span { end, .. }) = self.expect_id()?;
+        ident.insert(0, '\'');
         Ok((ident, Span { start, end }))
     }
 

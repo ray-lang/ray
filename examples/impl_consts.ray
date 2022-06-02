@@ -1,4 +1,3 @@
-
 struct Foo {}
 
 impl object Foo {
@@ -7,12 +6,10 @@ impl object Foo {
     fn two_minutes() => 2 * Foo::ONE_MINUTE
 }
 
-fn foo(a) => 2 * a
+// fn foo(a) => 2 * a
 
-x = foo(3)
-print(x)
+// x = foo(3)
+// print(x)
 
 y = Foo::two_minutes()
-print(y)
-
-
+// print(y)

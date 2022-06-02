@@ -4,6 +4,8 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::typing::ty::{Ty, TyVar};
 
 use super::{
@@ -11,7 +13,7 @@ use super::{
     traits::{CollectTyVars, QualifyTypes, QuantifyTypes},
 };
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subst(HashMap<TyVar, Ty>);
 
 impl Deref for Subst {
@@ -75,6 +77,12 @@ impl std::fmt::Display for Subst {
 impl Subst {
     pub fn new() -> Subst {
         Subst(HashMap::new())
+    }
+
+    pub fn one(tv: TyVar, ty: Ty) -> Subst {
+        let mut sub = Subst::new();
+        sub.insert(tv, ty);
+        sub
     }
 
     pub fn from_types<P, A>(params: P, args: A) -> Subst
@@ -160,19 +168,6 @@ impl Subst {
         v
     }
 
-    // pub fn insert(&mut self, v: TyVar, t: Ty) {
-    //     let map = self.deref_mut();
-    //     if let Some(u) = map.get_mut(&v) {
-    //         if !t.is_func() && !u.is_func() {
-    //             u.union(t);
-    //             log::debug!("union result: {}", u);
-    //             return;
-    //         }
-    //     }
-
-    //     map.insert(v, t);
-    // }
-
     pub fn union(mut self, other: Subst) -> Subst {
         self.union_inplace(other);
         self
@@ -182,11 +177,24 @@ impl Subst {
         for (tv, ty) in other {
             let ty = ty.apply_subst(&self);
             let other_ty = self.get_ty_for_var(&tv);
+            if ty == other_ty {
+                continue;
+            }
+
+            log::debug!("tv = {}", tv);
+            log::debug!("ty = {}", ty);
+            log::debug!("other_ty = {}", other_ty);
             if !matches!(&other_ty, Ty::Var(other_var) if other_var == &tv) {
-                if let Ty::Var(other_tv) = other_ty {
-                    self.insert(other_tv, ty.clone());
-                } else {
-                    continue;
+                // tv is mapped to another type variable
+                match (other_ty, &ty) {
+                    (Ty::Var(other_tv), _) if other_tv.is_unknown() => {
+                        self.insert(other_tv, ty.clone());
+                    }
+                    (other_ty @ Ty::Var(_), Ty::Var(v)) => {
+                        self.insert(v.clone(), other_ty);
+                        continue;
+                    }
+                    _ => continue,
                 }
             }
 
@@ -210,6 +218,19 @@ impl Subst {
 
             self.insert(tv, ty);
         }
+    }
+
+    pub fn merge(&mut self, other: Subst) -> bool {
+        self.iter()
+            .all(|(t, u)| {
+                if let Some(v) = other.get(t) {
+                    u == v
+                } else {
+                    true
+                }
+            })
+            .then(|| self.extend(other))
+            .is_some()
     }
 }
 
@@ -290,5 +311,47 @@ impl<T: ApplySubst> ApplySubst for Vec<(String, T)> {
         self.into_iter()
             .map(|(n, t)| (n, t.apply_subst(subst)))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod subst_tests {
+    use std::io;
+
+    use crate::typing::ty::{Ty, TyVar};
+
+    #[test]
+    fn test_union() {
+        fern::Dispatch::new()
+            .level(log::LevelFilter::Debug)
+            .chain(io::stderr())
+            .apply()
+            .unwrap();
+
+        let mut sub1 = subst! {
+            TyVar::new("?t1") => Ty::var("?t2"),
+        };
+
+        let sub2 = subst! {
+            TyVar::new("?t1") => Ty::var("'a")
+        };
+
+        sub1.union_inplace(sub2);
+
+        assert_eq!(sub1.get(&TyVar::new("?t1")), Some(&Ty::var("'a")));
+        assert_eq!(sub1.get(&TyVar::new("?t2")), Some(&Ty::var("'a")));
+
+        let mut sub1 = subst! {
+            TyVar::new("?t1") => Ty::var("'a"),
+        };
+
+        let sub2 = subst! {
+            TyVar::new("?t1") => Ty::var("?t2")
+        };
+
+        sub1.union_inplace(sub2);
+
+        assert_eq!(sub1.get(&TyVar::new("?t1")), Some(&Ty::var("'a")));
+        assert_eq!(sub1.get(&TyVar::new("?t2")), Some(&Ty::var("'a")));
     }
 }

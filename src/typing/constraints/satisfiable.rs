@@ -3,7 +3,7 @@ use crate::typing::{
     solvers::Solution,
     traits::{Generalize, HasFreeVars},
     ty::Ty,
-    ApplySubst, InferError, TyCtx,
+    ApplySubst, TyCtx, TypeError,
 };
 
 use super::{
@@ -12,11 +12,11 @@ use super::{
 };
 
 pub trait Satisfiable {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError>;
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError>;
 }
 
 impl Satisfiable for EqConstraint {
-    fn satisfied_by(self, _: &Solution, _: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, _: &Solution, _: &TyCtx) -> Result<(), TypeError> {
         let EqConstraint(s, t) = self;
         if s != t {
             log::debug!(
@@ -24,10 +24,7 @@ impl Satisfiable for EqConstraint {
                 s,
                 t
             );
-            Err(InferError {
-                msg: format!("types `{}` and `{}` are not equal", s, t),
-                src: vec![],
-            })
+            Err(TypeError::equality(s, t))
         } else {
             Ok(())
         }
@@ -35,7 +32,7 @@ impl Satisfiable for EqConstraint {
 }
 
 impl Satisfiable for VarConstraint {
-    fn satisfied_by(self, solution: &Solution, _: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, _: &TyCtx) -> Result<(), TypeError> {
         let VarConstraint(v, t) = self;
         let u = solution.get_var(&v)?;
         if t != u {
@@ -44,10 +41,7 @@ impl Satisfiable for VarConstraint {
                 t,
                 u
             );
-            Err(InferError {
-                msg: format!("types `{}` and `{}` are not equal", t, u),
-                src: vec![],
-            })
+            Err(TypeError::equality(t, u))
         } else {
             Ok(())
         }
@@ -55,7 +49,7 @@ impl Satisfiable for VarConstraint {
 }
 
 impl Satisfiable for GenConstraint {
-    fn satisfied_by(self, solution: &Solution, _: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, _: &TyCtx) -> Result<(), TypeError> {
         log::debug!("gen constraint: {:?}", self);
         let GenConstraint(m, s, t) = self;
         let mut s: Ty = solution.get_ty(Ty::Var(s))?.apply_subst(&solution.subst);
@@ -65,16 +59,15 @@ impl Satisfiable for GenConstraint {
         let t = t
             .generalize(&m, &solution.preds)
             .apply_subst(&solution.subst);
+        log::debug!("s = {:?}", s);
+        log::debug!("t = {:?}", t);
         if s != t {
             log::debug!(
                 "generalization constraint not satisified for types {} and {}",
                 s,
                 t
             );
-            Err(InferError {
-                msg: format!("types `{}` and `{}` are not equal", s, t),
-                src: vec![],
-            })
+            Err(TypeError::equality(s, t))
         } else {
             Ok(())
         }
@@ -82,17 +75,14 @@ impl Satisfiable for GenConstraint {
 }
 
 impl Satisfiable for InstConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError> {
         log::debug!("inst constraint: {:?}", self);
         let InstConstraint(t, u) = self;
         let tyvars = t.free_vars().into_iter().cloned().collect::<Vec<_>>();
         let t = t.qualify(&solution.preds, &tyvars);
         let u = solution.get_ty(u)?;
         if !ctx.instance_of(&t, &u) {
-            Err(InferError {
-                msg: format!("type `{}` is not an instance of type `{}`", t, u),
-                src: vec![],
-            })
+            Err(TypeError::instance_of(t, u))
         } else {
             Ok(())
         }
@@ -100,7 +90,7 @@ impl Satisfiable for InstConstraint {
 }
 
 impl Satisfiable for SkolConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError> {
         log::debug!("skol constraint: {:?}", self);
         let SkolConstraint(m, t, u) = self;
         let u = solution.get_ty(u)?;
@@ -109,10 +99,7 @@ impl Satisfiable for SkolConstraint {
             &solution.preds,
         );
         if !ctx.instance_of(&t, &u) {
-            Err(InferError {
-                msg: format!("type `{}` is not an instance of type `{}`", t, u),
-                src: vec![],
-            })
+            Err(TypeError::instance_of(t, u))
         } else {
             Ok(())
         }
@@ -120,19 +107,17 @@ impl Satisfiable for SkolConstraint {
 }
 
 impl Satisfiable for ImplicitConstraint {
-    fn satisfied_by(self, _: &Solution, _: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, _: &Solution, _: &TyCtx) -> Result<(), TypeError> {
         todo!()
     }
 }
 
 impl Satisfiable for ProveConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError> {
+        log::debug!("satisfies check: {:?}", self);
         let p = self.get_predicate();
         if !solution.preds.entails(&p, ctx) {
-            Err(InferError {
-                msg: format!("expression does not {}", p.desc()),
-                src: vec![],
-            })
+            Err(TypeError::predicate(p))
         } else {
             Ok(())
         }
@@ -140,13 +125,11 @@ impl Satisfiable for ProveConstraint {
 }
 
 impl Satisfiable for AssumeConstraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError> {
+        log::debug!("satisfies check: {:?}", self);
         let p = self.get_predicate();
         if !solution.preds.entails(&p, ctx) {
-            Err(InferError {
-                msg: format!("expression does not {}", p.desc()),
-                src: vec![],
-            })
+            Err(TypeError::predicate(p))
         } else {
             Ok(())
         }
@@ -154,7 +137,7 @@ impl Satisfiable for AssumeConstraint {
 }
 
 impl Satisfiable for ConstraintKind {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError> {
         match self {
             ConstraintKind::Eq(c) => c.satisfied_by(solution, ctx),
             ConstraintKind::Var(c) => c.satisfied_by(solution, ctx),
@@ -169,7 +152,7 @@ impl Satisfiable for ConstraintKind {
 }
 
 impl Satisfiable for Constraint {
-    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfied_by(self, solution: &Solution, ctx: &TyCtx) -> Result<(), TypeError> {
         let src = self.info.src.iter().map(|src| src.clone()).collect();
         self.kind.satisfied_by(solution, ctx).map_err(|mut e| {
             e.src = src;

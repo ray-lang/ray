@@ -77,7 +77,7 @@ impl CollectDeclarations for Node<Decl> {
 
                 (ty, BindingGroup::empty().with_src(src.clone()), env)
             }
-            Decl::Fn(func) => (func, &src, None).collect_decls(ctx),
+            Decl::Func(func) => (func, &src, None).collect_decls(ctx),
             Decl::Mutable(d) => todo!("collect_decls: Decl::Mutable: {:?}", d),
             Decl::Name(d) => todo!("collect_decls: Decl::Name: {:?}", d),
             Decl::Declare(d) => todo!("collect_decls: Decl::Declare: {:?}", d),
@@ -89,9 +89,10 @@ impl CollectDeclarations for Node<Decl> {
             ),
             Decl::Trait(tr) => {
                 let mut env = TyEnv::new();
-                for func in tr.funcs.iter() {
-                    log::debug!("trait func: {}", func.path);
-                    env.insert(func.path.clone(), func.ty.clone().unwrap());
+                for decl in tr.funcs.iter() {
+                    let sig = variant!(decl.deref(), if Decl::FnSig(f));
+                    log::debug!("trait func: {}", sig.path);
+                    env.insert(sig.path.clone(), sig.ty.clone().unwrap());
                 }
 
                 (Ty::unit(), BindingGroup::empty().with_src(src.clone()), env)
@@ -108,7 +109,7 @@ impl CollectDeclarations for Node<Decl> {
                 if let Some(funcs) = &imp.funcs {
                     for func_node in funcs {
                         let src = ctx.srcmap.get(func_node);
-                        let func = variant!(&func_node.value, if Decl::Fn(f));
+                        let func = variant!(&func_node.value, if Decl::Func(f));
                         let self_ty = if func.sig.params.len() != 0 {
                             Some(self_ty)
                         } else {
@@ -157,7 +158,7 @@ impl CollectDeclarations for Node<Decl> {
     }
 }
 
-impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
+impl CollectDeclarations for (&ast::Func, &Source, Option<&Ty>) {
     type Output = (Ty, BindingGroup, TyEnv);
 
     fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
@@ -238,7 +239,7 @@ impl CollectDeclarations for (&ast::Fn, &Source, Option<&Ty>) {
     }
 }
 
-impl<'a> CollectConstraints for Module<Expr, Decl> {
+impl<'a> CollectConstraints for Module<(), Decl> {
     type Output = ();
 
     fn collect_constraints(
@@ -311,7 +312,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::Curly(ex) => (ex, src).collect_constraints(ctx),
             Expr::DefaultValue(_) => todo!(),
             Expr::Dot(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Fn(_) => todo!(),
+            Expr::Func(_) => todo!(),
             Expr::For(ex) => (ex, src).collect_constraints(ctx),
             Expr::If(ex) => (ex, src).collect_constraints(ctx),
             Expr::Index(_) => {
@@ -687,7 +688,7 @@ impl CollectConstraints for (&Call, &Source) {
         let mut arg_tys = vec![];
         let mut arg_cts = vec![];
 
-        let (lhs_ty, ct1) = if let Expr::Dot(dot) = &call.lhs.value {
+        let (lhs_ty, ct1) = if let Expr::Dot(dot) = &call.callee.value {
             let (self_ty, self_aset, mut ct1) = dot.lhs.collect_constraints(ctx);
             arg_tys.push(self_ty.clone());
             aset.extend(self_aset);
@@ -710,11 +711,11 @@ impl CollectConstraints for (&Call, &Source) {
 
             aset.add(fqn.clone(), member_ty.clone());
             ct1 = NodeTree::new(vec![ReceiverTree::new(member_ty.to_string()), ct1]);
-            ctx.tcx.set_ty(call.lhs.id, member_ty.clone());
+            ctx.tcx.set_ty(call.callee.id, member_ty.clone());
             (member_ty, ct1)
         } else {
-            let (lhs_ty, fun_aset, ct1) = call.lhs.collect_constraints(ctx);
-            log::debug!("type of {}: {}", call.lhs, lhs_ty);
+            let (lhs_ty, fun_aset, ct1) = call.callee.collect_constraints(ctx);
+            log::debug!("type of {}: {}", call.callee, lhs_ty);
             log::debug!("fun_aset = {:#?}", fun_aset);
             aset.extend(fun_aset);
             (lhs_ty, ct1)
@@ -819,7 +820,7 @@ impl CollectConstraints for (&Dot, &Source) {
     }
 }
 
-impl CollectConstraints for (&ast::Fn, &Source) {
+impl CollectConstraints for (&ast::Func, &Source) {
     type Output = Ty;
 
     fn collect_constraints(

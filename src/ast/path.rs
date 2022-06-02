@@ -225,6 +225,13 @@ impl Path {
         Path { parts }
     }
 
+    pub fn append_path<P: Into<Path>>(&self, p: P) -> Path {
+        let mut parts = self.parts.clone();
+        let other: Path = p.into();
+        parts.extend(other.parts);
+        Path { parts }
+    }
+
     pub fn append_mut<T: ToString>(&mut self, s: T) {
         self.parts.push(PathPart::Name(s.to_string()));
     }

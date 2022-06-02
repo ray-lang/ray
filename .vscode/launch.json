@@ -25,8 +25,12 @@
                 "build",
                 // "--no-core",
                 "--print-ast",
-                "examples/ptrs.ray"
+                "examples/scratch.ray"
+                // "examples/impl_consts.ray"
             ],
+            "env": {
+                "RUST_BACKTRACE": "1"
+            },
             // "args": [
             //     "--log-level",
             //     "debug",

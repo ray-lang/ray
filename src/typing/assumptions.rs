@@ -1,9 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
+    iter::FromIterator,
     ops::{Deref, DerefMut, Sub},
 };
 
 use crate::{ast::Path, typing::ty::Ty};
+
+use super::{traits::CollectTyVars, ty::TyVar, ApplySubst, Subst};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AssumptionSet {
@@ -34,6 +37,16 @@ impl DerefMut for AssumptionSet {
     }
 }
 
+impl FromIterator<(Path, Ty)> for AssumptionSet {
+    fn from_iter<T: IntoIterator<Item = (Path, Ty)>>(iter: T) -> Self {
+        let mut aset = AssumptionSet::new();
+        for (path, ty) in iter {
+            aset.add(path, ty);
+        }
+        aset
+    }
+}
+
 impl IntoIterator for AssumptionSet {
     type Item = (Path, HashSet<Ty>);
     type IntoIter = std::collections::hash_map::IntoIter<Path, HashSet<Ty>>;
@@ -43,11 +56,39 @@ impl IntoIterator for AssumptionSet {
     }
 }
 
+impl Extend<(Path, Vec<Ty>)> for AssumptionSet {
+    fn extend<T: IntoIterator<Item = (Path, Vec<Ty>)>>(&mut self, iter: T) {
+        for (path, tys) in iter {
+            for ty in tys {
+                self.add(path.clone(), ty);
+            }
+        }
+    }
+}
+
+impl Extend<(Path, HashSet<Ty>)> for AssumptionSet {
+    fn extend<T: IntoIterator<Item = (Path, HashSet<Ty>)>>(&mut self, iter: T) {
+        for (path, tys) in iter {
+            for ty in tys {
+                self.add(path.clone(), ty);
+            }
+        }
+    }
+}
+
+impl Extend<(Path, Ty)> for AssumptionSet {
+    fn extend<T: IntoIterator<Item = (Path, Ty)>>(&mut self, iter: T) {
+        for (path, ty) in iter {
+            self.add(path, ty);
+        }
+    }
+}
+
 impl From<Vec<(Path, Ty)>> for AssumptionSet {
     fn from(v: Vec<(Path, Ty)>) -> AssumptionSet {
         let mut aset = AssumptionSet::new();
-        for (x, t) in v {
-            aset.add(x, t);
+        for (path, t) in v {
+            aset.add(path, t);
         }
         aset
     }
@@ -78,6 +119,28 @@ where
     }
 }
 
+impl ApplySubst for AssumptionSet {
+    fn apply_subst(self, subst: &Subst) -> Self {
+        let mut aset = Self::new();
+        for (path, tys) in self {
+            aset.insert(
+                path,
+                tys.into_iter().map(|t| t.apply_subst(subst)).collect(),
+            );
+        }
+        aset
+    }
+}
+
+impl CollectTyVars for AssumptionSet {
+    fn collect_tyvars(&self) -> Vec<TyVar> {
+        self.iter()
+            .flat_map(|(_, tys)| tys.iter().map(|ty| ty.collect_tyvars()))
+            .flatten()
+            .collect()
+    }
+}
+
 impl AssumptionSet {
     pub fn new() -> AssumptionSet {
         AssumptionSet {
@@ -85,19 +148,11 @@ impl AssumptionSet {
         }
     }
 
-    pub fn add(&mut self, x: Path, ty: Ty) {
-        if let Some(v) = self.map.get_mut(&x) {
+    pub fn add(&mut self, path: Path, ty: Ty) {
+        if let Some(v) = self.map.get_mut(&path) {
             v.insert(ty);
         } else {
-            self.map.insert(x, vec![ty].into_iter().collect());
-        }
-    }
-
-    pub fn extend(&mut self, other: AssumptionSet) {
-        for (x, tys) in other {
-            for ty in tys {
-                self.add(x.clone(), ty);
-            }
+            self.map.insert(path, vec![ty].into_iter().collect());
         }
     }
 }

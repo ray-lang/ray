@@ -31,7 +31,7 @@ use crate::{
     lir,
     pathlib::FilePath,
     span::SourceMap,
-    typing::{ty::Ty, TyCtx},
+    typing::{predicate::TyPredicate, ty::Ty, TyCtx},
 };
 
 use super::Codegen;
@@ -320,37 +320,51 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn to_llvm_type(&mut self, ty: &Ty, tcx: &TyCtx) -> BasicTypeEnum<'ctx> {
         match ty {
             Ty::Never => todo!("to_llvm_ty: {}", ty),
+            Ty::Any => todo!("to_llvm_ty: {}", ty),
             Ty::Func(_, _) => todo!("to_llvm_ty: {}", ty),
-            Ty::Var(_) | Ty::Any => BasicTypeEnum::IntType(self.ptr_type()),
-            Ty::Tuple(tys) => BasicTypeEnum::StructType(
-                self.lcx.struct_type(
+            Ty::Var(_) => todo!("to_llvm_ty: {}", ty),
+            Ty::Union(_) => todo!("to_llvm_ty: {}", ty),
+            Ty::Array(..) => todo!("to_llvm_ty: {}", ty),
+            Ty::Tuple(tys) => self
+                .lcx
+                .struct_type(
                     tys.iter()
                         .map(|ty| self.to_llvm_type(ty, tcx))
                         .collect::<Vec<_>>()
                         .as_slice(),
                     false,
-                ),
-            ),
-            Ty::Union(_) | Ty::Array(..) => todo!("to_llvm_ty: {}", ty),
-            Ty::Ptr(pointee_ty) => BasicTypeEnum::PointerType(
-                self.to_llvm_type(pointee_ty, tcx)
-                    .ptr_type(AddressSpace::Generic),
-            ),
+                )
+                .into(),
+            Ty::Ptr(pointee_ty) => self
+                .to_llvm_type(pointee_ty, tcx)
+                .ptr_type(AddressSpace::Generic)
+                .into(),
             Ty::Projection(fqn, ..) => match fqn.as_str() {
-                "bool" => BasicTypeEnum::IntType(self.lcx.bool_type()),
-                "i8" | "u8" => BasicTypeEnum::IntType(self.lcx.i8_type()),
-                "i16" | "u16" => BasicTypeEnum::IntType(self.lcx.i16_type()),
-                "i32" | "u32" | "char" => BasicTypeEnum::IntType(self.lcx.i32_type()),
-                "u64" | "i64" => BasicTypeEnum::IntType(self.lcx.i64_type()),
-                "int" | "uint" => BasicTypeEnum::IntType(self.ptr_type()),
-                fqn => BasicTypeEnum::PointerType(
-                    BasicTypeEnum::StructType(self.get_struct_type(fqn, tcx))
-                        .ptr_type(AddressSpace::Generic),
-                ),
+                "bool" => self.lcx.bool_type().into(),
+                "i8" | "u8" => self.lcx.i8_type().into(),
+                "i16" | "u16" => self.lcx.i16_type().into(),
+                "i32" | "u32" | "char" => self.lcx.i32_type().into(),
+                "u64" | "i64" => self.lcx.i64_type().into(),
+                "int" | "uint" => self.ptr_type().into(),
+                fqn => self
+                    .get_struct_type(fqn, tcx)
+                    .as_basic_type_enum()
+                    .ptr_type(AddressSpace::Generic)
+                    .into(),
             },
-            Ty::Cast(_, _) => todo!("to_llvm_ty: {}", ty),
             Ty::Qualified(_, _) => todo!("to_llvm_ty: {}", ty),
-            Ty::All(_, _) => todo!("to_llvm_ty: {}", ty),
+            Ty::All(_, base_ty) => {
+                // we have to be very careful here; since this is a polymorphic type
+                // we need to either transform it into a default type (such as int or float)
+                // or it needs to be boxed; this hasn't been fully decided yet so we still panic
+                if base_ty.has_qualifier(&TyPredicate::core_trait("Int")) {
+                    self.ptr_type().into()
+                } else if base_ty.has_qualifier(&TyPredicate::core_trait("Float")) {
+                    self.lcx.f64_type().into()
+                } else {
+                    panic!("cannot generate code for a polymorphic type: {}", ty)
+                }
+            }
         }
     }
 
@@ -538,10 +552,10 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
                 ctx.fn_attr(fn_val, "wasm-import-name", &name);
             }
 
-            if f.name.to_string() != "_start" {
+            if f.name != lir::START_FUNCTION {
                 fn_val.set_linkage(Linkage::Internal);
             } else {
-                ctx.fn_attr(fn_val, "wasm-export-name", "_start");
+                ctx.fn_attr(fn_val, "wasm-export-name", lir::START_FUNCTION);
             }
 
             if srcmap.has_inline(f) {
@@ -785,8 +799,8 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Malloc {
             lir::Atom::FuncRef(_)
             | lir::Atom::BoolConst(_)
             | lir::Atom::CharConst(_)
-            | lir::Atom::IntConst(_, _)
-            | lir::Atom::FloatConst(_, _)
+            | lir::Atom::IntConst(..)
+            | lir::Atom::FloatConst(..)
             | lir::Atom::RawString(_)
             | lir::Atom::NilConst => panic!(
                 "COMPILER BUG: invalid count expression for lir::Malloc: {}",

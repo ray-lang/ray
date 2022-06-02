@@ -467,13 +467,13 @@ mod tree_tests {
         solvers::GreedySolver,
         traits::HasSubst,
         ty::Ty,
-        InferError, TyCtx,
+        TyCtx, TypeError,
     };
 
     use super::{BottomUpWalk, ConstraintTree};
 
     #[test]
-    fn test_constraints1() -> Result<(), InferError> {
+    fn test_constraints1() -> Result<(), TypeError> {
         let mul = Ty::Func(vec![Ty::int(), Ty::int()], Box::new(Ty::int()));
 
         // let sq = λx.(x * x) in sq(1)

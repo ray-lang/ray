@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use itertools::Dedup;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
 
 use super::{
     state::TyVarFactory,
-    traits::{CollectTyVars, HasFreeVars, Instantiate, Polymorphize},
+    traits::{CollectTyVars, HasFreeVars, HoistTypes, Instantiate, Polymorphize},
     ty::{LiteralKind, Ty, TyVar},
     ApplySubst, Subst, TyCtx,
 };
@@ -50,8 +51,15 @@ impl std::fmt::Display for TyPredicate {
 impl ApplySubst for TyPredicate {
     fn apply_subst(self, subst: &Subst) -> TyPredicate {
         match self {
-            TyPredicate::Trait(p) => TyPredicate::Trait(p.apply_subst(subst)),
-            TyPredicate::Literal(t, k) => TyPredicate::Literal(t.apply_subst(subst), k),
+            TyPredicate::Trait(p) => {
+                // make sure that p is not an quantified or qualified type
+                let (p, _, _) = p.apply_subst(subst).hoist_types();
+                TyPredicate::Trait(p)
+            }
+            TyPredicate::Literal(t, k) => {
+                let (t, _, _) = t.apply_subst(subst).hoist_types();
+                TyPredicate::Literal(t, k)
+            }
             TyPredicate::HasMember(t, m, member_ty) => {
                 TyPredicate::HasMember(t.apply_subst(subst), m, member_ty.apply_subst(subst))
             }
@@ -115,6 +123,32 @@ impl Instantiate for TyPredicate {
     }
 }
 
+impl HoistTypes for TyPredicate {
+    fn hoist_types(self) -> (Self, Vec<TyVar>, Vec<TyPredicate>) {
+        match self {
+            TyPredicate::Trait(t) => {
+                let (t, qs, ps) = t.hoist_types();
+                (TyPredicate::Trait(t), qs, ps)
+            }
+            TyPredicate::Literal(t, k) => {
+                let (t, qs, ps) = t.hoist_types();
+                (TyPredicate::Literal(t, k), qs, ps)
+            }
+            TyPredicate::HasMember(t, n, m) => {
+                let (ty, mut qs, mut ps) = t.hoist_types();
+                let (m, mqs, mps) = m.hoist_types();
+                qs.extend(mqs);
+                qs.sort();
+                qs.dedup();
+                ps.extend(mps);
+                ps.sort();
+                ps.dedup();
+                (TyPredicate::HasMember(ty, n, m), qs, ps)
+            }
+        }
+    }
+}
+
 impl PredicateEntails<Vec<TyPredicate>> for Vec<TyPredicate> {
     fn entails(&self, q: &Vec<TyPredicate>, ctx: &TyCtx) -> bool {
         log::debug!("{:?} entails {:?}", self, q);
@@ -162,7 +196,7 @@ impl PredicateEntails<TyPredicate> for Vec<TyPredicate> {
                             self.entails(&i.predicates, ctx)
                         })
                 } else {
-                    self.iter().all(|p| p == q)
+                    self.iter().any(|p| p == q)
                 }
             }
             TyPredicate::Literal(t, k) => match k {
@@ -258,12 +292,41 @@ impl TyPredicate {
         Ok(TyPredicate::Trait(trait_ty))
     }
 
+    pub fn core_trait<T: Into<String>>(name: T) -> Self {
+        TyPredicate::Trait(Ty::Projection(
+            format!("core::{}", name.into()),
+            vec![Ty::var("'a")],
+        ))
+    }
+
     pub fn is_int_trait(&self) -> bool {
         matches!(self, TyPredicate::Trait(Ty::Projection(s, ..)) if s == "core::Int")
     }
 
     pub fn is_float_trait(&self) -> bool {
         matches!(self, TyPredicate::Trait(Ty::Projection(s, ..)) if s == "core::Float")
+    }
+
+    pub fn in_hnf(&self) -> bool {
+        match self {
+            TyPredicate::Trait(t) => t.get_ty_param_at(0).in_hnf(),
+            TyPredicate::Literal(_, _) => todo!(),
+            TyPredicate::HasMember(t, _, _) => t.in_hnf(),
+        }
+    }
+
+    pub fn unpack(&self) -> Option<(&String, Option<&Vec<Ty>>)> {
+        match self {
+            TyPredicate::Trait(Ty::Projection(p, tps)) => Some((p, Some(tps))),
+            TyPredicate::Literal(_, _) | TyPredicate::HasMember(_, _, _) | _ => None,
+        }
+    }
+
+    pub fn type_params(&self) -> Option<&Vec<Ty>> {
+        match self {
+            TyPredicate::Trait(Ty::Projection(_, tps)) => Some(tps),
+            _ => None,
+        }
     }
 
     pub fn desc(&self) -> String {

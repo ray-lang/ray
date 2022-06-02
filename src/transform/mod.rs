@@ -15,10 +15,10 @@ pub fn combine(
     srcmaps: &mut HashMap<Path, SourceMap>,
     lib_set: &HashSet<Path>,
     tcx: &mut TyCtx,
-) -> Result<(SourceModule, SourceMap, HashMap<Path, Vec<Path>>), RayError> {
+) -> Result<(Module<(), Decl>, SourceMap, HashMap<Path, Vec<Path>>), RayError> {
     let module = modules.remove(module_path).unwrap();
     let mut srcmap = srcmaps.remove(module_path).unwrap();
-    let mut new_module = Module::new_from(&module);
+    let mut new_module = Module::new_from::<(), Decl>(&module);
     let mut scope_map = HashMap::new();
     let (mut stmts, mut decls) = get_root(
         module,
@@ -62,7 +62,7 @@ pub fn combine(
 
     // create a "main" function for the stmts
     let main_path = module_path.append("main");
-    let main_decl = Node::new(Decl::Fn(ast::Fn::new(main_path, vec![], body)));
+    let main_decl = Node::new(Decl::Func(ast::Func::new(main_path, vec![], body)));
     srcmap.set_src(
         &main_decl,
         Source::new(filepath.clone(), span, Path::new(), module_path.clone()),

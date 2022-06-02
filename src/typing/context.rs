@@ -19,6 +19,7 @@ use super::{
 pub struct TyCtx {
     ty_map: HashMap<u64, Ty>,
     original_ty_map: HashMap<u64, Ty>,
+    inst_ty_map: Subst,
     fqns: HashMap<String, (Path, Option<Path>)>,
     infix_ops: HashMap<String, (Path, Path)>,
     prefix_ops: HashMap<String, (Path, Path)>,
@@ -54,6 +55,7 @@ impl TyCtx {
         Self {
             original_ty_map: HashMap::new(),
             ty_map: HashMap::new(),
+            inst_ty_map: Subst::new(),
             fqns: HashMap::new(),
             infix_ops: HashMap::new(),
             prefix_ops: HashMap::new(),
@@ -70,6 +72,7 @@ impl TyCtx {
     pub fn extend(&mut self, other: TyCtx) {
         self.original_ty_map.extend(other.original_ty_map);
         self.ty_map.extend(other.ty_map);
+        self.inst_ty_map.extend(other.inst_ty_map);
         self.fqns.extend(other.fqns);
         self.infix_ops.extend(other.infix_ops);
         self.prefix_ops.extend(other.prefix_ops);
@@ -77,6 +80,10 @@ impl TyCtx {
         self.traits.extend(other.traits);
         self.impls.extend(other.impls);
         self.nametree.extend(other.nametree);
+    }
+
+    pub fn extend_inst_ty_map(&mut self, inst_ty_map: Subst) {
+        self.inst_ty_map.extend(inst_ty_map);
     }
 
     pub fn ty_of(&self, id: u64) -> Ty {
@@ -87,13 +94,17 @@ impl TyCtx {
         self.ty_map.get(&id)
     }
 
-    pub fn original_ty_of<T>(&self, node: &Node<T>) -> Ty {
-        self.original_ty_map.get(&node.id).unwrap().clone()
+    pub fn original_ty_of(&self, id: u64) -> Option<&Ty> {
+        self.original_ty_map.get(&id)
     }
 
     pub fn set_ty(&mut self, id: u64, ty: Ty) {
         self.original_ty_map.insert(id, ty.clone());
         self.ty_map.insert(id, ty);
+    }
+
+    pub fn inst_ty_of(&self, tv: &TyVar) -> Option<&Ty> {
+        self.inst_ty_map.get(tv)
     }
 
     pub fn mk_tvar(&mut self, id: u64) -> Ty {
@@ -310,7 +321,6 @@ impl TyCtx {
                 .iter()
                 .zip(ys.iter())
                 .all(|(x, y)| self.instance_of(x, y)),
-            (Ty::Cast(a, b), Ty::Cast(c, d)) => self.instance_of(a, c) && self.instance_of(b, d),
             // (_, Ty::Var(_)) => true,
             _ => t == u,
         }

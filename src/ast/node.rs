@@ -101,7 +101,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node")
-            .field("id", &format!("{:x}", self.id))
+            .field("id", &format!("{}", self.id))
             .field("value", &self.value)
             .finish()
     }
@@ -169,6 +169,13 @@ impl<T> Node<T> {
 
     pub fn with_id(id: u64, value: T) -> Node<T> {
         Node { id, value }
+    }
+
+    pub fn as_ref(&self) -> Node<&T> {
+        Node {
+            id: self.id,
+            value: &self.value,
+        }
     }
 
     pub fn take_map<F, U>(self, f: F) -> Node<U>

@@ -83,11 +83,11 @@ impl<'a> Solver for GreedySolver<'a> {
         preds.sort();
         preds.dedup();
 
-        // qualify all types in the substitution
-        subst.qualify_tys(&preds);
-
         // quantify all types in the substitution
         subst.quantify_tys();
+
+        // qualify all types in the substitution
+        subst.qualify_tys(&preds);
 
         Solution {
             subst,
@@ -288,6 +288,8 @@ impl<'a> HasPredicates for GreedySolver<'a> {
             .map(|&v| v)
             .to_set();
 
+        log::debug!("free vars: {:?}", vs);
+
         // move the prove predicates into a set that contains the freevars
         let mut i = 0;
         let mut prove_preds = vec![];
@@ -328,18 +330,62 @@ mod greedy_solver_tests {
     use crate::{
         ast::Path,
         typing::{
-            constraints::{EqConstraint, ImplicitConstraint, SkolConstraint, VarConstraint},
+            constraints::{
+                Constraint, EqConstraint, ImplicitConstraint, SkolConstraint, VarConstraint,
+            },
             predicate::TyPredicate,
-            solvers::Solver,
+            solvers::{Solution, Solver},
             ty::{TraitTy, Ty},
-            InferError, TyCtx,
+            TyCtx, TypeError,
         },
     };
 
     use super::GreedySolver;
 
+    type TestResult = Result<(), TypeError>;
+
+    fn setup_logger() {
+        fern::Dispatch::new()
+            .level(log::LevelFilter::Debug)
+            .chain(io::stderr())
+            .apply()
+            .unwrap();
+    }
+
+    fn mktcx(skip: u64) -> TyCtx {
+        let mut ctx = TyCtx::new();
+        ctx.tf().set_prefix("v");
+        ctx.tf().skip_to(skip);
+        ctx
+    }
+
+    fn run_solve(constraints: Vec<Constraint>, mut tcx: TyCtx) -> Solution {
+        let solver = GreedySolver::new(constraints, &mut tcx);
+        let (sol, _) = solver.solve();
+        sol
+    }
+
     #[test]
-    fn test_greedy_solver() -> Result<(), InferError> {
+    fn test_simple() -> TestResult {
+        setup_logger();
+
+        let cs = vec![EqConstraint::new(
+            Ty::Var(tvar!(v0)),
+            Ty::All(
+                vec![tvar!('a)],
+                Box::new(Ty::Func(vec![], Box::new(Ty::Var(tvar!('a))))),
+            ),
+        )];
+
+        let sol = run_solve(cs, mktcx(1));
+        println!("sol: {:#?}", sol);
+        Ok(())
+    }
+
+    #[test]
+    fn test_greedy_solver() -> TestResult {
+        setup_logger();
+
         let constraints = vec![
             // v2 ≡ v1 → v0
             EqConstraint::new(
@@ -361,10 +407,7 @@ mod greedy_solver_tests {
             EqConstraint::new(Ty::Var(tvar!(v6)), Ty::Var(tvar!(v5))),
         ];
 
-        let mut ctx = TyCtx::new();
-        ctx.tf().skip_to(7);
-        let solver = GreedySolver::new(constraints, &mut ctx);
-        let (sol, _) = solver.solve();
+        let sol = run_solve(constraints, mktcx(7));
 
         assert_eq!(
             sol.subst,
@@ -383,12 +426,8 @@ mod greedy_solver_tests {
     }
 
     #[test]
-    fn test_annotated_types() -> Result<(), InferError> {
-        fern::Dispatch::new()
-            .level(log::LevelFilter::Debug)
-            .chain(io::stderr())
-            .apply()
-            .unwrap();
+    fn test_annotated_types() -> TestResult {
+        setup_logger();
 
         let constraints = vec![
             // v0 ≡ (v1) -> ()
@@ -424,8 +463,8 @@ mod greedy_solver_tests {
             ),
         ];
 
-        let mut ctx = TyCtx::new();
-        ctx.add_trait_ty(
+        let mut tcx = mktcx(4);
+        tcx.add_trait_ty(
             str!("ToStr"),
             TraitTy {
                 path: Path::from("ToStr"),
@@ -440,21 +479,15 @@ mod greedy_solver_tests {
                 )],
             },
         );
-        ctx.tf().skip_to(4);
-        let solver = GreedySolver::new(constraints, &mut ctx);
-        let (sol, _) = solver.solve();
+        let sol = run_solve(constraints, tcx);
         println!("{:#?}", sol);
 
         Ok(())
     }
 
     #[test]
-    fn test_union_type() -> Result<(), InferError> {
-        fern::Dispatch::new()
-            .level(log::LevelFilter::Debug)
-            .chain(io::stderr())
-            .apply()
-            .unwrap();
+    fn test_union_type() -> TestResult {
+        setup_logger();
 
         let constraints = vec![
             // v0 ≡ string
@@ -467,10 +500,7 @@ mod greedy_solver_tests {
             VarConstraint::new(tvar!(v2), Ty::Var(tvar!(v1))),
         ];
 
-        let mut ctx = TyCtx::new();
-        ctx.tf().skip_to(3);
-        let solver = GreedySolver::new(constraints, &mut ctx);
-        let (sol, _) = solver.solve();
+        let sol = run_solve(constraints, mktcx(3));
         println!("{:#?}", sol);
 
         Ok(())

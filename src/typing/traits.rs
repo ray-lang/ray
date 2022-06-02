@@ -99,7 +99,7 @@ pub trait QualifyTypes {
 impl<'a> QualifyTypes for std::vec::IntoIter<&'a mut Ty> {
     fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
         for t in self {
-            if t.is_func() {
+            if t.is_forall() {
                 t.qualify_in_place(preds);
             }
         }
@@ -109,7 +109,7 @@ impl<'a> QualifyTypes for std::vec::IntoIter<&'a mut Ty> {
 impl<'a, K> QualifyTypes for std::collections::hash_map::ValuesMut<'a, K, Ty> {
     fn qualify_tys(&mut self, preds: &Vec<TyPredicate>) {
         for t in self {
-            if t.is_func() {
+            if t.is_forall() {
                 t.qualify_in_place(preds);
             }
         }
@@ -134,9 +134,7 @@ pub trait QuantifyTypes {
 impl<'a> QuantifyTypes for std::vec::IntoIter<&'a mut Ty> {
     fn quantify_tys(&mut self) {
         for t in self {
-            if t.is_func() {
-                t.quantify_in_place();
-            }
+            t.quantify_in_place();
         }
     }
 }
@@ -144,9 +142,7 @@ impl<'a> QuantifyTypes for std::vec::IntoIter<&'a mut Ty> {
 impl<'a, K> QuantifyTypes for std::collections::hash_map::ValuesMut<'a, K, Ty> {
     fn quantify_tys(&mut self) {
         for t in self {
-            if t.is_func() {
-                t.quantify_in_place();
-            }
+            t.quantify_in_place();
         }
     }
 }
@@ -270,6 +266,26 @@ pub trait Skolemize {
     fn skolemize(&self, sf: &mut TyVarFactory) -> (Self, Vec<TyVar>)
     where
         Self: Sized;
+}
+
+pub trait HoistTypes
+where
+    Self: Sized,
+{
+    fn hoist_types(self) -> (Self, Vec<TyVar>, Vec<TyPredicate>);
+}
+
+impl<T: HoistTypes> HoistTypes for Vec<T> {
+    fn hoist_types(self) -> (Self, Vec<TyVar>, Vec<TyPredicate>) {
+        let (mut ts, mut qs, mut ps) = (vec![], vec![], vec![]);
+        for t in self {
+            let (t, q, p) = t.hoist_types();
+            ts.push(t);
+            qs.extend(q);
+            ps.extend(p);
+        }
+        (ts, qs, ps)
+    }
 }
 
 pub trait TreeWalk: Copy {

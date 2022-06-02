@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::{
-    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, Fn, For, If, Index, List, Literal, Loop,
-    Name, New, Pattern, Range, Sequence, Tuple, UnaryOp, While,
+    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, For, Func, If, Index, List, Literal,
+    Loop, Name, New, Pattern, Range, Sequence, Tuple, UnaryOp, While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub enum Expr {
     Curly(Curly),
     DefaultValue(Box<Node<Expr>>),
     Dot(Dot),
-    Fn(Fn),
+    Func(Func),
     For(For),
     If(If),
     Index(Index),
@@ -82,7 +82,7 @@ impl std::fmt::Display for Expr {
                 Expr::Curly(ex) => ex.to_string(),
                 Expr::DefaultValue(ex) => ex.to_string(),
                 Expr::Dot(ex) => ex.to_string(),
-                Expr::Fn(ex) => ex.to_string(),
+                Expr::Func(ex) => ex.to_string(),
                 Expr::For(ex) => ex.to_string(),
                 Expr::If(ex) => ex.to_string(),
                 Expr::Index(ex) => ex.to_string(),
@@ -114,7 +114,7 @@ impl Expr {
     pub fn path(&self) -> Option<Path> {
         match self {
             Expr::Name(n) => Some(n.path.clone()),
-            Expr::Fn(f) => Some(f.sig.path.clone()),
+            Expr::Func(f) => Some(f.sig.path.clone()),
             Expr::Pattern(p) => p.path().cloned(),
             Expr::Path(p) => Some(p.clone()),
             Expr::Assign(_)
@@ -152,7 +152,7 @@ impl Expr {
     pub fn get_name(&self) -> Option<String> {
         match self {
             Expr::Name(n) => Some(n.path.to_string()),
-            Expr::Fn(f) => f.sig.name.clone(),
+            Expr::Func(f) => f.sig.name.clone(),
             Expr::Pattern(p) => p.get_name(),
             Expr::Path(p) => Some(p.to_string()),
             Expr::Assign(_)
@@ -201,7 +201,7 @@ impl Expr {
             Expr::Curly(..) => "curly",
             Expr::DefaultValue(..) => "default value",
             Expr::Dot(..) => "dot",
-            Expr::Fn(..) => "function",
+            Expr::Func(..) => "function",
             Expr::For(..) => "for",
             Expr::If(..) => "if",
             Expr::Index(..) => "index",

@@ -1,7 +1,7 @@
 use super::{ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
-    ast::{self, token::TokenKind, FnParam, FnSig, Node},
+    ast::{self, token::TokenKind, FnParam, FuncSig, Node},
     span::Span,
 };
 
@@ -10,7 +10,7 @@ impl Parser<'_> {
         &mut self,
         only_sigs: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(ast::Fn, Span)> {
+    ) -> ParseResult<(ast::Func, Span)> {
         let sig = self.parse_fn_sig(ctx)?;
         let start = sig.span.start;
         let mut end = sig.span.end;
@@ -31,7 +31,7 @@ impl Parser<'_> {
         };
 
         Ok((
-            ast::Fn {
+            ast::Func {
                 sig,
                 body: body.map(|b| Box::new(b)),
             },
@@ -39,11 +39,11 @@ impl Parser<'_> {
         ))
     }
 
-    pub(crate) fn parse_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FnSig> {
+    pub(crate) fn parse_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FuncSig> {
         self.parse_fn_sig_with_param(ctx, |this| this.parse_params(ctx))
     }
 
-    pub(crate) fn parse_trait_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FnSig> {
+    pub(crate) fn parse_trait_fn_sig(&mut self, ctx: &ParseContext) -> ParseResult<FuncSig> {
         self.parse_fn_sig_with_param(ctx, |this| this.parse_trait_fn_params(ctx))
     }
 
@@ -51,7 +51,7 @@ impl Parser<'_> {
         &mut self,
         ctx: &ParseContext,
         f: F,
-    ) -> ParseResult<FnSig>
+    ) -> ParseResult<FuncSig>
     where
         F: Fn(&mut Parser) -> ParseResult<(Vec<Node<FnParam>>, Span)>,
     {
@@ -76,7 +76,7 @@ impl Parser<'_> {
 
         let qualifiers = self.parse_where_clause()?;
 
-        Ok(FnSig {
+        Ok(FuncSig {
             path,
             name,
             params,

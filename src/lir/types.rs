@@ -279,9 +279,9 @@ impl std::fmt::Display for Atom {
             Atom::Size(s) => write!(f, "{}", s),
             Atom::BoolConst(b) => write!(f, "{}", b),
             Atom::CharConst(ch) => write!(f, "`{}`", ch),
-            Atom::UintConst(u, _) => write!(f, "{}", u),
-            Atom::IntConst(i, _) => write!(f, "{}", i),
-            Atom::FloatConst(c, _) => write!(f, "{}", c),
+            Atom::UintConst(u, ..) => write!(f, "{}", u),
+            Atom::IntConst(i, ..) => write!(f, "{}", i),
+            Atom::FloatConst(c, ..) => write!(f, "{}", c),
             Atom::RawString(s) => write!(f, "{:?}", s),
             Atom::NilConst => write!(f, "nil"),
         }
@@ -296,9 +296,9 @@ impl<'a> GetLocalsMut<'a> for Atom {
             | Atom::Size(_)
             | Atom::BoolConst(_)
             | Atom::CharConst(_)
-            | Atom::UintConst(_, _)
-            | Atom::IntConst(_, _)
-            | Atom::FloatConst(_, _)
+            | Atom::UintConst(..)
+            | Atom::IntConst(..)
+            | Atom::FloatConst(..)
             | Atom::RawString(_)
             | Atom::NilConst => vec![],
         }
@@ -313,9 +313,9 @@ impl<'a> GetLocals<'a> for Atom {
             | Atom::Size(_)
             | Atom::BoolConst(_)
             | Atom::CharConst(_)
-            | Atom::UintConst(_, _)
-            | Atom::IntConst(_, _)
-            | Atom::FloatConst(_, _)
+            | Atom::UintConst(..)
+            | Atom::IntConst(..)
+            | Atom::FloatConst(..)
             | Atom::RawString(_)
             | Atom::NilConst => vec![],
         }
@@ -335,6 +335,10 @@ impl ApplySubst for Atom {
 impl Atom {
     pub fn new<A: Into<Atom>>(a: A) -> Atom {
         a.into()
+    }
+
+    pub fn uptr(value: u64) -> Atom {
+        Atom::UintConst(value, Size::ptr())
     }
 }
 
@@ -551,6 +555,18 @@ pub enum Inst {
     Return(Value),
     Break(Break),
     Goto(usize),
+}
+
+impl<'a> std::fmt::Display for FuncDisplayCtx<'a, &Inst> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.value {
+            Inst::SetLocal(idx, value) => {
+                let local = &self.locals[*idx];
+                write!(f, "${}: {} = {}", idx, local.ty, value)
+            }
+            value => write!(f, "{}", value),
+        }
+    }
 }
 
 impl std::fmt::Display for Inst {
@@ -886,8 +902,8 @@ pub struct Program {
     pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
     pub poly_fn_map: HashMap<Path, usize>,
-    pub start_idx: i64, // index in Funcs for _start
-    pub main_idx: i64,  // index in Funcs for main
+    pub start_idx: i64,     // index in Funcs for _start
+    pub user_main_idx: i64, // index in Funcs for user main
 }
 
 impl std::fmt::Display for Program {
@@ -914,7 +930,7 @@ impl Program {
             extern_map: HashMap::new(),
             trait_member_set: HashSet::new(),
             start_idx: -1,
-            main_idx: -1,
+            user_main_idx: -1,
         }
     }
 
@@ -969,6 +985,14 @@ pub struct Global {
     pub ty: Ty,
     pub init_value: Value,
     pub mutable: bool,
+}
+
+impl ApplySubst for Global {
+    fn apply_subst(mut self, subst: &Subst) -> Self {
+        self.ty = self.ty.apply_subst(subst);
+        self.init_value = self.init_value.apply_subst(subst);
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1065,10 +1089,15 @@ pub struct Block {
     markers: Vec<ControlMarker>,
 }
 
-impl std::fmt::Display for Block {
+impl<'a> std::fmt::Display for FuncDisplayCtx<'a, &Block> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let lines = indent_lines(join(&self.instructions, "\n"), 2);
-        let mut markers = map_join(&self.markers, ", ", |marker| match marker {
+        let lines = indent_lines(
+            map_join(&self.value.instructions, "\n", |inst| {
+                format!("{}", self.with(inst))
+            }),
+            2,
+        );
+        let mut markers = map_join(&self.value.markers, ", ", |marker| match marker {
             ControlMarker::If => str!("#if"),
             ControlMarker::Else(label) => format!("#else({})", label),
             ControlMarker::Loop => str!("#loop"),
@@ -1077,7 +1106,7 @@ impl std::fmt::Display for Block {
         if markers.len() != 0 {
             markers.insert_str(0, "  ");
         }
-        write!(f, "B{}:{}\n{}", self.label, markers, lines)
+        write!(f, "B{}:{}\n{}", self.value.label, markers, lines)
     }
 }
 
@@ -1273,6 +1302,24 @@ pub struct Func {
     pub cfg: ControlFlowGraph,
 }
 
+pub struct FuncDisplayCtx<'a, T> {
+    value: T,
+    locals: &'a Vec<Local>,
+}
+
+impl<'a, T> FuncDisplayCtx<'a, T> {
+    pub fn new(value: T, locals: &'a Vec<Local>) -> Self {
+        Self { value, locals }
+    }
+
+    pub fn with<U>(&self, value: U) -> FuncDisplayCtx<'a, U> {
+        FuncDisplayCtx {
+            value,
+            locals: self.locals,
+        }
+    }
+}
+
 impl std::fmt::Display for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (_, preds, _, ret_ty) = self.ty.try_borrow_fn().unwrap();
@@ -1283,11 +1330,16 @@ impl std::fmt::Display for Func {
             map_join(&self.params, ", ", |p| format!("${}: {}", p.idx, p.ty)),
             ret_ty,
             if let Some(preds) = preds {
-                format!(" where {}", join(preds, ", "))
+                format!(" where {}", join(preds, " + "))
             } else {
                 str!("")
             },
-            indent_lines(join(&self.blocks, "\n"), 2)
+            indent_lines(
+                map_join(&self.blocks, "\n", |block| {
+                    format!("{}", FuncDisplayCtx::new(block, &self.locals))
+                }),
+                2,
+            )
         )
     }
 }
@@ -1342,6 +1394,22 @@ impl Func {
             params: vec![],
             locals: vec![],
             blocks: vec![],
+        }
+    }
+
+    pub fn ty_of_local(&self, loc: usize) -> Option<Ty> {
+        self.locals.iter().find_map(|l| {
+            if l.idx == loc {
+                Some(l.ty.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn set_ty_of_local(&mut self, loc: usize, ty: Ty) {
+        if let Some(l) = self.locals.iter_mut().find(|l| l.idx == loc) {
+            l.ty = ty;
         }
     }
 

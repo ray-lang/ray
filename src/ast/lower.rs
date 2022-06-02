@@ -19,7 +19,7 @@ use crate::{
     utils::try_replace,
 };
 
-use super::{Decl, Expr, Extern, Fn, Modifier, Node, Path, Struct, Trait, TypeParams};
+use super::{Decl, Expr, Extern, Func, Modifier, Node, Path, Struct, Trait, TypeParams};
 
 fn get_ty_vars(
     ty_params: Option<&TypeParams>,
@@ -175,7 +175,7 @@ impl LowerAST for Node<Decl> {
                 tcx.bind_var(&n.path, ty);
             }
             d @ Decl::Declare(_) => unimplemented!("decl to type: {}", d),
-            Decl::Fn(func) => Sourced(func, &src).lower(srcmap, scope_map, tcx)?,
+            Decl::Func(func) => Sourced(func, &src).lower(srcmap, scope_map, tcx)?,
             Decl::FnSig(sig) => todo!("lower: Decl::FnSig: {:?}", sig),
             Decl::Struct(st) => Sourced(st, &src).lower(srcmap, scope_map, tcx)?,
             Decl::Trait(tr) => Sourced(tr, &src).lower(srcmap, scope_map, tcx)?,
@@ -349,6 +349,7 @@ impl LowerAST for Sourced<'_, Trait> {
 
         let mut fields = vec![];
         for func in tr.funcs.iter_mut() {
+            let func = variant!(func.deref_mut(), if Decl::FnSig(sig));
             let func_name = match &func.name {
                 Some(n) => n.clone(),
                 _ => {
@@ -503,7 +504,7 @@ impl LowerAST for Sourced<'_, Impl> {
 
         if let Some(funcs) = &mut imp.funcs {
             for func in funcs {
-                let func_name = if let Decl::Fn(f) = &func.value {
+                let func_name = if let Decl::Func(f) = &func.value {
                     match &f.sig.name {
                         Some(n) => n.clone(),
                         _ => {
@@ -521,7 +522,7 @@ impl LowerAST for Sourced<'_, Impl> {
                     unreachable!()
                 };
 
-                if let Decl::Fn(f) = &mut func.value {
+                if let Decl::Func(f) = &mut func.value {
                     // make this a fully-qualified name
                     f.sig.path = if imp.is_object {
                         trait_fqn.append(&func_name)
@@ -580,7 +581,7 @@ impl LowerAST for Sourced<'_, Impl> {
     }
 }
 
-impl LowerAST for Sourced<'_, Fn> {
+impl LowerAST for Sourced<'_, Func> {
     type Output = ();
 
     fn lower(
@@ -676,7 +677,7 @@ impl LowerAST for Node<Expr> {
             Expr::Curly(c) => Sourced(c, &src).lower(srcmap, scope_map, tcx),
             Expr::DefaultValue(_) => todo!("lower: Expr::DefaultValue: {:?}", self),
             Expr::Dot(d) => d.lower(srcmap, scope_map, tcx),
-            Expr::Fn(_) => todo!("lower: Expr::Fn: {:?}", self),
+            Expr::Func(_) => todo!("lower: Expr::Fn: {:?}", self),
             Expr::For(_) => todo!("lower: Expr::For: {:?}", self),
             Expr::If(if_ex) => Sourced(if_ex, &src).lower(srcmap, scope_map, tcx),
             Expr::Index(_) => todo!("lower: Expr::Index: {:?}", self),
@@ -813,7 +814,7 @@ impl LowerAST for ast::Call {
         scope_map: &HashMap<Path, Vec<Path>>,
         tcx: &mut TyCtx,
     ) -> RayResult<Self::Output> {
-        self.lhs.lower(srcmap, scope_map, tcx)?;
+        self.callee.lower(srcmap, scope_map, tcx)?;
         self.args.items.lower(srcmap, scope_map, tcx)
     }
 }

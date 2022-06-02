@@ -52,7 +52,7 @@ impl Parser<'_> {
             }
             TokenKind::Fn | TokenKind::Modifier(_) => self
                 .parse_fn(false, ctx)
-                .map(|(f, span)| self.mk_expr(Expr::Fn(f), span, ctx.path.clone())),
+                .map(|(f, span)| self.mk_expr(Expr::Func(f), span, ctx.path.clone())),
             TokenKind::LeftParen => self.parse_paren_expr(ctx),
             TokenKind::LeftCurly => self.parse_block(ctx),
             TokenKind::Mut => self.parse_local(false, ctx),
@@ -274,7 +274,7 @@ impl Parser<'_> {
 
         Ok(self.mk_expr(
             Expr::Call(Call {
-                lhs: Box::new(lhs),
+                callee: Box::new(lhs),
                 args,
                 args_span,
                 paren_span: Span {

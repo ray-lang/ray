@@ -3,31 +3,18 @@ use std::collections::HashSet;
 use crate::{
     errors::{RayError, RayErrorKind},
     span::{Source, SourceMap},
-    typing::{state::TyEnv, subst::ApplySubst},
+    typing::{state::TyEnv, subst::ApplySubst, ApplySubstMut},
 };
 
 use super::{
     collect::{CollectConstraints, CollectCtx},
     constraints::tree::BottomUpWalk,
     context::TyCtx,
+    predicate::TyPredicate,
     solvers::{GreedySolver, Solution, Solver},
+    ty::{Ty, TyVar},
+    Subst, TypeError,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InferError {
-    pub msg: String,
-    pub src: Vec<Source>,
-}
-
-impl From<InferError> for RayError {
-    fn from(err: InferError) -> Self {
-        RayError {
-            msg: err.msg,
-            src: err.src,
-            kind: RayErrorKind::Type,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct InferSystem<'tcx> {
@@ -44,7 +31,7 @@ impl<'tcx> InferSystem<'tcx> {
         v: &T,
         srcmap: &mut SourceMap,
         defs: TyEnv,
-    ) -> Result<(Solution, TyEnv), Vec<InferError>>
+    ) -> Result<(Solution, TyEnv), Vec<TypeError>>
     where
         T: CollectConstraints<Output = U> + std::fmt::Display,
     {
@@ -67,12 +54,17 @@ impl<'tcx> InferSystem<'tcx> {
         defs.extend(new_defs);
 
         let solver = GreedySolver::new(constraints, &mut self.tcx);
-        let (solution, constraints) = solver.solve();
+        let (mut solution, constraints) = solver.solve();
 
         log::debug!("solution (before satisfy check): {:#?}", solution);
 
         // verify satisibility of the constraints using the solution
-        let errs = solution.satisfies(constraints, &self.tcx);
+        let mut errs = solution.satisfies(constraints, &self.tcx);
+
+        // formalize types and apply substitution to the errors
+        // solution.formalize_types();
+        // errs.apply_subst_mut(&solution.subst);
+        // log::debug!("solution (after formalization): {:#?}", solution);
 
         if errs.len() != 0 {
             Err(errs)

@@ -8,7 +8,7 @@ use crate::{
     libgen, lir,
     pathlib::FilePath,
     sema, transform,
-    typing::{state::TyEnv, ApplySubstMut, InferSystem, TyCtx},
+    typing::{check::TypeCheckSystem, state::TyEnv, ApplySubstMut, InferSystem, TyCtx},
 };
 
 mod build;
@@ -98,7 +98,7 @@ impl Driver {
                 return Err(errs
                     .into_iter()
                     .map(|err| RayError {
-                        msg: err.msg,
+                        msg: err.message(),
                         src: err.src,
                         kind: RayErrorKind::Type,
                     })
@@ -107,8 +107,19 @@ impl Driver {
         };
 
         tcx.apply_subst_mut(&solution.subst);
+        tcx.extend_inst_ty_map(solution.inst_map.clone());
 
-        log::debug!("{}", module);
+        log::debug!("{:#?}", module);
+        log::debug!("{:#?}", tcx);
+
+        let mut tyck = TypeCheckSystem::new(&mut tcx, &srcmap);
+        if let Err(err) = tyck.type_check(&mut module) {
+            return Err(vec![RayError {
+                msg: err.message(),
+                src: err.src,
+                kind: RayErrorKind::Type,
+            }]);
+        }
 
         if options.no_compile {
             return Ok(());
@@ -151,9 +162,9 @@ impl Driver {
                 .and_then(|_| fs::write(path, lib))
                 .map_err(|err| vec![err.into()])
         } else {
+            log::debug!("program before monomorphization:\n{}", program);
             program.monomorphize();
-
-            log::debug!("{}", program);
+            log::debug!("program after monomorphization:\n{}", program);
 
             let lcx = inkwell::context::Context::create();
             llvm::codegen(&program, &tcx, &srcmap, &lcx, output_path)

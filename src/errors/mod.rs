@@ -100,7 +100,7 @@ impl RayError {
 
                 // skip to the start line
                 let mut lines = buf.lines().skip(start_line).take(line_count);
-                let mut lineno = start_line + 1;
+                let mut lineno = start_line;
                 let red_slash = "/".bold().red();
                 let red_pipe = "|".bold().red();
                 if line_count == 1 {
@@ -114,15 +114,25 @@ impl RayError {
                     eprintln!("{}{} {}{}", full_spacing, pipe, indent, indicator);
                 } else {
                     for (i, line) in lines.enumerate() {
-                        let lineno_str = lineno.to_string();
                         lineno += 1;
                         if line_count > 3 && i > 1 && i < line_count - 2 {
                             if i == 2 {
-                                eprintln!("{} {} {}", ELLIPSIS.bold(), pipe, red_pipe);
+                                let after = line.trim_start();
+                                let indent_len = line.len() - after.len();
+                                let spacing = " ".repeat(indent_len);
+                                eprintln!(
+                                    "{} {} {} {}{}",
+                                    ELLIPSIS.bold(),
+                                    pipe,
+                                    red_pipe,
+                                    spacing,
+                                    ELLIPSIS
+                                );
                             }
                             continue;
                         }
 
+                        let lineno_str = lineno.to_string();
                         let num_width = lineno_str.len();
                         let spacing = " ".repeat(max_num_width - num_width);
                         let prefix = if i == 0 { &red_slash } else { &red_pipe };

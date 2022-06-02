@@ -4,6 +4,8 @@ use crate::{
     typing::ty::Ty,
 };
 
+use super::Decl;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FnParam {
     Name(Name),
@@ -52,7 +54,7 @@ impl FnParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FnSig {
+pub struct FuncSig {
     pub path: Path,
     pub name: Option<String>,
     pub params: Vec<Node<FnParam>>,
@@ -67,15 +69,15 @@ pub struct FnSig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Fn {
-    pub sig: FnSig,
+pub struct Func {
+    pub sig: FuncSig,
     pub body: Option<Box<Node<Expr>>>,
 }
 
-impl Fn {
+impl Func {
     pub fn new(path: Path, params: Vec<Node<FnParam>>, body: Node<Expr>) -> Self {
         Self {
-            sig: FnSig {
+            sig: FuncSig {
                 path,
                 name: None,
                 params,
@@ -93,7 +95,7 @@ impl Fn {
     }
 }
 
-impl std::fmt::Display for FnSig {
+impl std::fmt::Display for FuncSig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ty_params = if let Some(ref ty_params) = self.ty_params {
             ty_params.to_string()
@@ -121,7 +123,7 @@ impl std::fmt::Display for FnSig {
     }
 }
 
-impl std::fmt::Display for Fn {
+impl std::fmt::Display for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let body = self.body.as_ref();
         write!(

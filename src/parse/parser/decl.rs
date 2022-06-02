@@ -75,7 +75,7 @@ impl Parser<'_> {
                     let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
                     f.sig.doc_comment = doc;
                     f.sig.is_method = true;
-                    let decl = this.mk_decl(Decl::Fn(f), span, ctx.path.clone());
+                    let decl = this.mk_decl(Decl::Func(f), span, ctx.path.clone());
                     funcs.push(decl);
                     Ok(span.end)
                 }
@@ -110,7 +110,7 @@ impl Parser<'_> {
             TokenKind::Trait => self.parse_trait(ctx)?,
             TokenKind::Fn | TokenKind::Modifier(_) => {
                 let (f, span) = self.parse_fn(false, ctx)?;
-                self.mk_decl(Decl::Fn(f), span, ctx.path.clone())
+                self.mk_decl(Decl::Func(f), span, ctx.path.clone())
             }
             _ => unreachable!(),
         })
@@ -228,7 +228,8 @@ impl Parser<'_> {
             }
 
             let sig = self.parse_trait_fn_sig(&ctx)?;
-            funcs.push(sig);
+            let span = sig.span;
+            funcs.push(self.mk_decl(Decl::FnSig(sig), span, ctx.path.clone()));
         }
 
         let end = self.expect_end(TokenKind::RightCurly)?;

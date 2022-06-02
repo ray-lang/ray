@@ -3,7 +3,7 @@
     "[rust]": {
         "editor.formatOnSave": true,
     },
-    "rust-analyzer.checkOnSave.command": "build",
+    // "rust-analyzer.checkOnSave.command": "build",
     "lldb.library": "/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/LLDB",
     "files.associations": {
         "cstdlib": "cpp",

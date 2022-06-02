@@ -1,11 +1,14 @@
 mod greedy;
 
+use std::{collections::HashSet, time::SystemTime};
+
 pub use greedy::*;
 
 use crate::typing::{
     predicate::TyPredicate,
+    traits::CollectTyVars,
     ty::{Ty, TyVar},
-    ApplySubst, InferError, Subst, TyCtx,
+    ApplySubst, Subst, TyCtx, TypeError,
 };
 
 use super::{
@@ -14,8 +17,8 @@ use super::{
         ProveConstraint, Satisfiable,
     },
     traits::{
-        HasBasic, HasPredicates, HasState, HasSubst, Instantiate, PolymorphismInfo, QualifyTypes,
-        QuantifyTypes, Skolemize,
+        HasBasic, HasPredicates, HasState, HasSubst, HoistTypes, Instantiate, PolymorphismInfo,
+        QualifyTypes, QuantifyTypes, Skolemize,
     },
     ApplySubstMut,
 };
@@ -59,7 +62,7 @@ impl ApplySubst for Solution {
 }
 
 impl Solution {
-    pub fn satisfies(&self, constraints: Vec<Constraint>, ctx: &TyCtx) -> Vec<InferError> {
+    pub fn satisfies(&self, constraints: Vec<Constraint>, ctx: &TyCtx) -> Vec<TypeError> {
         let mut errs = vec![];
         for c in constraints.into_iter().rev() {
             if let Some(e) = self.satisfies_constraint(c, ctx).err() {
@@ -70,99 +73,146 @@ impl Solution {
         errs
     }
 
-    fn satisfies_constraint(&self, c: Constraint, ctx: &TyCtx) -> Result<(), InferError> {
+    fn satisfies_constraint(&self, c: Constraint, ctx: &TyCtx) -> Result<(), TypeError> {
         c.satisfied_by(self, ctx)
     }
 
     pub fn apply_subst_changes(&mut self) {
         let subst = self.subst.clone();
         self.apply_subst_mut(&subst);
+    }
+
+    pub fn simplify_subst(&mut self) {
+        log::debug!("solution: {:#?}", self);
+
+        // first, qualify the types in the solution
+        self.subst.qualify_tys(&self.preds);
         self.ty_map.qualify_tys(&self.preds);
+        self.inst_map.qualify_tys(&self.preds);
+
+        let tvs = self.subst.keys().cloned().collect::<Vec<_>>();
+        let mut tv_set = HashSet::new();
+        for tv in tvs {
+            self.simplify_var(tv, &mut tv_set);
+        }
+    }
+
+    fn simplify_var(&mut self, tv: TyVar, tv_set: &mut HashSet<TyVar>) {
+        log::debug!("simplify var: {:?} {:?}", tv, tv_set);
+        if tv_set.contains(&tv) {
+            return;
+        }
+
+        tv_set.insert(tv.clone());
+        let tyvars = unless!(self.subst.get(&tv).map(|ty| ty.collect_tyvars()));
+        for tv in tyvars {
+            self.simplify_var(tv, tv_set);
+        }
+
+        // unwrap is okay here because we wouldn't have gotten here if it was None
+        let ty = self.subst.get(&tv).cloned().unwrap();
+        let subst = Subst::one(tv, ty);
+        self.apply_subst_mut(&subst);
+        log::debug!("solution: {:#?}", self);
     }
 
     pub fn formalize_types(&mut self) {
-        // formalize any unbound type variables
-        let mut subst = Subst::new();
-        for ty in self.ty_map.values() {
-            let ty: Ty = ty.clone().apply_subst(&self.subst);
-            if ty.is_func() {
-                subst.extend(ty.formalize());
-            } else if let Ty::All(_, t) = ty {
-                let (preds, ty) = t.unpack_qualified_ty();
-                for p in preds {
-                    if let Ty::Var(v) = &ty {
-                        if p.is_int_trait() {
-                            subst.insert(v.clone(), Ty::int());
-                            break;
-                        } else if p.is_float_trait() {
-                            subst.insert(v.clone(), Ty::float());
-                            break;
+        log::debug!("solution: {:#?}", self);
+
+        let inst_map = self.inst_map.clone();
+        let prev_sub = self.subst.clone();
+        let mut inst_sub = Subst::new();
+        for (var, original_ty) in self.inst_map.iter() {
+            match prev_sub.get(var).cloned() {
+                Some(inst_ty) if inst_ty.has_unknowns() => {
+                    // find all of the types that have been solved
+                    let solved_tyvars = inst_ty
+                        .collect_tyvars()
+                        .into_iter()
+                        .filter_map(|tv| {
+                            let mapped_ty = prev_sub.get_ty_for_var(&tv);
+                            log::debug!("tv: {}", tv);
+                            log::debug!("mapped_ty: {}", mapped_ty);
+
+                            // if the mapped type is not the original type var
+                            // and mapped type is either not a type variable or is
+                            // an unknown type variable, then the type is considered solved
+                            if !mapped_ty.is_unknown_tyvar() {
+                                if let Ty::Var(u) = mapped_ty {
+                                    Some(u)
+                                } else {
+                                    Some(tv)
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<HashSet<_>>();
+
+                    let original_ty = original_ty.clone().apply_subst(&prev_sub);
+                    let mut inst_ty = inst_ty.apply_subst(&prev_sub);
+                    log::debug!("original_ty: {}", original_ty);
+                    log::debug!("inst_ty: {}", inst_ty);
+                    log::debug!("solved_tyvars: {:?}", solved_tyvars);
+                    // remove type vars from the substitution and
+                    // apply them to the instantiated type
+                    let mut sub = inst_ty.mgu(&original_ty).unwrap_or_default();
+                    let mut local_sub = Subst::new();
+                    for tv in solved_tyvars {
+                        if let Some(ty) = sub.remove(&tv) {
+                            local_sub.insert(tv, ty);
                         }
                     }
+                    log::debug!("sub: {}", sub);
+                    log::debug!("local_sub: {}", local_sub);
+                    for tv in sub.keys() {
+                        let mut ty = Ty::Var(tv.clone());
+                        ty.quantify_in_place();
+                        ty.qualify_in_place(&self.preds);
+                        inst_sub.insert(tv.clone(), ty);
+                    }
+
+                    self.subst.union_inplace(sub);
+
+                    inst_ty.quantify_in_place();
+                    inst_ty.apply_subst_mut(&local_sub);
+                    inst_ty.qualify_in_place(&self.preds);
+                    log::debug!("new instantiation: {} => {}", var, inst_ty);
+                    self.subst.insert(var.clone(), inst_ty);
                 }
+                _ => continue,
             }
         }
 
-        // add to substitution from the original skolem variables
-        for (sk, ty) in self.skolem_subst.iter() {
-            // get the current type variable from the substitution
-            let tv = sk.clone().apply_subst(&self.subst);
-            // add this to the substitution
-            subst.insert(tv, ty.clone());
+        self.apply_subst_changes();
+        inst_sub.apply_subst_mut(&self.subst);
+        log::debug!("inst_sub: {:#?}", inst_sub);
+        log::debug!("solution: {:#?}", self);
+
+        // formalize any unbound type variables
+        let mut subst = Subst::new();
+        for ty in self.ty_map.values() {
+            let ty = ty.clone().apply_subst(&self.subst);
+            if ty.is_func() {
+                todo!()
+                // subst.extend(ty.formalize());
+            }
         }
 
-        // let subst = self.subst.clone();
         log::debug!("apply subst: {:#?}", subst);
-        self.subst.extend(subst);
+        self.subst.union_inplace(subst);
         self.apply_subst_changes();
+        log::debug!("solution: {:#?}", self);
 
-        self.unformalized_inst_map.extend(self.inst_map.clone());
-
-        // for (var, ty) in self.skol_map.iter() {
-        //     match self.subst.get(var).cloned() {
-        //         Some(other_ty) if other_ty.has_unknowns() => {
-        //             log::debug!("ty: {}", ty);
-        //             log::debug!("other_ty: {}", other_ty);
-        //             let ty = ty.clone().apply_subst(&self.subst);
-        //             let other_ty = other_ty.apply_subst(&self.subst);
-        //             let sub = other_ty.mgu(&ty).unwrap_or_default();
-        //             log::debug!("sub: {}", sub);
-        //             self.subst.union_inplace(sub);
-        //         }
-        //         _ => continue,
-        //     }
-        // }
-
-        // let subst = self.subst.clone();
-        // self.apply_subst_mut(&subst);
-
-        // for (var, ty) in self.inst_map.iter() {
-        //     match self.subst.get(var).cloned() {
-        //         Some(other_ty) if other_ty.has_unknowns() => {
-        //             let ty = ty.clone().apply_subst(&self.subst);
-        //             let other_ty = other_ty.apply_subst(&self.subst);
-        //             log::debug!("ty: {}", ty);
-        //             log::debug!("other_ty: {}", other_ty);
-        //             let sub = other_ty.mgu(&ty).unwrap_or_default();
-        //             log::debug!("sub: {}", sub);
-        //             self.subst.union_inplace(sub);
-        //         }
-        //         _ => continue,
-        //     }
-        // }
-
-        // let subst = self.subst.clone();
-        // self.apply_subst_mut(&subst);
+        // use the inst_map from before
+        self.unformalized_inst_map.extend(inst_map);
     }
 
-    pub fn get_ty(&self, r: Ty) -> Result<Ty, InferError> {
+    pub fn get_ty(&self, r: Ty) -> Result<Ty, TypeError> {
         Ok(if let Ty::Var(v) = r {
             let r = self.ty_map.get(&v);
             if r.is_none() {
-                return Err(InferError {
-                    msg: format!("type variable `{}` cannot be solved", v),
-                    src: vec![],
-                });
+                return Err(TypeError::tyvar(v));
             }
 
             r.unwrap().clone()
@@ -171,14 +221,11 @@ impl Solution {
         })
     }
 
-    pub fn get_var(&self, v: &TyVar) -> Result<Ty, InferError> {
+    pub fn get_var(&self, v: &TyVar) -> Result<Ty, TypeError> {
         if let Some(s) = self.subst.get(v) {
             Ok(s.clone())
         } else {
-            Err(InferError {
-                msg: format!("type variable `{}` cannot be solved", v),
-                src: vec![],
-            })
+            Err(TypeError::tyvar(v.clone()))
         }
     }
 }
@@ -186,45 +233,19 @@ impl Solution {
 pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
     fn solution(self) -> Solution;
 
+    fn apply_subst_to<T>(&self, value: T) -> T
+    where
+        T: ApplySubst,
+    {
+        value.apply_subst(self.get_subst())
+    }
+
     fn solve(mut self) -> (Solution, Vec<Constraint>)
     where
         Self: std::marker::Sized,
     {
         // first solve the constraints
         let mut check = vec![];
-        self.solve_constraints(&mut check);
-
-        // then if there are any literal predicates that have type variables add
-        // equality constraints that unify with the default type of the literal
-        let mut cs = vec![];
-        for (pred, info) in self.get_preds() {
-            match pred {
-                TyPredicate::Trait(t) => match t {
-                    Ty::Projection(x, p) => {
-                        if x == "core::Int" || x == "core::Float" {
-                            let base_ty = &p[0];
-                            if base_ty.is_tyvar() {
-                                cs.push(
-                                    EqConstraint::new(
-                                        base_ty.clone(),
-                                        if x == "core::Int" {
-                                            Ty::int()
-                                        } else {
-                                            Ty::float()
-                                        },
-                                    )
-                                    .with_info(info.clone()),
-                                );
-                            }
-                        }
-                    }
-                    _ => continue,
-                },
-                _ => continue,
-            }
-        }
-
-        self.add_constraints(cs);
         self.solve_constraints(&mut check);
 
         let mut cs = vec![];
@@ -255,19 +276,24 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
         let mut solution = self.solution();
         log::debug!("------------- Before constraint apply_subst ---------------");
         log::debug!("solution: {:#?}", solution);
-        let mut check = check.apply_subst(&solution.subst);
-        // check.qualify_tys(&solution.preds);
-        // check.quantify_tys();
+        check.apply_subst_mut(&solution.subst);
+        check.qualify_tys(&solution.preds);
+        check.quantify_tys();
+
+        log::debug!("------------- Before subst simplification ---------------");
+        log::debug!("constraints to check: {:#?}", check);
+        log::debug!("solution: {:#?}", solution);
+
+        solution.simplify_subst();
+        check.apply_subst_mut(&solution.subst);
+        check.qualify_tys(&solution.preds);
+        check.quantify_tys();
 
         log::debug!("------------- Before formalization ---------------");
         log::debug!("constraints to check: {:#?}", check);
         log::debug!("solution: {:#?}", solution);
-
-        solution.formalize_types();
-
-        check = check.apply_subst(&solution.subst);
-        check.qualify_tys(&solution.preds);
-        check.quantify_tys();
+        // solution.formalize_types();
+        // check.apply_subst_mut(&solution.subst);
 
         log::debug!("------------- After formalization ---------------");
         log::debug!("constraints to check: {:#?}", check);
@@ -303,17 +329,23 @@ pub trait Solver: HasBasic + HasSubst + HasState + HasPredicates {
             ConstraintKind::Gen(c) => {
                 let (m, v, t) = c.unpack();
                 self.make_consistent();
-                let m = m.apply_subst(self.get_subst());
-                let t = t.apply_subst(self.get_subst());
+                let m = self.apply_subst_to(m);
+                log::debug!("inst constraint: m = {:?}", m);
+                let t = self.apply_subst_to(t);
+                log::debug!("inst constraint: t = {}", t);
                 let s = self.generalize_with_preds(&m, t);
+                log::debug!("inst constraint: s = {}", s);
                 self.store_ty(v, s, info);
             }
             ConstraintKind::Inst(c) => {
+                log::debug!("inst constraint: {:?}", c);
                 let (t, r) = c.unpack();
                 let s = self.find_ty(&r);
+                log::debug!("s = {}", s);
                 self.inst_ty(t.clone(), s.clone());
                 let info = info.inst_ty(&s);
                 let t_sub = s.instantiate(&mut self.tf());
+                log::debug!("t_sub = {}", t_sub);
                 let (p, t_sub) = t_sub.unpack_qualified_ty();
                 for pred in p {
                     self.add_constraint(ProveConstraint::new(pred).with_info(info.clone()))

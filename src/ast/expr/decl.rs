@@ -1,7 +1,12 @@
-use std::ops::DerefMut;
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
+
+use itertools::Itertools;
 
 use crate::{
-    ast::{Assign, Expr, Fn, FnSig, Name, Node, TypeParams},
+    ast::{Assign, Expr, Func, FuncSig, Name, Node, Path, TypeParams},
     span::parsed::Parsed,
     strutils,
     typing::ty::Ty,
@@ -26,6 +31,10 @@ impl Extern {
             decl: Box::new(decl),
             src: None,
         }
+    }
+
+    pub fn decl_node(&self) -> &Node<Decl> {
+        &self.decl
     }
 
     pub fn decl(&self) -> &Decl {
@@ -55,8 +64,8 @@ pub enum Decl {
     Mutable(Node<Name>),
     Name(Node<Name>),
     Declare(Assign),
-    Fn(Fn),
-    FnSig(FnSig),
+    Func(Func),
+    FnSig(FuncSig),
     Struct(Struct),
     Trait(Trait),
     TypeAlias(Node<Name>, Parsed<Ty>),
@@ -86,11 +95,97 @@ impl Into<usize> for &Decl {
             Decl::Struct(_) => 1,
             Decl::TypeAlias(_, _) => 2,
             Decl::Extern(_) => 3,
-            Decl::Fn(_) | Decl::FnSig(_) => 4,
+            Decl::Func(_) | Decl::FnSig(_) => 4,
             Decl::Impl(_) => 5,
             Decl::Declare(_) => 6,
             Decl::Mutable(_) | Decl::Name(_) => 7,
         }
+    }
+}
+
+impl Decl {
+    pub fn desc(&self) -> String {
+        match self {
+            Decl::Extern(e) => format!("extern {}", e.decl().desc()),
+            Decl::Mutable(_) => todo!("mutable variable"),
+            Decl::Name(_) => todo!("variable"),
+            Decl::Declare(_) => todo!("variable"),
+            Decl::Func(_) => str!("function"),
+            Decl::FnSig(_) => str!("function signature"),
+            Decl::Struct(_) => str!("struct"),
+            Decl::Trait(_) => str!("trait"),
+            Decl::TypeAlias(_, _) => str!("type alias"),
+            Decl::Impl(_) => str!("impl"),
+        }
+    }
+
+    pub fn is_typed(&self) -> bool {
+        match self {
+            Decl::Extern(_) | Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => true,
+            Decl::Mutable(_) => todo!(),
+            Decl::Name(_) => todo!(),
+            Decl::Declare(_) => todo!(),
+            Decl::Func(f) => f.sig.ty.is_some(),
+            Decl::FnSig(sig) => sig.ty.is_some(),
+            Decl::Impl(_) => false, // not entirely true, but we don't care here
+        }
+    }
+
+    pub fn get_ty(&self) -> Option<&Ty> {
+        match self {
+            Decl::Extern(_)
+            | Decl::Impl(_)
+            | Decl::Struct(_)
+            | Decl::Trait(_)
+            | Decl::TypeAlias(_, _) => todo!(),
+            Decl::Mutable(_) => todo!(),
+            Decl::Name(_) => todo!(),
+            Decl::Declare(_) => todo!(),
+            Decl::Func(f) => f.sig.ty.as_ref(),
+            Decl::FnSig(sig) => sig.ty.as_ref(),
+        }
+    }
+
+    pub fn get_defs(&self) -> HashMap<&Path, Option<&Ty>> {
+        let mut defs = HashMap::new();
+        match self {
+            Decl::Extern(ex) => defs.extend(ex.decl().get_defs()),
+            Decl::Mutable(_) => todo!(),
+            Decl::Name(_) => todo!(),
+            Decl::Declare(_) => todo!(),
+            Decl::Func(f) => {
+                defs.insert(&f.sig.path, f.sig.ty.as_ref());
+            }
+            Decl::FnSig(sig) => {
+                defs.insert(&sig.path, sig.ty.as_ref());
+            }
+            Decl::Struct(_) => todo!(),
+            Decl::Trait(tr) => {
+                for func in tr.funcs.iter() {
+                    let func = variant!(func.deref(), if Decl::FnSig(func));
+                    defs.insert(&func.path, func.ty.as_ref());
+                }
+            }
+            Decl::TypeAlias(_, _) => todo!(),
+            Decl::Impl(im) => {
+                if let Some(externs) = &im.externs {
+                    defs.extend(externs.iter().map(|d| d.get_defs()).concat());
+                }
+
+                if let Some(funcs) = &im.funcs {
+                    defs.extend(funcs.iter().map(|d| d.get_defs()).concat());
+                }
+
+                if let Some(consts) = &im.consts {
+                    defs.extend(
+                        consts
+                            .iter()
+                            .flat_map(|d| d.lhs.path().map(|path| (path, None))),
+                    );
+                }
+            }
+        }
+        defs
     }
 }
 
@@ -104,7 +199,7 @@ pub struct Struct {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trait {
     pub ty: Parsed<Ty>,
-    pub funcs: Vec<FnSig>,
+    pub funcs: Vec<Node<Decl>>,
     pub super_trait: Option<Parsed<Ty>>,
 }
 
@@ -126,7 +221,7 @@ impl std::fmt::Display for Decl {
             Decl::Name(n) => write!(f, "(declare {})", n),
             Decl::Declare(a) => write!(f, "(declare {})", a),
             Decl::TypeAlias(n, ty) => write!(f, "(type {} = {})", n, ty),
-            Decl::Fn(func) => write!(f, "{}", func),
+            Decl::Func(func) => write!(f, "{}", func),
             Decl::FnSig(sig) => write!(f, "(fn {})", sig),
             Decl::Struct(st) => {
                 let tp = if let Some(tp) = &st.ty_params {
@@ -152,7 +247,7 @@ impl std::fmt::Display for Decl {
             }
             Decl::Impl(im) => {
                 let qualifiers = if im.qualifiers.len() != 0 {
-                    format!("where {}", join(&im.qualifiers, ", "))
+                    format!("where {}", join(&im.qualifiers, " + "))
                 } else {
                     str!("")
                 };
@@ -209,7 +304,7 @@ impl Decl {
         match &self {
             Decl::Extern(e) => e.decl.get_name(),
             Decl::Mutable(n) | Decl::Name(n) => Some(n.path.to_string()),
-            Decl::Fn(f) => f.sig.name.clone(),
+            Decl::Func(f) => f.sig.name.clone(),
             Decl::FnSig(sig) => sig.name.clone(),
             Decl::Struct(s) => Some(s.name.path.to_string()),
             Decl::Trait(t) => Some(t.ty.name()),

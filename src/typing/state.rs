@@ -118,6 +118,10 @@ impl TyVarFactory {
         }
     }
 
+    pub fn set_prefix<S: AsRef<str>>(&mut self, prefix: S) {
+        self.prefix = prefix.as_ref().to_string();
+    }
+
     pub fn curr(&self) -> u64 {
         self.value
     }
@@ -147,7 +151,8 @@ impl TyVarFactory {
         // if v == 46 {
         //     panic!("v = 46")
         // }
-        let path = scope.append(format!("{}{}", self.prefix, v));
+        // let path = scope.append(format!("{}{}", self.prefix, v));
+        let path = Path::from(format!("{}{}", self.prefix, v));
         TyVar(path)
     }
 }

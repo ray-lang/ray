@@ -5,6 +5,8 @@ use crate::{
     typing::{state::TyEnv, ApplySubst, Subst},
 };
 
+use super::{Decl, Expr};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module<A, B>
 where
@@ -23,11 +25,7 @@ where
     pub is_lib: bool,
 }
 
-impl<A, B> std::fmt::Display for Module<A, B>
-where
-    A: std::fmt::Display + std::fmt::Debug + Clone + PartialEq + Eq,
-    B: std::fmt::Display + std::fmt::Debug + Clone + PartialEq + Eq,
-{
+impl std::fmt::Display for Module<Expr, Decl> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let decls = strutils::indent_lines_iter(&self.decls, 2);
         let stmts = strutils::indent_lines_iter(&self.stmts, 2);
@@ -37,6 +35,17 @@ where
             write!(f, "(module {}\n{}\n)", self.path, decls)
         } else if stmts.len() != 0 {
             write!(f, "(module {}\n{}\n)", self.path, stmts)
+        } else {
+            write!(f, "(module {})", self.path)
+        }
+    }
+}
+
+impl std::fmt::Display for Module<(), Decl> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let decls = strutils::indent_lines_iter(&self.decls, 2);
+        if decls.len() != 0 {
+            write!(f, "(module {}\n{}\n)", self.path, decls)
         } else {
             write!(f, "(module {})", self.path)
         }
@@ -69,7 +78,11 @@ where
     A: std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub fn new_from(other: &Module<A, B>) -> Module<A, B> {
+    pub fn new_from<C, D>(other: &Module<A, B>) -> Module<C, D>
+    where
+        C: std::fmt::Debug + Clone + PartialEq + Eq,
+        D: std::fmt::Debug + Clone + PartialEq + Eq,
+    {
         Module {
             path: other.path.clone(),
             stmts: vec![],
