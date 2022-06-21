@@ -100,7 +100,7 @@ impl RayError {
 
                 // skip to the start line
                 let mut lines = buf.lines().skip(start_line).take(line_count);
-                let mut lineno = start_line;
+                let mut lineno = start_line + 1;
                 let red_slash = "/".bold().red();
                 let red_pipe = "|".bold().red();
                 if line_count == 1 {

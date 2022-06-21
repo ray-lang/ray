@@ -113,6 +113,13 @@ impl<T> Parsed<T> {
     pub fn take_value(self) -> T {
         self.value
     }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Parsed<U> {
+        Parsed {
+            value: f(self.value),
+            src: self.src,
+        }
+    }
 }
 
 impl<T> Parsed<T>

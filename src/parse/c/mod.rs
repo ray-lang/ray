@@ -273,7 +273,7 @@ fn make_type(ty_specs: Vec<&TypeSpecifier>) -> Ty {
                         .declarations
                         .as_ref()
                         .map(|struct_decls| get_struct_fields(struct_decls, &mut ty_params));
-                    Some(Ty::Projection(name, ty_params))
+                    Some(Ty::Projection(Box::new(Ty::Const(name)), ty_params))
                 }
                 StructKind::Union => None,
             },

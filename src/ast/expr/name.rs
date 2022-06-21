@@ -1,11 +1,31 @@
+use std::hash::Hash;
+
 use serde::{Deserialize, Serialize};
 
-use crate::{ast::Path, span::parsed::Parsed, typing::ty::Ty};
+use crate::{ast::Path, span::parsed::Parsed, typing::ty::TyScheme};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Name {
     pub path: Path,
-    pub ty: Option<Parsed<Ty>>,
+    pub ty: Option<Parsed<TyScheme>>,
+}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.path.partial_cmp(&other.path)
+    }
+}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path.cmp(&other.path)
+    }
+}
+
+impl Hash for Name {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+    }
 }
 
 impl std::fmt::Display for Name {
@@ -26,7 +46,7 @@ impl Name {
         }
     }
 
-    pub fn typed<P: Into<Path>>(path: P, ty: Parsed<Ty>) -> Name {
+    pub fn typed<P: Into<Path>>(path: P, ty: Parsed<TyScheme>) -> Name {
         Name {
             path: path.into(),
             ty: Some(ty),

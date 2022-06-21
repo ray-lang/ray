@@ -1,20 +1,31 @@
 use std::collections::HashSet;
 
+use top::{
+    mgu,
+    solver::{greedy::GreedySolver, SolveOptions, SolveResult, Solver},
+    Class, Instance, Predicate, Predicates, Subst, Substitutable,
+};
+
 use crate::{
+    ast::Path,
     errors::{RayError, RayErrorKind},
     span::{Source, SourceMap},
-    typing::{state::TyEnv, subst::ApplySubst, ApplySubstMut},
+    typing::{state::Env, traits::QualifyTypes, ty::TyScheme},
 };
 
 use super::{
     collect::{CollectConstraints, CollectCtx},
     constraints::tree::BottomUpWalk,
     context::TyCtx,
-    predicate::TyPredicate,
-    solvers::{GreedySolver, Solution, Solver},
-    ty::{Ty, TyVar},
-    Subst, TypeError,
+    info::TypeSystemInfo,
+    state::SchemeEnv,
+    // predicate::TyPredicate,
+    // solvers::{GreedySolver, Solution, Solver},
+    ty::{SigmaTy, Ty, TyVar},
+    TypeError,
 };
+
+pub(crate) mod solution;
 
 #[derive(Debug)]
 pub struct InferSystem<'tcx> {
@@ -30,13 +41,13 @@ impl<'tcx> InferSystem<'tcx> {
         &mut self,
         v: &T,
         srcmap: &mut SourceMap,
-        defs: TyEnv,
-    ) -> Result<(Solution, TyEnv), Vec<TypeError>>
+        defs: SchemeEnv,
+    ) -> Result<(SolveResult<TypeSystemInfo, Ty, TyVar>, SchemeEnv), Vec<TypeError>>
     where
         T: CollectConstraints<Output = U> + std::fmt::Display,
     {
         let mono_tys = HashSet::new();
-        let mut new_defs = TyEnv::new();
+        let mut new_defs = Env::new();
         let mut ctx = CollectCtx {
             mono_tys: &mono_tys,
             srcmap: &srcmap,
@@ -47,31 +58,103 @@ impl<'tcx> InferSystem<'tcx> {
         let (_, _, c) = v.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);
         log::debug!("{}", v);
-        log::debug!("constraints: {:#?}", constraints);
+        // log::debug!("constraints: {:#?}", constraints);
+        let mut s = String::new();
+        s.push_str("[\n");
+        for constraint in constraints.iter() {
+            s.push_str(&format!("  {}\n", constraint));
+        }
+        s.push_str("]");
+
+        log::debug!("constraints: {}", s);
 
         // combine with the new definitions collected from constraints
         let mut defs = ctx.defs;
         defs.extend(new_defs);
 
-        let solver = GreedySolver::new(constraints, &mut self.tcx);
-        let (mut solution, constraints) = solver.solve();
+        let solver = GreedySolver::default(); //new(constraints, &mut self.tcx);
+        let mut options = SolveOptions::default();
+        options.unique = self.tcx.tf().curr() as u32;
 
-        log::debug!("solution (before satisfy check): {:#?}", solution);
+        // convert the traits/impls into classes/instances
+        for (path, trait_ty) in self.tcx.traits() {
+            let superclasses = trait_ty
+                .super_traits
+                .iter()
+                .map(|super_trait| super_trait.get_path().unwrap().to_string())
+                .collect();
+            let instances = self
+                .tcx
+                .impls()
+                .get(path)
+                .map(|impls| {
+                    impls
+                        .iter()
+                        .map(|impl_ty| {
+                            let base_ty = impl_ty.base_ty.clone();
+                            Instance::new(
+                                Predicate::class(
+                                    impl_ty.trait_ty.get_path().unwrap().to_string(),
+                                    base_ty,
+                                ),
+                                Predicates::from(impl_ty.predicates.clone()),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let class = Class::new(superclasses, instances);
+            options.class_env.add_class(path.to_string(), class);
+            options
+                .type_class_directives
+                .extend(trait_ty.directives.clone());
+        }
 
-        // verify satisibility of the constraints using the solution
-        let mut errs = solution.satisfies(constraints, &self.tcx);
+        // convert structs to record classes
+        for (_, struct_ty) in self.tcx.structs() {
+            for (field_name, field_ty) in struct_ty.fields.iter() {
+                options.class_env.add_record_class(
+                    field_name.clone(),
+                    Predicate::has_field(
+                        struct_ty.ty.mono().clone(),
+                        field_name.clone(),
+                        field_ty.mono().clone(),
+                    ),
+                )
+            }
+        }
 
-        // formalize types and apply substitution to the errors
-        // solution.formalize_types();
-        // errs.apply_subst_mut(&solution.subst);
-        // log::debug!("solution (after formalization): {:#?}", solution);
+        log::debug!("class env: {:?}", options.class_env);
 
-        if errs.len() != 0 {
+        // let (mut solution, constraints) = solver.solve(options, constraints);
+        let solution = solver.solve(options, constraints);
+
+        log::debug!("solution: {}", solution);
+
+        if solution.errors.len() != 0 {
+            let errs = solution
+                .errors
+                .into_iter()
+                .map(|(_, info)| TypeError::from_info(info))
+                .collect();
             Err(errs)
         } else {
-            log::debug!("defs before apply: {:#?}", defs);
-            let defs = defs.apply_subst(&solution.subst);
-            log::debug!("defs after apply: {:#?}", defs);
+            log::debug!("defs: {:?}", defs);
+            defs.apply_subst(&solution.subst);
+            defs.qualify_tys(&solution.qualifiers);
+            // let mut new_defs = SchemeEnv::new();
+            // for (mut path, mut scheme) in defs.drain() {
+            //     if scheme.has_quantifiers() {
+            //         let qual_ty = scheme.take().ty;
+            //         let gen_scheme = qual_ty.clone().generalize_all();
+            //         if let Ok((_, subst)) = mgu(qual_ty.ty(), gen_scheme.ty.ty()) {
+            //             path.apply_subst(&subst);
+            //         }
+            //         scheme = TyScheme::scheme(gen_scheme);
+            //     }
+            //     new_defs.insert(path, scheme);
+            // }
+            log::debug!("defs: {}", defs);
             Ok((solution, defs))
         }
     }

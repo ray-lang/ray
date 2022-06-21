@@ -1,28 +1,34 @@
-use crate::{constraint::Constraint, interface::basic::HasBasic, state::HasState};
+use crate::{constraint::Constraint, interface::basic::HasBasic, state::HasState, Ty, TyVar};
 
 #[derive(Debug, Default)]
-pub struct BasicState<T> {
-    pub(crate) constraints: Vec<Constraint<T>>,
-    pub(crate) errors: Vec<(String, T)>,
+pub struct BasicState<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    pub(crate) constraints: Vec<Constraint<I, T, V>>,
+    pub(crate) errors: Vec<(String, I)>,
     pub(crate) conditions: Vec<(String, bool)>,
     pub(crate) stop_after_first_error: bool,
     pub(crate) check_conditions: bool,
 }
 
-impl<S, T> HasBasic<T> for S
+impl<I, S, T, V> HasBasic<I, T, V> for S
 where
-    S: HasState<BasicState<T>>,
-    T: 'static,
+    I: 'static,
+    S: HasState<BasicState<I, T, V>>,
+    T: Ty<V> + 'static,
+    V: TyVar + 'static,
 {
-    fn push_constraint(&mut self, constraint: Constraint<T>) {
+    fn push_constraint(&mut self, constraint: Constraint<I, T, V>) {
         self.state_mut().constraints.push(constraint);
     }
 
-    fn push_constraints(&mut self, constraints: Vec<Constraint<T>>) {
+    fn push_constraints(&mut self, constraints: Vec<Constraint<I, T, V>>) {
         self.state_mut().constraints.extend(constraints);
     }
 
-    fn pop_constraint(&mut self) -> Option<Constraint<T>> {
+    fn pop_constraint(&mut self) -> Option<Constraint<I, T, V>> {
         self.state_mut().constraints.pop()
     }
 
@@ -30,7 +36,7 @@ where
         self.state_mut().constraints.clear();
     }
 
-    fn add_labeled_err(&mut self, label: &str, info: T) {
+    fn add_labeled_err(&mut self, label: &str, info: I) {
         let state = self.state_mut();
         state.errors.push((label.to_string(), info));
         if state.stop_after_first_error {
@@ -38,11 +44,11 @@ where
         }
     }
 
-    fn get_labeled_errs(&self) -> &Vec<(String, T)> {
+    fn get_labeled_errs(&self) -> &Vec<(String, I)> {
         &self.state().errors
     }
 
-    fn update_err_info(&mut self, mut f: impl FnMut(&mut T)) {
+    fn update_err_info(&mut self, mut f: impl FnMut(&mut I)) {
         for (_, info) in &mut self.state_mut().errors {
             f(info);
         }

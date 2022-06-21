@@ -1,39 +1,46 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 use crate::{
     constraint::TypeConstraintInfo,
     state::HasState,
     types::{ForAll, OrderedTypeSynonyms, Predicate, Scheme, Sigma, Substitutable, Ty},
+    Predicates, SigmaPredicates, Subst, TyVar,
 };
 
 use super::{basic::HasBasic, subst::HasSubst};
 
-pub trait HasTypeInference<T> {
+pub trait HasTypeInference<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     fn get_unique(&self) -> u32;
 
     fn set_unique(&mut self, unique: u32);
 
-    fn type_synonyms(&self) -> &OrderedTypeSynonyms;
+    fn type_synonyms(&self) -> &OrderedTypeSynonyms<T, V>;
 
-    fn type_synonyms_mut(&mut self) -> &mut OrderedTypeSynonyms;
+    fn type_synonyms_mut(&mut self) -> &mut OrderedTypeSynonyms<T, V>;
 
-    fn skolems(&self) -> &Vec<(Vec<u32>, T, Vec<Ty>)>;
+    fn skolems(&self) -> &Vec<(Vec<V>, I, Vec<T>)>;
 
-    fn skolems_mut(&mut self) -> &mut Vec<(Vec<u32>, T, Vec<Ty>)>;
+    fn skolems_mut(&mut self) -> &mut Vec<(Vec<V>, I, Vec<T>)>;
 
-    fn all_type_schemes(&self) -> &HashMap<u32, Scheme<Vec<Predicate>>>;
+    fn all_type_schemes(&self) -> &HashMap<V, Scheme<Predicates<T, V>, T, V>>;
 
-    fn get_type_scheme(&self, var: u32) -> Option<&Scheme<Vec<Predicate>>>;
+    fn get_type_scheme(&self, var: &V) -> Option<&Scheme<Predicates<T, V>, T, V>>;
 
-    fn store_type_scheme(&mut self, var: u32, type_scheme: Scheme<Vec<Predicate>>);
+    fn store_type_scheme(&mut self, var: V, type_scheme: Scheme<Predicates<T, V>, T, V>);
 
-    fn add_skolem(&mut self, skolem: (Vec<u32>, T, Vec<Ty>)) {
+    fn instantiated_type_scheme(&mut self, var: V, type_scheme: Scheme<Predicates<T, V>, T, V>);
+
+    fn add_skolem(&mut self, skolem: (Vec<V>, I, Vec<T>)) {
         self.skolems_mut().push(skolem);
     }
 
-    fn instantiate<A>(&mut self, forall: ForAll<A>) -> A
+    fn instantiate<A>(&mut self, forall: ForAll<A, T, V>) -> A
     where
-        A: Substitutable + Clone,
+        A: Substitutable<V, T> + Clone,
     {
         let unique = self.get_unique();
         let (new_unique, ty) = forall.instantiate(unique);
@@ -41,9 +48,10 @@ pub trait HasTypeInference<T> {
         ty
     }
 
-    fn skolemize<A>(&mut self, forall: ForAll<A>) -> A
+    fn skolemize<A>(&mut self, forall: ForAll<A, T, V>) -> A
     where
-        A: Substitutable + Clone,
+        A: Substitutable<V, T> + Clone,
+        V: Display,
     {
         let unique = self.get_unique();
         let (new_unique, ty) = forall.skolemize(unique);
@@ -51,14 +59,18 @@ pub trait HasTypeInference<T> {
         ty
     }
 
-    fn skolemize_faked<A>(&mut self, info: T, mono_tys: Vec<Ty>, forall: ForAll<A>) -> A
+    fn skolemize_faked<A>(&mut self, info: I, mono_tys: Vec<T>, forall: ForAll<A, T, V>) -> A
     where
-        A: Substitutable + Clone,
-        T: Clone,
+        A: Substitutable<V, T> + Clone,
+        I: Clone,
     {
         let unique = self.get_unique();
         let (new_unique, ty) = forall.instantiate(unique);
-        let skolem = ((unique..(new_unique - 1)).collect(), info, mono_tys);
+        let skolem = (
+            (unique..(new_unique - 1)).map(|u| V::from_u32(u)).collect(),
+            info,
+            mono_tys,
+        );
         self.add_skolem(skolem);
         self.set_unique(new_unique);
         ty
@@ -66,15 +78,17 @@ pub trait HasTypeInference<T> {
 
     fn make_consistent(&mut self)
     where
-        Self: HasSubst<T>,
+        Self: HasSubst<I, T, V>,
+        V: Eq,
     {
-        <Self as HasSubst<T>>::make_subst_consistent(self);
+        <Self as HasSubst<I, T, V>>::make_subst_consistent(self);
     }
 
     fn check_skolems(&mut self)
     where
-        Self: Sized + HasSubst<T> + HasBasic<T>,
-        T: Clone + TypeConstraintInfo<T>,
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Clone + TypeConstraintInfo<I, T, V>,
+        V: Ord,
     {
         // remove all the skolems from the state
         let skolems = self.skolems_mut().drain(..).collect::<Vec<_>>();
@@ -85,11 +99,8 @@ pub trait HasTypeInference<T> {
             .map(|(vars, info, mono_tys)| {
                 (
                     vars.iter()
-                        .copied()
-                        .zip(
-                            vars.iter()
-                                .map(|var| self.find_subst_for_var(*var).unwrap()),
-                        )
+                        .cloned()
+                        .zip(vars.iter().map(|var| self.find_subst_for_var(var)))
                         .collect::<Vec<_>>(),
                     info.clone(),
                     mono_tys,
@@ -108,8 +119,8 @@ pub trait HasTypeInference<T> {
             .flat_map(|(vars, info, _)| {
                 vars.into_iter()
                     .filter_map(|(_, ty)| {
-                        if let Ty::Var(var) = ty {
-                            Some((*var, info.clone()))
+                        if let Some(var) = ty.maybe_var() {
+                            Some((var.clone(), info.clone()))
                         } else {
                             None
                         }
@@ -118,7 +129,7 @@ pub trait HasTypeInference<T> {
             })
             .collect::<Vec<_>>();
 
-        skolem_const_errs.sort_by_key(|(var, _)| *var);
+        skolem_const_errs.sort_by(|(var1, _), (var2, _)| var1.cmp(var2));
         let mut sk_const_err_groups = HashMap::new();
         for (var, info) in skolem_const_errs.into_iter() {
             sk_const_err_groups
@@ -135,7 +146,7 @@ pub trait HasTypeInference<T> {
         let skolems = {
             let skolem_vars = skolem_const_errs
                 .iter()
-                .map(|(var, _)| *var)
+                .map(|(var, _)| var.clone())
                 .collect::<Vec<_>>();
 
             skolems
@@ -171,6 +182,7 @@ pub trait HasTypeInference<T> {
                 let escaped_skolems = mono_free_vars
                     .into_iter()
                     .filter(|var| pairs_free_vars.contains(var))
+                    .cloned()
                     .collect::<Vec<_>>();
 
                 if escaped_skolems.is_empty() {
@@ -192,7 +204,7 @@ pub trait HasTypeInference<T> {
             .map(|(vars, info, mono_tys)| {
                 (
                     vars.into_iter()
-                        .flat_map(|(_, ty)| ty.free_vars())
+                        .flat_map(|(_, ty)| ty.free_vars().into_iter().cloned().collect::<Vec<_>>())
                         .collect::<Vec<_>>(),
                     info,
                     mono_tys,
@@ -216,30 +228,40 @@ pub trait HasTypeInference<T> {
         }
     }
 
-    fn resolve_scheme_var(&self, sigma: &Sigma<Vec<Predicate>>) -> Option<Scheme<Vec<Predicate>>> {
+    fn resolve_scheme_var(
+        &self,
+        sigma: &SigmaPredicates<T, V>,
+    ) -> Option<Scheme<Predicates<T, V>, T, V>> {
         match sigma {
-            Sigma::Var(var) => self.get_type_scheme(*var).cloned(),
+            Sigma::Var(var) => self.get_type_scheme(var).cloned(),
             Sigma::Scheme(scheme) => Some(scheme.clone()),
         }
     }
 
-    fn find_scheme(&self, sigma: &Sigma<Vec<Predicate>>) -> Option<Scheme<Vec<Predicate>>> {
+    fn find_scheme(&self, sigma: &SigmaPredicates<T, V>) -> Option<Scheme<Predicates<T, V>, T, V>> {
         self.resolve_scheme_var(sigma)
     }
 }
 
 #[derive(Debug, Default)]
-pub struct TypeInferState<Info> {
+pub struct TypeInferState<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     pub(crate) unique: u32,
-    pub(crate) type_synonyms: OrderedTypeSynonyms,
-    pub(crate) skolems: Vec<(Vec<u32>, Info, Vec<Ty>)>,
-    pub(crate) type_schemes: HashMap<u32, Scheme<Vec<Predicate>>>,
+    pub(crate) type_synonyms: OrderedTypeSynonyms<T, V>,
+    pub(crate) skolems: Vec<(Vec<V>, I, Vec<T>)>,
+    pub(crate) type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
+    pub(crate) inst_type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
 }
 
-impl<T, U> HasTypeInference<T> for U
+impl<I, T, U, V> HasTypeInference<I, T, V> for U
 where
-    U: HasState<TypeInferState<T>>,
-    T: 'static,
+    I: 'static,
+    T: Ty<V>,
+    U: HasState<TypeInferState<I, T, V>>,
+    V: TyVar,
 {
     fn get_unique(&self) -> u32 {
         self.state().unique
@@ -249,31 +271,35 @@ where
         self.state_mut().unique = unique;
     }
 
-    fn type_synonyms(&self) -> &OrderedTypeSynonyms {
+    fn type_synonyms(&self) -> &OrderedTypeSynonyms<T, V> {
         &self.state().type_synonyms
     }
 
-    fn type_synonyms_mut(&mut self) -> &mut OrderedTypeSynonyms {
+    fn type_synonyms_mut(&mut self) -> &mut OrderedTypeSynonyms<T, V> {
         &mut self.state_mut().type_synonyms
     }
 
-    fn skolems(&self) -> &Vec<(Vec<u32>, T, Vec<Ty>)> {
+    fn skolems(&self) -> &Vec<(Vec<V>, I, Vec<T>)> {
         &self.state().skolems
     }
 
-    fn skolems_mut(&mut self) -> &mut Vec<(Vec<u32>, T, Vec<Ty>)> {
+    fn skolems_mut(&mut self) -> &mut Vec<(Vec<V>, I, Vec<T>)> {
         &mut self.state_mut().skolems
     }
 
-    fn all_type_schemes(&self) -> &HashMap<u32, Scheme<Vec<Predicate>>> {
+    fn all_type_schemes(&self) -> &HashMap<V, Scheme<Predicates<T, V>, T, V>> {
         &self.state().type_schemes
     }
 
-    fn get_type_scheme(&self, var: u32) -> Option<&Scheme<Vec<Predicate>>> {
-        self.state().type_schemes.get(&var)
+    fn get_type_scheme(&self, var: &V) -> Option<&Scheme<Predicates<T, V>, T, V>> {
+        self.state().type_schemes.get(var)
     }
 
-    fn store_type_scheme(&mut self, var: u32, type_scheme: Scheme<Vec<Predicate>>) {
+    fn store_type_scheme(&mut self, var: V, type_scheme: Scheme<Predicates<T, V>, T, V>) {
         self.state_mut().type_schemes.insert(var, type_scheme);
+    }
+
+    fn instantiated_type_scheme(&mut self, var: V, type_scheme: Scheme<Predicates<T, V>, T, V>) {
+        self.state_mut().inst_type_schemes.insert(var, type_scheme);
     }
 }

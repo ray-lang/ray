@@ -4,8 +4,8 @@ use super::{DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, Parse
 
 use crate::{
     ast::{
-        token::TokenKind, Assign, Decl, Decorator, Expr, Extern, Impl, Modifier, Name, Node,
-        Pattern, Struct, Trailing, Trait,
+        token::TokenKind, Assign, Decl, Decorator, Expr, Extern, Func, Impl, Modifier, Name, Node,
+        Pattern, Struct, Trailing, Trait, TraitDirective, TraitDirectiveKind,
     },
     errors::{RayError, RayErrorKind},
     span::{parsed::Parsed, Pos, Span},
@@ -32,7 +32,7 @@ impl Parser<'_> {
         start: Pos,
         only_sigs: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<ParsedDecl>, Vec<ParsedDecl>, Vec<Node<Assign>>)> {
+    ) -> ParseResult<(Vec<Node<Func>>, Vec<ParsedDecl>, Vec<Node<Assign>>)> {
         let mut funcs = vec![];
         let mut externs = vec![];
         let mut consts = vec![];
@@ -75,8 +75,8 @@ impl Parser<'_> {
                     let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
                     f.sig.doc_comment = doc;
                     f.sig.is_method = true;
-                    let decl = this.mk_decl(Decl::Func(f), span, ctx.path.clone());
-                    funcs.push(decl);
+                    let func_node = this.mk_node_with_path(f, span, ctx.path.clone());
+                    funcs.push(func_node);
                     Ok(span.end)
                 }
                 TokenKind::Extern => {
@@ -212,16 +212,43 @@ impl Parser<'_> {
         let (name, span) = self.expect_id()?;
         let mut ctx = ctx.clone();
         ctx.path = ctx.path.append(&name);
-        let ty = self.parse_ty_with_name(name, span)?;
+        let ty = self.parse_ty_with_name(name, span)?.map(|t| t.into_mono());
 
         let super_trait = if expect_if!(self, TokenKind::Colon) {
-            Some(self.parse_ty()?)
+            Some(self.parse_ty()?.map(|t| t.into_mono()))
         } else {
             None
         };
 
-        let mut funcs = vec![];
+        let mut fields = vec![];
         self.expect(TokenKind::LeftCurly)?;
+
+        // parse directives
+        let mut directives = vec![];
+        while let Some(tok) = self.expect_kind(TokenKind::Default)? {
+            let mut args = vec![];
+            let start = tok.span.start;
+            self.expect_end(TokenKind::LeftParen)?;
+            let end = loop {
+                let ty = self.parse_ty()?.map(|t| t.into_mono());
+                args.push(ty);
+
+                if let Some(tok) = self.expect_kind(TokenKind::RightParen)? {
+                    break tok.span.end;
+                }
+
+                self.expect_kind(TokenKind::Comma)?;
+            };
+
+            directives.push(Parsed::new(
+                TraitDirective {
+                    kind: TraitDirectiveKind::Default,
+                    args,
+                },
+                self.mk_src(Span { start, end }),
+            ));
+        }
+
         loop {
             if peek!(self, TokenKind::RightCurly) {
                 break;
@@ -229,7 +256,7 @@ impl Parser<'_> {
 
             let sig = self.parse_trait_fn_sig(&ctx)?;
             let span = sig.span;
-            funcs.push(self.mk_decl(Decl::FnSig(sig), span, ctx.path.clone()));
+            fields.push(self.mk_decl(Decl::FnSig(sig), span, ctx.path.clone()));
         }
 
         let end = self.expect_end(TokenKind::RightCurly)?;
@@ -237,8 +264,9 @@ impl Parser<'_> {
         Ok(self.mk_decl(
             Decl::Trait(Trait {
                 ty,
-                funcs,
+                fields,
                 super_trait,
+                directives,
             }),
             Span { start, end },
             ctx.path,
@@ -283,7 +311,7 @@ impl Parser<'_> {
 
         let is_object = expect_if!(self, TokenKind::Object);
 
-        let ty = self.parse_ty()?;
+        let ty = self.parse_ty()?.map(|t| t.into_mono());
         let mut end = ty.span().unwrap().end;
 
         let qualifiers = self.parse_where_clause()?;
@@ -360,7 +388,7 @@ impl Parser<'_> {
         self.expect(TokenKind::Where)?;
 
         loop {
-            let ty = self.parse_ty()?;
+            let ty = self.parse_ty()?.map(|t| t.into_mono());
             qualifiers.push(ty);
 
             if !peek!(self, TokenKind::Comma) {

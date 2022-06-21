@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::typing::ty::Ty;
+use crate::typing::ty::{Ty, TyScheme};
 
 use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
@@ -71,7 +71,7 @@ impl Builder {
         )
     }
 
-    pub fn local(&mut self, ty: Ty) -> usize {
+    pub fn local(&mut self, ty: TyScheme) -> usize {
         let idx = self.locals.len();
         let loc = Local { idx, ty };
         self.locals.push(loc);
@@ -91,7 +91,7 @@ impl Builder {
     }
 
     pub fn param(&mut self, name: String, ty: Ty) -> usize {
-        let idx = self.local(ty.clone());
+        let idx = self.local(ty.clone().into());
         self.params.push(Param::new(name.clone(), idx, ty));
         self.set_var(name, idx);
         idx

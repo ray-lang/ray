@@ -1,0 +1,15 @@
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+impl ToStr[string] {
+    fn to_str(self: string) -> string => self
+}
+
+extern fn write(a: string) -> ()
+fn print(a: 'a) -> () where ToStr['a] {
+    write(a.to_str())
+}
+
+x = "hello"
+print("hello")

@@ -11,7 +11,7 @@ impl Parser<'_> {
         only_sigs: bool,
         ctx: &ParseContext,
     ) -> ParseResult<(ast::Func, Span)> {
-        let sig = self.parse_fn_sig(ctx)?;
+        let mut sig = self.parse_fn_sig(ctx)?;
         let start = sig.span.start;
         let mut end = sig.span.end;
 
@@ -25,6 +25,7 @@ impl Parser<'_> {
                 self.parse_block(&ctx)?
             };
             end = self.srcmap.span_of(&b).end;
+            sig.has_body = true;
             Some(b)
         } else {
             None
@@ -67,7 +68,7 @@ impl Parser<'_> {
         let (params, param_span) = f(self)?;
         let mut end = param_span.end;
         let ret_ty = if expect_if!(self, TokenKind::Arrow) {
-            let t = self.parse_ty()?;
+            let t = self.parse_ty()?.map(|t| t.into_mono());
             end = t.span().unwrap().end;
             Some(t)
         } else {
@@ -87,6 +88,7 @@ impl Parser<'_> {
             ty: None, // this will be populated later
             doc_comment: None,
             is_method: false,
+            has_body: false,
             span: Span { start, end },
         })
     }

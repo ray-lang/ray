@@ -10,7 +10,7 @@ use crate::{
         Trailing, ValueKind,
     },
     span::{parsed::Parsed, Span},
-    typing::ty::Ty,
+    typing::ty::{SigmaTy, Ty, TyScheme},
 };
 
 impl Parser<'_> {
@@ -366,7 +366,7 @@ impl Parser<'_> {
                 lhs,
                 elements,
                 curly_span,
-                ty: Ty::unit(),
+                ty: TyScheme::default(),
             }),
             span,
             ctx.path.clone(),
@@ -377,7 +377,7 @@ impl Parser<'_> {
         let new_span = self.expect_sp(TokenKind::New)?;
         let lparen_span = self.expect_sp(TokenKind::LeftParen)?;
 
-        let parsed_ty = self.parse_ty()?;
+        let parsed_ty = self.parse_ty()?.map(|t| t.into_mono());
         let ty = self.mk_ty(parsed_ty, ctx.path.clone());
 
         let count = if expect_if!(self, TokenKind::Comma) {
@@ -407,7 +407,7 @@ impl Parser<'_> {
         let mut inst = vec![];
         let ret_ty = if peek!(self, TokenKind::LeftParen) {
             self.expect(TokenKind::LeftParen)?;
-            let t = self.parse_ty()?;
+            let t = self.parse_ty()?.map(|t| t.into_mono());
             self.expect(TokenKind::RightParen)?;
             Some(t)
         } else {

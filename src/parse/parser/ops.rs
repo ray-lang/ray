@@ -89,7 +89,7 @@ impl Parser<'_> {
             } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
                 // this is a typed expression
                 let ty = self.parse_ty()?;
-                let rhs = self.mk_ty(ty, ctx.path.clone());
+                let rhs = self.mk_tyscheme(ty, ctx.path.clone());
                 let span = self
                     .srcmap
                     .span_of(&lhs)
@@ -223,7 +223,7 @@ impl Parser<'_> {
         as_span: Span,
         ctx: &ParseContext,
     ) -> ExprResult {
-        let ty = self.parse_ty()?;
+        let ty = self.parse_ty()?.map(|ty| ty.into_mono());
         let span = self.srcmap.span_of(&lhs).extend_to(ty.span().unwrap());
         Ok(self.mk_expr(
             Expr::Cast(Cast {

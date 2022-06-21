@@ -1,12 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
-    ops::BitOr,
+    fmt::Display,
+    hash::Hash,
+    ops::{BitOr, Deref, DerefMut},
+    str::FromStr,
 };
 
 use serde::{Deserialize, Serialize};
+use top::{directives::TypeClassDirective, Predicate, Predicates, Subst, Substitutable};
 
 use crate::{
-    ast::{self, FuncSig, Path},
+    ast::{self, FuncSig, Path, TraitDirective},
     convert::ToSet,
     errors::{RayError, RayErrorKind},
     lir::Size,
@@ -17,14 +21,385 @@ use crate::{
 
 use super::{
     context::TyCtx,
-    predicate::TyPredicate,
-    state::TyVarFactory,
-    subst::{ApplySubst, Subst},
-    traits::{
-        CollectTyVars, Generalize, HasFreeVars, HoistTypes, Instantiate, Polymorphize, Skolemize,
-    },
+    info::TypeSystemInfo,
+    traits::QualifyTypes,
+    // predicate::TyPredicate,
+    // state::TyVarFactory,
+    // subst::{ApplySubst, Subst},
+    // traits::{
+    //     CollectTyVars, Generalize, HasFreeVars, HoistTypes, Instantiate, Polymorphize, Skolemize,
+    // },
     TypeError,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TyScheme(top::SchemePredicates<Ty, TyVar>);
+
+impl Deref for TyScheme {
+    type Target = top::SchemePredicates<Ty, TyVar>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TyScheme {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Display for TyScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Into<SigmaTy> for TyScheme {
+    fn into(self) -> SigmaTy {
+        SigmaTy::scheme(self)
+    }
+}
+
+impl Default for TyScheme {
+    fn default() -> Self {
+        Self::from_mono(Ty::unit())
+    }
+}
+
+impl QualifyTypes for TyScheme {
+    fn qualify_tys(&mut self, preds: &Vec<Predicate<Ty, TyVar>>) {
+        let freevars = self.free_vars();
+        let preds = preds
+            .iter()
+            .filter(|pred| pred.free_vars().iter().any(|var| freevars.contains(var)))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.ty.qualifiers_mut().extend(preds);
+        self.ty.qualifiers_mut().sort();
+        self.ty.qualifiers_mut().dedup();
+    }
+}
+
+impl TyScheme {
+    pub fn new(vars: Vec<TyVar>, preds: Predicates<Ty, TyVar>, ty: Ty) -> Self {
+        Self(top::SchemePredicates::new(
+            vars,
+            top::Qualification::new(preds, ty),
+        ))
+    }
+
+    pub fn scheme(scheme: top::SchemePredicates<Ty, TyVar>) -> Self {
+        Self(scheme)
+    }
+
+    #[inline(always)]
+    pub fn from_var(var: TyVar) -> Self {
+        Self::from_mono(Ty::Var(var))
+    }
+
+    #[inline(always)]
+    pub fn from_mono(ty: Ty) -> Self {
+        Self(top::SchemePredicates::mono(
+            top::Qualification::unqualified(ty),
+        ))
+    }
+
+    pub fn from_sig(
+        sig: &FuncSig,
+        fn_scope: &Path,
+        filepath: &FilePath,
+        fn_tcx: &mut TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<Self, RayError> {
+        let mut param_tys = vec![];
+
+        for param in sig.params.iter() {
+            if let Some(ty) = param.ty() {
+                let mut ty = ty.clone();
+                ty.resolve_fqns(&fn_scope, fn_tcx);
+                ty.map_vars(fn_tcx);
+                param_tys.push(ty);
+            } else {
+                return Err(RayError {
+                    msg: format!("parameter `{}` must have a type annotation", param),
+                    src: vec![Source {
+                        span: Some(srcmap.span_of(&param)),
+                        filepath: filepath.clone(),
+                        ..Default::default()
+                    }],
+                    kind: RayErrorKind::Type,
+                });
+            }
+        }
+
+        let mut ret_ty = sig.ret_ty.as_deref().cloned().unwrap_or_else(|| {
+            if sig.has_body {
+                Ty::ret_placeholder(fn_scope)
+            } else {
+                Ty::unit()
+            }
+        });
+        ret_ty.resolve_fqns(&fn_scope, fn_tcx);
+        ret_ty.map_vars(fn_tcx);
+
+        let ty = Ty::Func(param_tys, Box::new(ret_ty));
+
+        let vars = if let Some(ty_params) = &sig.ty_params {
+            let mut vars = vec![];
+            for ty_param in ty_params.tys.iter() {
+                let mut ty = ty_param.deref().clone();
+                ty.map_vars(fn_tcx);
+                if let Ty::Var(v) = ty {
+                    vars.push(v.clone());
+                }
+            }
+
+            vars
+        } else {
+            let mut vars = ty
+                .free_vars()
+                .into_iter()
+                .filter(|tv| !tv.is_ret_placeholder())
+                .cloned()
+                .collect::<Vec<_>>();
+            vars.sort();
+            vars.dedup();
+            vars
+        };
+
+        let scheme = if sig.qualifiers.len() != 0 {
+            let mut preds = Predicates::new();
+            for q in sig.qualifiers.iter() {
+                let ty_span = *q.span().unwrap();
+                let mut q = q.clone_value();
+                q.resolve_fqns(fn_scope, fn_tcx);
+                q.map_vars(fn_tcx);
+
+                let (s, v) = match q {
+                    Ty::Projection(s, v) => (s.name(), v),
+                    Ty::Const(name) => (name, vec![]),
+                    _ => {
+                        return Err(RayError {
+                            msg: str!("qualifier must be a trait type"),
+                            src: vec![Source {
+                                span: Some(ty_span),
+                                filepath: filepath.clone(),
+                                ..Default::default()
+                            }],
+                            kind: RayErrorKind::Type,
+                        })
+                    }
+                };
+
+                if v.len() != 1 {
+                    return Err(RayError {
+                        msg: format!("traits must have one type argument, but found {}", v.len()),
+                        src: vec![Source {
+                            span: Some(ty_span),
+                            filepath: filepath.clone(),
+                            ..Default::default()
+                        }],
+                        kind: RayErrorKind::Type,
+                    });
+                }
+
+                let mut ty_arg = v[0].clone();
+                ty_arg.map_vars(fn_tcx);
+                let fqn = Path::from(s.as_str());
+                log::debug!("converting from ast type: {}", fqn);
+                if fn_tcx.get_trait_ty(&fqn).is_none() {
+                    return Err(RayError {
+                        msg: format!("trait `{}` is not defined", fqn),
+                        src: vec![Source {
+                            span: Some(ty_span),
+                            filepath: filepath.clone(),
+                            ..Default::default()
+                        }],
+                        kind: RayErrorKind::Type,
+                    });
+                }
+
+                preds.push(Predicate::class(fqn.to_string(), ty_arg));
+            }
+            Self::new(vars, preds, ty)
+        } else if vars.len() != 0 {
+            Self::new(vars, Predicates::new(), ty)
+        } else {
+            Self::from_mono(ty)
+        };
+
+        log::debug!("ty = {}", scheme);
+        Ok(scheme)
+    }
+
+    pub fn mono(&self) -> &Ty {
+        &self.ty.ty
+    }
+
+    pub fn mono_mut(&mut self) -> &mut Ty {
+        &mut self.ty.ty
+    }
+
+    pub fn into_mono(self) -> Ty {
+        // NOTE: should this actual fail if not actually a monotype?
+        self.0.ty.ty
+    }
+
+    pub fn has_quantifiers(&self) -> bool {
+        !self.vars.is_empty()
+    }
+
+    #[inline(always)]
+    pub fn has_freevars(&self) -> bool {
+        !self.free_vars().is_empty()
+    }
+
+    #[inline(always)]
+    pub fn is_polymorphic(&self) -> bool {
+        self.has_quantifiers() || self.has_freevars()
+    }
+
+    pub fn quantifiers(&self) -> &Vec<TyVar> {
+        &self.vars
+    }
+
+    pub fn qualifiers(&self) -> &Predicates<Ty, TyVar> {
+        &self.ty.qualifiers
+    }
+
+    pub fn is_unit(&self) -> bool {
+        self.ty.ty.is_unit()
+    }
+
+    pub fn take(self) -> top::SchemePredicates<Ty, TyVar> {
+        self.0
+    }
+
+    pub fn try_borrow_fn(&self) -> Option<(&Vec<TyVar>, &Predicates<Ty, TyVar>, &Vec<Ty>, &Ty)> {
+        if let Ty::Func(params, ret) = &self.ty.ty {
+            Some((&self.vars, &self.ty.qualifiers, params, ret))
+        } else {
+            None
+        }
+    }
+
+    pub fn resolve_fqns(&mut self, scope: &ast::Path, tcx: &mut TyCtx) {
+        self.unquantified_mut().ty_mut().resolve_fqns(scope, tcx)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigmaTy(top::SigmaPredicates<Ty, TyVar>);
+
+impl Deref for SigmaTy {
+    type Target = top::SigmaPredicates<Ty, TyVar>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for SigmaTy {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Display for SigmaTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.deref() {
+            top::SigmaPredicates::Var(v) => write!(f, "{}", v),
+            top::SigmaPredicates::Scheme(s) => {
+                write!(f, "{}", s)
+            }
+        }
+    }
+}
+
+impl SigmaTy {
+    pub fn var(var: TyVar) -> Self {
+        SigmaTy(top::SigmaPredicates::Var(var))
+    }
+
+    pub fn scheme(scheme: TyScheme) -> Self {
+        SigmaTy(top::SigmaPredicates::Scheme(scheme.take()))
+    }
+
+    pub fn mono(ty: Ty) -> Self {
+        SigmaTy(top::SigmaPredicates::mono(ty))
+    }
+
+    #[inline(always)]
+    pub fn is_polymorphic(&self) -> bool {
+        self.has_quantifiers()
+    }
+
+    pub fn get_mono(&self) -> Option<&Ty> {
+        match &self.0 {
+            top::SigmaPredicates::Scheme(sch)
+                if sch.vars.is_empty() && sch.ty.qualifiers.is_empty() =>
+            {
+                Some(&sch.ty.ty)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn into_mono(self) -> Option<Ty> {
+        match self.0 {
+            top::SigmaPredicates::Scheme(sch)
+                if sch.vars.is_empty() && sch.ty.qualifiers.is_empty() =>
+            {
+                Some(sch.ty.ty)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_mono_mut(&mut self) -> Option<&mut Ty> {
+        match &mut self.0 {
+            top::SigmaPredicates::Scheme(sch)
+                if sch.vars.is_empty() && sch.ty.qualifiers.is_empty() =>
+            {
+                Some(&mut sch.ty.ty)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_scheme(&self) -> Option<&top::SchemePredicates<Ty, TyVar>> {
+        match &self.0 {
+            top::SigmaPredicates::Scheme(sch) => Some(sch),
+            _ => None,
+        }
+    }
+
+    pub fn get_scheme_mut(&mut self) -> Option<&mut top::SchemePredicates<Ty, TyVar>> {
+        match &mut self.0 {
+            top::SigmaPredicates::Scheme(sch) => Some(sch),
+            _ => None,
+        }
+    }
+
+    pub fn has_quantifiers(&self) -> bool {
+        match &self.0 {
+            top::SigmaPredicates::Scheme(sch) => !sch.vars.is_empty(),
+            _ => false,
+        }
+    }
+
+    pub fn quantifiers(&self) -> Option<&Vec<TyVar>> {
+        match &self.0 {
+            top::Sigma::Scheme(sch) => Some(sch.quantifiers()),
+            _ => None,
+        }
+    }
+
+    pub fn take(self) -> top::SigmaPredicates<Ty, TyVar> {
+        self.0
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TyVar(pub Path);
@@ -53,22 +428,42 @@ impl std::fmt::Display for TyVar {
     }
 }
 
-impl ApplySubst for TyVar {
-    fn apply_subst(self, subst: &Subst) -> TyVar {
-        subst.get_var(self)
+// impl ApplySubst for TyVar {
+//     fn apply_subst(self, subst: &Subst) -> TyVar {
+//         subst.get_var(self)
+//     }
+// }
+
+// impl Polymorphize for TyVar {
+//     fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self {
+//         if let Some(tv) = subst.get(&Ty::Var(self.clone())) {
+//             tv.clone()
+//         } else {
+//             let path = self.path().parent();
+//             let tv = tf.with_scope(&path);
+//             subst.insert(Ty::Var(self), tv.clone());
+//             tv
+//         }
+//     }
+// }
+
+impl FromStr for TyVar {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(TyVar::new(Path::from(s)))
     }
 }
 
-impl Polymorphize for TyVar {
-    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Self {
-        if let Some(tv) = subst.get(&Ty::Var(self.clone())) {
-            tv.clone()
-        } else {
-            let path = self.path().parent();
-            let tv = tf.with_scope(&path);
-            subst.insert(Ty::Var(self), tv.clone());
-            tv
-        }
+impl top::TyVar for TyVar {
+    fn from_u32(u: u32) -> Self {
+        TyVar::new(Path::from(format!("?t{}", u)))
+    }
+}
+
+impl Default for TyVar {
+    fn default() -> Self {
+        Self(Default::default())
     }
 }
 
@@ -96,38 +491,51 @@ impl TyVar {
     pub fn is_unknown(&self) -> bool {
         matches!(self.path().name().as_deref(), Some(n) if n.starts_with("?"))
     }
+
+    // pub fn to_u32(&self) -> u32 {
+    //     let mut hasher = DefaultHasher::new();
+    //     self.hash(&mut hasher);
+    //     (hasher.finish() % (u32::MAX as u64)) as u32
+    // }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructTy {
     pub path: ast::Path,
-    pub ty: Ty,
-    pub fields: Vec<(String, Ty)>,
+    pub ty: TyScheme,
+    pub fields: Vec<(String, TyScheme)>,
+}
+
+impl Hash for StructTy {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+    }
 }
 
 impl StructTy {
-    pub fn get_field(&self, f: &String) -> Option<(usize, &Ty)> {
+    pub fn get_field(&self, f: &String) -> Option<(usize, &TyScheme)> {
         self.fields
             .iter()
             .enumerate()
             .find_map(|(idx, (g, t))| if f == g { Some((idx, t)) } else { None })
     }
 
-    pub fn field_tys(&self) -> Vec<Ty> {
+    pub fn field_tys(&self) -> Vec<TyScheme> {
         self.fields.iter().map(|(_, t)| t.clone()).collect()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitTy {
     pub path: ast::Path,
     pub ty: Ty,
     pub super_traits: Vec<Ty>,
-    pub fields: Vec<(String, Ty)>,
+    pub fields: Vec<(String, TyScheme)>,
+    pub directives: Vec<TypeClassDirective<TypeSystemInfo, Ty, TyVar>>,
 }
 
 impl TraitTy {
-    pub fn field_tys(&self) -> Vec<Ty> {
+    pub fn field_tys(&self) -> Vec<TyScheme> {
         self.fields.iter().map(|(_, t)| t.clone()).collect()
     }
 }
@@ -136,7 +544,7 @@ impl TraitTy {
 pub struct ImplTy {
     pub base_ty: Ty,
     pub trait_ty: Ty,
-    pub predicates: Vec<TyPredicate>,
+    pub predicates: Vec<Predicate<Ty, TyVar>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -164,9 +572,8 @@ pub enum Ty {
     Union(Vec<Ty>),
     Array(Box<Ty>, usize),
     Func(Vec<Ty>, Box<Ty>),
-    Projection(String, Vec<Ty>),
-    Qualified(Vec<TyPredicate>, Box<Ty>),
-    All(Vec<TyVar>, Box<Ty>),
+    Const(String),
+    Projection(Box<Ty>, Vec<Ty>),
 }
 
 impl std::fmt::Display for Ty {
@@ -194,6 +601,7 @@ impl std::fmt::Display for Ty {
                 write!(f, "[{}; {}]", ty, size)
             }
             Ty::Func(a, r) => write!(f, "({}) -> {}", join(a, ", "), r),
+            Ty::Const(s) => write!(f, "{}", s),
             Ty::Projection(n, t) => {
                 if t.len() != 0 {
                     write!(f, "{}[{}]", n, join(t, ", "))
@@ -201,15 +609,6 @@ impl std::fmt::Display for Ty {
                     write!(f, "{}", n)
                 }
             }
-            Ty::Qualified(qual, t) => {
-                let q = if qual.len() != 0 {
-                    format!(" where {}", join(qual, " + "))
-                } else {
-                    str!()
-                };
-                write!(f, "{}{}", t, q)
-            }
-            Ty::All(xs, t) => write!(f, "All[{}]{}", join(xs, ", "), t),
         }
     }
 }
@@ -220,279 +619,9 @@ impl Default for Ty {
     }
 }
 
-impl ApplySubst for Ty {
-    fn apply_subst(self, subst: &Subst) -> Ty {
-        let ty = match self {
-            any @ Ty::Any => any,
-            never @ Ty::Never => never,
-            Ty::Var(v) => subst.get_ty_for_var(&v),
-            Ty::Tuple(tys) => Ty::Tuple(tys.apply_subst(subst)),
-            Ty::Array(ty, size) => Ty::Array(ty.apply_subst(subst), size),
-            Ty::Ptr(ty) => Ty::Ptr(ty.apply_subst(subst)),
-            Ty::Union(tys) => {
-                let mut tys = tys.apply_subst(subst);
-                let mut i = 0;
-                while i < tys.len() {
-                    let mut j = i + 1;
-                    while j < tys.len() {
-                        if &tys[i] == &tys[j] {
-                            tys.remove(j);
-                        } else {
-                            j += 1;
-                        }
-                    }
-                    i += 1;
-                }
-
-                if tys.len() == 1 {
-                    tys.pop().unwrap()
-                } else {
-                    Ty::Union(tys)
-                }
-            }
-            Ty::Func(a, r) => Ty::Func(a.apply_subst(subst), r.apply_subst(subst)),
-            Ty::Projection(n, t) => Ty::Projection(n, t.apply_subst(subst)),
-            Ty::Qualified(p, ty) => {
-                let mut preds = p.apply_subst(subst);
-                preds.sort();
-                preds.dedup();
-                let ty = ty.apply_subst(subst);
-                let preds_freevars = preds.collect_tyvars().to_set();
-                let ty_freevars = ty.collect_tyvars().to_set();
-                if preds_freevars.is_disjoint(&ty_freevars) {
-                    *ty
-                } else {
-                    Ty::Qualified(preds, ty)
-                }
-            }
-            Ty::All(xs, ty) => {
-                let ty = ty.apply_subst(subst);
-                let freevars = ty.collect_tyvars().to_set();
-                let xs = xs
-                    .apply_subst(subst)
-                    .into_iter()
-                    .filter(|x| !x.is_ret_placeholder() && freevars.contains(x))
-                    .collect::<Vec<_>>();
-                if xs.len() == 0 {
-                    *ty
-                } else {
-                    Ty::All(xs, ty)
-                }
-            }
-        };
-
-        let (mut ty, qs, ps) = ty.hoist_types();
-        if ps.len() != 0 {
-            ty = Ty::Qualified(ps, Box::new(ty))
-        }
-
-        if qs.len() != 0 {
-            ty = Ty::All(qs, Box::new(ty))
-        }
-
-        ty
-    }
-}
-
-impl Generalize for Ty {
-    fn generalize(self, m: &Vec<Ty>, preds: &Vec<TyPredicate>) -> Ty {
-        // generalize(M, τ) => ∀{a}.τ where {a} = ftv(τ) − ftv(M).
-        let freevars = m.free_vars();
-        let mut tyvars = self.collect_tyvars();
-        tyvars.drain_in_place(|t| t.is_ret_placeholder() || freevars.contains(&t));
-
-        self.quantify(tyvars.clone()).qualify(preds, &tyvars)
-    }
-}
-
-impl Generalize for Vec<Ty> {
-    fn generalize(self, m: &Vec<Ty>, preds: &Vec<TyPredicate>) -> Self {
-        self.into_iter().map(|t| t.generalize(m, &preds)).collect()
-    }
-}
-
-impl HasFreeVars for Ty {
-    fn free_vars(&self) -> HashSet<&TyVar> {
-        match self {
-            Ty::All(xs, ty) => {
-                let ty_fv = ty.free_vars();
-                xs.iter().filter(|x| !ty_fv.contains(x)).collect()
-            }
-            Ty::Var(v) => {
-                let mut set = HashSet::new();
-                set.insert(v);
-                set
-            }
-            Ty::Projection(_, tys) | Ty::Tuple(tys) | Ty::Union(tys) => tys.free_vars(),
-            Ty::Array(ty, _) | Ty::Ptr(ty) | Ty::Qualified(_, ty) => ty.free_vars(),
-            Ty::Func(p, r) => {
-                let mut set = HashSet::new();
-                set.extend(p.free_vars());
-                set.extend(r.free_vars());
-                set
-            }
-            Ty::Never | Ty::Any => HashSet::new(),
-        }
-    }
-}
-
-impl CollectTyVars for Ty {
-    fn collect_tyvars(&self) -> Vec<TyVar> {
-        let mut vs = match self {
-            Ty::All(_, t) | Ty::Qualified(_, t) | Ty::Ptr(t) | Ty::Array(t, _) => {
-                t.collect_tyvars()
-            }
-            Ty::Func(param_tys, ret) => param_tys
-                .iter()
-                .chain(std::iter::once(ret.as_ref()))
-                .flat_map(|t| t.collect_tyvars())
-                .collect(),
-            Ty::Var(v) => vec![v.clone()].into_iter().collect(),
-            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => {
-                t.iter().flat_map(|t| t.collect_tyvars()).collect()
-            }
-            Ty::Never | Ty::Any => vec![],
-        };
-
-        vs.sort();
-        vs.dedup();
-        vs
-    }
-}
-
-impl Polymorphize for Ty {
-    fn polymorphize(self, tf: &mut TyVarFactory, subst: &mut HashMap<Ty, TyVar>) -> Ty {
-        if let Some(tv) = subst.get(&self) {
-            return Ty::Var(tv.clone());
-        }
-
-        match self {
-            Ty::Never => Ty::Never,
-            Ty::Any => Ty::Any,
-            Ty::Var(t) => Ty::Var(t.polymorphize(tf, subst)),
-            Ty::Tuple(tys) => Ty::Tuple(tys.polymorphize(tf, subst)),
-            Ty::Union(tys) => Ty::Union(tys.polymorphize(tf, subst)),
-            Ty::Func(p, r) => Ty::Func(p.polymorphize(tf, subst), r.polymorphize(tf, subst)),
-            Ty::Array(t, size) => Ty::Array(t.polymorphize(tf, subst), size),
-            Ty::Ptr(t) => Ty::Ptr(t.polymorphize(tf, subst)),
-            proj @ Ty::Projection(..) => {
-                let tv = tf.next();
-                subst.insert(proj, tv.clone());
-                Ty::Var(tv)
-            }
-            Ty::Qualified(preds, t) => {
-                Ty::Qualified(preds.polymorphize(tf, subst), t.polymorphize(tf, subst))
-            }
-            Ty::All(xs, t) => Ty::All(xs.polymorphize(tf, subst), t.polymorphize(tf, subst)),
-        }
-    }
-}
-
-impl Instantiate for Ty {
-    fn instantiate(self, tf: &mut TyVarFactory) -> Ty {
-        match self {
-            Ty::Var(v) => Ty::Var(v),
-            Ty::Union(tys) => Ty::Union(tys.instantiate(tf)),
-            Ty::Tuple(tys) => Ty::Tuple(tys.instantiate(tf)),
-            Ty::Func(p, r) => Ty::Func(p.instantiate(tf), r.instantiate(tf)),
-            Ty::Ptr(t) => Ty::Ptr(t.instantiate(tf)),
-            Ty::Array(t, size) => Ty::Array(t.instantiate(tf), size),
-            Ty::Projection(s, tys) => Ty::Projection(s, tys.instantiate(tf)),
-            Ty::Qualified(p, t) => Ty::Qualified(p.instantiate(tf), t.instantiate(tf)),
-            Ty::All(xs, t) => {
-                let new_xs = (0..xs.len()).into_iter().map(|_| Ty::Var(tf.next()));
-                let sub = Subst::from_types(xs, new_xs);
-                (*t).apply_subst(&sub)
-            }
-            t @ Ty::Never | t @ Ty::Any => t,
-        }
-    }
-}
-
-impl<T> Instantiate for Vec<T>
-where
-    T: Instantiate,
-{
-    fn instantiate(self, tf: &mut TyVarFactory) -> Vec<T> {
-        self.into_iter().map(|t| t.instantiate(tf)).collect()
-    }
-}
-
-impl Skolemize for Ty {
-    fn skolemize(&self, sf: &mut TyVarFactory) -> (Self, Vec<TyVar>)
-    where
-        Self: Sized,
-    {
-        let ty = self.clone();
-        let prev_vars = ty.collect_tyvars();
-        let ty = ty.instantiate(sf).generalize(&vec![], &vec![]);
-        let mut vars = ty.collect_tyvars();
-        for v in prev_vars {
-            if let Some(pos) = vars.iter().position(|x| x == &v) {
-                vars.remove(pos);
-            }
-        }
-        (ty, vars)
-    }
-}
-
-impl HoistTypes for Ty {
-    fn hoist_types(self) -> (Self, Vec<TyVar>, Vec<TyPredicate>) {
-        match self {
-            Ty::Never | Ty::Any | Ty::Var(_) => (self, vec![], vec![]),
-            Ty::Tuple(tys) => {
-                let (tys, qs, ps) = tys.hoist_types();
-                (Ty::Tuple(tys), qs, ps)
-            }
-            Ty::Ptr(ty) => {
-                let (ty, qs, ps) = ty.hoist_types();
-                (Ty::Ptr(Box::new(ty)), qs, ps)
-            }
-            Ty::Union(tys) => {
-                let (tys, qs, ps) = tys.hoist_types();
-                (Ty::Union(tys), qs, ps)
-            }
-            Ty::Array(ty, s) => {
-                let (ty, qs, ps) = ty.hoist_types();
-                (Ty::Array(Box::new(ty), s), qs, ps)
-            }
-            Ty::Func(params, ret) => {
-                let (params, mut qs, mut ps) = params.hoist_types();
-                let (ret_ty, ret_qs, ret_ps) = ret.hoist_types();
-                qs.extend(ret_qs);
-                qs.sort();
-                qs.dedup();
-                ps.extend(ret_ps);
-                ps.sort();
-                ps.dedup();
-                (Ty::Func(params, Box::new(ret_ty)), qs, ps)
-            }
-            Ty::Projection(n, tys) => {
-                let (tys, qs, ps) = tys.hoist_types();
-                (Ty::Projection(n, tys), qs, ps)
-            }
-            Ty::Qualified(preds, ty) => {
-                let (mut preds, mut qs, ps) = preds.hoist_types();
-                let (ty, ty_qs, ty_ps) = ty.hoist_types();
-                preds.extend(ps);
-                preds.extend(ty_ps);
-                preds.sort();
-                preds.dedup();
-
-                qs.extend(ty_qs);
-                qs.sort();
-                qs.dedup();
-
-                (ty, qs, preds)
-            }
-            Ty::All(mut ty_vars, ty) => {
-                let (ty, qs, ps) = ty.hoist_types();
-                ty_vars.extend(qs);
-                ty_vars.sort();
-                ty_vars.dedup();
-                (ty, ty_vars, ps)
-            }
-        }
+impl Into<TyScheme> for Ty {
+    fn into(self) -> TyScheme {
+        TyScheme::from_mono(self)
     }
 }
 
@@ -522,7 +651,262 @@ impl BitOr for Ty {
     }
 }
 
+impl Substitutable<TyVar, Ty> for Ty {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Ty::Any | Ty::Never | Ty::Const(_) => {}
+            Ty::Var(var) => {
+                *self = subst.lookup_var(var);
+            }
+            Ty::Projection(ty, tys) => {
+                ty.apply_subst(subst);
+                tys.apply_subst(subst);
+            }
+            Ty::Tuple(tys) | Ty::Union(tys) => tys.apply_subst(subst),
+            Ty::Ptr(ty) | Ty::Array(ty, _) => {
+                ty.apply_subst(subst);
+            }
+            Ty::Func(param_tys, ret_ty) => {
+                param_tys.apply_subst(subst);
+                ret_ty.apply_subst(subst);
+            }
+        }
+    }
+
+    fn free_vars(&self) -> Vec<&TyVar> {
+        match self {
+            Ty::Never | Ty::Any | Ty::Const(_) => vec![],
+            Ty::Var(v) => vec![v],
+            Ty::Projection(ty, tys) => {
+                let mut vars = ty.free_vars();
+                vars.extend(tys.free_vars());
+                vars
+            }
+            Ty::Tuple(tys) | Ty::Union(tys) => tys.free_vars(),
+            Ty::Ptr(ty) | Ty::Array(ty, _) => ty.free_vars(),
+            Ty::Func(param_tys, ret_ty) => {
+                let mut vars = param_tys.free_vars();
+                vars.extend(ret_ty.free_vars());
+                vars
+            }
+        }
+    }
+}
+
+impl top::Ty<TyVar> for Ty {
+    fn new(name: &str) -> Self {
+        Self::Const(name.to_string())
+    }
+
+    fn var(v: TyVar) -> Self {
+        Self::Var(v)
+    }
+
+    fn app(lhs: Self, rhs: Self) -> Self {
+        Ty::Projection(Box::new(lhs), vec![rhs])
+    }
+
+    fn tuple(tys: Vec<Self>) -> Self {
+        Ty::Tuple(tys)
+    }
+
+    fn maybe_var(&self) -> Option<&TyVar> {
+        match self {
+            Ty::Var(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    fn maybe_const(&self) -> Option<&str> {
+        match self {
+            Ty::Const(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    fn maybe_app(&self) -> Option<(Self, Vec<Self>)> {
+        match self {
+            Ty::Any => Some((Ty::Const(str!("any")), vec![])),
+            Ty::Never => Some((Ty::Const(str!("never")), vec![])),
+            Ty::Array(ty, size) => {
+                Some((Ty::Const(format!("[{}]", size)), vec![ty.as_ref().clone()]))
+            }
+            Ty::Projection(n, tys) => Some((n.as_ref().clone(), tys.clone())),
+            Ty::Ptr(ty) => Some((Ty::Const(str!("*")), vec![ty.as_ref().clone()])),
+            _ => None,
+        }
+    }
+
+    fn maybe_func(&self) -> Option<(&Vec<Self>, &Self)> {
+        match self {
+            Ty::Func(param_tys, ret_ty) => Some((param_tys, ret_ty)),
+            _ => None,
+        }
+    }
+
+    fn maybe_tuple(&self) -> Option<&Vec<Self>> {
+        match self {
+            Ty::Tuple(tys) => Some(tys),
+            _ => None,
+        }
+    }
+
+    fn is_tyvar(&self) -> bool {
+        matches!(self, Ty::Var(_))
+    }
+
+    fn in_head_normal_form(&self) -> bool {
+        match self {
+            Ty::Var(_) => true,
+            Ty::Any | Ty::Never | Ty::Const(_) | Ty::Func(_, _) => false,
+            Ty::Tuple(tys) | Ty::Union(tys) => tys.iter().all(|ty| ty.in_head_normal_form()),
+            Ty::Array(ty, _) | Ty::Ptr(ty) | Ty::Projection(ty, _) => ty.in_head_normal_form(),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Ty::Never => "never",
+            Ty::Any => "any",
+            Ty::Var(_) => todo!(),
+            Ty::Tuple(_) => todo!(),
+            Ty::Ptr(_) => todo!(),
+            Ty::Union(_) => todo!(),
+            Ty::Array(_, _) => todo!(),
+            Ty::Func(_, _) => todo!(),
+            Ty::Const(n) => n,
+            Ty::Projection(ty, _) => top::Ty::name(ty.as_ref()),
+        }
+    }
+
+    fn variables(&self) -> Vec<&TyVar>
+    where
+        TyVar: Ord,
+    {
+        match self {
+            Ty::Var(v) => vec![v],
+            Ty::Tuple(tys) | Ty::Union(tys) => tys.iter().flat_map(|ty| ty.variables()).collect(),
+            Ty::Projection(ty, tys) => {
+                let mut vars = ty.variables();
+                vars.extend(tys.iter().flat_map(|ty| ty.variables()));
+                vars
+            }
+            Ty::Ptr(ty) | Ty::Array(ty, _) => ty.variables(),
+            Ty::Func(param_tys, ret_ty) => {
+                let mut vars = param_tys
+                    .iter()
+                    .flat_map(|ty| ty.variables())
+                    .collect::<Vec<_>>();
+                vars.extend(ret_ty.variables());
+                vars
+            }
+            Ty::Const(_) => vec![],
+            Ty::Any | Ty::Never => vec![],
+        }
+    }
+
+    fn constants(&self) -> Vec<String> {
+        match self {
+            Ty::Any => vec![str!("any")],
+            Ty::Never => vec![str!("never")],
+            Ty::Var(_) => vec![],
+            Ty::Const(n) => vec![n.clone()],
+            Ty::Tuple(tys) | Ty::Union(tys) => tys.iter().flat_map(|ty| ty.constants()).collect(),
+            Ty::Projection(ty, tys) => {
+                let mut vars = ty.constants();
+                vars.extend(tys.iter().flat_map(|ty| ty.constants()));
+                vars
+            }
+            Ty::Ptr(ty) | Ty::Array(ty, _) => ty.constants(),
+            Ty::Func(param_tys, ret_ty) => {
+                let mut vars = param_tys
+                    .iter()
+                    .flat_map(|ty| ty.constants())
+                    .collect::<Vec<_>>();
+                vars.extend(ret_ty.constants());
+                vars
+            }
+        }
+    }
+
+    fn eq_with_synonyms(
+        &self,
+        other: &Self,
+        synonyms: &top::OrderedTypeSynonyms<Self, TyVar>,
+    ) -> Option<Self> {
+        todo!()
+    }
+
+    fn freeze_vars(&self) -> Self
+    where
+        TyVar: std::fmt::Display,
+    {
+        match self {
+            Ty::Any | Ty::Never | Ty::Const(_) => self.clone(),
+            Ty::Var(v) => Ty::Const(format!("//{}", v)),
+            Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|ty| ty.freeze_vars()).collect()),
+            Ty::Ptr(ty) => Ty::Ptr(Box::new(ty.freeze_vars())),
+            Ty::Union(tys) => Ty::Union(tys.iter().map(|ty| ty.freeze_vars()).collect()),
+            Ty::Array(ty, n) => Ty::Array(Box::new(ty.freeze_vars()), *n),
+            Ty::Func(param_tys, ret_ty) => Ty::Func(
+                param_tys.iter().map(|ty| ty.freeze_vars()).collect(),
+                Box::new(ret_ty.freeze_vars()),
+            ),
+            Ty::Projection(ty, tys) => Ty::Projection(
+                Box::new(ty.freeze_vars()),
+                tys.iter().map(|ty| ty.freeze_vars()).collect(),
+            ),
+        }
+    }
+
+    fn unfreeze_vars(&self) -> Self
+    where
+        TyVar: FromStr,
+        <TyVar as FromStr>::Err: std::fmt::Debug,
+    {
+        match self {
+            Ty::Any | Ty::Never | Ty::Var(_) => self.clone(),
+            Ty::Const(n) => {
+                if n.starts_with("//") {
+                    let chars = n.chars().skip(1).collect::<Vec<_>>();
+                    if chars.len() != 0 && chars.iter().all(|c| c.is_ascii_digit()) {
+                        let s = chars.iter().collect::<String>();
+                        return Ty::Var(s.parse().unwrap());
+                    }
+                }
+
+                Ty::Const(n.clone())
+            }
+            Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|ty| ty.unfreeze_vars()).collect()),
+            Ty::Ptr(ty) => Ty::Ptr(Box::new(ty.unfreeze_vars())),
+            Ty::Union(tys) => Ty::Union(tys.iter().map(|ty| ty.unfreeze_vars()).collect()),
+            Ty::Array(ty, n) => Ty::Array(Box::new(ty.unfreeze_vars()), *n),
+            Ty::Func(param_tys, ret_ty) => Ty::Func(
+                param_tys.iter().map(|ty| ty.unfreeze_vars()).collect(),
+                Box::new(ret_ty.unfreeze_vars()),
+            ),
+            Ty::Projection(ty, tys) => Ty::Projection(
+                Box::new(ty.unfreeze_vars()),
+                tys.iter().map(|ty| ty.unfreeze_vars()).collect(),
+            ),
+        }
+    }
+}
+
 impl Ty {
+    #[inline(always)]
+    pub fn with_vars<T: ToString>(name: &T, vars: &[TyVar]) -> Self {
+        Ty::with_tys(name, vars.iter().map(|t| Ty::Var(t.clone())).collect())
+    }
+
+    pub fn with_tys<T: ToString>(name: &T, tys: Vec<Ty>) -> Self {
+        if tys.is_empty() {
+            Ty::Const(name.to_string())
+        } else {
+            Ty::Projection(Box::new(Ty::Const(name.to_string())), tys)
+        }
+    }
+
     pub fn from_str(s: &str) -> Option<Ty> {
         Some(match s {
             "int" => Ty::int(),
@@ -549,57 +933,6 @@ impl Ty {
         })
     }
 
-    pub fn from_sig(
-        sig: &FuncSig,
-        fn_scope: &Path,
-        filepath: &FilePath,
-        fn_tcx: &mut TyCtx,
-        parent_tcx: &mut TyCtx,
-        srcmap: &SourceMap,
-    ) -> Result<Ty, RayError> {
-        let mut param_tys = vec![];
-
-        for param in sig.params.iter() {
-            if let Some(ty) = param.ty() {
-                let mut ty = ty.clone();
-                ty.resolve_ty(&fn_scope, fn_tcx);
-                param_tys.push(ty);
-            } else {
-                return Err(RayError {
-                    msg: format!("parameter `{}` must have a type annotation", param),
-                    src: vec![Source {
-                        span: Some(srcmap.span_of(&param)),
-                        filepath: filepath.clone(),
-                        ..Default::default()
-                    }],
-                    kind: RayErrorKind::Type,
-                });
-            }
-        }
-
-        let mut ret_ty = sig
-            .ret_ty
-            .as_deref()
-            .cloned()
-            .unwrap_or_else(|| Ty::ret_placeholder(fn_scope));
-        ret_ty.resolve_ty(&fn_scope, fn_tcx);
-
-        let mut ty = Ty::Func(param_tys, Box::new(ret_ty));
-
-        if sig.qualifiers.len() != 0 {
-            let mut p = vec![];
-            for q in sig.qualifiers.iter() {
-                p.push(TyPredicate::from_ast_ty(q, &fn_scope, &filepath, fn_tcx)?);
-            }
-            ty = Ty::Qualified(p, Box::new(ty));
-        }
-
-        log::debug!("ty = {}", ty);
-        ty.quantify_in_place();
-        log::debug!("ty = {}", ty);
-        Ok(ty)
-    }
-
     pub fn desc(&self) -> String {
         match self {
             Ty::Never => str!("never"),
@@ -610,60 +943,63 @@ impl Ty {
             Ty::Union(_) => str!("union"),
             Ty::Array(ty, _) => format!("array of {}", ty.desc()),
             Ty::Func(_, _) => str!("function"),
-            Ty::Projection(name, _) => name.clone(),
-            Ty::Qualified(_, ty) => ty.desc(),
-            Ty::All(_, ty) => ty.desc(),
+            Ty::Const(name) => name.clone(),
+            Ty::Projection(ty, _) => ty.desc(),
+            // Ty::Qualified(_, ty) => ty.desc(),
+            // Ty::All(_, ty) => ty.desc(),
         }
     }
 
-    pub fn resolve_ty(&mut self, scope: &ast::Path, tcx: &mut TyCtx) {
+    pub fn resolve_fqns(&mut self, scope: &ast::Path, tcx: &mut TyCtx) {
         match self {
-            Ty::Projection(name, ty_params) => {
-                ty_params.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
-
+            Ty::Const(name) => {
                 if let Some(fqn) = tcx.lookup_fqn(name) {
                     *name = fqn.to_string();
-                    return;
-                }
-
-                if let Some(ty) = tcx.get_var(&name) {
-                    let _ = std::mem::replace(self, ty.clone());
                 }
             }
-            Ty::Var(tv) => {
-                // let fqn = tv.path().clone(); //Path::from(format!("'{}", tv)); //scope.append(format!("'{}", tv));
-                let fqn_string = tv.path().to_string();
-                if let Some(ty) = tcx.get_var(&fqn_string) {
-                    let _ = std::mem::replace(self, ty.clone());
-                } else {
-                    // *tv.path_mut() = fqn;
-                    tcx.bind_var(fqn_string, self.clone());
+            Ty::Projection(ty, tys) => {
+                ty.resolve_fqns(scope, tcx);
+                for ty in tys {
+                    ty.resolve_fqns(scope, tcx);
                 }
             }
             Ty::Tuple(tys) | Ty::Union(tys) => {
-                tys.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
+                tys.iter_mut().for_each(|t| t.resolve_fqns(scope, tcx));
             }
-            Ty::Ptr(t) | Ty::Array(t, _) => t.resolve_ty(scope, tcx),
+            Ty::Ptr(t) | Ty::Array(t, _) => t.resolve_fqns(scope, tcx),
             Ty::Func(params, ret) => {
-                params.iter_mut().for_each(|t| t.resolve_ty(scope, tcx));
-                ret.resolve_ty(scope, tcx);
+                params.iter_mut().for_each(|t| t.resolve_fqns(scope, tcx));
+                ret.resolve_fqns(scope, tcx);
             }
-            Ty::Qualified(qs, t) => {
-                for pred in qs.iter_mut() {
-                    match pred {
-                        TyPredicate::Trait(t) | TyPredicate::Literal(t, _) => {
-                            t.resolve_ty(scope, tcx)
-                        }
-                        TyPredicate::HasMember(s, _, t) => {
-                            s.resolve_ty(scope, tcx);
-                            t.resolve_ty(scope, tcx);
-                        }
-                    }
+            Ty::Var(_) | Ty::Never | Ty::Any => {}
+        }
+    }
+
+    pub fn map_vars(&mut self, tcx: &mut TyCtx) {
+        match self {
+            Ty::Never | Ty::Any | Ty::Const(_) => {}
+            Ty::Var(tv) => {
+                if tv.is_ret_placeholder() {
+                    return;
                 }
-                t.resolve_ty(scope, tcx);
+
+                *tv = if let Some(mapped_tv) = tcx.get_var_mapping(tv) {
+                    log::debug!("found mapping: {} -> {}", tv, mapped_tv);
+                    mapped_tv.clone()
+                } else {
+                    let mapped_tv = tcx.tf().next();
+                    tcx.add_var_mapping(tv.clone(), mapped_tv.clone());
+                    mapped_tv
+                };
             }
-            Ty::All(_, t) => t.resolve_ty(scope, tcx),
-            Ty::Never | Ty::Any => {}
+            Ty::Tuple(tys) | Ty::Union(tys) => {
+                tys.iter_mut().for_each(|t| t.map_vars(tcx));
+            }
+            Ty::Array(ty, _) | Ty::Projection(ty, _) | Ty::Ptr(ty) => ty.map_vars(tcx),
+            Ty::Func(param_tys, ret_ty) => {
+                param_tys.iter_mut().for_each(|t| t.map_vars(tcx));
+                ret_ty.map_vars(tcx);
+            }
         }
     }
 
@@ -692,7 +1028,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn con<S: Into<String>>(s: S) -> Ty {
-        Ty::Projection(s.into(), vec![])
+        Ty::Const(s.into())
     }
 
     #[inline(always)]
@@ -702,7 +1038,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn ty_type(ty: Ty) -> Ty {
-        Ty::Projection(str!("type"), vec![ty])
+        Ty::Projection(Box::new(Ty::Const(str!("type"))), vec![ty])
     }
 
     #[inline(always)]
@@ -722,7 +1058,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn string() -> Ty {
-        Ty::Projection(str!("string"), vec![])
+        Ty::Const(str!("string"))
     }
 
     #[inline(always)]
@@ -732,12 +1068,12 @@ impl Ty {
 
     #[inline(always)]
     pub fn range(el: Ty) -> Ty {
-        Ty::Projection(str!("range"), vec![el.clone()])
+        Ty::Projection(Box::new(Ty::Const(str!("range"))), vec![el.clone()])
     }
 
     #[inline(always)]
     pub fn list(el: Ty) -> Ty {
-        Ty::Projection(str!("list"), vec![el])
+        Ty::Projection(Box::new(Ty::Const(str!("list"))), vec![el])
     }
 
     #[inline(always)]
@@ -823,7 +1159,7 @@ impl Ty {
     #[inline(always)]
     pub fn is_int_ty(&self) -> bool {
         match self {
-            Ty::Projection(a, _)
+            Ty::Const(a)
                 if matches!(
                     a.as_str(),
                     "int"
@@ -849,7 +1185,7 @@ impl Ty {
     #[inline(always)]
     pub fn is_float_ty(&self) -> bool {
         match self {
-            Ty::Projection(a, _) if matches!(a.as_str(), "float" | "f32" | "f64" | "f128") => true,
+            Ty::Const(a) if matches!(a.as_str(), "float" | "f32" | "f64" | "f128") => true,
             _ => false,
         }
     }
@@ -860,8 +1196,8 @@ impl Ty {
             Ty::Never => Some(Path::from("never")),
             Ty::Any => Some(Path::from("any")),
             Ty::Var(v) => Some(v.path().clone()),
-            Ty::Projection(s, _) => Some(Path::from(s.clone())),
-            Ty::Qualified(_, t) | Ty::All(_, t) => t.get_path(),
+            Ty::Const(s) => Some(Path::from(s.clone())),
+            Ty::Projection(ty, _) => ty.get_path(),
             Ty::Array(..) | Ty::Ptr(_) | Ty::Tuple(_) | Ty::Union(_) | Ty::Func(_, _) => None,
         }
     }
@@ -872,8 +1208,8 @@ impl Ty {
             Ty::Any => str!("any"),
             Ty::Tuple(_) => str!("tuple"),
             Ty::Var(v) => v.path().name().unwrap(),
-            Ty::Projection(s, _) => s.clone(),
-            Ty::Qualified(_, t) | Ty::All(_, t) => t.name(),
+            Ty::Const(s) => s.clone(),
+            Ty::Projection(ty, _) => ty.name(),
             Ty::Array(..) | Ty::Ptr(_) | Ty::Union(_) | Ty::Func(_, _) => {
                 str!("")
             }
@@ -891,302 +1227,186 @@ impl Ty {
                 Size::bytes(tag_size) + max_size
             }
             Ty::Func(_, _) | Ty::Ptr(_) => Size::ptr(),
-            Ty::Projection(n, _) => match n.as_str() {
+            Ty::Projection(ty, _) => ty.size_of(),
+            Ty::Const(n) => match n.as_str() {
                 "int" | "uint" => Size::ptr(),
                 "i8" | "u8" | "bool" => Size::bytes(1),
                 "i16" | "u16" => Size::bytes(2),
                 "i32" | "u32" | "f32" => Size::bytes(4),
                 "i64" | "u64" | "f64" => Size::bytes(8),
                 "i128" | "u128" | "f128" => Size::bytes(16),
-                // _ if f.len() != 0 => f
-                //     .iter()
-                //     .fold(Size::zero(), |acc, ty| acc + Ty::size_of(ty)),
                 _ => Size::ptr(),
             },
-            Ty::Qualified(_, ty) | Ty::All(_, ty) => ty.size_of(),
         }
     }
 
-    pub fn skolemize_freevars(self) -> Ty {
-        match self {
-            Ty::All(xs, t) => {
-                let consts = xs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| Ty::Var(TyVar::from(format!("${}", i))))
-                    .collect::<Vec<_>>();
-                let sub = Subst::from_types(xs.clone(), consts);
-                Ty::All(xs, t).apply_subst(&sub)
-            }
-            t @ _ => t,
-        }
-    }
+    // pub fn skolemize_freevars(self) -> Ty {
+    //     match self {
+    //         Ty::All(xs, t) => {
+    //             let consts = xs
+    //                 .iter()
+    //                 .enumerate()
+    //                 .map(|(i, _)| Ty::Var(TyVar::from(format!("${}", i))))
+    //                 .collect::<Vec<_>>();
+    //             let sub = Subst::from_types(xs.clone(), consts);
+    //             Ty::All(xs, t).apply_subst(&sub)
+    //         }
+    //         t @ _ => t,
+    //     }
+    // }
 
-    pub fn quantify(self, tyvars: Vec<TyVar>) -> Ty {
-        if tyvars.len() != 0 {
-            let t = match self {
-                Ty::All(_, t) => t,
-                _ => Box::new(self),
-            };
-            Ty::All(tyvars, t)
-        } else {
-            self
-        }
-    }
+    // pub fn quantify(self, tyvars: Vec<TyVar>) -> Ty {
+    //     if tyvars.len() != 0 {
+    //         let t = match self {
+    //             Ty::All(_, t) => t,
+    //             _ => Box::new(self),
+    //         };
+    //         Ty::All(tyvars, t)
+    //     } else {
+    //         self
+    //     }
+    // }
 
-    pub fn quantify_in_place(&mut self) {
-        let freevars = HashSet::new();
-        replace(self, |ty| ty.quantify_with_freevars(&freevars));
-    }
+    // pub fn quantify_in_place(&mut self) {
+    //     let freevars = HashSet::new();
+    //     replace(self, |ty| ty.quantify_with_freevars(&freevars));
+    // }
 
-    pub fn quantify_with_freevars(self, freevars: &HashSet<&TyVar>) -> Ty {
-        let mut tyvars = self.collect_tyvars();
-        let mut i = 0;
-        while i < tyvars.len() {
-            let t = &tyvars[i];
-            if t.is_ret_placeholder() || freevars.contains(&t) {
-                tyvars.remove(i);
-            } else {
-                i += 1;
-            }
-        }
+    // pub fn quantify_with_freevars(self, freevars: &HashSet<&TyVar>) -> Ty {
+    //     let mut tyvars = self.collect_tyvars();
+    //     let mut i = 0;
+    //     while i < tyvars.len() {
+    //         let t = &tyvars[i];
+    //         if t.is_ret_placeholder() || freevars.contains(&t) {
+    //             tyvars.remove(i);
+    //         } else {
+    //             i += 1;
+    //         }
+    //     }
 
-        self.quantify(tyvars)
-    }
+    //     self.quantify(tyvars)
+    // }
 
-    pub fn unquantify(self) -> Ty {
-        match self {
-            Ty::All(_, t) => *t,
-            t => t,
-        }
-    }
+    // pub fn unquantify(self) -> Ty {
+    //     match self {
+    //         Ty::All(_, t) => *t,
+    //         t => t,
+    //     }
+    // }
 
-    pub fn formalize(self, path: &Path, tyvars: &HashSet<TyVar>) -> (Ty, Subst) {
-        log::debug!("formalize: {}", self);
-        let mut subst = Subst::new();
-        if let Ty::All(xs, _) = &self {
-            // bind all type variables in the function type
-            let mut c = 'a' as u8;
-            for v in xs.iter().filter(|x| !tyvars.contains(x)) {
-                if !subst.contains_key(v) {
-                    let path = path.append(format!("'{}", c as char));
-                    let u = TyVar(path);
-                    if v == &u {
-                        continue;
-                    }
+    // pub fn formalize(self, path: &Path, tyvars: &HashSet<TyVar>) -> (Ty, Subst) {
+    //     log::debug!("formalize: {}", self);
+    //     let mut subst = Subst::new();
+    //     if let Ty::All(xs, _) = &self {
+    //         // bind all type variables in the function type
+    //         let mut c = 'a' as u8;
+    //         for v in xs.iter().filter(|x| !tyvars.contains(x)) {
+    //             if !subst.contains_key(v) {
+    //                 let path = path.append(format!("'{}", c as char));
+    //                 let u = TyVar(path);
+    //                 if v == &u {
+    //                     continue;
+    //                 }
 
-                    subst.insert(v.clone(), Ty::Var(u));
-                    c += 1;
-                }
-            }
-            let ty = self.apply_subst(&subst);
-            return (ty, subst);
-        }
+    //                 subst.insert(v.clone(), Ty::Var(u));
+    //                 c += 1;
+    //             }
+    //         }
+    //         let ty = self.apply_subst(&subst);
+    //         return (ty, subst);
+    //     }
 
-        (self, subst)
-    }
+    //     (self, subst)
+    // }
 
-    pub fn qualify_in_place(&mut self, preds: &Vec<TyPredicate>) {
-        log::debug!("qualify in place: {}", self);
-        let tyvars = self.collect_tyvars();
-        let ty = std::mem::replace(self, Ty::unit());
-        *self = ty.qualify(preds, &tyvars);
-    }
+    // pub fn qualify_in_place(&mut self, preds: &Vec<TyPredicate>) {
+    //     log::debug!("qualify in place: {}", self);
+    //     let tyvars = self.collect_tyvars();
+    //     let ty = std::mem::replace(self, Ty::unit());
+    //     *self = ty.qualify(preds, &tyvars);
+    // }
 
-    pub fn qualify(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
-        log::debug!("preds: {:?}", preds);
-        log::debug!("tyvars: {:?}", tyvars);
-        let tyvar_set = tyvars.to_set();
-        let mut preds = preds
-            .iter()
-            .filter_map(|p| {
-                if !p.collect_tyvars().iter().to_set().is_disjoint(&tyvar_set) {
-                    Some(p.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+    // pub fn qualify(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
+    //     log::debug!("preds: {:?}", preds);
+    //     log::debug!("tyvars: {:?}", tyvars);
+    //     let tyvar_set = tyvars.to_set();
+    //     let mut preds = preds
+    //         .iter()
+    //         .filter_map(|p| {
+    //             if !p.collect_tyvars().iter().to_set().is_disjoint(&tyvar_set) {
+    //                 Some(p.clone())
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //         .collect::<Vec<_>>();
 
-        log::debug!("preds: {:?}", preds);
-        log::debug!("tyvar_set: {:?}", tyvar_set);
+    //     log::debug!("preds: {:?}", preds);
+    //     log::debug!("tyvar_set: {:?}", tyvar_set);
 
-        preds.sort();
-        preds.dedup();
-        self.qualify_with(preds)
-    }
+    //     preds.sort();
+    //     preds.dedup();
+    //     self.qualify_with(preds)
+    // }
 
-    fn qualify_with(self, preds: Vec<TyPredicate>) -> Ty {
-        if preds.len() != 0 {
-            // wrap the type in a qualified type if there are type variables
-            match self {
-                Ty::All(xs, t) => Ty::All(xs, Box::new(t.qualify_with(preds))),
-                Ty::Qualified(q, t) => {
-                    log::debug!("prev preds: {:?}", q);
-                    Ty::Qualified(preds, t)
-                }
-                _ => Ty::Qualified(preds, Box::new(self)),
-            }
-        } else {
-            self
-        }
-    }
+    // fn qualify_with(self, preds: Vec<TyPredicate>) -> Ty {
+    //     if preds.len() != 0 {
+    //         // wrap the type in a qualified type if there are type variables
+    //         match self {
+    //             Ty::All(xs, t) => Ty::All(xs, Box::new(t.qualify_with(preds))),
+    //             Ty::Qualified(q, t) => {
+    //                 log::debug!("prev preds: {:?}", q);
+    //                 Ty::Qualified(preds, t)
+    //             }
+    //             _ => Ty::Qualified(preds, Box::new(self)),
+    //         }
+    //     } else {
+    //         self
+    //     }
+    // }
 
-    pub fn unqualify(self) -> Ty {
-        match self {
-            Ty::All(xs, t) => Ty::All(xs, Box::new(t.unqualify())),
-            Ty::Qualified(_, t) => *t,
-            t => t,
-        }
-    }
+    // pub fn unqualify(self) -> Ty {
+    //     match self {
+    //         Ty::All(xs, t) => Ty::All(xs, Box::new(t.unqualify())),
+    //         Ty::Qualified(_, t) => *t,
+    //         t => t,
+    //     }
+    // }
 
-    pub fn qualifiers(&self) -> Option<&Vec<TyPredicate>> {
-        match self {
-            Ty::All(_, t) => t.qualifiers(),
-            Ty::Qualified(q, _) => Some(q),
-            _ => None,
-        }
-    }
+    // pub fn qualifiers(&self) -> Option<&Vec<TyPredicate>> {
+    //     match self {
+    //         Ty::All(_, t) => t.qualifiers(),
+    //         Ty::Qualified(q, _) => Some(q),
+    //         _ => None,
+    //     }
+    // }
 
-    pub fn has_qualifier(&self, pred: &TyPredicate) -> bool {
-        match self {
-            Ty::All(_, ty) => ty.has_qualifier(pred),
-            Ty::Qualified(preds, _) => preds.contains(pred),
-            _ => false,
-        }
-    }
+    // pub fn has_qualifier(&self, pred: &TyPredicate) -> bool {
+    //     match self {
+    //         Ty::All(_, ty) => ty.has_qualifier(pred),
+    //         Ty::Qualified(preds, _) => preds.contains(pred),
+    //         _ => false,
+    //     }
+    // }
 
-    pub fn in_hnf(&self) -> bool {
-        match self {
-            Ty::Never => todo!(),
-            Ty::Any => todo!(),
-            Ty::Var(_) => todo!(),
-            Ty::Tuple(_) => todo!(),
-            Ty::Ptr(_) => todo!(),
-            Ty::Union(_) => todo!(),
-            Ty::Array(_, _) => todo!(),
-            Ty::Func(_, _) => todo!(),
-            Ty::Projection(_, _) => todo!(),
-            Ty::Qualified(_, _) => todo!(),
-            Ty::All(_, _) => todo!(),
-        }
-    }
+    // pub fn in_hnf(&self) -> bool {
+    //     match self {
+    //         Ty::Never => todo!(),
+    //         Ty::Any => todo!(),
+    //         Ty::Var(_) => todo!(),
+    //         Ty::Tuple(_) => todo!(),
+    //         Ty::Ptr(_) => todo!(),
+    //         Ty::Union(_) => todo!(),
+    //         Ty::Array(_, _) => todo!(),
+    //         Ty::Func(_, _) => todo!(),
+    //         Ty::Projection(_, _) => todo!(),
+    //         Ty::Qualified(_, _) => todo!(),
+    //         Ty::All(_, _) => todo!(),
+    //     }
+    // }
 
     pub fn nilable(t: Ty) -> Ty {
         Ty::Union(vec![t, Ty::nil()])
-    }
-
-    pub fn is_closed(&self) -> bool {
-        // A type x is closed if fv(x) = ∅
-        //   close(x, x', V) => (x' = All[X](x)),
-        //   where X = fv(x) - V and V is a set of type variables
-        self.free_vars().len() == 0
-    }
-
-    pub fn open(self) -> Ty {
-        if let Ty::All(_, t) = self {
-            *t
-        } else {
-            self
-        }
-    }
-
-    pub fn close(self, vs: &HashSet<&TyVar>) -> Ty {
-        match self {
-            Ty::All(_, t) => t.close(vs),
-            _ => {
-                let xs = self
-                    .free_vars()
-                    .difference(vs)
-                    .map(|t| *t)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if xs.len() == 0 {
-                    self
-                } else {
-                    Ty::All(xs, Box::new(self))
-                }
-            }
-        }
-    }
-
-    pub fn has_unknowns(&self) -> bool {
-        self.collect_tyvars().len() != 0
-    }
-
-    pub fn unify_with<A, B, F, G>(
-        &self,
-        other: &Ty,
-        mut f: F,
-        g: G,
-    ) -> Result<(A, Vec<B>), TypeError>
-    where
-        F: FnMut(Subst) -> A,
-        G: Fn(&Ty, &Ty) -> B,
-    {
-        match (self, other) {
-            (Ty::Tuple(a), Ty::Tuple(b)) => {
-                let mut z = vec![];
-                for (x, y) in a.iter().zip(b.iter()) {
-                    z.push(g(x, y));
-                }
-                Ok((f(Subst::new()), z))
-            }
-            (Ty::Ptr(a), Ty::Ptr(b)) => a.unify_with(b, f, g),
-            (Ty::Projection(a, s), Ty::Projection(b, t)) if a == b => {
-                let mut b = vec![];
-                for (x, y) in s.iter().zip(t.iter()) {
-                    b.push(g(x, y));
-                }
-                Ok((f(Subst::new()), b))
-            }
-            (Ty::Func(r, s), Ty::Func(t, u)) if r.len() == t.len() => {
-                let mut b = vec![];
-                for (x, y) in r.iter().zip(t.iter()) {
-                    b.push(g(x, y));
-                }
-                b.push(g(s, u));
-                Ok((f(Subst::new()), b))
-            }
-            (Ty::Union(s), Ty::Union(t)) if s.len() == t.len() => {
-                let mut b = vec![];
-                for (x, y) in s.iter().zip(t.iter()) {
-                    b.push(g(x, y));
-                }
-                Ok((f(Subst::new()), b))
-            }
-            (Ty::Qualified(p, s), Ty::Qualified(q, t)) if p == q => {
-                Ok((f(Subst::new()), vec![g(s, t)]))
-            }
-            (Ty::Qualified(_, s), t) => s.unify_with(t, f, g),
-            (s, Ty::Qualified(_, t)) => s.unify_with(t, f, g),
-            (Ty::All(xs, s), Ty::All(ys, t)) if xs.len() == ys.len() => {
-                Ok((f(Subst::new()), vec![g(s, t)]))
-            }
-            (Ty::All(_, s), t) => s.unify_with(t, f, g),
-            (s, Ty::All(_, t)) => s.unify_with(t, f, g),
-            (Ty::Var(tv), t) | (t, Ty::Var(tv)) if self != other => {
-                if !t.free_vars().contains(&tv) {
-                    Ok((f(subst! { tv.clone() => t.clone() }), vec![]))
-                } else {
-                    return Err(TypeError::recursive_unify(self.clone(), other.clone()));
-                }
-            }
-            (_, Ty::Any) | (_, Ty::Never) => Ok((f(Subst::new()), vec![])),
-            (s, t) if s == t => Ok((f(Subst::new()), vec![])),
-            _ => {
-                return Err(TypeError::mismatch(self.clone(), other.clone()));
-            }
-        }
-    }
-
-    pub fn mgu(&self, other: &Ty) -> Result<Subst, TypeError> {
-        let (sub, subs) = self.unify_with(other, |sub| sub, |x, y| x.mgu(y))?;
-        let mut sub = sub;
-        for s in subs {
-            sub = sub.union(s?);
-        }
-        Ok(sub)
     }
 
     /// S <: T => S is a subtype of T
@@ -1205,7 +1425,7 @@ impl Ty {
                     && r.iter().zip(t.iter()).all(|(x, y)| x.is_subtype(y))
                     && s.is_subtype(u)
             }
-            (Ty::All(xs, s), Ty::All(ys, t)) if xs == ys => s.is_subtype(t),
+            // (Ty::All(xs, s), Ty::All(ys, t)) if xs == ys => s.is_subtype(t),
             _ if self == t => true,
             _ => false,
         }
@@ -1217,25 +1437,25 @@ impl Ty {
 
     pub fn is_nullary(&self) -> bool {
         match self {
-            Ty::Never | Ty::Any | Ty::Union(_) | Ty::Var(_) => true,
+            Ty::Never | Ty::Any | Ty::Const(_) | Ty::Union(_) | Ty::Var(_) => true,
             Ty::Projection(_, tys) | Ty::Tuple(tys) => tys.len() == 0,
-            Ty::Qualified(_, t) | Ty::All(_, t) => t.is_nullary(),
             Ty::Func(_, _) | Ty::Array(_, _) | Ty::Ptr(_) => false,
         }
     }
 
+    #[inline(always)]
     pub fn is_polymorphic(&self) -> bool {
-        self.has_unknowns()
+        !self.free_vars().is_empty()
     }
 
-    #[inline(always)]
-    pub fn is_forall(&self) -> bool {
-        matches!(self, Ty::All(..))
-    }
+    // #[inline(always)]
+    // pub fn is_forall(&self) -> bool {
+    //     matches!(self, Ty::All(..))
+    // }
 
     pub fn is_func(&self) -> bool {
         match &self {
-            Ty::All(_, ty) | Ty::Qualified(_, ty) => ty.is_func(),
+            // Ty::All(_, ty) | Ty::Qualified(_, ty) => ty.is_func(),
             Ty::Func(..) => true,
             _ => false,
         }
@@ -1243,7 +1463,7 @@ impl Ty {
 
     pub fn is_funcs_union(&self) -> bool {
         match &self {
-            Ty::All(_, ty) => ty.is_funcs_union(),
+            // Ty::All(_, ty) => ty.is_funcs_union(),
             Ty::Union(tys) => tys.iter().all(|t| t.is_func()),
             _ => false,
         }
@@ -1251,7 +1471,7 @@ impl Ty {
 
     pub fn is_union(&self) -> bool {
         match &self {
-            Ty::All(_, ty) => ty.is_union(),
+            // Ty::All(_, ty) => ty.is_union(),
             Ty::Union(_) => true,
             _ => false,
         }
@@ -1277,31 +1497,28 @@ impl Ty {
             Ty::Never
             | Ty::Any
             | Ty::Var(_)
+            | Ty::Const(_)
             | Ty::Tuple(_)
             | Ty::Ptr(_)
             | Ty::Union(_)
             | Ty::Array(_, _)
             | Ty::Projection(_, _) => None,
             Ty::Func(params, _) => params.get(idx),
-            Ty::Qualified(_, t) => t.get_func_param(idx),
-            Ty::All(_, t) => t.get_func_param(idx),
+            // Ty::Qualified(_, t) => t.get_func_param(idx),
+            // Ty::All(_, t) => t.get_func_param(idx),
         }
     }
 
     pub fn get_ty_params(&self) -> Vec<&Ty> {
         match self {
-            Ty::All(_, t) => t.get_ty_params(),
-            Ty::Qualified(_, t) => t.get_ty_params(),
             Ty::Array(t, _) | Ty::Ptr(t) => vec![t.as_ref()],
             Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => t.iter().collect(),
-            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => vec![],
+            Ty::Never | Ty::Any | Ty::Const(_) | Ty::Var(_) | Ty::Func(_, _) => vec![],
         }
     }
 
     pub fn get_ty_param_at(&self, idx: usize) -> &Ty {
         match self {
-            Ty::All(_, t) => t.get_ty_param_at(idx),
-            Ty::Qualified(_, t) => t.get_ty_param_at(idx),
             Ty::Array(t, _) => {
                 if idx != 0 {
                     panic!("array only has one type parameter: idx={}", idx)
@@ -1317,7 +1534,7 @@ impl Ty {
                 t.as_ref()
             }
             Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => t.iter().nth(idx).unwrap(),
-            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => {
+            Ty::Never | Ty::Any | Ty::Const(_) | Ty::Var(_) | Ty::Func(_, _) => {
                 panic!("no type parameters: {}", self)
             }
         }
@@ -1325,8 +1542,6 @@ impl Ty {
 
     pub fn set_ty_param_at(&mut self, idx: usize, tp: Ty) {
         match self {
-            Ty::All(_, t) => t.set_ty_param_at(idx, tp),
-            Ty::Qualified(_, t) => t.set_ty_param_at(idx, tp),
             Ty::Array(t, _) => {
                 if idx != 0 {
                     panic!("array only has one type parameter: idx={}", idx)
@@ -1344,7 +1559,7 @@ impl Ty {
             Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => {
                 t[idx] = tp;
             }
-            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Func(_, _) => {
+            Ty::Never | Ty::Any | Ty::Const(_) | Ty::Var(_) | Ty::Func(_, _) => {
                 panic!("no type parameters: {}", self)
             }
         }
@@ -1358,30 +1573,30 @@ impl Ty {
     pub fn union(&mut self, ty: Ty) {
         log::debug!("union: {} | {}", self, ty);
         match (self, ty) {
-            (Ty::All(xs, t), Ty::All(ys, u)) => {
-                for y in ys {
-                    if !xs.contains(&y) {
-                        xs.push(y);
-                    }
-                }
-                t.union(*u);
-            }
-            (Ty::All(_, t), u) => t.union(u),
-            (t, Ty::All(xs, u)) => replace(t, |mut t| {
-                t.union(*u);
-                Ty::All(xs, Box::new(t))
-            }),
-            (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
-                p.extend(q);
-                t.union(*u);
-            }
-            (Ty::Qualified(_, t), u) => {
-                t.union(u);
-            }
-            (t, Ty::Qualified(p, u)) => replace(t, |mut t| {
-                t.union(*u);
-                Ty::Qualified(p, Box::new(t))
-            }),
+            // (Ty::All(xs, t), Ty::All(ys, u)) => {
+            //     for y in ys {
+            //         if !xs.contains(&y) {
+            //             xs.push(y);
+            //         }
+            //     }
+            //     t.union(*u);
+            // }
+            // (Ty::All(_, t), u) => t.union(u),
+            // (t, Ty::All(xs, u)) => replace(t, |mut t| {
+            //     t.union(*u);
+            //     Ty::All(xs, Box::new(t))
+            // }),
+            // (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
+            //     p.extend(q);
+            //     t.union(*u);
+            // }
+            // (Ty::Qualified(_, t), u) => {
+            //     t.union(u);
+            // }
+            // (t, Ty::Qualified(p, u)) => replace(t, |mut t| {
+            //     t.union(*u);
+            //     Ty::Qualified(p, Box::new(t))
+            // }),
             (Ty::Union(tys), ty) => {
                 if !tys.contains(&ty) {
                     tys.push(ty);
@@ -1400,99 +1615,95 @@ impl Ty {
         }
     }
 
-    pub fn add_to_union(&mut self, ty: Ty) {
-        if let Ty::All(_, t) = self {
-            t.as_mut().add_to_union(ty);
-        } else if let Ty::Union(tys) = self {
-            tys.push(ty);
-        }
-    }
+    // pub fn add_to_union(&mut self, ty: Ty) {
+    //     if let Ty::All(_, t) = self {
+    //         t.as_mut().add_to_union(ty);
+    //     } else if let Ty::Union(tys) = self {
+    //         tys.push(ty);
+    //     }
+    // }
 
-    pub fn unpack_quantified_ty(self) -> (Vec<TyVar>, Ty) {
-        match self {
-            Ty::All(q, t) => (q, *t),
-            t => (vec![], t),
-        }
-    }
+    // pub fn unpack_quantified_ty(self) -> (Vec<TyVar>, Ty) {
+    //     match self {
+    //         Ty::All(q, t) => (q, *t),
+    //         t => (vec![], t),
+    //     }
+    // }
 
-    pub fn unpack_qualified_ty(self) -> (Vec<TyPredicate>, Ty) {
-        match self {
-            Ty::All(xs, t) => {
-                let (q, t) = t.unpack_qualified_ty();
-                (q, Ty::All(xs, Box::new(t)))
-            }
-            Ty::Qualified(q, t) => (q, *t),
-            t => (vec![], t),
-        }
-    }
+    // pub fn unpack_qualified_ty(self) -> (Vec<TyPredicate>, Ty) {
+    //     match self {
+    //         Ty::All(xs, t) => {
+    //             let (q, t) = t.unpack_qualified_ty();
+    //             (q, Ty::All(xs, Box::new(t)))
+    //         }
+    //         Ty::Qualified(q, t) => (q, *t),
+    //         t => (vec![], t),
+    //     }
+    // }
 
-    pub fn unpack_tuple(self) -> Vec<Ty> {
-        match self {
-            Ty::Tuple(tys) => tys,
-            _ => panic!("not a tuple type"),
-        }
-    }
+    // pub fn unpack_tuple(self) -> Vec<Ty> {
+    //     match self {
+    //         Ty::Tuple(tys) => tys,
+    //         _ => panic!("not a tuple type"),
+    //     }
+    // }
 
-    pub fn try_unpack_overloaded_fn<T: Copy + Clone>(self) -> Result<Vec<Ty>, TypeError> {
-        if !self.is_func() && !self.is_funcs_union() {
-            return Err(TypeError::assertion(str!("function"), self));
-        }
+    // pub fn try_unpack_overloaded_fn<T: Copy + Clone>(self) -> Result<Vec<Ty>, TypeError> {
+    //     if !self.is_func() && !self.is_funcs_union() {
+    //         return Err(TypeError::assertion(str!("function"), self));
+    //     }
 
-        match self {
-            Ty::Func(p, r) => Ok(vec![Ty::Func(p, r)]),
-            Ty::All(xs, t) if t.is_func() => Ok(vec![Ty::All(xs, t)]),
-            Ty::Union(tys) => Ok(tys),
-            t => unreachable!("attempted to unpack non-function: {:?}", t),
-        }
-    }
+    //     match self {
+    //         Ty::Func(p, r) => Ok(vec![Ty::Func(p, r)]),
+    //         Ty::All(xs, t) if t.is_func() => Ok(vec![Ty::All(xs, t)]),
+    //         Ty::Union(tys) => Ok(tys),
+    //         t => unreachable!("attempted to unpack non-function: {:?}", t),
+    //     }
+    // }
 
-    pub fn try_borrow_fn(
-        &self,
-    ) -> Result<
-        (
-            Option<&Vec<TyVar>>,
-            Option<&Vec<TyPredicate>>,
-            &Vec<Ty>,
-            &Ty,
-        ),
-        TypeError,
-    > {
+    pub fn try_borrow_fn(&self) -> Result<(&Vec<Ty>, &Ty), TypeError> {
         if !self.is_func() {
             return Err(TypeError::assertion(str!("function"), self.clone()));
         }
 
         match self {
-            Ty::All(xs, ty) => {
-                let (_, q, p, r) = ty.try_borrow_fn()?;
-                Ok((Some(xs), q, p, r))
-            }
-            Ty::Qualified(q, ty) => {
-                let (_, _, p, r) = ty.try_borrow_fn()?;
-                Ok((None, Some(q), p, r))
-            }
-            Ty::Func(p, r) => Ok((None, None, p, r.as_ref())),
+            Ty::Func(p, r) => Ok((p, r.as_ref())),
             _ => unreachable!("attempted to unpack non-function: {:?}", self),
         }
     }
 
-    pub fn try_unpack_fn(
-        self,
-    ) -> Result<(Option<Vec<TyVar>>, Vec<TyPredicate>, Vec<Ty>, Ty), TypeError> {
-        if !self.is_func() {
-            return Err(TypeError::assertion(str!("function"), self));
-        }
+    pub fn has_ret_placeholder(&self) -> bool {
+        self.get_ret_placeholder().is_some()
+    }
 
+    pub fn get_ret_placeholder(&self) -> Option<&TyVar> {
         match self {
-            Ty::All(xs, ty) => {
-                let (_, q, p, r) = ty.try_unpack_fn()?;
-                Ok((Some(xs), q, p, r))
-            }
-            Ty::Qualified(q, ty) => {
-                let (_, _, p, r) = ty.try_unpack_fn()?;
-                Ok((None, q, p, r))
-            }
-            Ty::Func(p, r) => Ok((None, vec![], p, *r)),
-            _ => unreachable!("attempted to unpack non-function: {:?}", self),
+            Ty::Func(_, ret_ty) => match ret_ty.as_ref() {
+                Ty::Var(r) if r.is_ret_placeholder() => Some(r),
+                _ => None,
+            },
+            _ => None,
         }
     }
+
+    // pub fn try_unpack_fn(
+    //     self,
+    // ) -> Result<(Option<Vec<TyVar>>, Vec<TyPredicate>, Vec<Ty>, Ty), TypeError> {
+    //     if !self.is_func() {
+    //         return Err(TypeError::assertion(str!("function"), self));
+    //     }
+
+    //     match self {
+    //         Ty::All(xs, ty) => {
+    //             let (_, q, p, r) = ty.try_unpack_fn()?;
+    //             Ok((Some(xs), q, p, r))
+    //         }
+    //         Ty::Qualified(q, ty) => {
+    //             let (_, _, p, r) = ty.try_unpack_fn()?;
+    //             Ok((None, q, p, r))
+    //         }
+    //         Ty::Func(p, r) => Ok((None, vec![], p, *r)),
+    //         _ => unreachable!("attempted to unpack non-function: {:?}", self),
+    //     }
+    // }
 }

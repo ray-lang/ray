@@ -811,6 +811,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13bd41f508810a131401606d54ac32a467c97172d74ba7662562ebba5ad07fa0"
 
 [[package]]
+name = "ordered_set"
+version = "0.1.0"
+
+[[package]]
 name = "parity-wasm"
 version = "0.42.1"
 source = "git+https://github.com/ray-lang/parity-wasm#de0ccdff21bea73eff57f60548ef5fc84a4783cb"
@@ -1461,6 +1465,10 @@ dependencies = [
 [[package]]
 name = "top"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+]
 
 [[package]]
 name = "tracing"

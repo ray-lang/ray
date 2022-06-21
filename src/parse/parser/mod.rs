@@ -22,7 +22,7 @@ use crate::{
     parse::lexer::{Lexer, Preceding},
     pathlib::FilePath,
     span::{parsed::Parsed, Pos, Source, SourceMap, Span},
-    typing::ty::Ty,
+    typing::ty::{Ty, TyScheme},
 };
 
 fn read_string<R: io::Read>(mut r: R) -> ParseResult<String> {
@@ -362,6 +362,23 @@ impl<'src> Parser<'src> {
     }
 
     pub(crate) fn mk_ty(&mut self, ty: Parsed<Ty>, path: Path) -> Node<Parsed<Ty>> {
+        let span = *ty.span().unwrap();
+        let node = Node::new(ty);
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            path,
+            src_module: self.options.module_path.clone(),
+        };
+        self.srcmap.set_src(&node, src);
+        node
+    }
+
+    pub(crate) fn mk_tyscheme(
+        &mut self,
+        ty: Parsed<TyScheme>,
+        path: Path,
+    ) -> Node<Parsed<TyScheme>> {
         let span = *ty.span().unwrap();
         let node = Node::new(ty);
         let src = Source {

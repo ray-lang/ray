@@ -1,13 +1,16 @@
+use top::Predicate;
+
 use crate::{
     errors::{RayError, RayErrorKind},
     span::Source,
-    typing::subst::ApplySubst,
+    // typing::subst::ApplySubst,
 };
 
 use super::{
-    predicate::TyPredicate,
+    info::{Info, TypeSystemInfo},
+    // predicate::TyPredicate,
     ty::{Ty, TyVar},
-    Subst,
+    // Subst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,8 +21,9 @@ pub enum TypeErrorKind {
     Equality(Ty, Ty),
     InstanceOf(Ty, Ty),
     UnsolvableTyVar(TyVar),
-    Predicate(TyPredicate),
+    Predicate(Predicate<Ty, TyVar>),
     RecursiveUnification(Ty, Ty),
+    WithInfo(Vec<Info>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,17 +42,18 @@ impl From<TypeError> for RayError {
     }
 }
 
-impl ApplySubst for TypeError {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        todo!()
-    }
-}
-
 impl TypeError {
     pub fn new(msg: String) -> Self {
         Self {
             kind: TypeErrorKind::Message(msg),
             src: vec![],
+        }
+    }
+
+    pub fn from_info(info: TypeSystemInfo) -> Self {
+        Self {
+            kind: TypeErrorKind::WithInfo(info.info),
+            src: info.source,
         }
     }
 
@@ -87,7 +92,7 @@ impl TypeError {
         }
     }
 
-    pub fn predicate(pred: TyPredicate) -> Self {
+    pub fn predicate(pred: Predicate<Ty, TyVar>) -> Self {
         Self {
             kind: TypeErrorKind::Predicate(pred),
             src: vec![],
@@ -103,7 +108,7 @@ impl TypeError {
 
     pub fn message(&self) -> String {
         match &self.kind {
-            TypeErrorKind::Message(msg) => msg.clone(),
+            TypeErrorKind::Message(_) => todo!(),
             TypeErrorKind::Assertion(a, b) => {
                 format!("expected {} type, but found {}", a, b)
             }
@@ -115,9 +120,21 @@ impl TypeError {
                 format!("type `{}` is not an instance of type `{}`", a, b)
             }
             TypeErrorKind::UnsolvableTyVar(v) => format!("type variable `{}` cannot be solved", v),
-            TypeErrorKind::Predicate(pred) => format!("expression does not {}", pred.desc()),
+            TypeErrorKind::Predicate(pred) => {
+                format!("expression does not implement {}", pred)
+            }
             TypeErrorKind::RecursiveUnification(a, b) => {
                 format!("recursive unification: {} and {}", a, b)
+            }
+            TypeErrorKind::WithInfo(info) => {
+                let mut msg = String::new();
+                for (x, i) in info.iter().enumerate() {
+                    msg.push_str(&i.to_string());
+                    if x < info.len() - 1 {
+                        msg.push_str("\n");
+                    }
+                }
+                msg
             }
         }
     }

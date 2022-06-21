@@ -1,8 +1,10 @@
+use top::Predicates;
+
 use crate::{
     ast::{token::TokenKind, FnParam, Name, Node, TypeParams},
     parse::{ParseResult, Parser},
     span::{parsed::Parsed, Span},
-    typing::ty::Ty,
+    typing::ty::{Ty, TyScheme},
 };
 
 impl Parser<'_> {
@@ -13,11 +15,11 @@ impl Parser<'_> {
         Ok(self.mk_node(FnParam::Name(Name::typed(name, ty)), span))
     }
 
-    pub(crate) fn parse_ty(&mut self) -> ParseResult<Parsed<Ty>> {
+    pub(crate) fn parse_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         self.parse_ty_with(None)
     }
 
-    fn parse_ty_with(&mut self, ty: Option<Parsed<Ty>>) -> ParseResult<Parsed<Ty>> {
+    fn parse_ty_with(&mut self, ty: Option<Parsed<TyScheme>>) -> ParseResult<Parsed<TyScheme>> {
         let ty = if let Some(ty) = ty {
             ty
         } else {
@@ -28,12 +30,12 @@ impl Parser<'_> {
         self.parse_union_ty(ty)
     }
 
-    fn parse_nilable_ty(&mut self, ty: Parsed<Ty>) -> ParseResult<Parsed<Ty>> {
+    fn parse_nilable_ty(&mut self, ty: Parsed<TyScheme>) -> ParseResult<Parsed<TyScheme>> {
         Ok(if peek!(self, TokenKind::Question) {
             let start = ty.span().unwrap().start;
             let end = self.expect_end(TokenKind::Question)?;
             Parsed::new(
-                Ty::nilable(ty.take_value()),
+                TyScheme::from_mono(Ty::nilable(ty.take_value().into_mono())),
                 self.mk_src(Span { start, end }),
             )
         } else {
@@ -41,34 +43,35 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_union_ty(&mut self, ty: Parsed<Ty>) -> ParseResult<Parsed<Ty>> {
+    fn parse_union_ty(&mut self, ty: Parsed<TyScheme>) -> ParseResult<Parsed<TyScheme>> {
         if !expect_if!(self, TokenKind::Pipe) {
             return Ok(ty);
         }
 
-        let next_ty = self.parse_ty()?;
-        let span = *ty.span().unwrap();
-        let next_span = *next_ty.span().unwrap();
-        Ok(match (ty.take_value(), next_ty.take_value()) {
-            (Ty::Union(lhs), Ty::Union(rhs)) => {
-                let mut tys = lhs;
-                tys.extend(rhs);
-                Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
-            }
-            (Ty::Union(lhs), ty) => {
-                let mut tys = lhs;
-                tys.push(ty);
-                Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
-            }
-            (ty, Ty::Union(tys)) => {
-                Parsed::new(ty, self.mk_src(span));
-                Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
-            }
-            (lhs_ty, rhs_ty) => Parsed::new(
-                Ty::Union(vec![lhs_ty, rhs_ty]),
-                self.mk_src(span.extend_to(&next_span)),
-            ),
-        })
+        todo!("parse union type")
+        // let next_ty = self.parse_ty()?;
+        // let span = *ty.span().unwrap();
+        // let next_span = *next_ty.span().unwrap();
+        // Ok(match (ty.take_value(), next_ty.take_value()) {
+        //     (Ty::Union(lhs), Ty::Union(rhs)) => {
+        //         let mut tys = lhs;
+        //         tys.extend(rhs);
+        //         Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
+        //     }
+        //     (Ty::Union(lhs), ty) => {
+        //         let mut tys = lhs;
+        //         tys.push(ty);
+        //         Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
+        //     }
+        //     (ty, Ty::Union(tys)) => {
+        //         Parsed::new(ty, self.mk_src(span));
+        //         Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
+        //     }
+        //     (lhs_ty, rhs_ty) => Parsed::new(
+        //         Ty::Union(vec![lhs_ty, rhs_ty]),
+        //         self.mk_src(span.extend_to(&next_span)),
+        //     ),
+        // })
     }
 
     pub(crate) fn parse_ty_params(&mut self) -> ParseResult<Option<TypeParams>> {
@@ -78,7 +81,7 @@ impl Parser<'_> {
             let mut tys = Vec::new();
             let lb_span = self.expect_sp(TokenKind::LeftBracket)?;
             loop {
-                tys.push(self.parse_ty()?);
+                tys.push(self.parse_ty()?.map(|ty| ty.into_mono()));
                 if peek!(self, TokenKind::RightBracket) {
                     break;
                 }
@@ -95,7 +98,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_ty_complex(&mut self) -> ParseResult<Option<Parsed<Ty>>> {
+    fn parse_ty_complex(&mut self) -> ParseResult<Option<Parsed<TyScheme>>> {
         Ok(if peek!(self, TokenKind::Asterisk) {
             Some(self.parse_ptr_ty()?)
         } else if peek!(self, TokenKind::UpperFn) {
@@ -111,7 +114,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_ty_base(&mut self, ident: Option<(String, Span)>) -> ParseResult<Parsed<Ty>> {
+    fn parse_ty_base(&mut self, ident: Option<(String, Span)>) -> ParseResult<Parsed<TyScheme>> {
         if let Some(t) = self.parse_ty_complex()? {
             Ok(t)
         } else if let Some((name, span)) = ident {
@@ -122,17 +125,17 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_ptr_ty(&mut self) -> ParseResult<Parsed<Ty>> {
+    fn parse_ptr_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let start = self.expect_start(TokenKind::Asterisk)?;
         let ptee_ty = self.parse_ty()?;
         let end = ptee_ty.span().unwrap().end;
         Ok(Parsed::new(
-            Ty::ptr(ptee_ty.take_value()),
+            TyScheme::from_mono(Ty::ptr(ptee_ty.take_value().into_mono())),
             self.mk_src(Span { start, end }),
         ))
     }
 
-    fn parse_arr_ty(&mut self) -> ParseResult<Parsed<Ty>> {
+    fn parse_arr_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let start = self.expect_start(TokenKind::LeftBracket)?;
         let el_ty = self.parse_ty()?;
         self.expect(TokenKind::Semi)?;
@@ -161,21 +164,24 @@ impl Parser<'_> {
         let end = rbrack_sp.end;
 
         Ok(Parsed::new(
-            Ty::Array(Box::new(el_ty.take_value()), size),
+            TyScheme::from_mono(Ty::Array(Box::new(el_ty.take_value().into_mono()), size)),
             self.mk_src(Span { start, end }),
         ))
     }
 
-    fn parse_generic_ty(&mut self) -> ParseResult<Parsed<Ty>> {
+    fn parse_generic_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let (name, span) = self.expect_ty_var_ident()?;
-        Ok(Parsed::new(Ty::var(name), self.mk_src(span)))
+        Ok(Parsed::new(
+            TyScheme::from_mono(Ty::var(name)),
+            self.mk_src(span),
+        ))
     }
 
     pub(crate) fn parse_ty_with_name(
         &mut self,
         name: String,
         span: Span,
-    ) -> ParseResult<Parsed<Ty>> {
+    ) -> ParseResult<Parsed<TyScheme>> {
         let Span { start, mut end } = span;
         let ty_params = self.parse_ty_params()?;
         if let Some(ref p) = ty_params {
@@ -184,7 +190,7 @@ impl Parser<'_> {
 
         let ty = if let Some(mut ty) = Ty::from_str(&name) {
             match &mut ty {
-                Ty::Projection(name, el_tys) if name.as_str() == "list" => {
+                Ty::Projection(_, el_tys) => {
                     *el_tys = ty_params
                         .unwrap()
                         .tys
@@ -196,27 +202,31 @@ impl Parser<'_> {
             }
             ty
         } else {
-            Ty::Projection(
-                name,
+            Ty::with_tys(
+                &name,
                 ty_params
                     .map(|p| p.tys.into_iter().map(|t| t.take_value()).collect())
                     .unwrap_or_default(),
             )
         };
 
-        Ok(Parsed::new(ty, self.mk_src(Span { start, end })))
+        Ok(Parsed::new(
+            TyScheme::from_mono(ty),
+            self.mk_src(Span { start, end }),
+        ))
     }
 
-    fn parse_fn_ty(&mut self) -> ParseResult<Parsed<Ty>> {
+    fn parse_fn_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
+        // Fn[<ty_params>](<params>) -> <ret_ty>
         let start = self.expect_start(TokenKind::UpperFn)?;
         let ty_params = self.parse_ty_params()?;
-        let params = self.parse_tuple_ty()?;
+        let params = self.parse_tuple_ty()?.map(|t| t.into_mono());
         let mut end = params.span().unwrap().end;
         let ret_ty = Box::new(if peek!(self, TokenKind::Arrow) {
             self.expect_end(TokenKind::Arrow)?;
             let ty = self.parse_ty()?;
             end = ty.span().unwrap().end;
-            ty.take_value()
+            ty.take_value().into_mono()
         } else {
             Ty::unit()
         });
@@ -226,22 +236,23 @@ impl Parser<'_> {
 
         Ok(Parsed::new(
             if let Some(ty_params) = ty_params {
-                Ty::All(
+                TyScheme::new(
                     ty_params
                         .tys
                         .into_iter()
                         .map(|t| variant!(t.take_value(), if Ty::Var(v)))
                         .collect(),
-                    Box::new(fn_ty),
+                    Predicates::new(), // TODO: what about predicates?
+                    fn_ty,
                 )
             } else {
-                fn_ty
+                TyScheme::from_mono(fn_ty)
             },
             self.mk_src(Span { start, end }),
         ))
     }
 
-    fn parse_tuple_ty(&mut self) -> ParseResult<Parsed<Ty>> {
+    fn parse_tuple_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let (lparen_tok, lp_span) = self.expect(TokenKind::LeftParen)?;
         let start = lp_span.start;
 
@@ -264,7 +275,11 @@ impl Parser<'_> {
             tys.pop().unwrap()
         } else {
             Parsed::new(
-                Ty::Tuple(tys.into_iter().map(|t| t.take_value()).collect()),
+                TyScheme::from_mono(Ty::Tuple(
+                    tys.into_iter()
+                        .map(|t| t.take_value().into_mono())
+                        .collect(),
+                )),
                 self.mk_src(Span { start, end }),
             )
         })

@@ -1,15 +1,29 @@
 use std::{
     collections::HashMap,
-    fmt::Debug,
+    fmt::{Debug, Display},
+    marker::PhantomData,
     ops::{Deref, DerefMut},
+    str::FromStr,
 };
+
+use crate::TyVar;
 
 use super::{mgu_with_synonyms, Predicate, Subst, Substitutable, Ty};
 
 #[derive(Default)]
-pub struct TypeSynonyms(HashMap<String, (usize, Box<dyn Fn(Vec<&Ty>) -> &Ty>)>);
+pub struct TypeSynonyms<T, V>(
+    HashMap<String, (usize, Box<dyn Fn(Vec<T>) -> T>)>,
+    PhantomData<V>,
+)
+where
+    T: Ty<V>,
+    V: TyVar;
 
-impl Debug for TypeSynonyms {
+impl<T, V> Debug for TypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypeSynonyms(")?;
         for (i, (k, (v, _))) in self.iter().enumerate() {
@@ -23,57 +37,67 @@ impl Debug for TypeSynonyms {
     }
 }
 
-impl Deref for TypeSynonyms {
-    type Target = HashMap<String, (usize, Box<dyn Fn(Vec<&Ty>) -> &Ty>)>;
+impl<T, V> Deref for TypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    type Target = HashMap<String, (usize, Box<dyn Fn(Vec<T>) -> T>)>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl DerefMut for TypeSynonyms {
+impl<T, V> DerefMut for TypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl TypeSynonyms {
+impl<T, V> TypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     pub fn new() -> Self {
-        TypeSynonyms(HashMap::new())
+        TypeSynonyms(HashMap::new(), PhantomData)
     }
 
-    pub fn add(&mut self, name: String, arity: usize, f: impl Fn(Vec<&Ty>) -> &Ty + 'static) {
-        self.insert(name, (arity, Box::new(f)));
+    pub fn add(&mut self, name: String, arity: usize, f: Box<dyn Fn(Vec<T>) -> T>) {
+        self.insert(name, (arity, f));
     }
 
-    pub fn expand_type(&self, ty: &Ty) -> Ty {
+    pub fn expand_type(&self, ty: T) -> T {
         let ty = self.expand_type_constructor(ty);
         let (ty, xs) = ty.left_spine();
-        xs.into_iter()
-            .cloned()
-            .fold(ty.clone(), |ty, x| Ty::App(Box::new(ty), Box::new(x)))
+        xs.into_iter().fold(ty.clone(), Ty::app)
     }
 
-    pub fn expand_type_constructor<'a>(&self, ty: &'a Ty) -> &'a Ty {
-        if let Some(ty) = self.expand_tc(ty) {
+    pub fn expand_type_constructor(&self, ty: T) -> T {
+        if let Some(ty) = self.expand_tc(ty.clone()) {
             self.expand_type_constructor(ty)
         } else {
             ty
         }
     }
 
-    fn expand_tc<'a>(&self, ty: &'a Ty) -> Option<&'a Ty> {
+    fn expand_tc(&self, ty: T) -> Option<T> {
         match ty.left_spine() {
-            (Ty::Const(name), args) => {
-                if let Some((arity, f)) = self.get(name) {
-                    if args.len() == *arity {
-                        Some(f(args))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+            (left, args) => {
+                left.maybe_const()
+                    .and_then(|name| self.get(name))
+                    .and_then(move |(arity, f)| {
+                        if args.len() == *arity {
+                            Some(f(args))
+                        } else {
+                            None
+                        }
+                    })
             }
             _ => Some(ty),
         }
@@ -83,10 +107,13 @@ impl TypeSynonyms {
         match self.get(name) {
             Some((arity, f)) => {
                 let is = (0..(*arity as u32)).collect::<Vec<_>>();
-                let vars = is.iter().map(|&i| Ty::Var(i)).collect::<Vec<_>>();
-                let ty = f(vars.iter().collect());
+                let vars = is
+                    .iter()
+                    .map(|&i| Ty::var(V::from_u32(i)))
+                    .collect::<Vec<_>>();
+                let ty = f(vars);
                 let free_vars = ty.free_vars();
-                is.iter().any(|i| !free_vars.contains(i))
+                is.iter().any(|i| !free_vars.contains(&&V::from_u32(*i)))
             }
             None => false,
         }
@@ -96,26 +123,41 @@ impl TypeSynonyms {
 pub type TypeSynonymOrdering = HashMap<String, usize>;
 
 #[derive(Debug, Default)]
-pub struct OrderedTypeSynonyms(TypeSynonymOrdering, TypeSynonyms);
+pub struct OrderedTypeSynonyms<T, V>(TypeSynonymOrdering, TypeSynonyms<T, V>, PhantomData<V>)
+where
+    T: Ty<V>,
+    V: TyVar;
 
-impl Deref for OrderedTypeSynonyms {
-    type Target = TypeSynonyms;
+impl<T, V> Deref for OrderedTypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    type Target = TypeSynonyms<T, V>;
 
     fn deref(&self) -> &Self::Target {
         &self.1
     }
 }
 
-impl DerefMut for OrderedTypeSynonyms {
+impl<T, V> DerefMut for OrderedTypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.1
     }
 }
 
-impl Extend<(String, usize, usize, Box<dyn Fn(Vec<&Ty>) -> &Ty>)> for OrderedTypeSynonyms {
-    fn extend<T: IntoIterator<Item = (String, usize, usize, Box<dyn Fn(Vec<&Ty>) -> &Ty>)>>(
+impl<T, V> Extend<(String, usize, usize, Box<dyn Fn(Vec<T>) -> T>)> for OrderedTypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar + 'static,
+{
+    fn extend<I: IntoIterator<Item = (String, usize, usize, Box<dyn Fn(Vec<T>) -> T>)>>(
         &mut self,
-        iter: T,
+        iter: I,
     ) {
         for (name, arity, order, f) in iter {
             self.insert(name, order, arity, f);
@@ -123,8 +165,12 @@ impl Extend<(String, usize, usize, Box<dyn Fn(Vec<&Ty>) -> &Ty>)> for OrderedTyp
     }
 }
 
-impl IntoIterator for OrderedTypeSynonyms {
-    type Item = (String, usize, usize, Box<dyn Fn(Vec<&Ty>) -> &Ty>);
+impl<T, V> IntoIterator for OrderedTypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    type Item = (String, usize, usize, Box<dyn Fn(Vec<T>) -> T>);
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(mut self) -> Self::IntoIter {
@@ -139,9 +185,13 @@ impl IntoIterator for OrderedTypeSynonyms {
     }
 }
 
-impl OrderedTypeSynonyms {
+impl<T, V> OrderedTypeSynonyms<T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
     pub fn new() -> Self {
-        OrderedTypeSynonyms(HashMap::new(), TypeSynonyms::new())
+        OrderedTypeSynonyms(HashMap::new(), TypeSynonyms::new(), PhantomData)
     }
 
     pub fn insert(
@@ -149,7 +199,7 @@ impl OrderedTypeSynonyms {
         name: String,
         order: usize,
         arity: usize,
-        f: Box<dyn Fn(Vec<&Ty>) -> &Ty>,
+        f: Box<dyn Fn(Vec<T>) -> T>,
     ) {
         self.0.insert(name.clone(), order);
         self.1.add(name, arity, f);
@@ -159,46 +209,20 @@ impl OrderedTypeSynonyms {
         self.0.get(name).cloned()
     }
 
-    pub fn expand_ordered<'a>(&self, a: &'a Ty, b: &'a Ty) -> Option<(&'a Ty, &'a Ty)> {
-        let f = |ty: &Ty| {
+    pub fn expand_ordered(&self, a: T, b: T) -> Option<(T, T)> {
+        let f = |ty: T| {
             let (ty, _) = ty.left_spine();
-            match ty {
-                Ty::Const(name) => self.order(name),
-                _ => None,
+            if let Some(name) = ty.maybe_const() {
+                self.order(name)
+            } else {
+                None
             }
         };
 
-        match (f(a), f(b)) {
+        match (f(a.clone()), f(b.clone())) {
             (Some(i), Some(j)) if i > j => self.expand_tc(b).map(|b| (a, b)),
             (Some(_), _) => self.expand_tc(a).map(|a| (a, b)),
             (_, Some(_)) => self.expand_tc(b).map(|b| (a, b)),
-            _ => None,
-        }
-    }
-
-    pub fn match_predicates(&self, p: &Predicate, q: &Predicate) -> Option<Subst> {
-        match (&p, q) {
-            (
-                Predicate {
-                    name: p_name,
-                    ty: p_ty,
-                },
-                Predicate {
-                    name: q_name,
-                    ty: q_ty,
-                },
-            ) if p_name == q_name => {
-                let p_ty = p_ty.freeze_vars();
-                match mgu_with_synonyms(&p_ty, q_ty, &Subst::new(), self) {
-                    Ok((_, mut subst)) => {
-                        for (_, ty) in subst.iter_mut() {
-                            *ty = ty.unfreeze_vars();
-                        }
-                        Some(subst)
-                    }
-                    Err(_) => None,
-                }
-            }
             _ => None,
         }
     }

@@ -1,4 +1,4 @@
-fn abs(a) {
+fn abs(a: 'a) -> 'a where Lt['a], Mul['a], Neg['a] {
     if a < 0 {
         a * -1
     } else {

@@ -7,7 +7,7 @@ use crate::{
     pathlib::FilePath,
     span::{Source, SourceMap, Span},
     strutils,
-    typing::state::TyEnv,
+    typing::state::Env,
 };
 
 use std::{
@@ -143,7 +143,7 @@ impl ModuleBuilder<'_, Expr, Decl> {
                     stmts,
                     decls,
                     filepaths,
-                    defs: TyEnv::new(),
+                    defs: Env::new(),
                     path: module_path.clone(),
                     root_filepath: root_file.filepath,
                     doc_comment: root_file.doc_comment,

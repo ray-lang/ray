@@ -10,9 +10,8 @@ use crate::{
 };
 
 use super::{
-    state::TyEnv,
     ty::{Ty, TyVar},
-    ApplySubst, ApplySubstMut, Subst, TyCtx, TypeError,
+    TyCtx, TypeError,
 };
 
 pub type TypeCheckResult<T = ()> = Result<T, TypeError>;
@@ -103,7 +102,7 @@ where
         kcx: &mut CheckCtx,
         _: Option<&mut Ty>,
     ) -> TypeCheckResult<U> {
-        let mut ty = ctx.maybe_ty_of(self.id).cloned();
+        let mut ty = ctx.get_ty(self.id).cloned();
         if let Some(ty) = &ty {
             log::debug!("{}: {}", self.value, ty);
         }
@@ -180,7 +179,7 @@ impl TypeCheck for Expr {
             Expr::Return(ex) => Ok(()), // ex.type_check(ctx, srcmap, kcx, ty),
             Expr::Sequence(ex) => ex.type_check(ctx, srcmap, kcx, ty),
             Expr::Tuple(ex) => ex.type_check(ctx, srcmap, kcx, ty),
-            Expr::Type(ex) => ex.type_check(ctx, srcmap, kcx, ty),
+            Expr::Type(ex) => todo!(), // ex.type_check(ctx, srcmap, kcx, ty),
             Expr::TypeAnnotated(ex, tys) => ex.type_check(ctx, srcmap, kcx, ty),
             Expr::UnaryOp(ex) => ex.type_check(ctx, srcmap, kcx, ty),
             Expr::Unsafe(ex) => ex.type_check(ctx, srcmap, kcx, ty),
@@ -238,30 +237,32 @@ impl TypeCheck for Func {
         kcx: &mut CheckCtx,
         ty: Option<&mut Ty>,
     ) -> TypeCheckResult {
-        let (fn_ty, subst) = if let Some(ty) = &ty {
-            // TODO: this is pretty ugly, is there a better way?
-            (**ty).clone().formalize(&self.sig.path, &kcx.tyvars)
-        } else {
-            panic!("function does not have a type")
-        };
-        log::debug!("function type formalized: {}", fn_ty);
+        todo!();
+        // let (fn_ty, subst) = if let Some(ty) = &ty {
+        //     // TODO: this is pretty ugly, is there a better way?
+        //     todo!()
+        //     // (**ty).clone().formalize(&self.sig.path, &kcx.tyvars)
+        // } else {
+        //     panic!("function does not have a type")
+        // };
+        // log::debug!("function type formalized: {}", fn_ty);
 
-        if let (Some(ty_params), ..) = fn_ty.try_borrow_fn()? {
-            kcx.tyvars.extend(ty_params.iter().cloned());
-        }
+        // if let (Some(ty_params), ..) = fn_ty.try_borrow_fn()? {
+        //     kcx.tyvars.extend(ty_params.iter().cloned());
+        // }
 
-        ctx.apply_subst_mut(&subst);
+        // ctx.apply_subst_mut(&subst);
 
-        if let Some(body) = &mut self.body {
-            body.type_check(ctx, srcmap, kcx, None)?;
-        }
+        // if let Some(body) = &mut self.body {
+        //     body.type_check(ctx, srcmap, kcx, None)?;
+        // }
 
-        if let Some(ty) = ty {
-            *ty = fn_ty;
-        }
+        // if let Some(ty) = ty {
+        //     *ty = fn_ty;
+        // }
 
-        kcx.tyvars.clear();
-        Ok(())
+        // kcx.tyvars.clear();
+        // Ok(())
     }
 }
 
@@ -337,7 +338,7 @@ impl TypeCheck for Assign {
         let lhs_ty = ctx.ty_of(self.lhs.id);
         let rhs_ty = ctx.ty_of(self.rhs.id);
         if lhs_ty != rhs_ty {
-            return Err(TypeError::equality(lhs_ty, rhs_ty));
+            return Err(TypeError::equality(lhs_ty.into_mono(), rhs_ty.into_mono()));
         }
 
         Ok(())

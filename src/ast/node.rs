@@ -5,11 +5,12 @@ use std::{
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use top::{Subst, Substitutable};
 
 use crate::{
     ast::Path,
     span::{Source, Span},
-    typing::{ApplySubst, Subst},
+    typing::ty::{Ty, TyVar},
 };
 
 pub trait HasSource {
@@ -60,11 +61,11 @@ impl HasSource for SourceInfo {
     }
 }
 
-impl ApplySubst for SourceInfo {
-    fn apply_subst(self, _: &Subst) -> Self {
-        self
-    }
-}
+// impl ApplySubst for SourceInfo {
+//     fn apply_subst(self, _: &Subst) -> Self {
+//         self
+//     }
+// }
 
 #[derive(Serialize, Deserialize)]
 pub struct Node<T> {
@@ -148,17 +149,26 @@ where
     }
 }
 
-impl<T> ApplySubst for Node<T>
+impl<T> Substitutable<TyVar, Ty> for Node<T>
 where
-    T: ApplySubst,
+    T: Substitutable<TyVar, Ty>,
 {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Node {
-            id: self.id,
-            value: self.value.apply_subst(subst),
-        }
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.value.apply_subst(subst);
     }
 }
+
+// impl<T> ApplySubst for Node<T>
+// where
+//     T: ApplySubst,
+// {
+//     fn apply_subst(self, subst: &Subst) -> Self {
+//         Node {
+//             id: self.id,
+//             value: self.value.apply_subst(subst),
+//         }
+//     }
+// }
 
 impl<T> Node<T> {
     pub fn new(value: T) -> Node<T> {

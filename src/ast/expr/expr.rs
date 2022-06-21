@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::{
     ast::{asm::Asm, Node, Path},
     span::parsed::Parsed,
-    typing::ty::Ty,
+    typing::ty::TyScheme,
 };
 
 use super::{
@@ -41,8 +41,8 @@ pub enum Expr {
     Return(Option<Box<Node<Expr>>>),
     Sequence(Sequence),
     Tuple(Tuple),
-    Type(Parsed<Ty>),
-    TypeAnnotated(Box<Node<Expr>>, Node<Parsed<Ty>>),
+    Type(Parsed<TyScheme>),
+    TypeAnnotated(Box<Node<Expr>>, Node<Parsed<TyScheme>>),
     UnaryOp(UnaryOp),
     Unsafe(Box<Node<Expr>>),
     While(While),

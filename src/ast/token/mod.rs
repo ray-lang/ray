@@ -56,6 +56,8 @@ pub enum TokenKind {
     Enum,
     /// trait
     Trait,
+    /// default
+    Default,
     /// impl
     Impl,
     /// object
@@ -228,6 +230,7 @@ impl TokenKind {
             TokenKind::Struct => "`struct`",
             TokenKind::Enum => "`enum`",
             TokenKind::Trait => "`trait`",
+            TokenKind::Default => "`default`",
             TokenKind::Impl => "`impl`",
             TokenKind::Object => "`object`",
             TokenKind::Nil => "`nil`",
@@ -345,6 +348,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Struct => "struct".to_string(),
             TokenKind::Enum => "enum".to_string(),
             TokenKind::Trait => "trait".to_string(),
+            TokenKind::Default => "default".to_string(),
             TokenKind::Impl => "impl".to_string(),
             TokenKind::Object => "object".to_string(),
             TokenKind::TypeAlias => "typealias".to_string(),

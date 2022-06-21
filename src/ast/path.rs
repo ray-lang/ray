@@ -2,10 +2,11 @@ use std::{fmt, hash::Hasher, str::Chars};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use top::{Subst, Substitutable};
 
 use crate::{
     pathlib::FilePath,
-    typing::{ty::TyVar, ApplySubst, Subst},
+    typing::ty::{Ty, TyVar},
 };
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -49,10 +50,10 @@ impl PartialEq<&str> for Path {
     }
 }
 
-impl ApplySubst for Path {
-    fn apply_subst(self, subst: &Subst) -> Self {
+impl Substitutable<TyVar, Ty> for Path {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         let mut parts = vec![];
-        for part in self.parts.into_iter() {
+        for part in self.parts.drain(..).into_iter() {
             if let PathPart::FuncType(func_ty) = part {
                 let s = func_ty.trim_matches(|ch| ch == '<' || ch == '>');
                 let mut args = String::new();
@@ -140,7 +141,11 @@ impl ApplySubst for Path {
             }
         }
 
-        Path { parts }
+        *self = Path { parts }
+    }
+
+    fn free_vars(&self) -> Vec<&TyVar> {
+        vec![]
     }
 }
 

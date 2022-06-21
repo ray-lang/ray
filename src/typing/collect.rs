@@ -13,7 +13,8 @@ use super::{
         tree::{AttachTree, ConstraintTree, NodeTree, ReceiverTree},
         EqConstraint,
     },
-    state::TyEnv,
+    state::{Env, SchemeEnv, SigmaEnv, TyEnv},
+    ty::SigmaTy,
     TyCtx,
 };
 
@@ -21,8 +22,8 @@ pub struct CollectCtx<'a> {
     pub mono_tys: &'a HashSet<TyVar>,
     pub srcmap: &'a SourceMap,
     pub tcx: &'a mut TyCtx,
-    pub defs: TyEnv,
-    pub new_defs: &'a mut TyEnv,
+    pub defs: SchemeEnv,
+    pub new_defs: &'a mut SchemeEnv,
 }
 
 impl CollectCtx<'_> {
@@ -55,7 +56,7 @@ impl CollectPatterns for String {
 
 impl CollectPatterns for Path {
     fn collect_patterns(&self, _: &SourceMap, tcx: &mut TyCtx) -> (Ty, TyEnv, ConstraintTree) {
-        let mut env = TyEnv::new();
+        let mut env = Env::new();
         let tv = tcx.tf().next();
         env.insert(self.clone(), Ty::Var(tv.clone()));
         let ct = ReceiverTree::new(tv.to_string());
@@ -78,9 +79,9 @@ where
     V: CollectPatterns,
     Node<T>: CollectConstraints<Output = Ty>,
 {
-    type Output = (Ty, BindingGroup, TyEnv);
+    type Output = (Ty, BindingGroup, SchemeEnv);
 
-    fn collect_decls(&self, ctx: &mut CollectCtx) -> (Ty, BindingGroup, TyEnv) {
+    fn collect_decls(&self, ctx: &mut CollectCtx) -> Self::Output {
         let &(var, rhs, src) = self;
 
         // E,Tc1 ⊢p p : τ1
@@ -90,13 +91,14 @@ where
         let (rhs_ty, a, ct2) = rhs.collect_constraints(ctx);
 
         // c = (τ1 ≡ τ2)
-        let c = EqConstraint::new(lhs_ty.clone(), rhs_ty).with_src(src.clone());
+        let mut c = EqConstraint::new(lhs_ty.clone(), rhs_ty);
+        c.info_mut().with_src(src.clone());
 
         // B = (E, A, c ▹ [Ct1, Ct2])
         let bg = BindingGroup::new(env, a, AttachTree::new(c, NodeTree::new(vec![ct1, ct2])))
             .with_src(src.clone());
 
-        (lhs_ty, bg, TyEnv::new())
+        (lhs_ty, bg, SchemeEnv::new())
     }
 }
 

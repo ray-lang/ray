@@ -20,7 +20,7 @@ pub struct Source {
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(span) = &self.span {
-            write!(f, "{} at {}", self.filepath, span)
+            write!(f, "{}:{}", self.filepath, span)
         } else {
             write!(f, "{}", self.filepath)
         }

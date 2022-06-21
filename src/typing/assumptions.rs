@@ -6,8 +6,6 @@ use std::{
 
 use crate::{ast::Path, typing::ty::Ty};
 
-use super::{traits::CollectTyVars, ty::TyVar, ApplySubst, Subst};
-
 #[derive(Clone, PartialEq, Eq)]
 pub struct AssumptionSet {
     map: HashMap<Path, HashSet<Ty>>,
@@ -119,27 +117,27 @@ where
     }
 }
 
-impl ApplySubst for AssumptionSet {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        let mut aset = Self::new();
-        for (path, tys) in self {
-            aset.insert(
-                path,
-                tys.into_iter().map(|t| t.apply_subst(subst)).collect(),
-            );
-        }
-        aset
-    }
-}
+// impl ApplySubst for AssumptionSet {
+//     fn apply_subst(self, subst: &Subst) -> Self {
+//         let mut aset = Self::new();
+//         for (path, tys) in self {
+//             aset.insert(
+//                 path,
+//                 tys.into_iter().map(|t| t.apply_subst(subst)).collect(),
+//             );
+//         }
+//         aset
+//     }
+// }
 
-impl CollectTyVars for AssumptionSet {
-    fn collect_tyvars(&self) -> Vec<TyVar> {
-        self.iter()
-            .flat_map(|(_, tys)| tys.iter().map(|ty| ty.collect_tyvars()))
-            .flatten()
-            .collect()
-    }
-}
+// impl CollectTyVars for AssumptionSet {
+//     fn collect_tyvars(&self) -> Vec<TyVar> {
+//         self.iter()
+//             .flat_map(|(_, tys)| tys.iter().map(|ty| ty.collect_tyvars()))
+//             .flatten()
+//             .collect()
+//     }
+// }
 
 impl AssumptionSet {
     pub fn new() -> AssumptionSet {

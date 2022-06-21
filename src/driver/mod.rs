@@ -1,6 +1,7 @@
 use std::{collections::HashSet, fs};
 
 use itertools::Itertools;
+use top::Substitutable;
 
 use crate::{
     codegen::llvm,
@@ -8,7 +9,7 @@ use crate::{
     libgen, lir,
     pathlib::FilePath,
     sema, transform,
-    typing::{check::TypeCheckSystem, state::TyEnv, ApplySubstMut, InferSystem, TyCtx},
+    typing::{check::TypeCheckSystem, state::Env, ty::TyScheme, InferSystem, TyCtx},
 };
 
 mod build;
@@ -75,10 +76,12 @@ impl Driver {
         let mut modules = mod_builder.modules;
         let mut srcmaps = mod_builder.srcmaps;
         let mut lib_set = HashSet::new();
-        let mut lib_defs = TyEnv::new();
+        let mut lib_defs = Env::new();
         let mut tcx = TyCtx::new();
-        for (lib_path, lib) in mod_builder.libs {
+        for (lib_path, mut lib) in mod_builder.libs {
             lib_set.insert(lib_path.clone());
+            let curr_tyvar_idx = lib.tcx.tf().curr();
+            log::debug!("curr ty var index for {}: {}", lib_path, curr_tyvar_idx);
             tcx.extend(lib.tcx);
             srcmaps.insert(lib_path, lib.srcmap);
             libs.push(lib.program);
@@ -106,20 +109,39 @@ impl Driver {
             }
         };
 
-        tcx.apply_subst_mut(&solution.subst);
-        tcx.extend_inst_ty_map(solution.inst_map.clone());
+        log::debug!("solution: {}", solution);
+        log::debug!("defs: {}", defs);
 
-        log::debug!("{:#?}", module);
-        log::debug!("{:#?}", tcx);
+        tcx.apply_subst(&solution.subst);
+        tcx.extend_inst_ty_map(
+            solution
+                .inst_type_schemes
+                .iter()
+                .map(|(v, scheme)| (v.clone(), TyScheme::scheme(scheme.clone())))
+                .collect(),
+        );
+        tcx.extend_scheme_subst(
+            solution
+                .scheme_subst()
+                .into_iter()
+                .map(|(v, s)| (v, TyScheme::scheme(s)))
+                .collect(),
+        );
+        tcx.extend_predicates(solution.qualifiers.clone());
 
-        let mut tyck = TypeCheckSystem::new(&mut tcx, &srcmap);
-        if let Err(err) = tyck.type_check(&mut module) {
-            return Err(vec![RayError {
-                msg: err.message(),
-                src: err.src,
-                kind: RayErrorKind::Type,
-            }]);
-        }
+        // module.apply_subst(&solution.subst);
+
+        log::debug!("{}", module);
+        log::debug!("{}", tcx);
+
+        // let mut tyck = TypeCheckSystem::new(&mut tcx, &srcmap);
+        // if let Err(err) = tyck.type_check(&mut module) {
+        //     return Err(vec![RayError {
+        //         msg: err.message(),
+        //         src: err.src,
+        //         kind: RayErrorKind::Type,
+        //     }]);
+        // }
 
         if options.no_compile {
             return Ok(());

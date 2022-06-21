@@ -1,28 +1,30 @@
 use std::collections::{HashMap, HashSet};
 
 use itertools::Itertools;
+use top::Substitutable;
 
 use crate::{
     ast::Path,
     convert::ToSet,
     sort::{topological::TopologicalSort, SortByIndexSlice},
     span::Source,
-    typing::ty::{Ty, TyVar},
+    typing::ty::{SigmaTy, Ty, TyVar},
 };
 
 use super::{
     assumptions::AssumptionSet,
     constraints::{
         tree::{ConstraintTree, NodeTree, StrictTree},
-        ConstraintInfo, EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
+        EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
     },
-    state::{TyEnv, TyVarFactory},
-    traits::HasFreeVars,
+    info::TypeSystemInfo,
+    state::{Env, SigmaEnv, TyEnv, TyVarFactory},
+    // traits::HasFreeVars,
 };
 
 pub struct BindingGroupAnalysis<'a> {
     groups: Vec<BindingGroup>,
-    defs: &'a TyEnv,
+    defs: &'a SigmaEnv,
     svar_factory: &'a mut TyVarFactory,
     mono_tys: &'a HashSet<TyVar>,
 }
@@ -30,7 +32,7 @@ pub struct BindingGroupAnalysis<'a> {
 impl<'a> BindingGroupAnalysis<'a> {
     pub fn new(
         groups: Vec<BindingGroup>,
-        defs: &'a TyEnv,
+        defs: &'a SigmaEnv,
         svar_factory: &'a mut TyVarFactory,
         mono_tys: &'a HashSet<TyVar>,
     ) -> BindingGroupAnalysis<'a> {
@@ -126,6 +128,7 @@ impl<'a> BindingGroupAnalysis<'a> {
         log::debug!("groups: {:#?}", self.groups);
         self.organize_groups();
         log::debug!("groups: {:#?}", self.groups);
+        log::debug!("mono_tys: {:?}", self.mono_tys);
         let mut mono_tys = self.mono_tys.clone();
         let mut aset = AssumptionSet::new();
         let mut ctree = ConstraintTree::empty();
@@ -146,7 +149,7 @@ pub struct BindingGroup {
     env: TyEnv,
     aset: AssumptionSet,
     ctree: ConstraintTree,
-    info: ConstraintInfo,
+    info: TypeSystemInfo,
 }
 
 impl std::fmt::Debug for BindingGroup {
@@ -164,7 +167,7 @@ impl BindingGroup {
             env,
             aset,
             ctree,
-            info: ConstraintInfo::new(),
+            info: TypeSystemInfo::default(),
         }
     }
 
@@ -173,12 +176,12 @@ impl BindingGroup {
             env: TyEnv::new(),
             aset: AssumptionSet::new(),
             ctree: ConstraintTree::empty(),
-            info: ConstraintInfo::new(),
+            info: TypeSystemInfo::default(),
         }
     }
 
     pub fn with_src(mut self, src: Source) -> BindingGroup {
-        self.info.src.push(src);
+        self.info.source.push(src);
         self
     }
 
@@ -198,7 +201,7 @@ impl BindingGroup {
         (&mut self.env, &mut self.aset, &mut self.ctree)
     }
 
-    pub fn is_mutually_recursive(&self, other: &BindingGroup, sigs: &HashMap<Path, Ty>) -> bool {
+    pub fn is_mutually_recursive(&self, other: &BindingGroup, sigs: &SigmaEnv) -> bool {
         let (lhs_sigs, lhs_use, _) = self.borrow();
         let (rhs_sigs, rhs_use, _) = other.borrow();
 
@@ -232,9 +235,9 @@ impl BindingGroup {
         }
         // if both are empty or lhs is not empty and rhs is empty do nothing
 
-        self.info.src.extend(rhs_info.src);
-        self.info.src.sort();
-        self.info.src.dedup();
+        self.info.source.extend(rhs_info.source);
+        self.info.source.sort();
+        self.info.source.dedup();
     }
 
     pub fn combine_with(
@@ -242,7 +245,7 @@ impl BindingGroup {
         mono_tys: &HashSet<TyVar>,
         rhs_aset: AssumptionSet,
         rhs_tree: ConstraintTree,
-        sigs: &TyEnv,
+        sigs: &SigmaEnv,
         svar_factory: &mut TyVarFactory,
     ) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
         let info = self.info.clone();
@@ -259,7 +262,10 @@ impl BindingGroup {
         // for which we have a type scheme in Σ.
         let cl1 = InstConstraint::lift(&lhs_aset, sigs)
             .into_iter()
-            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .map(|(s, mut c)| {
+                c.info_mut().extend(info.clone());
+                (s, c)
+            })
             .collect::<Vec<_>>();
 
         // Cl2 = E ≽M Σ;
@@ -269,7 +275,10 @@ impl BindingGroup {
         // of a definition to be more general than its declared type signature.
         let cl2 = SkolConstraint::lift(&env, sigs, mono_tys)
             .into_iter()
-            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .map(|(s, mut c)| {
+                c.info_mut().extend(info.clone());
+                (s, c)
+            })
             .collect::<Vec<_>>();
 
         // A1' = A1\dom(Σ); E' = E\dom(Σ)
@@ -279,7 +288,10 @@ impl BindingGroup {
         // Cl3 = A1' ≡ E'
         let cl3 = EqConstraint::lift(&lhs_aset, &env)
             .into_iter()
-            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .map(|(s, mut c)| {
+                c.info_mut().extend(info.clone());
+                (s, c)
+            })
             .collect::<Vec<_>>();
 
         // A1'' = A1'\dom(E')
@@ -293,33 +305,35 @@ impl BindingGroup {
             .collect::<Vec<_>>();
 
         let mut c4 = vec![];
-        for (x, v) in implicits.iter() {
+        for (x, sv) in implicits.iter() {
             if let Some(t) = env.get(x) {
-                c4.push(
-                    GenConstraint::new(
-                        mono_tys.iter().cloned().map(|v| Ty::Var(v)).collect(),
-                        v.clone(),
-                        t.clone(),
-                    )
-                    .with_info(info.clone()),
+                let mut c = GenConstraint::new(
+                    mono_tys.iter().cloned().map(|v| Ty::Var(v)).collect(),
+                    sv.clone(),
+                    t.clone(),
                 );
+                c.info_mut().extend(info.clone());
+                c4.push(c);
             }
         }
 
         let implicit_map = implicits
             .into_iter()
-            .map(|(s, t)| (s, Ty::Var(t)))
-            .collect::<TyEnv>();
+            .map(|(s, t)| (s, SigmaTy::var(t)))
+            .collect::<SigmaEnv>();
         let cl5 = InstConstraint::lift(&rhs_aset, &implicit_map)
             .into_iter()
-            .map(|(s, c)| (s, c.with_info(info.clone())))
+            .map(|(s, mut c)| {
+                c.info_mut().extend(info.clone());
+                (s, c)
+            })
             .collect::<Vec<_>>();
 
         // A2' = A2\dom(E')
         let rhs_aset = rhs_aset - env.keys();
 
         let mut m = mono_tys.clone();
-        m.extend(cl3.free_vars().iter().map(|&t| t.clone()));
+        m.extend(cl3.iter().flat_map(|(_, c)| c.free_vars()).cloned());
 
         // (Cl1 ≪◦ (Cl2 ≥◦ (Cl3 ≥◦ TC1)))
 

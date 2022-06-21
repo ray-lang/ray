@@ -19,26 +19,31 @@
                     "kind": "bin"
                 },
             },
-            "args": [
-                "--log-level",
-                "debug",
-                "build",
-                // "--no-core",
-                "--print-ast",
-                "examples/scratch.ray"
-                // "examples/impl_consts.ray"
-            ],
-            "env": {
-                "RUST_BACKTRACE": "1"
-            },
             // "args": [
             //     "--log-level",
             //     "debug",
             //     "build",
-            //     "--print-ast",
+            //     "examples/scratch.ray"
+            // ],
+            "args": [
+                "--log-level",
+                "debug",
+                "build",
+                // "-K",
+                "--no-core",
+                "--print-ast",
+                "examples/no_std.ray"
+            ],
+            // "args": [
+            //     "--log-level",
+            //     "debug",
+            //     "build",
             //     "--lib",
             //     "lib/core"
             // ],
+            "env": {
+                "RUST_BACKTRACE": "1"
+            },
             "cwd": "${workspaceFolder}"
         },
         {

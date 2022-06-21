@@ -1,5 +1,4 @@
-fn add_one(a: 'a) => a + 1
+fn add_one(a) => a + 1
 
 x = add_one(1)
-y = add_one(4)
-z = add_one(10)
+print(x)

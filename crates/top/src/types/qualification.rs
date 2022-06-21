@@ -1,15 +1,19 @@
-use crate::util::DisplayableVec;
+use std::fmt::Display;
+
+use serde::{Deserialize, Serialize};
+
+use crate::TyVar;
 
 use super::{HasTypes, ShowQuantors, Subst, Substitutable, Ty};
 
 #[derive(Debug)]
 pub struct Displayable<T>(T)
 where
-    T: std::fmt::Display;
+    T: Display;
 
-impl<T> std::fmt::Display for Displayable<T>
+impl<T> Display for Displayable<T>
 where
-    T: std::fmt::Display,
+    T: Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -18,7 +22,7 @@ where
 
 impl<T> From<T> for Displayable<T>
 where
-    T: std::fmt::Display,
+    T: Display,
 {
     fn from(t: T) -> Self {
         Self(t)
@@ -40,7 +44,7 @@ pub trait ShowQualifiers {
 
 impl<T> ShowQualifiers for Displayable<T>
 where
-    T: std::fmt::Display,
+    T: Display,
 {
     fn show_qualifiers(&self) -> Vec<String> {
         vec![self.to_string()]
@@ -49,23 +53,23 @@ where
 
 impl<T> ShowQualifiers for Vec<T>
 where
-    T: std::fmt::Display + ShowQualifiers,
+    T: Display + ShowQualifiers,
 {
     fn show_qualifiers(&self) -> Vec<String> {
         self.iter().flat_map(|v| v.show_qualifiers()).collect()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Qualification<P, T> {
     pub qualifiers: P,
     pub ty: T,
 }
 
-impl<P, T> std::fmt::Display for Qualification<P, T>
+impl<P, T> Display for Qualification<P, T>
 where
-    P: std::fmt::Display + ShowQualifiers,
-    T: std::fmt::Display,
+    P: Display + ShowQualifiers,
+    T: Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.qualifiers.show_context())?;
@@ -73,36 +77,26 @@ where
     }
 }
 
-impl<P, T> Into<Qualification<DisplayableVec<P>, T>> for Qualification<Vec<P>, T>
+impl<Q, P> ShowQuantors for Qualification<Q, P>
 where
-    P: std::fmt::Display,
-{
-    fn into(self) -> Qualification<DisplayableVec<P>, T> {
-        Qualification {
-            qualifiers: self.qualifiers.into(),
-            ty: self.ty,
-        }
-    }
-}
-
-impl<P, T> ShowQuantors for Qualification<P, T>
-where
-    P: std::fmt::Display + ShowQualifiers,
-    T: std::fmt::Display,
+    Q: Display + ShowQualifiers,
+    P: Display,
 {
 }
 
-impl<P, T> Substitutable for Qualification<P, T>
+impl<Q, P, T, V> Substitutable<V, T> for Qualification<Q, P>
 where
-    P: Substitutable,
-    T: Substitutable,
+    Q: Substitutable<V, T>,
+    P: Substitutable<V, T>,
+    T: Ty<V>,
+    V: TyVar,
 {
-    fn apply_subst(&mut self, subst: &Subst) {
+    fn apply_subst(&mut self, subst: &Subst<V, T>) {
         self.qualifiers.apply_subst(subst);
         self.ty.apply_subst(subst);
     }
 
-    fn free_vars(&self) -> Vec<u32> {
+    fn free_vars(&self) -> Vec<&V> {
         self.qualifiers
             .free_vars()
             .into_iter()
@@ -111,12 +105,14 @@ where
     }
 }
 
-impl<P, T> HasTypes for Qualification<P, T>
+impl<Q, P, T, V> HasTypes<T, V> for Qualification<Q, P>
 where
-    P: HasTypes,
-    T: HasTypes,
+    Q: HasTypes<T, V>,
+    P: HasTypes<T, V>,
+    T: Ty<V>,
+    V: TyVar,
 {
-    fn get_types(&self) -> Vec<&Ty> {
+    fn get_types(&self) -> Vec<&T> {
         self.qualifiers
             .get_types()
             .into_iter()
@@ -124,7 +120,7 @@ where
             .collect()
     }
 
-    fn change_types(&mut self, f: &impl FnMut(&mut Ty) -> ()) {
+    fn change_types(&mut self, f: &impl FnMut(&mut T) -> ()) {
         self.qualifiers.change_types(f);
         self.ty.change_types(f);
     }
@@ -135,12 +131,26 @@ impl<P, T> Qualification<P, T> {
         Self { qualifiers, ty }
     }
 
+    pub fn unqualified(ty: T) -> Self
+    where
+        P: Default,
+    {
+        Self::new(P::default(), ty)
+    }
+
     pub fn qualifiers(&self) -> &P {
         &self.qualifiers
     }
 
+    pub fn qualifiers_mut(&mut self) -> &mut P {
+        &mut self.qualifiers
+    }
+
     pub fn ty(&self) -> &T {
         &self.ty
+    }
+    pub fn ty_mut(&mut self) -> &mut T {
+        &mut self.ty
     }
 
     pub fn unqualify(self) -> T {

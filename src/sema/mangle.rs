@@ -1,6 +1,10 @@
-use crate::{ast::Path, typing::ty::Ty, utils::map_join};
+use crate::{
+    ast::Path,
+    typing::ty::{Ty, TyScheme},
+    utils::map_join,
+};
 
-pub fn fn_name(base: &Path, ty: &Ty) -> Path {
+pub fn fn_name(base: &Path, ty: &TyScheme) -> Path {
     let (_, _, param_tys, ret_ty) = ty.try_borrow_fn().unwrap();
     base.without_func_type().append_func_type(format!(
         "<({}):{:#}>",

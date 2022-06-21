@@ -37,12 +37,12 @@ macro_rules! mk_binop_ty {
 #[macro_export]
 macro_rules! subst {
     {} => {
-        $crate::typing::Subst::new()
+        top::Subst::new()
     };
 
     { $($key:expr => $value:expr),+ $(,)? } => {
         {
-            let mut s = $crate::typing::Subst::new();
+            let mut s = top::Subst::new();
             $(
                 s.insert($key, $value);
             )+

@@ -2,7 +2,7 @@ use crate::{
     ast::{Expr, Name, Node, Path},
     span::{parsed::Parsed, Span},
     strutils::indent_lines,
-    typing::ty::Ty,
+    typing::ty::TyScheme,
     utils::join,
 };
 
@@ -26,7 +26,7 @@ pub struct Curly {
     pub lhs: Option<Parsed<Path>>,
     pub elements: Vec<Node<CurlyElement>>,
     pub curly_span: Span,
-    pub ty: Ty,
+    pub ty: TyScheme,
 }
 
 impl std::fmt::Display for Curly {

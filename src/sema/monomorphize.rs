@@ -7,13 +7,14 @@ use std::{
 };
 
 use lir::IterCalls;
+use top::{mgu, util::Join, Subst, Substitutable};
 
 use crate::{
     ast::{Node, Path},
     convert::ToSet,
     lir::{self, GetLocals, NamedInst},
     sema,
-    typing::{ty::Ty, ApplySubst, ApplySubstMut, Subst, TyCtx},
+    typing::ty::{Ty, TyScheme, TyVar},
 };
 
 #[derive(Debug)]
@@ -25,8 +26,8 @@ enum PolyValue<'a> {
 #[derive(Debug)]
 struct PolyRef<'a> {
     value: PolyValue<'a>,
-    poly_ty: Ty,   // the polymorphic type
-    callee_ty: Ty, // the type of the callee (which may be polymorphic as well)
+    poly_ty: TyScheme,   // the polymorphic type
+    callee_ty: TyScheme, // the type of the callee (which may be polymorphic as well)
 }
 
 #[derive(Debug)]
@@ -169,7 +170,7 @@ impl<'p> Monomorphizer<'p> {
     fn monomorphize_ref(
         &mut self,
         poly_ref: &mut PolyRef<'_>,
-        locals: &mut HashMap<usize, Ty>,
+        locals: &mut HashMap<usize, TyScheme>,
         funcs: &mut Vec<Node<lir::Func>>,
         globals: &mut Vec<lir::Global>,
     ) -> Option<(Path, Path)> {
@@ -193,9 +194,9 @@ impl<'p> Monomorphizer<'p> {
     fn monomorphize_call(
         &mut self,
         call: &mut lir::Call,
-        poly_ty: &Ty,
-        callee_ty: &mut Ty,
-        locals: &mut HashMap<usize, Ty>,
+        poly_ty: &TyScheme,
+        callee_ty: &mut TyScheme,
+        locals: &mut HashMap<usize, TyScheme>,
         funcs: &mut Vec<Node<lir::Func>>,
         globals: &mut Vec<lir::Global>,
     ) -> (Path, Path) {
@@ -205,7 +206,10 @@ impl<'p> Monomorphizer<'p> {
         // the type is contained in a monomorphized polymorphic function in which case
         // the function type has been monomorphized previously
 
-        let poly_fqn = call.get_name().without_func_type();
+        let poly_fqn = call.orig_name().without_func_type();
+        log::debug!("[monomorphize] poly_fqn: {}", poly_fqn);
+        log::debug!("[monomorphize] poly_ty: {}", poly_ty);
+        log::debug!("[monomorphize] callee_ty: {}", callee_ty);
 
         // check that the callee function type is monomorphic
         if callee_ty.is_polymorphic() {
@@ -214,7 +218,7 @@ impl<'p> Monomorphizer<'p> {
 
             // if it's polymorphic, can we turn it into a monomorphic call
             // by applying trait defaults, such as for Int or Float
-            apply_trait_defaults(callee_ty);
+            // apply_trait_defaults(callee_ty);
             if callee_ty.is_polymorphic() {
                 log::debug!("callee type is not monomorphic: {}", callee_ty);
                 log::debug!("   here's the polymorphic type: {}", poly_ty);
@@ -227,14 +231,17 @@ impl<'p> Monomorphizer<'p> {
 
         // get the polymorphic name
         let poly_base_name = poly_fqn.clone();
-        let poly_name = sema::fn_name(&poly_base_name, &poly_ty);
+        let poly_name = sema::fn_name(&poly_base_name, poly_ty);
 
         // get the monomorphized name using a substitution
-        let subst = poly_ty.mgu(&callee_ty).ok().unwrap_or_default();
+        let (_, subst) = mgu(poly_ty.mono(), callee_ty.mono())
+            .ok()
+            .unwrap_or_default();
         log::debug!("[monomorphize] subst = {:#?}", subst);
-        let mono_fqn = poly_fqn.clone().apply_subst(&subst);
+        let mut mono_fqn = poly_fqn.clone();
+        mono_fqn.apply_subst(&subst);
         let mono_base_name = mono_fqn.clone();
-        let mono_name = sema::fn_name(&mono_base_name, &callee_ty);
+        let mono_name = sema::fn_name(&mono_base_name, callee_ty);
         let mono_ty = callee_ty.clone();
 
         log::debug!("[monomorphize] poly_name = {}", poly_name);
@@ -255,16 +262,19 @@ impl<'p> Monomorphizer<'p> {
             (poly_base_name, mono_name)
         } else {
             // get the polymorphic function from the index and add a mapping from poly to mono
-            let mut mono_fn = self
-                .poly_fn_map
-                .get(&poly_fqn)
-                .cloned()
-                .expect(&format!("polymorphic function `{}` is undefined", poly_fqn));
+            let mut mono_fn = self.poly_fn_map.get(&poly_fqn).cloned().expect(&format!(
+                "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
+                poly_fqn,
+                self.poly_fn_map
+                    .keys()
+                    .map(|a| format!("  {}", a))
+                    .join("\n")
+            ));
             mono_fn.name = mono_name.clone();
             mono_fn.ty = mono_ty.clone();
 
             // apply the substitution to the function
-            mono_fn = mono_fn.apply_subst(&subst);
+            mono_fn.apply_subst(&subst);
             log::debug!(
                 "symbols for `{}` after subst: {:?}",
                 mono_name,
@@ -282,10 +292,10 @@ impl<'p> Monomorphizer<'p> {
 
         for (idx, arg) in call.args.iter().enumerate() {
             if let &lir::Variable::Local(loc) = arg {
-                if let Some(ty) = mono_ty.get_func_param(idx).cloned() {
+                if let Some(ty) = mono_ty.mono().get_func_param(idx).cloned() {
                     log::debug!("adding local with type {}: {}", loc, ty);
                     // FIXME: what if the loc is already in the map with another type?
-                    locals.insert(loc, ty);
+                    locals.insert(loc, ty.into());
                 }
             }
         }
@@ -293,7 +303,7 @@ impl<'p> Monomorphizer<'p> {
         // add it to the map
         self.mono_poly_fn_idx
             .insert(poly_name.clone(), mono_name.clone());
-        self.add_mono_fn_mapping(&poly_name, &mono_name, mono_ty);
+        self.add_mono_fn_mapping(&poly_name, &mono_name, mono_ty.into_mono());
         (poly_name, mono_name)
     }
 
@@ -303,69 +313,39 @@ impl<'p> Monomorphizer<'p> {
         ty: &mut Ty,
         globals: &mut Vec<lir::Global>,
     ) {
-        let subst = apply_trait_defaults(ty);
-        if ty.is_polymorphic() {
-            panic!(
-                "cannot monomorphize value where the type is polymorphic: {}",
-                ty
-            );
-        }
+        todo!()
+        // let subst = apply_trait_defaults(ty);
+        // if ty.is_polymorphic() {
+        //     panic!(
+        //         "cannot monomorphize value where the type is polymorphic: {}",
+        //         ty
+        //     );
+        // }
 
-        let mut global = self
-            .poly_global_map
-            .get(&global)
-            .cloned()
-            .expect("global is not defined");
-        if let Some(subst) = subst {
-            global.apply_subst_mut(&subst);
-        }
+        // let mut global = self
+        //     .poly_global_map
+        //     .get(&global)
+        //     .cloned()
+        //     .expect("global is not defined");
+        // if let Some(subst) = subst {
+        //     global.apply_subst_mut(&subst);
+        // }
 
-        globals.push(global);
+        // globals.push(global);
     }
 
     fn monomorphize_value(&mut self, value: &mut lir::Value, poly_ty: &mut Ty) {
-        let subst = apply_trait_defaults(poly_ty);
-        if poly_ty.is_polymorphic() {
-            panic!(
-                "cannot monomorphize value where the type is polymorphic: {}",
-                poly_ty
-            );
-        }
+        todo!()
+        // let subst = apply_trait_defaults(poly_ty);
+        // if poly_ty.is_polymorphic() {
+        //     panic!(
+        //         "cannot monomorphize value where the type is polymorphic: {}",
+        //         poly_ty
+        //     );
+        // }
 
-        if let Some(subst) = subst {
-            value.apply_subst_mut(&subst);
-        }
-
-        // match value {
-        //     lir::Value::Empty => todo!("monomorphize_value: case(lir::Value::Empty)"),
-        //     lir::Value::VarRef(_) => todo!("monomorphize_value: case(lir::Value::VarRef)"),
-        //     lir::Value::Atom(atom) => {
-        //         match atom {
-        //             lir::Atom::Variable(_) => todo!(),
-        //             lir::Atom::FuncRef(_) => todo!(),
-        //             lir::Atom::Size(_) => todo!(),
-        //             lir::Atom::BoolConst(_) => todo!(),
-        //             lir::Atom::CharConst(_) => todo!(),
-        //             lir::Atom::UintConst(_, _) => todo!(),
-        //             lir::Atom::IntConst(_, _) => todo!(),
-        //             lir::Atom::FloatConst(_, _) => todo!(),
-        //             lir::Atom::RawString(_) => todo!(),
-        //             lir::Atom::NilConst => todo!(),
-        //         }
-        //     },
-        //     lir::Value::Malloc(_) => todo!("monomorphize_value: case(lir::Value::Malloc)"),
-        //     lir::Value::Call(_) => todo!("monomorphize_value: case(lir::Value::Call)"),
-        //     lir::Value::CExternCall(_) => {
-        //         todo!("monomorphize_value: case(lir::Value::CExternCall)")
-        //     }
-        //     lir::Value::Select(_) => todo!("monomorphize_value: case(lir::Value::Select)"),
-        //     lir::Value::Phi(_) => todo!("monomorphize_value: case(lir::Value::Phi)"),
-        //     lir::Value::Load(_) => todo!("monomorphize_value: case(lir::Value::Load)"),
-        //     lir::Value::Lea(_) => todo!("monomorphize_value: case(lir::Value::Lea)"),
-        //     lir::Value::GetField(_) => todo!("monomorphize_value: case(lir::Value::GetField)"),
-        //     lir::Value::BasicOp(_) => todo!("monomorphize_value: case(lir::Value::BasicOp)"),
-        //     lir::Value::Cast(_) => todo!("monomorphize_value: case(lir::Value::Cast)"),
-        //     lir::Value::IntConvert(_) => todo!("monomorphize_value: case(lir::Value::IntConvert)"),
+        // if let Some(subst) = subst {
+        //     value.apply_subst_mut(&subst);
         // }
     }
 
@@ -421,26 +401,26 @@ impl<'p> Monomorphizer<'p> {
     }
 }
 
-fn apply_trait_defaults(ty: &mut Ty) -> Option<Subst> {
-    ty.qualifiers()
-        .map(|preds| {
-            preds
-                .iter()
-                .flat_map(|p| {
-                    p.type_params().and_then(|ty_params| {
-                        if p.is_int_trait() {
-                            Some((variant!(&ty_params[0], if Ty::Var(a)).clone(), Ty::int()))
-                        } else if p.is_float_trait() {
-                            Some((variant!(&ty_params[0], if Ty::Var(a)).clone(), Ty::float()))
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect::<Subst>()
-        })
-        .map(|subst| {
-            ty.apply_subst_mut(&subst);
-            subst
-        })
-}
+// fn apply_trait_defaults(ty: &mut TyScheme) -> Option<Subst<TyVar, Ty>> {
+//     if ty.qualifiers().is_empty() {
+//         return None;
+//     }
+
+//     let subst = ty
+//         .qualifiers()
+//         .iter()
+//         .flat_map(|p| {
+//             p.type_params().and_then(|ty_params| {
+//                 if p.is_int_trait() {
+//                     Some((variant!(&ty_params[0], if Ty::Var(a)).clone(), Ty::int()))
+//                 } else if p.is_float_trait() {
+//                     Some((variant!(&ty_params[0], if Ty::Var(a)).clone(), Ty::float()))
+//                 } else {
+//                     None
+//                 }
+//             })
+//         })
+//         .collect::<Subst<TyVar, Ty>>();
+//     ty.apply_subst(&subst);
+//     Some(subst)
+// }

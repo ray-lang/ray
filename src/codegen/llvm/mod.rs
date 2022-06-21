@@ -31,7 +31,10 @@ use crate::{
     lir,
     pathlib::FilePath,
     span::SourceMap,
-    typing::{predicate::TyPredicate, ty::Ty, TyCtx},
+    typing::{
+        ty::{Ty, TyScheme},
+        TyCtx,
+    },
 };
 
 use super::Codegen;
@@ -339,7 +342,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 .to_llvm_type(pointee_ty, tcx)
                 .ptr_type(AddressSpace::Generic)
                 .into(),
-            Ty::Projection(fqn, ..) => match fqn.as_str() {
+            Ty::Projection(ty, ..) => self.to_llvm_type(ty, tcx),
+            Ty::Const(fqn) => match fqn.as_str() {
                 "bool" => self.lcx.bool_type().into(),
                 "i8" | "u8" => self.lcx.i8_type().into(),
                 "i16" | "u16" => self.lcx.i16_type().into(),
@@ -352,19 +356,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                     .ptr_type(AddressSpace::Generic)
                     .into(),
             },
-            Ty::Qualified(_, _) => todo!("to_llvm_ty: {}", ty),
-            Ty::All(_, base_ty) => {
-                // we have to be very careful here; since this is a polymorphic type
-                // we need to either transform it into a default type (such as int or float)
-                // or it needs to be boxed; this hasn't been fully decided yet so we still panic
-                if base_ty.has_qualifier(&TyPredicate::core_trait("Int")) {
-                    self.ptr_type().into()
-                } else if base_ty.has_qualifier(&TyPredicate::core_trait("Float")) {
-                    self.lcx.f64_type().into()
-                } else {
-                    panic!("cannot generate code for a polymorphic type: {}", ty)
-                }
-            }
         }
     }
 
@@ -432,7 +423,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 struct_ty
                     .fields
                     .iter()
-                    .map(|(_, ty)| self.to_llvm_type(ty, tcx))
+                    .map(|(_, ty)| self.to_llvm_type(ty.mono(), tcx))
                     .collect::<Vec<_>>()
                     .as_slice(),
                 false,
@@ -473,7 +464,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             }
             // define
             log::debug!("define extern: {}", ext.name);
-            if let Ok((_, _, param_tys, ret_ty)) = ext.ty.try_borrow_fn() {
+            if let Some((_, _, param_tys, ret_ty)) = ext.ty.try_borrow_fn() {
                 let ret_ty = ctx.to_llvm_type(ret_ty, tcx);
                 let fn_ty = ret_ty.fn_type(
                     param_tys
@@ -517,7 +508,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
         }
 
         for global in self.globals.iter() {
-            let global_type = ctx.to_llvm_type(&global.ty, tcx);
+            let global_type = ctx.to_llvm_type(global.ty.mono(), tcx);
             let global_val =
                 ctx.module
                     .add_global(global_type, Some(AddressSpace::Generic), &global.name);
@@ -579,7 +570,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             let local_tys = f
                 .locals
                 .iter()
-                .map(|loc| loc.ty.clone())
+                .map(|loc| loc.ty.mono().clone())
                 .collect::<Vec<_>>();
             ctx.local_tys = local_tys;
             ctx.curr_fn = Some(val);
@@ -609,7 +600,11 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Func {
         ctx.blocks.clear();
 
         // create the local types
-        ctx.local_tys = self.locals.iter().map(|l| l.ty.clone()).collect();
+        ctx.local_tys = self
+            .locals
+            .iter()
+            .map(|l| l.ty.clone().into_mono())
+            .collect();
 
         // create the function value
         let fn_val = *ctx.fn_index.get(&self.name).unwrap();
@@ -633,7 +628,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Func {
                 continue;
             }
 
-            let alloca = ctx.alloca(&loc.ty, tcx);
+            let alloca = ctx.alloca(loc.ty.mono(), tcx);
             ctx.locals.insert(loc.idx, alloca);
             log::debug!("adding local ${}", loc.idx);
         }
@@ -770,7 +765,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Malloc {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
-        let mut ty = ctx.to_llvm_type(&self.ty, tcx);
+        let mut ty = ctx.to_llvm_type(self.ty.mono(), tcx);
         if let BasicTypeEnum::PointerType(ptr_ty) = ty {
             ty = to_basic_type(ptr_ty.get_element_type())
         }

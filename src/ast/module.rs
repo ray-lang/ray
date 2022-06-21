@@ -1,8 +1,15 @@
+use std::fmt::Debug;
+
+use top::{Subst, Substitutable};
+
 use crate::{
     ast::{Node, Path},
     pathlib::FilePath,
     strutils,
-    typing::{state::TyEnv, ApplySubst, Subst},
+    typing::{
+        state::TyEnv,
+        ty::{Ty, TyVar},
+    },
 };
 
 use super::{Decl, Expr};
@@ -52,26 +59,32 @@ impl std::fmt::Display for Module<(), Decl> {
     }
 }
 
-impl<A, B> ApplySubst for Module<A, B>
-where
-    A: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
-    B: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
-{
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Module {
-            path: self.path,
-            stmts: self.stmts.apply_subst(subst),
-            decls: self.decls.apply_subst(subst),
-            imports: self.imports,
-            submodules: self.submodules,
-            defs: self.defs,
-            doc_comment: self.doc_comment,
-            root_filepath: self.root_filepath,
-            filepaths: self.filepaths,
-            is_lib: self.is_lib,
-        }
-    }
-}
+// impl Substitutable<TyVar, Ty> for Module<(), Decl> {
+//     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+//         self.decls.apply_subst(subst);
+//     }
+// }
+
+// impl<A, B> ApplySubst for Module<A, B>
+// where
+//     A: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
+//     B: std::fmt::Debug + Clone + PartialEq + Eq + ApplySubst,
+// {
+//     fn apply_subst(self, subst: &Subst) -> Self {
+//         Module {
+//             path: self.path,
+//             stmts: self.stmts.apply_subst(subst),
+//             decls: self.decls.apply_subst(subst),
+//             imports: self.imports,
+//             submodules: self.submodules,
+//             defs: self.defs,
+//             doc_comment: self.doc_comment,
+//             root_filepath: self.root_filepath,
+//             filepaths: self.filepaths,
+//             is_lib: self.is_lib,
+//         }
+//     }
+// }
 
 impl<A, B> Module<A, B>
 where

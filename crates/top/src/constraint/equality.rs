@@ -1,33 +1,47 @@
+use std::{fmt::Display, marker::PhantomData};
+
 use crate::{
     interface::{subst::HasSubst, type_inference::HasTypeInference},
     types::{Subst, Substitutable, Ty},
+    TyVar,
 };
 
 use super::{Solvable, TypeConstraintInfo};
 
-#[derive(Debug)]
-pub struct EqualityConstraint<T> {
-    pub lhs: Ty,
-    pub rhs: Ty,
-    pub info: T,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EqualityConstraint<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    pub lhs: T,
+    pub rhs: T,
+    pub info: I,
+    _phantom: PhantomData<V>,
 }
 
-impl<T> std::fmt::Display for EqualityConstraint<T>
+impl<I, T, V> Display for EqualityConstraint<I, T, V>
 where
-    T: std::fmt::Display,
+    I: Display,
+    T: Display + Ty<V>,
+    V: Display + TyVar,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{} == {}", self.lhs, self.rhs)
     }
 }
 
-impl<Info> Substitutable for EqualityConstraint<Info> {
-    fn apply_subst(&mut self, subst: &Subst) {
+impl<I, T, V> Substitutable<V, T> for EqualityConstraint<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    fn apply_subst(&mut self, subst: &Subst<V, T>) {
         self.lhs.apply_subst(subst);
         self.rhs.apply_subst(subst);
     }
 
-    fn free_vars(&self) -> Vec<u32> {
+    fn free_vars(&self) -> Vec<&V> {
         self.lhs
             .free_vars()
             .into_iter()
@@ -36,10 +50,12 @@ impl<Info> Substitutable for EqualityConstraint<Info> {
     }
 }
 
-impl<State, T> Solvable<State> for EqualityConstraint<T>
+impl<State, I, T, V> Solvable<State, T, V> for EqualityConstraint<I, T, V>
 where
-    State: HasTypeInference<T> + HasSubst<T>,
-    T: std::fmt::Display + TypeConstraintInfo<T>,
+    State: HasTypeInference<I, T, V> + HasSubst<I, T, V>,
+    I: Display + TypeConstraintInfo<I, T, V>,
+    T: Display + Ty<V>,
+    V: Display + TyVar,
 {
     fn solve(&mut self, state: &mut State) {
         self.info.equality_type_pair(&self.lhs, &self.rhs);
@@ -52,12 +68,21 @@ where
         let mut rhs = self.rhs.clone();
         rhs.apply_subst_from(state);
         let syn = state.type_synonyms();
-        syn.expand_type(&lhs) == syn.expand_type(&rhs)
+        syn.expand_type(lhs) == syn.expand_type(rhs)
     }
 }
 
-impl<Info> EqualityConstraint<Info> {
-    pub fn new(lhs: Ty, rhs: Ty, info: Info) -> Self {
-        EqualityConstraint { lhs, rhs, info }
+impl<I, T, V> EqualityConstraint<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    pub fn new(lhs: T, rhs: T, info: I) -> Self {
+        EqualityConstraint {
+            lhs,
+            rhs,
+            info,
+            _phantom: PhantomData,
+        }
     }
 }

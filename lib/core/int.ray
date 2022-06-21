@@ -1,9 +1,18 @@
-trait Int['a] {}
+trait Int['a] {
+    default (int)
+}
 
 impl Int[int] {}
 impl Int[i8] {}
 impl Int[i16] {}
 impl Int[i32] {}
+impl Int[i64] {}
+
+impl Int[uint] {}
+impl Int[u8] {}
+impl Int[u16] {}
+impl Int[u32] {}
+impl Int[u64] {}
 
 impl ToStr[int] {
     fn to_str(self: int) -> string {

@@ -9,7 +9,7 @@ use crate::{
     ast::{Assign, Expr, Func, FuncSig, Name, Node, Path, TypeParams},
     span::parsed::Parsed,
     strutils,
-    typing::ty::Ty,
+    typing::ty::{SigmaTy, Ty, TyScheme},
     utils::join,
 };
 
@@ -131,7 +131,7 @@ impl Decl {
         }
     }
 
-    pub fn get_ty(&self) -> Option<&Ty> {
+    pub fn get_ty(&self) -> Option<&TyScheme> {
         match self {
             Decl::Extern(_)
             | Decl::Impl(_)
@@ -146,7 +146,7 @@ impl Decl {
         }
     }
 
-    pub fn get_defs(&self) -> HashMap<&Path, Option<&Ty>> {
+    pub fn get_defs(&self) -> HashMap<&Path, Option<&TyScheme>> {
         let mut defs = HashMap::new();
         match self {
             Decl::Extern(ex) => defs.extend(ex.decl().get_defs()),
@@ -161,7 +161,7 @@ impl Decl {
             }
             Decl::Struct(_) => todo!(),
             Decl::Trait(tr) => {
-                for func in tr.funcs.iter() {
+                for func in tr.fields.iter() {
                     let func = variant!(func.deref(), if Decl::FnSig(func));
                     defs.insert(&func.path, func.ty.as_ref());
                 }
@@ -173,7 +173,7 @@ impl Decl {
                 }
 
                 if let Some(funcs) = &im.funcs {
-                    defs.extend(funcs.iter().map(|d| d.get_defs()).concat());
+                    defs.extend(funcs.iter().map(|f| (&f.sig.path, f.sig.ty.as_ref())));
                 }
 
                 if let Some(consts) = &im.consts {
@@ -199,8 +199,20 @@ pub struct Struct {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trait {
     pub ty: Parsed<Ty>,
-    pub funcs: Vec<Node<Decl>>,
+    pub fields: Vec<Node<Decl>>,
     pub super_trait: Option<Parsed<Ty>>,
+    pub directives: Vec<Parsed<TraitDirective>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraitDirectiveKind {
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitDirective {
+    pub kind: TraitDirectiveKind,
+    pub args: Vec<Parsed<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,7 +220,7 @@ pub struct Impl {
     pub ty: Parsed<Ty>,
     pub qualifiers: Vec<Parsed<Ty>>,
     pub externs: Option<Vec<Node<Decl>>>,
-    pub funcs: Option<Vec<Node<Decl>>>,
+    pub funcs: Option<Vec<Node<Func>>>,
     pub consts: Option<Vec<Node<Assign>>>,
     pub is_object: bool,
 }
@@ -238,8 +250,8 @@ impl std::fmt::Display for Decl {
                 }
             }
             Decl::Trait(tr) => {
-                if tr.funcs.len() != 0 {
-                    let methods = format!("{}\n", strutils::indent_lines_iter(&tr.funcs, 2));
+                if tr.fields.len() != 0 {
+                    let methods = format!("{}\n", strutils::indent_lines_iter(&tr.fields, 2));
                     write!(f, "(trait {}\n{})", tr.ty, methods)
                 } else {
                     write!(f, "(trait {}\n)", tr.ty)

@@ -1,10 +1,10 @@
-fn puts(s: string) {
+fn puts(s: string) -> () {
     nwritten = malloc(4) as *uint
     io = IOVec { base: s.raw_ptr, len: s.len }
     _ = fd_write(1, io, 1, nwritten)
 }
 
-fn print(v) {
+fn print(v: 'a) -> () where ToStr['a] {
     puts(v.to_str())
     puts("\n")
 }

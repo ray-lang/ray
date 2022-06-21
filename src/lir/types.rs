@@ -3,12 +3,13 @@ use petgraph::{
     visit::{depth_first_search, Dfs, DfsEvent, EdgeRef},
 };
 use serde::{Deserialize, Serialize};
+use top::{Subst, Substitutable};
 
 use crate::{
     ast::{self, asm::AsmOp, Modifier, Node, Path},
     convert::ToSet,
     strutils::indent_lines,
-    typing::{ty::Ty, ApplySubst, Subst},
+    typing::ty::{SigmaTy, Ty, TyScheme, TyVar},
     utils::{join, map_join},
 };
 
@@ -186,9 +187,13 @@ impl LCA<usize> for ControlFlowGraph {
 
 pub type SymbolSet = HashSet<Path>;
 
-impl ApplySubst for SymbolSet {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        self.into_iter().map(|p| p.apply_subst(subst)).collect()
+impl Substitutable<TyVar, Ty> for SymbolSet {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        let paths = self.drain().collect::<Vec<_>>();
+        for mut path in paths {
+            path.apply_subst(subst);
+            self.insert(path);
+        }
     }
 }
 
@@ -249,9 +254,9 @@ impl<'a> GetLocals<'a> for Variable {
     }
 }
 
-impl ApplySubst for Variable {
-    fn apply_subst(self, _: &Subst) -> Self {
-        self
+impl Substitutable<TyVar, Ty> for Variable {
+    fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
     }
 }
 
@@ -322,12 +327,12 @@ impl<'a> GetLocals<'a> for Atom {
     }
 }
 
-impl ApplySubst for Atom {
-    fn apply_subst(self, subst: &Subst) -> Self {
+impl Substitutable<TyVar, Ty> for Atom {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         match self {
-            Atom::Variable(v) => Atom::Variable(v.apply_subst(subst)),
-            Atom::FuncRef(r) => Atom::FuncRef(r.apply_subst(subst)),
-            t @ _ => t,
+            Atom::Variable(v) => v.apply_subst(subst),
+            Atom::FuncRef(r) => r.apply_subst(subst),
+            _ => {}
         }
     }
 }
@@ -344,7 +349,7 @@ impl Atom {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Malloc {
-    pub ty: Ty,
+    pub ty: TyScheme,
     pub count: Atom,
 }
 LirImplInto!(Value for Malloc);
@@ -367,14 +372,14 @@ impl<'a> GetLocalsMut<'a> for Malloc {
     }
 }
 
-impl ApplySubst for Malloc {
-    fn apply_subst(self, _: &Subst) -> Self {
-        self
+impl Substitutable<TyVar, Ty> for Malloc {
+    fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
     }
 }
 
 impl Malloc {
-    pub fn new(ty: Ty, count: Atom) -> Value {
+    pub fn new(ty: TyScheme, count: Atom) -> Value {
         Malloc { ty, count }.into()
     }
 }
@@ -474,23 +479,22 @@ impl<'a> GetLocals<'a> for Value {
     }
 }
 
-impl ApplySubst for Value {
-    fn apply_subst(self, subst: &Subst) -> Value {
+impl Substitutable<TyVar, Ty> for Value {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         match self {
-            Value::Empty => Value::Empty,
-            Value::VarRef(n) => Value::VarRef(n),
-            Value::Atom(a) => Value::Atom(a.apply_subst(subst)),
-            Value::Malloc(m) => Value::Malloc(m.apply_subst(subst)),
-            Value::Call(c) => Value::Call(c.apply_subst(subst)),
+            Value::Empty | Value::VarRef(_) => {}
+            Value::Atom(a) => a.apply_subst(subst),
+            Value::Malloc(m) => m.apply_subst(subst),
+            Value::Call(c) => c.apply_subst(subst),
             Value::CExternCall(_) => todo!(),
-            Value::Select(s) => Value::Select(s.apply_subst(subst)),
-            Value::Phi(phi) => Value::Phi(phi.apply_subst(subst)),
-            Value::Load(l) => Value::Load(l.apply_subst(subst)),
-            Value::Lea(l) => Value::Lea(l.apply_subst(subst)),
-            Value::GetField(g) => Value::GetField(g.apply_subst(subst)),
-            Value::BasicOp(b) => Value::BasicOp(b.apply_subst(subst)),
-            Value::Cast(c) => Value::Cast(c.apply_subst(subst)),
-            Value::IntConvert(i) => Value::IntConvert(i.apply_subst(subst)),
+            Value::Select(s) => s.apply_subst(subst),
+            Value::Phi(phi) => phi.apply_subst(subst),
+            Value::Load(l) => l.apply_subst(subst),
+            Value::Lea(l) => l.apply_subst(subst),
+            Value::GetField(g) => g.apply_subst(subst),
+            Value::BasicOp(b) => b.apply_subst(subst),
+            Value::Cast(c) => c.apply_subst(subst),
+            Value::IntConvert(i) => i.apply_subst(subst),
         }
     }
 }
@@ -652,23 +656,26 @@ impl<'a> GetLocals<'a> for Inst {
     }
 }
 
-impl ApplySubst for Inst {
-    fn apply_subst(self, subst: &Subst) -> Self {
+impl Substitutable<TyVar, Ty> for Inst {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         match self {
-            Inst::Call(c) => Inst::Call(c.apply_subst(subst)),
+            Inst::Call(c) => c.apply_subst(subst),
             Inst::CExternCall(_) => todo!(),
-            Inst::Free(i) => Inst::Free(i),
-            Inst::SetGlobal(i, v) => Inst::SetGlobal(i, v.apply_subst(subst)),
-            Inst::SetLocal(i, v) => Inst::SetLocal(i, v.apply_subst(subst)),
-            Inst::If(b) => Inst::If(b.apply_subst(subst)),
-            Inst::SetField(s) => Inst::SetField(s.apply_subst(subst)),
-            Inst::Store(s) => Inst::Store(s.apply_subst(subst)),
-            Inst::MemCopy(d, s, z) => Inst::MemCopy(d, s, z),
-            Inst::IncRef(v, i) => Inst::IncRef(v.apply_subst(subst), i),
-            Inst::DecRef(v) => Inst::DecRef(v.apply_subst(subst)),
-            Inst::Return(v) => Inst::Return(v.apply_subst(subst)),
-            Inst::Break(b) => Inst::Break(b.apply_subst(subst)),
-            Inst::Goto(idx) => Inst::Goto(idx),
+            Inst::SetGlobal(_, v) => v.apply_subst(subst),
+            Inst::SetLocal(_, v) => v.apply_subst(subst),
+            Inst::If(b) => b.apply_subst(subst),
+            Inst::SetField(s) => s.apply_subst(subst),
+            Inst::Store(s) => s.apply_subst(subst),
+            Inst::MemCopy(d, s, z) => {
+                d.apply_subst(subst);
+                s.apply_subst(subst);
+                z.apply_subst(subst);
+            }
+            Inst::IncRef(v, i) => v.apply_subst(subst),
+            Inst::DecRef(v) => v.apply_subst(subst),
+            Inst::Return(v) => v.apply_subst(subst),
+            Inst::Break(b) => b.apply_subst(subst),
+            Inst::Free(_) | Inst::Goto(_) => {}
         }
     }
 }
@@ -880,7 +887,7 @@ impl Size {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Extern {
     pub name: Path,
-    pub ty: Ty,
+    pub ty: TyScheme,
     pub is_mutable: bool,
     pub modifiers: Vec<Modifier>,
     pub src: Option<String>,
@@ -937,6 +944,7 @@ impl Program {
     pub fn extend(&mut self, other: Program) {
         for (p, i) in other.poly_fn_map {
             // offset the function indices
+            log::debug!("adding to poly_fn_map: {}", p);
             self.poly_fn_map.insert(p, self.funcs.len() + i);
         }
 
@@ -982,23 +990,22 @@ impl Data {
 pub struct Global {
     pub idx: usize,
     pub name: String,
-    pub ty: Ty,
+    pub ty: TyScheme,
     pub init_value: Value,
     pub mutable: bool,
 }
 
-impl ApplySubst for Global {
-    fn apply_subst(mut self, subst: &Subst) -> Self {
-        self.ty = self.ty.apply_subst(subst);
-        self.init_value = self.init_value.apply_subst(subst);
-        self
+impl Substitutable<TyVar, Ty> for Global {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst(subst);
+        self.init_value.apply_subst(subst);
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Local {
     pub idx: usize,
-    pub ty: Ty,
+    pub ty: TyScheme,
 }
 
 impl std::fmt::Display for Local {
@@ -1007,10 +1014,9 @@ impl std::fmt::Display for Local {
     }
 }
 
-impl ApplySubst for Local {
-    fn apply_subst(mut self, subst: &Subst) -> Self {
-        self.ty = self.ty.apply_subst(subst);
-        self
+impl Substitutable<TyVar, Ty> for Local {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst(subst);
     }
 }
 
@@ -1027,7 +1033,7 @@ impl<'a> GetLocals<'a> for Local {
 }
 
 impl Local {
-    pub fn new(idx: usize, ty: Ty) -> Local {
+    pub fn new(idx: usize, ty: TyScheme) -> Local {
         Local { idx, ty }
     }
 }
@@ -1057,13 +1063,9 @@ impl<'a> GetLocals<'a> for Param {
     }
 }
 
-impl ApplySubst for Param {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Param {
-            name: self.name,
-            idx: self.idx,
-            ty: self.ty.apply_subst(subst),
-        }
+impl Substitutable<TyVar, Ty> for Param {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst(subst);
     }
 }
 
@@ -1142,14 +1144,9 @@ impl<'a> GetLocals<'a> for Block {
     }
 }
 
-impl ApplySubst for Block {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Block {
-            label: self.label,
-            instructions: self.instructions.apply_subst(subst),
-            defined_vars: self.defined_vars,
-            markers: self.markers,
-        }
+impl Substitutable<TyVar, Ty> for Block {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.instructions.apply_subst(subst)
     }
 }
 
@@ -1295,7 +1292,7 @@ pub struct Func {
     pub name: Path,
     pub params: Vec<Param>,
     pub locals: Vec<Local>,
-    pub ty: Ty,
+    pub ty: TyScheme,
     pub blocks: Vec<Block>,
     pub symbols: SymbolSet,
     pub modifiers: Vec<Modifier>,
@@ -1329,7 +1326,7 @@ impl std::fmt::Display for Func {
             self.name,
             map_join(&self.params, ", ", |p| format!("${}: {}", p.idx, p.ty)),
             ret_ty,
-            if let Some(preds) = preds {
+            if !preds.is_empty() {
                 format!(" where {}", join(preds, " + "))
             } else {
                 str!("")
@@ -1362,25 +1359,20 @@ impl<'a> GetLocals<'a> for Func {
     }
 }
 
-impl ApplySubst for Func {
-    fn apply_subst(self, subst: &Subst) -> Func {
-        Func {
-            name: self.name,
-            params: self.params.apply_subst(subst),
-            locals: self.locals.apply_subst(subst),
-            ty: self.ty.apply_subst(subst),
-            blocks: self.blocks.apply_subst(subst),
-            symbols: self.symbols.apply_subst(subst),
-            modifiers: self.modifiers,
-            cfg: self.cfg,
-        }
+impl Substitutable<TyVar, Ty> for Func {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst(subst);
+        self.params.apply_subst(subst);
+        self.locals.apply_subst(subst);
+        self.blocks.apply_subst(subst);
+        self.symbols.apply_subst(subst);
     }
 }
 
 impl Func {
     pub fn new(
         name: Path,
-        ty: Ty,
+        ty: TyScheme,
         modifiers: Vec<Modifier>,
         symbols: SymbolSet,
         cfg: ControlFlowGraph,
@@ -1397,7 +1389,7 @@ impl Func {
         }
     }
 
-    pub fn ty_of_local(&self, loc: usize) -> Option<Ty> {
+    pub fn ty_of_local(&self, loc: usize) -> Option<TyScheme> {
         self.locals.iter().find_map(|l| {
             if l.idx == loc {
                 Some(l.ty.clone())
@@ -1407,7 +1399,7 @@ impl Func {
         })
     }
 
-    pub fn set_ty_of_local(&mut self, loc: usize, ty: Ty) {
+    pub fn set_ty_of_local(&mut self, loc: usize, ty: TyScheme) {
         if let Some(l) = self.locals.iter_mut().find(|l| l.idx == loc) {
             l.ty = ty;
         }
@@ -1588,23 +1580,20 @@ impl std::fmt::Display for FuncRef {
     }
 }
 
-impl ApplySubst for FuncRef {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        FuncRef {
-            name: self.name,
-            ty: self.ty.apply_subst(subst),
-        }
+impl Substitutable<TyVar, Ty> for FuncRef {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst(subst);
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Call {
     pub fn_name: Path,
-    pub original_fn: Path,
+    pub original_fn_name: Path,
     pub fn_ref: Option<usize>,
     pub args: Vec<Variable>,
-    pub ty: Ty,
-    pub poly_ty: Option<Ty>,
+    pub ty: TyScheme,
+    pub poly_ty: Option<TyScheme>,
 }
 
 LirImplInto!(Inst for Call);
@@ -1628,16 +1617,11 @@ impl<'a> GetLocals<'a> for Call {
     }
 }
 
-impl ApplySubst for Call {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Call {
-            fn_name: self.fn_name.apply_subst(subst),
-            original_fn: self.original_fn,
-            fn_ref: self.fn_ref,
-            args: self.args.apply_subst(subst),
-            ty: self.ty.apply_subst(subst),
-            poly_ty: self.poly_ty,
-        }
+impl Substitutable<TyVar, Ty> for Call {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.fn_name.apply_subst(subst);
+        self.args.apply_subst(subst);
+        self.ty.apply_subst(subst);
     }
 }
 
@@ -1652,9 +1636,14 @@ impl NamedInst for Call {
 }
 
 impl Call {
-    pub fn new(fn_name: Path, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Call {
+    pub fn new(
+        fn_name: Path,
+        args: Vec<Variable>,
+        ty: TyScheme,
+        poly_ty: Option<TyScheme>,
+    ) -> Call {
         Call {
-            original_fn: fn_name.clone(),
+            original_fn_name: fn_name.clone(),
             fn_ref: None,
             ty,
             poly_ty,
@@ -1663,15 +1652,24 @@ impl Call {
         }
     }
 
-    pub fn new_ref(fn_ref: usize, args: Vec<Variable>, ty: Ty, poly_ty: Option<Ty>) -> Call {
+    pub fn new_ref(
+        fn_ref: usize,
+        args: Vec<Variable>,
+        ty: TyScheme,
+        poly_ty: Option<TyScheme>,
+    ) -> Call {
         Call {
-            original_fn: Path::new(),
+            original_fn_name: Path::new(),
             fn_name: Path::new(),
             fn_ref: Some(fn_ref),
             ty,
             poly_ty,
             args,
         }
+    }
+
+    pub fn orig_name(&self) -> &Path {
+        &self.original_fn_name
     }
 }
 
@@ -1733,9 +1731,9 @@ impl<'a> GetLocals<'a> for If {
     }
 }
 
-impl ApplySubst for If {
-    fn apply_subst(self, _: &Subst) -> Self {
-        self
+impl Substitutable<TyVar, Ty> for If {
+    fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
     }
 }
 
@@ -1793,13 +1791,9 @@ impl<'a> GetLocals<'a> for Break {
     }
 }
 
-impl ApplySubst for Break {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Break {
-            op: self.op,
-            operand: self.operand.apply_subst(subst),
-            label: self.label,
-        }
+impl Substitutable<TyVar, Ty> for Break {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.operand.apply_subst(subst);
     }
 }
 
@@ -1848,9 +1842,9 @@ impl<'a> GetLocals<'a> for Phi {
     }
 }
 
-impl ApplySubst for Phi {
-    fn apply_subst(self, _: &Subst) -> Self {
-        self
+impl Substitutable<TyVar, Ty> for Phi {
+    fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
     }
 }
 
@@ -1903,13 +1897,11 @@ impl<'a> GetLocals<'a> for Select {
     }
 }
 
-impl ApplySubst for Select {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Select {
-            cond: self.cond.apply_subst(subst),
-            then: self.then.apply_subst(subst),
-            els: self.els.apply_subst(subst),
-        }
+impl Substitutable<TyVar, Ty> for Select {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.cond.apply_subst(subst);
+        self.then.apply_subst(subst);
+        self.els.apply_subst(subst);
     }
 }
 
@@ -1953,14 +1945,10 @@ impl<'a> GetLocals<'a> for Store {
     }
 }
 
-impl ApplySubst for Store {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Store {
-            dst: self.dst.apply_subst(subst),
-            value: self.value.apply_subst(subst),
-            offset: self.offset,
-            size: self.size,
-        }
+impl Substitutable<TyVar, Ty> for Store {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.dst.apply_subst(subst);
+        self.value.apply_subst(subst);
     }
 }
 
@@ -2006,13 +1994,9 @@ impl<'a> GetLocals<'a> for Load {
     }
 }
 
-impl ApplySubst for Load {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Load {
-            src: self.src.apply_subst(subst),
-            offset: self.offset,
-            size: self.size,
-        }
+impl Substitutable<TyVar, Ty> for Load {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.src.apply_subst(subst);
     }
 }
 
@@ -2047,13 +2031,9 @@ impl<'a> GetLocals<'a> for Lea {
     }
 }
 
-impl ApplySubst for Lea {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Lea {
-            value: self.value.apply_subst(subst),
-            src_offset: self.src_offset,
-            dst_offset: self.dst_offset,
-        }
+impl Substitutable<TyVar, Ty> for Lea {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.value.apply_subst(subst);
     }
 }
 
@@ -2083,12 +2063,9 @@ impl<'a> GetLocals<'a> for GetField {
     }
 }
 
-impl ApplySubst for GetField {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        GetField {
-            src: self.src.apply_subst(subst),
-            field: self.field,
-        }
+impl Substitutable<TyVar, Ty> for GetField {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.src.apply_subst(subst);
     }
 }
 
@@ -2121,13 +2098,10 @@ impl<'a> GetLocals<'a> for SetField {
     }
 }
 
-impl ApplySubst for SetField {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        SetField {
-            dst: self.dst.apply_subst(subst),
-            field: self.field,
-            value: self.value.apply_subst(subst),
-        }
+impl Substitutable<TyVar, Ty> for SetField {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.dst.apply_subst(subst);
+        self.value.apply_subst(subst);
     }
 }
 
@@ -2180,14 +2154,9 @@ impl<'a> GetLocals<'a> for BasicOp {
     }
 }
 
-impl ApplySubst for BasicOp {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        BasicOp {
-            op: self.op,
-            size: self.size,
-            signed: self.signed,
-            operands: self.operands.apply_subst(subst),
-        }
+impl Substitutable<TyVar, Ty> for BasicOp {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.operands.apply_subst(subst);
     }
 }
 
@@ -3341,12 +3310,10 @@ impl<'a> GetLocals<'a> for Cast {
     }
 }
 
-impl ApplySubst for Cast {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        Cast {
-            src: self.src.apply_subst(subst),
-            ty: self.ty.apply_subst(subst),
-        }
+impl Substitutable<TyVar, Ty> for Cast {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.src.apply_subst(subst);
+        self.ty.apply_subst(subst);
     }
 }
 
@@ -3371,12 +3338,8 @@ impl std::fmt::Display for IntConvert {
     }
 }
 
-impl ApplySubst for IntConvert {
-    fn apply_subst(self, subst: &Subst) -> Self {
-        IntConvert {
-            value: self.value.apply_subst(subst),
-            src: self.src,
-            dst: self.dst,
-        }
+impl Substitutable<TyVar, Ty> for IntConvert {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.value.apply_subst(subst);
     }
 }

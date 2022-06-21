@@ -200,6 +200,7 @@ impl Lexer {
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
             "trait" => TokenKind::Trait,
+            "default" => TokenKind::Default,
             "impl" => TokenKind::Impl,
             "object" => TokenKind::Object,
             "typealias" => TokenKind::TypeAlias,

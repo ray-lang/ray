@@ -1,16 +1,20 @@
-use crate::constraint::{Constraint, PolyTypeConstraintInfo, Solvable, TypeConstraintInfo};
+use std::hash::Hash;
 
-use super::qualification::HasQual;
+use crate::{constraint::Constraint, Ty, TyVar};
 
-pub trait HasBasic<T> {
-    fn push_constraint(&mut self, constraint: Constraint<T>);
-    fn push_constraints(&mut self, constraints: Vec<Constraint<T>>);
-    fn pop_constraint(&mut self) -> Option<Constraint<T>>;
+pub trait HasBasic<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    fn push_constraint(&mut self, constraint: Constraint<I, T, V>);
+    fn push_constraints(&mut self, constraints: Vec<Constraint<I, T, V>>);
+    fn pop_constraint(&mut self) -> Option<Constraint<I, T, V>>;
     fn discard_constraints(&mut self);
 
-    fn add_labeled_err(&mut self, label: &str, info: T);
-    fn get_labeled_errs(&self) -> &Vec<(String, T)>;
-    fn update_err_info(&mut self, f: impl FnMut(&mut T));
+    fn add_labeled_err(&mut self, label: &str, info: I);
+    fn get_labeled_errs(&self) -> &Vec<(String, I)>;
+    fn update_err_info(&mut self, f: impl FnMut(&mut I));
 
     fn add_check(&mut self, label: &str, check: bool);
     fn get_checks(&self) -> &Vec<(String, bool)>;

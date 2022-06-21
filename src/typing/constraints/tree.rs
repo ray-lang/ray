@@ -1,6 +1,9 @@
 use std::ops::Add;
 
-use crate::{typing::traits::TreeWalk, utils::replace};
+use crate::{
+    typing::{info::TypeSystemInfo, traits::TreeWalk},
+    utils::replace,
+};
 
 use super::Constraint;
 
@@ -460,69 +463,69 @@ impl TreeWalk for BottomUpWalk {
     }
 }
 
-#[cfg(test)]
-mod tree_tests {
-    use crate::typing::{
-        constraints::{EqConstraint, ImplicitConstraint},
-        solvers::GreedySolver,
-        traits::HasSubst,
-        ty::Ty,
-        TyCtx, TypeError,
-    };
+// #[cfg(test)]
+// mod tree_tests {
+//     use crate::typing::{
+//         constraints::{EqConstraint, ImplicitConstraint},
+//         solvers::GreedySolver,
+//         traits::HasSubst,
+//         ty::Ty,
+//         TyCtx, TypeError,
+//     };
 
-    use super::{BottomUpWalk, ConstraintTree};
+//     use super::{BottomUpWalk, ConstraintTree};
 
-    #[test]
-    fn test_constraints1() -> Result<(), TypeError> {
-        let mul = Ty::Func(vec![Ty::int(), Ty::int()], Box::new(Ty::int()));
+//     #[test]
+//     fn test_constraints1() -> Result<(), TypeError> {
+//         let mul = Ty::Func(vec![Ty::int(), Ty::int()], Box::new(Ty::int()));
 
-        // let sq = λx.(x * x) in sq(1)
-        let x0 = tvar!(x0); // type of the first x in the body
-        let x1 = tvar!(x1); // type of the second x in the body
-        let app0 = tvar!(app0); // type of the app
+//         // let sq = λx.(x * x) in sq(1)
+//         let x0 = tvar!(x0); // type of the first x in the body
+//         let x1 = tvar!(x1); // type of the second x in the body
+//         let app0 = tvar!(app0); // type of the app
 
-        // constraint: (x0 -> x1 -> r) == mul
-        let c1 = EqConstraint::new(
-            Ty::Func(
-                vec![Ty::Var(x0), Ty::Var(x1)],
-                Box::new(Ty::Var(app0.clone())),
-            ),
-            mul,
-        );
+//         // constraint: (x0 -> x1 -> r) == mul
+//         let c1 = EqConstraint::new(
+//             Ty::Func(
+//                 vec![Ty::Var(x0), Ty::Var(x1)],
+//                 Box::new(Ty::Var(app0.clone())),
+//             ),
+//             mul,
+//         );
 
-        // λx.(x * x)
-        let lam0 = tvar!(lam0); // type of the lambda
-        let p0 = tvar!(p0); // type of parameter `x`
-        let r0 = tvar!(r0); // type of the body
-                            // constraint: lam0 == (p0 -> r0)
-        let c2 = EqConstraint::new(
-            Ty::Var(lam0),
-            Ty::Func(vec![Ty::Var(p0.clone())], Box::new(Ty::Var(r0))),
-        );
+//         // λx.(x * x)
+//         let lam0 = tvar!(lam0); // type of the lambda
+//         let p0 = tvar!(p0); // type of parameter `x`
+//         let r0 = tvar!(r0); // type of the body
+//                             // constraint: lam0 == (p0 -> r0)
+//         let c2 = EqConstraint::new(
+//             Ty::Var(lam0),
+//             Ty::Func(vec![Ty::Var(p0.clone())], Box::new(Ty::Var(r0))),
+//         );
 
-        // constraint: p0 == p1
-        let p1 = tvar!(p1);
-        let c3 = EqConstraint::new(Ty::Var(p0.clone()), Ty::Var(p1));
+//         // constraint: p0 == p1
+//         let p1 = tvar!(p1);
+//         let c3 = EqConstraint::new(Ty::Var(p0.clone()), Ty::Var(p1));
 
-        let sq = tvar!(sq); // type of ident `sq`
-        let b0 = tvar!(b0); // type of let body
-        let l0 = tvar!(l0); // type of let
-        let l1 = tvar!(sq0); // type of the let rhs
+//         let sq = tvar!(sq); // type of ident `sq`
+//         let b0 = tvar!(b0); // type of let body
+//         let l0 = tvar!(l0); // type of let
+//         let l1 = tvar!(sq0); // type of the let rhs
 
-        // constraint: b0 == l0
-        let c4 = EqConstraint::new(Ty::Var(b0), Ty::Var(l0));
+//         // constraint: b0 == l0
+//         let c4 = EqConstraint::new(Ty::Var(b0), Ty::Var(l0));
 
-        // constraint: sq ≤m l1
-        let c5 = ImplicitConstraint::new(vec![p0], Ty::Var(sq), Ty::Var(l1));
+//         // constraint: sq ≤m l1
+//         let c5 = ImplicitConstraint::new(vec![p0], Ty::Var(sq), Ty::Var(l1));
 
-        let t = ConstraintTree::list(vec![c1, c2, c3, c4, c5]);
+//         let t = ConstraintTree::list(vec![c1, c2, c3, c4, c5]);
 
-        let walker = BottomUpWalk {};
-        let cs = t.flatten(walker);
-        let mut ctx = TyCtx::new();
-        let solver = GreedySolver::new(cs, &mut ctx);
-        // solver.solve()?;
-        println!("{:#?}", solver.get_subst());
-        Ok(())
-    }
-}
+//         let walker = BottomUpWalk {};
+//         let cs = t.flatten(walker);
+//         let mut ctx = TyCtx::new();
+//         let solver = GreedySolver::new(cs, &mut ctx);
+//         // solver.solve()?;
+//         println!("{:#?}", solver.get_subst());
+//         Ok(())
+//     }
+// }

@@ -1,7 +1,7 @@
 use crate::{
     ast::{Expr, Modifier, Name, Node, Path, TypeParams},
     span::{parsed::Parsed, Source, Span},
-    typing::ty::Ty,
+    typing::ty::{SigmaTy, Ty, TyScheme},
 };
 
 use super::Decl;
@@ -32,14 +32,14 @@ impl FnParam {
     pub fn ty(&self) -> Option<&Ty> {
         match self {
             FnParam::DefaultValue(p, _) => p.ty(),
-            FnParam::Name(n) => n.ty.as_deref(),
+            FnParam::Name(n) => n.ty.as_deref().map(|t| t.mono()),
         }
     }
 
     pub fn ty_mut(&mut self) -> Option<&mut Ty> {
         match self {
             FnParam::DefaultValue(p, _) => p.ty_mut(),
-            FnParam::Name(n) => n.ty.as_deref_mut(),
+            FnParam::Name(n) => n.ty.as_deref_mut().map(|t| t.mono_mut()),
         }
     }
 
@@ -47,7 +47,7 @@ impl FnParam {
         match self {
             FnParam::DefaultValue(p, _) => p.set_ty(ty),
             FnParam::Name(n) => {
-                n.ty = Some(Parsed::new(ty, Source::default()));
+                n.ty = Some(Parsed::new(TyScheme::from_mono(ty), Source::default()));
             }
         }
     }
@@ -60,11 +60,12 @@ pub struct FuncSig {
     pub params: Vec<Node<FnParam>>,
     pub ty_params: Option<TypeParams>,
     pub ret_ty: Option<Parsed<Ty>>,
-    pub ty: Option<Ty>,
+    pub ty: Option<TyScheme>,
     pub modifiers: Vec<Modifier>,
     pub qualifiers: Vec<Parsed<Ty>>,
     pub doc_comment: Option<String>,
     pub is_method: bool,
+    pub has_body: bool,
     pub span: Span,
 }
 
@@ -88,6 +89,7 @@ impl Func {
                 qualifiers: vec![],
                 doc_comment: None,
                 is_method: false,
+                has_body: true,
                 span: Span::new(),
             },
             body: Some(Box::new(body)),
@@ -136,7 +138,7 @@ impl std::fmt::Display for Func {
             {
                 " => "
             } else {
-                ""
+                "\n"
             },
             body.map_or_else(|| str!(""), |b| b.to_string()),
         )
