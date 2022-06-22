@@ -140,8 +140,9 @@ impl<'tcx> InferSystem<'tcx> {
             Err(errs)
         } else {
             log::debug!("defs: {:?}", defs);
-            defs.apply_subst(&solution.subst);
+            defs.apply_subst_all(&solution.subst);
             defs.qualify_tys(&solution.qualifiers);
+            log::debug!("defs: {:?}", defs);
             // let mut new_defs = SchemeEnv::new();
             // for (mut path, mut scheme) in defs.drain() {
             //     if scheme.has_quantifiers() {

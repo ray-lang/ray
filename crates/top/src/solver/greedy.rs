@@ -305,6 +305,10 @@ mod tests {
             }
         }
 
+        fn apply_subst_all(&mut self, subst: &Subst<u32, BasicTy>) {
+            self.apply_subst(subst);
+        }
+
         fn free_vars(&self) -> Vec<&u32> {
             match self {
                 BasicTy::Var(v) => vec![v],
@@ -414,6 +418,10 @@ mod tests {
     impl TyVar for u32 {
         fn from_u32(u: u32) -> Self {
             u
+        }
+
+        fn get_u32(&self) -> Option<u32> {
+            Some(*self)
         }
     }
 

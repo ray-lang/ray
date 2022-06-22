@@ -1,13 +1,20 @@
+use top::{Subst, Substitutable, TyVar as TopTyVar};
+
 use crate::{
     ast::{self, Decl, Expr, Import, Module},
     driver::RayPaths,
     errors::{RayError, RayErrorKind, RayResult},
     libgen::RayLib,
+    lir::Program,
     parse::{self, ParseOptions, Parser},
     pathlib::FilePath,
     span::{Source, SourceMap, Span},
-    strutils,
-    typing::state::Env,
+    strutils, transform,
+    typing::{
+        state::{Env, SchemeEnv},
+        ty::{Ty, TyVar},
+        TyCtx,
+    },
 };
 
 use std::{
@@ -477,5 +484,45 @@ impl ModuleBuilder<'_, Expr, Decl> {
         }
 
         return false;
+    }
+
+    pub fn finish(
+        self,
+        module_path: &ast::Path,
+    ) -> RayResult<(Module<(), Decl>, TyCtx, SourceMap, SchemeEnv, Vec<Program>)> {
+        let mut libs = vec![];
+        let mut modules = self.modules;
+        let mut srcmaps = self.srcmaps;
+        let mut lib_set = HashSet::new();
+        let mut lib_defs = Env::new();
+        let mut tcx = TyCtx::new();
+        for (lib_path, mut lib) in self.libs {
+            // create a substitution to map the library's variables
+            let subst = (0..lib.tcx.tf().curr())
+                .flat_map(|u| {
+                    let old_var = TyVar::from_u32(u as u32);
+                    if u == tcx.tf().curr() {
+                        // generate and ignore the new variable
+                        let _ = tcx.tf().next();
+                        return None;
+                    }
+                    let new_var = tcx.tf().next();
+                    Some((old_var, Ty::Var(new_var)))
+                })
+                .collect::<Subst<TyVar, Ty>>();
+            log::debug!("subst: {}", subst);
+            lib.tcx.apply_subst_all(&subst);
+            lib.program.apply_subst_all(&subst);
+
+            lib_set.insert(lib_path.clone());
+            tcx.extend(lib.tcx);
+            srcmaps.insert(lib_path, lib.srcmap);
+            libs.push(lib.program);
+            lib_defs.extend(lib.defs);
+        }
+
+        let (module, srcmap, _) =
+            transform::combine(module_path, &mut modules, &mut srcmaps, &lib_set, &mut tcx)?;
+        Ok((module, tcx, srcmap, lib_defs, libs))
     }
 }

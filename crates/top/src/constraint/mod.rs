@@ -100,6 +100,14 @@ where
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        match self {
+            Constraint::Equality(c) => c.apply_subst_all(subst),
+            Constraint::Polymorphism(c) => c.apply_subst_all(subst),
+            Constraint::Qualifier(c) => c.apply_subst_all(subst),
+        }
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         match self {
             Constraint::Equality(c) => c.free_vars(),

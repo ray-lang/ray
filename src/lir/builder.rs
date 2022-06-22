@@ -75,7 +75,6 @@ impl Builder {
         let idx = self.locals.len();
         let loc = Local { idx, ty };
         self.locals.push(loc);
-        log::debug!("locals: {:?}", self.locals);
         idx
     }
 

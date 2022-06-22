@@ -121,6 +121,12 @@ where
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, T>) {
+        for (_, ty) in self.iter_mut() {
+            ty.apply_subst_all(subst);
+        }
+    }
+
     fn free_vars(&self) -> Vec<&TyVar> {
         self.iter().flat_map(|(_, ty)| ty.free_vars()).collect()
     }
@@ -133,6 +139,12 @@ impl Substitutable<TyVar, Ty> for Env<SigmaTy> {
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        for (_, ty) in self.iter_mut() {
+            ty.apply_subst_all(subst);
+        }
+    }
+
     fn free_vars(&self) -> Vec<&TyVar> {
         self.iter().flat_map(|(_, ty)| ty.free_vars()).collect()
     }
@@ -142,6 +154,12 @@ impl Substitutable<TyVar, Ty> for Env<TyScheme> {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         for (_, ty) in self.iter_mut() {
             ty.apply_subst(subst);
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        for (_, ty) in self.iter_mut() {
+            ty.apply_subst_all(subst);
         }
     }
 

@@ -73,6 +73,7 @@ impl InstConstraint {
         let mut cl = vec![];
         for (x, tys) in aset.iter().sorted_by_key(|&(x, _)| x) {
             if let Some(rhs_ty) = sigs.get(x) {
+                log::debug!("sig: {} :: {}", x, rhs_ty);
                 for lhs_ty in tys {
                     cl.push((
                         lhs_ty.to_string(),

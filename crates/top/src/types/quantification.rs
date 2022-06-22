@@ -309,6 +309,15 @@ where
         self.ty.apply_subst(&subst);
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        self.vars.iter_mut().for_each(|var| {
+            if let Some(new_var) = subst.get(var).and_then(|ty| ty.maybe_var()) {
+                *var = new_var.clone();
+            }
+        });
+        self.ty.apply_subst_all(subst);
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         self.ty
             .free_vars()
@@ -412,15 +421,6 @@ where
         V: Display,
     {
         self.introduce_skolems(i)
-    }
-
-    pub fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
-        self.vars.iter_mut().for_each(|var| {
-            if let Some(new_var) = subst.get(var).and_then(|ty| ty.maybe_var()) {
-                *var = new_var.clone();
-            }
-        });
-        self.ty.apply_subst(subst);
     }
 }
 

@@ -156,19 +156,11 @@ where
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.value.apply_subst(subst);
     }
-}
 
-// impl<T> ApplySubst for Node<T>
-// where
-//     T: ApplySubst,
-// {
-//     fn apply_subst(self, subst: &Subst) -> Self {
-//         Node {
-//             id: self.id,
-//             value: self.value.apply_subst(subst),
-//         }
-//     }
-// }
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.value.apply_subst_all(subst);
+    }
+}
 
 impl<T> Node<T> {
     pub fn new(value: T) -> Node<T> {

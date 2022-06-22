@@ -41,6 +41,11 @@ where
         self.rhs.apply_subst(subst);
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        self.lhs.apply_subst_all(subst);
+        self.rhs.apply_subst_all(subst);
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         self.lhs
             .free_vars()

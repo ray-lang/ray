@@ -802,7 +802,10 @@ impl CollectConstraints for (&Call, &Source) {
         }
 
         let ret_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-        let mut c = EqConstraint::new(lhs_ty, Ty::Func(arg_tys, Box::new(ret_ty.clone())));
+        let rhs_ty = Ty::Func(arg_tys, Box::new(ret_ty.clone()));
+
+        log::debug!("creating eq constraint: {} == {}", lhs_ty, rhs_ty);
+        let mut c = EqConstraint::new(lhs_ty, rhs_ty);
         c.info_mut().with_src(src.clone());
 
         let mut cts = vec![ct1];

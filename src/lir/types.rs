@@ -9,12 +9,13 @@ use crate::{
     ast::{self, asm::AsmOp, Modifier, Node, Path},
     convert::ToSet,
     strutils::indent_lines,
-    typing::ty::{SigmaTy, Ty, TyScheme, TyVar},
+    typing::ty::{Ty, TyScheme, TyVar},
     utils::{join, map_join},
 };
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Display,
     iter::Sum,
     usize,
 };
@@ -195,6 +196,14 @@ impl Substitutable<TyVar, Ty> for SymbolSet {
             self.insert(path);
         }
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        let paths = self.drain().collect::<Vec<_>>();
+        for mut path in paths {
+            path.apply_subst_all(subst);
+            self.insert(path);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,7 +232,7 @@ impl Into<Value> for Variable {
     }
 }
 
-impl std::fmt::Display for Variable {
+impl Display for Variable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Variable::Data(s) => write!(f, "$data[{}]", s),
@@ -258,6 +267,10 @@ impl Substitutable<TyVar, Ty> for Variable {
     fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
         /* do nothing */
     }
+
+    fn apply_subst_all(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -276,7 +289,7 @@ pub enum Atom {
 
 LirImplInto!(Value for Atom);
 
-impl std::fmt::Display for Atom {
+impl Display for Atom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Atom::Variable(v) => write!(f, "{}", v),
@@ -335,6 +348,14 @@ impl Substitutable<TyVar, Ty> for Atom {
             _ => {}
         }
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Atom::Variable(v) => v.apply_subst_all(subst),
+            Atom::FuncRef(r) => r.apply_subst_all(subst),
+            _ => {}
+        }
+    }
 }
 
 impl Atom {
@@ -354,7 +375,7 @@ pub struct Malloc {
 }
 LirImplInto!(Value for Malloc);
 
-impl std::fmt::Display for Malloc {
+impl Display for Malloc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "new({}, {})", self.ty, self.count)
     }
@@ -374,6 +395,10 @@ impl<'a> GetLocalsMut<'a> for Malloc {
 
 impl Substitutable<TyVar, Ty> for Malloc {
     fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
+    }
+
+    fn apply_subst_all(&mut self, _: &Subst<TyVar, Ty>) {
         /* do nothing */
     }
 }
@@ -412,7 +437,7 @@ impl Value {
     }
 }
 
-impl std::fmt::Display for Value {
+impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Empty => write!(f, ""),
@@ -497,6 +522,24 @@ impl Substitutable<TyVar, Ty> for Value {
             Value::IntConvert(i) => i.apply_subst(subst),
         }
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Value::Empty | Value::VarRef(_) => {}
+            Value::Atom(a) => a.apply_subst_all(subst),
+            Value::Malloc(m) => m.apply_subst_all(subst),
+            Value::Call(c) => c.apply_subst_all(subst),
+            Value::CExternCall(_) => todo!(),
+            Value::Select(s) => s.apply_subst_all(subst),
+            Value::Phi(phi) => phi.apply_subst_all(subst),
+            Value::Load(l) => l.apply_subst_all(subst),
+            Value::Lea(l) => l.apply_subst_all(subst),
+            Value::GetField(g) => g.apply_subst_all(subst),
+            Value::BasicOp(b) => b.apply_subst_all(subst),
+            Value::Cast(c) => c.apply_subst_all(subst),
+            Value::IntConvert(i) => i.apply_subst_all(subst),
+        }
+    }
 }
 
 impl NamedInst for Value {
@@ -561,7 +604,7 @@ pub enum Inst {
     Goto(usize),
 }
 
-impl<'a> std::fmt::Display for FuncDisplayCtx<'a, &Inst> {
+impl<'a> Display for FuncDisplayCtx<'a, &Inst> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.value {
             Inst::SetLocal(idx, value) => {
@@ -573,7 +616,7 @@ impl<'a> std::fmt::Display for FuncDisplayCtx<'a, &Inst> {
     }
 }
 
-impl std::fmt::Display for Inst {
+impl Display for Inst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Inst::Free(s) => write!(f, "free ${}", s),
@@ -678,6 +721,28 @@ impl Substitutable<TyVar, Ty> for Inst {
             Inst::Free(_) | Inst::Goto(_) => {}
         }
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Inst::Call(c) => c.apply_subst_all(subst),
+            Inst::CExternCall(_) => todo!(),
+            Inst::SetGlobal(_, v) => v.apply_subst_all(subst),
+            Inst::SetLocal(_, v) => v.apply_subst_all(subst),
+            Inst::If(b) => b.apply_subst_all(subst),
+            Inst::SetField(s) => s.apply_subst_all(subst),
+            Inst::Store(s) => s.apply_subst_all(subst),
+            Inst::MemCopy(d, s, z) => {
+                d.apply_subst_all(subst);
+                s.apply_subst_all(subst);
+                z.apply_subst_all(subst);
+            }
+            Inst::IncRef(v, i) => v.apply_subst_all(subst),
+            Inst::DecRef(v) => v.apply_subst_all(subst),
+            Inst::Return(v) => v.apply_subst_all(subst),
+            Inst::Break(b) => b.apply_subst_all(subst),
+            Inst::Free(_) | Inst::Goto(_) => {}
+        }
+    }
 }
 
 impl Inst {
@@ -730,7 +795,7 @@ pub enum Op {
     Neq,
 }
 
-impl std::fmt::Display for Op {
+impl Display for Op {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Op::Add => write!(f, "add"),
@@ -766,7 +831,7 @@ pub enum BreakOp {
     BreakZ,
 }
 
-impl std::fmt::Display for BreakOp {
+impl Display for BreakOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BreakOp::Break => write!(f, "break"),
@@ -848,7 +913,7 @@ impl Sum for Size {
     }
 }
 
-impl std::fmt::Display for Size {
+impl Display for Size {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.ptrs == 0 && self.bytes == 0 {
             write!(f, "0")
@@ -893,7 +958,7 @@ pub struct Extern {
     pub src: Option<String>,
 }
 
-impl std::fmt::Display for Extern {
+impl Display for Extern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "extern {} : {}", self.name, self.ty)
     }
@@ -913,7 +978,7 @@ pub struct Program {
     pub user_main_idx: i64, // index in Funcs for user main
 }
 
-impl std::fmt::Display for Program {
+impl Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &join(&self.externs, "\n"))?;
 
@@ -922,6 +987,36 @@ impl std::fmt::Display for Program {
         }
 
         write!(f, "{}", &join(&self.funcs, "\n\n"))
+    }
+}
+
+impl Substitutable<TyVar, Ty> for Program {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        for global in &mut self.globals {
+            global.ty.apply_subst(subst);
+        }
+
+        for func in &mut self.funcs {
+            func.apply_subst(subst);
+        }
+
+        for ext in &mut self.externs {
+            ext.ty.apply_subst(subst);
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        for global in &mut self.globals {
+            global.ty.apply_subst_all(subst);
+        }
+
+        for func in &mut self.funcs {
+            func.apply_subst_all(subst);
+        }
+
+        for ext in &mut self.externs {
+            ext.ty.apply_subst_all(subst);
+        }
     }
 }
 
@@ -1000,6 +1095,11 @@ impl Substitutable<TyVar, Ty> for Global {
         self.ty.apply_subst(subst);
         self.init_value.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst_all(subst);
+        self.init_value.apply_subst_all(subst);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1008,7 +1108,7 @@ pub struct Local {
     pub ty: TyScheme,
 }
 
-impl std::fmt::Display for Local {
+impl Display for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "${}", self.idx)
     }
@@ -1017,6 +1117,10 @@ impl std::fmt::Display for Local {
 impl Substitutable<TyVar, Ty> for Local {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.ty.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst_all(subst);
     }
 }
 
@@ -1045,7 +1149,7 @@ pub struct Param {
     pub ty: Ty,
 }
 
-impl std::fmt::Display for Param {
+impl Display for Param {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "${}: {}", self.idx, self.ty)
     }
@@ -1066,6 +1170,10 @@ impl<'a> GetLocals<'a> for Param {
 impl Substitutable<TyVar, Ty> for Param {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.ty.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst_all(subst);
     }
 }
 
@@ -1091,7 +1199,7 @@ pub struct Block {
     markers: Vec<ControlMarker>,
 }
 
-impl<'a> std::fmt::Display for FuncDisplayCtx<'a, &Block> {
+impl<'a> Display for FuncDisplayCtx<'a, &Block> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let lines = indent_lines(
             map_join(&self.value.instructions, "\n", |inst| {
@@ -1147,6 +1255,10 @@ impl<'a> GetLocals<'a> for Block {
 impl Substitutable<TyVar, Ty> for Block {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.instructions.apply_subst(subst)
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.instructions.apply_subst_all(subst)
     }
 }
 
@@ -1317,7 +1429,7 @@ impl<'a, T> FuncDisplayCtx<'a, T> {
     }
 }
 
-impl std::fmt::Display for Func {
+impl Display for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (_, preds, _, ret_ty) = self.ty.try_borrow_fn().unwrap();
         write!(
@@ -1366,6 +1478,14 @@ impl Substitutable<TyVar, Ty> for Func {
         self.locals.apply_subst(subst);
         self.blocks.apply_subst(subst);
         self.symbols.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst_all(subst);
+        self.params.apply_subst_all(subst);
+        self.locals.apply_subst_all(subst);
+        self.blocks.apply_subst_all(subst);
+        self.symbols.apply_subst_all(subst);
     }
 }
 
@@ -1574,7 +1694,7 @@ pub struct FuncRef {
     pub ty: Ty,
 }
 
-impl std::fmt::Display for FuncRef {
+impl Display for FuncRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "$fn[{}]", self.name)
     }
@@ -1583,6 +1703,10 @@ impl std::fmt::Display for FuncRef {
 impl Substitutable<TyVar, Ty> for FuncRef {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.ty.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.ty.apply_subst_all(subst);
     }
 }
 
@@ -1599,7 +1723,7 @@ pub struct Call {
 LirImplInto!(Inst for Call);
 LirImplInto!(Value for Call);
 
-impl std::fmt::Display for Call {
+impl Display for Call {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({})", self.fn_name, join(&self.args, ", "))
     }
@@ -1622,6 +1746,12 @@ impl Substitutable<TyVar, Ty> for Call {
         self.fn_name.apply_subst(subst);
         self.args.apply_subst(subst);
         self.ty.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.fn_name.apply_subst_all(subst);
+        self.args.apply_subst_all(subst);
+        self.ty.apply_subst_all(subst);
     }
 }
 
@@ -1682,7 +1812,7 @@ pub struct CExternCall {
 
 LirImplInto!(Value for CExternCall);
 
-impl std::fmt::Display for CExternCall {
+impl Display for CExternCall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "@extern {}({})", self.fn_name, join(&self.args, ", "))
     }
@@ -1709,7 +1839,7 @@ pub struct If {
 
 LirImplInto!(Inst for If);
 
-impl std::fmt::Display for If {
+impl Display for If {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -1735,6 +1865,10 @@ impl Substitutable<TyVar, Ty> for If {
     fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
         /* do nothing */
     }
+
+    fn apply_subst_all(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
+    }
 }
 
 impl If {
@@ -1756,7 +1890,7 @@ pub struct Break {
 
 LirImplInto!(Inst for Break);
 
-impl std::fmt::Display for Break {
+impl Display for Break {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = self
             .label
@@ -1795,6 +1929,10 @@ impl Substitutable<TyVar, Ty> for Break {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.operand.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.operand.apply_subst_all(subst);
+    }
 }
 
 impl Break {
@@ -1820,7 +1958,7 @@ pub struct Phi(Vec<(usize, usize)>);
 
 LirImplInto!(Value for Phi);
 
-impl std::fmt::Display for Phi {
+impl Display for Phi {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -1844,6 +1982,10 @@ impl<'a> GetLocals<'a> for Phi {
 
 impl Substitutable<TyVar, Ty> for Phi {
     fn apply_subst(&mut self, _: &Subst<TyVar, Ty>) {
+        /* do nothing */
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
         /* do nothing */
     }
 }
@@ -1873,7 +2015,7 @@ pub struct Select {
 
 LirImplInto!(Value for Select);
 
-impl std::fmt::Display for Select {
+impl Display for Select {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "select {} {} {}", self.cond, self.then, self.els)
     }
@@ -1903,6 +2045,12 @@ impl Substitutable<TyVar, Ty> for Select {
         self.then.apply_subst(subst);
         self.els.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.cond.apply_subst_all(subst);
+        self.then.apply_subst_all(subst);
+        self.els.apply_subst_all(subst);
+    }
 }
 
 impl Select {
@@ -1919,7 +2067,7 @@ pub struct Store {
     pub size: Size,
 }
 
-impl std::fmt::Display for Store {
+impl Display for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -1950,6 +2098,11 @@ impl Substitutable<TyVar, Ty> for Store {
         self.dst.apply_subst(subst);
         self.value.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.dst.apply_subst_all(subst);
+        self.value.apply_subst_all(subst);
+    }
 }
 
 impl Store {
@@ -1972,7 +2125,7 @@ pub struct Load {
 
 LirImplInto!(Value for Load);
 
-impl std::fmt::Display for Load {
+impl Display for Load {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -1998,6 +2151,10 @@ impl Substitutable<TyVar, Ty> for Load {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.src.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.src.apply_subst_all(subst);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2009,7 +2166,7 @@ pub struct Lea {
 
 LirImplInto!(Value for Lea);
 
-impl std::fmt::Display for Lea {
+impl Display for Lea {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -2035,6 +2192,10 @@ impl Substitutable<TyVar, Ty> for Lea {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.value.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.value.apply_subst_all(subst);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2045,7 +2206,7 @@ pub struct GetField {
 
 LirImplInto!(Value for GetField);
 
-impl std::fmt::Display for GetField {
+impl Display for GetField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "getfield {} {}", self.src, self.field)
     }
@@ -2067,6 +2228,10 @@ impl Substitutable<TyVar, Ty> for GetField {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.src.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.src.apply_subst_all(subst);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2076,7 +2241,7 @@ pub struct SetField {
     pub value: Value,
 }
 
-impl std::fmt::Display for SetField {
+impl Display for SetField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "setfield {} {} {}", self.dst, self.field, self.value,)
     }
@@ -2103,6 +2268,11 @@ impl Substitutable<TyVar, Ty> for SetField {
         self.dst.apply_subst(subst);
         self.value.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.dst.apply_subst_all(subst);
+        self.value.apply_subst_all(subst);
+    }
 }
 
 impl SetField {
@@ -2121,7 +2291,7 @@ pub struct BasicOp {
 
 LirImplInto!(Value for BasicOp);
 
-impl std::fmt::Display for BasicOp {
+impl Display for BasicOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let operands = join(&self.operands, " ");
         let ext = match (self.signed, self.size.ptrs, self.size.bytes) {
@@ -2157,6 +2327,10 @@ impl<'a> GetLocals<'a> for BasicOp {
 impl Substitutable<TyVar, Ty> for BasicOp {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.operands.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.operands.apply_subst_all(subst);
     }
 }
 
@@ -3292,7 +3466,7 @@ impl Cast {
     }
 }
 
-impl std::fmt::Display for Cast {
+impl Display for Cast {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} as {}", self.src, self.ty)
     }
@@ -3315,6 +3489,11 @@ impl Substitutable<TyVar, Ty> for Cast {
         self.src.apply_subst(subst);
         self.ty.apply_subst(subst);
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.src.apply_subst_all(subst);
+        self.ty.apply_subst_all(subst);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3326,7 +3505,7 @@ pub struct IntConvert {
 
 LirImplInto!(Value for IntConvert);
 
-impl std::fmt::Display for IntConvert {
+impl Display for IntConvert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -3341,5 +3520,9 @@ impl std::fmt::Display for IntConvert {
 impl Substitutable<TyVar, Ty> for IntConvert {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.value.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.value.apply_subst_all(subst);
     }
 }

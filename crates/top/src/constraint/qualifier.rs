@@ -58,6 +58,13 @@ where
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        match &mut self.kind {
+            QualConstraintKind::Prove(pred) => pred.apply_subst_all(subst),
+            QualConstraintKind::Assume(pred) => pred.apply_subst_all(subst),
+        }
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         match &self.kind {
             QualConstraintKind::Prove(pred) => pred.free_vars(),

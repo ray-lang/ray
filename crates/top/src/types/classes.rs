@@ -303,6 +303,18 @@ where
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        match self {
+            Predicate::Class(_, ty, _) => {
+                ty.apply_subst_all(subst);
+            }
+            Predicate::HasField(ty, _, field, _) => {
+                ty.apply_subst_all(subst);
+                field.apply_subst_all(subst);
+            }
+        }
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         match self {
             Predicate::Class(_, ty, _) => ty.free_vars(),
@@ -571,6 +583,12 @@ where
     fn apply_subst(&mut self, subst: &Subst<V, T>) {
         for pred in self.iter_mut() {
             pred.apply_subst(subst);
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        for pred in self.iter_mut() {
+            pred.apply_subst_all(subst);
         }
     }
 

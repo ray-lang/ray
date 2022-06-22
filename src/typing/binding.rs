@@ -8,7 +8,10 @@ use crate::{
     convert::ToSet,
     sort::{topological::TopologicalSort, SortByIndexSlice},
     span::Source,
-    typing::ty::{SigmaTy, Ty, TyVar},
+    typing::{
+        state::SchemeEnv,
+        ty::{SigmaTy, Ty, TyVar},
+    },
 };
 
 use super::{
@@ -24,7 +27,7 @@ use super::{
 
 pub struct BindingGroupAnalysis<'a> {
     groups: Vec<BindingGroup>,
-    defs: &'a SigmaEnv,
+    sigs: &'a SigmaEnv,
     svar_factory: &'a mut TyVarFactory,
     mono_tys: &'a HashSet<TyVar>,
 }
@@ -32,13 +35,13 @@ pub struct BindingGroupAnalysis<'a> {
 impl<'a> BindingGroupAnalysis<'a> {
     pub fn new(
         groups: Vec<BindingGroup>,
-        defs: &'a SigmaEnv,
+        sigs: &'a SigmaEnv,
         svar_factory: &'a mut TyVarFactory,
         mono_tys: &'a HashSet<TyVar>,
     ) -> BindingGroupAnalysis<'a> {
         BindingGroupAnalysis {
             groups,
-            defs,
+            sigs,
             svar_factory,
             mono_tys,
         }
@@ -57,7 +60,7 @@ impl<'a> BindingGroupAnalysis<'a> {
                 let is_mutually_recursive = {
                     let x = &self.groups[i];
                     let y = &self.groups[j];
-                    x.is_mutually_recursive(y, self.defs)
+                    x.is_mutually_recursive(y, self.sigs)
                 };
 
                 if is_mutually_recursive {
@@ -73,7 +76,7 @@ impl<'a> BindingGroupAnalysis<'a> {
         }
 
         // create a topology of the binding groups
-        let sigs = self.defs;
+        let sigs = self.sigs;
         let mut ts = petgraph::graphmap::DiGraphMap::new();
 
         // TopologicalSort::<usize>::new();
@@ -86,8 +89,6 @@ impl<'a> BindingGroupAnalysis<'a> {
                 .any(|p| rhs_use.contains_key(p) && !sigs.contains_key(p))
             {
                 // LHS defines variables used in RHS, so RHS depends on LHS
-                // ts.add_dependency(i, j);
-                log::debug!("{:#?} depends on {:#?}", rhs, lhs);
                 ts.add_edge(i, j, ());
             }
 
@@ -96,8 +97,6 @@ impl<'a> BindingGroupAnalysis<'a> {
                 .any(|p| lhs_use.contains_key(p) && !sigs.contains_key(p))
             {
                 // RHS defines variables used in LHS, LHS depends on RHS
-                // ts.add_dependency(j, i);
-                log::debug!("{:#?} depends on {:#?}", lhs, rhs);
                 ts.add_edge(j, i, ());
             }
         }
@@ -125,16 +124,20 @@ impl<'a> BindingGroupAnalysis<'a> {
     }
 
     pub fn analyze(&mut self) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
-        log::debug!("groups: {:#?}", self.groups);
         self.organize_groups();
-        log::debug!("groups: {:#?}", self.groups);
-        log::debug!("mono_tys: {:?}", self.mono_tys);
         let mut mono_tys = self.mono_tys.clone();
         let mut aset = AssumptionSet::new();
         let mut ctree = ConstraintTree::empty();
+        let mut defs = SchemeEnv::new();
         while let Some(g) = self.groups.pop() {
-            let (new_m, new_a, new_t) =
-                g.combine_with(&mono_tys, aset, ctree, self.defs, self.svar_factory);
+            let (new_m, new_a, new_t) = g.combine_with(
+                &mono_tys,
+                aset,
+                ctree,
+                self.sigs,
+                self.svar_factory,
+                &mut defs,
+            );
             mono_tys = new_m;
             aset = new_a;
             ctree = new_t;
@@ -247,6 +250,7 @@ impl BindingGroup {
         rhs_tree: ConstraintTree,
         sigs: &SigmaEnv,
         svar_factory: &mut TyVarFactory,
+        defs: &mut SchemeEnv,
     ) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
         let info = self.info.clone();
         let env = self.env;
@@ -295,7 +299,9 @@ impl BindingGroup {
             .collect::<Vec<_>>();
 
         // A1'' = A1'\dom(E')
-        let lhs_aset = lhs_aset - env.keys();
+        // note: we used to have a line here that created a new assumption set
+        //       without the definitions from `env`, but this was removed so that
+        //       variables could be redefined in the same binding group.
 
         // implicits = zip (dom(E')) [σv1,σv2,...] -- fresh type scheme vars
         let implicits = env

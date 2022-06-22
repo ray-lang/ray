@@ -156,6 +156,16 @@ impl Substitutable<TyVar, Ty> for TyCtx {
             ty.apply_subst(subst);
         }
     }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        for ty in self.ty_map.values_mut() {
+            ty.apply_subst_all(subst);
+        }
+
+        for ty in self.ty_scheme_map.values_mut() {
+            ty.apply_subst_all(subst);
+        }
+    }
 }
 
 // impl ApplySubst for TyCtx {

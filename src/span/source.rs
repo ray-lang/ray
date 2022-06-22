@@ -143,7 +143,6 @@ impl SourceMap {
     }
 
     pub fn has_decorator<T>(&self, node: &Node<T>, p: &Path) -> bool {
-        log::debug!("looking for decorator {} in {:?}", p, self.decorators);
         self.decorators
             .get(&node.id)
             .map(|v| v.iter().any(|d| &d.path.value == p))

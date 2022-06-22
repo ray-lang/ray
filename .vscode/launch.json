@@ -19,21 +19,21 @@
                     "kind": "bin"
                 },
             },
-            // "args": [
-            //     "--log-level",
-            //     "debug",
-            //     "build",
-            //     "examples/scratch.ray"
-            // ],
             "args": [
                 "--log-level",
                 "debug",
                 "build",
-                // "-K",
-                "--no-core",
-                "--print-ast",
-                "examples/no_std.ray"
+                "examples/scratch.ray"
             ],
+            // "args": [
+            //     "--log-level",
+            //     "debug",
+            //     "build",
+            //     // "-K",
+            //     "--no-core",
+            //     "--print-ast",
+            //     "examples/no_std.ray"
+            // ],
             // "args": [
             //     "--log-level",
             //     "debug",

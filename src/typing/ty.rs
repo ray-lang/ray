@@ -459,6 +459,16 @@ impl top::TyVar for TyVar {
     fn from_u32(u: u32) -> Self {
         TyVar::new(Path::from(format!("?t{}", u)))
     }
+
+    fn get_u32(&self) -> Option<u32> {
+        self.path()
+            .name()?
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u32>()
+            .ok()
+    }
 }
 
 impl Default for TyVar {
@@ -669,6 +679,27 @@ impl Substitutable<TyVar, Ty> for Ty {
             Ty::Func(param_tys, ret_ty) => {
                 param_tys.apply_subst(subst);
                 ret_ty.apply_subst(subst);
+            }
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Ty::Any | Ty::Never | Ty::Const(_) => {}
+            Ty::Var(var) => {
+                *self = subst.lookup_var(var);
+            }
+            Ty::Projection(ty, tys) => {
+                ty.apply_subst_all(subst);
+                tys.apply_subst_all(subst);
+            }
+            Ty::Tuple(tys) | Ty::Union(tys) => tys.apply_subst_all(subst),
+            Ty::Ptr(ty) | Ty::Array(ty, _) => {
+                ty.apply_subst_all(subst);
+            }
+            Ty::Func(param_tys, ret_ty) => {
+                param_tys.apply_subst_all(subst);
+                ret_ty.apply_subst_all(subst);
             }
         }
     }

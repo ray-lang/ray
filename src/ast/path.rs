@@ -144,6 +144,10 @@ impl Substitutable<TyVar, Ty> for Path {
         *self = Path { parts }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.apply_subst(subst);
+    }
+
     fn free_vars(&self) -> Vec<&TyVar> {
         vec![]
     }

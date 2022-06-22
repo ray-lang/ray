@@ -18,6 +18,8 @@ where
 {
     fn apply_subst(&mut self, subst: &Subst<V, T>);
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>);
+
     fn apply_subst_from<I, S>(&mut self, state: &S)
     where
         S: HasSubst<I, T, V>,
@@ -138,29 +140,14 @@ where
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        for ty in self.iter_mut() {
+            ty.apply_subst_all(subst);
+        }
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         self.iter().flat_map(|ty| ty.free_vars()).collect()
-    }
-}
-
-impl<A, T, B, V> Substitutable<V, T> for (A, B)
-where
-    A: Substitutable<V, T>,
-    B: Substitutable<V, T>,
-    T: Ty<V>,
-    V: TyVar,
-{
-    fn apply_subst(&mut self, subst: &Subst<V, T>) {
-        self.0.apply_subst(subst);
-        self.1.apply_subst(subst);
-    }
-
-    fn free_vars(&self) -> Vec<&V> {
-        self.0
-            .free_vars()
-            .into_iter()
-            .chain(self.1.free_vars())
-            .collect()
     }
 }
 
@@ -173,6 +160,12 @@ where
     fn apply_subst(&mut self, subst: &Subst<V, T>) {
         if let Some(ty) = self {
             ty.apply_subst(subst);
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        if let Some(ty) = self {
+            ty.apply_subst_all(subst);
         }
     }
 
@@ -261,14 +254,11 @@ where
         }
 
         write!(f, "{{\n")?;
-        let mut lines = self
-            .iter()
-            .map(|(var, ty)| format!("  {}: {}\n", var, ty))
-            .collect::<Vec<_>>();
-        lines.sort();
+        let mut lines = self.iter().collect::<Vec<_>>();
+        lines.sort_by_key(|(var, _)| var.get_u32().unwrap_or(u32::MAX));
 
-        for line in lines {
-            write!(f, "{}", line)?;
+        for (var, ty) in lines {
+            write!(f, "  {}: {}\n", var, ty)?;
         }
 
         write!(f, "}}")

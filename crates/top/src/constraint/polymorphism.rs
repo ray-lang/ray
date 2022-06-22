@@ -111,6 +111,35 @@ where
         }
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        match &mut self.kind {
+            PolyConstraintKind::Generalize(_, mono_tys, ty) => {
+                for ty in mono_tys {
+                    ty.apply_subst_all(subst);
+                }
+                ty.apply_subst_all(subst);
+            }
+            PolyConstraintKind::Instantiate(ty, sigma) => {
+                ty.apply_subst_all(subst);
+                sigma.apply_subst_all(subst);
+            }
+            PolyConstraintKind::Skolemize(ty, monos, sigma) => {
+                ty.apply_subst_all(subst);
+                for ty in monos {
+                    ty.apply_subst_all(subst);
+                }
+                sigma.apply_subst_all(subst);
+            }
+            PolyConstraintKind::Implicit(a, monos, b) => {
+                a.apply_subst_all(subst);
+                for ty in monos {
+                    ty.apply_subst_all(subst);
+                }
+                b.apply_subst_all(subst);
+            }
+        }
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         match &self.kind {
             PolyConstraintKind::Generalize(var, mono_tys, ty) => mono_tys
@@ -156,20 +185,22 @@ where
                 mono_tys.apply_subst_from(state);
                 ty.apply_subst_from(state);
                 state.change_qualifiers(|this, qual| qual.apply_subst_from(this));
+                log::debug!("mono_tys: {:?}", mono_tys);
                 let type_scheme = state.generalize_with_qualifiers(&mono_tys, &ty);
+                log::debug!("generalized: {} --> {}", ty, type_scheme);
                 state.store_type_scheme(var.clone(), type_scheme);
             }
             PolyConstraintKind::Instantiate(ty, sigma) => {
                 let scheme = state.find_scheme(sigma).unwrap();
                 let mut info = self.info.clone();
                 info.instantiated_type_scheme(&scheme);
-                log::debug!("instantiated type scheme: {} ({})", scheme, info);
+                log::debug!("instantiated type scheme: {:?} ({})", scheme, info);
                 if let Some(var) = ty.maybe_var() {
                     state.instantiated_type_scheme(var.clone(), scheme.clone());
                 }
                 let (preds, instantiated_ty) = state.instantiate(scheme).split();
-                log::debug!("preds: {}", preds);
-                log::debug!("instantiated type: {}", instantiated_ty);
+                log::debug!("preds: {:?}", preds);
+                log::debug!("instantiated type: {:?}", instantiated_ty);
                 info.equality_type_pair(&instantiated_ty, ty);
                 state.prove_qualifiers(preds, &info);
                 state.push_constraint(Constraint::from(EqualityConstraint::new(
@@ -181,12 +212,13 @@ where
             PolyConstraintKind::Skolemize(ty, mono_tys, sigma) => {
                 let mut info = self.info.clone();
                 let forall = state.find_scheme(sigma).unwrap();
-                log::debug!("skolemized: {:?}", forall);
+                log::debug!("pre-skolemized: {:?}", forall);
                 info.skolemized_type_scheme(mono_tys, &forall);
                 let (preds, skolem_ty) = state
                     .skolemize_faked(info.clone(), mono_tys.clone(), forall)
                     .split();
 
+                log::debug!("skolemized: {:?}", skolem_ty);
                 info.equality_type_pair(ty, ty);
                 state.assume_qualifiers(preds, &info);
                 state.push_constraint(Constraint::from(EqualityConstraint::new(

@@ -96,6 +96,11 @@ where
         self.ty.apply_subst(subst);
     }
 
+    fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
+        self.qualifiers.apply_subst_all(subst);
+        self.ty.apply_subst_all(subst);
+    }
+
     fn free_vars(&self) -> Vec<&V> {
         self.qualifiers
             .free_vars()

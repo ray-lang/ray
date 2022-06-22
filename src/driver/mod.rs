@@ -72,24 +72,7 @@ impl Driver {
             }
         }
 
-        let mut libs = vec![];
-        let mut modules = mod_builder.modules;
-        let mut srcmaps = mod_builder.srcmaps;
-        let mut lib_set = HashSet::new();
-        let mut lib_defs = Env::new();
-        let mut tcx = TyCtx::new();
-        for (lib_path, mut lib) in mod_builder.libs {
-            lib_set.insert(lib_path.clone());
-            let curr_tyvar_idx = lib.tcx.tf().curr();
-            log::debug!("curr ty var index for {}: {}", lib_path, curr_tyvar_idx);
-            tcx.extend(lib.tcx);
-            srcmaps.insert(lib_path, lib.srcmap);
-            libs.push(lib.program);
-            lib_defs.extend(lib.defs);
-        }
-
-        let (mut module, mut srcmap, _) =
-            transform::combine(&mod_path, &mut modules, &mut srcmaps, &lib_set, &mut tcx)?;
+        let (mut module, mut tcx, mut srcmap, lib_defs, libs) = mod_builder.finish(&mod_path)?;
         module.is_lib = options.build_lib;
 
         log::debug!("{}", module);
@@ -128,6 +111,7 @@ impl Driver {
                 .collect(),
         );
         tcx.extend_predicates(solution.qualifiers.clone());
+        tcx.tf().skip_to(solution.unique as u64);
 
         // module.apply_subst(&solution.subst);
 
