@@ -14,7 +14,7 @@ use llvm::{
     basic_block::BasicBlock,
     module::Linkage,
     passes::{PassManager, PassManagerBuilder},
-    targets::{FileType, InitializationConfig, Target, TargetMachine, TargetTriple},
+    targets::{FileType, InitializationConfig, Target as LLVMTarget, TargetMachine, TargetTriple},
     types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, IntType, StructType},
     values::{
         AnyValue, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
@@ -31,6 +31,7 @@ use crate::{
     lir,
     pathlib::FilePath,
     span::SourceMap,
+    target::Target,
     typing::{
         ty::{Ty, TyScheme},
         TyCtx,
@@ -52,6 +53,7 @@ pub fn codegen<'a, 'ctx, P>(
     tcx: &TyCtx,
     srcmap: &SourceMap,
     lcx: &'a llvm::context::Context,
+    target: &Target,
     output_path: P,
 ) -> Result<(), Vec<RayError>>
 where
@@ -60,7 +62,7 @@ where
     let name = program.module_path.to_string();
     let module = lcx.create_module(&name);
     let builder = lcx.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(lcx, &module, &builder);
+    let mut ctx = LLVMCodegenCtx::new(target, lcx, &module, &builder);
     program.codegen(&mut ctx, tcx, srcmap);
 
     if let Err(err) = module.verify() {
@@ -96,6 +98,11 @@ where
         );
     }
 
+    log::debug!(
+        "LLVM Module:\n--------------\n{}",
+        module.print_to_string().to_string()
+    );
+
     // write out the object to a temp file
     let mut rng = rand::thread_rng();
     let id = rng.gen::<u64>();
@@ -115,14 +122,17 @@ where
     let wasm_path = output_path("wasm");
     log::info!("writing to {}", wasm_path);
     let curr_dir = env::current_dir().unwrap();
-    lld::link(&[
-        str!("wasm-ld"),
-        obj_path.to_string(),
-        malloc_path.to_string(),
-        str!("--no-entry"),
-        str!("-o"),
-        curr_dir.join(wasm_path).to_str().unwrap().to_string(),
-    ])
+    lld::link(
+        target.to_string(),
+        &[
+            str!("lld"),
+            obj_path.to_string(),
+            malloc_path.to_string(),
+            str!("--no-entry"),
+            str!("-o"),
+            curr_dir.join(wasm_path).to_str().unwrap().to_string(),
+        ],
+    )
     .ok()
     .unwrap();
     Ok(())
@@ -148,8 +158,8 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     curr_fn: Option<FunctionValue<'ctx>>,
     fn_index: HashMap<Path, FunctionValue<'ctx>>,
     struct_types: HashMap<String, StructType<'ctx>>,
-    data_addrs: HashMap<usize, GlobalValue<'ctx>>,
-    globals: HashMap<usize, GlobalValue<'ctx>>,
+    data_addrs: HashMap<(Path, usize), GlobalValue<'ctx>>,
+    globals: HashMap<(Path, usize), GlobalValue<'ctx>>,
     locals: HashMap<usize, PointerValue<'ctx>>,
     local_tys: Vec<Ty>,
     blocks: HashMap<usize, BasicBlock<'ctx>>,
@@ -157,23 +167,34 @@ struct LLVMCodegenCtx<'a, 'ctx> {
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn new(
+        target: &Target,
         lcx: &'ctx llvm::context::Context,
         module: &'a llvm::module::Module<'ctx>,
         builder: &'a llvm::builder::Builder<'ctx>,
     ) -> Self {
-        Target::initialize_webassembly(&InitializationConfig::default());
-        // TODO: make this variable?
-        let target = Target::from_name("wasm32").expect("could not get wasm32 target");
-        let target_machine = target
+        LLVMTarget::initialize_webassembly(&InitializationConfig::default());
+
+        // create the LLVM target machine from the target parameter
+        let (llvm_target, target_triple) = match target {
+            Target::Wasm | Target::Wasm32 | Target::Wasi | Target::Wasm32Wasi => (
+                LLVMTarget::from_name("wasm32").expect("could not get wasm32 target"),
+                TargetTriple::create("wasm32-wasi"),
+            ),
+        };
+
+        let target_machine = llvm_target
             .create_target_machine(
-                &TargetTriple::create("wasm32-wasi"),
+                &target_triple,
                 "generic",
                 "",
                 llvm::OptimizationLevel::Default,
                 llvm::targets::RelocMode::Default,
                 llvm::targets::CodeModel::Default,
             )
-            .expect("could not create wasm32-wasi target machine");
+            .expect(&format!(
+                "could not create `{}` target machine",
+                llvm_target.get_name().to_str().unwrap()
+            ));
 
         let target_data = target_machine.get_target_data();
         let data_layout = target_data.get_data_layout();
@@ -198,8 +219,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn type_of(&self, var: &lir::Variable) -> &Ty {
         match var {
             lir::Variable::Unit => panic!("unit is untyped"),
-            lir::Variable::Data(_) => panic!("data is untyped"),
-            lir::Variable::Global(idx) => {
+            lir::Variable::Data(..) => panic!("data is untyped"),
+            lir::Variable::Global(_, idx) => {
                 todo!("type of global: {}", idx)
             }
             lir::Variable::Local(idx) => &self.local_tys[*idx],
@@ -310,8 +331,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         // TODO: what to do about size???
         let offset = self.ptr_type().const_int(offset, false);
         match var {
-            lir::Variable::Data(_) => todo!(),
-            lir::Variable::Global(_) => todo!(),
+            lir::Variable::Data(..) => todo!(),
+            lir::Variable::Global(..) => todo!(),
             lir::Variable::Local(idx) => {
                 let ptr = self.load_local(*idx).into_pointer_value();
                 unsafe { self.builder.build_gep(ptr, &[self.zero(), offset], "") }
@@ -325,6 +346,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             Ty::Never => todo!("to_llvm_ty: {}", ty),
             Ty::Any => todo!("to_llvm_ty: {}", ty),
             Ty::Func(_, _) => todo!("to_llvm_ty: {}", ty),
+            Ty::Accessor(_, _) => todo!("to_llvm_ty: {}", ty),
             Ty::Var(_) => todo!("to_llvm_ty: {}", ty),
             Ty::Union(_) => todo!("to_llvm_ty: {}", ty),
             Ty::Array(..) => todo!("to_llvm_ty: {}", ty),
@@ -492,7 +514,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             let global = ctx.module.add_global(
                 i8_type.array_type(value.len() as u32),
                 Some(AddressSpace::Generic),
-                d.name(),
+                &d.name(),
             );
             global.set_initializer(
                 &i8_type.const_array(
@@ -504,7 +526,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
                 ),
             );
 
-            ctx.data_addrs.insert(d.index(), global);
+            ctx.data_addrs.insert(d.key(), global);
         }
 
         for global in self.globals.iter() {
@@ -515,7 +537,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             let init_value = global.init_value.codegen(ctx, tcx, srcmap);
             global_val.set_initializer(&init_value);
 
-            ctx.globals.insert(global.idx, global_val);
+            ctx.globals.insert(global.key(), global_val);
         }
 
         let mut funcs = vec![];
@@ -620,7 +642,6 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Func {
             let alloca = ctx.alloca(&param.ty, tcx);
             ctx.builder.build_store(alloca, param_val);
             ctx.locals.insert(param.idx, alloca);
-            log::debug!("adding local parameter {} (${})", param.name, param.idx);
         }
 
         for loc in self.locals.iter() {
@@ -630,7 +651,6 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Func {
 
             let alloca = ctx.alloca(loc.ty.mono(), tcx);
             ctx.locals.insert(loc.idx, alloca);
-            log::debug!("adding local ${}", loc.idx);
         }
 
         // codegen each block as a basic block
@@ -839,8 +859,8 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Store {
         // TODO: what to do about size?
         let offset = ctx.size_to_int(&self.offset);
         match self.dst {
-            lir::Variable::Data(_) => todo!(),
-            lir::Variable::Global(_) => todo!(),
+            lir::Variable::Data(..) => todo!(),
+            lir::Variable::Global(..) => todo!(),
             lir::Variable::Local(idx) => {
                 let mut ptr = ctx.get_local(idx);
                 log::debug!("ptr = {}", ptr.print_to_string());
@@ -1202,15 +1222,15 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Variable {
         _: &SourceMap,
     ) -> Self::Output {
         match self {
-            lir::Variable::Data(idx) => ctx
+            lir::Variable::Data(path, idx) => ctx
                 .data_addrs
-                .get(idx)
+                .get(&(path.clone(), *idx))
                 .unwrap()
                 .as_pointer_value()
                 .as_basic_value_enum(),
-            lir::Variable::Global(idx) => ctx
+            lir::Variable::Global(path, idx) => ctx
                 .globals
-                .get(idx)
+                .get(&(path.clone(), *idx))
                 .unwrap()
                 .as_pointer_value()
                 .as_basic_value_enum(),

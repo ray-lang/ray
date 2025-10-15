@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    ops::{Deref, DerefMut},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -152,5 +156,56 @@ impl SourceMap {
     pub fn has_inline<T>(&self, node: &Node<T>) -> bool {
         let path = Path::from("inline");
         self.has_decorator(node, &path)
+    }
+}
+
+pub struct Sourced<'a, T>(pub &'a mut T, pub &'a Source);
+
+impl<'a, T> Deref for Sourced<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, T> DerefMut for Sourced<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<'a, T> Display for Sourced<'a, T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl<'a, T> Sourced<'a, T> {
+    pub fn unpack(&self) -> (&T, &Source) {
+        (self.0, self.1)
+    }
+
+    pub fn unpack_mut(&mut self) -> (&mut T, &Source) {
+        (self.0, self.1)
+    }
+
+    pub fn value(&self) -> &T {
+        &self.0
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+
+    pub fn src(&self) -> &Source {
+        &self.1
+    }
+
+    pub fn src_module(&self) -> &Path {
+        &self.1.src_module
     }
 }

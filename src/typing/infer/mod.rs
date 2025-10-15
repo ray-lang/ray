@@ -1,16 +1,14 @@
 use std::collections::HashSet;
 
 use top::{
-    mgu,
     solver::{greedy::GreedySolver, SolveOptions, SolveResult, Solver},
-    Class, Instance, Predicate, Predicates, Subst, Substitutable,
+    Class, Instance, Predicate, Predicates, Substitutable,
 };
 
 use crate::{
-    ast::Path,
-    errors::{RayError, RayErrorKind},
-    span::{Source, SourceMap},
-    typing::{state::Env, traits::QualifyTypes, ty::TyScheme},
+    sema::NameContext,
+    span::SourceMap,
+    typing::{state::Env, traits::QualifyTypes},
 };
 
 use super::{
@@ -19,22 +17,21 @@ use super::{
     context::TyCtx,
     info::TypeSystemInfo,
     state::SchemeEnv,
-    // predicate::TyPredicate,
-    // solvers::{GreedySolver, Solution, Solver},
-    ty::{SigmaTy, Ty, TyVar},
+    ty::{Ty, TyVar},
     TypeError,
 };
 
 pub(crate) mod solution;
 
 #[derive(Debug)]
-pub struct InferSystem<'tcx> {
-    tcx: &'tcx mut TyCtx,
+pub struct InferSystem<'a> {
+    tcx: &'a mut TyCtx,
+    ncx: &'a mut NameContext,
 }
 
-impl<'tcx> InferSystem<'tcx> {
-    pub fn new(tcx: &'tcx mut TyCtx) -> InferSystem {
-        InferSystem { tcx }
+impl<'a> InferSystem<'a> {
+    pub fn new(tcx: &'a mut TyCtx, ncx: &'a mut NameContext) -> InferSystem<'a> {
+        InferSystem { tcx, ncx }
     }
 
     pub fn infer_ty<T, U>(
@@ -52,6 +49,7 @@ impl<'tcx> InferSystem<'tcx> {
             mono_tys: &mono_tys,
             srcmap: &srcmap,
             tcx: self.tcx,
+            ncx: self.ncx,
             new_defs: &mut new_defs,
             defs,
         };
@@ -142,19 +140,6 @@ impl<'tcx> InferSystem<'tcx> {
             log::debug!("defs: {:?}", defs);
             defs.apply_subst_all(&solution.subst);
             defs.qualify_tys(&solution.qualifiers);
-            log::debug!("defs: {:?}", defs);
-            // let mut new_defs = SchemeEnv::new();
-            // for (mut path, mut scheme) in defs.drain() {
-            //     if scheme.has_quantifiers() {
-            //         let qual_ty = scheme.take().ty;
-            //         let gen_scheme = qual_ty.clone().generalize_all();
-            //         if let Ok((_, subst)) = mgu(qual_ty.ty(), gen_scheme.ty.ty()) {
-            //             path.apply_subst(&subst);
-            //         }
-            //         scheme = TyScheme::scheme(gen_scheme);
-            //     }
-            //     new_defs.insert(path, scheme);
-            // }
             log::debug!("defs: {}", defs);
             Ok((solution, defs))
         }

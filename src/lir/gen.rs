@@ -190,6 +190,10 @@ impl GenCtx {
         self.builder = Some(builder);
     }
 
+    fn path(&self) -> Path {
+        self.prog.borrow().module_path.clone()
+    }
+
     fn add_sym(&mut self, sym: Path) {
         self.builder.as_mut().unwrap().symbols.insert(sym);
     }
@@ -233,11 +237,13 @@ impl GenCtx {
 
     fn new_global(&mut self, name: &Path, init_value: lir::Value, ty: TyScheme, mutable: bool) {
         let mut prog = self.prog.borrow_mut();
+        let path = prog.module_path.clone();
         let idx = prog.globals.len();
         let name = name.to_string();
         self.global_idx.insert(name.clone(), idx);
         prog.globals.push(lir::Global {
             idx,
+            path,
             name,
             ty,
             init_value,
@@ -256,11 +262,11 @@ impl GenCtx {
         }
 
         let mut prog = self.prog.borrow_mut();
+        let path = prog.module_path.clone();
         let idx = prog.data.len();
         self.data_idx.insert(value.clone(), idx);
 
-        let name = format!(".data.{}", idx);
-        prog.data.push(lir::Data::new(idx, name, value));
+        prog.data.push(lir::Data::new(idx, path, value));
         idx
     }
 
@@ -729,35 +735,26 @@ impl LirGen<GenResult> for (&Expr, &TyScheme) {
                 }
 
                 let fn_name = base
-                    .map(|base| {
-                        let fn_name = base.to_string();
-                        log::debug!("fn_name = {}", fn_name);
-                        if let Some((mut func_fqn, trait_fqn)) =
-                            tcx.lookup_fqn_with_trait(&fn_name).cloned()
-                        {
-                            log::debug!("func_fqn: {}", func_fqn);
-                            if let Some((poly_ty, trait_fn_ty)) =
-                                poly_ty.as_ref().and_then(|poly_ty| {
-                                    trait_fqn
-                                        .and_then(|trait_fqn| {
-                                            tcx.get_trait_fn(&trait_fqn, &fn_name)
-                                        })
-                                        .map(|fn_ty| (poly_ty, fn_ty))
+                    .map(|mut func_fqn| {
+                        log::debug!("func_fqn = {}", func_fqn);
+                        let trait_fqn = tcx.resolve_trait_from_path(&func_fqn);
+                        if let Some((poly_ty, trait_fn_ty)) = poly_ty.as_ref().and_then(|poly_ty| {
+                            trait_fqn
+                                .and_then(|trait_fqn| {
+                                    tcx.get_trait_fn(&trait_fqn, &func_fqn.name().unwrap())
                                 })
-                            {
-                                log::debug!("poly_ty: {}", poly_ty);
-                                log::debug!("fn_ty: {}", trait_fn_ty);
-                                let (_, subst) = mgu(trait_fn_ty.mono(), poly_ty.mono())
-                                    .ok()
-                                    .unwrap_or_default();
-                                log::debug!("subst: {}", subst);
-                                func_fqn.apply_subst(&subst);
-                            }
-
-                            func_fqn
-                        } else {
-                            base
+                                .map(|fn_ty| (poly_ty, fn_ty))
+                        }) {
+                            log::debug!("poly_ty: {}", poly_ty);
+                            log::debug!("fn_ty: {}", trait_fn_ty);
+                            let (_, subst) = mgu(trait_fn_ty.mono(), poly_ty.mono())
+                                .ok()
+                                .unwrap_or_default();
+                            log::debug!("subst: {}", subst);
+                            func_fqn.apply_subst(&subst);
                         }
+
+                        func_fqn
                     })
                     .map(|base| {
                         log::debug!("base_name: {}", base);
@@ -975,7 +972,7 @@ impl LirGen<GenResult> for (&Path, &TyScheme) {
         let &(path, ty) = self;
         let name = path.to_string();
         if let Some(&global) = ctx.global_idx.get(&name) {
-            return Ok(lir::Variable::Global(global).into());
+            return Ok(lir::Variable::Global(ctx.path(), global).into());
         }
 
         let loc = ctx.get_var(&name).copied().unwrap_or_else(|| {
@@ -1026,9 +1023,10 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 ctx.push(lir::Inst::SetLocal(data_loc.into(), ptr.into()));
 
                 // make a call to `memcpy` to copy the bytes
+                let path = ctx.path();
                 ctx.push(lir::Inst::MemCopy(
                     lir::Variable::Local(data_loc), // dst
-                    lir::Variable::Data(idx),       // src
+                    lir::Variable::Data(path, idx), // src
                     string_size.into(),             // size
                 ));
 
@@ -1076,7 +1074,7 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
         ctx.with_entry_block(|ctx| {
             // add the parameters to the function
             for p in func.sig.params.iter() {
-                let name = p.name().unwrap().to_string();
+                let name = p.name().to_string();
                 let ty = tcx.ty_of(p.id);
                 ctx.param(name, ty.into_mono());
             }

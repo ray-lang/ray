@@ -125,6 +125,7 @@ impl Parser<'_> {
         let span = Span { start, end };
         let pattern = if seq.items.len() == 1 && !seq.trailing {
             let item = seq.items.pop().unwrap();
+            let src = self.mk_src(span);
             match item.value {
                 Expr::Name(n) => Pattern::Name(n),
                 _ => unreachable!(),
@@ -371,10 +372,7 @@ impl Parser<'_> {
         let end = self.expect_end(TokenKind::RightCurly)?;
 
         Ok(self.mk_expr(
-            Expr::Block(Block {
-                stmts,
-                is_top_level: ctx.top_level,
-            }),
+            Expr::Block(Block::new(stmts)),
             Span { start, end },
             ctx.path.clone(),
         ))

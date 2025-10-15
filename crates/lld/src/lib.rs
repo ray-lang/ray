@@ -11,7 +11,7 @@ struct LLDInvokeResult {
 }
 
 extern "C" {
-    fn lld_link(argc: c_int, argv: *const *const c_char) -> LLDInvokeResult;
+    fn lld_link(flavor: *const c_char, argc: c_int, argv: *const *const c_char) -> LLDInvokeResult;
     fn link_free_result(result: *mut LLDInvokeResult);
 }
 
@@ -35,7 +35,7 @@ impl LLDResult {
 }
 
 /// Invokes LLD of the given flavor with the specified arguments.
-pub fn link(args: &[String]) -> LLDResult {
+pub fn link(flavor: String, args: &[String]) -> LLDResult {
     // Prepare arguments
     let c_args = args
         .iter()
@@ -44,7 +44,8 @@ pub fn link(args: &[String]) -> LLDResult {
     let args: Vec<*const c_char> = c_args.iter().map(|arg| arg.as_ptr()).collect();
 
     // Invoke LLD
-    let mut lld_result = unsafe { lld_link(args.len() as c_int, args.as_ptr()) };
+    let flavor = CString::new(flavor.as_bytes()).unwrap();
+    let mut lld_result = unsafe { lld_link(flavor.as_ptr(), args.len() as c_int, args.as_ptr()) };
 
     // Get the messages from the invocation
     let messages = if !lld_result.messages.is_null() {

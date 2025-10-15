@@ -29,6 +29,15 @@
             //     "--log-level",
             //     "debug",
             //     "build",
+            //     "-K",
+            //     "--lib",
+            //     "--no-core",
+            //     "examples/module"
+            // ],
+            // "args": [
+            //     "--log-level",
+            //     "debug",
+            //     "build",
             //     // "-K",
             //     "--no-core",
             //     "--print-ast",
@@ -41,6 +50,33 @@
             //     "--lib",
             //     "lib/core"
             // ],
+            "env": {
+                "RUST_BACKTRACE": "1"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug build libcore 'ray'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=ray",
+                    "--package=ray"
+                ],
+                "filter": {
+                    "name": "ray",
+                    "kind": "bin"
+                },
+            },
+            "args": [
+                "--log-level",
+                "debug",
+                "build",
+                "--lib",
+                "lib/core"
+            ],
             "env": {
                 "RUST_BACKTRACE": "1"
             },

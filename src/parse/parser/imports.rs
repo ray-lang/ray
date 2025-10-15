@@ -1,5 +1,5 @@
 use crate::{
-    ast::{token::TokenKind, Import, Node, Path, Trailing},
+    ast::{token::TokenKind, Import, ImportKind, Node, Path, Trailing},
     parse::{ParseContext, ParseResult, Parser},
     span::Span,
 };
@@ -23,30 +23,33 @@ impl Parser<'_> {
                 );
             }
 
-            let (c_import, sp) = self.expect_string()?;
+            let (header_path, sp) = self.expect_string()?;
             let end = sp.end;
             Import {
-                path: Node::new(Path::new()),
-                with: None,
+                kind: ImportKind::CImport(header_path, sp),
                 span: Span { start, end },
-                c_import: Some((c_import, sp)),
             }
         } else {
             let path = self.parse_path()?;
             let mut end = self.srcmap.span_of(&path).end;
             let with = if expect_if!(self, TokenKind::With) {
                 let (names, span) = self.parse_name_seq(Trailing::Disallow, ctx)?;
+                let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
                 end = span.end;
                 Some(names)
             } else {
                 None
             };
 
+            let kind = if let Some(with) = with {
+                ImportKind::Names(path, with)
+            } else {
+                ImportKind::Path(path)
+            };
+
             Import {
-                path,
-                with,
+                kind,
                 span: Span { start, end },
-                c_import: None,
             }
         })
     }

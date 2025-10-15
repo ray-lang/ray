@@ -26,6 +26,11 @@ lazy_static! {
 
     /// Filesystem path to an llvm-config binary for the correct version.
     static ref LLVM_CONFIG_PATH: PathBuf = {
+        // Check the LLVM_CONFIG_PATH environment variable first.
+        if let Some(path) = env::var_os("LLVM_SYS_CONFIG_PATH") {
+            return path.into();
+        }
+
         // Try llvm-config via PATH first.
         if let Some(name) = locate_system_llvm_config() {
             return name.into();
@@ -360,6 +365,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=lldDriver");
     println!("cargo:rustc-link-lib=static=lldELF");
     println!("cargo:rustc-link-lib=static=lldMachO");
+    println!("cargo:rustc-link-lib=static=lldMachO2");
     println!("cargo:rustc-link-lib=static=lldMinGW");
     println!("cargo:rustc-link-lib=static=lldReaderWriter");
     println!("cargo:rustc-link-lib=static=lldWasm");

@@ -1,10 +1,8 @@
 use crate::{
     ast::{Expr, Modifier, Name, Node, Path, TypeParams},
     span::{parsed::Parsed, Source, Span},
-    typing::ty::{SigmaTy, Ty, TyScheme},
+    typing::ty::{Ty, TyScheme},
 };
-
-use super::Decl;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FnParam {
@@ -22,10 +20,17 @@ impl std::fmt::Display for FnParam {
 }
 
 impl FnParam {
-    pub fn name(&self) -> Option<&Path> {
+    pub fn name(&self) -> &Path {
         match self {
             FnParam::DefaultValue(p, _) => p.name(),
-            FnParam::Name(n) => Some(&n.path),
+            FnParam::Name(n) => &n.path,
+        }
+    }
+
+    pub fn name_mut(&mut self) -> &mut Path {
+        match self {
+            FnParam::DefaultValue(p, _) => p.name_mut(),
+            FnParam::Name(n) => &mut n.path,
         }
     }
 
@@ -56,7 +61,6 @@ impl FnParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuncSig {
     pub path: Path,
-    pub name: Option<String>,
     pub params: Vec<Node<FnParam>>,
     pub ty_params: Option<TypeParams>,
     pub ret_ty: Option<Parsed<Ty>>,
@@ -64,6 +68,7 @@ pub struct FuncSig {
     pub modifiers: Vec<Modifier>,
     pub qualifiers: Vec<Parsed<Ty>>,
     pub doc_comment: Option<String>,
+    pub is_anon: bool,
     pub is_method: bool,
     pub has_body: bool,
     pub span: Span,
@@ -80,7 +85,6 @@ impl Func {
         Self {
             sig: FuncSig {
                 path,
-                name: None,
                 params,
                 ty_params: None,
                 ret_ty: None,
@@ -89,6 +93,7 @@ impl Func {
                 qualifiers: vec![],
                 doc_comment: None,
                 is_method: false,
+                is_anon: false,
                 has_body: true,
                 span: Span::new(),
             },
@@ -111,9 +116,7 @@ impl std::fmt::Display for FuncSig {
         write!(
             f,
             "{}{}({}){}",
-            self.name
-                .as_ref()
-                .map_or_else(|| "__anon__".to_string(), |n| n.to_string()),
+            self.path.name().unwrap_or_else(|| "__anon__".to_string()),
             ty_params,
             self.params
                 .iter()

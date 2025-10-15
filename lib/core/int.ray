@@ -17,7 +17,7 @@ impl Int[u64] {}
 impl ToStr[int] {
     fn to_str(self: int) -> string {
         len = 1
-        i = abs(self)
+        mut i = abs(self)
         while true {
             i /= 10
             len += 1
@@ -32,7 +32,7 @@ impl ToStr[int] {
 
         raw_ptr = new(u8, len)
         i = abs(self)
-        ptr = ptr_add(raw_ptr, len - 1)
+        mut ptr = ptr_add(raw_ptr, len - 1)
         while true {
             *ptr = ('0' as u8) + ((i%10) as u8)
             ptr = ptr_sub(ptr, 1)

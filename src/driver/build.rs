@@ -1,68 +1,79 @@
 use crate::pathlib::FilePath;
 use crate::target::Target;
 
-use structopt::StructOpt;
+use clap::builder::PossibleValuesParser;
+use clap::StructOpt;
+// use clap::ArgAction::
 
 #[derive(Debug, StructOpt)]
 pub struct BuildOptions {
-    #[structopt(name = "INPUT", help = "entrypoint of the program")]
+    #[clap(name = "INPUT", help = "entrypoint of the program", action = clap::ArgAction::Set)]
     pub input_path: FilePath,
 
-    #[structopt(long = "stdout", help = "Writes output to stdout")]
+    #[clap(long = "stdout", help = "Writes output to stdout", action = clap::ArgAction::SetTrue)]
     pub to_stdout: bool,
 
-    #[structopt(
+    #[clap(
         long = "assembly",
-        short = "S",
-        help = "Write out assembly instead of compiling"
+        short = 'S',
+        help = "Write out assembly instead of compiling",
+        action = clap::ArgAction::SetTrue
     )]
     pub write_assembly: bool,
 
-    #[structopt(
+    #[clap(
         long = "optimize",
-        short = "O",
+        short = 'O',
         help = "Set optimize level",
-        default_value = "2"
+        default_value = "2",
+        action = clap::ArgAction::Set
     )]
     pub max_optimize_level: i8,
 
-    #[structopt(long, help = "Emit IR to output")]
+    #[clap(long, help = "Emit IR to output", action = clap::ArgAction::SetTrue)]
     pub emit_ir: bool,
 
-    #[structopt(long, help = "Print the AST after parsing")]
+    #[clap(long, help = "Print the AST after parsing", action = clap::ArgAction::SetTrue)]
     pub print_ast: bool,
 
-    #[structopt(long = "skip-compile", short = "K", help = "Skip compilation step")]
+    #[clap(long = "skip-compile", short = 'K', help = "Skip compilation step", action = clap::ArgAction::SetTrue)]
     pub no_compile: bool,
 
-    #[structopt(long, help = "Disable automatic import of `core` library")]
+    #[clap(long, help = "Disable automatic import of `core` library", action = clap::ArgAction::SetTrue)]
     pub no_core: bool,
 
-    #[structopt(
+    #[clap(
         long,
         short,
         help = "Compile target",
-        possible_values = &[
+        value_parser([
+            Target::Wasm32Wasi.as_str(),
             Target::Wasm32.as_str(),
+            Target::Wasi.as_str(),
             Target::Wasm.as_str(),
-        ]
+        ])
     )]
     pub target: Option<Target>,
 
-    #[structopt(long, short, help = "Output path")]
+    #[clap(long, short, help = "Output path", action = clap::ArgAction::Set)]
     pub output_path: Option<FilePath>,
 
-    #[structopt(
+    #[clap(
         long = "include",
-        short = "I",
-        help = "Add directory to C include search path"
+        short = 'I',
+        help = "Add directory to C include search path",
+        action = clap::ArgAction::Append,
     )]
     pub c_include_paths: Option<Vec<FilePath>>,
 
-    #[structopt(long = "link", short = "L", help = "Link in module")]
+    #[clap(long = "link", short = 'L', help = "Link in module", action = clap::ArgAction::Append)]
     pub link_modules: Option<Vec<FilePath>>,
 
-    #[structopt(long = "lib", help = "Build a library (without library)")]
+    #[clap(
+        long = "lib",
+        help = "Build a library (without library)",
+        action = clap::ArgAction::SetTrue,
+    )]
     pub build_lib: bool,
 }
 

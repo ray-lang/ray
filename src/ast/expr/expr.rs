@@ -99,7 +99,7 @@ impl std::fmt::Display for Expr {
                     .as_ref()
                     .map_or_else(|| "(return)".to_string(), |ex| format!("(return {})", ex)),
                 Expr::Sequence(ex) => ex.to_string(),
-                Expr::Tuple(ex) => format!("(tuple {})", ex),
+                Expr::Tuple(ex) => ex.to_string(),
                 Expr::Type(ex) => ex.to_string(),
                 Expr::TypeAnnotated(value, ty) => format!("({} :: {})", value, ty),
                 Expr::UnaryOp(ex) => ex.to_string(),
@@ -152,7 +152,7 @@ impl Expr {
     pub fn get_name(&self) -> Option<String> {
         match self {
             Expr::Name(n) => Some(n.path.to_string()),
-            Expr::Func(f) => f.sig.name.clone(),
+            Expr::Func(f) => f.sig.path.name(),
             Expr::Pattern(p) => p.get_name(),
             Expr::Path(p) => Some(p.to_string()),
             Expr::Assign(_)

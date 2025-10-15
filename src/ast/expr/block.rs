@@ -6,7 +6,6 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub stmts: Vec<Node<Expr>>,
-    pub is_top_level: bool,
 }
 
 impl std::fmt::Display for Block {
@@ -17,5 +16,11 @@ impl std::fmt::Display for Block {
 
         let stmts = strutils::indent_lines_iter(&self.stmts, 2);
         write!(f, "(block\n{}\n)", stmts)
+    }
+}
+
+impl Block {
+    pub fn new(stmts: Vec<Node<Expr>>) -> Self {
+        Block { stmts }
     }
 }

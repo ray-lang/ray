@@ -11,6 +11,7 @@ pub type RayResult<T = ()> = Result<T, RayError>;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RayErrorKind {
     Parse,
+    Name,
     Import,
     Compile,
     Type,
@@ -25,6 +26,7 @@ impl fmt::Display for RayErrorKind {
             "{}",
             match self {
                 RayErrorKind::Parse => "parse error",
+                RayErrorKind::Name => "name error",
                 RayErrorKind::Import => "import error",
                 RayErrorKind::Compile => "compile error",
                 RayErrorKind::Type => "type error",

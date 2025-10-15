@@ -16,17 +16,21 @@ mod build;
 
 pub use build::BuildOptions;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RayPaths {
     root: FilePath,
 }
 
 impl RayPaths {
+    pub fn is_empty(&self) -> bool {
+        self.root.is_empty()
+    }
+
     pub fn get_build_path(&self) -> FilePath {
         &self.root / "build"
     }
 
-    pub fn get_stdlib_path(&self) -> FilePath {
+    pub fn get_lib_path(&self) -> FilePath {
         &self.root / "lib"
     }
 
@@ -65,20 +69,24 @@ impl Driver {
         let mut c_include_paths = options.c_include_paths.clone().unwrap_or_else(|| vec![]);
         c_include_paths.insert(0, paths.get_c_includes_path());
         let mut mod_builder = sema::ModuleBuilder::new(&paths, c_include_paths, options.no_core);
-        let mod_path = mod_builder.build_from_path(&options.input_path, None)?;
+        let module_path = match mod_builder.build_from_path(&options.input_path, None)? {
+            Some(module_path) => module_path.path,
+            None => return Err(mod_builder.take_errors()),
+        };
+
         if options.print_ast {
             for m in mod_builder.modules.values() {
                 eprintln!("{}", m);
             }
         }
 
-        let (mut module, mut tcx, mut srcmap, lib_defs, libs) = mod_builder.finish(&mod_path)?;
-        module.is_lib = options.build_lib;
+        let mut result = mod_builder.finish(&module_path)?;
+        result.module.is_lib = options.build_lib;
 
-        log::debug!("{}", module);
-        let mut inf = InferSystem::new(&mut tcx);
+        log::debug!("{}", result.module);
+        let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
         log::info!("type checking module...");
-        let (solution, defs) = match inf.infer_ty(&module, &mut srcmap, lib_defs) {
+        let (solution, defs) = match inf.infer_ty(&result.module, &mut result.srcmap, result.defs) {
             Ok(result) => result,
             Err(errs) => {
                 return Err(errs
@@ -95,30 +103,30 @@ impl Driver {
         log::debug!("solution: {}", solution);
         log::debug!("defs: {}", defs);
 
-        tcx.apply_subst(&solution.subst);
-        tcx.extend_inst_ty_map(
+        result.tcx.apply_subst(&solution.subst);
+        result.tcx.extend_inst_ty_map(
             solution
                 .inst_type_schemes
                 .iter()
                 .map(|(v, scheme)| (v.clone(), TyScheme::scheme(scheme.clone())))
                 .collect(),
         );
-        tcx.extend_scheme_subst(
+        result.tcx.extend_scheme_subst(
             solution
                 .scheme_subst()
                 .into_iter()
                 .map(|(v, s)| (v, TyScheme::scheme(s)))
                 .collect(),
         );
-        tcx.extend_predicates(solution.qualifiers.clone());
-        tcx.tf().skip_to(solution.unique as u64);
+        result.tcx.extend_predicates(solution.qualifiers.clone());
+        result.tcx.tf().skip_to(solution.unique as u64);
 
         // module.apply_subst(&solution.subst);
 
-        log::debug!("{}", module);
-        log::debug!("{}", tcx);
+        log::debug!("{}", result.module);
+        log::debug!("{}", result.tcx);
 
-        // let mut tyck = TypeCheckSystem::new(&mut tcx, &srcmap);
+        // let mut tyck = TypeCheckSystem::new(&mut result.tcx, &srcmap);
         // if let Err(err) = tyck.type_check(&mut module) {
         //     return Err(vec![RayError {
         //         msg: err.message(),
@@ -132,14 +140,14 @@ impl Driver {
         }
 
         // generate IR
-        let mut program = lir::Program::gen(&module, &solution, &tcx, libs)?;
+        let mut program = lir::Program::gen(&result.module, &solution, &result.tcx, result.libs)?;
         log::debug!("{}", program);
 
         // determine the output path
         let output_path = |ext| {
             if let Some(outpath) = &options.output_path {
                 if outpath.is_dir() {
-                    let filename = mod_path.name().unwrap();
+                    let filename = module_path.name().unwrap();
                     (outpath / filename).with_extension(ext)
                 } else {
                     outpath.clone()
@@ -147,21 +155,32 @@ impl Driver {
             } else if options.build_lib && options.input_path.is_dir() {
                 &options.input_path / format!(".{}", ext)
             } else {
-                let filename = mod_path.name().unwrap();
+                let filename = module_path.name().unwrap();
                 FilePath::from(filename).with_extension(ext)
             }
         };
 
         // if we're building a library, write the program to a .raylib file
         if options.build_lib {
-            let lib = libgen::serialize(program, tcx, srcmap, defs);
+            let mut modules = result.paths.into_iter().collect::<Vec<_>>();
+            modules.sort();
+            log::debug!("modules: {:?}", modules);
+            let lib = libgen::serialize(
+                program,
+                result.tcx,
+                result.ncx,
+                result.srcmap,
+                defs,
+                modules,
+            );
             let path = output_path("raylib");
             let build_path = paths.get_build_path();
             if !build_path.exists() {
                 fs::create_dir_all(build_path).map_err(|err| vec![err.into()])?;
             }
 
-            let cache_path = (paths.get_build_path() / mod_path.join("#")).with_extension("raylib");
+            let cache_path =
+                (paths.get_build_path() / module_path.join("#")).with_extension("raylib");
             log::info!("writing to {}", path);
             // write to the build cache first
             fs::write(cache_path, &lib)
@@ -173,7 +192,15 @@ impl Driver {
             log::debug!("program after monomorphization:\n{}", program);
 
             let lcx = inkwell::context::Context::create();
-            llvm::codegen(&program, &tcx, &srcmap, &lcx, output_path)
+            let target = options.get_target();
+            llvm::codegen(
+                &program,
+                &result.tcx,
+                &result.srcmap,
+                &lcx,
+                &target,
+                output_path,
+            )
         }
     }
 }

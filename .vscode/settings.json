@@ -4,7 +4,10 @@
         "editor.formatOnSave": true,
     },
     // "rust-analyzer.checkOnSave.command": "build",
-    "lldb.library": "/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/LLDB",
+    // "lldb.library": "/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/LLDB",
+    "rust-analyzer.cargo.extraEnv": {
+        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@12/bin/llvm-config"
+    },
     "files.associations": {
         "cstdlib": "cpp",
         "__bit_reference": "cpp",

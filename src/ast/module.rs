@@ -4,6 +4,7 @@ use top::{Subst, Substitutable};
 
 use crate::{
     ast::{Node, Path},
+    collections::nametree::Scope,
     pathlib::FilePath,
     strutils,
     typing::{
@@ -12,7 +13,7 @@ use crate::{
     },
 };
 
-use super::{Decl, Expr};
+use super::{Decl, Expr, Import};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module<A, B>
@@ -23,7 +24,8 @@ where
     pub path: Path,
     pub stmts: Vec<Node<A>>,
     pub decls: Vec<Node<B>>,
-    pub imports: Vec<Path>,
+    pub imports: Vec<Scope>,
+    pub import_stmts: Vec<Import>,
     pub submodules: Vec<Path>,
     pub defs: TyEnv,
     pub doc_comment: Option<String>,
@@ -101,6 +103,7 @@ where
             stmts: vec![],
             decls: vec![],
             imports: other.imports.clone(),
+            import_stmts: other.import_stmts.clone(),
             submodules: other.submodules.clone(),
             defs: other.defs.clone(),
             doc_comment: other.doc_comment.clone(),

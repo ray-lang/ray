@@ -11,16 +11,16 @@ use super::{Expr, Name, Sequence};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pattern {
     Name(Name),
-    Sequence(Vec<Pattern>),
-    Tuple(Vec<Pattern>),
+    Sequence(Vec<Node<Pattern>>),
+    Tuple(Vec<Node<Pattern>>),
     Deref(Name),
 }
 
-impl TryFrom<Node<Expr>> for Pattern {
+impl TryFrom<Expr> for Pattern {
     type Error = RayError;
 
-    fn try_from(expr: Node<Expr>) -> Result<Self, Self::Error> {
-        match expr.value {
+    fn try_from(expr: Expr) -> Result<Self, Self::Error> {
+        match expr {
             Expr::Name(n) => Ok(Pattern::Name(n)),
             Expr::Tuple(tuple) => Pattern::tuple(tuple.seq),
             Expr::Sequence(seq) => Pattern::try_from(seq),
@@ -45,12 +45,13 @@ impl TryFrom<Sequence> for Pattern {
 
     fn try_from(mut seq: Sequence) -> Result<Self, Self::Error> {
         if seq.items.len() == 1 {
-            Pattern::try_from(seq.items.pop().unwrap())
+            let item = seq.items.pop().unwrap();
+            Pattern::try_from(item.value)
         } else {
             Ok(Pattern::Sequence(
                 seq.items
                     .into_iter()
-                    .map(|i| Pattern::try_from(i))
+                    .map(|i| i.try_take_map(|i| Pattern::try_from(i)))
                     .collect::<Result<_, _>>()?,
             ))
         }
@@ -77,7 +78,7 @@ impl Pattern {
         Ok(Pattern::Tuple(
             seq.items
                 .into_iter()
-                .map(|i| Pattern::try_from(i))
+                .map(|i| i.try_take_map(|i| Pattern::try_from(i)))
                 .collect::<Result<_, _>>()?,
         ))
     }
@@ -100,6 +101,18 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(n) => Some(n.path.to_string()),
             Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+        }
+    }
+}
+
+impl Node<Pattern> {
+    pub fn identifiers(&self) -> Vec<Node<(&Path, bool)>> {
+        match &self.value {
+            Pattern::Name(n) => vec![Node::with_id(self.id, (&n.path, false))],
+            Pattern::Deref(n) => vec![Node::with_id(self.id, (&n.path, true))],
+            Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
+                ps.iter().map(|p| p.identifiers()).flatten().collect()
+            }
         }
     }
 }

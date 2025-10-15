@@ -1,13 +1,18 @@
-use crate::driver::{BuildOptions, Driver};
-use crate::pathlib::FilePath;
+use std::{
+    error::Error,
+    fs::File,
+    io::{self, Write},
+};
 
+use clap::StructOpt;
 use colored::{Color, ColoredString, Colorize};
 use log::Level;
 use pprof::protos::Message;
-use std::error::Error;
-use std::fs::File;
-use std::io::{self, Write};
-use structopt::StructOpt;
+
+use crate::{
+    driver::{BuildOptions, Driver},
+    pathlib::FilePath,
+};
 
 mod build;
 
@@ -22,30 +27,33 @@ pub struct Cli {
 
 #[derive(Debug, StructOpt)]
 pub struct GlobalOptions {
-    #[structopt(
+    #[clap(
         name = "root-path",
         long = "root-path",
+        takes_value = true,
         env = "RAY_PATH",
         help = "root path for ray libraries and sources",
         long_help = "If not provided, it will default to `$HOME/.ray`. If that path is inaccessible, then /opt/ray will be used.",
-        global = true
+        global = true,
+        action = clap::ArgAction::Set,
     )]
     ray_path: Option<FilePath>,
 
-    #[structopt(
+    #[clap(
         long, env = "LOG_LEVEL",
         help = "Sets the log level",
         default_value = "info",
-        possible_values = &["off", "error", "warn", "info", "debug"],
-        hidden = true,
+        hide = true,
         global = true,
+        action = clap::ArgAction::Set,
     )]
     log_level: log::LevelFilter,
 
     #[structopt(
         long,
         help = "Runs in profiling mode, outputting to profile-<DATE>.pb",
-        global = true
+        global = true,
+        action = clap::ArgAction::SetTrue,
     )]
     profile: bool,
 }
@@ -67,7 +75,7 @@ impl<E: Error> From<E> for CmdError {
 
 pub fn run() {
     // get the subcommand
-    let cli: Cli = Cli::from_args();
+    let cli = Cli::parse();
 
     // set up logging
     fern::Dispatch::new()

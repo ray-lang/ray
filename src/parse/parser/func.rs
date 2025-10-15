@@ -51,7 +51,7 @@ impl Parser<'_> {
     pub(crate) fn parse_fn_sig_with_param<F>(
         &mut self,
         ctx: &ParseContext,
-        f: F,
+        parse_params: F,
     ) -> ParseResult<FuncSig>
     where
         F: Fn(&mut Parser) -> ParseResult<(Vec<Node<FnParam>>, Span)>,
@@ -59,13 +59,14 @@ impl Parser<'_> {
         let modifiers = self.parse_modifiers()?;
         let start = self.expect_start(TokenKind::Fn)?;
         let name = self.parse_fn_name(ctx)?;
+        let is_anon = name.is_none();
         let path = if let Some(name) = &name {
             ctx.path.append(name)
         } else {
             ctx.path.append("<anon>")
         };
         let ty_params = self.parse_ty_params()?;
-        let (params, param_span) = f(self)?;
+        let (params, param_span) = parse_params(self)?;
         let mut end = param_span.end;
         let ret_ty = if expect_if!(self, TokenKind::Arrow) {
             let t = self.parse_ty()?.map(|t| t.into_mono());
@@ -79,7 +80,6 @@ impl Parser<'_> {
 
         Ok(FuncSig {
             path,
-            name,
             params,
             ty_params,
             ret_ty,
@@ -88,6 +88,7 @@ impl Parser<'_> {
             ty: None, // this will be populated later
             doc_comment: None,
             is_method: false,
+            is_anon,
             has_body: false,
             span: Span { start, end },
         })

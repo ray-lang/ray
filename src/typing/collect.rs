@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     ast::{Node, Path},
+    sema::NameContext,
     span::{Source, SourceMap},
     typing::ty::{Ty, TyVar},
 };
@@ -22,6 +23,7 @@ pub struct CollectCtx<'a> {
     pub mono_tys: &'a HashSet<TyVar>,
     pub srcmap: &'a SourceMap,
     pub tcx: &'a mut TyCtx,
+    pub ncx: &'a mut NameContext,
     pub defs: SchemeEnv,
     pub new_defs: &'a mut SchemeEnv,
 }
@@ -35,6 +37,7 @@ impl CollectCtx<'_> {
             mono_tys: self.mono_tys,
             srcmap: self.srcmap,
             tcx: self.tcx,
+            ncx: self.ncx,
             defs: self.defs.clone(),
             new_defs: self.new_defs,
         };

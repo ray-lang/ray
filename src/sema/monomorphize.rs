@@ -215,18 +215,10 @@ impl<'p> Monomorphizer<'p> {
         if callee_ty.is_polymorphic() {
             log::debug!("callee type is not monomorphic: {}", callee_ty);
             log::debug!("   here's the polymorphic type: {}", poly_ty);
-
-            // if it's polymorphic, can we turn it into a monomorphic call
-            // by applying trait defaults, such as for Int or Float
-            // apply_trait_defaults(callee_ty);
-            if callee_ty.is_polymorphic() {
-                log::debug!("callee type is not monomorphic: {}", callee_ty);
-                log::debug!("   here's the polymorphic type: {}", poly_ty);
-                panic!(
-                    "cannot monomorphize function where the callee type is polymorphic: {}",
-                    callee_ty
-                );
-            }
+            panic!(
+                "cannot monomorphize function where the callee type is polymorphic: {}",
+                callee_ty
+            );
         }
 
         // get the polymorphic name

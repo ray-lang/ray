@@ -32,6 +32,10 @@ impl FilePath {
         self.buf.exists()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.buf.iter().map(|s| s.to_str().unwrap())
+    }
+
     pub fn split(&self) -> Vec<String> {
         self.buf
             .into_iter()
@@ -41,6 +45,12 @@ impl FilePath {
 
     pub fn push<P: AsRef<Path>>(&mut self, path: P) {
         self.buf.push(path);
+    }
+
+    pub fn canonicalize(&self) -> io::Result<FilePath> {
+        Ok(FilePath {
+            buf: self.buf.canonicalize()?,
+        })
     }
 
     /// Returns the final component of the `FilePath`, if there is one.
@@ -69,6 +79,10 @@ impl FilePath {
         FilePath {
             buf: self.buf.with_extension(ext),
         }
+    }
+
+    pub fn set_extension<S: AsRef<OsStr>>(&mut self, ext: S) {
+        self.buf.set_extension(ext);
     }
 
     pub fn has_extension<S: AsRef<OsStr>>(&self, ext: S) -> bool {

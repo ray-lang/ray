@@ -317,8 +317,11 @@ impl Parser<'_> {
         let qualifiers = self.parse_where_clause()?;
 
         let (funcs, externs, consts) = if !is_extern {
+            let impl_ty = ty.get_ty_param_at(0).get_path().unwrap();
+            let mut ctx = ctx.clone();
+            ctx.path = ctx.path.append_path(impl_ty);
             let start = self.expect_end(TokenKind::LeftCurly)?;
-            let (f, ex, consts) = self.parse_impl_body(start, only_sigs, ctx)?;
+            let (f, ex, consts) = self.parse_impl_body(start, only_sigs, &ctx)?;
             end = self.expect_end(TokenKind::RightCurly)?;
             (Some(f), Some(ex), Some(consts))
         } else {

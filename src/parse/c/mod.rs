@@ -300,14 +300,14 @@ fn offset_to_pos(input: &str, offset: usize) -> Pos {
 }
 
 pub fn parse(
-    fpath: &FilePath,
+    filepath: &FilePath,
     include_paths: &Vec<FilePath>,
 ) -> Result<Vec<(ast::CType, Span)>, lang_c::driver::Error> {
     let mut config = Config::default();
     for p in include_paths {
         config.cpp_options.push(format!("-I{}", p));
     }
-    let p = cparse(&config, &fpath)?;
+    let p = cparse(&config, &filepath)?;
     let TranslationUnit(nodes) = p.unit;
     let mut types = vec![];
     for n in nodes.iter() {
@@ -349,7 +349,7 @@ pub fn parse(
                     } else {
                         None
                     },
-                    filepath: fpath.clone(),
+                    filepath: filepath.clone(),
                     inputs,
                     out_ty,
                 }
@@ -367,7 +367,7 @@ pub fn parse(
                     } else {
                         None
                     },
-                    filepath: fpath.clone(),
+                    filepath: filepath.clone(),
                     out_ty,
                     inputs,
                 }

@@ -121,14 +121,15 @@ impl Parser<'_> {
 
             let kind = match op {
                 InfixOp::Assign | InfixOp::AssignOp(_) => {
-                    let id = lhs.id;
                     let src = self.srcmap.get(&lhs);
-                    let pat = Pattern::try_from(lhs).map_err(|mut e| {
-                        e.src.push(src);
-                        e
-                    })?;
+                    let lhs =
+                        lhs.try_take_map(|expr| Pattern::try_from(expr))
+                            .map_err(|mut e| {
+                                e.src.push(src);
+                                e
+                            })?;
                     Expr::Assign(Assign {
-                        lhs: Node { id, value: pat },
+                        lhs,
                         rhs: Box::new(rhs),
                         is_mut: false,
                         mut_span: None,

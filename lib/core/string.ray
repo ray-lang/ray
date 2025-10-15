@@ -12,9 +12,9 @@ impl Add[string] {
         len = a.len + b.len
         raw_ptr = malloc(len) as *u8
 
-        src_len = a.len
-        src_ptr = a.raw_ptr
-        dst_ptr = raw_ptr
+        mut src_len = a.len
+        mut src_ptr = a.raw_ptr
+        mut dst_ptr = raw_ptr
         asm { $memcopy dst_ptr src_ptr src_len }
 
         src_len = b.len

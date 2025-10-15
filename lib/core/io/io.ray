@@ -1,0 +1,6 @@
+import super::ToStr
+
+fn print(v: 'a) -> () where ToStr['a] {
+    puts(v.to_str())
+    puts("\n")
+}

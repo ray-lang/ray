@@ -11,9 +11,10 @@ use top::{Predicates, Subst, Substitutable};
 
 use crate::{
     ast::{FuncSig, Node, Path},
-    collections::nametree::NameTree,
+    collections::nametree::{NameTree, Scope},
     errors::RayError,
     pathlib::FilePath,
+    sema::NameContext,
     span::SourceMap,
 };
 
@@ -30,7 +31,6 @@ pub struct TyCtx {
     predicates: Predicates<Ty, TyVar>,
     scheme_subst: Subst<TyVar, TyScheme>,
     inst_ty_map: Subst<TyVar, TyScheme>,
-    fqns: HashMap<String, (Path, Option<Path>)>,
     infix_ops: HashMap<String, (Path, Path)>,
     prefix_ops: HashMap<String, (Path, Path)>,
     var_map: HashMap<TyVar, TyVar>,
@@ -38,7 +38,6 @@ pub struct TyCtx {
     traits: HashMap<Path, TraitTy>,
     impls: HashMap<Path, Vec<ImplTy>>,
     tf: Rc<RefCell<TyVarFactory>>,
-    nametree: NameTree,
 }
 
 impl Clone for TyCtx {
@@ -50,7 +49,6 @@ impl Clone for TyCtx {
             predicates: self.predicates.clone(),
             scheme_subst: self.scheme_subst.clone(),
             inst_ty_map: self.inst_ty_map.clone(),
-            fqns: self.fqns.clone(),
             infix_ops: self.infix_ops.clone(),
             prefix_ops: self.prefix_ops.clone(),
             var_map: self.var_map.clone(),
@@ -58,7 +56,6 @@ impl Clone for TyCtx {
             traits: self.traits.clone(),
             impls: self.impls.clone(),
             tf: Rc::clone(&self.tf),
-            nametree: self.nametree.clone(),
         }
     }
 }
@@ -99,17 +96,6 @@ impl Display for TyCtx {
             write!(f, "    {}: {},", k, v)?;
         }
         write!(f, "  }}")?;
-        write!(f, "  fqns: {{")?;
-        for (k, (p1, p2)) in &self.fqns {
-            write!(
-                f,
-                "    {}: ({}, {}),",
-                k,
-                p1,
-                p2.as_ref().map(|p| p.to_string()).unwrap_or_default()
-            )?;
-        }
-        write!(f, "  }}")?;
         write!(f, "  infix_ops: {{")?;
         for (k, (p1, p2)) in &self.infix_ops {
             write!(f, "    {}: ({}, {}),", k, p1, p2)?;
@@ -141,7 +127,6 @@ impl Display for TyCtx {
         }
         write!(f, "  }}")?;
         write!(f, "  tf: {:?},", self.tf)?;
-        write!(f, "  nametree: {:?},", self.nametree)?;
         write!(f, "}}")
     }
 }
@@ -195,7 +180,6 @@ impl TyCtx {
             predicates: Predicates::new(),
             scheme_subst: Subst::new(),
             inst_ty_map: Subst::new(),
-            fqns: HashMap::new(),
             infix_ops: HashMap::new(),
             prefix_ops: HashMap::new(),
             var_map: HashMap::new(),
@@ -203,7 +187,6 @@ impl TyCtx {
             traits: HashMap::new(),
             impls: HashMap::new(),
             tf: Rc::new(RefCell::new(TyVarFactory::new("?t"))),
-            nametree: NameTree::new(),
         }
     }
 
@@ -211,13 +194,11 @@ impl TyCtx {
         self.original_ty_map.extend(other.original_ty_map);
         self.ty_map.extend(other.ty_map);
         self.inst_ty_map.extend(other.inst_ty_map);
-        self.fqns.extend(other.fqns);
         self.infix_ops.extend(other.infix_ops);
         self.prefix_ops.extend(other.prefix_ops);
         self.struct_tys.extend(other.struct_tys);
         self.traits.extend(other.traits);
         self.impls.extend(other.impls);
-        self.nametree.extend(other.nametree);
     }
 
     pub fn traits(&self) -> &HashMap<Path, TraitTy> {
@@ -258,7 +239,7 @@ impl TyCtx {
             return ty.clone().into();
         }
 
-        panic!("could not find type of id {}", id);
+        panic!("could not find type of id {:x}", id);
     }
 
     pub fn get_ty(&self, id: u64) -> Option<&Ty> {
@@ -321,33 +302,13 @@ impl TyCtx {
         ty
     }
 
-    pub fn resolve_name(&self, scopes: &Vec<Path>, name: &String) -> Option<Path> {
-        let scopes = scopes.iter().map(Path::to_vec).collect::<Vec<_>>();
-        self.nametree.find_in_scopes(&scopes, name).map(|parts| {
-            let mut parts = parts.clone();
-            parts.push(name.clone());
-            Path::from(parts)
-        })
-    }
-
-    pub fn resolve_path(&self, scopes: &Vec<Path>, path: &Path) -> Option<Path> {
-        let scopes = scopes.iter().map(Path::to_vec).collect::<Vec<_>>();
-        let parts = path.to_vec();
-        self.nametree
-            .find_from_parts_in_scopes(&scopes, &parts)
-            .map(|scope_parts| {
-                let mut new_path = Path::from(scope_parts.clone());
-                new_path.extend_mut(parts.into_iter());
-                new_path
-            })
-    }
-
-    pub fn lookup_fqn(&self, name: &String) -> Option<&Path> {
-        self.fqns.get(name).map(|(p, _)| p)
-    }
-
-    pub fn lookup_fqn_with_trait(&self, name: &String) -> Option<&(Path, Option<Path>)> {
-        self.fqns.get(name)
+    pub fn resolve_trait_from_path(&self, path: &Path) -> Option<Path> {
+        let parent_path = path.parent();
+        if self.traits.contains_key(&parent_path) {
+            Some(parent_path)
+        } else {
+            None
+        }
     }
 
     pub fn lookup_infix_op(&self, name: &String) -> Option<&(Path, Path)> {
@@ -356,10 +317,6 @@ impl TyCtx {
 
     pub fn lookup_prefix_op(&self, name: &String) -> Option<&(Path, Path)> {
         self.prefix_ops.get(name)
-    }
-
-    pub fn add_fqn(&mut self, name: String, fqn: Path, trait_fqn: Option<Path>) {
-        self.fqns.insert(name, (fqn, trait_fqn));
     }
 
     pub fn add_infix_op(&mut self, name: String, infix_op: Path, trait_fqn: Path) {
@@ -383,10 +340,12 @@ impl TyCtx {
         &mut self,
         sig: &mut FuncSig,
         fn_scope: &Path,
+        scopes: &Vec<Scope>,
         filepath: &FilePath,
         srcmap: &SourceMap,
+        ncx: &NameContext,
     ) -> Result<(), RayError> {
-        let ty = TyScheme::from_sig(sig, fn_scope, filepath, self, srcmap)?;
+        let ty = TyScheme::from_sig(sig, fn_scope, scopes, filepath, self, ncx, srcmap)?;
         if let Some(ty_params) = &mut sig.ty_params {
             for ty_param in ty_params.tys.iter_mut() {
                 let ty = ty_param.deref_mut();
@@ -402,14 +361,13 @@ impl TyCtx {
         self.struct_tys.get(fqn)
     }
 
-    pub fn add_struct_ty(&mut self, name: String, struct_ty: StructTy) {
-        let fqn = struct_ty.path.clone();
-        self.add_fqn(name, fqn.clone(), None);
-        self.struct_tys.insert(fqn, struct_ty);
+    pub fn add_struct_ty(&mut self, struct_ty: StructTy) {
+        self.struct_tys.insert(struct_ty.path.clone(), struct_ty);
     }
 
-    pub fn get_trait_ty(&self, fqn: &Path) -> Option<&TraitTy> {
-        self.traits.get(fqn)
+    pub fn get_trait_ty(&self, path: &Path) -> Option<&TraitTy> {
+        // let fqn = self.nametree().find_in_scope(scope, name);
+        self.traits.get(path)
     }
 
     pub fn get_super_traits_from_ty(&self, ty: &Ty) -> Option<&Vec<Ty>> {
@@ -423,36 +381,6 @@ impl TyCtx {
         }
     }
 
-    pub fn get_subtraits(&self, super_trait: &Ty) -> Vec<&Ty> {
-        log::debug!("super trait: {}", super_trait);
-        let fqn = super_trait.get_path().unwrap();
-        log::debug!("super fqn: {}", fqn);
-        self.traits
-            .values()
-            .filter_map(|t| {
-                for s in t.super_traits.iter() {
-                    log::debug!("super trait: {}", s);
-                    let p = s.get_path().unwrap();
-                    let name = p.name().unwrap();
-                    let super_fqn = self.lookup_fqn(&name).unwrap();
-                    log::debug!("super fqn: {}", super_fqn);
-                    if &fqn == super_fqn {
-                        return Some(&t.ty);
-                    }
-                }
-                None
-            })
-            .collect()
-    }
-
-    pub fn int_trait(&self) -> Path {
-        if let Some(fqn) = self.lookup_fqn(&str!("Int")) {
-            fqn.clone()
-        } else {
-            Path::from("core::Int")
-        }
-    }
-
     pub fn get_trait_fn(&self, trait_fqn: &Path, fn_name: &String) -> Option<&TyScheme> {
         self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
             trait_ty
@@ -463,9 +391,7 @@ impl TyCtx {
     }
 
     pub fn add_trait_ty(&mut self, name: String, trait_ty: TraitTy) {
-        let fqn = trait_ty.path.clone();
-        self.add_fqn(name, fqn.clone(), None);
-        self.traits.insert(fqn, trait_ty);
+        self.traits.insert(trait_ty.path.clone(), trait_ty);
     }
 
     pub fn add_impl(&mut self, trait_fqn: Path, impl_ty: ImplTy) {
@@ -494,14 +420,6 @@ impl TyCtx {
 
     pub fn tf(&mut self) -> RefMut<TyVarFactory> {
         self.tf.borrow_mut()
-    }
-
-    pub fn nametree(&self) -> &NameTree {
-        &self.nametree
-    }
-
-    pub fn nametree_mut(&mut self) -> &mut NameTree {
-        &mut self.nametree
     }
 
     // pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {

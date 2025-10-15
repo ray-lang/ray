@@ -40,6 +40,8 @@ impl EqConstraint {
                         EqConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
                     ));
                 }
+            } else {
+                log::debug!("{} is not in the assumption set", x);
             }
         }
 
@@ -80,6 +82,8 @@ impl InstConstraint {
                         InstConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
                     ));
                 }
+            } else {
+                log::debug!("{} is not in the sigs", x);
             }
         }
 
@@ -112,6 +116,8 @@ impl SkolConstraint {
                     lhs_ty.to_string(),
                     SkolConstraint::new(mono_tys.iter().cloned(), lhs_ty.clone(), rhs_ty.clone()),
                 ));
+            } else {
+                log::debug!("{} is not in the sigs", x);
             }
         }
 

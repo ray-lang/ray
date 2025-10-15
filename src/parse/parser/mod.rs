@@ -81,7 +81,7 @@ impl ParseContext {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ParseOptions {
     pub module_path: Path,
     pub use_stdin: bool,
@@ -121,15 +121,15 @@ pub struct Parser<'src> {
 impl<'src> Parser<'src> {
     pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseResult<File> {
         let src = Self::get_src(&options)?;
-        Self::parse_from_src(src, options, srcmap)
+        Self::parse_from_src(&src, options, srcmap)
     }
 
     pub fn parse_from_src(
-        src: String,
+        src: &str,
         options: ParseOptions,
         srcmap: &'src mut SourceMap,
     ) -> ParseResult<File> {
-        let lex = Lexer::new(&src);
+        let lex = Lexer::new(src);
         let mut parser = Self {
             lex,
             options,

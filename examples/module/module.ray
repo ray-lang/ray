@@ -1,0 +1,5 @@
+import submodule::bar
+
+fn foo() -> () => bar()
+
+fn zip() -> () => foo()

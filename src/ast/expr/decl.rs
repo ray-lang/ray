@@ -316,8 +316,8 @@ impl Decl {
         match &self {
             Decl::Extern(e) => e.decl.get_name(),
             Decl::Mutable(n) | Decl::Name(n) => Some(n.path.to_string()),
-            Decl::Func(f) => f.sig.name.clone(),
-            Decl::FnSig(sig) => sig.name.clone(),
+            Decl::Func(f) => f.sig.path.name(),
+            Decl::FnSig(sig) => sig.path.name(),
             Decl::Struct(s) => Some(s.name.path.to_string()),
             Decl::Trait(t) => Some(t.ty.name()),
             Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) => None,

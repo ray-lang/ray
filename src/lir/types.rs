@@ -211,8 +211,8 @@ pub struct TypeMetadata;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Variable {
-    Data(usize),
-    Global(usize),
+    Data(Path, usize),
+    Global(Path, usize),
     Local(usize),
     Unit,
 }
@@ -235,8 +235,8 @@ impl Into<Value> for Variable {
 impl Display for Variable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Variable::Data(s) => write!(f, "$data[{}]", s),
-            Variable::Global(s) => write!(f, "$global[{}]", s),
+            Variable::Data(path, idx) => write!(f, "{}::$data[{}]", path, idx),
+            Variable::Global(path, idx) => write!(f, "{}::$global[{}]", path, idx),
             Variable::Local(s) => write!(f, "${}", s),
             Variable::Unit => write!(f, "unit"),
         }
@@ -1039,7 +1039,6 @@ impl Program {
     pub fn extend(&mut self, other: Program) {
         for (p, i) in other.poly_fn_map {
             // offset the function indices
-            log::debug!("adding to poly_fn_map: {}", p);
             self.poly_fn_map.insert(p, self.funcs.len() + i);
         }
 
@@ -1059,21 +1058,25 @@ impl Program {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Data {
     idx: usize,
-    name: String,
+    path: Path,
     value: Vec<u8>,
 }
 
 impl Data {
-    pub fn new(idx: usize, name: String, value: Vec<u8>) -> Data {
-        Data { idx, name, value }
+    pub fn new(idx: usize, path: Path, value: Vec<u8>) -> Data {
+        Data { idx, path, value }
+    }
+
+    pub fn key(&self) -> (Path, usize) {
+        (self.path.clone(), self.idx)
     }
 
     pub fn index(&self) -> usize {
         self.idx
     }
 
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+    pub fn name(&self) -> String {
+        format!("{}::/data::{}", self.path, self.idx)
     }
 
     pub fn value(&self) -> Vec<u8> {
@@ -1084,6 +1087,7 @@ impl Data {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Global {
     pub idx: usize,
+    pub path: Path,
     pub name: String,
     pub ty: TyScheme,
     pub init_value: Value,
@@ -1099,6 +1103,16 @@ impl Substitutable<TyVar, Ty> for Global {
     fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
         self.ty.apply_subst_all(subst);
         self.init_value.apply_subst_all(subst);
+    }
+}
+
+impl Global {
+    pub fn key(&self) -> (Path, usize) {
+        (self.path.clone(), self.idx)
+    }
+
+    pub fn name(&self) -> String {
+        format!("{}::/global::{}", self.path, self.name)
     }
 }
 

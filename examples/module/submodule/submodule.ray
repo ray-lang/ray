@@ -1,0 +1,5 @@
+import super::foo
+
+fn bar() -> () => ()
+
+fn baz() -> () => foo()

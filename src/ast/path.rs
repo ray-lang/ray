@@ -1,4 +1,4 @@
-use std::{fmt, hash::Hasher, str::Chars};
+use std::{collections::VecDeque, fmt, hash::Hasher, str::Chars};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-enum PathPart {
+pub enum PathPart {
     Name(String),
     TypeArgs(String),
     FuncType(String),
@@ -32,9 +32,17 @@ impl std::fmt::Display for PathPart {
     }
 }
 
+impl PathPart {
+    fn as_str(&self) -> &str {
+        match self {
+            PathPart::Name(s) | PathPart::TypeArgs(s) | PathPart::FuncType(s) => s,
+        }
+    }
+}
+
 #[derive(Clone, Eq, Default, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Path {
-    parts: Vec<PathPart>,
+    parts: VecDeque<PathPart>,
 }
 
 impl PartialEq for Path {
@@ -52,7 +60,7 @@ impl PartialEq<&str> for Path {
 
 impl Substitutable<TyVar, Ty> for Path {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
-        let mut parts = vec![];
+        let mut parts = VecDeque::new();
         for part in self.parts.drain(..).into_iter() {
             if let PathPart::FuncType(func_ty) = part {
                 let s = func_ty.trim_matches(|ch| ch == '<' || ch == '>');
@@ -105,7 +113,7 @@ impl Substitutable<TyVar, Ty> for Path {
                         ret
                     }
                 };
-                parts.push(PathPart::FuncType(format!(
+                parts.push_back(PathPart::FuncType(format!(
                     "<({}):{}>",
                     args.join(","),
                     ret
@@ -125,9 +133,9 @@ impl Substitutable<TyVar, Ty> for Path {
                     .collect::<Vec<_>>();
                 let args = format!("[{}]", args.join(","));
                 log::debug!("args: {}", args);
-                parts.push(PathPart::TypeArgs(args));
+                parts.push_back(PathPart::TypeArgs(args));
             } else {
-                parts.push(part);
+                parts.push_back(part);
                 let tv = TyVar(Path {
                     parts: parts.clone(),
                 });
@@ -136,7 +144,7 @@ impl Substitutable<TyVar, Ty> for Path {
                         .to_string()
                         .split("::")
                         .map(|s| PathPart::Name(s.to_string()))
-                        .collect::<Vec<_>>();
+                        .collect::<VecDeque<_>>();
                 }
             }
         }
@@ -155,15 +163,32 @@ impl Substitutable<TyVar, Ty> for Path {
 
 impl Path {
     pub fn new() -> Path {
-        Path { parts: vec![] }
+        Path {
+            parts: VecDeque::new(),
+        }
     }
 
     pub fn name(&self) -> Option<String> {
-        self.parts.last().map(PathPart::to_string)
+        self.parts.back().map(PathPart::to_string)
     }
 
     pub fn len(&self) -> usize {
         self.parts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+
+    pub fn is_relative(&self) -> bool {
+        self.parts.iter().any(|p| match p {
+            PathPart::Name(s) => s == "super",
+            _ => false,
+        })
+    }
+
+    pub fn is_self(&self) -> bool {
+        self.name().unwrap().as_str() == "self"
     }
 
     pub fn join<S: AsRef<str>>(&self, sep: S) -> String {
@@ -179,14 +204,17 @@ impl Path {
         h.finish()
     }
 
-    pub fn to_vec(&self) -> Vec<String> {
-        self.parts.iter().map(|p| p.to_string()).collect()
+    pub fn to_vec(&self) -> Vec<&str> {
+        self.parts.iter().map(|p| p.as_str()).collect()
     }
 
     pub fn to_filepath(&self) -> FilePath {
         let mut fp = FilePath::new();
         for p in self.parts.iter() {
-            fp.push(p.to_string())
+            match p {
+                PathPart::Name(s) if s == "super" => fp.push(".."),
+                PathPart::Name(s) | PathPart::TypeArgs(s) | PathPart::FuncType(s) => fp.push(s),
+            }
         }
         fp.into()
     }
@@ -224,13 +252,13 @@ impl Path {
 
     pub fn with_all(&self) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(PathPart::Name(String::from("*")));
+        parts.push_back(PathPart::Name(String::from("*")));
         Path { parts }
     }
 
     pub fn append<T: ToString>(&self, s: T) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(PathPart::Name(s.to_string()));
+        parts.push_back(PathPart::Name(s.to_string()));
         Path { parts }
     }
 
@@ -242,18 +270,18 @@ impl Path {
     }
 
     pub fn append_mut<T: ToString>(&mut self, s: T) {
-        self.parts.push(PathPart::Name(s.to_string()));
+        self.parts.push_back(PathPart::Name(s.to_string()));
     }
 
     pub fn append_func_type<T: ToString>(&self, s: T) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(PathPart::FuncType(s.to_string()));
+        parts.push_back(PathPart::FuncType(s.to_string()));
         Path { parts }
     }
 
     pub fn append_type_args<T: ToString>(&self, args: &[T]) -> Path {
         let mut parts = self.parts.clone();
-        parts.push(PathPart::TypeArgs(format!(
+        parts.push_back(PathPart::TypeArgs(format!(
             "[{}]",
             args.iter().map(|s| s.to_string()).join(",")
         )));
@@ -265,7 +293,7 @@ impl Path {
     }
 
     pub fn merge(&self, rhs: &Path) -> Path {
-        let mut parts = vec![];
+        let mut parts = VecDeque::new();
         let mut idx = 0;
         while idx < self.parts.len() && idx < rhs.parts.len() {
             let lhs_part = &self.parts[idx];
@@ -274,7 +302,7 @@ impl Path {
                 break;
             }
 
-            parts.push(lhs_part.clone());
+            parts.push_back(lhs_part.clone());
             idx += 1;
         }
 
@@ -288,15 +316,114 @@ impl Path {
         Path { parts }
     }
 
+    pub fn pop_front(&mut self) -> PathPart {
+        self.parts.pop_front().unwrap()
+    }
+
+    pub fn pop_back(&mut self) -> PathPart {
+        self.parts.pop_back().unwrap()
+    }
+
+    pub fn canonicalize(&self) -> Path {
+        let mut parts = self.parts.clone();
+        let mut idx = 0;
+        while idx < parts.len() {
+            let part = &parts[idx];
+            match part {
+                PathPart::Name(name) if name == "super" => {
+                    // remove the previous index and current index
+                    parts.remove(idx);
+                    parts.remove(idx - 1);
+                    idx -= 1;
+                }
+                _ => {
+                    idx += 1;
+                }
+            }
+        }
+        Path { parts }
+    }
+
+    pub fn root_from_filepath(&self, filepath: &FilePath) -> Path {
+        let parts = self
+            .parts
+            .iter()
+            .rev()
+            .zip(filepath.split().iter().rev())
+            .filter_map(|(a, b)| match a {
+                PathPart::Name(name) if name == b => None,
+                _ => Some(a.clone()),
+            })
+            .rev()
+            .collect();
+
+        Path { parts }
+    }
+
+    pub fn resolve_from_parent(&self, parent: &Path) -> (Path, Path) {
+        let mut parent_parts = parent.parts.clone();
+        let mut parts = VecDeque::new();
+        for part in &self.parts {
+            match part {
+                PathPart::Name(s) if s == "super" => {
+                    parent_parts.pop_back();
+                }
+                _ => parts.push_back(part.clone()),
+            }
+        }
+
+        (
+            Path {
+                parts: parent_parts,
+            },
+            Path { parts },
+        )
+    }
+
+    pub fn without_parent(&self, parent: &Path) -> Path {
+        let mut idx = 0;
+        while idx < self.parts.len() && idx < parent.parts.len() {
+            let part = &self.parts[idx];
+            let parent_part = &parent.parts[idx];
+            if parent_part != part {
+                break;
+            }
+
+            idx += 1;
+        }
+
+        let parts = self.parts.iter().skip(idx).cloned().collect();
+        Path { parts }
+    }
+
     pub fn with_name<T: ToString>(&self, name: T) -> Path {
         let mut parts = self.parts.clone();
         let name = PathPart::Name(name.to_string());
-        if let Some(last) = parts.last_mut() {
+        if let Some(last) = parts.back_mut() {
             *last = name;
         } else {
-            parts = vec![name];
+            parts = VecDeque::from([name]);
         }
         Path { parts }
+    }
+
+    pub fn with_names_only(&self) -> Path {
+        let mut parts = self.parts.clone();
+        parts.retain(|p| match p {
+            PathPart::Name(_) => true,
+            _ => false,
+        });
+        Path { parts }
+    }
+
+    pub fn to_name_vec(&self) -> Vec<String> {
+        self.parts
+            .iter()
+            .filter_map(|p| match p {
+                PathPart::Name(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn without_func_type(&self) -> Path {
@@ -305,16 +432,21 @@ impl Path {
             .iter()
             .cloned()
             .filter(|p| !matches!(p, PathPart::FuncType(_)))
-            .collect::<Vec<_>>();
+            .collect::<VecDeque<_>>();
 
         Path { parts }
     }
 
     pub fn parent(&self) -> Path {
         let mut parts = self.parts.clone();
-        parts.pop();
+        parts.pop_back();
         Path { parts }
     }
+
+    // pub fn split_name(&self) -> (&[PathPart], &PathPart) {
+    //     let (last, rest) = self.parts.split_back().unwrap();
+    //     (rest, last)
+    // }
 }
 
 impl fmt::Display for Path {
@@ -332,7 +464,7 @@ impl fmt::Debug for Path {
 impl From<FilePath> for Path {
     fn from(f: FilePath) -> Path {
         Path {
-            parts: vec![PathPart::Name(f.file_stem())],
+            parts: VecDeque::from([PathPart::Name(f.file_stem())]),
         }
     }
 }
@@ -354,6 +486,14 @@ impl From<Vec<String>> for Path {
     fn from(parts: Vec<String>) -> Path {
         Path {
             parts: parts.into_iter().map(PathPart::Name).collect(),
+        }
+    }
+}
+
+impl From<&[String]> for Path {
+    fn from(parts: &[String]) -> Path {
+        Path {
+            parts: parts.iter().cloned().map(PathPart::Name).collect(),
         }
     }
 }
@@ -396,7 +536,9 @@ impl PathParser {
             }
         }
 
-        Path { parts: self.parts }
+        Path {
+            parts: VecDeque::from(self.parts),
+        }
     }
 
     fn parse_func_type(&mut self, chars: &mut Chars) {
@@ -453,4 +595,15 @@ impl PathParser {
 #[macro_export]
 macro_rules! path {
     ($($x:expr),*) => (Path::from(vec![$(String::from($x),)*]))
+}
+
+#[cfg(test)]
+mod test_path {
+    use super::Path;
+
+    #[test]
+    fn test_canonicalize() {
+        let path = path!("a", "b", "super", "c");
+        assert_eq!(path.canonicalize(), path!("a", "c"));
+    }
 }

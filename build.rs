@@ -3,14 +3,82 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+fn rustc_cmd() -> String {
+    env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string())
+}
+
+fn cargo_cmd() -> String {
+    env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+}
+
+fn probe_wasi_target() -> Result<String, String> {
+    let candidates = [
+        "wasm32-wasip1",
+        "wasm32-wasip1-threads",
+        "wasm32-wasip2",
+        // legacy last, for older toolchains
+        "wasm32-wasi",
+    ];
+
+    for target in candidates {
+        let out = Command::new(rustc_cmd())
+            .args(&[
+                "-",
+                "--crate-name",
+                "___",
+                "--print=file-names",
+                "--target",
+                target,
+                "--crate-type",
+                "bin",
+                "--print=sysroot",
+                "--print=cfg",
+                "-Wwarnings",
+            ])
+            .output();
+
+        match out {
+            Ok(o) if o.status.success() => return Ok(target.to_string()),
+            _ => {}
+        }
+    }
+
+    Err("No supported WASI target found. Install wasm32-wasip1 or use an older toolchain that still has wasm32-wasi.".into())
+}
+
 fn main() {
+    // --- DEBUG: show exactly which tools the build script will use
+    let rustc = rustc_cmd();
+    let cargo = cargo_cmd();
+    println!("cargo:warning=build.rs using RUSTC: {}", rustc);
+    println!("cargo:warning=build.rs using CARGO: {}", cargo);
+
+    let ver = std::process::Command::new(&rustc)
+        .arg("-Vv")
+        .output()
+        .expect("rustc -Vv failed");
+    println!(
+        "cargo:warning=rustc -Vv:\n{}",
+        String::from_utf8_lossy(&ver.stdout)
+    );
+
+    let tgt = std::process::Command::new(&rustc)
+        .args(&["--print", "target-list"])
+        .output()
+        .expect("rustc --print target-list failed");
+    println!(
+        "cargo:warning=rustc targets:\n{}",
+        String::from_utf8_lossy(&tgt.stdout)
+    );
+
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let project_dir = Path::new(&manifest_dir);
+    let wasi_target = probe_wasi_target().expect("Failed to find a supported WASI target");
 
-    Command::new("cargo")
+    Command::new(cargo_cmd())
         .args(&[
             "rustc",
-            "--target=wasm32-wasi",
+            &format!("--target={}", wasi_target),
             "--release",
             "--",
             "-C",

@@ -16,7 +16,7 @@ use crate::{
             EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
         },
         state::{Env, SchemeEnv, SigmaEnv, TyEnv},
-        ty::{LiteralKind, SigmaTy, Ty, TyScheme},
+        ty::{LiteralKind, SigmaTy, Ty, TyScheme, TyVar},
         TyCtx,
     },
 };
@@ -170,29 +170,37 @@ impl CollectDeclarations for (&ast::Func, &Source, Option<&Ty>) {
     type Output = (TyScheme, BindingGroup, SchemeEnv);
 
     fn collect_decls(&self, ctx: &mut CollectCtx) -> Self::Output {
+        // Collecting constraints for a function is two-fold:
+        //   1) (D-FB) Collect constraints for the function binding itself, the LHS (parameter patterns) and RHS (body)
+        //   2) (D-TYPE) Collect constraints for the function's type signature, if it exists
+
         let &(func, src, maybe_self_ty) = self;
-
-        // name, mut params, body, decs
         let name = &func.sig.path;
-
-        // ⟨M⟩, id, A\dom(E),Cl ◃◦•[ TC1,TC2 •] ⊢fb lhs = rhs : {|τ1,...,τn,τ|}
         let fn_tv = ctx.tcx.tf().next();
-        log::debug!("type of {} = {}", name, fn_tv);
 
-        let anno_fn_ty = func.sig.ty.as_ref().and_then(|ty| ty.try_borrow_fn());
+        //
+        // D-FB
+        //
+        // FB: ⟨M⟩,x,A\dom(E),Cl >o [TC1, TC2] ⊢fb lhs = rhs : {|τ1,...,τn,τ|}
 
-        // LHS
+        // LHS: x, Union(Ei), [TC1,...,TCn] ⊢lhs x p1 ... pn : {|τ1,...,τn|}
+        let insert_mono_ty = |mono_tys: &mut HashSet<TyVar>, ty: &Ty| {
+            if let Ty::Var(tv) = ty {
+                mono_tys.insert(tv.clone());
+            }
+        };
+
         let mut mono_tys = ctx.mono_tys.clone();
         let mut param_tys = vec![];
         let mut param_cts = vec![];
         let mut lhs_env = Env::new();
-        for (param_index, param) in func.sig.params.iter().enumerate() {
-            let param_name = param.name().unwrap();
+        for param in func.sig.params.iter() {
+            let param_name = param.name();
             let (param_ty, param_env, mut param_ct) =
                 param_name.collect_patterns(ctx.srcmap, ctx.tcx);
 
             if let Some(self_ty) = maybe_self_ty {
-                if param_name.name().unwrap().as_str() == "self" {
+                if param_name.is_self() {
                     let src = ctx.srcmap.get(param);
                     let mut c = EqConstraint::new(param_ty.clone(), self_ty.clone());
                     c.info_mut().with_src(src);
@@ -200,58 +208,58 @@ impl CollectDeclarations for (&ast::Func, &Source, Option<&Ty>) {
                 }
             }
 
-            if let Some(anno_ty) =
-                anno_fn_ty.and_then(|(_, _, param_tys, _)| param_tys.get(param_index))
-            {
-                // param type was provided, so create an equality constraint
-                let mut c = EqConstraint::new(param_ty.clone(), anno_ty.clone());
-                let src = ctx.srcmap.get(param);
-                c.info_mut().with_src(src);
-                param_ct = AttachTree::new(c, param_ct);
-
-                if let Ty::Var(tv) = anno_ty {
-                    mono_tys.insert(tv.clone());
-                }
-            }
-
-            if let Ty::Var(tv) = &param_ty {
-                mono_tys.insert(tv.clone());
-            }
-
             param_tys.push(param_ty.clone());
             param_cts.push(param_ct);
             lhs_env.extend(param_env);
+            insert_mono_ty(&mut mono_tys, &param_ty.clone());
             ctx.tcx.set_ty(param.id, param_ty);
         }
 
-        // RHS
-        // ⟨M + ftv(Cl)⟩,A,TC2 ⊢rhs rhs : τ
-        let mut ctx = CollectCtx {
-            mono_tys: &mono_tys,
+        let lhs_ct = NodeTree::new(param_cts);
+
+        // RHS:⟨M + ftv(Cl)⟩,A,TC2 ⊢rhs rhs : τ
+        let mut rhs_ctx = CollectCtx {
+            mono_tys: ctx.mono_tys,
             srcmap: ctx.srcmap,
             tcx: ctx.tcx,
+            ncx: ctx.ncx,
             defs: ctx.defs.clone(),
             new_defs: ctx.new_defs,
         };
-        let (body_ty, aset, body_ct) = func.body.as_deref().unwrap().collect_constraints(&mut ctx);
+        let (body_ty, aset, body_ct) = func
+            .body
+            .as_deref()
+            .unwrap()
+            .collect_constraints(&mut rhs_ctx);
 
-        let mut mk_eq_cs = |ty: Ty| {
-            let tv = ctx.tcx.tf().next();
-            let c = EqConstraint::new(ty, Ty::Var(tv.clone()));
-            (tv, c)
-        };
+        let bg = BindingGroup::new(Env::new(), aset, body_ct).with_src(src.clone());
+        let sigs = SigmaEnv::new();
+        let mut tf = rhs_ctx.tcx.tf();
+        let mut bga = BindingGroupAnalysis::new(vec![bg], &sigs, &mut tf, &rhs_ctx.mono_tys);
+        let (mut mono_tys, aset, rhs_ct) = bga.analyze();
+        drop(tf);
 
-        let (param_tvs, param_cs): (Vec<_>, Vec<_>) =
-            param_tys.into_iter().map(&mut mk_eq_cs).unzip();
-        let (ret_tv, ret_cs) = mk_eq_cs(body_ty.clone());
-
+        // combine the mono types with the free variables from the LHS labeled constraint list
         let cl = EqConstraint::lift(&aset, &lhs_env)
             .into_iter()
             .map(|(l, mut c)| {
                 c.info_mut().with_src(src.clone());
                 (l, c)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        mono_tys.extend(cl.iter().map(|(_, c)| c.free_vars()).flatten().cloned());
+
+        let fb_aset = aset - lhs_env.keys();
+        let fb_ct = NodeTree::new(vec![lhs_ct, rhs_ct]).spread_list(cl);
+
+        let mut mk_eq_cs = |ty: Ty| {
+            let tv = ctx.tcx.tf().next();
+            let c = EqConstraint::new(ty, Ty::Var(tv.clone()));
+            (tv, c)
+        };
+        let (param_tvs, param_cs): (Vec<_>, Vec<_>) =
+            param_tys.into_iter().map(&mut mk_eq_cs).unzip();
+        let (ret_tv, ret_cs) = mk_eq_cs(body_ty.clone());
 
         let fn_ty = Ty::Func(
             param_tvs.into_iter().map(Ty::Var).collect(),
@@ -260,53 +268,184 @@ impl CollectDeclarations for (&ast::Func, &Source, Option<&Ty>) {
         let mut eq = EqConstraint::new(Ty::Var(fn_tv.clone()), fn_ty);
         eq.info_mut().with_src(src.clone());
 
-        let lhs_rhs_ct = NodeTree::new(vec![NodeTree::new(param_cts), body_ct]).spread_list(cl);
+        let mut fb_env = Env::new();
+        fb_env.insert(name.clone(), Ty::Var(fn_tv.clone()));
+
         let fn_ct = param_cs
             .into_iter()
             .chain(std::iter::once(ret_cs))
             .rev()
-            .fold(lhs_rhs_ct, |mut ct, c| {
+            .fold(fb_ct, |mut ct, c| {
                 ct = ParentAttachTree::new(c, ct);
                 ct
             });
 
-        let mut ct = AttachTree::new(
+        let ctree = AttachTree::new(
             eq,
             NodeTree::new(vec![ReceiverTree::new(fn_tv.to_string()), fn_ct]),
         );
 
+        //
+        // D-TYPE
+        //
+        // Now that we have the constraints for the function binding
+        // we can collect the constraints for the function's type signature
+        let bg = BindingGroup::new(fb_env, fb_aset, ctree).with_src(src.clone());
+        let mut sigma = Env::new();
         if let Some(anno_ty) = &func.sig.ty {
-            let mut fn_eq = EqConstraint::new(Ty::Var(fn_tv.clone()), anno_ty.mono().clone());
-            fn_eq.info_mut().with_src(src.clone());
-            ct = AttachTree::new(fn_eq, ct);
+            sigma.insert(name.clone(), anno_ty.clone());
         }
 
-        if let Some(ret_tv) = func
-            .sig
-            .ty
-            .as_ref()
-            .and_then(|ty| ty.mono().get_ret_placeholder())
-        {
-            let mut ret_eq = EqConstraint::new(Ty::Var(ret_tv.clone()), body_ty.clone());
-            ret_eq.info_mut().with_src(src.clone());
-            ct = AttachTree::new(ret_eq, ct);
-        }
+        (Ty::Var(fn_tv).into(), bg, sigma)
 
-        let mut env = Env::new();
-        env.insert(name.clone(), Ty::Var(fn_tv.clone()));
-        let bg = BindingGroup::new(env, aset - lhs_env.keys(), ct).with_src(src.clone());
+        // Collecting constraints for a function is two-fold:
+        //   1) (D-FB) Collect constraints for the function binding itself, the LHS (parameter patterns) and RHS (body)
+        //   2) (D-TYPE) Collect constraints for the function's type signature, if it exists
+        // Although these two things are not separated out clearly below, but the comments will help explain what's going on.
 
-        let mut env = Env::new();
-        match &func.sig.ty {
-            Some(ty) => {
-                // if !ty.mono().has_ret_placeholder()
-                env.insert(name.clone(), ty.clone().into())
-            }
-            _ => ctx
-                .new_defs
-                .insert(name.clone(), TyScheme::from_var(fn_tv.clone())),
-        };
-        (Ty::Var(fn_tv).into(), bg, env)
+        // let &(func, src, maybe_self_ty) = self;
+
+        // // name, mut params, body, decs
+        // let name = &func.sig.path;
+
+        // // ⟨M⟩, id, A\dom(E),Cl ◃◦•[ TC1,TC2 •] ⊢fb lhs = rhs : {|τ1,...,τn,τ|}
+        // let fn_tv = ctx.tcx.tf().next();
+        // log::debug!("type of {} = {}", name, fn_tv);
+
+        // let anno_fn_ty = func.sig.ty.as_ref().and_then(|ty| ty.try_borrow_fn());
+
+        // // LHS
+        // let mut mono_tys = ctx.mono_tys.clone();
+        // let mut param_tys = vec![];
+        // let mut param_cts = vec![];
+        // let mut lhs_env = Env::new();
+
+        // let insert_mono_ty = |mono_tys: &mut HashSet<TyVar>, ty: &Ty| {
+        //     if let Ty::Var(tv) = ty {
+        //         mono_tys.insert(tv.clone());
+        //     }
+        // };
+
+        // // Looping through the parameters:
+        // //   1) (D-FB) we collect the parameter type from the patterns, which will become part of the function type
+        // //   2) (D-TYPE) we create equality constraints if the parameter has a type annotation
+        // for (param_index, param) in func.sig.params.iter().enumerate() {
+        //     let param_name = param.name();
+        //     let (param_ty, param_env, mut param_ct) =
+        //         param_name.collect_patterns(ctx.srcmap, ctx.tcx);
+
+        //     if let Some(self_ty) = maybe_self_ty {
+        //         if param_name.name().unwrap().as_str() == "self" {
+        //             let src = ctx.srcmap.get(param);
+        //             let mut c = EqConstraint::new(param_ty.clone(), self_ty.clone());
+        //             c.info_mut().with_src(src);
+        //             param_ct = AttachTree::new(c, param_ct);
+        //         }
+        //     }
+
+        //     if let Some(anno_ty) =
+        //         anno_fn_ty.and_then(|(_, _, param_tys, _)| param_tys.get(param_index))
+        //     {
+        //         // (D-TYPE) param type was provided, so create an equality constraint
+        //         let mut c = EqConstraint::new(param_ty.clone(), anno_ty.clone());
+        //         let src = ctx.srcmap.get(param);
+        //         c.info_mut().with_src(src);
+        //         param_ct = AttachTree::new(c, param_ct);
+        //         insert_mono_ty(&mut mono_tys, anno_ty);
+        //     }
+
+        //     insert_mono_ty(&mut mono_tys, &param_ty);
+
+        //     param_tys.push(param_ty.clone());
+        //     param_cts.push(param_ct);
+        //     lhs_env.extend(param_env);
+        //     ctx.tcx.set_ty(param.id, param_ty);
+        // }
+
+        // // RHS
+        // // ⟨M + ftv(Cl)⟩,A,TC2 ⊢rhs rhs : τ
+        // let mut ctx = CollectCtx {
+        //     mono_tys: &mono_tys,
+        //     srcmap: ctx.srcmap,
+        //     tcx: ctx.tcx,
+        //     ncx: ctx.ncx,
+        //     defs: ctx.defs.clone(),
+        //     new_defs: ctx.new_defs,
+        // };
+        // let (body_ty, aset, body_ct) = func.body.as_deref().unwrap().collect_constraints(&mut ctx);
+
+        // let mut mk_eq_cs = |ty: Ty| {
+        //     let tv = ctx.tcx.tf().next();
+        //     let c = EqConstraint::new(ty, Ty::Var(tv.clone()));
+        //     (tv, c)
+        // };
+
+        // let (param_tvs, param_cs): (Vec<_>, Vec<_>) =
+        //     param_tys.into_iter().map(&mut mk_eq_cs).unzip();
+        // let (ret_tv, ret_cs) = mk_eq_cs(body_ty.clone());
+
+        // let cl = EqConstraint::lift(&aset, &lhs_env)
+        //     .into_iter()
+        //     .map(|(l, mut c)| {
+        //         c.info_mut().with_src(src.clone());
+        //         (l, c)
+        //     })
+        //     .collect();
+
+        // let fn_ty = Ty::Func(
+        //     param_tvs.into_iter().map(Ty::Var).collect(),
+        //     Box::new(Ty::Var(ret_tv)),
+        // );
+        // let mut eq = EqConstraint::new(Ty::Var(fn_tv.clone()), fn_ty);
+        // eq.info_mut().with_src(src.clone());
+
+        // let lhs_rhs_ct = NodeTree::new(vec![NodeTree::new(param_cts), body_ct]).spread_list(cl);
+        // let fn_ct = param_cs
+        //     .into_iter()
+        //     .chain(std::iter::once(ret_cs))
+        //     .rev()
+        //     .fold(lhs_rhs_ct, |mut ct, c| {
+        //         ct = ParentAttachTree::new(c, ct);
+        //         ct
+        //     });
+
+        // let mut ct = AttachTree::new(
+        //     eq,
+        //     NodeTree::new(vec![ReceiverTree::new(fn_tv.to_string()), fn_ct]),
+        // );
+
+        // if let Some(anno_ty) = &func.sig.ty {
+        //     let mut fn_eq = EqConstraint::new(Ty::Var(fn_tv.clone()), anno_ty.mono().clone());
+        //     fn_eq.info_mut().with_src(src.clone());
+        //     ct = AttachTree::new(fn_eq, ct);
+        // }
+
+        // if let Some(ret_tv) = func
+        //     .sig
+        //     .ty
+        //     .as_ref()
+        //     .and_then(|ty| ty.mono().get_ret_placeholder())
+        // {
+        //     let mut ret_eq = EqConstraint::new(Ty::Var(ret_tv.clone()), body_ty.clone());
+        //     ret_eq.info_mut().with_src(src.clone());
+        //     ct = AttachTree::new(ret_eq, ct);
+        // }
+
+        // let mut env = Env::new();
+        // env.insert(name.clone(), Ty::Var(fn_tv.clone()));
+        // let bg = BindingGroup::new(env, aset - lhs_env.keys(), ct).with_src(src.clone());
+
+        // let mut env = Env::new();
+        // match &func.sig.ty {
+        //     Some(ty) => {
+        //         // if !ty.mono().has_ret_placeholder()
+        //         env.insert(name.clone(), ty.clone().into())
+        //     }
+        //     _ => ctx
+        //         .new_defs
+        //         .insert(name.clone(), TyScheme::from_var(fn_tv.clone())),
+        // };
+        // (Ty::Var(fn_tv).into(), bg, env)
     }
 }
 
@@ -769,17 +908,12 @@ impl CollectConstraints for (&Call, &Source) {
 
             let src = ctx.srcmap.get(&dot.lhs);
             let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-            let name = dot.rhs.path.to_string();
-            log::debug!("name: {}", name);
-            let fqn = if let Some(fqn) = ctx.tcx.lookup_fqn(&name) {
-                fqn.clone()
-            } else {
-                Path::from(format!(
-                    "{}::{}",
-                    self_ty.clone().get_path().unwrap(),
-                    dot.rhs.path
-                ))
-            };
+            log::debug!("rhs: {}", dot.rhs.path);
+            let fqn = Path::from(format!(
+                "{}::{}",
+                self_ty.clone().get_path().unwrap(),
+                dot.rhs.path
+            ));
 
             log::debug!("fqn: {}", fqn);
 
@@ -854,7 +988,7 @@ impl CollectConstraints for (&Curly, &Source) {
             aset.extend(a);
             let mut prove = ProveConstraint::new(Predicate::has_field(
                 ty.clone(),
-                name.path.to_string(),
+                name.path.name().unwrap().to_string(),
                 field_ty.clone(),
             ));
             prove.info_mut().with_src(src.clone());
@@ -891,11 +1025,25 @@ impl CollectConstraints for (&Dot, &Source) {
         let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         let mut prove = ProveConstraint::new(Predicate::has_field(
             lhs_ty,
-            dot.rhs.path.to_string(),
+            dot.rhs.path.name().unwrap().to_string(),
             field_ty.clone(),
         ));
         prove.info_mut().with_src(src.clone());
         (field_ty, aset, AttachTree::new(prove, ct))
+
+        // let accessor_tv = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+        // let mut eq = EqConstraint::new(
+        //     accessor_tv,
+        //     Ty::Accessor(Box::new(lhs_ty.clone()), Box::new(field_ty.clone())),
+        // );
+        // eq.info_mut().with_src(src.clone());
+        // let mut prove = ProveConstraint::new(Predicate::has_field(
+        //     lhs_ty,
+        //     dot.rhs.path.name().unwrap().to_string(),
+        //     field_ty.clone(),
+        // ));
+        // prove.info_mut().with_src(src.clone());
+        // (field_ty, aset, AttachTree::list(vec![eq, prove], ct))
     }
 }
 
@@ -1013,7 +1161,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("{}{}", sign, size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    let int_trait_fqn = ctx.tcx.int_trait();
+                    let int_trait_fqn = ctx.ncx.int_trait();
                     log::debug!("int_trait_fqn = {}", int_trait_fqn);
                     let mut prove = ProveConstraint::new(Predicate::class(
                         int_trait_fqn.to_string(),
@@ -1266,5 +1414,72 @@ impl CollectConstraints for (&While, &Source) {
 
         let ctree = NodeTree::new(vec![cond_tree, body_tree]);
         (Ty::unit(), aset, ctree)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::{
+        ast::Path,
+        errors::{RayError, RayErrorKind},
+        sema::ModuleBuilder,
+        span::SourceMap,
+        typing::{
+            collect::{CollectConstraints, CollectCtx},
+            constraints::tree::BottomUpWalk,
+            state::{Env, SchemeEnv},
+            InferSystem,
+        },
+    };
+
+    #[test]
+    fn test_collect_function() -> Result<(), Vec<RayError>> {
+        let src = r#"
+        fn foo(x: int) -> int {
+            x + 1
+        }
+        "#;
+        let mut result = ModuleBuilder::from_src(&src, Path::from("#test"))?;
+        result.tcx.add_infix_op(
+            "+".into(),
+            Path::from("core::Add::+"),
+            Path::from("core::Add"),
+        );
+
+        let mono_tys = HashSet::new();
+        let mut new_defs = Env::new();
+        let mut ctx = CollectCtx {
+            mono_tys: &mono_tys,
+            srcmap: &result.srcmap,
+            tcx: &mut result.tcx,
+            ncx: &mut result.ncx,
+            new_defs: &mut new_defs,
+            defs: SchemeEnv::new(),
+        };
+        let (_, _, c) = result.module.collect_constraints(&mut ctx);
+        let constraints = c.spread().phase().flatten(BottomUpWalk);
+        println!("tcx = {:#?}", result.tcx);
+        println!("ncx = {:#?}", result.ncx);
+        for c in constraints {
+            println!("{}", c);
+        }
+        // let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
+        // let (solution, defs) = match inf.infer_ty(&result.module, &mut result.srcmap, result.defs) {
+        //     Ok(result) => result,
+        //     Err(errs) => {
+        //         return Err(errs
+        //             .into_iter()
+        //             .map(|err| RayError {
+        //                 msg: err.message(),
+        //                 src: err.src,
+        //                 kind: RayErrorKind::Type,
+        //             })
+        //             .collect());
+        //     }
+        // };
+
+        Ok(())
     }
 }
