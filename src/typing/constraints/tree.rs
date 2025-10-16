@@ -351,7 +351,10 @@ impl ConstraintTree {
         let mut list = vec![];
         let ct = self.spread_with(&mut list);
         if list.len() != 0 {
-            panic!("COMPILER ERROR!!!\nnon-empty spread list (missing ReceiveTrees for the following type variables): {:#?}", list);
+            panic!(
+                "COMPILER ERROR!!!\nnon-empty spread list (missing ReceiveTrees for the following type variables): {:#?}",
+                list
+            );
         }
         ct
     }

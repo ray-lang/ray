@@ -1,9 +1,9 @@
 use top::Predicates;
 
 use crate::{
-    ast::{token::TokenKind, FnParam, Name, Node, TypeParams},
+    ast::{FnParam, Name, Node, TypeParams, token::TokenKind},
     parse::{ParseResult, Parser},
-    span::{parsed::Parsed, Span},
+    span::{Span, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };
 

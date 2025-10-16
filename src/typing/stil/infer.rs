@@ -5,11 +5,11 @@ use crate::{
     errors::RayError,
     span::Source,
     typing::{
+        ApplySubstMut, Subst, TyCtx,
         assumptions::AssumptionSet,
         predicate::TyPredicate,
         stil::{GetDecls, VerifyTys},
         ty::Ty,
-        ApplySubstMut, Subst, TyCtx,
     },
 };
 

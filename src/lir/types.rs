@@ -1,13 +1,14 @@
 use petgraph::{
     graph::NodeIndex,
-    visit::{depth_first_search, Dfs, DfsEvent, EdgeRef},
+    visit::{Dfs, DfsEvent, EdgeRef, depth_first_search},
 };
 use serde::{Deserialize, Serialize};
 use top::{Subst, Substitutable};
 
 use crate::{
-    ast::{self, asm::AsmOp, Modifier, Node, Path},
+    ast::{self, Modifier, Node, Path, asm::AsmOp},
     convert::ToSet,
+    span::{Source, Span},
     strutils::indent_lines,
     typing::ty::{Ty, TyScheme, TyVar},
     utils::{join, map_join},
@@ -1732,6 +1733,8 @@ pub struct Call {
     pub args: Vec<Variable>,
     pub ty: TyScheme,
     pub poly_ty: Option<TyScheme>,
+    pub subst: Subst<TyVar, Ty>,
+    pub source: Option<Source>,
 }
 
 LirImplInto!(Inst for Call);
@@ -1760,12 +1763,18 @@ impl Substitutable<TyVar, Ty> for Call {
         self.fn_name.apply_subst(subst);
         self.args.apply_subst(subst);
         self.ty.apply_subst(subst);
+        for ty in self.subst.values_mut() {
+            ty.apply_subst(subst);
+        }
     }
 
     fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
         self.fn_name.apply_subst_all(subst);
         self.args.apply_subst_all(subst);
         self.ty.apply_subst_all(subst);
+        for ty in self.subst.values_mut() {
+            ty.apply_subst_all(subst);
+        }
     }
 }
 
@@ -1785,14 +1794,17 @@ impl Call {
         args: Vec<Variable>,
         ty: TyScheme,
         poly_ty: Option<TyScheme>,
+        subst: Subst<TyVar, Ty>,
     ) -> Call {
         Call {
             original_fn_name: fn_name.clone(),
             fn_ref: None,
             ty,
             poly_ty,
+            subst,
             args,
             fn_name,
+            source: None,
         }
     }
 
@@ -1801,6 +1813,7 @@ impl Call {
         args: Vec<Variable>,
         ty: TyScheme,
         poly_ty: Option<TyScheme>,
+        subst: Subst<TyVar, Ty>,
     ) -> Call {
         Call {
             original_fn_name: Path::new(),
@@ -1808,7 +1821,9 @@ impl Call {
             fn_ref: Some(fn_ref),
             ty,
             poly_ty,
+            subst,
             args,
+            source: None,
         }
     }
 

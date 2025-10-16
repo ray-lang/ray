@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast::{Node, Path},
@@ -8,15 +8,15 @@ use crate::{
 };
 
 use super::{
+    TyCtx,
     assumptions::AssumptionSet,
     binding::BindingGroup,
     constraints::{
-        tree::{AttachTree, ConstraintTree, NodeTree, ReceiverTree},
         EqConstraint,
+        tree::{AttachTree, ConstraintTree, NodeTree, ReceiverTree},
     },
     state::{Env, SchemeEnv, SigmaEnv, TyEnv},
     ty::SigmaTy,
-    TyCtx,
 };
 
 pub struct CollectCtx<'a> {
@@ -26,6 +26,7 @@ pub struct CollectCtx<'a> {
     pub ncx: &'a mut NameContext,
     pub defs: SchemeEnv,
     pub new_defs: &'a mut SchemeEnv,
+    // pub trait_bounds: HashMap<Path, Vec<Path>>,
 }
 
 impl CollectCtx<'_> {
@@ -40,6 +41,7 @@ impl CollectCtx<'_> {
             ncx: self.ncx,
             defs: self.defs.clone(),
             new_defs: self.new_defs,
+            // trait_bounds: self.trait_bounds.clone(),
         };
 
         f(&mut ctx)
@@ -90,12 +92,21 @@ where
         // E,Tc1 ⊢p p : τ1
         let (lhs_ty, env, ct1) = var.collect_patterns(ctx.srcmap, ctx.tcx);
 
+        let lhs_names = env.keys().map(|path| path.to_string()).collect::<Vec<_>>();
+        log::debug!(
+            "collect_decls: lhs_names={:?} lhs_ty={} rhs_id={}",
+            lhs_names,
+            lhs_ty,
+            rhs.id
+        );
+
         // ⟨M⟩, A, Tc2 ⊢e rhs : τ2
         let (rhs_ty, a, ct2) = rhs.collect_constraints(ctx);
 
         // c = (τ1 ≡ τ2)
         let mut c = EqConstraint::new(lhs_ty.clone(), rhs_ty);
         c.info_mut().with_src(src.clone());
+        log::debug!("collect_decls: eq_constraint={}", c);
 
         // B = (E, A, c ▹ [Ct1, Ct2])
         let bg = BindingGroup::new(env, a, AttachTree::new(c, NodeTree::new(vec![ct1, ct2])))

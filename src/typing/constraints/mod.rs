@@ -74,8 +74,13 @@ impl InstConstraint {
     pub fn lift(aset: &AssumptionSet, sigs: &SigmaEnv) -> Vec<(String, Constraint)> {
         let mut cl = vec![];
         for (x, tys) in aset.iter().sorted_by_key(|&(x, _)| x) {
-            if let Some(rhs_ty) = sigs.get(x) {
-                log::debug!("sig: {} :: {}", x, rhs_ty);
+            let entry = sigs.get_key_value(x).or_else(|| {
+                sigs.iter()
+                    .find(|(sig_path, _)| sig_path.without_type_args() == *x)
+            });
+
+            if let Some((sig_path, rhs_ty)) = entry {
+                log::debug!("sig: {} :: {}", sig_path, rhs_ty);
                 for lhs_ty in tys {
                     cl.push((
                         lhs_ty.to_string(),
@@ -83,7 +88,7 @@ impl InstConstraint {
                     ));
                 }
             } else {
-                log::debug!("{} is not in the sigs", x);
+                log::debug!("InstConstraint::lift: {} is not in the sigs, {:?}", x, sigs);
             }
         }
 
@@ -117,7 +122,7 @@ impl SkolConstraint {
                     SkolConstraint::new(mono_tys.iter().cloned(), lhs_ty.clone(), rhs_ty.clone()),
                 ));
             } else {
-                log::debug!("{} is not in the sigs", x);
+                log::debug!("SkolConstraint::lift: {} is not in the sigs, {:?}", x, sigs);
             }
         }
 

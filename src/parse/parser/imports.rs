@@ -1,5 +1,5 @@
 use crate::{
-    ast::{token::TokenKind, Import, ImportKind, Node, Path, Trailing},
+    ast::{Import, ImportKind, Node, Path, Trailing, token::TokenKind},
     parse::{ParseContext, ParseResult, Parser},
     span::Span,
 };

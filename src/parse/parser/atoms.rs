@@ -4,8 +4,8 @@ use super::{ExprResult, ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
     ast::{
-        token::TokenKind, Block, Closure, Expr, Literal, Name, Node, Path, Pattern, Sequence,
-        Trailing, Tuple, ValueKind,
+        Block, Closure, Expr, Literal, Name, Node, Path, Pattern, Sequence, Trailing, Tuple,
+        ValueKind, token::TokenKind,
     },
     span::{Pos, Span},
 };
@@ -206,7 +206,7 @@ impl Parser<'_> {
                         Trailing::Disallow => {
                             return Err(
                                 self.parse_error("unexpected trailing comma".to_string(), span)
-                            )
+                            );
                         }
                         _ => continue,
                     }

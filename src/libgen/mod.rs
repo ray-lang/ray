@@ -5,7 +5,7 @@ use crate::{
     lir,
     sema::NameContext,
     span::SourceMap,
-    typing::{state::SchemeEnv, TyCtx},
+    typing::{TyCtx, state::SchemeEnv},
 };
 
 #[derive(Debug, Serialize, Deserialize)]

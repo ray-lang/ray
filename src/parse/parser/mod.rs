@@ -15,13 +15,13 @@ use std::{fs, io};
 
 use crate::{
     ast::{
-        token::{Token, TokenKind},
         Decl, Decorator, Expr, File, Import, Node, Path, ValueKind,
+        token::{Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
     pathlib::FilePath,
-    span::{parsed::Parsed, Pos, Source, SourceMap, Span},
+    span::{Pos, Source, SourceMap, Span, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };
 

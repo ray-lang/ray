@@ -4,12 +4,12 @@ use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
 
 use crate::{
     ast::{
-        asm::{Asm, AsmOp, AsmOperand},
-        token::{Token, TokenKind},
         Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
         Trailing, ValueKind,
+        asm::{Asm, AsmOp, AsmOperand},
+        token::{Token, TokenKind},
     },
-    span::{parsed::Parsed, Span},
+    span::{Span, parsed::Parsed},
     typing::ty::{SigmaTy, Ty, TyScheme},
 };
 
@@ -320,7 +320,7 @@ impl Parser<'_> {
                 _ => {
                     return Err(
                         self.parse_error(str!("expected identifier for struct expression"), span)
-                    )
+                    );
                 }
             }
         } else {
@@ -421,7 +421,7 @@ impl Parser<'_> {
             let op = match AsmOp::try_from(op.as_str()) {
                 Ok(op) => op,
                 Err(s) => {
-                    return Err(self.parse_error(format!("invalid asm operator `${}`", s), span))
+                    return Err(self.parse_error(format!("invalid asm operator `${}`", s), span));
                 }
             };
 

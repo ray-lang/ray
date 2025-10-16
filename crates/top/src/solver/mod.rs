@@ -75,6 +75,7 @@ where
     pub qualifiers: Predicates<T, V>,
     pub errors: Vec<(String, I)>,
     pub solved_constraints: Vec<Constraint<I, T, V>>,
+    pub skolems: Vec<V>,
 }
 
 impl<I, T, V> Display for SolveResult<I, T, V>
@@ -202,5 +203,40 @@ where
             vars,
             Qualification::new(Predicates::from(preds), ty.clone()),
         )
+    }
+
+    pub fn normalize_subst(&mut self) {
+        // Step 1: reorient var→var bindings so skolem is never on LHS
+        let mut flipped = Vec::new();
+        for (k, v) in self.subst.iter() {
+            if let Some(v2) = v.maybe_var() {
+                if self.skolems.contains(k) && !self.skolems.contains(v2) && k != v2 {
+                    flipped.push((k.clone(), v2.clone()));
+                }
+            }
+        }
+
+        for (lhs, rhs) in flipped {
+            log::debug!("normalize_subst: flipped {} -> {}", lhs, rhs);
+            self.subst.remove(&lhs);
+            self.subst.insert(rhs, T::var(lhs));
+        }
+
+        // Step 2: saturate (make idempotent) so var→var chains collapse
+        loop {
+            let mut changed = false;
+            let snapshot = self.subst.clone();
+            for (k, v) in snapshot {
+                let mut t = v.clone();
+                t.apply_subst(&self.subst);
+                if t != v {
+                    self.subst.insert(k, t);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 }

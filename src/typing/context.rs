@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use top::{Predicates, Subst, Substitutable};
+use top::{Predicates, Subst, Substitutable, mgu};
 
 use crate::{
     ast::{FuncSig, Node, Path},
@@ -37,6 +37,7 @@ pub struct TyCtx {
     struct_tys: HashMap<Path, StructTy>,
     traits: HashMap<Path, TraitTy>,
     impls: HashMap<Path, Vec<ImplTy>>,
+    call_resolutions: HashMap<u64, Path>,
     tf: Rc<RefCell<TyVarFactory>>,
 }
 
@@ -55,6 +56,7 @@ impl Clone for TyCtx {
             struct_tys: self.struct_tys.clone(),
             traits: self.traits.clone(),
             impls: self.impls.clone(),
+            call_resolutions: self.call_resolutions.clone(),
             tf: Rc::clone(&self.tf),
         }
     }
@@ -126,6 +128,11 @@ impl Display for TyCtx {
             write!(f, "    {}: {:?},", k, v)?;
         }
         write!(f, "  }}")?;
+        write!(f, "  call_resolutions: {{")?;
+        for (k, v) in &self.call_resolutions {
+            write!(f, "    {}: {},", k, v)?;
+        }
+        write!(f, "  }}")?;
         write!(f, "  tf: {:?},", self.tf)?;
         write!(f, "}}")
     }
@@ -186,6 +193,7 @@ impl TyCtx {
             struct_tys: HashMap::new(),
             traits: HashMap::new(),
             impls: HashMap::new(),
+            call_resolutions: HashMap::new(),
             tf: Rc::new(RefCell::new(TyVarFactory::new("?t"))),
         }
     }
@@ -199,6 +207,7 @@ impl TyCtx {
         self.struct_tys.extend(other.struct_tys);
         self.traits.extend(other.traits);
         self.impls.extend(other.impls);
+        self.call_resolutions.extend(other.call_resolutions);
     }
 
     pub fn traits(&self) -> &HashMap<Path, TraitTy> {
@@ -284,11 +293,7 @@ impl TyCtx {
         if let Some(Ty::Var(original_ty)) = self.original_ty_of(node.id) {
             self.inst_ty_of(original_ty).and_then(
                 |t| {
-                    if t.has_quantifiers() {
-                        Some(t)
-                    } else {
-                        None
-                    }
+                    if t.has_quantifiers() { Some(t) } else { None }
                 },
             )
         } else {
@@ -365,6 +370,14 @@ impl TyCtx {
         self.struct_tys.insert(struct_ty.path.clone(), struct_ty);
     }
 
+    pub fn set_call_resolution(&mut self, id: u64, path: Path) {
+        self.call_resolutions.insert(id, path);
+    }
+
+    pub fn call_resolution(&self, id: u64) -> Option<Path> {
+        self.call_resolutions.get(&id).cloned()
+    }
+
     pub fn get_trait_ty(&self, path: &Path) -> Option<&TraitTy> {
         // let fqn = self.nametree().find_in_scope(scope, name);
         self.traits.get(path)
@@ -420,6 +433,53 @@ impl TyCtx {
 
     pub fn tf(&mut self) -> RefMut<TyVarFactory> {
         self.tf.borrow_mut()
+    }
+
+    pub fn resolve_trait_method(&self, receiver_ty: &Ty, method_name: &str) -> Option<Path> {
+        self.traits.iter().find_map(|(trait_path, trait_ty)| {
+            trait_ty
+                .fields
+                .iter()
+                .find(|(field_name, _)| field_name == method_name)
+                .map(|_| {
+                    let mut method_path = trait_path.clone();
+                    let type_params = trait_ty.ty.get_ty_params();
+                    if !type_params.is_empty() {
+                        let type_args = self
+                            .impls()
+                            .get(trait_path)
+                            .and_then(|impls| {
+                                impls.iter().find_map(|impl_ty| {
+                                    mgu(&impl_ty.base_ty, receiver_ty).ok().map(|(_, subst)| {
+                                        let mut instantiated = impl_ty.trait_ty.clone();
+                                        instantiated.apply_subst(&subst);
+                                        instantiated
+                                            .get_ty_params()
+                                            .into_iter()
+                                            .map(|ty| ty.to_string())
+                                            .collect::<Vec<_>>()
+                                    })
+                                })
+                            })
+                            .unwrap_or_else(|| {
+                                let mut args = type_params
+                                    .iter()
+                                    .map(|ty| ty.to_string())
+                                    .collect::<Vec<_>>();
+                                if !args.is_empty() {
+                                    args[0] = receiver_ty.to_string();
+                                }
+                                args
+                            });
+
+                        if !type_args.is_empty() {
+                            method_path = method_path.append_type_args(&type_args);
+                        }
+                    }
+
+                    method_path.append(method_name.to_string())
+                })
+        })
     }
 
     // pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {

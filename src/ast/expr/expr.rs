@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use crate::{
-    ast::{asm::Asm, Node, Path},
+    ast::{Node, Path, asm::Asm},
     span::parsed::Parsed,
     typing::ty::TyScheme,
 };

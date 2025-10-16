@@ -1,6 +1,6 @@
 use crate::{
     ast::{Expr, Node},
-    span::{parsed::Parsed, Span},
+    span::{Span, parsed::Parsed},
     typing::ty::Ty,
 };
 

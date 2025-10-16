@@ -1,7 +1,7 @@
 use crate::{
     ast::{
-        token::{IntegerBase, Token, TokenKind},
         Modifier,
+        token::{IntegerBase, Token, TokenKind},
     },
     span::{Pos, Span},
 };

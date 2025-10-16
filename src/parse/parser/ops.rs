@@ -4,8 +4,8 @@ use super::{ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Restricti
 
 use crate::{
     ast::{
-        token::TokenKind, Assign, Associativity, BinOp, Cast, Expr, InfixOp, Node, Pattern,
-        PrefixOp, Range, RangeLimits, Sequence, UnaryOp,
+        Assign, Associativity, BinOp, Cast, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
+        RangeLimits, Sequence, UnaryOp, token::TokenKind,
     },
     span::Span,
 };

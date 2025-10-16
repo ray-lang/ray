@@ -2,16 +2,16 @@ use std::collections::HashSet;
 
 use crate::{
     ast::{
-        asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, Decl, Dot, Expr, Extern, For,
-        Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module, Name, New, Node, Path,
-        Pattern, Range, Sequence, Struct, Trait, Tuple, UnaryOp, While,
+        Assign, BinOp, Block, Call, Cast, Closure, Curly, Decl, Dot, Expr, Extern, For, Func,
+        FuncSig, If, Impl, Index, List, Literal, Loop, Module, Name, New, Node, Path, Pattern,
+        Range, Sequence, Struct, Trait, Tuple, UnaryOp, While, asm::Asm,
     },
-    span::{parsed::Parsed, SourceMap},
+    span::{SourceMap, parsed::Parsed},
 };
 
 use super::{
-    ty::{Ty, TyVar},
     TyCtx, TypeError,
+    ty::{Ty, TyVar},
 };
 
 pub type TypeCheckResult<T = ()> = Result<T, TypeError>;

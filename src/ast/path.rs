@@ -416,6 +416,16 @@ impl Path {
         Path { parts }
     }
 
+    pub fn without_type_args(&self) -> Path {
+        let parts = self
+            .parts
+            .iter()
+            .filter(|part| !matches!(part, PathPart::TypeArgs(_)))
+            .cloned()
+            .collect();
+        Path { parts }
+    }
+
     pub fn to_name_vec(&self) -> Vec<String> {
         self.parts
             .iter()

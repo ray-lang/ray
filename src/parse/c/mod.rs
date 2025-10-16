@@ -2,7 +2,7 @@ use lang_c::ast::{
     DeclarationSpecifier, Declarator, DeclaratorKind, DerivedDeclarator, ExternalDeclaration,
     SpecifierQualifier, StructDeclaration, StructKind, TranslationUnit, TypeSpecifier,
 };
-use lang_c::driver::{parse as cparse, Config};
+use lang_c::driver::{Config, parse as cparse};
 use lang_c::span::Node;
 
 use std::collections::HashSet;
@@ -260,7 +260,7 @@ fn make_type(ty_specs: Vec<&TypeSpecifier>) -> Ty {
     } else {
         let k = ty_specs.iter().find_map(|t| match t {
             TypeSpecifier::TypedefName(id) => Some(Ty::con(id.node.name.clone())),
-            TypeSpecifier::Struct(ref struct_ty) => match struct_ty.node.kind.node {
+            TypeSpecifier::Struct(struct_ty) => match struct_ty.node.kind.node {
                 StructKind::Struct => {
                     let name = struct_ty
                         .node

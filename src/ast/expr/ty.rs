@@ -1,5 +1,5 @@
 use crate::{
-    span::{parsed::Parsed, Span},
+    span::{Span, parsed::Parsed},
     typing::ty::Ty,
 };
 

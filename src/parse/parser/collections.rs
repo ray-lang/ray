@@ -1,6 +1,6 @@
 use super::{ExprResult, ParseContext, Parser};
 
-use crate::ast::{token::TokenKind, Expr, List, Trailing, ValueKind};
+use crate::ast::{Expr, List, Trailing, ValueKind, token::TokenKind};
 
 impl Parser<'_> {
     pub(crate) fn parse_array_expr(&mut self, ctx: &ParseContext) -> ExprResult {

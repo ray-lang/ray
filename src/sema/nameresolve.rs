@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{
-        asm::Asm, Assign, BinOp, Block, Call, Cast, Closure, Curly, CurlyElement, Decl, Dot, Expr,
-        Extern, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module, Name,
-        New, Node, Path, Pattern, Range, Sequence, Struct, Trait, Tuple, UnaryOp, While,
+        Assign, BinOp, Block, Call, Cast, Closure, Curly, CurlyElement, Decl, Dot, Expr, Extern,
+        FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module, Name, New, Node,
+        Path, Pattern, Range, Sequence, Struct, Trait, Tuple, UnaryOp, While,
+        asm::{Asm, AsmOperand},
     },
     collections::nametree::{NameTree, Scope},
     errors::{RayError, RayErrorKind, RayResult},
-    span::{parsed::Parsed, SourceMap, Sourced},
+    span::{SourceMap, Sourced, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };
 
@@ -268,6 +269,7 @@ impl NameResolve for Sourced<'_, Extern> {
             Decl::Name(_) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::FnSig(sig) => {
+                log::debug!("NameResolve::resolve_names: extern fn sig: {:?}", sig);
                 ctx.add_path(&sig.path);
             }
             _ => unreachable!(),
@@ -377,18 +379,24 @@ impl NameResolve for Sourced<'_, Expr> {
 impl NameResolve for Sourced<'_, Assign> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         let (assign, src) = self.unpack_mut();
-        let ids = assign.lhs.identifiers().into_iter().filter_map(|id| {
-            let (id, is_lvalue) = id.value;
-            if !is_lvalue {
-                Some(id)
-            } else {
-                None
-            }
-        });
+        let ids = assign
+            .lhs
+            .identifiers()
+            .into_iter()
+            .filter_map(|node| {
+                let (path, is_lvalue) = node.value;
+                if !is_lvalue {
+                    Some((node.id, path.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
 
-        for path in ids {
-            let path = src.path.clone().append_path(path);
-            ctx.add_path(&path);
+        for (id, path) in ids {
+            let full_path = src.path.clone().append_path(path);
+            set_pattern_path(&mut assign.lhs, id, full_path.clone());
+            ctx.add_path(&full_path);
         }
 
         assign.rhs.resolve_names(ctx)
@@ -396,7 +404,25 @@ impl NameResolve for Sourced<'_, Assign> {
 }
 
 impl NameResolve for Sourced<'_, Asm> {
-    fn resolve_names(&mut self, _: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        let mut scopes = ctx
+            .scope_map
+            .get(self.src_module())
+            .cloned()
+            .unwrap_or_default();
+
+        let (asm, src) = self.unpack_mut();
+        scopes.push(Scope::from(src.path.clone()));
+
+        for (_op, operands) in asm.inst.iter_mut() {
+            for operand in operands.iter_mut() {
+                if let AsmOperand::Var(name) = operand {
+                    if let Some(fqn) = ctx.ncx.resolve_name(&scopes, name) {
+                        *name = fqn.to_string();
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -453,6 +479,35 @@ impl NameResolve for Sourced<'_, Dot> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         self.lhs.resolve_names(ctx)
     }
+}
+
+fn set_pattern_path(pattern: &mut Node<Pattern>, target_id: u64, new_path: Path) {
+    fn helper(pattern: &mut Node<Pattern>, target_id: u64, new_path: &Path) -> bool {
+        if pattern.id == target_id {
+            match &mut pattern.value {
+                Pattern::Name(name) | Pattern::Deref(name) => {
+                    name.path = new_path.clone();
+                    return true;
+                }
+                Pattern::Sequence(_) | Pattern::Tuple(_) => {}
+            }
+        }
+
+        match &mut pattern.value {
+            Pattern::Sequence(seq) | Pattern::Tuple(seq) => {
+                for pat in seq.iter_mut() {
+                    if helper(pat, target_id, new_path) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        false
+    }
+
+    helper(pattern, target_id, &new_path);
 }
 
 impl NameResolve for Sourced<'_, For> {

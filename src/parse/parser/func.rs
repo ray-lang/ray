@@ -1,7 +1,7 @@
 use super::{ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
-    ast::{self, token::TokenKind, FnParam, FuncSig, Node},
+    ast::{self, FnParam, FuncSig, Node, token::TokenKind},
     span::Span,
 };
 

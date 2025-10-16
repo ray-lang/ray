@@ -1,7 +1,7 @@
 use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
 
 use crate::{
-    ast::{token::TokenKind, Expr, For, If, Loop, While},
+    ast::{Expr, For, If, Loop, While, token::TokenKind},
     span::Span,
 };
 

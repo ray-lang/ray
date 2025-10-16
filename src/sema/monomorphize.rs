@@ -7,7 +7,7 @@ use std::{
 };
 
 use lir::IterCalls;
-use top::{mgu, util::Join, Subst, Substitutable};
+use top::{Subst, Substitutable, mgu, util::Join};
 
 use crate::{
     ast::{Node, Path},

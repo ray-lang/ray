@@ -3,7 +3,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use rand::Rng;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use top::{Subst, Substitutable};
 
@@ -165,7 +165,7 @@ where
 impl<T> Node<T> {
     pub fn new(value: T) -> Node<T> {
         let mut rng = rand::thread_rng();
-        let id = rng.gen::<u64>();
+        let id = rng.next_u64();
         Node { id, value }
     }
 

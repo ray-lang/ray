@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use top::{
-    solver::{greedy::GreedySolver, SolveOptions, SolveResult, Solver},
     Class, Instance, Predicate, Predicates, Substitutable,
+    solver::{SolveOptions, SolveResult, Solver, greedy::GreedySolver},
 };
 
 use crate::{
@@ -12,13 +12,13 @@ use crate::{
 };
 
 use super::{
+    TypeError,
     collect::{CollectConstraints, CollectCtx},
     constraints::tree::BottomUpWalk,
     context::TyCtx,
     info::TypeSystemInfo,
     state::SchemeEnv,
     ty::{Ty, TyVar},
-    TypeError,
 };
 
 pub(crate) mod solution;
@@ -52,6 +52,7 @@ impl<'a> InferSystem<'a> {
             ncx: self.ncx,
             new_defs: &mut new_defs,
             defs,
+            // trait_bounds: HashMap::new(),
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);
@@ -125,7 +126,9 @@ impl<'a> InferSystem<'a> {
         log::debug!("class env: {:?}", options.class_env);
 
         // let (mut solution, constraints) = solver.solve(options, constraints);
-        let solution = solver.solve(options, constraints);
+        let mut solution = solver.solve(options, constraints);
+        // normalize the skolems
+        solution.normalize_subst();
 
         log::debug!("solution: {}", solution);
 

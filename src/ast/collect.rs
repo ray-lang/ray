@@ -8,23 +8,23 @@ use crate::{
     ast,
     span::{Source, SourceMap},
     typing::{
+        TyCtx,
         assumptions::AssumptionSet,
         binding::{BindingGroup, BindingGroupAnalysis},
         collect::{CollectConstraints, CollectCtx, CollectDeclarations, CollectPatterns},
         constraints::{
-            tree::{AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree},
             EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
+            tree::{AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree},
         },
         state::{Env, SchemeEnv, SigmaEnv, TyEnv},
         ty::{LiteralKind, SigmaTy, Ty, TyScheme, TyVar},
-        TyCtx,
     },
 };
 
 use super::{
-    asm::{Asm, AsmOperand},
     BinOp, Block, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal, Name,
     New, Node, Path, Pattern, Range, Tuple, UnaryOp, While,
+    asm::{Asm, AsmOperand},
 };
 
 impl CollectPatterns for Node<Pattern> {
@@ -909,12 +909,23 @@ impl CollectConstraints for (&Call, &Source) {
             let src = ctx.srcmap.get(&dot.lhs);
             let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
             log::debug!("rhs: {}", dot.rhs.path);
-            let fqn = Path::from(format!(
+            let method_name = dot.rhs.path.name().unwrap().to_string();
+            let fallback = Path::from(format!(
                 "{}::{}",
                 self_ty.clone().get_path().unwrap(),
                 dot.rhs.path
             ));
 
+            log::debug!("Call::Dot fallback: {}", fallback);
+
+            let resolved_method = ctx.tcx.resolve_trait_method(&self_ty, &method_name);
+            if let Some(ref path) = resolved_method {
+                log::debug!("Call::Dot resolved method path: {}", path);
+            }
+
+            let fqn = resolved_method.unwrap_or(fallback);
+
+            ctx.tcx.set_call_resolution(call.callee.id, fqn.clone());
             log::debug!("fqn: {}", fqn);
 
             aset.add(fqn.clone(), field_ty.clone());
@@ -1427,10 +1438,10 @@ mod tests {
         sema::ModuleBuilder,
         span::SourceMap,
         typing::{
+            InferSystem,
             collect::{CollectConstraints, CollectCtx},
             constraints::tree::BottomUpWalk,
             state::{Env, SchemeEnv},
-            InferSystem,
         },
     };
 

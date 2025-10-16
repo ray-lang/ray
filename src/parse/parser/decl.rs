@@ -4,11 +4,11 @@ use super::{DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, Parse
 
 use crate::{
     ast::{
-        token::TokenKind, Assign, Decl, Decorator, Expr, Extern, Func, Impl, Modifier, Name, Node,
-        Pattern, Struct, Trailing, Trait, TraitDirective, TraitDirectiveKind,
+        Assign, Decl, Decorator, Expr, Extern, Func, Impl, Modifier, Name, Node, Pattern, Struct,
+        Trailing, Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
     },
     errors::{RayError, RayErrorKind},
-    span::{parsed::Parsed, Pos, Span},
+    span::{Pos, Span, parsed::Parsed},
     typing::ty::Ty,
 };
 

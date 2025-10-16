@@ -211,12 +211,20 @@ where
             })
             .collect();
 
+        let skolems = state
+            .infer_state
+            .skolems
+            .into_iter()
+            .flat_map(|(vars, _, _)| vars)
+            .collect();
+
         SolveResult {
             unique: state.infer_state.unique,
             subst,
             type_schemes,
             inst_type_schemes,
             qualifiers,
+            skolems,
             errors: state.basic_state.errors,
             solved_constraints: solved,
         }

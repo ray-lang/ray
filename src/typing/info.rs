@@ -2,8 +2,8 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 use top::{
-    util::Join, InfoDetail, PolyTypeConstraintInfo, Predicate, Predicates, Scheme,
-    TypeConstraintInfo,
+    InfoDetail, PolyTypeConstraintInfo, Predicate, Predicates, Scheme, TypeConstraintInfo,
+    util::Join,
 };
 
 use crate::span::Source;

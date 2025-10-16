@@ -1,6 +1,6 @@
 use crate::{
     ast::{Expr, Modifier, Name, Node, Path, TypeParams},
-    span::{parsed::Parsed, Source, Span},
+    span::{Source, Span, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };
 

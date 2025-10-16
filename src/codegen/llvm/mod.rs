@@ -1,7 +1,7 @@
 mod attr;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     env::{self, temp_dir},
     fs,
     io::Write,
@@ -10,6 +10,7 @@ use std::{
 
 use inkwell as llvm;
 use llvm::{
+    AddressSpace, IntPredicate, OptimizationLevel,
     attributes::AttributeLoc,
     basic_block::BasicBlock,
     module::Linkage,
@@ -20,12 +21,11 @@ use llvm::{
         AnyValue, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
         InstructionValue, IntValue, PointerValue,
     },
-    AddressSpace, IntPredicate, OptimizationLevel,
 };
-use rand::Rng;
+use rand::RngCore;
 
 use crate::{
-    ast::{Modifier, Path},
+    ast::{Modifier, Node, Path},
     codegen::collect_symbols,
     errors::RayError,
     lir,
@@ -33,8 +33,8 @@ use crate::{
     span::SourceMap,
     target::Target,
     typing::{
-        ty::{Ty, TyScheme},
         TyCtx,
+        ty::{Ty, TyScheme},
     },
 };
 
@@ -105,7 +105,7 @@ where
 
     // write out the object to a temp file
     let mut rng = rand::thread_rng();
-    let id = rng.gen::<u64>();
+    let id = rng.next_u64();
     let tmp_dir = FilePath::from(temp_dir());
     let base = format!("{}_{}.ray", name, id);
     let obj_path = tmp_dir.clone() / format!("{}.o", base);
@@ -467,11 +467,27 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
         srcmap: &SourceMap,
     ) -> Self::Output {
         // collect the function symbols
-        let fn_map = self
-            .funcs
-            .iter()
-            .map(|f| (f.name.clone(), f))
-            .collect::<HashMap<_, _>>();
+        let mut fn_map: HashMap<Path, &Node<lir::Func>> = HashMap::new();
+        for func in self.funcs.iter() {
+            match fn_map.entry(func.name.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(func);
+                }
+                Entry::Occupied(mut entry) => {
+                    let existing = *entry.get();
+                    let existing_weight =
+                        existing.value.blocks.iter().map(|b| b.len()).sum::<usize>();
+                    let new_weight = func.value.blocks.iter().map(|b| b.len()).sum::<usize>();
+                    let existing_symbols = existing.value.symbols.len();
+                    let new_symbols = func.value.symbols.len();
+                    if new_weight > existing_weight
+                        || (new_weight == existing_weight && new_symbols > existing_symbols)
+                    {
+                        entry.insert(func);
+                    }
+                }
+            }
+        }
         log::debug!("fn_map: {:#?}", fn_map.keys());
 
         let mut symbols = HashSet::new();

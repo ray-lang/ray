@@ -5,9 +5,9 @@ use top::solver::SolveResult;
 use crate::{
     ast::{Decl, Func, Module, Node, Path},
     typing::{
+        TyCtx,
         info::TypeSystemInfo,
         ty::{Ty, TyVar},
-        TyCtx,
     },
 };
 

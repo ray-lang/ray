@@ -9,7 +9,7 @@ use crate::{
     libgen, lir,
     pathlib::FilePath,
     sema, transform,
-    typing::{check::TypeCheckSystem, state::Env, ty::TyScheme, InferSystem, TyCtx},
+    typing::{InferSystem, TyCtx, check::TypeCheckSystem, state::Env, ty::TyScheme},
 };
 
 mod build;
@@ -140,7 +140,13 @@ impl Driver {
         }
 
         // generate IR
-        let mut program = lir::Program::gen(&result.module, &solution, &result.tcx, result.libs)?;
+        let mut program = lir::Program::generate(
+            &result.module,
+            &solution,
+            &result.tcx,
+            &result.srcmap,
+            result.libs,
+        )?;
         log::debug!("{}", program);
 
         // determine the output path

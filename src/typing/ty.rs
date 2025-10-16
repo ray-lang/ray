@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use top::{directives::TypeClassDirective, Predicate, Predicates, Subst, Substitutable};
+use top::{Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective};
 
 use crate::{
     ast::{self, FuncSig, Path, TraitDirective},
@@ -18,13 +18,10 @@ use crate::{
     pathlib::FilePath,
     sema::NameContext,
     span::{Source, SourceMap},
-    utils::{join, replace, DrainInPlace},
+    utils::{DrainInPlace, join, replace},
 };
 
 use super::{
-    context::TyCtx,
-    info::TypeSystemInfo,
-    traits::QualifyTypes,
     // predicate::TyPredicate,
     // state::TyVarFactory,
     // subst::{ApplySubst, Subst},
@@ -32,6 +29,9 @@ use super::{
     //     CollectTyVars, Generalize, HasFreeVars, HoistTypes, Instantiate, Polymorphize, Skolemize,
     // },
     TypeError,
+    context::TyCtx,
+    info::TypeSystemInfo,
+    traits::QualifyTypes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,7 +192,7 @@ impl TyScheme {
                                 ..Default::default()
                             }],
                             kind: RayErrorKind::Type,
-                        })
+                        });
                     }
                 };
 

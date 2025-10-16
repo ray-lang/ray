@@ -1,7 +1,7 @@
 use crate::{
     ast::{
-        token::{IntegerBase, Token, TokenKind},
         Path,
+        token::{IntegerBase, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,

@@ -5,7 +5,7 @@ use std::{
 };
 
 use ast::Impl;
-use top::{directives::TypeClassDirective, Predicate, Predicates, Substitutable};
+use top::{Predicate, Predicates, Substitutable, directives::TypeClassDirective};
 
 use crate::{
     ast::{self, TraitDirectiveKind},
@@ -13,12 +13,12 @@ use crate::{
     errors::{RayError, RayErrorKind, RayResult},
     pathlib::FilePath,
     sema::NameContext,
-    span::{parsed::Parsed, Source, SourceMap, Sourced},
+    span::{Source, SourceMap, Sourced, parsed::Parsed},
     subst,
     typing::{
+        TyCtx,
         info::TypeSystemInfo,
         ty::{ImplTy, StructTy, TraitTy, Ty, TyScheme, TyVar},
-        TyCtx,
     },
     utils::try_replace,
 };
@@ -246,7 +246,7 @@ impl LowerAST for Sourced<'_, Extern> {
             Decl::Name(_) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::FnSig(sig) => {
-                let name = sig
+                let _name = sig
                     .path
                     .name()
                     .ok_or_else(|| RayError {
@@ -255,7 +255,6 @@ impl LowerAST for Sourced<'_, Extern> {
                         kind: RayErrorKind::Type,
                     })?
                     .clone();
-                sig.path = Path::from(name);
 
                 // make sure that the signature is fully typed
                 let mut fn_tcx = ctx.tcx.clone();
@@ -355,7 +354,7 @@ impl LowerAST for Sourced<'_, Trait> {
                     msg: format!("expected trait type name with parameters but found `{}`", t),
                     src: vec![src.respan(ty_span)],
                     kind: RayErrorKind::Type,
-                })
+                });
             }
         };
 
@@ -399,7 +398,7 @@ impl LowerAST for Sourced<'_, Trait> {
                         msg: format!("trait function on `{}` does not have a name", tr.ty),
                         src: vec![src.respan(sig.span)],
                         kind: RayErrorKind::Type,
-                    })
+                    });
                 }
             };
 
@@ -505,7 +504,7 @@ impl LowerAST for Sourced<'_, Impl> {
                     ),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
-                })
+                });
             }
         };
 
@@ -541,7 +540,7 @@ impl LowerAST for Sourced<'_, Impl> {
                         msg: format!("trait `{}` is not defined", trait_fqn),
                         src: vec![src.respan(*imp.ty.span().unwrap())],
                         kind: RayErrorKind::Type,
-                    })
+                    });
                 }
             }
         };
@@ -554,7 +553,7 @@ impl LowerAST for Sourced<'_, Impl> {
                     msg: str!("expected a type parameter for trait"),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
-                })
+                });
             }
         };
 
@@ -588,7 +587,7 @@ impl LowerAST for Sourced<'_, Impl> {
                             msg: format!("trait function on `{}` does not have a name", trait_name),
                             src: vec![src.respan(func.sig.span)],
                             kind: RayErrorKind::Type,
-                        })
+                        });
                     }
                 };
 
@@ -905,7 +904,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
                         msg: format!("struct type `{}` is undefined", lhs),
                         src: vec![src.respan(lhs_span)],
                         kind: RayErrorKind::Type,
-                    })
+                    });
                 }
             }
         };
@@ -920,7 +919,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
                     msg: format!("struct type `{}` is undefined", lhs),
                     src: vec![src.respan(lhs_span)],
                     kind: RayErrorKind::Type,
-                })
+                });
             }
         };
 
@@ -1100,7 +1099,7 @@ pub fn predicate_from_ast_ty(
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Type,
-            })
+            });
         }
     };
 
@@ -1129,7 +1128,7 @@ pub fn predicate_from_ast_ty(
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Type,
-            })
+            });
         }
     };
 

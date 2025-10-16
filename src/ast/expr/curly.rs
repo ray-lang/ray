@@ -1,6 +1,6 @@
 use crate::{
     ast::{Expr, Name, Node, Path},
-    span::{parsed::Parsed, Span},
+    span::{Span, parsed::Parsed},
     strutils::indent_lines,
     typing::ty::TyScheme,
     utils::join,

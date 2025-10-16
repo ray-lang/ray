@@ -1,8 +1,8 @@
 use crate::pathlib::FilePath;
 use crate::target::Target;
 
-use clap::builder::PossibleValuesParser;
 use clap::StructOpt;
+use clap::builder::PossibleValuesParser;
 // use clap::ArgAction::
 
 #[derive(Debug, StructOpt)]
@@ -46,12 +46,7 @@ pub struct BuildOptions {
         long,
         short,
         help = "Compile target",
-        value_parser([
-            Target::Wasm32Wasi.as_str(),
-            Target::Wasm32.as_str(),
-            Target::Wasi.as_str(),
-            Target::Wasm.as_str(),
-        ])
+        action = clap::ArgAction::Set,
     )]
     pub target: Option<Target>,
 

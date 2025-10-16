@@ -6,7 +6,7 @@ use top::Substitutable;
 use crate::{
     ast::Path,
     convert::ToSet,
-    sort::{topological::TopologicalSort, SortByIndexSlice},
+    sort::{SortByIndexSlice, topological::TopologicalSort},
     span::Source,
     typing::{
         state::SchemeEnv,
@@ -17,8 +17,8 @@ use crate::{
 use super::{
     assumptions::AssumptionSet,
     constraints::{
-        tree::{ConstraintTree, NodeTree, StrictTree},
         EqConstraint, GenConstraint, InstConstraint, SkolConstraint,
+        tree::{ConstraintTree, NodeTree, StrictTree},
     },
     info::TypeSystemInfo,
     state::{Env, SigmaEnv, TyEnv, TyVarFactory},
@@ -260,6 +260,7 @@ impl BindingGroup {
         log::debug!("next env: {:?}", env);
         log::debug!("next aset: {:?}", lhs_aset);
         log::debug!("current aset: {:?}", rhs_aset);
+        log::debug!("sigs keys: {:?}", sigs.keys().collect::<Vec<_>>());
 
         // Cl1 = A1 ≼ Σ;
         // We create an instantiation constraint for assumptions in A1

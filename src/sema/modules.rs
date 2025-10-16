@@ -12,9 +12,9 @@ use crate::{
     span::{Source, SourceMap, Span},
     strutils, transform,
     typing::{
+        TyCtx,
         state::{Env, SchemeEnv},
         ty::{Ty, TyVar},
-        TyCtx,
     },
 };
 
@@ -499,7 +499,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                         ..Default::default()
                     }],
                     kind: RayErrorKind::Parse,
-                })
+                });
             }
         };
 
@@ -621,7 +621,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                         filepath: Some(filepath),
                         module_path: Some(module_path),
                         named_path: Some(path),
-                    })
+                    });
                 }
                 Err(e) => self.errors.push(e),
             }
