@@ -211,10 +211,18 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] poly_ty: {}", poly_ty);
         log::debug!("[monomorphize] callee_ty: {}", callee_ty);
 
+        log::debug!("[monomorphize] call.orig_name = {}", call.orig_name());
+        log::debug!("[monomorphize] call.name       = {}", call.fn_name);
+        log::debug!("[monomorphize] call.ty         = {}", call.ty);
+        log::debug!("[monomorphize] call.args       = {:?}", call.args);
+
         // check that the callee function type is monomorphic
         if callee_ty.is_polymorphic() {
-            log::debug!("callee type is not monomorphic: {}", callee_ty);
-            log::debug!("   here's the polymorphic type: {}", poly_ty);
+            log::debug!(
+                "[monomorphize] callee type is not monomorphic: {}",
+                callee_ty
+            );
+            log::debug!("[monomorphize]   here's the polymorphic type: {}", poly_ty);
             panic!(
                 "cannot monomorphize function where the callee type is polymorphic: {}",
                 callee_ty
@@ -265,16 +273,66 @@ impl<'p> Monomorphizer<'p> {
             mono_fn.name = mono_name.clone();
             mono_fn.ty = mono_ty.clone();
 
+            log::debug!(
+                "[monomorphize] before apply_subst: mono_name={} mono_ty={} symbols={:?}",
+                mono_name,
+                mono_ty,
+                mono_fn.symbols
+            );
+
+            // BEFORE substitution
+            let tvs_before = scan_tyvars_in_paths(&mono_fn.symbols);
+            log::debug!(
+                "[monomorphize] tvs in symbols before subst for `{}`: {:?}",
+                mono_name,
+                tvs_before
+            );
+            log::debug!(
+                "[monomorphize] subst bindings for `{}`: {:?}",
+                mono_name,
+                subst
+            );
+
             // apply the substitution to the function
             mono_fn.apply_subst(&subst);
             log::debug!(
-                "symbols for `{}` after subst: {:?}",
+                "[monomorphize] symbols for `{}` after subst: {:?}",
                 mono_name,
                 mono_fn.symbols
             );
 
+            // summary
+            let tvs_after = scan_tyvars_in_paths(&mono_fn.symbols);
+            log::debug!(
+                "[monomorphize] tvs in symbols after subst for `{}`: {:?}",
+                mono_name,
+                tvs_after
+            );
+
+            // per symbol details
+            for p in &mono_fn.symbols {
+                let s = p.to_string();
+                if s.contains("?t") {
+                    log::warn!(
+                        "[monomorphize] unresolved tyvar in `{}` of `{}`",
+                        s,
+                        mono_name
+                    );
+                }
+            }
+
             // collect further polymorphic functions from the new monomorphized function
             self.monomorphize_func(&mut mono_fn, funcs, globals);
+            log::debug!(
+                "[monomorphize] params for `{}`: {:?}",
+                mono_name,
+                mono_fn.params
+            );
+            log::debug!(
+                "[monomorphize] locals for `{}`: {:?}",
+                mono_name,
+                mono_fn.locals
+            );
             funcs.push(mono_fn);
             (poly_name, mono_name)
         };
@@ -416,3 +474,24 @@ impl<'p> Monomorphizer<'p> {
 //     ty.apply_subst(&subst);
 //     Some(subst)
 // }
+
+fn scan_tyvars_in_paths(paths: &std::collections::HashSet<Path>) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in paths {
+        let s = p.to_string();
+        // very simple scan for substrings like ?t123
+        let mut i = 0;
+        while let Some(pos) = s[i..].find("?t") {
+            let start = i + pos;
+            let mut end = start + 2;
+            while end < s.len() && s.as_bytes()[end].is_ascii_digit() {
+                end += 1;
+            }
+            out.push(s[start..end].to_string());
+            i = end;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}

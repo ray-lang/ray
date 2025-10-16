@@ -4,7 +4,10 @@ use crate::{
     ast::{Node, Path},
     sema::NameContext,
     span::{Source, SourceMap},
-    typing::ty::{Ty, TyVar},
+    typing::{
+        bound_names::BoundNames,
+        ty::{Ty, TyVar},
+    },
 };
 
 use super::{
@@ -26,7 +29,7 @@ pub struct CollectCtx<'a> {
     pub ncx: &'a mut NameContext,
     pub defs: SchemeEnv,
     pub new_defs: &'a mut SchemeEnv,
-    // pub trait_bounds: HashMap<Path, Vec<Path>>,
+    pub bound_names: &'a mut BoundNames,
 }
 
 impl CollectCtx<'_> {
@@ -41,10 +44,20 @@ impl CollectCtx<'_> {
             ncx: self.ncx,
             defs: self.defs.clone(),
             new_defs: self.new_defs,
-            // trait_bounds: self.trait_bounds.clone(),
+            bound_names: self.bound_names,
         };
 
         f(&mut ctx)
+    }
+
+    pub fn with_frame<F, A>(&mut self, f: F) -> A
+    where
+        F: FnOnce(&mut CollectCtx) -> A,
+    {
+        self.bound_names.enter();
+        let result = f(self);
+        self.bound_names.exit();
+        result
     }
 }
 

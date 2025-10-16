@@ -1,15 +1,16 @@
 use std::{collections::HashSet, fs};
 
 use itertools::Itertools;
-use top::Substitutable;
+use top::{Subst, Substitutable};
 
 use crate::{
+    ast::{Decl, Path},
     codegen::llvm,
     errors::{RayError, RayErrorKind},
     libgen, lir,
     pathlib::FilePath,
     sema, transform,
-    typing::{InferSystem, TyCtx, check::TypeCheckSystem, state::Env, ty::TyScheme},
+    typing::{InferSystem, TyCtx, check::TypeCheckSystem, state::Env, ty::{Ty, TyScheme, TyVar}},
 };
 
 mod build;
@@ -104,20 +105,113 @@ impl Driver {
         log::debug!("defs: {}", defs);
 
         result.tcx.apply_subst(&solution.subst);
-        result.tcx.extend_inst_ty_map(
-            solution
-                .inst_type_schemes
-                .iter()
-                .map(|(v, scheme)| (v.clone(), TyScheme::scheme(scheme.clone())))
-                .collect(),
-        );
-        result.tcx.extend_scheme_subst(
-            solution
-                .scheme_subst()
-                .into_iter()
-                .map(|(v, s)| (v, TyScheme::scheme(s)))
-                .collect(),
-        );
+        let inst_scheme_map = solution
+            .inst_type_schemes
+            .iter()
+            .map(|(v, scheme)| {
+                let ty_scheme = TyScheme::scheme(scheme.clone());
+                log::debug!(
+                    "inst_type_schemes: inserting {} => {} (has_quantifiers={})",
+                    v,
+                    ty_scheme,
+                    ty_scheme.has_quantifiers()
+                );
+                (v.clone(), ty_scheme)
+            })
+            .collect();
+        result.tcx.extend_inst_ty_map(inst_scheme_map);
+        let inst_scheme_keys = solution
+            .inst_type_schemes
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let mut poly_inst_seeds = Subst::<TyVar, TyScheme>::new();
+        {
+            let tcx = &result.tcx;
+            let defs_ref = &defs;
+
+            let mut seed_from_fn = |node_id: u64, path: &Path| {
+                if let Some(Ty::Var(original_tv)) = tcx.original_ty_of(node_id) {
+                    if tcx.inst_ty_of(original_tv).is_some() {
+                        log::debug!(
+                            "poly_inst_seed: {} already has instantiation; skipping path {}",
+                            original_tv,
+                            path
+                        );
+                        return;
+                    }
+
+                    if let Some(scheme) = defs_ref.get(path) {
+                        if scheme.has_quantifiers() {
+                            log::debug!(
+                                "poly_inst_seed: seeding {} with polymorphic scheme {} from {}",
+                                original_tv,
+                                scheme,
+                                path
+                            );
+                            poly_inst_seeds.insert(original_tv.clone(), scheme.clone());
+                        } else {
+                            log::debug!(
+                                "poly_inst_seed: defs entry for {} is monomorphic {}; skipping",
+                                path,
+                                scheme
+                            );
+                        }
+                    } else {
+                        log::debug!(
+                            "poly_inst_seed: no defs entry for {}; skipping",
+                            path
+                        );
+                    }
+                }
+            };
+
+            for decl in &result.module.decls {
+                match &decl.value {
+                    Decl::Func(func) => seed_from_fn(decl.id, &func.sig.path),
+                    Decl::Impl(imp) => {
+                        if let Some(funcs) = &imp.funcs {
+                            for func in funcs {
+                                seed_from_fn(func.id, &func.sig.path);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !poly_inst_seeds.is_empty() {
+            result.tcx.extend_inst_ty_map(poly_inst_seeds);
+        }
+
+        let filtered_scheme_subst = solution
+            .scheme_subst()
+            .into_iter()
+            .filter_map(|(v, s)| {
+                if inst_scheme_keys.contains(&v) {
+                    log::debug!(
+                        "scheme_subst: skipping {} because instantiation exists",
+                        v
+                    );
+                    return None;
+                }
+                let scheme = TyScheme::scheme(s);
+                if scheme.has_quantifiers() {
+                    log::debug!(
+                        "scheme_subst: dropping {} => {} (has_quantifiers)",
+                        v,
+                        scheme
+                    );
+                    None
+                } else {
+                    log::debug!("scheme_subst: keeping {} => {}", v, scheme);
+                    Some((v, scheme))
+                }
+            })
+            .collect();
+        result.tcx.extend_scheme_subst(filtered_scheme_subst);
         result.tcx.extend_predicates(solution.qualifiers.clone());
         result.tcx.tf().skip_to(solution.unique as u64);
 

@@ -1,0 +1,9 @@
+struct A {}
+
+fn use_it(a: 'a) -> string {
+    "hello, world"
+}
+
+fn main() {
+    _ = use_it(A{})
+}

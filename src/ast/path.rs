@@ -132,7 +132,7 @@ impl Substitutable<TyVar, Ty> for Path {
                     })
                     .collect::<Vec<_>>();
                 let args = format!("[{}]", args.join(","));
-                log::debug!("args: {}", args);
+                log::debug!("[Path::apply_subst] args: {}", args);
                 parts.push_back(PathPart::TypeArgs(args));
             } else {
                 parts.push_back(part);

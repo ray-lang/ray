@@ -8,7 +8,7 @@ use top::{
 use crate::{
     sema::NameContext,
     span::SourceMap,
-    typing::{state::Env, traits::QualifyTypes},
+    typing::{bound_names::BoundNames, state::Env, traits::QualifyTypes},
 };
 
 use super::{
@@ -51,8 +51,8 @@ impl<'a> InferSystem<'a> {
             tcx: self.tcx,
             ncx: self.ncx,
             new_defs: &mut new_defs,
+            bound_names: &mut BoundNames::new(),
             defs,
-            // trait_bounds: HashMap::new(),
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);

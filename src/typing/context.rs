@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use top::{Predicates, Subst, Substitutable, mgu};
+use top::{Predicates, Subst, Substitutable};
 
 use crate::{
     ast::{FuncSig, Node, Path},
@@ -140,22 +140,42 @@ impl Display for TyCtx {
 
 impl Substitutable<TyVar, Ty> for TyCtx {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
-        for ty in self.ty_map.values_mut() {
+        for (id, ty) in self.ty_map.iter_mut() {
+            if let Some(scheme) = self.ty_scheme_map.get(id) {
+                if scheme.has_quantifiers() {
+                    continue;
+                }
+            }
             ty.apply_subst(subst);
         }
 
-        for ty in self.ty_scheme_map.values_mut() {
-            ty.apply_subst(subst);
+        for scheme in self.ty_scheme_map.values_mut() {
+            if scheme.has_quantifiers() {
+                continue;
+            }
+            scheme.apply_subst(subst);
+        }
+
+        for (_, fqn) in self.call_resolutions.iter_mut() {
+            fqn.apply_subst(subst);
         }
     }
 
     fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
-        for ty in self.ty_map.values_mut() {
+        for (id, ty) in self.ty_map.iter_mut() {
+            if let Some(scheme) = self.ty_scheme_map.get(id) {
+                if scheme.has_quantifiers() {
+                    continue;
+                }
+            }
             ty.apply_subst_all(subst);
         }
 
-        for ty in self.ty_scheme_map.values_mut() {
-            ty.apply_subst_all(subst);
+        for scheme in self.ty_scheme_map.values_mut() {
+            if scheme.has_quantifiers() {
+                continue;
+            }
+            scheme.apply_subst_all(subst);
         }
     }
 }
@@ -290,14 +310,45 @@ impl TyCtx {
     }
 
     pub fn get_poly_ty<T>(&self, node: &Node<T>) -> Option<&TyScheme> {
-        if let Some(Ty::Var(original_ty)) = self.original_ty_of(node.id) {
-            self.inst_ty_of(original_ty).and_then(
-                |t| {
-                    if t.has_quantifiers() { Some(t) } else { None }
-                },
-            )
-        } else {
-            None
+        let original = self.original_ty_of(node.id);
+        match original {
+            Some(Ty::Var(original_ty)) => {
+                let inst_entry = self.inst_ty_of(original_ty);
+                log::debug!(
+                    "get_poly_ty: node={:#x} original_ty={} inst_hit={} inst_has_quantifiers={}",
+                    node.id,
+                    original_ty,
+                    inst_entry.is_some(),
+                    inst_entry
+                        .map(|scheme| scheme.has_quantifiers())
+                        .unwrap_or(false)
+                );
+                inst_entry.and_then(|scheme| {
+                    if scheme.has_quantifiers() {
+                        log::debug!(
+                            "get_poly_ty: returning polymorphic scheme {} for {}",
+                            scheme,
+                            original_ty
+                        );
+                        Some(scheme)
+                    } else {
+                        log::debug!(
+                            "get_poly_ty: inst scheme {} for {} is monomorphic; ignoring",
+                            scheme,
+                            original_ty
+                        );
+                        None
+                    }
+                })
+            }
+            other => {
+                log::debug!(
+                    "get_poly_ty: node={:#x} has no original Ty::Var entry (original={:?})",
+                    node.id,
+                    other
+                );
+                None
+            }
         }
     }
 
@@ -436,6 +487,11 @@ impl TyCtx {
     }
 
     pub fn resolve_trait_method(&self, receiver_ty: &Ty, method_name: &str) -> Option<Path> {
+        log::debug!(
+            "[resolve_trait_method] method={} receiver_ty={}",
+            method_name,
+            receiver_ty
+        );
         self.traits.iter().find_map(|(trait_path, trait_ty)| {
             trait_ty
                 .fields
@@ -445,38 +501,25 @@ impl TyCtx {
                     let mut method_path = trait_path.clone();
                     let type_params = trait_ty.ty.get_ty_params();
                     if !type_params.is_empty() {
-                        let type_args = self
-                            .impls()
-                            .get(trait_path)
-                            .and_then(|impls| {
-                                impls.iter().find_map(|impl_ty| {
-                                    mgu(&impl_ty.base_ty, receiver_ty).ok().map(|(_, subst)| {
-                                        let mut instantiated = impl_ty.trait_ty.clone();
-                                        instantiated.apply_subst(&subst);
-                                        instantiated
-                                            .get_ty_params()
-                                            .into_iter()
-                                            .map(|ty| ty.to_string())
-                                            .collect::<Vec<_>>()
-                                    })
-                                })
-                            })
-                            .unwrap_or_else(|| {
-                                let mut args = type_params
-                                    .iter()
-                                    .map(|ty| ty.to_string())
-                                    .collect::<Vec<_>>();
-                                if !args.is_empty() {
-                                    args[0] = receiver_ty.to_string();
-                                }
-                                args
-                            });
-
+                        let mut type_args = type_params
+                            .iter()
+                            .map(|ty| ty.to_string())
+                            .collect::<Vec<_>>();
                         if !type_args.is_empty() {
-                            method_path = method_path.append_type_args(&type_args);
+                            type_args[0] = receiver_ty.to_string();
                         }
+                        method_path = method_path.append_type_args(&type_args);
                     }
 
+                    log::debug!(
+                        "[resolve_trait_method] trait_path={} type_params={:?} produced={}",
+                        trait_path,
+                        type_params
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>(),
+                        method_path.append(method_name.to_string())
+                    );
                     method_path.append(method_name.to_string())
                 })
         })

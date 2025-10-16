@@ -9,6 +9,7 @@ mod subst;
 
 pub mod assumptions;
 pub mod binding;
+pub mod bound_names;
 pub mod check;
 pub mod collect;
 pub mod constraints;
