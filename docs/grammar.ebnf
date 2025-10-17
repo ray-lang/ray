@@ -1,15 +1,287 @@
-module = [ { top_level_statement } ] ;
+(*======================================================================*)
+(*  Ray surface grammar (informative)                                   *)
+(*======================================================================*)
 
-(* *)
-top_level_statement = [ decorator , { decorator } ] , expression ;
+module            = spacing , { top_level_item } , EOF ;
 
-decorator = "@" , identifier , tuple ;
+top_level_item    =
+      import_decl
+    | decorated_decl
+    | expression_stmt ;
 
-(* atoms *)
-tuple = "(" , _ , [ expression , { "," , expression } , [ "," ] ] , _ , ")" ;
-identifier = alpha [ { alphanumeric } ] ;
+decorated_decl    = { decorator } , declaration ;
 
-alphanumeric = alpha | decimal_digit ;
-decimal_digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
-alpha = ? alphabetic unicode characters ? ;
-_ = [ { ? whitespace ?  } ] ;
+decorator         = "@" , path , [ tuple_expr ] , terminator ;
+
+(*--------------------------------------------------------------------*)
+(*  Declarations                                                      *)
+(*--------------------------------------------------------------------*)
+
+declaration       =
+      function_decl
+    | extern_decl
+    | struct_decl
+    | trait_decl
+    | impl_decl
+    | type_alias
+    | binding_stmt ;
+
+import_decl       = "import" , path , [ "as" , identifier ] , terminator ;
+
+function_decl     =
+      "fn" , identifier , generic_params? , parameter_list , return_type? ,
+      ( block | "=>" , expression ) ;
+
+extern_decl       =
+      "extern" , [ "wasi" ] , "fn" , identifier , generic_params? ,
+      parameter_list , return_type , terminator ;
+
+struct_decl       =
+      "struct" , identifier , generic_params? ,
+      "{" , spacing , struct_fields? , spacing , "}" ;
+
+struct_fields     =
+      struct_field , { "," , struct_field } , [ "," ] ;
+
+struct_field      = identifier , ":" , type_expr ;
+
+trait_decl        =
+      "trait" , identifier , generic_params? ,
+      "{" , spacing , { trait_item } , "}" ;
+
+trait_item        =
+      decorator* ,
+      ( type_alias
+      | function_sig
+      | "default" , "(" , type_expr , ")" , terminator
+      ) ;
+
+impl_decl         =
+      "impl" , path , impl_parameters? ,
+      [ type_constraint ] ,
+      "{" , spacing , { decorated_decl | expression_stmt } , "}" ;
+
+impl_parameters   = "[" , spacing , type_expr ,
+                    { "," , type_expr } , spacing , "]" ;
+
+type_constraint   = "for" , "[" , spacing , type_expr ,
+                    { "," , type_expr } , spacing , "]" ;
+
+type_alias        =
+      "type" , identifier , generic_params? , "=" , type_expr , terminator ;
+
+function_sig      =
+      "fn" , identifier , generic_params? ,
+      parameter_list , return_type , terminator ;
+
+parameter_list    =
+      "(" , spacing , [ parameter , { "," , parameter } , [ "," ] ] , ")" ;
+
+parameter         = pattern , [ ":" , type_expr ] ;
+
+generic_params    =
+      "[" , spacing ,
+          type_param , { "," , type_param } , [ "," ] ,
+      "]" ;
+
+type_param        =
+      type_variable
+    | type_expr ;
+
+return_type       = spacing , "->" , spacing , type_expr ;
+
+(*--------------------------------------------------------------------*)
+(*  Statements and blocks                                             *)
+(*--------------------------------------------------------------------*)
+
+block             =
+      "{" , spacing , { decorated_decl | expression_stmt } , "}" ;
+
+binding_stmt      = pattern , "=" , expression , terminator ;
+
+expression_stmt   = expression , terminator ;
+
+terminator        = spacing , ( ";" | newline ) , spacing ;
+
+(*--------------------------------------------------------------------*)
+(*  Expressions                                                       *)
+(*--------------------------------------------------------------------*)
+
+expression        = assignment_expr ;
+
+assignment_expr   =
+      conditional_expr
+    | pattern , "=" , assignment_expr ;
+
+conditional_expr  =
+      if_expr
+    | loop_expr
+    | while_expr
+    | for_expr
+    | break_expr
+    | return_expr
+    | lambda_expr ;
+
+lambda_expr       =
+      logical_or_expr
+    | "fn" , parameter_list , return_type? , "=>" , expression ;
+
+if_expr           =
+      "if" , expression , block ,
+      [ "else" , ( block | if_expr ) ] ;
+
+loop_expr         = "loop" , block ;
+
+while_expr        = "while" , expression , block ;
+
+for_expr          =
+      "for" , pattern , "in" , expression , block ;
+
+break_expr        = "break" , [ expression ] ;
+
+return_expr       = "return" , [ expression ] ;
+
+logical_or_expr   = logical_and_expr , { "||" , logical_and_expr } ;
+logical_and_expr  = equality_expr ,    { "&&" , equality_expr } ;
+equality_expr     = comparison_expr ,  { ( "==" | "!=" ) , comparison_expr } ;
+comparison_expr   = additive_expr ,    { ( "<" | ">" | "<=" | ">=" ) , additive_expr } ;
+additive_expr     = multiplicative_expr , { ( "+" | "-" ) , multiplicative_expr } ;
+multiplicative_expr =
+      unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
+
+unary_expr        =
+      postfix_expr
+    | ( "+" | "-" | "!" | "*" | "&" | "~" ) , unary_expr ;
+
+postfix_expr      =
+      primary_expr ,
+      { call_suffix | index_suffix | field_suffix } ;
+
+call_suffix       =
+      "(" , spacing ,
+          [ expression , { "," , expression } , [ "," ] ] ,
+      ")" ;
+
+index_suffix      = "[" , spacing , expression , spacing , "]" ;
+
+field_suffix      = "." , identifier ;
+
+primary_expr      =
+      literal
+    | path
+    | tuple_expr
+    | list_expr
+    | block
+    | "new" , "(" , type_expr , "," , expression , ")"
+    | "(" , expression , ")"
+    | "unsafe" , expression ;
+
+tuple_expr        =
+      "(" , spacing ,
+          [ expression , { "," , expression } , [ "," ] ] ,
+      ")" ;
+
+list_expr         =
+      "[" , spacing ,
+          [ expression , { "," , expression } , [ "," ] ] ,
+      "]" ;
+
+literal           =
+      numeric_literal
+    | string_literal
+    | char_literal
+    | "true"
+    | "false"
+    | "nil" ;
+
+(*--------------------------------------------------------------------*)
+(*  Patterns                                                          *)
+(*--------------------------------------------------------------------*)
+
+pattern           =
+      [ "mut" ] ,
+      ( identifier
+      | "_" 
+      | tuple_pattern
+      | sequence_pattern
+      | "*" , identifier
+      ) ;
+
+tuple_pattern     =
+      "(" , spacing ,
+          [ pattern , { "," , pattern } , [ "," ] ] ,
+      ")" ;
+
+sequence_pattern  =
+      "[" , spacing ,
+          [ pattern , { "," , pattern } , [ "," ] ] ,
+      "]" ;
+
+(*--------------------------------------------------------------------*)
+(*  Types                                                             *)
+(*--------------------------------------------------------------------*)
+
+type_expr         = function_type | sum_type ;
+
+function_type     =
+      sum_type , "->" , spacing , type_expr ;
+
+sum_type          =
+      pointer_type , { "|" , pointer_type } ;
+
+pointer_type      =
+      "*" , type_expr
+    | grouped_type ;
+
+grouped_type      =
+      "(" , spacing , type_expr , spacing , ")"
+    | tuple_type
+    | path_type ;
+
+tuple_type        =
+      "(" , spacing ,
+          type_expr , "," ,
+          type_expr , { "," , type_expr } , [ "," ] ,
+      ")" ;
+
+path_type         =
+      path , [ "[" , spacing ,
+          type_expr , { "," , type_expr } , [ "," ] ,
+      "]" ] ;
+
+type_variable     = "'" , identifier ;
+
+(*--------------------------------------------------------------------*)
+(*  Lexical elements                                                  *)
+(*--------------------------------------------------------------------*)
+
+path              = identifier , { "::" , identifier } ;
+
+identifier        = alpha , { alphanumeric | "_" } ;
+
+numeric_literal   = decimal_literal | hex_literal | binary_literal ;
+
+decimal_literal   = decimal_digit , { decimal_digit } ;
+hex_literal       = "0x" , hex_digit , { hex_digit } ;
+binary_literal    = "0b" , binary_digit , { binary_digit } ;
+
+string_literal    = "\"" , { ? any char except " or newline ? | escape_seq } , "\"" ;
+char_literal      = "'" , ( ? any char except ' or newline ? | escape_seq ) , "'" ;
+escape_seq        = "\\" , ( "'" | "\"" | "\\" | "n" | "r" | "t" | "0" ) ;
+
+alphanumeric      = alpha | decimal_digit ;
+decimal_digit     = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+hex_digit         = decimal_digit | "a" | "b" | "c" | "d" | "e" | "f"
+                                  | "A" | "B" | "C" | "D" | "E" | "F" ;
+binary_digit      = "0" | "1" ;
+alpha             = ? alphabetic unicode characters ? ;
+
+spacing           = { whitespace | comment } ;
+whitespace        = ? whitespace characters (including newlines) ? ;
+newline           = ? line break characters ? ;
+comment           = "/*" , { ? any character ? } , "*/"
+                  | "//" , { ? any character except newline ? } , newline ;
+
+EOF               = ? end of file ? ;
+
+(*  The grammar above reflects the current parser and may evolve.    *)

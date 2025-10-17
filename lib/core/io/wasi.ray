@@ -1,4 +1,4 @@
-extern fn fd_write(fd: int, iov: IOVec, iov_len: uint, nwritten: *uint) -> uint
+extern wasi fn fd_write(fd: int, iov: IOVec, iov_len: uint, nwritten: *uint) -> uint
 
 struct IOVec {
     base: *u8  // Starting address

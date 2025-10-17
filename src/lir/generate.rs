@@ -19,8 +19,7 @@ use crate::{
     },
 };
 
-pub const START_FUNCTION: &'static str = "_start";
-pub const RAY_MAIN_FUNCTION: &'static str = "_ray_main";
+use super::{RAY_MAIN_FUNCTION, START_FUNCTION};
 
 impl lir::Program {
     pub fn generate(
@@ -36,10 +35,47 @@ impl lir::Program {
             let mut ctx = GenCtx::new(Rc::clone(&prog), srcmap);
             module.decls.lir_gen(&mut ctx, tcx)?;
 
+            let module_main_path = prog.borrow().main_path();
+            let user_main_path = prog.borrow().user_main_path();
+
+            let has_module_main = {
+                let prog_ref = prog.borrow();
+                prog_ref
+                    .funcs
+                    .iter()
+                    .any(|f| f.name == module_main_path)
+            };
+
+            if !has_module_main {
+                ctx.with_builder(lir::Builder::new());
+                ctx.with_new_block(|ctx| {
+                    ctx.ret(lir::Value::Empty);
+                });
+
+                let builder = ctx.builder.take().unwrap();
+                let (params, locals, blocks, symbols, cfg) = builder.done();
+                let mut module_main_fn = Node::new(lir::Func::new(
+                    module_main_path.clone(),
+                    TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
+                    vec![],
+                    symbols,
+                    cfg,
+                ));
+                module_main_fn.params = params;
+                module_main_fn.locals = locals;
+                module_main_fn.blocks = blocks;
+                ctx.new_func(module_main_fn);
+            }
+
+            let has_user_main = {
+                let prog_ref = prog.borrow();
+                prog_ref.funcs.iter().any(|f| f.name == user_main_path)
+            };
+
             if !module.is_lib {
                 let mut main_symbols = lir::SymbolSet::new();
-                let main_path = prog.borrow().main_path();
-                log::debug!("main function path: {}", main_path);
+                log::debug!("module main path: {}", module_main_path);
+                log::debug!("user main path: {}", user_main_path);
 
                 ctx.with_builder(lir::Builder::new());
                 ctx.with_new_block(|ctx| {
@@ -47,7 +83,7 @@ impl lir::Program {
                     let mut main_funcs = libs.iter().map(|l| l.main_path()).collect::<Vec<_>>();
 
                     // then call _this_ module's main function
-                    main_funcs.push(main_path.clone());
+                    main_funcs.push(module_main_path.clone());
 
                     // generate calls
                     for main in main_funcs {
@@ -56,6 +92,21 @@ impl lir::Program {
                         ctx.push(
                             lir::Call::new(
                                 main,
+                                vec![],
+                                Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                                None,
+                                Subst::new(),
+                            )
+                            .into(),
+                        );
+                    }
+
+                    if has_user_main {
+                        log::debug!("calling user main function: {}", user_main_path);
+                        main_symbols.insert(user_main_path.clone());
+                        ctx.push(
+                            lir::Call::new(
+                                user_main_path.clone(),
                                 vec![],
                                 Ty::Func(vec![], Box::new(Ty::unit())).into(),
                                 None,
@@ -114,13 +165,14 @@ impl lir::Program {
         }
 
         // remove the polymorphic functions
-        let main_path = self.main_path();
+        let module_main_path = self.main_path();
+        let user_main_path = self.user_main_path();
         let mut i = 0;
         while i < self.funcs.len() {
             let f = &self.funcs[i];
             if f.name == START_FUNCTION {
                 self.start_idx = i as i64;
-            } else if f.name == main_path {
+            } else if f.name == user_main_path {
                 self.user_main_idx = i as i64;
             }
 
@@ -307,6 +359,12 @@ impl<'a> GenCtx<'a> {
     fn is_extern(&self, name: &Path) -> bool {
         let prog = self.prog.borrow();
         prog.extern_map.contains_key(name)
+    }
+
+    fn extern_link_name(&self, name: &Path) -> Option<Path> {
+        let prog = self.prog.borrow();
+        let idx = prog.extern_map.get(name)?;
+        Some(prog.externs[*idx].name.clone())
     }
 
     fn new_global(&mut self, name: &Path, init_value: lir::Value, ty: TyScheme, mutable: bool) {
@@ -1123,15 +1181,15 @@ impl LirGen<GenResult> for Node<Expr> {
                     })
                     .map(|base| {
                         log::debug!("base_name: {}", base);
-                        if !ctx.is_extern(&base) {
+                        if ctx.is_extern(&base) {
+                            ctx.extern_link_name(&base).unwrap_or(base)
+                        } else {
                             match &instantiated_poly_ty {
                                 Some(poly_ty) if fn_ty.is_polymorphic() => {
                                     sema::fn_name(&base, poly_ty)
                                 }
                                 _ => sema::fn_name(&base, &fn_ty),
                             }
-                        } else {
-                            base
                         }
                     });
 

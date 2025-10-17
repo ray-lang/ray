@@ -6,9 +6,10 @@ use std::{
     fs,
     io::Write,
     ops::Deref,
+    ptr,
 };
 
-use inkwell as llvm;
+use inkwell::{self as llvm};
 use llvm::{
     AddressSpace, IntPredicate, OptimizationLevel,
     attributes::AttributeLoc,
@@ -18,8 +19,8 @@ use llvm::{
     targets::{FileType, InitializationConfig, Target as LLVMTarget, TargetMachine, TargetTriple},
     types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, IntType, StructType},
     values::{
-        AnyValue, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
-        InstructionValue, IntValue, PointerValue,
+        AnyValue, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue,
+        InstructionOpcode, InstructionValue, IntValue, PointerValue,
     },
 };
 use rand::RngCore;
@@ -64,6 +65,7 @@ where
     let builder = lcx.create_builder();
     let mut ctx = LLVMCodegenCtx::new(target, lcx, &module, &builder);
     program.codegen(&mut ctx, tcx, srcmap);
+    ctx.ensure_wasi_globals();
 
     if let Err(err) = module.verify() {
         panic!(
@@ -82,7 +84,6 @@ where
     pm.add_memcpy_optimize_pass();
     pm.add_cfg_simplification_pass();
     pm.add_licm_pass();
-    pm.add_dead_arg_elimination_pass();
     pm.add_dead_store_elimination_pass();
     pm.add_always_inliner_pass();
 
@@ -207,12 +208,27 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             target_machine,
             curr_fn: None,
             fn_index: HashMap::new(),
-            struct_types: HashMap::new(),
-            data_addrs: HashMap::new(),
-            globals: HashMap::new(),
-            locals: HashMap::new(),
-            local_tys: vec![],
+        struct_types: HashMap::new(),
+        data_addrs: HashMap::new(),
+        globals: HashMap::new(),
+        locals: HashMap::new(),
+        local_tys: vec![],
             blocks: HashMap::new(),
+        }
+    }
+
+    fn ensure_wasi_globals(&mut self) {
+        let i32_ty = self.lcx.i32_type();
+        for name in ["__heap_base", "__heap_end"] {
+            if self.module.get_global(name).is_some() {
+                continue;
+            }
+            let global = self
+                .module
+                .add_global(i32_ty, Some(AddressSpace::Generic), name);
+            global.set_linkage(Linkage::External);
+            global.set_initializer(&i32_ty.const_zero());
+            global.set_constant(false);
         }
     }
 
@@ -381,6 +397,24 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
     }
 
+    fn to_llvm_fn_ty(
+        &mut self,
+        param_tys: &Vec<Ty>,
+        ret_ty: &Ty,
+        tcx: &TyCtx,
+    ) -> llvm::types::FunctionType<'ctx> {
+        let param_tys = param_tys
+            .iter()
+            .map(|ty| self.to_llvm_type(ty, tcx))
+            .collect::<Vec<_>>();
+        if ret_ty.is_unit() {
+            return self.lcx.void_type().fn_type(&param_tys, false);
+        }
+
+        let ret_ty = self.to_llvm_type(ret_ty, tcx);
+        ret_ty.fn_type(&param_tys, false)
+    }
+
     fn alloca(&mut self, ty: &Ty, tcx: &TyCtx) -> PointerValue<'ctx> {
         let entry = self.get_fn().get_first_basic_block().unwrap();
 
@@ -439,7 +473,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         if !self.struct_types.contains_key(fqn) {
             let opaque = self.lcx.opaque_struct_type(&fqn);
             let path = Path::from(fqn);
-            let struct_ty = tcx.get_struct_ty(&path).unwrap();
+            let struct_ty = tcx
+                .get_struct_ty(&path)
+                .expect(&format!("could not find struct type for {}", fqn));
 
             opaque.set_body(
                 struct_ty
@@ -503,15 +539,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             // define
             log::debug!("define extern: {}", ext.name);
             if let Some((_, _, param_tys, ret_ty)) = ext.ty.try_borrow_fn() {
-                let ret_ty = ctx.to_llvm_type(ret_ty, tcx);
-                let fn_ty = ret_ty.fn_type(
-                    param_tys
-                        .iter()
-                        .map(|ty| ctx.to_llvm_type(ty, tcx))
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    false,
-                );
+                let fn_ty = ctx.to_llvm_fn_ty(param_tys, ret_ty, tcx);
                 let name = ext.name.to_string();
                 let fn_val = ctx.module.add_function(&name, fn_ty, None);
 
@@ -563,19 +591,40 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
                 continue;
             }
 
-            let (_, _, param_tys, ret_ty) = f.ty.try_borrow_fn().unwrap();
-            let ret_ty = ctx.to_llvm_type(ret_ty, tcx);
-            let fn_ty = ret_ty.fn_type(
-                param_tys
-                    .iter()
-                    .map(|ty| ctx.to_llvm_type(ty, tcx))
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-                false,
-            );
+            if let Some(selected) = fn_map.get(&f.name) {
+                if !ptr::eq(*selected, f) {
+                    continue;
+                }
+            }
 
-            let name = f.name.to_mangled();
+            let (_, _, param_tys, ret_ty) = f.ty.try_borrow_fn().unwrap();
+            let param_desc = param_tys
+                .iter()
+                .map(|ty| ty.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            log::debug!(
+                "llvm fn sig {} :: ({}) -> {}",
+                f.name,
+                param_desc,
+                ret_ty
+            );
+            let fn_ty = ctx.to_llvm_fn_ty(param_tys, ret_ty, tcx);
+            log::debug!(
+                "  llvm fn type result: {}",
+                fn_ty.print_to_string().to_string()
+            );
+            let name = if f.name == lir::START_FUNCTION {
+                "_start".to_string()
+            } else {
+                f.name.to_mangled()
+            };
             let fn_val = ctx.module.add_function(&name, fn_ty, None);
+            log::debug!(
+                "  added function {} with llvm type {}",
+                name,
+                fn_val.get_type().print_to_string().to_string()
+            );
             if f.modifiers.contains(&Modifier::Wasi) {
                 ctx.fn_attr(fn_val, "wasm-import-module", "wasi_snapshot_preview1");
                 ctx.fn_attr(fn_val, "wasm-import-name", &name);
@@ -603,6 +652,12 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
             if srcmap.has_inline(f) {
                 // don't generate inline functions
                 continue;
+            }
+
+            if let Some(selected) = fn_map.get(&f.name) {
+                if !ptr::eq(*selected, f) {
+                    continue;
+                }
             }
 
             let local_tys = f
@@ -713,8 +768,8 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Inst {
             lir::Inst::Free(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Call(call) => call
                 .codegen(ctx, tcx, srcmap)
-                .as_instruction_value()
-                .unwrap(),
+                .try_as_basic_value()
+                .either(|val| val.as_instruction_value().unwrap(), |inst| inst),
             lir::Inst::CExternCall(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::SetGlobal(_, _) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::SetLocal(idx, value) => {
@@ -744,12 +799,27 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Inst {
             lir::Inst::IncRef(_, _) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::DecRef(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Return(v) => {
-                let mut val = v.codegen(ctx, tcx, srcmap);
-                if val.is_pointer_value() {
-                    let ptr = val.into_pointer_value();
-                    val = ctx.builder.build_load(ptr, "").as_basic_value_enum();
+                let fn_val = ctx.get_fn();
+                log::debug!(
+                    "returning from {} with type {}",
+                    fn_val.get_name().to_str().unwrap_or(""),
+                    fn_val.get_type().print_to_string().to_string()
+                );
+                let mut ret_val = v.codegen(ctx, tcx, srcmap);
+                if fn_val.get_type().get_return_type().is_none() {
+                    log::debug!("  building void return");
+                    ctx.builder.build_return(None)
+                } else {
+                    if ret_val.is_pointer_value() {
+                        let ptr = ret_val.into_pointer_value();
+                        ret_val = ctx.builder.build_load(ptr, "").as_basic_value_enum();
+                    }
+                     log::debug!(
+                        "  building return with value type {}",
+                        ret_val.get_type().print_to_string().to_string()
+                    );
+                    ctx.builder.build_return(Some(&ret_val))
                 }
-                ctx.builder.build_return(Some(&val))
             }
             // skip all of the control instructions (expect return), which will be processed later
             lir::Inst::Goto(idx) => {
@@ -778,7 +848,10 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Value {
             lir::Value::Empty => ctx.unit(),
             lir::Value::Atom(a) => a.codegen(ctx, tcx, srcmap),
             lir::Value::Malloc(m) => m.codegen(ctx, tcx, srcmap),
-            lir::Value::Call(c) => c.codegen(ctx, tcx, srcmap),
+            lir::Value::Call(c) => c
+                .codegen(ctx, tcx, srcmap)
+                .try_as_basic_value()
+                .either(|val| val, |_| ctx.unit()),
             lir::Value::CExternCall(_) => todo!("codegen lir::CExternCall: {}", self),
             lir::Value::Select(_) => todo!("codegen lir::Select: {}", self),
             lir::Value::Phi(phi) => phi.codegen(ctx, tcx, srcmap),
@@ -1027,7 +1100,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Cast {
 }
 
 impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Call {
-    type Output = BasicValueEnum<'a>;
+    type Output = CallSiteValue<'a>;
 
     fn codegen(
         &self,
@@ -1056,10 +1129,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Call {
                 }
             })
             .collect::<Vec<_>>();
-        ctx.builder
-            .build_call(function, args.as_slice(), "")
-            .try_as_basic_value()
-            .unwrap_left()
+        ctx.builder.build_call(function, args.as_slice(), "")
     }
 }
 

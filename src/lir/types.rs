@@ -21,6 +21,8 @@ use std::{
     usize,
 };
 
+use super::RAY_MAIN_FUNCTION;
+
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {
         impl Into<$dst> for $src {
@@ -1052,6 +1054,12 @@ impl Program {
     }
 
     pub fn main_path(&self) -> Path {
+        self.module_path
+            .append(RAY_MAIN_FUNCTION)
+            .append_func_type("<():()>")
+    }
+
+    pub fn user_main_path(&self) -> Path {
         self.module_path.append("main").append_func_type("<():()>")
     }
 }
