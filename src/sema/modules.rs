@@ -5,7 +5,7 @@ use crate::{
     collections::nametree::Scope,
     driver::RayPaths,
     errors::{RayError, RayErrorKind, RayResult},
-    libgen::RayLib,
+    libgen::{self, RayLib},
     lir::Program,
     parse::{self, ParseOptions, Parser},
     pathlib::FilePath,
@@ -35,6 +35,7 @@ pub struct ModBuilderResult {
     pub defs: SchemeEnv,
     pub libs: Vec<Program>,
     pub paths: HashSet<ast::Path>,
+    pub definitions: HashMap<String, libgen::DefinitionRecord>,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +104,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let mut lib_set = HashSet::new();
         let mut defs = Env::new();
         let mut tcx = TyCtx::new();
+        let mut definitions = HashMap::new();
         for (lib_path, mut lib) in self.libs {
             // create a substitution to map the library's variables
             let subst = (0..lib.tcx.tf().curr())
@@ -127,6 +129,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             srcmaps.insert(lib_path, lib.srcmap);
             libs.push(lib.program);
             defs.extend(lib.defs);
+            definitions.extend(lib.definitions.into_iter());
         }
 
         let modules = self.modules;
@@ -140,6 +143,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 }
             };
 
+        let local_definitions = libgen::collect_definition_records(&module, &srcmap);
+        definitions.extend(local_definitions);
+
         Ok(ModBuilderResult {
             module,
             tcx,
@@ -148,6 +154,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             defs,
             libs,
             paths,
+            definitions,
         })
     }
 

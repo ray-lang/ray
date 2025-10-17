@@ -10,10 +10,11 @@ use log::Level;
 use pprof::protos::Message;
 
 use crate::{
-    driver::{BuildOptions, Driver},
+    driver::{AnalyzeOptions, BuildOptions, Driver},
     pathlib::FilePath,
 };
 
+mod analyze;
 mod build;
 
 #[derive(Debug, StructOpt)]
@@ -61,6 +62,7 @@ pub struct GlobalOptions {
 #[derive(Debug, StructOpt)]
 pub enum Command {
     Build(BuildOptions),
+    Analyze(AnalyzeOptions),
 }
 
 pub struct CmdError {
@@ -120,6 +122,7 @@ pub fn run() {
     let mut driver = Driver::new(ray_path);
     match cli.cmd {
         Command::Build(options) => build::action(&mut driver, options),
+        Command::Analyze(options) => analyze::action(&mut driver, options),
     }
 
     if let Some(prof) = prof {

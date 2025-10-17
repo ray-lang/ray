@@ -112,7 +112,7 @@ impl ModuleCombiner {
         }
 
         let (sub_module, sub_srcmap) = self.get_module(module_path);
-        parent_srcmap.extend(sub_srcmap);
+        parent_srcmap.extend_with(sub_srcmap);
         self.collect(sub_module, parent_srcmap, modules)?;
         Ok(())
     }

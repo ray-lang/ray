@@ -1,0 +1,9 @@
+/// `use_it` converts `v` to a `string`
+/// `v` must implement ToStr
+fn use_it(v: 'a) -> string where ToStr['a] {
+    v.to_str()
+}
+
+fn main() {
+    _ = use_it(42)
+}

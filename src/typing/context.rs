@@ -429,6 +429,10 @@ impl TyCtx {
         self.call_resolutions.get(&id).cloned()
     }
 
+    pub fn call_resolutions(&self) -> &HashMap<u64, Path> {
+        &self.call_resolutions
+    }
+
     pub fn get_trait_ty(&self, path: &Path) -> Option<&TraitTy> {
         // let fqn = self.nametree().find_in_scope(scope, name);
         self.traits.get(path)

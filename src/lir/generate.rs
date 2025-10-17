@@ -40,10 +40,7 @@ impl lir::Program {
 
             let has_module_main = {
                 let prog_ref = prog.borrow();
-                prog_ref
-                    .funcs
-                    .iter()
-                    .any(|f| f.name == module_main_path)
+                prog_ref.funcs.iter().any(|f| f.name == module_main_path)
             };
 
             if !has_module_main {

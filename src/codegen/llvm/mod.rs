@@ -208,11 +208,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             target_machine,
             curr_fn: None,
             fn_index: HashMap::new(),
-        struct_types: HashMap::new(),
-        data_addrs: HashMap::new(),
-        globals: HashMap::new(),
-        locals: HashMap::new(),
-        local_tys: vec![],
+            struct_types: HashMap::new(),
+            data_addrs: HashMap::new(),
+            globals: HashMap::new(),
+            locals: HashMap::new(),
+            local_tys: vec![],
             blocks: HashMap::new(),
         }
     }
@@ -603,12 +603,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Program {
                 .map(|ty| ty.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            log::debug!(
-                "llvm fn sig {} :: ({}) -> {}",
-                f.name,
-                param_desc,
-                ret_ty
-            );
+            log::debug!("llvm fn sig {} :: ({}) -> {}", f.name, param_desc, ret_ty);
             let fn_ty = ctx.to_llvm_fn_ty(param_tys, ret_ty, tcx);
             log::debug!(
                 "  llvm fn type result: {}",
@@ -814,7 +809,7 @@ impl<'a> Codegen<LLVMCodegenCtx<'a, '_>> for lir::Inst {
                         let ptr = ret_val.into_pointer_value();
                         ret_val = ctx.builder.build_load(ptr, "").as_basic_value_enum();
                     }
-                     log::debug!(
+                    log::debug!(
                         "  building return with value type {}",
                         ret_val.get_type().print_to_string().to_string()
                     );

@@ -114,6 +114,10 @@ impl SourceMap {
         self.map.get(&node.id).cloned().unwrap()
     }
 
+    pub fn get_by_id(&self, id: u64) -> Option<Source> {
+        self.map.get(&id).cloned()
+    }
+
     pub fn span_of<T>(&self, node: &Node<T>) -> Span {
         self.map.get(&node.id).and_then(|src| src.span).unwrap()
     }
@@ -136,6 +140,20 @@ impl SourceMap {
 
     pub fn set_doc<T>(&mut self, node: &Node<T>, doc: String) {
         self.docs.insert(node.id, doc);
+    }
+
+    pub fn doc<T>(&self, node: &Node<T>) -> Option<&String> {
+        self.docs.get(&node.id)
+    }
+
+    pub fn doc_by_id(&self, id: u64) -> Option<&String> {
+        self.docs.get(&id)
+    }
+
+    pub fn extend_with(&mut self, mut other: SourceMap) {
+        self.docs.extend(other.docs.drain());
+        self.decorators.extend(other.decorators.drain());
+        self.map.extend(other.map.drain());
     }
 
     pub fn set_decorators<T>(&mut self, node: &Node<T>, decorators: Vec<Decorator>) {

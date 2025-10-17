@@ -158,9 +158,11 @@ impl<'src> Parser<'src> {
         let path = self.options.module_path.clone();
         let ctx = ParseContext::new(path.clone());
         let doc_comment = self.parse_doc_comment();
+        let mut pending_doc = doc_comment.clone();
         let mut items = Items::new();
         let filepath = self.options.filepath.clone();
         let span = self.parse_items(Pos::new(), None, &ctx, |this, kind, doc, decs| {
+            let doc = doc.or_else(|| pending_doc.take());
             match kind {
                 TokenKind::Import => {
                     let import = this.parse_import(&ctx)?;
@@ -178,6 +180,9 @@ impl<'src> Parser<'src> {
                     let decl = this.parse_decl(&kind, &ctx)?;
                     if let Some(decs) = decs {
                         this.srcmap.set_decorators(&decl, decs);
+                    }
+                    if let Some(doc) = doc.clone() {
+                        this.srcmap.set_doc(&decl, doc);
                     }
 
                     let end = this.srcmap.span_of(&decl).end;
@@ -263,6 +268,7 @@ impl<'src> Parser<'src> {
             }
 
             if doc.len() != 0 {
+                log::debug!("[parser] doc comment: {:?}", doc);
                 Some(doc.join("\n"))
             } else {
                 None

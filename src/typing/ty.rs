@@ -107,6 +107,10 @@ impl TyScheme {
         ))
     }
 
+    pub fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.0.apply_subst_all(subst);
+    }
+
     pub fn from_sig(
         sig: &FuncSig,
         fn_scope: &Path,
