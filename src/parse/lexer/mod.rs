@@ -14,6 +14,13 @@ pub enum Preceding {
     Comment(Token),
 }
 
+/// A single lexeme produced by the Ray lexer along with any leading trivia.
+#[derive(Clone, Debug)]
+pub struct Lexeme {
+    pub leading: Vec<Preceding>,
+    pub token: Token,
+}
+
 pub struct Lexer {
     src: Vec<char>,
     curr_pos: Pos,
@@ -547,11 +554,29 @@ impl Lexer {
     }
 }
 
+/// Convenience helper that runs the lexer to completion and collects all lexemes,
+/// including the trailing EOF token, along with their leading trivia.
+pub fn lexemes(src: &str) -> Vec<Lexeme> {
+    let mut lexer = Lexer::new(src);
+    let mut out = Vec::new();
+
+    loop {
+        let (leading, token) = lexer.consume();
+        let is_eof = matches!(token.kind, TokenKind::EOF);
+        out.push(Lexeme { leading, token });
+        if is_eof {
+            break;
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod lexer_tests {
     use crate::ast::token::TokenKind;
 
-    use super::Lexer;
+    use super::{lexemes, Lexer};
 
     #[test]
     fn test_rewind() {
@@ -574,5 +599,15 @@ mod lexer_tests {
                 println!("{:?}", t);
             }
         }
+    }
+
+    #[test]
+    fn lexemes_collects_tokens() {
+        let tokens = lexemes("fn answer() -> i32 { 42 }");
+        assert!(!tokens.is_empty());
+        assert!(matches!(
+            tokens.last().unwrap().token.kind,
+            TokenKind::EOF
+        ));
     }
 }
