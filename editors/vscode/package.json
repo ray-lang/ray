@@ -1,0 +1,44 @@
+{
+  "name": "ray-vscode",
+  "displayName": "Ray Language Support",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "activationEvents": [
+    "onLanguage:ray"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "ray",
+        "aliases": [
+          "Ray"
+        ],
+        "extensions": [
+          ".ray"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ray",
+        "scopeName": "source.ray",
+        "path": "./syntaxes/ray.tmLanguage.json"
+      }
+    ]
+  },
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.84.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

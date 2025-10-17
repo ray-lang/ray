@@ -1,0 +1,70 @@
+{
+  "name": "Ray",
+  "scopeName": "source.ray",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    {
+      "match": "\\b([A-Z][A-Za-z0-9_]*)\\b",
+      "name": "support.type.ray"
+    },
+    {
+      "match": "\\b([a-zA-Z_][A-Za-z0-9_]*)\\s*(?=\\())",
+      "name": "entity.name.function.ray"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.ray",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.ray",
+          "match": "\"(\\\\.|[^\\\"])*\""
+        },
+        {
+          "name": "string.quoted.single.ray",
+          "match": "'(?:\\\\.|[^\\'])'"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.ray",
+          "match": "\\b0x[0-9A-Fa-f_]+\\b"
+        },
+        {
+          "name": "constant.numeric.ray",
+          "match": "\\b[0-9][0-9_]*(?:\\.[0-9_]+)?(?:[eE][+-]?[0-9_]+)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.ray",
+          "match": "\\b(break|continue|else|for|if|loop|return|while)\\b"
+        },
+        {
+          "name": "keyword.declaration.ray",
+          "match": "\\b(fn|struct|trait|impl|type|extern|let|mut|where)\\b"
+        },
+        {
+          "name": "storage.type.ray",
+          "match": "\\b(bool|char|string|int|float|unit)\\b"
+        }
+      ]
+    }
+  },
+  "fileTypes": ["ray"],
+  "uuid": "f70f3f0b-6b92-4a35-9b6f-6d9c0cb1aec7"
+}

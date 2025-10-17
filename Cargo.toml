@@ -7,7 +7,7 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["crates/top", "crates/wasi_malloc"]
+members = ["crates/top", "crates/wasi_malloc", "crates/ray-lsp"]
 
 [dependencies]
 bincode = "1.3"
