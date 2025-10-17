@@ -12,7 +12,7 @@ This overview follows a Ray source file through the compiler, spotlighting the R
 Diagnostics raised at any stage bubble up through `Driver::emit_errors`, which groups messages by source file and phase.
 
 ## Parsing Pipeline
-- **Lexing**: `src/parse/lexer` tokenizes input according to the EBNF in `docs/grammar.ebnf`. The grammar is also emitted as `src/grammar.js` for tooling support.
+- **Lexing**: `src/parse/lexer` tokenizes input using handwritten rules defined in that module. The EBNF in `docs/grammar.ebnf` exists purely for documentation; it does not feed the lexer or parser.
 - **Parsing**: the Pratt-style parser lives under `src/parse/parser/`, with dedicated modules for declarations, expressions, control flow, and types. It produces `ast::Node` wrappers defined across `src/ast`.
 - **AST modifiers**: `src/ast/modifier` runs post-parse adjustments such as rewriting implicit returns and attaching IDs so later passes can look up definitions efficiently.
 
