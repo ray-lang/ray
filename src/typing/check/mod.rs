@@ -184,6 +184,7 @@ impl TypeCheck for Expr {
             Expr::UnaryOp(ex) => ex.type_check(ctx, srcmap, kcx, ty),
             Expr::Unsafe(ex) => ex.type_check(ctx, srcmap, kcx, ty),
             Expr::While(ex) => ex.type_check(ctx, srcmap, kcx, ty),
+            Expr::Missing(_) => todo!(),
         }
     }
 }

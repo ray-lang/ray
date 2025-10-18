@@ -26,20 +26,16 @@ impl Parser<'_> {
                     Err(err) => {
                         self.record_parse_error(err);
                         let body_end = self.recover_after_error(Some(&TokenKind::RightCurly));
-                        self.placeholder_unit_expr(body_start, body_end, &ctx)
+                        self.missing_expr(body_start, body_end, &ctx)
                     }
                 }
             } else {
                 match self.parse_block(&ctx) {
-                    Ok(expr) => {
-                        dbg!("parsed func body block expr", &expr);
-                        expr
-                    }
+                    Ok(expr) => expr,
                     Err(err) => {
-                        dbg!("error parsing func body block expr", &err);
                         self.record_parse_error(err);
                         let body_end = self.recover_after_error(Some(&TokenKind::RightCurly));
-                        self.placeholder_block_expr(body_start, body_end, &ctx)
+                        self.missing_block_expr(body_start, body_end, &ctx)
                     }
                 }
             };

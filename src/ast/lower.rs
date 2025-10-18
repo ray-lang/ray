@@ -743,6 +743,7 @@ impl LowerAST for Node<Expr> {
             Expr::UnaryOp(u) => Sourced(u, &src).lower(ctx),
             Expr::Unsafe(_) => todo!("lower: Expr::Unsafe: {:?}", self),
             Expr::While(w) => Sourced(w, &src).lower(ctx),
+            Expr::Missing(_) => todo!("lower: Expr::Missing: {:?}", self),
         }
     }
 }
@@ -781,13 +782,14 @@ impl LowerAST for ast::Assign {
             let lhs_src = ctx.srcmap.get(&self.lhs);
             let lhs = match self.lhs.clone().try_take_map(|pat| match pat {
                 ast::Pattern::Name(n) => Ok(Expr::Name(n)),
-                ast::Pattern::Sequence(_) | ast::Pattern::Tuple(_) | ast::Pattern::Deref(_) => {
-                    Err(RayError {
-                        msg: str!("cannot use expression as l-value for re-assignment"),
-                        src: vec![lhs_src],
-                        kind: RayErrorKind::Type,
-                    })
-                }
+                ast::Pattern::Sequence(_)
+                | ast::Pattern::Tuple(_)
+                | ast::Pattern::Deref(_)
+                | ast::Pattern::Missing(_) => Err(RayError {
+                    msg: str!("cannot use expression as l-value for re-assignment"),
+                    src: vec![lhs_src],
+                    kind: RayErrorKind::Type,
+                }),
             }) {
                 Ok(lhs) => lhs,
                 Err(err) => {
@@ -1027,6 +1029,7 @@ impl LowerAST for Sourced<'_, ast::Pattern> {
         let (value, src) = self.unpack_mut();
         match value {
             ast::Pattern::Name(n) | ast::Pattern::Deref(n) => Sourced(n, src).lower(ctx)?,
+            ast::Pattern::Missing(_) => todo!(),
             ast::Pattern::Sequence(_) => todo!(),
             ast::Pattern::Tuple(_) => todo!(),
         }

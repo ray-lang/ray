@@ -579,6 +579,7 @@ impl LirGen<GenResult> for (&Pattern, &TyScheme) {
                 });
                 Ok(lir::Value::new(lir::Variable::Local(idx)))
             }
+            Pattern::Missing(_) => todo!(),
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
         }
@@ -1391,6 +1392,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 lir::Value::Empty
             }
+            Expr::Missing(_) => todo!("lir_gen: Expr::Missing: {}", self.value),
         })
     }
 }

@@ -8,7 +8,7 @@ use crate::{
 
 use super::{
     Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, For, Func, If, Index, List, Literal,
-    Loop, Name, New, Pattern, Range, Sequence, Tuple, UnaryOp, While,
+    Loop, Missing, Name, New, Pattern, Range, Sequence, Tuple, UnaryOp, While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,7 @@ pub enum Expr {
     List(List),
     Literal(Literal),
     Loop(Loop),
+    Missing(Missing),
     Name(Name),
     New(New),
     Path(Path),
@@ -89,6 +90,7 @@ impl std::fmt::Display for Expr {
                 Expr::Labeled(label, ex) => format!("({}: {})", label, ex),
                 Expr::Literal(ex) => ex.to_string(),
                 Expr::Loop(ex) => ex.to_string(),
+                Expr::Missing(ex) => ex.to_string(),
                 Expr::Name(ex) => ex.to_string(),
                 Expr::New(ex) => ex.to_string(),
                 Expr::Path(ex) => ex.to_string(),
@@ -135,6 +137,7 @@ impl Expr {
             | Expr::Literal(_)
             | Expr::List(_)
             | Expr::Loop(_)
+            | Expr::Missing(_)
             | Expr::New(_)
             | Expr::Paren(_)
             | Expr::Range(_)
@@ -173,6 +176,7 @@ impl Expr {
             | Expr::Literal(_)
             | Expr::List(_)
             | Expr::Loop(_)
+            | Expr::Missing(_)
             | Expr::New(_)
             | Expr::Paren(_)
             | Expr::Range(_)
@@ -208,6 +212,7 @@ impl Expr {
             Expr::Labeled(..) => "labeled",
             Expr::Literal(..) => "literal",
             Expr::Loop(..) => "loop",
+            Expr::Missing(..) => "missing expression",
             Expr::Name(..) => "name",
             Expr::New(..) => "new",
             Expr::Pattern(..) => "pattern",

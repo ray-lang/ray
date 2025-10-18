@@ -713,7 +713,7 @@ fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(u64, Path)>) {
 
 fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(u64, Path)>) {
     match pattern {
-        Pattern::Name(_) | Pattern::Deref(_) => {}
+        Pattern::Missing(_) | Pattern::Name(_) | Pattern::Deref(_) => {}
         Pattern::Sequence(patterns) | Pattern::Tuple(patterns) => {
             for pat in patterns {
                 collect_pattern_refs(&pat.value, refs);
@@ -830,6 +830,7 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
             collect_expr_name_refs(&while_expr.cond, refs);
             collect_expr_name_refs(&while_expr.body, refs);
         }
+        Expr::Missing(_) => {}
     }
 }
 

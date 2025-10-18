@@ -372,6 +372,7 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::UnaryOp(unary_op) => Sourced(unary_op, src).resolve_names(ctx),
             Expr::Unsafe(unsafe_) => Sourced(unsafe_, src).resolve_names(ctx),
             Expr::While(while_) => Sourced(while_, src).resolve_names(ctx),
+            Expr::Missing(_) => todo!("resolve_names: Expr::Missing: {:?}", expr),
         }
     }
 }
@@ -489,7 +490,7 @@ fn set_pattern_path(pattern: &mut Node<Pattern>, target_id: u64, new_path: Path)
                     name.path = new_path.clone();
                     return true;
                 }
-                Pattern::Sequence(_) | Pattern::Tuple(_) => {}
+                Pattern::Missing(_) | Pattern::Sequence(_) | Pattern::Tuple(_) => {}
             }
         }
 

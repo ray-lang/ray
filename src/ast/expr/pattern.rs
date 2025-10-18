@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, ops::Deref};
 
 use crate::{
-    ast::{Node, Path, PrefixOp},
+    ast::{Missing, Node, Path, PrefixOp},
     errors::{RayError, RayErrorKind},
     utils::join,
 };
@@ -14,6 +14,7 @@ pub enum Pattern {
     Sequence(Vec<Node<Pattern>>),
     Tuple(Vec<Node<Pattern>>),
     Deref(Name),
+    Missing(Missing),
 }
 
 impl TryFrom<Expr> for Pattern {
@@ -68,6 +69,7 @@ impl std::fmt::Display for Pattern {
                 Pattern::Sequence(seq) => join(seq, ", "),
                 Pattern::Tuple(seq) => format!("(tuple ({}))", join(seq, ", ")),
                 Pattern::Deref(n) => format!("(deref {})", n),
+                Pattern::Missing(m) => format!("(missing {})", m),
             }
         )
     }
@@ -86,21 +88,21 @@ impl Pattern {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Pattern::Name(n) | Pattern::Deref(n) => Some(&n.path),
-            Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+            Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
         }
     }
 
     pub fn path_mut(&mut self) -> Option<&mut Path> {
         match self {
             Pattern::Name(n) | Pattern::Deref(n) => Some(&mut n.path),
-            Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+            Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
         }
     }
 
     pub fn get_name(&self) -> Option<String> {
         match self {
             Pattern::Name(n) | Pattern::Deref(n) => Some(n.path.to_string()),
-            Pattern::Sequence(_) | Pattern::Tuple(_) => None,
+            Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
         }
     }
 }
@@ -113,6 +115,7 @@ impl Node<Pattern> {
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
                 ps.iter().map(|p| p.identifiers()).flatten().collect()
             }
+            Pattern::Missing(_) => vec![],
         }
     }
 }

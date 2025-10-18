@@ -9,13 +9,16 @@ mod expr;
 mod func;
 mod imports;
 mod ops;
+mod recover;
 mod ty;
+
+pub use recover::Recover;
 
 use std::{fs, io, mem};
 
 use crate::{
     ast::{
-        Block, Decl, Decorator, Expr, File, Import, Literal, Name, Node, Path, Pattern, ValueKind,
+        Block, Decl, Decorator, Expr, File, Import, Missing, Name, Node, Path, Pattern, ValueKind,
         token::{CommentKind, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
@@ -461,39 +464,34 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn placeholder_unit_expr(
-        &mut self,
-        start: Pos,
-        mut end: Pos,
-        ctx: &ParseContext,
-    ) -> ParsedExpr {
+    fn missing_expr(&mut self, start: Pos, mut end: Pos, ctx: &ParseContext) -> ParsedExpr {
         if end.offset < start.offset {
             end = start;
         }
         let span = Span { start, end };
-        self.mk_expr(Expr::Literal(Literal::Unit), span, ctx.path.clone())
+        let context = Some(ctx.path.to_string());
+        let missing = Missing::new("expression", context);
+        self.mk_expr(Expr::Missing(missing), span, ctx.path.clone())
     }
 
-    fn placeholder_block_expr(
-        &mut self,
-        start: Pos,
-        mut end: Pos,
-        ctx: &ParseContext,
-    ) -> ParsedExpr {
+    fn missing_block_expr(&mut self, start: Pos, mut end: Pos, ctx: &ParseContext) -> ParsedExpr {
         if end.offset < start.offset {
             end = start;
         }
         let span = Span { start, end };
-        self.mk_expr(Expr::Block(Block::new(Vec::new())), span, ctx.path.clone())
+        let context = Some(ctx.path.to_string());
+        let missing = Missing::new("block", context);
+        self.mk_expr(Expr::Missing(missing), span, ctx.path.clone())
     }
 
-    fn placeholder_pattern(&mut self, start: Pos, mut end: Pos) -> Node<Pattern> {
+    fn missing_pattern(&mut self, start: Pos, mut end: Pos, ctx: &ParseContext) -> Node<Pattern> {
         if end.offset < start.offset {
             end = start;
         }
         let span = Span { start, end };
-        let name = Name::new(Path::from("_"));
-        self.mk_node(Pattern::Name(name), span)
+        let context = Some(ctx.path.to_string());
+        let missing = Missing::new("pattern", context);
+        self.mk_node(Pattern::Missing(missing), span)
     }
 
     fn parse_doc_comments(&mut self) -> DocComments {
@@ -876,7 +874,7 @@ impl<'src> Parser<'src> {
 mod tests {
     use super::{ParseDiagnostics, ParseOptions, Parser};
     use crate::{
-        ast::{Decl, Expr, Func, Literal, Path, Pattern},
+        ast::{Decl, Expr, Func, Path, Pattern},
         errors::{RayError, RayErrorKind},
         pathlib::FilePath,
         span::SourceMap,
@@ -1015,15 +1013,19 @@ fn main() {
         );
         let func = first_function(&file);
         let block = function_body_block(func);
-        dbg!(block.stmts.len());
         let if_expr = match &block.stmts.first().expect("expected if statement").value {
             Expr::If(if_expr) => if_expr,
             other => panic!("expected if expression, got {:?}", other),
         };
-        assert!(
-            matches!(if_expr.cond.value, Expr::Literal(Literal::Unit)),
-            "expected placeholder condition expression"
-        );
+        match &if_expr.cond.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "expression",
+                    "expected placeholder condition expression"
+                );
+            }
+            other => panic!("expected missing condition expression, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1049,14 +1051,15 @@ fn main() {
             Expr::If(if_expr) => if_expr,
             other => panic!("expected if expression, got {:?}", other),
         };
-        let then_block = match &if_expr.then.value {
-            Expr::Block(block) => block,
-            other => panic!("expected block expression, got {:?}", other),
-        };
-        assert!(
-            then_block.stmts.is_empty(),
-            "expected placeholder empty block"
-        );
+        match &if_expr.then.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "block",
+                    "expected placeholder block expression"
+                );
+            }
+            other => panic!("expected missing block expression, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1083,11 +1086,14 @@ fn main() {
             Expr::For(for_expr) => for_expr,
             other => panic!("expected for expression, got {:?}", other),
         };
-        let pat = match &for_expr.pat.value {
-            Pattern::Name(name) => name,
-            other => panic!("expected placeholder name pattern, got {:?}", other),
+        let missing = match &for_expr.pat.value {
+            Pattern::Missing(missing) => missing,
+            other => panic!("expected missing pattern, got {:?}", other),
         };
-        assert_eq!(format!("{}", pat.path), "_");
+        assert_eq!(
+            missing.expected, "pattern",
+            "expected placeholder missing pattern"
+        );
     }
 
     #[test]
@@ -1115,10 +1121,15 @@ fn main() {
             Expr::For(for_expr) => for_expr,
             other => panic!("expected for expression, got {:?}", other),
         };
-        assert!(
-            matches!(for_expr.expr.value, Expr::Block(_)),
-            "expected block iterable expression"
-        );
+        match &for_expr.expr.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "expression",
+                    "expected placeholder iterable expression"
+                );
+            }
+            other => panic!("expected missing iterable expression, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1144,14 +1155,15 @@ fn main() {
             Expr::For(for_expr) => for_expr,
             other => panic!("expected for expression, got {:?}", other),
         };
-        let body_block = match &for_expr.body.value {
-            Expr::Block(block) => block,
-            other => panic!("expected block expression, got {:?}", other),
-        };
-        assert!(
-            body_block.stmts.is_empty(),
-            "expected placeholder empty for body"
-        );
+        match &for_expr.body.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "block",
+                    "expected placeholder empty for body"
+                );
+            }
+            other => panic!("expected missing block expression, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1175,15 +1187,19 @@ fn main() {
         );
         let func = first_function(&file);
         let block = function_body_block(func);
-        dbg!(block);
         let while_expr = match &block.stmts.first().expect("expected while statement").value {
             Expr::While(while_expr) => while_expr,
             other => panic!("expected while expression, got {:?}", other),
         };
-        assert!(
-            matches!(while_expr.cond.value, Expr::Literal(Literal::Unit)),
-            "expected placeholder condition expression"
-        );
+        match &while_expr.cond.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "expression",
+                    "expected placeholder condition expression"
+                );
+            }
+            other => panic!("expected missing condition expression, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1205,19 +1221,19 @@ fn main() {
         );
         let func = first_function(&file);
         let block = function_body_block(func);
-        dbg!(block);
         let while_expr = match &block.stmts.first().expect("expected while statement").value {
             Expr::While(while_expr) => while_expr,
             other => panic!("expected while expression, got {:?}", other),
         };
-        let body_block = match &while_expr.body.value {
-            Expr::Block(block) => block,
-            other => panic!("expected block expression, got {:?}", other),
-        };
-        assert!(
-            body_block.stmts.is_empty(),
-            "expected placeholder empty while body"
-        );
+        match &while_expr.body.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "block",
+                    "expected placeholder empty while body"
+                );
+            }
+            other => panic!("expected missing block expression, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1243,13 +1259,14 @@ fn main() {
             Expr::Loop(loop_expr) => loop_expr,
             other => panic!("expected loop expression, got {:?}", other),
         };
-        let body_block = match &loop_expr.body.value {
-            Expr::Block(block) => block,
-            other => panic!("expected block expression, got {:?}", other),
-        };
-        assert!(
-            body_block.stmts.is_empty(),
-            "expected placeholder empty loop body"
-        );
+        match &loop_expr.body.value {
+            Expr::Missing(missing) => {
+                assert_eq!(
+                    missing.expected, "block",
+                    "expected placeholder empty loop body"
+                );
+            }
+            other => panic!("expected missing block expression, got {:?}", other),
+        }
     }
 }

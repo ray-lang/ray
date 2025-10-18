@@ -33,6 +33,11 @@ impl CollectPatterns for Node<Pattern> {
             Pattern::Name(n) => n.path.collect_patterns(srcmap, tcx),
             Pattern::Sequence(_) => todo!("collect patterns: {}", self),
             Pattern::Tuple(_) => todo!("collect patterns: {}", self),
+            Pattern::Missing(_) => {
+                let ty = Ty::Var(tcx.tf().next());
+                tcx.set_ty(self.id, ty.clone());
+                (ty, TyEnv::new(), ConstraintTree::empty())
+            }
             Pattern::Deref(n) => {
                 let src = srcmap.get(self);
                 let (ptr_ty, env, ctree) = n.path.collect_patterns(srcmap, tcx);
@@ -452,6 +457,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::UnaryOp(ex) => (ex, src).collect_constraints(ctx),
             Expr::Unsafe(_) => todo!(),
             Expr::While(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Missing(_) => todo!(),
             Expr::TypeAnnotated(ex, ty) => {
                 unreachable!("handled above")
             }
@@ -1120,6 +1126,7 @@ impl CollectConstraints for (&Pattern, &Source) {
             }
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
+            Pattern::Missing(_) => todo!(),
         };
         (ty, aset, ctree)
     }

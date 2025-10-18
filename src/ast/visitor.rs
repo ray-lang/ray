@@ -44,6 +44,7 @@ impl<'a, Ctx> Visitor<'a, Ctx> {
             Expr::UnaryOp(_) => todo!(),
             Expr::Unsafe(_) => todo!(),
             Expr::While(_) => todo!(),
+            Expr::Missing(_) => todo!(),
         }
     }
 }

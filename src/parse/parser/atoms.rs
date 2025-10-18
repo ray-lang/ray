@@ -437,11 +437,7 @@ impl Parser<'_> {
                 item: doc,
             } = self.parse_doc_comments();
             match self.parse_stmt(None, doc, ctx) {
-                Ok(stmt) => {
-                    #[cfg(test)]
-                    dbg!("pushed stmt", &stmt.value);
-                    stmts.push(stmt)
-                }
+                Ok(stmt) => stmts.push(stmt),
                 Err(err) => {
                     self.record_parse_error(err);
                     self.recover_after_error(Some(&TokenKind::RightCurly));
@@ -452,14 +448,23 @@ impl Parser<'_> {
             }
         }
 
-        dbg!("looped through block stmts", &stmts);
-
         // '}'
         let end = match self.expect_end(TokenKind::RightCurly) {
             Ok(pos) => pos,
             Err(err) => {
                 self.record_parse_error(err);
-                self.lex.position()
+                let recovered_end = self.recover_after_error(Some(&TokenKind::RightCurly));
+                if peek!(self, TokenKind::RightCurly) {
+                    match self.expect_end(TokenKind::RightCurly) {
+                        Ok(pos) => pos,
+                        Err(err) => {
+                            self.record_parse_error(err);
+                            recovered_end
+                        }
+                    }
+                } else {
+                    recovered_end
+                }
             }
         };
 

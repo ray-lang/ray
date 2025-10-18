@@ -22,7 +22,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let cond_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                self.placeholder_unit_expr(cond_start, cond_end, &ctx)
+                self.missing_expr(cond_start, cond_end, &ctx)
             }
         };
         let cond = Box::new(cond_expr);
@@ -33,7 +33,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let block_end = self.recover_after_error(Some(&TokenKind::Else));
-                self.placeholder_block_expr(block_start, block_end, &ctx)
+                self.missing_block_expr(block_start, block_end, &ctx)
             }
         };
         let mut end = self.srcmap.span_of(&then_expr).end;
@@ -50,7 +50,7 @@ impl Parser<'_> {
                     Err(err) => {
                         self.record_parse_error(err);
                         let else_end = self.recover_after_error(None);
-                        self.placeholder_block_expr(else_start, else_end, &ctx)
+                        self.missing_block_expr(else_start, else_end, &ctx)
                     }
                 }
             } else {
@@ -60,7 +60,7 @@ impl Parser<'_> {
                     Err(err) => {
                         self.record_parse_error(err);
                         let else_end = self.recover_after_error(None);
-                        self.placeholder_block_expr(else_block_start, else_end, &ctx)
+                        self.missing_block_expr(else_block_start, else_end, &ctx)
                     }
                 }
             };
@@ -92,7 +92,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let cond_end = self.recover_after_error(Some(&TokenKind::Else));
-                self.placeholder_unit_expr(cond_start, cond_end, &ctx)
+                self.missing_expr(cond_start, cond_end, &ctx)
             }
         };
         let mut end = self.srcmap.span_of(&cond_expr).end;
@@ -108,7 +108,7 @@ impl Parser<'_> {
                 Err(err) => {
                     self.record_parse_error(err);
                     let else_end = self.recover_after_error(None);
-                    self.placeholder_unit_expr(else_start, else_end, &ctx)
+                    self.missing_expr(else_start, else_end, &ctx)
                 }
             };
             end = self.srcmap.span_of(&e).end;
@@ -136,7 +136,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let pat_end = self.recover_after_error(Some(&TokenKind::In));
-                self.placeholder_pattern(pat_start, pat_end)
+                self.missing_pattern(pat_start, pat_end, ctx)
             }
         };
 
@@ -154,12 +154,31 @@ impl Parser<'_> {
         };
 
         let expr_start = self.lex.position();
-        let expr = match self.parse_pre_block_expr(ctx) {
-            Ok(expr) => expr,
-            Err(err) => {
-                self.record_parse_error(err);
-                let expr_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                self.placeholder_unit_expr(expr_start, expr_end, ctx)
+        let mut lookahead = 0;
+        let mut next_kind = self.peek_kind();
+        while matches!(next_kind, TokenKind::NewLine) {
+            lookahead += 1;
+            next_kind = self.peek_kind_at(lookahead);
+        }
+
+        let expr = if matches!(next_kind, TokenKind::LeftCurly | TokenKind::EOF) {
+            let err = self.parse_error(
+                "expected iterable expression after `in`".to_string(),
+                Span {
+                    start: expr_start,
+                    end: expr_start,
+                },
+            );
+            self.record_parse_error(err);
+            self.missing_expr(expr_start, expr_start, ctx)
+        } else {
+            match self.parse_pre_block_expr(ctx) {
+                Ok(expr) => expr,
+                Err(err) => {
+                    self.record_parse_error(err);
+                    let expr_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
+                    self.missing_expr(expr_start, expr_end, ctx)
+                }
             }
         };
 
@@ -169,7 +188,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let body_end = self.recover_after_error(None);
-                self.placeholder_block_expr(body_start, body_end, ctx)
+                self.missing_block_expr(body_start, body_end, ctx)
             }
         };
 
@@ -197,7 +216,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let cond_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                self.placeholder_unit_expr(cond_start, cond_end, ctx)
+                self.missing_expr(cond_start, cond_end, ctx)
             }
         };
         let body_start = self.lex.position();
@@ -206,7 +225,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let body_end = self.recover_after_error(None);
-                self.placeholder_block_expr(body_start, body_end, ctx)
+                self.missing_block_expr(body_start, body_end, ctx)
             }
         };
 
@@ -232,7 +251,7 @@ impl Parser<'_> {
             Err(err) => {
                 self.record_parse_error(err);
                 let body_end = self.recover_after_error(None);
-                self.placeholder_block_expr(body_start, body_end, ctx)
+                self.missing_block_expr(body_start, body_end, ctx)
             }
         };
 
