@@ -1453,6 +1453,8 @@ dependencies = [
  "env_logger",
  "log",
  "pretty_assertions",
+ "ray",
+ "serde_json",
  "tokio",
  "tower-lsp",
 ]

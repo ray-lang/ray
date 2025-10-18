@@ -16,19 +16,56 @@ impl Parser<'_> {
         let mut ctx = ctx.clone();
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
-        let cond = Box::new(self.parse_pre_block_expr(&ctx)?);
-        let then = Box::new(self.parse_block(&ctx)?);
-        let mut end = self.srcmap.span_of(&then).end;
+        let cond_start = self.lex.position();
+        let cond_expr = match self.parse_pre_block_expr(&ctx) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.record_parse_error(err);
+                let cond_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
+                self.placeholder_unit_expr(cond_start, cond_end, &ctx)
+            }
+        };
+        let cond = Box::new(cond_expr);
+
+        let block_start = self.lex.position();
+        let then_expr = match self.parse_block(&ctx) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.record_parse_error(err);
+                let block_end = self.recover_after_error(Some(&TokenKind::Else));
+                self.placeholder_block_expr(block_start, block_end, &ctx)
+            }
+        };
+        let mut end = self.srcmap.span_of(&then_expr).end;
+        let then = Box::new(then_expr);
 
         let els = if peek!(self, TokenKind::Else) {
-            self.expect(TokenKind::Else)?;
-            let e = if peek!(self, TokenKind::If) {
-                self.parse_if(&ctx)?
+            let else_start = self.lex.position();
+            if let Err(err) = self.expect(TokenKind::Else) {
+                self.record_parse_error(err);
+            }
+            let else_expr = if peek!(self, TokenKind::If) {
+                match self.parse_if(&ctx) {
+                    Ok(expr) => expr,
+                    Err(err) => {
+                        self.record_parse_error(err);
+                        let else_end = self.recover_after_error(None);
+                        self.placeholder_block_expr(else_start, else_end, &ctx)
+                    }
+                }
             } else {
-                self.parse_block(&ctx)?
+                let else_block_start = self.lex.position();
+                match self.parse_block(&ctx) {
+                    Ok(expr) => expr,
+                    Err(err) => {
+                        self.record_parse_error(err);
+                        let else_end = self.recover_after_error(None);
+                        self.placeholder_block_expr(else_block_start, else_end, &ctx)
+                    }
+                }
             };
-            end = self.srcmap.span_of(&e).end;
-            Some(Box::new(e))
+            end = self.srcmap.span_of(&else_expr).end;
+            Some(Box::new(else_expr))
         } else {
             None
         };
@@ -49,12 +86,31 @@ impl Parser<'_> {
         let mut ctx = ctx.clone();
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
-        let cond = Box::new(self.parse_expr(&ctx)?);
-        let mut end = self.srcmap.span_of(&cond).end;
+        let cond_start = self.lex.position();
+        let cond_expr = match self.parse_expr(&ctx) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.record_parse_error(err);
+                let cond_end = self.recover_after_error(Some(&TokenKind::Else));
+                self.placeholder_unit_expr(cond_start, cond_end, &ctx)
+            }
+        };
+        let mut end = self.srcmap.span_of(&cond_expr).end;
+        let cond = Box::new(cond_expr);
 
         let els = if peek!(self, TokenKind::Else) {
-            self.expect(TokenKind::Else)?;
-            let e = self.parse_expr(&ctx)?;
+            if let Err(err) = self.expect(TokenKind::Else) {
+                self.record_parse_error(err);
+            }
+            let else_start = self.lex.position();
+            let e = match self.parse_expr(&ctx) {
+                Ok(expr) => expr,
+                Err(err) => {
+                    self.record_parse_error(err);
+                    let else_end = self.recover_after_error(None);
+                    self.placeholder_unit_expr(else_start, else_end, &ctx)
+                }
+            };
             end = self.srcmap.span_of(&e).end;
             Some(Box::new(e))
         } else {
@@ -74,10 +130,48 @@ impl Parser<'_> {
 
     pub(crate) fn parse_for(&mut self, ctx: &ParseContext) -> ExprResult {
         let for_span = self.expect_sp(TokenKind::For)?;
-        let pat = self.parse_pattern(ctx)?;
-        let in_span = self.expect_sp(TokenKind::In)?;
-        let expr = self.parse_pre_block_expr(ctx)?;
-        let body = self.parse_block(ctx)?;
+        let pat_start = self.lex.position();
+        let pat = match self.parse_pattern(ctx) {
+            Ok(pat) => pat,
+            Err(err) => {
+                self.record_parse_error(err);
+                let pat_end = self.recover_after_error(Some(&TokenKind::In));
+                self.placeholder_pattern(pat_start, pat_end)
+            }
+        };
+
+        let in_start = self.lex.position();
+        let in_span = match self.expect_sp(TokenKind::In) {
+            Ok(span) => span,
+            Err(err) => {
+                self.record_parse_error(err);
+                let in_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
+                Span {
+                    start: in_start,
+                    end: in_end,
+                }
+            }
+        };
+
+        let expr_start = self.lex.position();
+        let expr = match self.parse_pre_block_expr(ctx) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.record_parse_error(err);
+                let expr_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
+                self.placeholder_unit_expr(expr_start, expr_end, ctx)
+            }
+        };
+
+        let body_start = self.lex.position();
+        let body = match self.parse_block(ctx) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_parse_error(err);
+                let body_end = self.recover_after_error(None);
+                self.placeholder_block_expr(body_start, body_end, ctx)
+            }
+        };
 
         let body_span = self.srcmap.span_of(&body);
         let span = for_span.extend_to(&body_span);
@@ -97,8 +191,24 @@ impl Parser<'_> {
 
     pub(crate) fn parse_while(&mut self, ctx: &ParseContext) -> ExprResult {
         let while_span = self.expect_sp(TokenKind::While)?;
-        let cond = self.parse_pre_block_expr(ctx)?;
-        let body = self.parse_block(ctx)?;
+        let cond_start = self.lex.position();
+        let cond = match self.parse_pre_block_expr(ctx) {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.record_parse_error(err);
+                let cond_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
+                self.placeholder_unit_expr(cond_start, cond_end, ctx)
+            }
+        };
+        let body_start = self.lex.position();
+        let body = match self.parse_block(ctx) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_parse_error(err);
+                let body_end = self.recover_after_error(None);
+                self.placeholder_block_expr(body_start, body_end, ctx)
+            }
+        };
 
         let body_span = self.srcmap.span_of(&body);
         let span = while_span.extend_to(&body_span);
@@ -116,7 +226,15 @@ impl Parser<'_> {
 
     pub(crate) fn parse_loop(&mut self, ctx: &ParseContext) -> ExprResult {
         let loop_span = self.expect_sp(TokenKind::Loop)?;
-        let body = self.parse_block(ctx)?;
+        let body_start = self.lex.position();
+        let body = match self.parse_block(ctx) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_parse_error(err);
+                let body_end = self.recover_after_error(None);
+                self.placeholder_block_expr(body_start, body_end, ctx)
+            }
+        };
 
         let body_span = self.srcmap.span_of(&body);
         let span = loop_span.extend_to(&body_span);

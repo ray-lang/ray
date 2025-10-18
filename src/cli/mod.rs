@@ -2,6 +2,7 @@ use std::{
     error::Error,
     fs::File,
     io::{self, Write},
+    process,
 };
 
 use clap::StructOpt;
@@ -10,7 +11,7 @@ use log::Level;
 use pprof::protos::Message;
 
 use crate::{
-    driver::{AnalyzeOptions, BuildOptions, Driver},
+    driver::{AnalyzeOptions, BuildOptions, Driver, RayPaths},
     pathlib::FilePath,
 };
 
@@ -104,13 +105,16 @@ pub fn run() {
         .unwrap();
 
     // get the ray_path
-    let ray_path = if let Some(p) = cli.global_options.ray_path {
-        p
+    let explicit_root = cli.global_options.ray_path.clone();
+    let ray_paths = if let Some(paths) = RayPaths::discover(explicit_root.clone(), None) {
+        paths
+    } else if let Some(path) = explicit_root {
+        RayPaths::new(path)
     } else {
-        match home::home_dir() {
-            Some(h) => FilePath::from(h) / ".ray",
-            None => FilePath::from("/opt/ray"),
-        }
+        eprintln!(
+            "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
+        );
+        process::exit(1);
     };
 
     let prof = if cli.global_options.profile {
@@ -119,7 +123,7 @@ pub fn run() {
         None
     };
 
-    let mut driver = Driver::new(ray_path);
+    let mut driver = Driver::new(ray_paths);
     match cli.cmd {
         Command::Build(options) => build::action(&mut driver, options),
         Command::Analyze(options) => analyze::action(&mut driver, options),

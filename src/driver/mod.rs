@@ -1,8 +1,9 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    fs,
+    env, fs,
     ops::Deref,
+    path::PathBuf,
 };
 
 use itertools::Itertools;
@@ -54,6 +55,43 @@ pub struct RayPaths {
 }
 
 impl RayPaths {
+    pub fn new(root: FilePath) -> Self {
+        Self { root }
+    }
+
+    pub fn discover(explicit: Option<FilePath>, workspace_hint: Option<&FilePath>) -> Option<Self> {
+        fn has_toolchain_root(candidate: &FilePath) -> bool {
+            (candidate / "lib" / "core").exists()
+        }
+
+        let mut candidates: Vec<FilePath> = Vec::new();
+
+        if let Some(path) = explicit {
+            candidates.push(path);
+        }
+
+        if let Ok(path) = env::var("RAY_PATH") {
+            if !path.is_empty() {
+                candidates.push(FilePath::from(PathBuf::from(path)));
+            }
+        }
+
+        if let Some(hint) = workspace_hint {
+            candidates.push(hint.clone());
+        }
+
+        if let Some(home) = home::home_dir() {
+            candidates.push(FilePath::from(home) / ".ray");
+        }
+
+        candidates.push(FilePath::from("/opt/ray"));
+
+        candidates
+            .into_iter()
+            .find(|candidate| has_toolchain_root(candidate))
+            .map(Self::new)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.root.is_empty()
     }
@@ -73,14 +111,14 @@ impl RayPaths {
 
 #[derive(Debug)]
 pub struct Driver {
-    ray_path: FilePath,
+    ray_paths: RayPaths,
     pub errors_emitted: usize,
 }
 
 impl Driver {
-    pub fn new(ray_path: FilePath) -> Driver {
+    pub fn new(ray_paths: RayPaths) -> Driver {
         Driver {
-            ray_path,
+            ray_paths,
             errors_emitted: 0,
         }
     }
@@ -103,9 +141,7 @@ impl Driver {
             build_lib: false,
         };
 
-        let paths = RayPaths {
-            root: self.ray_path.clone(),
-        };
+        let paths = self.ray_paths.clone();
         match self.build_frontend(&build_options, &paths) {
             Ok(frontend) => {
                 let symbols = collect_symbols(&frontend);
@@ -125,7 +161,10 @@ impl Driver {
         paths: &RayPaths,
     ) -> Result<FrontendResult, Vec<RayError>> {
         let mut c_include_paths = options.c_include_paths.clone().unwrap_or_else(|| vec![]);
-        c_include_paths.insert(0, paths.get_c_includes_path());
+        let default_include = paths.get_c_includes_path();
+        if default_include.exists() && !c_include_paths.contains(&default_include) {
+            c_include_paths.insert(0, default_include);
+        }
         let mut mod_builder = sema::ModuleBuilder::new(paths, c_include_paths, options.no_core);
         let module_scope = match mod_builder.build_from_path(&options.input_path, None)? {
             Some(module_path) => module_path,
@@ -295,9 +334,7 @@ impl Driver {
     }
 
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
-        let paths = RayPaths {
-            root: self.ray_path.clone(),
-        };
+        let paths = self.ray_paths.clone();
 
         let frontend = self.build_frontend(&options, &paths)?;
 
@@ -343,8 +380,7 @@ impl Driver {
             log::debug!("modules: {:?}", modules);
 
             let definitions = libgen::collect_definition_records(&module, &srcmap);
-            let lib =
-                libgen::serialize(program, tcx, ncx, srcmap, defs, modules, definitions);
+            let lib = libgen::serialize(program, tcx, ncx, srcmap, defs, modules, definitions);
             let path = output_path("raylib");
             let build_path = paths.get_build_path();
             if !build_path.exists() {

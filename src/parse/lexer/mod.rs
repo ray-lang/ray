@@ -1,7 +1,7 @@
 use crate::{
     ast::{
         Modifier,
-        token::{IntegerBase, Token, TokenKind},
+        token::{CommentKind, IntegerBase, Token, TokenKind},
     },
     span::{Pos, Span},
 };
@@ -313,17 +313,27 @@ impl Lexer {
                     },
                     '/' => match self.first() {
                         '/' => {
-                            let doc_style = self.second() == '/';
+                            let marker = self.second();
+                            let doc_style = matches!(marker, '/' | '!');
                             self.next_char(); // consume the first '/'
                             if doc_style {
                                 self.next_char();
                             }
+                            let kind = if doc_style {
+                                if marker == '!' {
+                                    CommentKind::ModuleDoc
+                                } else {
+                                    CommentKind::Doc
+                                }
+                            } else {
+                                CommentKind::Line
+                            };
                             let com = TokenKind::Comment {
                                 content: self
                                     .next_char_while(None, |c| c != '\n')
                                     .trim()
                                     .to_owned(),
-                                doc_style,
+                                kind,
                             };
                             // consume the newline character
                             self.next_char();
@@ -574,9 +584,9 @@ pub fn lexemes(src: &str) -> Vec<Lexeme> {
 
 #[cfg(test)]
 mod lexer_tests {
-    use crate::ast::token::TokenKind;
+    use crate::ast::token::{CommentKind, TokenKind};
 
-    use super::{lexemes, Lexer};
+    use super::{Lexer, Preceding, lexemes};
 
     #[test]
     fn test_rewind() {
@@ -605,9 +615,92 @@ mod lexer_tests {
     fn lexemes_collects_tokens() {
         let tokens = lexemes("fn answer() -> i32 { 42 }");
         assert!(!tokens.is_empty());
+        assert!(matches!(tokens.last().unwrap().token.kind, TokenKind::EOF));
+    }
+
+    #[test]
+    fn lexemes_preserve_trivia_and_kinds() {
+        let source = "fn foo(mut value: i32) {\n    // answer\n    42\n}\n";
+        let tokens = lexemes(source);
+
+        assert!(matches!(tokens[0].token.kind, TokenKind::Fn));
         assert!(matches!(
-            tokens.last().unwrap().token.kind,
-            TokenKind::EOF
+            tokens[1].token.kind,
+            TokenKind::Identifier(ref name) if name == "foo"
         ));
+        assert!(matches!(tokens[2].token.kind, TokenKind::LeftParen));
+        assert!(matches!(tokens[3].token.kind, TokenKind::Mut));
+        assert!(matches!(
+            tokens[4].token.kind,
+            TokenKind::Identifier(ref name) if name == "value"
+        ));
+        assert!(matches!(tokens[5].token.kind, TokenKind::Colon));
+        assert!(matches!(
+            tokens[6].token.kind,
+            TokenKind::Identifier(ref name) if name == "i32"
+        ));
+        assert!(matches!(tokens[7].token.kind, TokenKind::RightParen));
+        assert!(matches!(tokens[8].token.kind, TokenKind::LeftCurly));
+        assert!(matches!(
+            tokens[9].token.kind,
+            TokenKind::Integer { ref value, base, .. }
+                if value == "42" && matches!(base, crate::ast::token::IntegerBase::Decimal)
+        ));
+        assert!(matches!(tokens[10].token.kind, TokenKind::RightCurly));
+        assert!(matches!(tokens.last().unwrap().token.kind, TokenKind::EOF));
+
+        // The integer is preceded by a comment that we should surface via trivia.
+        let comment = tokens[9]
+            .leading
+            .iter()
+            .find_map(|preceding| match preceding {
+                Preceding::Comment(tok) => Some(tok),
+                _ => None,
+            })
+            .expect("expected comment preceding integer literal");
+
+        if let TokenKind::Comment {
+            ref content,
+            ref kind,
+        } = comment.kind
+        {
+            assert_eq!(content, "answer");
+            assert_eq!(*kind, CommentKind::Line);
+        } else {
+            panic!("expected token kind comment");
+        }
+    }
+
+    #[test]
+    fn lexemes_classifies_doc_comment_kinds() {
+        let tokens = lexemes("//! module docs\n/// fn docs\nfn main() {}");
+
+        let leading = &tokens[0].leading;
+        assert_eq!(leading.len(), 2);
+        match &leading[0] {
+            Preceding::Comment(token) => {
+                assert_eq!(
+                    token.kind,
+                    TokenKind::Comment {
+                        content: "module docs".to_string(),
+                        kind: CommentKind::ModuleDoc,
+                    }
+                );
+            }
+            other => panic!("unexpected preceding token: {:?}", other),
+        }
+
+        match &leading[1] {
+            Preceding::Comment(token) => {
+                assert_eq!(
+                    token.kind,
+                    TokenKind::Comment {
+                        content: "fn docs".to_string(),
+                        kind: CommentKind::Doc,
+                    }
+                );
+            }
+            other => panic!("unexpected preceding token: {:?}", other),
+        }
     }
 }

@@ -25,6 +25,13 @@ impl IntegerBase {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommentKind {
+    Line,
+    Doc,
+    ModuleDoc,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TokenKind {
     /// mut
     Mut,
@@ -187,7 +194,7 @@ pub enum TokenKind {
     Whitespace,
     Comment {
         content: String,
-        doc_style: bool,
+        kind: CommentKind,
     },
     Illegal(String),
     EOF,
@@ -283,13 +290,11 @@ impl TokenKind {
             TokenKind::Hash => "`#`",
             TokenKind::NewLine => "newline",
             TokenKind::Whitespace => "whitespace",
-            TokenKind::Comment { doc_style, .. } => {
-                if *doc_style {
-                    "`///`"
-                } else {
-                    "`//`"
-                }
-            }
+            TokenKind::Comment { kind, .. } => match kind {
+                CommentKind::ModuleDoc => "`//!`",
+                CommentKind::Doc => "`///`",
+                CommentKind::Line => "`//`",
+            },
             TokenKind::Bool(b) => {
                 if *b {
                     "`true`"
@@ -402,9 +407,11 @@ impl fmt::Display for TokenKind {
             TokenKind::Underscore => "_".to_string(),
             TokenKind::NewLine => "\n".to_string(),
             TokenKind::Whitespace => " ".to_string(),
-            TokenKind::Comment { doc_style, .. } => {
-                (if *doc_style { "///" } else { "//" }).to_string()
-            }
+            TokenKind::Comment { kind, .. } => match kind {
+                CommentKind::ModuleDoc => "//!".to_string(),
+                CommentKind::Doc => "///".to_string(),
+                CommentKind::Line => "//".to_string(),
+            },
             TokenKind::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
             TokenKind::EOF => "".to_string(),
         };

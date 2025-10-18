@@ -100,6 +100,25 @@
             },
             "args": [],
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Run Ray VS Code Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "runtimeExecutable": "${execPath}",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/editors/vscode/out/**/*.js"
+            ],
+            "preLaunchTask": "Compile VSCode extension",
+            "env": {
+                "RAY_LSP_COMMAND": "/Users/jjacobson/.cargo/bin/cargo",
+                "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@12/bin/llvm-config",
+                "LLVM_SYS_120_PREFIX": "/opt/homebrew/opt/llvm@12",
+                "RUST_LOG": "ray_lsp=debug"
+            }
         }
     ]
 }

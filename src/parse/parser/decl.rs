@@ -388,17 +388,36 @@ impl Parser<'_> {
             return Ok(qualifiers);
         }
 
-        self.expect(TokenKind::Where)?;
+        if let Err(err) = self.expect(TokenKind::Where) {
+            self.record_parse_error(err);
+            self.recover_after_sequence_error(None);
+            return Ok(qualifiers);
+        }
 
         loop {
-            let ty = self.parse_ty()?.map(|t| t.into_mono());
-            qualifiers.push(ty);
+            match self.parse_ty() {
+                Ok(ty) => qualifiers.push(ty.map(|t| t.into_mono())),
+                Err(err) => {
+                    self.record_parse_error(err);
+                    self.recover_after_sequence_error(None);
+                    if !peek!(self, TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
 
             if !peek!(self, TokenKind::Comma) {
                 break;
             }
 
-            self.expect(TokenKind::Comma)?;
+            if let Err(err) = self.expect(TokenKind::Comma) {
+                self.record_parse_error(err);
+                self.recover_after_sequence_error(None);
+                if peek!(self, TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
         }
 
         Ok(qualifiers)
@@ -410,17 +429,33 @@ impl Parser<'_> {
             if !peek!(self, TokenKind::Identifier { .. }) {
                 break;
             }
-            let n = self.parse_name_with_type()?;
-            let end = self.srcmap.span_of(&n).end;
-            fields.push(n);
+            match self.parse_name_with_type() {
+                Ok(n) => {
+                    let end = self.srcmap.span_of(&n).end;
+                    fields.push(n);
 
-            let next_comma = expect_if!(self, TokenKind::Comma);
-            if !self.is_eol() && !next_comma {
-                return Err(RayError {
-                    msg: format!("{}", "fields must be separated by a newline or comma"),
-                    src: vec![self.mk_src(Span { start: end, end })],
-                    kind: RayErrorKind::Parse,
-                });
+                    let next_comma = expect_if!(self, TokenKind::Comma);
+                    if !self.is_eol() && !next_comma {
+                        self.record_parse_error(RayError {
+                            msg: "fields must be separated by a newline or comma".to_string(),
+                            src: vec![self.mk_src(Span { start: end, end })],
+                            kind: RayErrorKind::Parse,
+                        });
+                        self.recover_after_error(Some(&TokenKind::RightCurly));
+                        if peek!(self, TokenKind::RightCurly) || self.is_eof() {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.record_parse_error(err);
+                    self.recover_after_error(Some(&TokenKind::RightCurly));
+                    if peek!(self, TokenKind::RightCurly) || self.is_eof() {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
             }
         }
         Ok(fields)

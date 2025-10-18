@@ -19,14 +19,33 @@ impl Parser<'_> {
         ctx.path = sig.path.clone();
 
         let body = if !only_sigs {
-            let b = if expect_if!(self, TokenKind::FatArrow) {
-                self.parse_expr(&ctx)?
+            let body_start = self.lex.position();
+            let expr = if expect_if!(self, TokenKind::FatArrow) {
+                match self.parse_expr(&ctx) {
+                    Ok(expr) => expr,
+                    Err(err) => {
+                        self.record_parse_error(err);
+                        let body_end = self.recover_after_error(Some(&TokenKind::RightCurly));
+                        self.placeholder_unit_expr(body_start, body_end, &ctx)
+                    }
+                }
             } else {
-                self.parse_block(&ctx)?
+                match self.parse_block(&ctx) {
+                    Ok(expr) => {
+                        dbg!("parsed func body block expr", &expr);
+                        expr
+                    }
+                    Err(err) => {
+                        dbg!("error parsing func body block expr", &err);
+                        self.record_parse_error(err);
+                        let body_end = self.recover_after_error(Some(&TokenKind::RightCurly));
+                        self.placeholder_block_expr(body_start, body_end, &ctx)
+                    }
+                }
             };
-            end = self.srcmap.span_of(&b).end;
+            end = self.srcmap.span_of(&expr).end;
             sig.has_body = true;
-            Some(b)
+            Some(expr)
         } else {
             None
         };
@@ -65,7 +84,14 @@ impl Parser<'_> {
         } else {
             ctx.path.append("<anon>")
         };
-        let ty_params = self.parse_ty_params()?;
+        let ty_params = match self.parse_ty_params() {
+            Ok(tp) => tp,
+            Err(err) => {
+                self.record_parse_error(err);
+                self.recover_after_sequence_error(Some(&TokenKind::RightParen));
+                None
+            }
+        };
         let (params, param_span) = parse_params(self)?;
         let mut end = param_span.end;
         let ret_ty = if expect_if!(self, TokenKind::Arrow) {

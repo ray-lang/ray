@@ -26,6 +26,18 @@
         "scopeName": "source.ray",
         "path": "./syntaxes/ray.tmLanguage.json"
       }
+    ],
+    "configuration": [
+      {
+        "title": "Ray",
+        "properties": {
+          "ray.toolchainPath": {
+            "type": "string",
+            "description": "Path to the Ray toolchain",
+            "default": ""
+          }
+        }
+      }
     ]
   },
   "main": "./out/extension.js",

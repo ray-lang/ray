@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-use super::{ExprResult, ParseContext, ParseResult, Parser, Restrictions};
+use super::{DocComments, ExprResult, ParseContext, ParseResult, Parser, Restrictions};
 
 use crate::{
     ast::{
@@ -189,26 +189,48 @@ impl Parser<'_> {
     ) -> ParseResult<(Vec<Node<Name>>, Span)> {
         let mut names = vec![];
         let mut start = Pos::new();
-        let mut end: Pos;
+        let mut end = Pos::new();
         loop {
-            let n = self.parse_name_with_type()?;
-            let span = self.srcmap.span_of(&n);
-            if start.empty() {
-                start = span.start;
+            match self.parse_name_with_type() {
+                Ok(n) => {
+                    let span = self.srcmap.span_of(&n);
+                    if start.empty() {
+                        start = span.start;
+                    }
+                    end = span.end;
+                    names.push(n);
+                }
+                Err(err) => {
+                    self.record_parse_error(err);
+                    self.recover_after_sequence_error(None);
+                    if peek!(self, TokenKind::Comma) {
+                        let span = self.expect_sp(TokenKind::Comma)?;
+                        if matches!(trail, Trailing::Disallow) {
+                            self.record_parse_error(
+                                self.parse_error("unexpected trailing comma".to_string(), span),
+                            );
+                        } else {
+                            continue;
+                        }
+                    }
+                    if !peek!(self, TokenKind::Identifier(_)) {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
             }
-            end = span.end;
-            names.push(n);
 
             if !peek!(self, TokenKind::Identifier(_)) {
                 if peek!(self, TokenKind::Comma) {
                     let span = self.expect_sp(TokenKind::Comma)?;
                     match trail {
                         Trailing::Disallow => {
-                            return Err(
-                                self.parse_error("unexpected trailing comma".to_string(), span)
+                            self.record_parse_error(
+                                self.parse_error("unexpected trailing comma".to_string(), span),
                             );
                         }
-                        _ => continue,
+                        _ => {}
                     }
                 }
                 break;
@@ -228,21 +250,67 @@ impl Parser<'_> {
         let mut items = vec![];
         let mut trailing = false;
         loop {
-            match (vkind, self.must_peek_kind()?, &stop_token) {
+            let next_kind = match self.must_peek_kind() {
+                Ok(k) => k,
+                Err(err) => {
+                    self.record_parse_error(err);
+                    self.recover_after_sequence_error(stop_token.as_ref());
+                    break;
+                }
+            };
+            match (vkind, next_kind, &stop_token) {
                 (_, k, Some(t)) if &k == t => break,
                 (ValueKind::LValue, TokenKind::Identifier(_), _) => {
-                    let n = self.parse_name_with_type()?;
-                    let span = self.srcmap.span_of(&n);
-                    items.push(self.mk_expr(Expr::Name(n.value), span, ctx.path.clone()))
-                }
-                (ValueKind::RValue, _, _) => {
-                    let ex = self.parse_expr(ctx)?;
-                    if let Expr::Sequence(seq) = ex.value {
-                        items.extend(seq.items);
-                    } else {
-                        items.push(ex);
+                    match self.parse_name_with_type() {
+                        Ok(n) => {
+                            let span = self.srcmap.span_of(&n);
+                            items.push(self.mk_expr(Expr::Name(n.value), span, ctx.path.clone()))
+                        }
+                        Err(err) => {
+                            self.record_parse_error(err);
+                            self.recover_after_sequence_error(stop_token.as_ref());
+                            if expect_if!(self, TokenKind::Comma) {
+                                trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
+                                continue;
+                            }
+                            if let Some(stop) = stop_token.as_ref() {
+                                if self.peek_kind().similar_to(stop) {
+                                    break;
+                                }
+                            }
+                            if self.is_eof() {
+                                break;
+                            }
+                            continue;
+                        }
                     }
                 }
+                (ValueKind::RValue, _, _) => match self.parse_expr(ctx) {
+                    Ok(ex) => {
+                        if let Expr::Sequence(seq) = ex.value {
+                            items.extend(seq.items);
+                        } else {
+                            items.push(ex);
+                        }
+                    }
+                    Err(err) => {
+                        self.record_parse_error(err);
+                        self.recover_after_sequence_error(stop_token.as_ref());
+                        if expect_if!(self, TokenKind::Comma) {
+                            trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
+                            continue;
+                        }
+                        if let Some(stop) = stop_token.as_ref() {
+                            if self.peek_kind().similar_to(stop) {
+                                break;
+                            }
+                        }
+                        if self.is_eof() {
+                            break;
+                        }
+                        continue;
+                    }
+                },
                 (_, TokenKind::Comma, _) if matches!(trail, Trailing::Allow | Trailing::Warn) => {
                     trailing = true;
                 }
@@ -364,12 +432,36 @@ impl Parser<'_> {
         let start = self.expect_start(TokenKind::LeftCurly)?;
         let mut stmts = vec![];
         while !peek!(self, TokenKind::RightCurly) {
-            let doc = self.parse_doc_comment();
-            stmts.push(self.parse_stmt(None, doc, ctx)?)
+            let DocComments {
+                module: _,
+                item: doc,
+            } = self.parse_doc_comments();
+            match self.parse_stmt(None, doc, ctx) {
+                Ok(stmt) => {
+                    #[cfg(test)]
+                    dbg!("pushed stmt", &stmt.value);
+                    stmts.push(stmt)
+                }
+                Err(err) => {
+                    self.record_parse_error(err);
+                    self.recover_after_error(Some(&TokenKind::RightCurly));
+                    if peek!(self, TokenKind::RightCurly) || self.is_eof() {
+                        break;
+                    }
+                }
+            }
         }
 
+        dbg!("looped through block stmts", &stmts);
+
         // '}'
-        let end = self.expect_end(TokenKind::RightCurly)?;
+        let end = match self.expect_end(TokenKind::RightCurly) {
+            Ok(pos) => pos,
+            Err(err) => {
+                self.record_parse_error(err);
+                self.lex.position()
+            }
+        };
 
         Ok(self.mk_expr(
             Expr::Block(Block::new(stmts)),

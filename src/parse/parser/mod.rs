@@ -11,12 +11,12 @@ mod imports;
 mod ops;
 mod ty;
 
-use std::{fs, io};
+use std::{fs, io, mem};
 
 use crate::{
     ast::{
-        Decl, Decorator, Expr, File, Import, Node, Path, ValueKind,
-        token::{Token, TokenKind},
+        Block, Decl, Decorator, Expr, File, Import, Literal, Name, Node, Path, Pattern, ValueKind,
+        token::{CommentKind, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
@@ -89,6 +89,35 @@ pub struct ParseOptions {
     pub original_filepath: FilePath,
 }
 
+/// Result of attempting to parse a Ray source module, including any diagnostics.
+#[derive(Debug)]
+pub struct ParseDiagnostics<T> {
+    pub value: Option<T>,
+    pub errors: Vec<RayError>,
+}
+
+#[derive(Default)]
+struct DocComments {
+    module: Option<String>,
+    item: Option<String>,
+}
+
+impl<T> ParseDiagnostics<T> {
+    fn success(value: T, errors: Vec<RayError>) -> Self {
+        Self {
+            value: Some(value),
+            errors,
+        }
+    }
+
+    fn failure(err: RayError) -> Self {
+        Self {
+            value: None,
+            errors: vec![err],
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StatementParseOptions {
     is_top_level: bool,
@@ -116,12 +145,24 @@ pub struct Parser<'src> {
     lex: Lexer,
     options: ParseOptions,
     srcmap: &'src mut SourceMap,
+    errors: Vec<RayError>,
 }
 
 impl<'src> Parser<'src> {
     pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseResult<File> {
         let src = Self::get_src(&options)?;
         Self::parse_from_src(&src, options, srcmap)
+    }
+
+    pub fn parse_with_diagnostics(
+        options: ParseOptions,
+        srcmap: &'src mut SourceMap,
+    ) -> ParseDiagnostics<File> {
+        let src = match Self::get_src(&options) {
+            Ok(src) => src,
+            Err(err) => return ParseDiagnostics::failure(err),
+        };
+        Self::parse_from_src_with_diagnostics(&src, options, srcmap)
     }
 
     pub fn parse_from_src(
@@ -134,8 +175,44 @@ impl<'src> Parser<'src> {
             lex,
             options,
             srcmap,
+            errors: Vec::new(),
         };
-        parser.parse_into_file()
+        let file = parser.parse_into_file()?;
+        let extra_errors = mem::take(&mut parser.errors);
+        if let Some(err) = extra_errors.into_iter().next() {
+            Err(err)
+        } else {
+            Ok(file)
+        }
+    }
+
+    pub fn parse_from_src_with_diagnostics(
+        src: &str,
+        options: ParseOptions,
+        srcmap: &'src mut SourceMap,
+    ) -> ParseDiagnostics<File> {
+        let lex = Lexer::new(src);
+        let mut parser = Self {
+            lex,
+            options,
+            srcmap,
+            errors: Vec::new(),
+        };
+
+        match parser.parse_into_file() {
+            Ok(file) => {
+                let errors = mem::take(&mut parser.errors);
+                ParseDiagnostics::success(file, errors)
+            }
+            Err(err) => {
+                let mut errors = mem::take(&mut parser.errors);
+                errors.insert(0, err);
+                ParseDiagnostics {
+                    value: None,
+                    errors,
+                }
+            }
+        }
     }
 
     fn get_src(options: &ParseOptions) -> ParseResult<String> {
@@ -157,8 +234,10 @@ impl<'src> Parser<'src> {
     fn parse_into_file(&mut self) -> ParseResult<File> {
         let path = self.options.module_path.clone();
         let ctx = ParseContext::new(path.clone());
-        let doc_comment = self.parse_doc_comment();
-        let mut pending_doc = doc_comment.clone();
+        let DocComments {
+            module: doc_comment,
+            item: mut pending_doc,
+        } = self.parse_doc_comments();
         let mut items = Items::new();
         let filepath = self.options.filepath.clone();
         let span = self.parse_items(Pos::new(), None, &ctx, |this, kind, doc, decs| {
@@ -225,7 +304,10 @@ impl<'src> Parser<'src> {
         let mut end = start;
 
         while !self.is_eof() {
-            let doc = self.parse_doc_comment();
+            let DocComments {
+                module: _,
+                item: doc,
+            } = self.parse_doc_comments();
             let decs = match self.parse_decorators(end, ctx) {
                 Ok((dec, span)) => {
                     end = span.end;
@@ -240,41 +322,229 @@ impl<'src> Parser<'src> {
                 (k, _) => k,
             };
 
-            end = f(self, kind, doc, decs)?;
+            match f(self, kind, doc, decs) {
+                Ok(next_end) => {
+                    end = next_end;
+                }
+                Err(err) => {
+                    self.record_parse_error(err);
+                    let recovered_end = self.recover_after_error(stop_token.as_ref());
+                    if let Some(stop) = stop_token.as_ref() {
+                        if self.peek_kind().similar_to(stop) {
+                            if recovered_end > end {
+                                end = recovered_end;
+                            }
+                            break;
+                        }
+                    }
+                    if self.is_eof() {
+                        if recovered_end > end {
+                            end = recovered_end;
+                        }
+                        break;
+                    }
+                    if recovered_end > end {
+                        end = recovered_end;
+                    }
+                    continue;
+                }
+            }
         }
 
         Ok(Span { start, end })
     }
 
-    fn parse_doc_comment(&mut self) -> Option<String> {
-        let preceding = self.lex.preceding();
-        if preceding.len() != 0 {
-            let mut doc: Vec<String> = vec![];
-            for p in preceding {
-                if let Preceding::Comment(c) = p {
-                    if let TokenKind::Comment {
-                        content,
-                        doc_style: true,
-                    } = c.kind
-                    {
-                        doc.push(if let Some(' ') = content.chars().next() {
-                            // skip the whitespace
-                            content.chars().skip(1).collect()
-                        } else {
-                            content
-                        });
+    fn record_parse_error(&mut self, err: RayError) {
+        self.errors.push(err);
+    }
+
+    fn recover_after_error(&mut self, stop_token: Option<&TokenKind>) -> Pos {
+        let mut depth: usize = 0;
+        let mut last_end = self.lex.position();
+        let mut consumed_any = false;
+
+        while !self.is_eof() {
+            let kind = self.peek_kind();
+            if depth == 0 {
+                if let Some(stop) = stop_token {
+                    if kind.similar_to(stop) {
+                        break;
                     }
+                }
+                if matches!(kind, TokenKind::EOF) {
+                    break;
+                }
+                if matches!(kind, TokenKind::RightCurly) {
+                    break;
+                }
+                if Self::is_decl_start(&kind) {
+                    break;
+                }
+                if matches!(kind, TokenKind::NewLine) {
+                    let tok = self.lex.token();
+                    last_end = tok.span.end;
+                    consumed_any = true;
+                    break;
                 }
             }
 
-            if doc.len() != 0 {
-                log::debug!("[parser] doc comment: {:?}", doc);
-                Some(doc.join("\n"))
-            } else {
-                None
+            let tok = self.lex.token();
+            last_end = tok.span.end;
+            consumed_any = true;
+            match tok.kind {
+                TokenKind::LeftCurly => depth += 1,
+                TokenKind::RightCurly => {
+                    if depth == 0 {
+                        break;
+                    } else {
+                        depth = depth.saturating_sub(1);
+                    }
+                }
+                _ => {}
             }
+        }
+
+        if consumed_any {
+            last_end
         } else {
-            None
+            self.lex.position()
+        }
+    }
+
+    fn is_decl_start(kind: &TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Fn
+                | TokenKind::UpperFn
+                | TokenKind::Struct
+                | TokenKind::Trait
+                | TokenKind::Enum
+                | TokenKind::TypeAlias
+                | TokenKind::Impl
+                | TokenKind::Extern
+                | TokenKind::Object
+                | TokenKind::Import
+                | TokenKind::Modifier(_)
+        )
+    }
+
+    fn recover_after_sequence_error(&mut self, stop_token: Option<&TokenKind>) {
+        let mut depth: usize = 0;
+        while !self.is_eof() {
+            let kind = self.peek_kind();
+            if depth == 0 {
+                if let Some(stop) = stop_token {
+                    if kind.similar_to(stop) {
+                        break;
+                    }
+                }
+                if matches!(
+                    kind,
+                    TokenKind::Comma | TokenKind::RightCurly | TokenKind::NewLine
+                ) {
+                    break;
+                }
+            }
+
+            let tok = self.lex.token();
+            match tok.kind {
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftCurly => depth += 1,
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightCurly => {
+                    if depth == 0 {
+                        break;
+                    } else {
+                        depth = depth.saturating_sub(1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn placeholder_unit_expr(
+        &mut self,
+        start: Pos,
+        mut end: Pos,
+        ctx: &ParseContext,
+    ) -> ParsedExpr {
+        if end.offset < start.offset {
+            end = start;
+        }
+        let span = Span { start, end };
+        self.mk_expr(Expr::Literal(Literal::Unit), span, ctx.path.clone())
+    }
+
+    fn placeholder_block_expr(
+        &mut self,
+        start: Pos,
+        mut end: Pos,
+        ctx: &ParseContext,
+    ) -> ParsedExpr {
+        if end.offset < start.offset {
+            end = start;
+        }
+        let span = Span { start, end };
+        self.mk_expr(Expr::Block(Block::new(Vec::new())), span, ctx.path.clone())
+    }
+
+    fn placeholder_pattern(&mut self, start: Pos, mut end: Pos) -> Node<Pattern> {
+        if end.offset < start.offset {
+            end = start;
+        }
+        let span = Span { start, end };
+        let name = Name::new(Path::from("_"));
+        self.mk_node(Pattern::Name(name), span)
+    }
+
+    fn parse_doc_comments(&mut self) -> DocComments {
+        if self.lex.peek_preceding().is_empty() {
+            return DocComments::default();
+        }
+
+        let preceding = self.lex.preceding();
+        if preceding.is_empty() {
+            return DocComments::default();
+        }
+
+        let mut module_lines: Vec<String> = vec![];
+        let mut item_lines: Vec<String> = vec![];
+
+        for p in preceding {
+            if let Preceding::Comment(c) = p {
+                if let TokenKind::Comment { ref content, kind } = c.kind {
+                    let line = if let Some(stripped) = content.strip_prefix(' ') {
+                        stripped.to_owned()
+                    } else {
+                        content.clone()
+                    };
+
+                    match kind {
+                        CommentKind::ModuleDoc => module_lines.push(line),
+                        CommentKind::Doc => item_lines.push(line),
+                        CommentKind::Line => {}
+                    }
+                }
+            }
+        }
+
+        if !module_lines.is_empty() {
+            log::debug!("[parser] module doc comment: {:?}", module_lines);
+        }
+        if !item_lines.is_empty() {
+            log::debug!("[parser] doc comment: {:?}", item_lines);
+        }
+
+        DocComments {
+            module: if module_lines.is_empty() {
+                None
+            } else {
+                Some(module_lines.join("\n"))
+            },
+            item: if item_lines.is_empty() {
+                None
+            } else {
+                Some(item_lines.join("\n"))
+            },
         }
     }
 
@@ -599,5 +869,387 @@ impl<'src> Parser<'src> {
             }],
             kind: RayErrorKind::Parse,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParseDiagnostics, ParseOptions, Parser};
+    use crate::{
+        ast::{Decl, Expr, Func, Literal, Path, Pattern},
+        errors::{RayError, RayErrorKind},
+        pathlib::FilePath,
+        span::SourceMap,
+    };
+
+    fn test_options() -> ParseOptions {
+        let mut options = ParseOptions::default();
+        let filepath = FilePath::from("test.ray");
+        options.filepath = filepath.clone();
+        options.original_filepath = filepath;
+        options.module_path = Path::from("test");
+        options
+    }
+
+    fn parse_source(src: &str) -> (crate::ast::File, Vec<RayError>) {
+        let mut srcmap = SourceMap::new();
+        let options = test_options();
+        let ParseDiagnostics { value, errors } =
+            Parser::parse_from_src_with_diagnostics(src, options, &mut srcmap);
+        let file = value.expect("expected successful parse despite recovery");
+        (file, errors)
+    }
+
+    fn first_function(file: &crate::ast::File) -> &Func {
+        match &file
+            .decls
+            .first()
+            .expect("expected at least one declaration")
+            .value
+        {
+            Decl::Func(func) => func,
+            other => panic!("expected function declaration, got {:?}", other),
+        }
+    }
+
+    fn function_body_block(func: &Func) -> &crate::ast::Block {
+        let body = func.body.as_ref().expect("expected function body");
+        match &body.value {
+            Expr::Block(block) => block,
+            other => panic!("expected block expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_from_src_with_diagnostics_success() {
+        let mut srcmap = SourceMap::new();
+        let options = test_options();
+        let result = Parser::parse_from_src_with_diagnostics("", options, &mut srcmap);
+
+        assert!(result.value.is_some());
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_from_src_with_diagnostics_reports_parse_errors() {
+        let mut srcmap = SourceMap::new();
+        let options = test_options();
+        let result = Parser::parse_from_src_with_diagnostics("fn main( {", options, &mut srcmap);
+
+        assert!(
+            result.value.is_some(),
+            "expected partial parse even with errors"
+        );
+        assert!(!result.errors.is_empty());
+        assert_eq!(result.errors[0].kind, RayErrorKind::Parse);
+        assert!(result.errors[0].src.first().and_then(|s| s.span).is_some());
+    }
+
+    #[test]
+    fn parse_from_src_with_diagnostics_preserves_doc_comment() {
+        let mut srcmap = SourceMap::new();
+        let options = test_options();
+        let result = Parser::parse_from_src_with_diagnostics(
+            "//! module documentation\nfn main() {}",
+            options,
+            &mut srcmap,
+        );
+
+        let file = result.value.expect("expected successful parse");
+        assert_eq!(file.doc_comment.as_deref(), Some("module documentation"));
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_with_module_and_function_doc_comments() {
+        let mut srcmap = SourceMap::new();
+        let options = test_options();
+        let source = r#"//! module docs
+//! second line
+//! extra spacing above is okay
+
+/// function docs
+/// more function docs
+fn main() {
+    mut x = 1
+    x = 2
+}
+"#;
+        let result = Parser::parse_from_src_with_diagnostics(source, options, &mut srcmap);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let file = result.value.expect("expected successful parse");
+
+        assert_eq!(
+            file.doc_comment.as_deref(),
+            Some("module docs\nsecond line\nextra spacing above is okay")
+        );
+        assert!(result.errors.is_empty());
+        // Ensure at least one declaration collected the function doc comment via SourceMap.
+        let decl = file.decls.first().expect("expected function declaration");
+        let decl_doc = srcmap.doc(decl).expect("expected function doc comment");
+        assert_eq!(decl_doc, "function docs\nmore function docs");
+    }
+
+    #[test]
+    fn recovers_if_with_incomplete_condition() {
+        let source = r#"
+fn main() {
+    if (
+    {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for incomplete if condition"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        dbg!(block.stmts.len());
+        let if_expr = match &block.stmts.first().expect("expected if statement").value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected if expression, got {:?}", other),
+        };
+        assert!(
+            matches!(if_expr.cond.value, Expr::Literal(Literal::Unit)),
+            "expected placeholder condition expression"
+        );
+    }
+
+    #[test]
+    fn recovers_if_without_block() {
+        let source = r#"
+fn main() {
+    if true
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for missing if block"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let if_expr = match &block.stmts.first().expect("expected if statement").value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected if expression, got {:?}", other),
+        };
+        let then_block = match &if_expr.then.value {
+            Expr::Block(block) => block,
+            other => panic!("expected block expression, got {:?}", other),
+        };
+        assert!(
+            then_block.stmts.is_empty(),
+            "expected placeholder empty block"
+        );
+    }
+
+    #[test]
+    fn recovers_for_without_pattern() {
+        let source = r#"
+fn main() {
+    for in [1] {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for missing for pattern"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let for_expr = match &block.stmts.first().expect("expected for statement").value {
+            Expr::For(for_expr) => for_expr,
+            other => panic!("expected for expression, got {:?}", other),
+        };
+        let pat = match &for_expr.pat.value {
+            Pattern::Name(name) => name,
+            other => panic!("expected placeholder name pattern, got {:?}", other),
+        };
+        assert_eq!(format!("{}", pat.path), "_");
+    }
+
+    #[test]
+    fn recovers_for_without_iterable() {
+        let source = r#"
+fn main() {
+    for x in
+    {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for missing for iterable"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let for_expr = match &block.stmts.first().expect("expected for statement").value {
+            Expr::For(for_expr) => for_expr,
+            other => panic!("expected for expression, got {:?}", other),
+        };
+        assert!(
+            matches!(for_expr.expr.value, Expr::Block(_)),
+            "expected block iterable expression"
+        );
+    }
+
+    #[test]
+    fn recovers_for_without_body() {
+        let source = r#"
+fn main() {
+    for x in [1]
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for missing for body"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let for_expr = match &block.stmts.first().expect("expected for statement").value {
+            Expr::For(for_expr) => for_expr,
+            other => panic!("expected for expression, got {:?}", other),
+        };
+        let body_block = match &for_expr.body.value {
+            Expr::Block(block) => block,
+            other => panic!("expected block expression, got {:?}", other),
+        };
+        assert!(
+            body_block.stmts.is_empty(),
+            "expected placeholder empty for body"
+        );
+    }
+
+    #[test]
+    fn recovers_while_with_incomplete_condition() {
+        let source = r#"
+fn main() {
+    while (
+    {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for incomplete while condition"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        dbg!(block);
+        let while_expr = match &block.stmts.first().expect("expected while statement").value {
+            Expr::While(while_expr) => while_expr,
+            other => panic!("expected while expression, got {:?}", other),
+        };
+        assert!(
+            matches!(while_expr.cond.value, Expr::Literal(Literal::Unit)),
+            "expected placeholder condition expression"
+        );
+    }
+
+    #[test]
+    fn recovers_while_without_body() {
+        let source = r#"
+fn main() {
+    while true
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for missing while body"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        dbg!(block);
+        let while_expr = match &block.stmts.first().expect("expected while statement").value {
+            Expr::While(while_expr) => while_expr,
+            other => panic!("expected while expression, got {:?}", other),
+        };
+        let body_block = match &while_expr.body.value {
+            Expr::Block(block) => block,
+            other => panic!("expected block expression, got {:?}", other),
+        };
+        assert!(
+            body_block.stmts.is_empty(),
+            "expected placeholder empty while body"
+        );
+    }
+
+    #[test]
+    fn recovers_loop_without_body() {
+        let source = r#"
+fn main() {
+    loop
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for missing loop body"
+        );
+        assert!(
+            !file.decls.is_empty(),
+            "expected function declaration, errors: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let loop_expr = match &block.stmts.first().expect("expected loop statement").value {
+            Expr::Loop(loop_expr) => loop_expr,
+            other => panic!("expected loop expression, got {:?}", other),
+        };
+        let body_block = match &loop_expr.body.value {
+            Expr::Block(block) => block,
+            other => panic!("expected block expression, got {:?}", other),
+        };
+        assert!(
+            body_block.stmts.is_empty(),
+            "expected placeholder empty loop body"
+        );
     }
 }

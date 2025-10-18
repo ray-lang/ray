@@ -81,12 +81,28 @@ impl Parser<'_> {
             let mut tys = Vec::new();
             let lb_span = self.expect_sp(TokenKind::LeftBracket)?;
             loop {
-                tys.push(self.parse_ty()?.map(|ty| ty.into_mono()));
+                match self.parse_ty() {
+                    Ok(ty) => tys.push(ty.map(|ty| ty.into_mono())),
+                    Err(err) => {
+                        self.record_parse_error(err);
+                        self.recover_after_sequence_error(Some(&TokenKind::RightBracket));
+                        if peek!(self, TokenKind::RightBracket) || self.is_eof() {
+                            break;
+                        }
+                    }
+                }
+
                 if peek!(self, TokenKind::RightBracket) {
                     break;
                 }
 
-                self.expect(TokenKind::Comma)?;
+                if let Err(err) = self.expect(TokenKind::Comma) {
+                    self.record_parse_error(err);
+                    self.recover_after_sequence_error(Some(&TokenKind::RightBracket));
+                    if peek!(self, TokenKind::RightBracket) || self.is_eof() {
+                        break;
+                    }
+                }
             }
 
             let rb_span = self.expect_sp(TokenKind::RightBracket)?;
