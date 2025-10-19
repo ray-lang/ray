@@ -1,7 +1,7 @@
 use std::ops::Add;
 
 use crate::{
-    typing::{info::TypeSystemInfo, traits::TreeWalk},
+    typing::traits::TreeWalk,
     utils::replace,
 };
 

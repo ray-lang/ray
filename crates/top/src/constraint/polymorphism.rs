@@ -4,7 +4,7 @@ use crate::{
     interface::{
         basic::HasBasic, qualification::HasQual, subst::HasSubst, type_inference::HasTypeInference,
     },
-    types::{Predicate, ShowQuantors, Sigma, Subst, Substitutable, Ty},
+    types::{ShowQuantors, Sigma, Subst, Substitutable, Ty},
     util::Join,
     SigmaPredicates, TyVar,
 };

@@ -6,10 +6,10 @@ use std::{
 use itertools::Itertools;
 
 use crate::{
-    ast::{Assign, Expr, Func, FuncSig, Name, Node, Path, TypeParams},
+    ast::{Assign, Func, FuncSig, Name, Node, Path, TypeParams},
     span::parsed::Parsed,
     strutils,
-    typing::ty::{SigmaTy, Ty, TyScheme},
+    typing::ty::{Ty, TyScheme},
     utils::join,
 };
 

@@ -246,13 +246,9 @@ impl TyVarFactory {
         }
     }
 
-    pub fn with_scope(&mut self, scope: &Path) -> TyVar {
+    pub fn with_scope(&mut self, _: &Path) -> TyVar {
         let v = self.value;
         self.value += 1;
-        // if v == 46 {
-        //     panic!("v = 46")
-        // }
-        // let path = scope.append(format!("{}{}", self.prefix, v));
         let path = Path::from(format!("{}{}", self.prefix, v));
         TyVar(path)
     }

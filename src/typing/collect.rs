@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::{
     ast::{Node, Path},
@@ -18,8 +18,7 @@ use super::{
         EqConstraint,
         tree::{AttachTree, ConstraintTree, NodeTree, ReceiverTree},
     },
-    state::{Env, SchemeEnv, SigmaEnv, TyEnv},
-    ty::SigmaTy,
+    state::{Env, SchemeEnv, TyEnv},
 };
 
 pub struct CollectCtx<'a> {

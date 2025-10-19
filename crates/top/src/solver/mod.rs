@@ -1,7 +1,5 @@
 use std::{
-    collections::HashMap,
     fmt::{Debug, Display},
-    hash::Hash,
     marker::PhantomData,
 };
 

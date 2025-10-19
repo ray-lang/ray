@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::TyVar;
 
-use super::{Qualification, Subst, Substitutable, Ty};
+use super::{Subst, Substitutable, Ty};
 
 #[derive(Debug, Clone)]
 pub struct ShowQuantorOptions {

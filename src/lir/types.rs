@@ -8,7 +8,7 @@ use top::{Subst, Substitutable};
 use crate::{
     ast::{self, Modifier, Node, Path, asm::AsmOp},
     convert::ToSet,
-    span::{Source, Span},
+    span::Source,
     strutils::indent_lines,
     typing::ty::{Ty, TyScheme, TyVar},
     utils::{join, map_join},
@@ -717,7 +717,7 @@ impl Substitutable<TyVar, Ty> for Inst {
                 s.apply_subst(subst);
                 z.apply_subst(subst);
             }
-            Inst::IncRef(v, i) => v.apply_subst(subst),
+            Inst::IncRef(v, _) => v.apply_subst(subst),
             Inst::DecRef(v) => v.apply_subst(subst),
             Inst::Return(v) => v.apply_subst(subst),
             Inst::Break(b) => b.apply_subst(subst),
@@ -739,7 +739,7 @@ impl Substitutable<TyVar, Ty> for Inst {
                 s.apply_subst_all(subst);
                 z.apply_subst_all(subst);
             }
-            Inst::IncRef(v, i) => v.apply_subst_all(subst),
+            Inst::IncRef(v, _) => v.apply_subst_all(subst),
             Inst::DecRef(v) => v.apply_subst_all(subst),
             Inst::Return(v) => v.apply_subst_all(subst),
             Inst::Break(b) => b.apply_subst_all(subst),
@@ -977,8 +977,9 @@ pub struct Program {
     pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
     pub poly_fn_map: HashMap<Path, usize>,
-    pub start_idx: i64,     // index in Funcs for _start
-    pub user_main_idx: i64, // index in Funcs for user main
+    pub start_idx: i64,       // index in Funcs for _start
+    pub module_main_idx: i64, // index in Funcs for module main
+    pub user_main_idx: i64,   // index in Funcs for user main
 }
 
 impl Display for Program {
@@ -1035,6 +1036,7 @@ impl Program {
             extern_map: HashMap::new(),
             trait_member_set: HashSet::new(),
             start_idx: -1,
+            module_main_idx: -1,
             user_main_idx: -1,
         }
     }
@@ -2022,7 +2024,7 @@ impl Substitutable<TyVar, Ty> for Phi {
         /* do nothing */
     }
 
-    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+    fn apply_subst_all(&mut self, _: &Subst<TyVar, Ty>) {
         /* do nothing */
     }
 }

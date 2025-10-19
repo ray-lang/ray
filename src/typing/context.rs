@@ -11,7 +11,7 @@ use top::{Predicates, Subst, Substitutable};
 
 use crate::{
     ast::{FuncSig, Node, Path},
-    collections::nametree::{NameTree, Scope},
+    collections::nametree::Scope,
     errors::RayError,
     pathlib::FilePath,
     sema::NameContext,
@@ -458,7 +458,7 @@ impl TyCtx {
         })
     }
 
-    pub fn add_trait_ty(&mut self, name: String, trait_ty: TraitTy) {
+    pub fn add_trait_ty(&mut self, trait_ty: TraitTy) {
         self.traits.insert(trait_ty.path.clone(), trait_ty);
     }
 
@@ -486,7 +486,7 @@ impl TyCtx {
             .unwrap_or_default()
     }
 
-    pub fn tf(&mut self) -> RefMut<TyVarFactory> {
+    pub fn tf(&mut self) -> RefMut<'_, TyVarFactory> {
         self.tf.borrow_mut()
     }
 

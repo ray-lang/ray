@@ -47,30 +47,6 @@ fn probe_wasi_target() -> Result<String, String> {
 }
 
 fn main() {
-    // --- DEBUG: show exactly which tools the build script will use
-    let rustc = rustc_cmd();
-    let cargo = cargo_cmd();
-    println!("cargo:warning=build.rs using RUSTC: {}", rustc);
-    println!("cargo:warning=build.rs using CARGO: {}", cargo);
-
-    let ver = std::process::Command::new(&rustc)
-        .arg("-Vv")
-        .output()
-        .expect("rustc -Vv failed");
-    println!(
-        "cargo:warning=rustc -Vv:\n{}",
-        String::from_utf8_lossy(&ver.stdout)
-    );
-
-    let tgt = std::process::Command::new(&rustc)
-        .args(&["--print", "target-list"])
-        .output()
-        .expect("rustc --print target-list failed");
-    println!(
-        "cargo:warning=rustc targets:\n{}",
-        String::from_utf8_lossy(&tgt.stdout)
-    );
-
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let project_dir = Path::new(&manifest_dir);
     let wasi_target = probe_wasi_target().expect("Failed to find a supported WASI target");

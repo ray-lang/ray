@@ -1,18 +1,12 @@
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-    hash::Hash,
-    marker::PhantomData,
-    str::FromStr,
-};
+use std::fmt::{Debug, Display};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{Predicates, TyVar};
 
 use super::{
-    mgu_with_synonyms, ClassEnv, Entailment, ForAll, OrderedTypeSynonyms, Predicate, Qualification,
-    ShowQualifiers, ShowQuantorOptions, ShowQuantors, Subst, Substitutable, Ty,
+    ForAll, Qualification, ShowQualifiers, ShowQuantorOptions, ShowQuantors, Subst, Substitutable,
+    Ty,
 };
 
 // pub type QualifiedTy<T, V> = Qualification<Predicates<T, V>, T>;

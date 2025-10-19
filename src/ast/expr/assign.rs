@@ -1,7 +1,6 @@
-use std::ops::Deref;
 
 use crate::{
-    ast::{Expr, InfixOp, Node, Path, Pattern},
+    ast::{Expr, InfixOp, Node, Pattern},
     span::Span,
 };
 

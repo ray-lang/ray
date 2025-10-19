@@ -1,16 +1,12 @@
 use std::fmt::Debug;
 
-use top::{Subst, Substitutable};
 
 use crate::{
     ast::{Node, Path},
     collections::nametree::Scope,
     pathlib::FilePath,
     strutils,
-    typing::{
-        state::TyEnv,
-        ty::{Ty, TyVar},
-    },
+    typing::state::TyEnv,
 };
 
 use super::{Decl, Expr, Import};

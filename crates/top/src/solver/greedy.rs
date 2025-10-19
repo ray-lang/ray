@@ -9,7 +9,6 @@ use crate::{
     interface::{
         basic::HasBasic,
         qualification::HasQual,
-        subst::HasSubst,
         type_inference::{HasTypeInference, TypeInferState},
     },
     state::{BasicState, HasState, OverloadingState, SimpleState},

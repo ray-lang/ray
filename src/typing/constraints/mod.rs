@@ -17,9 +17,6 @@ mod list;
 mod satisfiable;
 pub mod tree;
 
-pub use list::*;
-pub use satisfiable::*;
-
 pub type Constraint = top::Constraint<TypeSystemInfo, Ty, TyVar>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -127,15 +124,6 @@ impl SkolConstraint {
         }
 
         cl
-    }
-}
-
-pub struct ImplicitConstraint;
-
-impl ImplicitConstraint {
-    pub fn new(vs: Vec<TyVar>, t: Ty, u: Ty) -> Constraint {
-        // Constraint::new(ImplicitConstraint(vs, t, u))
-        todo!()
     }
 }
 

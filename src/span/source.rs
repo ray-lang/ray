@@ -123,7 +123,7 @@ impl SourceMap {
     }
 
     pub fn respan<T>(&mut self, node: &Node<T>, span: Span) {
-        let mut src = self.map.get_mut(&node.id).unwrap();
+        let src = self.map.get_mut(&node.id).unwrap();
         src.span = Some(span);
     }
 

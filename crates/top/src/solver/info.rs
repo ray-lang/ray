@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, hash::Hash};
+use std::{collections::HashMap, fmt::Display};
 
 use crate::{
     constraint::{InfoDetail, PolyTypeConstraintInfo, TypeConstraintInfo},
@@ -140,7 +140,7 @@ impl TopInfo {
         self.info.get(l).map(|s| s.as_str())
     }
 
-    pub fn iter(&self) -> std::collections::hash_map::Iter<String, String> {
+    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, String, String> {
         self.info.iter()
     }
 }

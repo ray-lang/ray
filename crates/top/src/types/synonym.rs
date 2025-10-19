@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display},
+    fmt::Debug,
     marker::PhantomData,
     ops::{Deref, DerefMut},
-    str::FromStr,
 };
 
 use crate::TyVar;
 
-use super::{mgu_with_synonyms, Predicate, Subst, Substitutable, Ty};
+use super::Ty;
 
 #[derive(Default)]
 pub struct TypeSynonyms<T, V>(
@@ -87,20 +86,16 @@ where
     }
 
     fn expand_tc(&self, ty: T) -> Option<T> {
-        match ty.left_spine() {
-            (left, args) => {
-                left.maybe_const()
-                    .and_then(|name| self.get(name))
-                    .and_then(move |(arity, f)| {
-                        if args.len() == *arity {
-                            Some(f(args))
-                        } else {
-                            None
-                        }
-                    })
-            }
-            _ => Some(ty),
-        }
+        let (left, args) = ty.left_spine();
+        left.maybe_const()
+            .and_then(|name| self.get(name))
+            .and_then(move |(arity, f)| {
+                if args.len() == *arity {
+                    Some(f(args))
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn is_phantom_synonym(&self, name: &str) -> bool {

@@ -6,7 +6,7 @@ use std::{
 use crate::{
     constraint::InfoDetail,
     interface::{basic::HasBasic, subst::HasSubst, type_inference::HasTypeInference},
-    types::{mgu_with_synonyms, Subst, Substitutable, Ty},
+    types::{mgu_with_synonyms, Subst, Ty},
     TyVar,
 };
 

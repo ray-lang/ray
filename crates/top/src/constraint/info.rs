@@ -1,5 +1,3 @@
-use std::hash::Hash;
-
 use crate::{
     types::{Predicate, Scheme, Ty},
     Predicates, TyVar,

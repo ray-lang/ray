@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet},
     fmt::Display,
     hash::Hash,
     ops::{BitOr, Deref, DerefMut},
@@ -10,15 +9,14 @@ use serde::{Deserialize, Serialize};
 use top::{Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective};
 
 use crate::{
-    ast::{self, FuncSig, Path, TraitDirective},
+    ast::{self, FuncSig, Path},
     collections::nametree::Scope,
-    convert::ToSet,
     errors::{RayError, RayErrorKind},
     lir::Size,
     pathlib::FilePath,
     sema::NameContext,
     span::{Source, SourceMap},
-    utils::{DrainInPlace, join, replace},
+    utils::{join, replace},
 };
 
 use super::{
@@ -896,8 +894,8 @@ impl top::Ty<TyVar> for Ty {
 
     fn eq_with_synonyms(
         &self,
-        other: &Self,
-        synonyms: &top::OrderedTypeSynonyms<Self, TyVar>,
+        _: &Self,
+        _: &top::OrderedTypeSynonyms<Self, TyVar>,
     ) -> Option<Self> {
         todo!()
     }

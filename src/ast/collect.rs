@@ -1,7 +1,6 @@
-use std::{collections::HashSet, iter::Peekable, ops::Deref};
+use std::{collections::HashSet, ops::Deref};
 
 use ast::Module;
-use itertools::Itertools;
 use top::{Predicate, Substitutable};
 
 use crate::{
@@ -13,11 +12,11 @@ use crate::{
         binding::{BindingGroup, BindingGroupAnalysis},
         collect::{CollectConstraints, CollectCtx, CollectDeclarations, CollectPatterns},
         constraints::{
-            EqConstraint, InstConstraint, ProveConstraint, SkolConstraint,
+            EqConstraint, InstConstraint, ProveConstraint,
             tree::{AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree},
         },
         state::{Env, SchemeEnv, SigmaEnv, TyEnv},
-        ty::{LiteralKind, SigmaTy, Ty, TyScheme, TyVar},
+        ty::{SigmaTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -61,13 +60,13 @@ impl CollectDeclarations for Node<Decl> {
                 // B = (∅,∅,•) Σ = [x1 :σ,...,xn :σ]
                 let mut env = SchemeEnv::new();
                 let (fqn, ty_scheme) = match ext.decl() {
-                    Decl::Mutable(n) => {
+                    Decl::Mutable(_) => {
                         todo!()
                         // let ty = n.ty.as_deref().unwrap().clone();
                         // let fqn = n.path.clone();
                         // (fqn, ty)
                     }
-                    Decl::Name(n) => {
+                    Decl::Name(_) => {
                         todo!()
                         // let ty = n.ty.as_deref().unwrap().clone();
                         // let fqn = n.path.clone();
@@ -398,7 +397,7 @@ impl CollectConstraints for Node<Expr> {
         ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let src = &ctx.srcmap.get(self);
-        if let Expr::TypeAnnotated(ex, ty) = &self.value {
+        if let Expr::TypeAnnotated(_, _) = &self.value {
             todo!()
             // let anno_ty = ty.deref().deref().clone();
             // let (ty, aset, ctree) = ex.collect_constraints(ctx);
@@ -458,7 +457,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::Unsafe(_) => todo!(),
             Expr::While(ex) => (ex, src).collect_constraints(ctx),
             Expr::Missing(_) => todo!(),
-            Expr::TypeAnnotated(ex, ty) => {
+            Expr::TypeAnnotated(_, _) => {
                 unreachable!("handled above")
             }
         };
@@ -1290,11 +1289,9 @@ mod tests {
 
     use crate::{
         ast::Path,
-        errors::{RayError, RayErrorKind},
+        errors::RayError,
         sema::ModuleBuilder,
-        span::SourceMap,
         typing::{
-            InferSystem,
             bound_names::BoundNames,
             collect::{CollectConstraints, CollectCtx},
             constraints::tree::BottomUpWalk,

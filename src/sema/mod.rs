@@ -8,4 +8,3 @@ pub use mangle::*;
 pub use modules::*;
 pub use monomorphize::*;
 pub use nameresolve::*;
-pub use ty::*;

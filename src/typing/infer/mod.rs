@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use top::{
     Class, Instance, Predicate, Predicates, Substitutable,
@@ -20,8 +20,6 @@ use super::{
     state::SchemeEnv,
     ty::{Ty, TyVar},
 };
-
-pub(crate) mod solution;
 
 #[derive(Debug)]
 pub struct InferSystem<'a> {

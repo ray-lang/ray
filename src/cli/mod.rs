@@ -142,7 +142,7 @@ pub fn run() {
                 let mut file = File::create(format!("profile-{}.pb", d))?;
                 let mut content = Vec::new();
                 let profile = report.pprof()?;
-                profile.encode(&mut content)?;
+                profile.write_to_vec(&mut content)?;
                 file.write_all(&content)?;
 
                 let file = File::create(format!("flamegraph-{}.svg", d))?;

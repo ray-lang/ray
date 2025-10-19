@@ -1,6 +1,6 @@
 use crate::{
     ast::Path,
-    typing::ty::{Ty, TyScheme},
+    typing::ty::TyScheme,
     utils::map_join,
 };
 

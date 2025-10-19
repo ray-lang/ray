@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
 
-use top::{ForAll, Subst, Substitutable, mgu, solver::SolveResult};
+use top::{Subst, Substitutable, mgu};
 
 use crate::{
     ast::{
@@ -14,17 +14,15 @@ use crate::{
     span::SourceMap,
     typing::{
         TyCtx,
-        info::TypeSystemInfo,
-        ty::{SigmaTy, Ty, TyScheme, TyVar},
+        ty::{Ty, TyScheme, TyVar},
     },
 };
 
-use super::{RAY_MAIN_FUNCTION, START_FUNCTION};
+use super::START_FUNCTION;
 
 impl lir::Program {
     pub fn generate(
         module: &Module<(), Decl>,
-        solution: &SolveResult<TypeSystemInfo, Ty, TyVar>,
         tcx: &TyCtx,
         srcmap: &SourceMap,
         libs: Vec<lir::Program>,
@@ -171,6 +169,8 @@ impl lir::Program {
                 self.start_idx = i as i64;
             } else if f.name == user_main_path {
                 self.user_main_idx = i as i64;
+            } else if f.name == module_main_path {
+                self.module_main_idx = i as i64;
             }
 
             if f.ty.is_polymorphic() {
@@ -204,7 +204,6 @@ where
 pub struct GenCtx<'a> {
     prog: Rc<RefCell<lir::Program>>,
     builder: Option<lir::Builder>,
-    fn_idx: HashMap<String, usize>,
     data_idx: HashMap<Vec<u8>, usize>,
     global_idx: HashMap<String, usize>,
     pub(crate) srcmap: &'a SourceMap,
@@ -230,7 +229,6 @@ impl<'a> GenCtx<'a> {
         GenCtx {
             prog,
             builder: None,
-            fn_idx: HashMap::new(),
             data_idx: HashMap::new(),
             global_idx: HashMap::new(),
             srcmap,
@@ -771,9 +769,14 @@ impl LirGen<GenResult> for UnaryOp {
         log::debug!("trait_fqn: {}", trait_fqn);
         log::debug!("func_fqn: {}", func_fqn);
 
-        let (expr, ty) = (self.expr.as_ref(), ctx.ty_of(tcx, self.expr.id));
-
-        ctx.call_from_op(&mut func_fqn, &trait_fqn, &self.op, &[expr], &fn_ty, tcx)
+        ctx.call_from_op(
+            &mut func_fqn,
+            &trait_fqn,
+            &self.op,
+            &[self.expr.as_ref()],
+            &fn_ty,
+            tcx,
+        )
     }
 }
 

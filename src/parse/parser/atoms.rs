@@ -128,7 +128,6 @@ impl Parser<'_> {
         let span = Span { start, end };
         let pattern = if seq.items.len() == 1 && !seq.trailing {
             let item = seq.items.pop().unwrap();
-            let src = self.mk_src(span);
             match item.value {
                 Expr::Name(n) => Pattern::Name(n),
                 _ => unreachable!(),

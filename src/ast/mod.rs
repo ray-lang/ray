@@ -9,7 +9,6 @@ mod path;
 
 pub mod asm;
 pub mod token;
-pub mod visitor;
 
 pub use expr::*;
 pub use file::*;

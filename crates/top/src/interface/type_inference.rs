@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Display};
 use crate::{
     constraint::TypeConstraintInfo,
     state::HasState,
-    types::{ForAll, OrderedTypeSynonyms, Predicate, Scheme, Sigma, Substitutable, Ty},
+    types::{ForAll, OrderedTypeSynonyms, Scheme, Sigma, Substitutable, Ty},
     Predicates, SigmaPredicates, Subst, TyVar,
 };
 

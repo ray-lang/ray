@@ -45,12 +45,6 @@ struct ResolvedImport {
     named_path: Option<ast::Path>,
 }
 
-impl ResolvedImport {
-    pub fn name(&self) -> Option<ast::Path> {
-        todo!()
-    }
-}
-
 #[derive(Debug)]
 pub struct ModuleBuilder<'a, A, B>
 where
@@ -94,7 +88,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         self.errors
     }
 
-    pub fn finish(mut self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
+    pub fn finish(self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
         if !self.errors.is_empty() {
             return Err(self.errors);
         }

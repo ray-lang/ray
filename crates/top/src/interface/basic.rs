@@ -1,5 +1,3 @@
-use std::hash::Hash;
-
 use crate::{constraint::Constraint, Ty, TyVar};
 
 pub trait HasBasic<I, T, V>

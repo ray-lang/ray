@@ -10,7 +10,7 @@ use crate::{
         token::{Token, TokenKind},
     },
     span::{Span, parsed::Parsed},
-    typing::ty::{SigmaTy, Ty, TyScheme},
+    typing::ty::TyScheme,
 };
 
 impl Parser<'_> {

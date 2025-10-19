@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use lir::SymbolSet;
 
@@ -28,10 +28,6 @@ pub(self) fn collect_symbols(
             }
         }
     }
-}
-
-trait GetLocals {
-    fn get_locals(&self) -> HashSet<u32>;
 }
 
 trait Codegen<Ctx> {

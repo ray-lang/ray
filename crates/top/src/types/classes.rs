@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{mgu_ref_slices, mgu_slices, TyVar};
+use crate::{mgu_ref_slices, TyVar};
 
 use super::{mgu_with_synonyms, OrderedTypeSynonyms, ShowQualifiers, Subst, Substitutable, Ty};
 

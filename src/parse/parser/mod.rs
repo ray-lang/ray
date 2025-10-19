@@ -18,7 +18,7 @@ use std::{fs, io, mem};
 
 use crate::{
     ast::{
-        Block, Decl, Decorator, Expr, File, Import, Missing, Name, Node, Path, Pattern, ValueKind,
+        Decl, Decorator, Expr, File, Import, Missing, Node, Path, Pattern, ValueKind,
         token::{CommentKind, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
@@ -145,13 +145,6 @@ impl<T> ParseDiagnostics<T> {
             errors: vec![err],
         }
     }
-}
-
-#[derive(Debug)]
-pub struct StatementParseOptions {
-    is_top_level: bool,
-    only_functions: bool,
-    allow_externs: bool,
 }
 
 struct Items {
@@ -1408,10 +1401,7 @@ struct Foo {
 }
 "#;
         let (file, errors) = parse_source(source);
-        assert!(
-            !errors.is_empty(),
-            "expected errors for tuple type element"
-        );
+        assert!(!errors.is_empty(), "expected errors for tuple type element");
         let decl = file
             .decls
             .first()

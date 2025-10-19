@@ -25,11 +25,11 @@ lld = { path = "./crates/lld" }
 log = "0.4"
 parity-wasm = { git = "https://github.com/ray-lang/parity-wasm", features = ["bulk"] }
 petgraph = { version = "0.5.1", features = ["serde-1"] }
-pprof = { version = "0.3", features = ["protobuf", "flamegraph"] }
+pprof = { version = "0.15.0", features = ["protobuf-codec", "flamegraph"] }
 rand = "0.8"
 ray_tyinf = { path = "./crates/ray_tyinf" }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_derive = "1.0.228"
 structopt = "0.3"
 top = { path = "./crates/top" }
-wasmer = "1.0"
 xxhash-rust = { version = "0.8.2", features = ["xxh3"] }

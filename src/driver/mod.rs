@@ -2,12 +2,11 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     env, fs,
-    ops::Deref,
     path::PathBuf,
 };
 
 use itertools::Itertools;
-use top::{Subst, Substitutable, solver::SolveResult};
+use top::{Subst, Substitutable};
 
 use crate::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Path, Pattern},
@@ -17,12 +16,9 @@ use crate::{
     pathlib::FilePath,
     sema,
     span::{SourceMap, Span},
-    transform,
     typing::{
         InferSystem, TyCtx,
-        check::TypeCheckSystem,
-        info::TypeSystemInfo,
-        state::{Env, SchemeEnv},
+        state::SchemeEnv,
         ty::{Ty, TyScheme, TyVar},
     },
 };
@@ -45,7 +41,6 @@ struct FrontendResult {
     defs: SchemeEnv,
     libs: Vec<lir::Program>,
     paths: HashSet<Path>,
-    solution: SolveResult<TypeSystemInfo, Ty, TyVar>,
     definitions: HashMap<String, libgen::DefinitionRecord>,
 }
 
@@ -319,7 +314,6 @@ impl Driver {
             defs,
             libs: result.libs,
             paths: result.paths,
-            solution,
             definitions: result.definitions,
         })
     }
@@ -351,11 +345,10 @@ impl Driver {
             defs,
             libs,
             paths: module_paths,
-            solution,
             definitions: _,
         } = frontend;
 
-        let mut program = lir::Program::generate(&module, &solution, &tcx, &srcmap, libs)?;
+        let mut program = lir::Program::generate(&module, &tcx, &srcmap, libs)?;
         log::debug!("{}", program);
 
         let output_path = |ext| {

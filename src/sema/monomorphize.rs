@@ -1,26 +1,22 @@
 use std::{
-    borrow::{BorrowMut, Cow},
-    cell::{RefCell, RefMut},
+    cell::RefCell,
     collections::{HashMap, HashSet},
-    ops::DerefMut,
     rc::Rc,
 };
 
-use lir::IterCalls;
-use top::{Subst, Substitutable, mgu, util::Join};
+use top::{Substitutable, mgu, util::Join};
 
 use crate::{
     ast::{Node, Path},
     convert::ToSet,
-    lir::{self, GetLocals, NamedInst},
+    lir::{self, NamedInst},
     sema,
-    typing::ty::{Ty, TyScheme, TyVar},
+    typing::ty::{Ty, TyScheme},
 };
 
 #[derive(Debug)]
 enum PolyValue<'a> {
     Call(&'a mut lir::Call),
-    Global(usize),
 }
 
 #[derive(Debug)]
@@ -36,7 +32,6 @@ pub struct Monomorphizer<'p> {
     extern_set: HashSet<Path>,
     name_set: HashSet<Path>,
     poly_fn_map: HashMap<Path, Node<lir::Func>>, // polymorphic functions
-    poly_global_map: HashMap<usize, lir::Global>, // polymorphic globals
     poly_mono_fn_idx: HashMap<Path, Vec<(Path, Ty)>>, // a mapping of polymorphic functions to monomorphizations
     mono_poly_fn_idx: HashMap<Path, Path>, // a mapping of monomorphic functions to their polymorphic counterpart
     mono_fn_ty_map: HashMap<Path, Ty>,     // map of all monomorphic function types
@@ -51,8 +46,6 @@ impl<'p> Monomorphizer<'p> {
             .map(|(n, &i)| (n.clone(), program.funcs[i].clone()))
             .collect();
 
-        let poly_global_map = program.globals.iter().map(|g| (g.idx, g.clone())).collect();
-
         let name_set = program.funcs.iter().map(|f| f.name.clone()).collect();
         log::debug!("name set: {:#?}", name_set);
         let mut extern_set = program.extern_map.keys().cloned().to_set();
@@ -60,7 +53,6 @@ impl<'p> Monomorphizer<'p> {
         Monomorphizer {
             program: Rc::new(RefCell::new(program)),
             poly_fn_map,
-            poly_global_map,
             name_set,
             extern_set,
             poly_mono_fn_idx: HashMap::new(),
@@ -104,12 +96,6 @@ impl<'p> Monomorphizer<'p> {
         let mut funcs = vec![];
         let rc_prog = Rc::clone(&self.program);
         let mut prog = RefCell::borrow_mut(&rc_prog);
-
-        // for global in prog.globals.iter_mut() {
-        //     if global.ty.is_polymorphic() {
-        //         self.monomorphize_value(&mut global.init_value, &mut global.ty);
-        //     }
-        // }
 
         // monomorphize polymorphic functions that are called from non-polymorphic functions
         for func in prog.funcs.iter_mut() {
@@ -183,11 +169,6 @@ impl<'p> Monomorphizer<'p> {
                 funcs,
                 globals,
             )),
-            PolyValue::Global(_) => {
-                todo!()
-                // self.monomorphize_global_ref(*global, &mut poly_ref.callee_ty, globals);
-                // None
-            }
         }
     }
 
@@ -355,48 +336,6 @@ impl<'p> Monomorphizer<'p> {
             .insert(poly_name.clone(), mono_name.clone());
         self.add_mono_fn_mapping(&poly_name, &mono_name, mono_ty.into_mono());
         (poly_name, mono_name)
-    }
-
-    fn monomorphize_global_ref(
-        &mut self,
-        global: usize,
-        ty: &mut Ty,
-        globals: &mut Vec<lir::Global>,
-    ) {
-        todo!()
-        // let subst = apply_trait_defaults(ty);
-        // if ty.is_polymorphic() {
-        //     panic!(
-        //         "cannot monomorphize value where the type is polymorphic: {}",
-        //         ty
-        //     );
-        // }
-
-        // let mut global = self
-        //     .poly_global_map
-        //     .get(&global)
-        //     .cloned()
-        //     .expect("global is not defined");
-        // if let Some(subst) = subst {
-        //     global.apply_subst_mut(&subst);
-        // }
-
-        // globals.push(global);
-    }
-
-    fn monomorphize_value(&mut self, value: &mut lir::Value, poly_ty: &mut Ty) {
-        todo!()
-        // let subst = apply_trait_defaults(poly_ty);
-        // if poly_ty.is_polymorphic() {
-        //     panic!(
-        //         "cannot monomorphize value where the type is polymorphic: {}",
-        //         poly_ty
-        //     );
-        // }
-
-        // if let Some(subst) = subst {
-        //     value.apply_subst_mut(&subst);
-        // }
     }
 
     fn collect<'a, T>(&self, insts: T, poly_refs: &mut Vec<PolyRef<'a>>)

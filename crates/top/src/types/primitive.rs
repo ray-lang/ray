@@ -1,13 +1,10 @@
 use std::{
     fmt::{Debug, Display},
     hash::Hash,
-    ops::Deref,
     str::FromStr,
 };
 
-use crate::util::Join;
-
-use super::{HasTypes, OrderedTypeSynonyms, Subst, Substitutable};
+use super::{OrderedTypeSynonyms, Substitutable};
 
 pub trait TyVar: Display + Debug + Clone + Hash + Eq + Ord + FromStr {
     fn from_u32(u: u32) -> Self;

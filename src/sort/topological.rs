@@ -18,17 +18,6 @@
 #![warn(unused_import_braces)]
 #![warn(unused_qualifications)]
 #![warn(unused_results)]
-#![cfg_attr(feature = "cargo-clippy", warn(if_not_else))]
-#![cfg_attr(feature = "cargo-clippy", warn(invalid_upcast_comparisons))]
-#![cfg_attr(feature = "cargo-clippy", warn(items_after_statements))]
-#![cfg_attr(feature = "cargo-clippy", warn(mut_mut))]
-#![cfg_attr(feature = "cargo-clippy", warn(never_loop))]
-#![cfg_attr(feature = "cargo-clippy", warn(nonminimal_bool))]
-#![cfg_attr(feature = "cargo-clippy", warn(option_map_unwrap_or))]
-#![cfg_attr(feature = "cargo-clippy", warn(option_map_unwrap_or_else))]
-#![cfg_attr(feature = "cargo-clippy", warn(option_unwrap_used))]
-#![cfg_attr(feature = "cargo-clippy", warn(result_unwrap_used))]
-#![cfg_attr(feature = "cargo-clippy", warn(used_underscore_binding))]
 
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;

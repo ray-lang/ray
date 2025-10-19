@@ -1,17 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use itertools::Itertools;
 use top::Substitutable;
 
 use crate::{
-    ast::Path,
     convert::ToSet,
-    sort::{SortByIndexSlice, topological::TopologicalSort},
+    sort::SortByIndexSlice,
     span::Source,
-    typing::{
-        state::SchemeEnv,
-        ty::{SigmaTy, Ty, TyVar},
-    },
+    typing::ty::{SigmaTy, Ty, TyVar},
 };
 
 use super::{
@@ -21,7 +17,7 @@ use super::{
         tree::{ConstraintTree, NodeTree, StrictTree},
     },
     info::TypeSystemInfo,
-    state::{Env, SigmaEnv, TyEnv, TyVarFactory},
+    state::{SigmaEnv, TyEnv, TyVarFactory},
     // traits::HasFreeVars,
 };
 
@@ -128,16 +124,9 @@ impl<'a> BindingGroupAnalysis<'a> {
         let mut mono_tys = self.mono_tys.clone();
         let mut aset = AssumptionSet::new();
         let mut ctree = ConstraintTree::empty();
-        let mut defs = SchemeEnv::new();
         while let Some(g) = self.groups.pop() {
-            let (new_m, new_a, new_t) = g.combine_with(
-                &mono_tys,
-                aset,
-                ctree,
-                self.sigs,
-                self.svar_factory,
-                &mut defs,
-            );
+            let (new_m, new_a, new_t) =
+                g.combine_with(&mono_tys, aset, ctree, self.sigs, self.svar_factory);
             mono_tys = new_m;
             aset = new_a;
             ctree = new_t;
@@ -250,7 +239,6 @@ impl BindingGroup {
         rhs_tree: ConstraintTree,
         sigs: &SigmaEnv,
         svar_factory: &mut TyVarFactory,
-        defs: &mut SchemeEnv,
     ) -> (HashSet<TyVar>, AssumptionSet, ConstraintTree) {
         let info = self.info.clone();
         let env = self.env;

@@ -140,7 +140,7 @@ impl Parser<'_> {
 
     fn parse_ptr_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let start = self.expect_start(TokenKind::Asterisk)?;
-        let mut ptee_ty = self.parse_type_annotation(None);
+        let ptee_ty = self.parse_type_annotation(None);
         let end = ptee_ty.span().unwrap().end;
         Ok(Parsed::new(
             TyScheme::from_mono(Ty::ptr(ptee_ty.take_value().into_mono())),
@@ -254,7 +254,7 @@ impl Parser<'_> {
         let mut end = params.span().unwrap().end;
         let ret_ty = Box::new(if peek!(self, TokenKind::Arrow) {
             self.expect_end(TokenKind::Arrow)?;
-            let mut ty = self.parse_type_annotation(None);
+            let ty = self.parse_type_annotation(None);
             end = ty.span().unwrap().end;
             ty.take_value().into_mono()
         } else {

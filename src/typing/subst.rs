@@ -1,12 +1,5 @@
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    iter::FromIterator,
-    ops::{Deref, DerefMut},
-};
 
-use serde::{Deserialize, Serialize};
 
-use crate::typing::ty::{Ty, TyVar};
 
 // use super::{
 //     predicate::TyPredicate,

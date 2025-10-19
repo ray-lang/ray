@@ -35,7 +35,7 @@ use crate::{
     target::Target,
     typing::{
         TyCtx,
-        ty::{Ty, TyScheme},
+        ty::Ty,
     },
 };
 

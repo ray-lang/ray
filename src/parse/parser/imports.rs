@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Import, ImportKind, Node, Path, Trailing, token::TokenKind},
+    ast::{Import, ImportKind, Trailing, token::TokenKind},
     parse::{ParseContext, ParseResult, Parser},
     span::Span,
 };
@@ -12,7 +12,7 @@ impl Parser<'_> {
     ///   import a::b
     ///   import a::b with C, D, E
     ///   import "C" "stdlib.h"
-    pub(crate) fn parse_import(&mut self, ctx: &ParseContext) -> ParseResult<Import> {
+    pub(crate) fn parse_import(&mut self, _: &ParseContext) -> ParseResult<Import> {
         let start = self.expect_start(TokenKind::Import)?;
         Ok(if must_peek!(self, TokenKind::DoubleQuote { .. }) {
             // "C"
