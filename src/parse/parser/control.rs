@@ -1,4 +1,4 @@
-use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
+use super::{ExprResult, ParseContext, ParsedExpr, Parser, Recover, Restrictions};
 
 use crate::{
     ast::{Expr, For, If, Loop, While, token::TokenKind},
@@ -17,53 +17,35 @@ impl Parser<'_> {
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
         let cond_start = self.lex.position();
-        let cond_expr = match self.parse_pre_block_expr(&ctx) {
-            Ok(expr) => expr,
-            Err(err) => {
-                self.record_parse_error(err);
-                let cond_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                self.missing_expr(cond_start, cond_end, &ctx)
-            }
-        };
+        let cond_expr = self.parse_pre_block_expr(&ctx).recover_with(
+            self,
+            Some(&TokenKind::LeftCurly),
+            |parser, cond_end| parser.missing_expr(cond_start, cond_end, &ctx),
+        );
         let cond = Box::new(cond_expr);
 
         let block_start = self.lex.position();
-        let then_expr = match self.parse_block(&ctx) {
-            Ok(expr) => expr,
-            Err(err) => {
-                self.record_parse_error(err);
-                let block_end = self.recover_after_error(Some(&TokenKind::Else));
-                self.missing_block_expr(block_start, block_end, &ctx)
-            }
-        };
+        let then_expr = self.parse_block(&ctx).recover_with(
+            self,
+            Some(&TokenKind::Else),
+            |parser, block_end| parser.missing_block_expr(block_start, block_end, &ctx),
+        );
         let mut end = self.srcmap.span_of(&then_expr).end;
         let then = Box::new(then_expr);
 
         let els = if peek!(self, TokenKind::Else) {
             let else_start = self.lex.position();
-            if let Err(err) = self.expect(TokenKind::Else) {
-                self.record_parse_error(err);
-            }
-            let else_expr = if peek!(self, TokenKind::If) {
-                match self.parse_if(&ctx) {
-                    Ok(expr) => expr,
-                    Err(err) => {
-                        self.record_parse_error(err);
-                        let else_end = self.recover_after_error(None);
-                        self.missing_block_expr(else_start, else_end, &ctx)
-                    }
+            let else_expr = (|| -> ExprResult {
+                self.expect(TokenKind::Else)?;
+                if peek!(self, TokenKind::If) {
+                    self.parse_if(&ctx)
+                } else {
+                    self.parse_block(&ctx)
                 }
-            } else {
-                let else_block_start = self.lex.position();
-                match self.parse_block(&ctx) {
-                    Ok(expr) => expr,
-                    Err(err) => {
-                        self.record_parse_error(err);
-                        let else_end = self.recover_after_error(None);
-                        self.missing_block_expr(else_block_start, else_end, &ctx)
-                    }
-                }
-            };
+            })()
+            .recover_with(self, None, |parser, else_end| {
+                parser.missing_block_expr(else_start, else_end, &ctx)
+            });
             end = self.srcmap.span_of(&else_expr).end;
             Some(Box::new(else_expr))
         } else {
@@ -87,30 +69,23 @@ impl Parser<'_> {
         ctx.restrictions |= Restrictions::IF_ELSE;
         let start = self.expect_start(TokenKind::If)?;
         let cond_start = self.lex.position();
-        let cond_expr = match self.parse_expr(&ctx) {
-            Ok(expr) => expr,
-            Err(err) => {
-                self.record_parse_error(err);
-                let cond_end = self.recover_after_error(Some(&TokenKind::Else));
-                self.missing_expr(cond_start, cond_end, &ctx)
-            }
-        };
+        let cond_expr =
+            self.parse_expr(&ctx)
+                .recover_with(self, Some(&TokenKind::Else), |parser, cond_end| {
+                    parser.missing_expr(cond_start, cond_end, &ctx)
+                });
         let mut end = self.srcmap.span_of(&cond_expr).end;
         let cond = Box::new(cond_expr);
 
         let els = if peek!(self, TokenKind::Else) {
-            if let Err(err) = self.expect(TokenKind::Else) {
-                self.record_parse_error(err);
-            }
             let else_start = self.lex.position();
-            let e = match self.parse_expr(&ctx) {
-                Ok(expr) => expr,
-                Err(err) => {
-                    self.record_parse_error(err);
-                    let else_end = self.recover_after_error(None);
-                    self.missing_expr(else_start, else_end, &ctx)
-                }
-            };
+            let e = (|| -> ExprResult {
+                self.expect(TokenKind::Else)?;
+                self.parse_expr(&ctx)
+            })()
+            .recover_with(self, None, |parser, else_end| {
+                parser.missing_expr(else_start, else_end, &ctx)
+            });
             end = self.srcmap.span_of(&e).end;
             Some(Box::new(e))
         } else {
@@ -131,27 +106,21 @@ impl Parser<'_> {
     pub(crate) fn parse_for(&mut self, ctx: &ParseContext) -> ExprResult {
         let for_span = self.expect_sp(TokenKind::For)?;
         let pat_start = self.lex.position();
-        let pat = match self.parse_pattern(ctx) {
-            Ok(pat) => pat,
-            Err(err) => {
-                self.record_parse_error(err);
-                let pat_end = self.recover_after_error(Some(&TokenKind::In));
-                self.missing_pattern(pat_start, pat_end, ctx)
-            }
-        };
+        let pat =
+            self.parse_pattern(ctx)
+                .recover_with(self, Some(&TokenKind::In), |parser, pat_end| {
+                    parser.missing_pattern(pat_start, pat_end, ctx)
+                });
 
         let in_start = self.lex.position();
-        let in_span = match self.expect_sp(TokenKind::In) {
-            Ok(span) => span,
-            Err(err) => {
-                self.record_parse_error(err);
-                let in_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                Span {
-                    start: in_start,
-                    end: in_end,
-                }
-            }
-        };
+        let in_span = self.expect_sp(TokenKind::In).recover_with(
+            self,
+            Some(&TokenKind::LeftCurly),
+            |_, in_end| Span {
+                start: in_start,
+                end: in_end,
+            },
+        );
 
         let expr_start = self.lex.position();
         let mut lookahead = 0;
@@ -162,35 +131,30 @@ impl Parser<'_> {
         }
 
         let expr = if matches!(next_kind, TokenKind::LeftCurly | TokenKind::EOF) {
-            let err = self.parse_error(
+            Err(self.parse_error(
                 "expected iterable expression after `in`".to_string(),
                 Span {
                     start: expr_start,
                     end: expr_start,
                 },
-            );
-            self.record_parse_error(err);
-            self.missing_expr(expr_start, expr_start, ctx)
+            ))
+            .recover_with(self, Some(&TokenKind::LeftCurly), |parser, expr_end| {
+                parser.missing_expr(expr_start, expr_end, ctx)
+            })
         } else {
-            match self.parse_pre_block_expr(ctx) {
-                Ok(expr) => expr,
-                Err(err) => {
-                    self.record_parse_error(err);
-                    let expr_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                    self.missing_expr(expr_start, expr_end, ctx)
-                }
-            }
+            self.parse_pre_block_expr(ctx).recover_with(
+                self,
+                Some(&TokenKind::LeftCurly),
+                |parser, expr_end| parser.missing_expr(expr_start, expr_end, ctx),
+            )
         };
 
         let body_start = self.lex.position();
-        let body = match self.parse_block(ctx) {
-            Ok(body) => body,
-            Err(err) => {
-                self.record_parse_error(err);
-                let body_end = self.recover_after_error(None);
-                self.missing_block_expr(body_start, body_end, ctx)
-            }
-        };
+        let body = self
+            .parse_block(ctx)
+            .recover_with(self, None, |parser, body_end| {
+                parser.missing_block_expr(body_start, body_end, ctx)
+            });
 
         let body_span = self.srcmap.span_of(&body);
         let span = for_span.extend_to(&body_span);
@@ -211,23 +175,17 @@ impl Parser<'_> {
     pub(crate) fn parse_while(&mut self, ctx: &ParseContext) -> ExprResult {
         let while_span = self.expect_sp(TokenKind::While)?;
         let cond_start = self.lex.position();
-        let cond = match self.parse_pre_block_expr(ctx) {
-            Ok(expr) => expr,
-            Err(err) => {
-                self.record_parse_error(err);
-                let cond_end = self.recover_after_error(Some(&TokenKind::LeftCurly));
-                self.missing_expr(cond_start, cond_end, ctx)
-            }
-        };
+        let cond = self.parse_pre_block_expr(ctx).recover_with(
+            self,
+            Some(&TokenKind::LeftCurly),
+            |parser, cond_end| parser.missing_expr(cond_start, cond_end, ctx),
+        );
         let body_start = self.lex.position();
-        let body = match self.parse_block(ctx) {
-            Ok(body) => body,
-            Err(err) => {
-                self.record_parse_error(err);
-                let body_end = self.recover_after_error(None);
-                self.missing_block_expr(body_start, body_end, ctx)
-            }
-        };
+        let body = self
+            .parse_block(ctx)
+            .recover_with(self, None, |parser, body_end| {
+                parser.missing_block_expr(body_start, body_end, ctx)
+            });
 
         let body_span = self.srcmap.span_of(&body);
         let span = while_span.extend_to(&body_span);
@@ -246,14 +204,11 @@ impl Parser<'_> {
     pub(crate) fn parse_loop(&mut self, ctx: &ParseContext) -> ExprResult {
         let loop_span = self.expect_sp(TokenKind::Loop)?;
         let body_start = self.lex.position();
-        let body = match self.parse_block(ctx) {
-            Ok(body) => body,
-            Err(err) => {
-                self.record_parse_error(err);
-                let body_end = self.recover_after_error(None);
-                self.missing_block_expr(body_start, body_end, ctx)
-            }
-        };
+        let body = self
+            .parse_block(ctx)
+            .recover_with(self, None, |parser, body_end| {
+                parser.missing_block_expr(body_start, body_end, ctx)
+            });
 
         let body_span = self.srcmap.span_of(&body);
         let span = loop_span.extend_to(&body_span);

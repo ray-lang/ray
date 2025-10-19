@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Expr, Modifier, Name, Node, Path, TypeParams},
+    ast::{Expr, Missing, Modifier, Name, Node, Path, TypeParams},
     span::{Source, Span, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };
@@ -8,6 +8,7 @@ use crate::{
 pub enum FnParam {
     Name(Name),
     DefaultValue(Box<Node<FnParam>>, Box<Node<Expr>>),
+    Missing { info: Missing, placeholder: Name },
 }
 
 impl std::fmt::Display for FnParam {
@@ -15,6 +16,7 @@ impl std::fmt::Display for FnParam {
         match self {
             FnParam::Name(n) => write!(f, "{}", n),
             FnParam::DefaultValue(p, v) => write!(f, "{} = {}", p, v),
+            FnParam::Missing { info, .. } => write!(f, "(missing {})", info),
         }
     }
 }
@@ -24,6 +26,7 @@ impl FnParam {
         match self {
             FnParam::DefaultValue(p, _) => p.name(),
             FnParam::Name(n) => &n.path,
+            FnParam::Missing { placeholder, .. } => &placeholder.path,
         }
     }
 
@@ -31,6 +34,7 @@ impl FnParam {
         match self {
             FnParam::DefaultValue(p, _) => p.name_mut(),
             FnParam::Name(n) => &mut n.path,
+            FnParam::Missing { placeholder, .. } => &mut placeholder.path,
         }
     }
 
@@ -38,6 +42,7 @@ impl FnParam {
         match self {
             FnParam::DefaultValue(p, _) => p.ty(),
             FnParam::Name(n) => n.ty.as_deref().map(|t| t.mono()),
+            FnParam::Missing { placeholder, .. } => placeholder.ty.as_deref().map(|t| t.mono()),
         }
     }
 
@@ -45,6 +50,9 @@ impl FnParam {
         match self {
             FnParam::DefaultValue(p, _) => p.ty_mut(),
             FnParam::Name(n) => n.ty.as_deref_mut().map(|t| t.mono_mut()),
+            FnParam::Missing { placeholder, .. } => {
+                placeholder.ty.as_deref_mut().map(|t| t.mono_mut())
+            }
         }
     }
 
@@ -53,6 +61,9 @@ impl FnParam {
             FnParam::DefaultValue(p, _) => p.set_ty(ty),
             FnParam::Name(n) => {
                 n.ty = Some(Parsed::new(TyScheme::from_mono(ty), Source::default()));
+            }
+            FnParam::Missing { placeholder, .. } => {
+                placeholder.ty = Some(Parsed::new(TyScheme::from_mono(ty), Source::default()));
             }
         }
     }

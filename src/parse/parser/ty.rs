@@ -1,3 +1,4 @@
+use super::Recover;
 use top::Predicates;
 
 use crate::{
@@ -11,7 +12,7 @@ impl Parser<'_> {
     pub(crate) fn parse_trait_fn_param(&mut self) -> ParseResult<Node<FnParam>> {
         let (name, span) = self.expect_id()?;
         self.expect(TokenKind::Colon)?;
-        let ty = self.parse_ty()?;
+        let ty = self.parse_type_annotation(Some(&TokenKind::Comma));
         Ok(self.mk_node(FnParam::Name(Name::typed(name, ty)), span))
     }
 
@@ -81,27 +82,23 @@ impl Parser<'_> {
             let mut tys = Vec::new();
             let lb_span = self.expect_sp(TokenKind::LeftBracket)?;
             loop {
-                match self.parse_ty() {
-                    Ok(ty) => tys.push(ty.map(|ty| ty.into_mono())),
-                    Err(err) => {
-                        self.record_parse_error(err);
-                        self.recover_after_sequence_error(Some(&TokenKind::RightBracket));
-                        if peek!(self, TokenKind::RightBracket) || self.is_eof() {
-                            break;
-                        }
-                    }
-                }
+                let ty = self.parse_type_annotation(Some(&TokenKind::RightBracket));
+                tys.push(ty.map(|ty| ty.into_mono()));
 
                 if peek!(self, TokenKind::RightBracket) {
                     break;
                 }
 
-                if let Err(err) = self.expect(TokenKind::Comma) {
-                    self.record_parse_error(err);
-                    self.recover_after_sequence_error(Some(&TokenKind::RightBracket));
+                let had_comma = self
+                    .expect(TokenKind::Comma)
+                    .map(|_| true)
+                    .recover_seq(self, Some(&TokenKind::RightBracket), |_| false);
+
+                if !had_comma {
                     if peek!(self, TokenKind::RightBracket) || self.is_eof() {
                         break;
                     }
+                    continue;
                 }
             }
 
@@ -143,7 +140,7 @@ impl Parser<'_> {
 
     fn parse_ptr_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let start = self.expect_start(TokenKind::Asterisk)?;
-        let ptee_ty = self.parse_ty()?;
+        let mut ptee_ty = self.parse_type_annotation(None);
         let end = ptee_ty.span().unwrap().end;
         Ok(Parsed::new(
             TyScheme::from_mono(Ty::ptr(ptee_ty.take_value().into_mono())),
@@ -153,15 +150,40 @@ impl Parser<'_> {
 
     fn parse_arr_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         let start = self.expect_start(TokenKind::LeftBracket)?;
-        let el_ty = self.parse_ty()?;
+        let el_ty = self.parse_type_annotation(Some(&TokenKind::Semi));
+        let elem_ty = el_ty.clone_value().into_mono();
         self.expect(TokenKind::Semi)?;
+        let size = match self.parse_arr_ty_size() {
+            Ok(size) => size,
+            Err(err) => {
+                let placeholder = Err(err).recover_with(
+                    self,
+                    Some(&TokenKind::RightBracket),
+                    |parser, recovered| parser.missing_type(start, recovered),
+                );
+                let _ = self
+                    .expect_sp(TokenKind::RightBracket)
+                    .map(|_| ())
+                    .recover_with(self, None, |_, _| ());
+                return Ok(placeholder);
+            }
+        };
+        let rbrack_sp = self.expect_sp(TokenKind::RightBracket)?;
+        let end = rbrack_sp.end;
 
+        Ok(Parsed::new(
+            TyScheme::from_mono(Ty::Array(Box::new(elem_ty), size)),
+            self.mk_src(Span { start, end }),
+        ))
+    }
+
+    fn parse_arr_ty_size(&mut self) -> ParseResult<usize> {
         let size_tok = self.token()?;
         match &size_tok.kind {
             TokenKind::Integer { suffix, .. } => {
                 if suffix.is_some() {
                     return Err(self.parse_error(
-                        format!("cannot have suffix on static array size"),
+                        "cannot have suffix on static array size".to_string(),
                         size_tok.span,
                     ));
                 }
@@ -169,20 +191,12 @@ impl Parser<'_> {
             _ => return Err(self.unexpected_token(&size_tok, "static array size")),
         }
 
-        let size = size_tok.to_string().parse::<usize>().map_err(|e| {
+        size_tok.to_string().parse::<usize>().map_err(|e| {
             self.parse_error(
                 format!("`{}` is an invalid size: {}", size_tok, e),
                 size_tok.span,
             )
-        })?;
-
-        let rbrack_sp = self.expect_sp(TokenKind::RightBracket)?;
-        let end = rbrack_sp.end;
-
-        Ok(Parsed::new(
-            TyScheme::from_mono(Ty::Array(Box::new(el_ty.take_value().into_mono()), size)),
-            self.mk_src(Span { start, end }),
-        ))
+        })
     }
 
     fn parse_generic_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
@@ -240,14 +254,17 @@ impl Parser<'_> {
         let mut end = params.span().unwrap().end;
         let ret_ty = Box::new(if peek!(self, TokenKind::Arrow) {
             self.expect_end(TokenKind::Arrow)?;
-            let ty = self.parse_ty()?;
+            let mut ty = self.parse_type_annotation(None);
             end = ty.span().unwrap().end;
             ty.take_value().into_mono()
         } else {
             Ty::unit()
         });
 
-        let param_tys = variant!(params.take_value(), if Ty::Tuple(tys));
+        let param_tys = match params.take_value() {
+            Ty::Tuple(tys) => tys,
+            ty => vec![ty],
+        };
         let fn_ty = Ty::Func(param_tys, ret_ty);
 
         Ok(Parsed::new(
@@ -273,17 +290,33 @@ impl Parser<'_> {
         let start = lp_span.start;
 
         let mut tys = Vec::new();
-        let mut trailing = false;
-        while !peek!(self, TokenKind::RightParen) {
-            tys.push(self.parse_ty()?);
+        let mut last_had_comma = false;
+        while !peek!(self, TokenKind::RightParen) && !self.is_eof() {
+            let ty = self.parse_type_annotation(Some(&TokenKind::RightParen));
+            tys.push(ty);
+            last_had_comma = false;
 
-            if !peek!(self, TokenKind::RightParen) {
-                self.expect(TokenKind::Comma)?;
-                trailing = true;
+            if peek!(self, TokenKind::RightParen) {
+                break;
+            }
+
+            let had_comma = self
+                .expect(TokenKind::Comma)
+                .map(|_| true)
+                .recover_seq(self, Some(&TokenKind::RightParen), |_| false);
+
+            last_had_comma = had_comma;
+
+            if !had_comma {
+                if peek!(self, TokenKind::RightParen) || self.is_eof() {
+                    break;
+                }
+                continue;
             }
         }
 
         let end = self.expect_matching(&lparen_tok, TokenKind::RightParen)?;
+        let trailing = last_had_comma;
 
         Ok(if tys.len() == 1 && !trailing {
             // single element tuple type is just the first type

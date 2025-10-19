@@ -1,11 +1,11 @@
 use std::convert::TryFrom;
 
-use super::{DocComments, ExprResult, ParseContext, ParseResult, Parser, Restrictions};
+use super::{DocComments, ExprResult, ParseContext, ParseResult, Parser, Recover, Restrictions};
 
 use crate::{
     ast::{
-        Block, Closure, Expr, Literal, Name, Node, Path, Pattern, Sequence, Trailing, Tuple,
-        ValueKind, token::TokenKind,
+        Block, Closure, Expr, Literal, Missing, Name, Node, Path, Pattern, Sequence, Trailing,
+        Tuple, ValueKind, token::TokenKind,
     },
     span::{Pos, Span},
 };
@@ -95,11 +95,14 @@ impl Parser<'_> {
         Ok(self.mk_node(Name::new(name), span))
     }
 
-    pub(crate) fn parse_name_with_type(&mut self) -> ParseResult<Node<Name>> {
+    pub(crate) fn parse_name_with_type(
+        &mut self,
+        stop: Option<&TokenKind>,
+    ) -> ParseResult<Node<Name>> {
         let (name, span) = self.expect_id()?;
         let mut name = Name::new(name);
         name.ty = if expect_if!(self, TokenKind::Colon) {
-            Some(self.parse_ty()?)
+            Some(self.parse_type_annotation(stop))
         } else {
             None
         };
@@ -185,14 +188,19 @@ impl Parser<'_> {
     pub(crate) fn parse_name_seq(
         &mut self,
         trail: Trailing,
-        _: &ParseContext,
+        stop: Option<&TokenKind>,
     ) -> ParseResult<(Vec<Node<Name>>, Span)> {
         let mut names = vec![];
         let mut start = Pos::new();
         let mut end = Pos::new();
         loop {
-            match self.parse_name_with_type() {
-                Ok(n) => {
+            let maybe_name =
+                self.parse_name_with_type(stop)
+                    .map(Some)
+                    .recover_seq(self, None, |_| None);
+
+            match maybe_name {
+                Some(n) => {
                     let span = self.srcmap.span_of(&n);
                     if start.empty() {
                         start = span.start;
@@ -200,24 +208,20 @@ impl Parser<'_> {
                     end = span.end;
                     names.push(n);
                 }
-                Err(err) => {
-                    self.record_parse_error(err);
-                    self.recover_after_sequence_error(None);
+                None => {
                     if peek!(self, TokenKind::Comma) {
                         let span = self.expect_sp(TokenKind::Comma)?;
                         if matches!(trail, Trailing::Disallow) {
-                            self.record_parse_error(
-                                self.parse_error("unexpected trailing comma".to_string(), span),
-                            );
-                        } else {
-                            continue;
+                            Err(self.parse_error("unexpected trailing comma".to_string(), span))
+                                .recover_seq(self, None, |_| ());
+                            break;
                         }
+                        continue;
                     }
                     if !peek!(self, TokenKind::Identifier(_)) {
                         break;
-                    } else {
-                        continue;
                     }
+                    continue;
                 }
             }
 
@@ -226,9 +230,8 @@ impl Parser<'_> {
                     let span = self.expect_sp(TokenKind::Comma)?;
                     match trail {
                         Trailing::Disallow => {
-                            self.record_parse_error(
-                                self.parse_error("unexpected trailing comma".to_string(), span),
-                            );
+                            Err(self.parse_error("unexpected trailing comma".to_string(), span))
+                                .recover_seq(self, None, |_| ());
                         }
                         _ => {}
                     }
@@ -250,25 +253,28 @@ impl Parser<'_> {
         let mut items = vec![];
         let mut trailing = false;
         loop {
-            let next_kind = match self.must_peek_kind() {
-                Ok(k) => k,
-                Err(err) => {
-                    self.record_parse_error(err);
-                    self.recover_after_sequence_error(stop_token.as_ref());
-                    break;
-                }
-            };
+            let next_kind =
+                match self
+                    .must_peek_kind()
+                    .map(Some)
+                    .recover_seq(self, stop_token.as_ref(), |_| None)
+                {
+                    Some(k) => k,
+                    None => break,
+                };
             match (vkind, next_kind, &stop_token) {
                 (_, k, Some(t)) if &k == t => break,
                 (ValueKind::LValue, TokenKind::Identifier(_), _) => {
-                    match self.parse_name_with_type() {
-                        Ok(n) => {
+                    let maybe_name = self
+                        .parse_name_with_type(stop_token.as_ref())
+                        .map(Some)
+                        .recover_seq(self, stop_token.as_ref(), |_| None);
+                    match maybe_name {
+                        Some(n) => {
                             let span = self.srcmap.span_of(&n);
                             items.push(self.mk_expr(Expr::Name(n.value), span, ctx.path.clone()))
                         }
-                        Err(err) => {
-                            self.record_parse_error(err);
-                            self.recover_after_sequence_error(stop_token.as_ref());
+                        None => {
                             if expect_if!(self, TokenKind::Comma) {
                                 trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
                                 continue;
@@ -285,32 +291,37 @@ impl Parser<'_> {
                         }
                     }
                 }
-                (ValueKind::RValue, _, _) => match self.parse_expr(ctx) {
-                    Ok(ex) => {
-                        if let Expr::Sequence(seq) = ex.value {
-                            items.extend(seq.items);
-                        } else {
-                            items.push(ex);
-                        }
-                    }
-                    Err(err) => {
-                        self.record_parse_error(err);
-                        self.recover_after_sequence_error(stop_token.as_ref());
-                        if expect_if!(self, TokenKind::Comma) {
-                            trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
-                            continue;
-                        }
-                        if let Some(stop) = stop_token.as_ref() {
-                            if self.peek_kind().similar_to(stop) {
-                                break;
+                (ValueKind::RValue, _, _) => {
+                    let maybe_expr = self.parse_expr(ctx).map(Some).recover_seq(
+                        self,
+                        stop_token.as_ref(),
+                        |_| None,
+                    );
+                    match maybe_expr {
+                        Some(ex) => {
+                            if let Expr::Sequence(seq) = ex.value {
+                                items.extend(seq.items);
+                            } else {
+                                items.push(ex);
                             }
                         }
-                        if self.is_eof() {
-                            break;
+                        None => {
+                            if expect_if!(self, TokenKind::Comma) {
+                                trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
+                                continue;
+                            }
+                            if let Some(stop) = stop_token.as_ref() {
+                                if self.peek_kind().similar_to(stop) {
+                                    break;
+                                }
+                            }
+                            if self.is_eof() {
+                                break;
+                            }
+                            continue;
                         }
-                        continue;
                     }
-                },
+                }
                 (_, TokenKind::Comma, _) if matches!(trail, Trailing::Allow | Trailing::Warn) => {
                     trailing = true;
                 }
@@ -411,7 +422,7 @@ impl Parser<'_> {
             seq
         } else {
             // single arg or underscore
-            let name = self.parse_name_with_type()?;
+            let name = self.parse_name_with_type(None)?;
             let name_span = self.srcmap.span_of(&name);
             if !has_curly {
                 span.start = name_span.start;
@@ -436,37 +447,36 @@ impl Parser<'_> {
                 module: _,
                 item: doc,
             } = self.parse_doc_comments();
-            match self.parse_stmt(None, doc, ctx) {
-                Ok(stmt) => stmts.push(stmt),
-                Err(err) => {
-                    self.record_parse_error(err);
-                    self.recover_after_error(Some(&TokenKind::RightCurly));
-                    if peek!(self, TokenKind::RightCurly) || self.is_eof() {
-                        break;
-                    }
-                }
+            let stmt = self.parse_stmt(None, doc, ctx).recover_with(
+                self,
+                Some(&TokenKind::RightCurly),
+                |parser, _| {
+                    let info = Missing::new("statement", Some(ctx.path.to_string()));
+                    parser.mk_expr(Expr::Missing(info), Span::new(), ctx.path.clone())
+                },
+            );
+            if matches!(stmt.value, Expr::Missing(_))
+                && (peek!(self, TokenKind::RightCurly) || self.is_eof())
+            {
+                break;
             }
+            stmts.push(stmt);
         }
 
         // '}'
-        let end = match self.expect_end(TokenKind::RightCurly) {
-            Ok(pos) => pos,
-            Err(err) => {
-                self.record_parse_error(err);
-                let recovered_end = self.recover_after_error(Some(&TokenKind::RightCurly));
-                if peek!(self, TokenKind::RightCurly) {
-                    match self.expect_end(TokenKind::RightCurly) {
-                        Ok(pos) => pos,
-                        Err(err) => {
-                            self.record_parse_error(err);
-                            recovered_end
-                        }
-                    }
+        let end = self.expect_end(TokenKind::RightCurly).recover_with(
+            self,
+            Some(&TokenKind::RightCurly),
+            |parser, recovered_end| {
+                if peek!(parser, TokenKind::RightCurly) {
+                    parser
+                        .expect_end(TokenKind::RightCurly)
+                        .unwrap_or(recovered_end)
                 } else {
                     recovered_end
                 }
-            }
-        };
+            },
+        );
 
         Ok(self.mk_expr(
             Expr::Block(Block::new(stmts)),

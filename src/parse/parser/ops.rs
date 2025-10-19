@@ -88,7 +88,7 @@ impl Parser<'_> {
                 ctx.restrictions |= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
             } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
                 // this is a typed expression
-                let ty = self.parse_ty()?;
+                let ty = self.parse_type_annotation(None);
                 let rhs = self.mk_tyscheme(ty, ctx.path.clone());
                 let span = self
                     .srcmap
@@ -165,6 +165,11 @@ impl Parser<'_> {
             lhs = self.mk_expr(kind, span, ctx.path.clone())
         }
 
+        while peek!(self, TokenKind::If) {
+            let then = lhs;
+            lhs = self.parse_ternary_expr(then, &ctx)?;
+        }
+
         Ok(lhs)
     }
 
@@ -224,7 +229,7 @@ impl Parser<'_> {
         as_span: Span,
         ctx: &ParseContext,
     ) -> ExprResult {
-        let ty = self.parse_ty()?.map(|ty| ty.into_mono());
+        let ty = self.parse_type_annotation(None).map(|ty| ty.into_mono());
         let span = self.srcmap.span_of(&lhs).extend_to(ty.span().unwrap());
         Ok(self.mk_expr(
             Expr::Cast(Cast {

@@ -33,7 +33,7 @@ impl Parser<'_> {
             let path = self.parse_path()?;
             let mut end = self.srcmap.span_of(&path).end;
             let with = if expect_if!(self, TokenKind::With) {
-                let (names, span) = self.parse_name_seq(Trailing::Disallow, ctx)?;
+                let (names, span) = self.parse_name_seq(Trailing::Disallow, None)?;
                 let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
                 end = span.end;
                 Some(names)

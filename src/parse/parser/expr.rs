@@ -190,7 +190,7 @@ impl Parser<'_> {
         ctx: &ParseContext,
     ) -> ExprResult {
         let start = self.srcmap.span_of(&lhs).start;
-        let rhs = self.parse_name_with_type()?;
+        let rhs = self.parse_name_with_type(None)?;
         let end = self.srcmap.span_of(&rhs).end;
         Ok(self.mk_expr(
             Expr::Dot(Dot {
@@ -222,7 +222,7 @@ impl Parser<'_> {
 
         let (mut args, args_span) = if !peek!(self, TokenKind::RightParen) {
             if expects_type {
-                let ty = self.parse_ty()?;
+                let ty = self.parse_type_annotation(Some(&TokenKind::RightParen));
                 let span = *ty.span().unwrap();
                 (
                     Sequence {
@@ -377,7 +377,9 @@ impl Parser<'_> {
         let new_span = self.expect_sp(TokenKind::New)?;
         let lparen_span = self.expect_sp(TokenKind::LeftParen)?;
 
-        let parsed_ty = self.parse_ty()?.map(|t| t.into_mono());
+        let parsed_ty = self
+            .parse_type_annotation(Some(&TokenKind::RightParen))
+            .map(|t| t.into_mono());
         let ty = self.mk_ty(parsed_ty, ctx.path.clone());
 
         let count = if expect_if!(self, TokenKind::Comma) {
@@ -407,7 +409,9 @@ impl Parser<'_> {
         let mut inst = vec![];
         let ret_ty = if peek!(self, TokenKind::LeftParen) {
             self.expect(TokenKind::LeftParen)?;
-            let t = self.parse_ty()?.map(|t| t.into_mono());
+            let t = self
+                .parse_type_annotation(Some(&TokenKind::RightParen))
+                .map(|t| t.into_mono());
             self.expect(TokenKind::RightParen)?;
             Some(t)
         } else {

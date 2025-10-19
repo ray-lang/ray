@@ -1,7 +1,7 @@
-use super::{ParseContext, ParseResult, Parser, Restrictions};
+use super::{ParseContext, ParseResult, Parser, Recover, Restrictions};
 
 use crate::{
-    ast::{self, FnParam, FuncSig, Node, token::TokenKind},
+    ast::{self, FnParam, FuncSig, Missing, Name, Node, token::TokenKind},
     span::Span,
 };
 
@@ -21,23 +21,17 @@ impl Parser<'_> {
         let body = if !only_sigs {
             let body_start = self.lex.position();
             let expr = if expect_if!(self, TokenKind::FatArrow) {
-                match self.parse_expr(&ctx) {
-                    Ok(expr) => expr,
-                    Err(err) => {
-                        self.record_parse_error(err);
-                        let body_end = self.recover_after_error(Some(&TokenKind::RightCurly));
-                        self.missing_expr(body_start, body_end, &ctx)
-                    }
-                }
+                self.parse_expr(&ctx).recover_with(
+                    self,
+                    Some(&TokenKind::RightCurly),
+                    |parser, body_end| parser.missing_expr(body_start, body_end, &ctx),
+                )
             } else {
-                match self.parse_block(&ctx) {
-                    Ok(expr) => expr,
-                    Err(err) => {
-                        self.record_parse_error(err);
-                        let body_end = self.recover_after_error(Some(&TokenKind::RightCurly));
-                        self.missing_block_expr(body_start, body_end, &ctx)
-                    }
-                }
+                self.parse_block(&ctx).recover_with(
+                    self,
+                    Some(&TokenKind::RightCurly),
+                    |parser, body_end| parser.missing_block_expr(body_start, body_end, &ctx),
+                )
             };
             end = self.srcmap.span_of(&expr).end;
             sig.has_body = true;
@@ -80,18 +74,15 @@ impl Parser<'_> {
         } else {
             ctx.path.append("<anon>")
         };
-        let ty_params = match self.parse_ty_params() {
-            Ok(tp) => tp,
-            Err(err) => {
-                self.record_parse_error(err);
-                self.recover_after_sequence_error(Some(&TokenKind::RightParen));
-                None
-            }
-        };
+        let ty_params =
+            self.parse_ty_params()
+                .recover_seq(self, Some(&TokenKind::RightParen), |_| None);
         let (params, param_span) = parse_params(self)?;
         let mut end = param_span.end;
         let ret_ty = if expect_if!(self, TokenKind::Arrow) {
-            let t = self.parse_ty()?.map(|t| t.into_mono());
+            let t = self
+                .parse_type_annotation(Some(&TokenKind::LeftCurly))
+                .map(|t| t.into_mono());
             end = t.span().unwrap().end;
             Some(t)
         } else {
@@ -137,9 +128,26 @@ impl Parser<'_> {
     ) -> ParseResult<(Vec<Node<FnParam>>, Span)> {
         let path = ctx.path.clone();
         self.parse_params_with(ctx, |this| {
-            let name = this.parse_name_with_type()?;
-            let span = this.srcmap.span_of(&name);
-            Ok(this.mk_node_with_path(FnParam::Name(name.value), span, path.clone()))
+            let param = this
+                .parse_name_with_type(Some(&TokenKind::RightParen))
+                .map(|name| {
+                    let span = this.srcmap.span_of(&name);
+                    this.mk_node_with_path(FnParam::Name(name.value), span, path.clone())
+                })
+                .recover_with(this, Some(&TokenKind::RightParen), |parser, recovered| {
+                    let span = Span {
+                        start: recovered,
+                        end: recovered,
+                    };
+                    let info = Missing::new("parameter", Some(path.to_string()));
+                    let placeholder = Name::new("_");
+                    parser.mk_node_with_path(
+                        FnParam::Missing { info, placeholder },
+                        span,
+                        path.clone(),
+                    )
+                });
+            Ok(param)
         })
     }
 

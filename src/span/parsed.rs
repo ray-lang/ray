@@ -102,6 +102,10 @@ impl<T> Parsed<T> {
         &self.value
     }
 
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+
     pub fn span(&self) -> Option<&Span> {
         self.src.span.as_ref()
     }

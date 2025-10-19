@@ -1,6 +1,8 @@
 use std::ops::Deref;
 
-use super::{DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, Parser, Restrictions};
+use super::{
+    DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, Parser, Recover, Restrictions,
+};
 
 use crate::{
     ast::{
@@ -131,13 +133,13 @@ impl Parser<'_> {
             TokenKind::Fn | TokenKind::Modifier(_) => return self.parse_extern_fn_sig(start, ctx),
             TokenKind::Mut => {
                 let start = self.expect_start(TokenKind::Mut)?;
-                let n = self.parse_name_with_type()?;
+                let n = self.parse_name_with_type(None)?;
                 let mut span = self.srcmap.span_of(&n);
                 span.start = start;
                 (Decl::Mutable(n), span)
             }
             _ => {
-                let n = self.parse_name_with_type()?;
+                let n = self.parse_name_with_type(None)?;
                 let span = self.srcmap.span_of(&n);
                 (Decl::Name(n), span)
             }
@@ -212,10 +214,18 @@ impl Parser<'_> {
         let (name, span) = self.expect_id()?;
         let mut ctx = ctx.clone();
         ctx.path = ctx.path.append(&name);
-        let ty = self.parse_ty_with_name(name, span)?.map(|t| t.into_mono());
+        let ty = self
+            .parse_ty_with_name(name, span)
+            .recover_with(self, Some(&TokenKind::LeftCurly), |parser, recovered| {
+                parser.missing_type(span.start, recovered)
+            })
+            .map(|t| t.into_mono());
 
         let super_trait = if expect_if!(self, TokenKind::Colon) {
-            Some(self.parse_ty()?.map(|t| t.into_mono()))
+            Some(
+                self.parse_type_annotation(Some(&TokenKind::LeftCurly))
+                    .map(|t| t.into_mono()),
+            )
         } else {
             None
         };
@@ -230,7 +240,9 @@ impl Parser<'_> {
             let start = tok.span.start;
             self.expect_end(TokenKind::LeftParen)?;
             let end = loop {
-                let ty = self.parse_ty()?.map(|t| t.into_mono());
+                let ty = self
+                    .parse_type_annotation(Some(&TokenKind::RightParen))
+                    .map(|t| t.into_mono());
                 args.push(ty);
 
                 if let Some(tok) = self.expect_kind(TokenKind::RightParen)? {
@@ -275,7 +287,7 @@ impl Parser<'_> {
 
     pub(crate) fn parse_struct(&mut self, _: &ParseContext) -> ParseResult<(Struct, Span)> {
         let start = self.expect_start(TokenKind::Struct)?;
-        let name = self.parse_name_with_type()?;
+        let name = self.parse_name_with_type(Some(&TokenKind::LeftCurly))?;
         let mut end = self.srcmap.span_of(&name).end;
 
         let ty_params = self.parse_ty_params()?;
@@ -311,7 +323,9 @@ impl Parser<'_> {
 
         let is_object = expect_if!(self, TokenKind::Object);
 
-        let ty = self.parse_ty()?.map(|t| t.into_mono());
+        let ty = self
+            .parse_type_annotation(Some(&TokenKind::LeftCurly))
+            .map(|t| t.into_mono());
         let mut end = ty.span().unwrap().end;
 
         let qualifiers = self.parse_where_clause()?;
@@ -364,7 +378,8 @@ impl Parser<'_> {
             let mut ctx = ctx.clone();
             ctx.restrictions |= Restrictions::IN_PAREN;
             let args = if !peek!(self, TokenKind::RightParen) {
-                let (args, _) = self.parse_name_seq(Trailing::Allow, &ctx)?;
+                let (args, _) =
+                    self.parse_name_seq(Trailing::Allow, Some(&TokenKind::RightParen))?;
                 args
             } else {
                 vec![]
@@ -388,21 +403,27 @@ impl Parser<'_> {
             return Ok(qualifiers);
         }
 
-        if let Err(err) = self.expect(TokenKind::Where) {
-            self.record_parse_error(err);
-            self.recover_after_sequence_error(None);
+        let has_where =
+            self.expect(TokenKind::Where)
+                .map(|_| Some(()))
+                .recover_seq(self, None, |_| None);
+        if has_where.is_none() {
             return Ok(qualifiers);
         }
 
         loop {
-            match self.parse_ty() {
-                Ok(ty) => qualifiers.push(ty.map(|t| t.into_mono())),
-                Err(err) => {
-                    self.record_parse_error(err);
-                    self.recover_after_sequence_error(None);
+            let ty_item = self
+                .parse_ty()
+                .map(|ty| Some(ty.map(|t| t.into_mono())))
+                .recover_seq(self, None, |_| None);
+
+            match ty_item {
+                Some(ty) => qualifiers.push(ty),
+                None => {
                     if !peek!(self, TokenKind::Comma) {
                         break;
                     }
+                    continue;
                 }
             }
 
@@ -410,9 +431,11 @@ impl Parser<'_> {
                 break;
             }
 
-            if let Err(err) = self.expect(TokenKind::Comma) {
-                self.record_parse_error(err);
-                self.recover_after_sequence_error(None);
+            let has_comma =
+                self.expect(TokenKind::Comma)
+                    .map(|_| Some(()))
+                    .recover_seq(self, None, |_| None);
+            if has_comma.is_none() {
                 if peek!(self, TokenKind::Comma) {
                     continue;
                 }
@@ -429,27 +452,34 @@ impl Parser<'_> {
             if !peek!(self, TokenKind::Identifier { .. }) {
                 break;
             }
-            match self.parse_name_with_type() {
-                Ok(n) => {
+            let field = self
+                .parse_name_with_type(Some(&TokenKind::RightCurly))
+                .map(Some)
+                .recover_with(self, Some(&TokenKind::RightCurly), |_, _| None);
+
+            match field {
+                Some(n) => {
                     let end = self.srcmap.span_of(&n).end;
                     fields.push(n);
 
                     let next_comma = expect_if!(self, TokenKind::Comma);
                     if !self.is_eol() && !next_comma {
-                        self.record_parse_error(RayError {
+                        Result::<(), RayError>::Err(RayError {
                             msg: "fields must be separated by a newline or comma".to_string(),
                             src: vec![self.mk_src(Span { start: end, end })],
                             kind: RayErrorKind::Parse,
-                        });
-                        self.recover_after_error(Some(&TokenKind::RightCurly));
+                        })
+                        .recover_with(
+                            self,
+                            Some(&TokenKind::RightCurly),
+                            |_, _| (),
+                        );
                         if peek!(self, TokenKind::RightCurly) || self.is_eof() {
                             break;
                         }
                     }
                 }
-                Err(err) => {
-                    self.record_parse_error(err);
-                    self.recover_after_error(Some(&TokenKind::RightCurly));
+                None => {
                     if peek!(self, TokenKind::RightCurly) || self.is_eof() {
                         break;
                     } else {

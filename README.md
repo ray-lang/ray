@@ -9,6 +9,12 @@ A WebAssembly-focused programming language for general purpose use
 
 ## Tooling
 
+### Contributing
+
+If you plan to work on Ray, please read through the
+[contributing guide](CONTRIBUTING.md) for information on tooling, formatting,
+and testing expectations.
+
 ### Language Server
 
 An experimental Language Server Protocol (LSP) implementation now lives in this

@@ -41,14 +41,40 @@ pub type ExprResult = ParseResult<ParsedExpr>;
 pub type DeclResult = ParseResult<ParsedDecl>;
 
 bitflags::bitflags! {
+    /// Contextual switches that travel with a [`ParseContext`].
+    ///
+    /// The parser clones the context before descending into sub‑parsers and
+    /// toggles these bits to steer how the child production should behave. The
+    /// flags primarily influence two things:
+    ///
+    /// * which constructs are permitted (e.g. disallowing `{ ... }` from being
+    ///   treated as an expression in positions where only atomic expressions are
+    ///   valid), and
+    /// * the shape of diagnostics when recovery has to fabricate placeholders
+    ///   (e.g. requiring that an expression follow a comma so the error reads
+    ///   "expected expression after the previous comma").
     pub struct Restrictions: u8 {
+        /// The next token must begin an expression (set after a comma);
+        /// combined with `AFTER_COMMA` it gives better error messages.
         const EXPECT_EXPR   = 1 << 0;
+        /// Parsing the condition/branches of an `if`/`else` chain;
+        /// used to keep operators like `else` from being consumed as
+        /// infix tokens in nested contexts.
         const IF_ELSE       = 1 << 1;
+        /// Inside a loop; reserved for future validation such as `break`.
         const IN_LOOP       = 1 << 2;
+        /// Inside a function; reserved for future validation such as `return`.
         const IN_FUNC       = 1 << 3;
+        /// Expression is parsed in an r-value position (e.g. assignment rhs).
         const RVALUE        = 1 << 4;
+        /// Disallow `{ ... }` from being interpreted as an expression.
+        /// (needed for contexts where a block would change
+        /// parsing behaviour, such as `if` conditions).
         const NO_CURLY_EXPR = 1 << 5;
+        /// Set alongside `EXPECT_EXPR` to improve comma-related diagnostics.
         const AFTER_COMMA   = 1 << 6;
+        /// Currently parsing inside parentheses (newline handling differs);
+        /// it relaxes newline handling so multiline expressions can be parsed.
         const IN_PAREN      = 1 << 7;
     }
 }
@@ -305,6 +331,7 @@ impl<'src> Parser<'src> {
         mut f: F,
     ) -> ParseResult<Span> {
         let mut end = start;
+        let stop = stop_token.as_ref();
 
         while !self.is_eof() {
             let DocComments {
@@ -325,32 +352,24 @@ impl<'src> Parser<'src> {
                 (k, _) => k,
             };
 
-            match f(self, kind, doc, decs) {
-                Ok(next_end) => {
-                    end = next_end;
-                }
-                Err(err) => {
-                    self.record_parse_error(err);
-                    let recovered_end = self.recover_after_error(stop_token.as_ref());
-                    if let Some(stop) = stop_token.as_ref() {
-                        if self.peek_kind().similar_to(stop) {
-                            if recovered_end > end {
-                                end = recovered_end;
-                            }
-                            break;
+            let mut should_break = false;
+            let next_end =
+                f(self, kind, doc, decs).recover_with(self, stop, |parser, recovered| {
+                    if let Some(stop_token) = stop {
+                        if parser.peek_kind().similar_to(stop_token) {
+                            should_break = true;
                         }
                     }
-                    if self.is_eof() {
-                        if recovered_end > end {
-                            end = recovered_end;
-                        }
-                        break;
+                    if parser.is_eof() {
+                        should_break = true;
                     }
-                    if recovered_end > end {
-                        end = recovered_end;
-                    }
-                    continue;
-                }
+                    recovered
+                });
+            if next_end > end {
+                end = next_end;
+            }
+            if should_break {
+                break;
             }
         }
 
@@ -378,6 +397,9 @@ impl<'src> Parser<'src> {
                     break;
                 }
                 if matches!(kind, TokenKind::RightCurly) {
+                    break;
+                }
+                if matches!(kind, TokenKind::RightParen | TokenKind::Comma) {
                     break;
                 }
                 if Self::is_decl_start(&kind) {
@@ -492,6 +514,51 @@ impl<'src> Parser<'src> {
         let context = Some(ctx.path.to_string());
         let missing = Missing::new("pattern", context);
         self.mk_node(Pattern::Missing(missing), span)
+    }
+
+    fn missing_type(&mut self, start: Pos, mut end: Pos) -> Parsed<TyScheme> {
+        if end.offset < start.offset {
+            end = start;
+        }
+        let span = Span { start, end };
+        Parsed::new(TyScheme::from_mono(Ty::Never), self.mk_src(span))
+    }
+
+    fn parse_type_annotation(&mut self, stop: Option<&TokenKind>) -> Parsed<TyScheme> {
+        let start = self.lex.position();
+        let next_kind = self.peek_kind();
+        let mut should_short_circuit = stop
+            .map(|stop_kind| next_kind.similar_to(stop_kind))
+            .unwrap_or(false);
+        if !should_short_circuit {
+            should_short_circuit = matches!(
+                next_kind,
+                TokenKind::RightParen
+                    | TokenKind::RightCurly
+                    | TokenKind::Comma
+                    | TokenKind::Semi
+                    | TokenKind::NewLine
+                    | TokenKind::EOF
+            );
+        }
+
+        if should_short_circuit {
+            if matches!(next_kind, TokenKind::EOF) {
+                let err = self.unexpected_eof(start);
+                self.record_parse_error(err);
+                return self.missing_type(start, self.lex.position());
+            } else {
+                let peek_token = self.lex.peek_token().clone();
+                let err = self.unexpected_token(&peek_token, "type");
+                self.record_parse_error(err);
+                return self.missing_type(start, peek_token.span.start);
+            }
+        }
+
+        self.parse_ty()
+            .recover_with(self, stop, |parser, recovered| {
+                parser.missing_type(start, recovered)
+            })
     }
 
     fn parse_doc_comments(&mut self) -> DocComments {
@@ -874,10 +941,11 @@ impl<'src> Parser<'src> {
 mod tests {
     use super::{ParseDiagnostics, ParseOptions, Parser};
     use crate::{
-        ast::{Decl, Expr, Func, Path, Pattern},
+        ast::{Decl, Expr, Func, InfixOp, Literal, Path, Pattern},
         errors::{RayError, RayErrorKind},
         pathlib::FilePath,
         span::SourceMap,
+        typing::ty::Ty,
     };
 
     fn test_options() -> ParseOptions {
@@ -990,6 +1058,638 @@ fn main() {
         let decl = file.decls.first().expect("expected function declaration");
         let decl_doc = srcmap.doc(decl).expect("expected function doc comment");
         assert_eq!(decl_doc, "function docs\nmore function docs");
+    }
+
+    #[test]
+    fn parses_ternary_expression() {
+        let source = r#"
+fn main() {
+    x = 1 if true else 2
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected ternary expression to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let assign = match &block.stmts.first().expect("expected statement").value {
+            Expr::Assign(assign) => assign,
+            other => panic!("expected assignment statement, got {:?}", other),
+        };
+        let rhs = assign.rhs.as_ref();
+        let if_expr = match &rhs.value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected ternary if expression, got {:?}", other),
+        };
+        assert!(
+            matches!(if_expr.then.value, Expr::Literal(_)),
+            "expected literal then branch, got {:?}",
+            if_expr.then.value
+        );
+        assert!(
+            matches!(if_expr.cond.value, Expr::Literal(_)),
+            "expected literal condition branch, got {:?}",
+            if_expr.cond.value
+        );
+        assert!(
+            matches!(
+                if_expr.els.as_ref().map(|els| &els.value),
+                Some(Expr::Literal(_))
+            ),
+            "expected literal else branch, got {:?}",
+            if_expr.els.as_ref().map(|els| &els.value)
+        );
+    }
+
+    #[test]
+    fn parses_ternary_precedence() {
+        let source = r#"
+fn main() {
+    result = 1 + 2 if true else 3
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected ternary precedence expression to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let assign = match &block.stmts.first().expect("expected statement").value {
+            Expr::Assign(assign) => assign,
+            other => panic!("expected assignment statement, got {:?}", other),
+        };
+        let binop = match &assign.rhs.as_ref().value {
+            Expr::BinOp(binop) => binop,
+            other => panic!("expected binary expression on RHS, got {:?}", other),
+        };
+        assert_eq!(
+            binop.op.value,
+            InfixOp::Add,
+            "expected addition at the top level of the expression"
+        );
+        assert!(
+            matches!(
+                binop.lhs.as_ref().value,
+                Expr::Literal(Literal::Integer { .. })
+            ),
+            "expected integer literal on the left-hand side of the addition, got {:?}",
+            binop.lhs.as_ref().value
+        );
+        let if_expr = match &binop.rhs.as_ref().value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!(
+                "expected ternary expression on RHS of addition, got {:?}",
+                other
+            ),
+        };
+        assert!(
+            matches!(if_expr.then.value, Expr::Literal(Literal::Integer { .. })),
+            "expected literal then branch inside ternary, got {:?}",
+            if_expr.then.value
+        );
+        assert!(
+            matches!(if_expr.cond.value, Expr::Literal(Literal::Bool(true))),
+            "expected literal condition, got {:?}",
+            if_expr.cond.value
+        );
+        assert!(
+            matches!(
+                if_expr.els.as_ref().map(|els| &els.value),
+                Some(Expr::Literal(Literal::Integer { .. }))
+            ),
+            "expected integer literal else branch, got {:?}",
+            if_expr.els.as_ref().map(|els| &els.value)
+        );
+    }
+
+    #[test]
+    fn parses_if_with_else_block() {
+        let source = r#"
+fn main() {
+    if flag {
+    } else {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected if-expression to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let if_expr = match &block.stmts.first().expect("expected statement").value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected if expression, got {:?}", other),
+        };
+        match &if_expr.cond.value {
+            Expr::Name(name) => assert_eq!(name.path.to_string(), "flag"),
+            other => panic!("expected condition name `flag`, got {:?}", other),
+        }
+        match &if_expr.then.value {
+            Expr::Block(body) => assert!(
+                body.stmts.is_empty(),
+                "expected empty then block in this test"
+            ),
+            other => panic!("expected block in then branch, got {:?}", other),
+        }
+        match if_expr
+            .els
+            .as_ref()
+            .map(|els| &els.value)
+            .expect("expected else branch")
+        {
+            Expr::Block(body) => assert!(
+                body.stmts.is_empty(),
+                "expected empty else block in this test"
+            ),
+            other => panic!("expected block in else branch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_if_with_block_condition() {
+        let source = r#"
+fn main() {
+    if { true } {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected block condition to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let if_expr = match &block.stmts.first().expect("expected statement").value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected if expression, got {:?}", other),
+        };
+        match &if_expr.cond.value {
+            Expr::Block(cond_block) => assert!(
+                cond_block.stmts.len() == 1,
+                "expected condition block to contain single literal expression"
+            ),
+            other => panic!("expected block expression condition, got {:?}", other),
+        }
+        match &if_expr.then.value {
+            Expr::Block(body) => assert!(body.stmts.is_empty(), "expected then block to be empty"),
+            other => panic!("expected block in then branch, got {:?}", other),
+        }
+        assert!(
+            if_expr.els.is_none(),
+            "did not expect else branch in this test"
+        );
+    }
+
+    #[test]
+    fn recovers_missing_field_type() {
+        let source = r#"
+struct Foo { field:, }
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(!errors.is_empty(), "expected errors for missing field type");
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        assert_eq!(fields.len(), 1, "expected single field");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected placeholder type on field")
+            .clone_value();
+        let ty = ty_scheme.into_mono();
+        assert!(matches!(ty, Ty::Never), "expected Ty::Never placeholder");
+    }
+
+    #[test]
+    fn recovers_missing_return_type() {
+        let source = r#"
+fn main() -> {
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing return type"
+        );
+        let func = first_function(&file);
+        let ty = func
+            .sig
+            .ret_ty
+            .as_ref()
+            .expect("expected placeholder return type")
+            .clone_value();
+        assert!(matches!(ty, Ty::Never), "expected Ty::Never placeholder");
+    }
+
+    #[test]
+    fn recovers_missing_cast_type() {
+        let source = r#"
+fn main() {
+    1 as;
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(!errors.is_empty(), "expected errors for missing cast type");
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let cast = match &block.stmts.first().expect("expected statement").value {
+            Expr::Cast(cast) => cast,
+            other => panic!("expected cast expression, got {:?}", other),
+        };
+        let ty = cast.ty.clone_value();
+        assert!(matches!(ty, Ty::Never), "expected Ty::Never placeholder");
+    }
+
+    #[test]
+    fn recovers_missing_array_element_type() {
+        let source = r#"
+struct Foo {
+    field: [; 3],
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing array element type"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        let ty = ty_scheme.into_mono();
+        match ty {
+            Ty::Array(elem, size) => {
+                assert_eq!(size, 3, "expected element count to remain intact");
+                assert!(
+                    matches!(*elem, Ty::Never),
+                    "expected element placeholder to be Ty::Never"
+                );
+            }
+            other => panic!("expected array placeholder, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recovers_malformed_array_size_literal() {
+        let source = r#"
+struct Foo {
+    field: [i32; what],
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for malformed array size literal"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        let ty = ty_scheme.into_mono();
+        assert!(
+            matches!(ty, Ty::Never),
+            "expected Ty::Never placeholder for malformed array"
+        );
+    }
+
+    #[test]
+    fn recovers_tuple_type_element() {
+        let source = r#"
+struct Foo {
+    tuple: (i32, , bool),
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for tuple type element"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        let ty = ty_scheme.into_mono();
+        match ty {
+            Ty::Tuple(tys) => {
+                assert_eq!(tys.len(), 3, "expected three tuple elements");
+                assert!(
+                    matches!(tys[1], Ty::Never),
+                    "expected placeholder in missing tuple slot"
+                );
+            }
+            other => panic!("expected tuple type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recovers_missing_fn_type_return() {
+        let source = r#"
+struct Foo {
+    cb: Fn(i32) -> ,
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing function return type"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        let ty = ty_scheme.into_mono();
+        match ty {
+            Ty::Func(_, ret) => {
+                assert!(
+                    matches!(*ret, Ty::Never),
+                    "expected Ty::Never placeholder for missing return type"
+                );
+            }
+            other => panic!("expected function type, got {:?}", other),
+        }
+    }
+    #[test]
+    fn parses_for_loop_expression() {
+        let source = r#"
+fn main() {
+    for item in items {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected for-loop to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let for_expr = match &block.stmts.first().expect("expected statement").value {
+            Expr::For(for_expr) => for_expr,
+            other => panic!("expected for expression, got {:?}", other),
+        };
+        match &for_expr.pat.value {
+            Pattern::Name(name) => assert_eq!(name.path.to_string(), "item"),
+            other => panic!("expected pattern `item`, got {:?}", other),
+        }
+        match for_expr.expr.as_ref().value {
+            Expr::Name(ref name) => assert_eq!(name.path.to_string(), "items"),
+            ref other => panic!("expected iterable name `items`, got {:?}", other),
+        }
+        match for_expr.body.as_ref().value {
+            Expr::Block(ref body) => assert!(
+                body.stmts.is_empty(),
+                "expected loop body block to be empty"
+            ),
+            ref other => panic!("expected block body for for-loop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_while_loop_expression() {
+        let source = r#"
+fn main() {
+    while has_items {
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected while-loop to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let while_expr = match &block.stmts.first().expect("expected statement").value {
+            Expr::While(while_expr) => while_expr,
+            other => panic!("expected while expression, got {:?}", other),
+        };
+        match while_expr.cond.as_ref().value {
+            Expr::Name(ref name) => assert_eq!(name.path.to_string(), "has_items"),
+            ref other => panic!("expected condition name `has_items`, got {:?}", other),
+        }
+        match while_expr.body.as_ref().value {
+            Expr::Block(ref body) => {
+                assert!(body.stmts.is_empty(), "expected while body to be empty")
+            }
+            ref other => panic!("expected block body for while-loop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_loop_expression() {
+        let source = r#"
+fn main() {
+    loop {
+        break
+    }
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected loop expression to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let loop_expr = match &block.stmts.first().expect("expected statement").value {
+            Expr::Loop(loop_expr) => loop_expr,
+            other => panic!("expected loop expression, got {:?}", other),
+        };
+        match &loop_expr.body.as_ref().value {
+            Expr::Block(body) => {
+                assert_eq!(
+                    body.stmts.len(),
+                    1,
+                    "expected loop body to contain a single statement"
+                );
+                match &body.stmts[0].value {
+                    Expr::Break(_) => {}
+                    other => panic!("expected break statement in loop body, got {:?}", other),
+                }
+            }
+            other => panic!("expected block body for loop expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_chained_ternary_expression() {
+        let source = r#"
+fn main() {
+    result = 0 if a else 1 if b else 2
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            errors.is_empty(),
+            "expected chained ternary to parse without errors, got: {:?}",
+            errors
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let assign = match &block.stmts.first().expect("expected statement").value {
+            Expr::Assign(assign) => assign,
+            other => panic!("expected assignment statement, got {:?}", other),
+        };
+        let outer_if = match &assign.rhs.as_ref().value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected outer ternary expression, got {:?}", other),
+        };
+        let inner_if = match outer_if
+            .els
+            .as_ref()
+            .map(|els| &els.value)
+            .expect("expected nested ternary in else branch")
+        {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected nested ternary expression, got {:?}", other),
+        };
+        assert!(
+            matches!(outer_if.then.value, Expr::Literal(Literal::Integer { .. })),
+            "expected literal in outer then branch, got {:?}",
+            outer_if.then.value
+        );
+        assert!(
+            matches!(outer_if.cond.value, Expr::Name(_)),
+            "expected name in outer condition, got {:?}",
+            outer_if.cond.value
+        );
+        assert!(
+            matches!(inner_if.then.value, Expr::Literal(Literal::Integer { .. })),
+            "expected literal in inner then branch, got {:?}",
+            inner_if.then.value
+        );
+        assert!(
+            matches!(inner_if.cond.value, Expr::Name(_)),
+            "expected name in inner condition, got {:?}",
+            inner_if.cond.value
+        );
+        assert!(
+            matches!(
+                inner_if.els.as_ref().map(|els| &els.value),
+                Some(Expr::Literal(Literal::Integer { .. }))
+            ),
+            "expected literal in inner else branch, got {:?}",
+            inner_if.els.as_ref().map(|els| &els.value)
+        );
+    }
+
+    fn recovers_missing_ternary_condition() {
+        let source = r#"
+fn main() {
+    result = 1 if else 2
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors when ternary condition is missing"
+        );
+        let func = first_function(&file);
+        let block = function_body_block(func);
+        let assign = match &block.stmts.first().expect("expected statement").value {
+            Expr::Assign(assign) => assign,
+            other => panic!("expected assignment statement, got {:?}", other),
+        };
+        let if_expr = match &assign.rhs.as_ref().value {
+            Expr::If(if_expr) => if_expr,
+            other => panic!("expected ternary expression on RHS, got {:?}", other),
+        };
+        match &if_expr.cond.value {
+            Expr::Missing(missing) => assert_eq!(
+                missing.expected, "expression",
+                "expected missing expression placeholder for ternary condition"
+            ),
+            other => panic!("expected missing condition expression, got {:?}", other),
+        }
+        assert!(
+            matches!(if_expr.then.value, Expr::Literal(Literal::Integer { .. })),
+            "expected literal then branch, got {:?}",
+            if_expr.then.value
+        );
+        assert!(
+            if_expr.els.is_none(),
+            "expected parser to drop else branch after recovery, got {:?}",
+            if_expr.els.as_ref().map(|els| &els.value)
+        );
     }
 
     #[test]

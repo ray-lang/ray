@@ -196,6 +196,7 @@ impl NameResolve for Node<FnParam> {
         match &mut self.value {
             FnParam::Name(name) => Sourced(name, &src).resolve_names(ctx),
             FnParam::DefaultValue(param, _) => Sourced(param, &src).resolve_names(ctx),
+            FnParam::Missing { .. } => Ok(()),
         }
     }
 }

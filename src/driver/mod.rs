@@ -703,7 +703,7 @@ fn collect_func_refs(func: &Func, refs: &mut Vec<(u64, Path)>) {
 
 fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(u64, Path)>) {
     match param {
-        FnParam::Name(_) => {}
+        FnParam::Name(_) | FnParam::Missing { .. } => {}
         FnParam::DefaultValue(default_param, value) => {
             collect_fn_param_refs(&default_param.value, refs);
             collect_expr_name_refs(value, refs);
