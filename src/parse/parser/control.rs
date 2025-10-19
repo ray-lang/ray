@@ -15,7 +15,8 @@ impl Parser<'_> {
     pub(crate) fn parse_if(&mut self, ctx: &ParseContext) -> ExprResult {
         let mut ctx = ctx.clone();
         ctx.restrictions |= Restrictions::IF_ELSE;
-        let start = self.expect_start(TokenKind::If)?;
+        let if_span = self.expect_keyword(TokenKind::If)?;
+        let start = if_span.start;
         let cond_start = self.lex.position();
         let cond_expr = self.parse_pre_block_expr(&ctx).recover_with(
             self,
@@ -36,7 +37,7 @@ impl Parser<'_> {
         let els = if peek!(self, TokenKind::Else) {
             let else_start = self.lex.position();
             let else_expr = (|| -> ExprResult {
-                self.expect(TokenKind::Else)?;
+                self.expect_keyword(TokenKind::Else)?;
                 if peek!(self, TokenKind::If) {
                     self.parse_if(&ctx)
                 } else {
@@ -67,7 +68,8 @@ impl Parser<'_> {
     ) -> ExprResult {
         let mut ctx = ctx.clone();
         ctx.restrictions |= Restrictions::IF_ELSE;
-        let start = self.expect_start(TokenKind::If)?;
+        let if_span = self.expect_keyword(TokenKind::If)?;
+        let start = if_span.start;
         let cond_start = self.lex.position();
         let cond_expr =
             self.parse_expr(&ctx)
@@ -80,7 +82,7 @@ impl Parser<'_> {
         let els = if peek!(self, TokenKind::Else) {
             let else_start = self.lex.position();
             let e = (|| -> ExprResult {
-                self.expect(TokenKind::Else)?;
+                self.expect_keyword(TokenKind::Else)?;
                 self.parse_expr(&ctx)
             })()
             .recover_with(self, None, |parser, else_end| {
@@ -104,7 +106,7 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_for(&mut self, ctx: &ParseContext) -> ExprResult {
-        let for_span = self.expect_sp(TokenKind::For)?;
+        let for_span = self.expect_keyword(TokenKind::For)?;
         let pat_start = self.lex.position();
         let pat =
             self.parse_pattern(ctx)
@@ -113,7 +115,7 @@ impl Parser<'_> {
                 });
 
         let in_start = self.lex.position();
-        let in_span = self.expect_sp(TokenKind::In).recover_with(
+        let in_span = self.expect_keyword(TokenKind::In).recover_with(
             self,
             Some(&TokenKind::LeftCurly),
             |_, in_end| Span {
@@ -173,7 +175,7 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_while(&mut self, ctx: &ParseContext) -> ExprResult {
-        let while_span = self.expect_sp(TokenKind::While)?;
+        let while_span = self.expect_keyword(TokenKind::While)?;
         let cond_start = self.lex.position();
         let cond = self.parse_pre_block_expr(ctx).recover_with(
             self,
@@ -202,7 +204,7 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_loop(&mut self, ctx: &ParseContext) -> ExprResult {
-        let loop_span = self.expect_sp(TokenKind::Loop)?;
+        let loop_span = self.expect_keyword(TokenKind::Loop)?;
         let body_start = self.lex.position();
         let body = self
             .parse_block(ctx)

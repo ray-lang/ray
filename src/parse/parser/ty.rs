@@ -49,30 +49,33 @@ impl Parser<'_> {
             return Ok(ty);
         }
 
-        todo!("parse union type")
-        // let next_ty = self.parse_ty()?;
-        // let span = *ty.span().unwrap();
-        // let next_span = *next_ty.span().unwrap();
-        // Ok(match (ty.take_value(), next_ty.take_value()) {
-        //     (Ty::Union(lhs), Ty::Union(rhs)) => {
-        //         let mut tys = lhs;
-        //         tys.extend(rhs);
-        //         Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
-        //     }
-        //     (Ty::Union(lhs), ty) => {
-        //         let mut tys = lhs;
-        //         tys.push(ty);
-        //         Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
-        //     }
-        //     (ty, Ty::Union(tys)) => {
-        //         Parsed::new(ty, self.mk_src(span));
-        //         Parsed::new(Ty::Union(tys), self.mk_src(span.extend_to(&next_span)))
-        //     }
-        //     (lhs_ty, rhs_ty) => Parsed::new(
-        //         Ty::Union(vec![lhs_ty, rhs_ty]),
-        //         self.mk_src(span.extend_to(&next_span)),
-        //     ),
-        // })
+        let span = ty.span().copied();
+        let start = span.map(|s| s.start).unwrap_or_else(|| self.lex.position());
+        let mut end = span.map(|s| s.end).unwrap_or(start);
+        let mut items = match ty.take_value().into_mono() {
+            Ty::Union(tys) => tys,
+            other => vec![other],
+        };
+
+        loop {
+            let next_ty = self.parse_type_annotation(Some(&TokenKind::Pipe));
+            if let Some(span) = next_ty.span() {
+                end = span.end;
+            }
+            match next_ty.take_value().into_mono() {
+                Ty::Union(mut tys) => items.append(&mut tys),
+                other => items.push(other),
+            }
+
+            if !expect_if!(self, TokenKind::Pipe) {
+                break;
+            }
+        }
+
+        Ok(Parsed::new(
+            TyScheme::from_mono(Ty::Union(items)),
+            self.mk_src(Span { start, end }),
+        ))
     }
 
     pub(crate) fn parse_ty_params(&mut self) -> ParseResult<Option<TypeParams>> {
@@ -89,10 +92,11 @@ impl Parser<'_> {
                     break;
                 }
 
-                let had_comma = self
-                    .expect(TokenKind::Comma)
-                    .map(|_| true)
-                    .recover_seq(self, Some(&TokenKind::RightBracket), |_| false);
+                let had_comma = self.expect(TokenKind::Comma).map(|_| true).recover_seq(
+                    self,
+                    Some(&TokenKind::RightBracket),
+                    |_| false,
+                );
 
                 if !had_comma {
                     if peek!(self, TokenKind::RightBracket) || self.is_eof() {
@@ -248,7 +252,8 @@ impl Parser<'_> {
 
     fn parse_fn_ty(&mut self) -> ParseResult<Parsed<TyScheme>> {
         // Fn[<ty_params>](<params>) -> <ret_ty>
-        let start = self.expect_start(TokenKind::UpperFn)?;
+        let fn_span = self.expect_keyword(TokenKind::UpperFn)?;
+        let start = fn_span.start;
         let ty_params = self.parse_ty_params()?;
         let params = self.parse_tuple_ty()?.map(|t| t.into_mono());
         let mut end = params.span().unwrap().end;
@@ -300,10 +305,11 @@ impl Parser<'_> {
                 break;
             }
 
-            let had_comma = self
-                .expect(TokenKind::Comma)
-                .map(|_| true)
-                .recover_seq(self, Some(&TokenKind::RightParen), |_| false);
+            let had_comma = self.expect(TokenKind::Comma).map(|_| true).recover_seq(
+                self,
+                Some(&TokenKind::RightParen),
+                |_| false,
+            );
 
             last_had_comma = had_comma;
 

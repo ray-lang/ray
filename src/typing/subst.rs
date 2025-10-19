@@ -1,6 +1,3 @@
-
-
-
 // use super::{
 //     predicate::TyPredicate,
 //     traits::{CollectTyVars, QualifyTypes, QuantifyTypes},

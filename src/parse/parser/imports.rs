@@ -13,7 +13,8 @@ impl Parser<'_> {
     ///   import a::b with C, D, E
     ///   import "C" "stdlib.h"
     pub(crate) fn parse_import(&mut self, _: &ParseContext) -> ParseResult<Import> {
-        let start = self.expect_start(TokenKind::Import)?;
+        let import_span = self.expect_keyword(TokenKind::Import)?;
+        let start = import_span.start;
         Ok(if must_peek!(self, TokenKind::DoubleQuote { .. }) {
             // "C"
             let (s, sp) = self.expect_string()?;
@@ -32,7 +33,8 @@ impl Parser<'_> {
         } else {
             let path = self.parse_path()?;
             let mut end = self.srcmap.span_of(&path).end;
-            let with = if expect_if!(self, TokenKind::With) {
+            let with = if peek!(self, TokenKind::With) {
+                let _with_span = self.expect_keyword(TokenKind::With)?;
                 let (names, span) = self.parse_name_seq(Trailing::Disallow, None)?;
                 let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
                 end = span.end;

@@ -1,9 +1,6 @@
 use std::ops::Add;
 
-use crate::{
-    typing::traits::TreeWalk,
-    utils::replace,
-};
+use crate::{typing::traits::TreeWalk, utils::replace};
 
 use super::Constraint;
 

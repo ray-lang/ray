@@ -66,7 +66,8 @@ impl Parser<'_> {
         F: Fn(&mut Parser) -> ParseResult<(Vec<Node<FnParam>>, Span)>,
     {
         let modifiers = self.parse_modifiers()?;
-        let start = self.expect_start(TokenKind::Fn)?;
+        let fn_span = self.expect_keyword(TokenKind::Fn)?;
+        let start = fn_span.start;
         let name = self.parse_fn_name(ctx)?;
         let is_anon = name.is_none();
         let path = if let Some(name) = &name {

@@ -1,4 +1,3 @@
-
 pub trait DrainInPlace<T> {
     fn drain_in_place<F>(&mut self, f: F)
     where

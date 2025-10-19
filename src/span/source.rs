@@ -7,11 +7,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ast::{Decorator, Node, Path},
+    ast::{Decorator, Node, Path, token::TokenKind},
     pathlib::FilePath,
 };
 
 use super::Span;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TriviaKind {
+    Keyword,
+    Comment,
+}
 
 #[derive(Clone, Debug, Default, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Source {
@@ -80,10 +86,18 @@ impl Source {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trivia {
+    pub kind: TriviaKind,
+    pub span: Span,
+    pub token: Option<TokenKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMap {
     map: HashMap<u64, Source>,
     docs: HashMap<u64, String>,
     decorators: HashMap<u64, Vec<Decorator>>,
+    trivia: HashMap<FilePath, Vec<Trivia>>,
 }
 
 impl Extend<(u64, Source)> for SourceMap {
@@ -107,6 +121,7 @@ impl SourceMap {
             map: HashMap::new(),
             docs: HashMap::new(),
             decorators: HashMap::new(),
+            trivia: HashMap::new(),
         }
     }
 
@@ -154,6 +169,12 @@ impl SourceMap {
         self.docs.extend(other.docs.drain());
         self.decorators.extend(other.decorators.drain());
         self.map.extend(other.map.drain());
+        for (filepath, mut entries) in other.trivia.drain() {
+            self.trivia
+                .entry(filepath)
+                .or_default()
+                .append(&mut entries);
+        }
     }
 
     pub fn set_decorators<T>(&mut self, node: &Node<T>, decorators: Vec<Decorator>) {
@@ -174,6 +195,35 @@ impl SourceMap {
     pub fn has_inline<T>(&self, node: &Node<T>) -> bool {
         let path = Path::from("inline");
         self.has_decorator(node, &path)
+    }
+
+    pub fn record_trivia(
+        &mut self,
+        filepath: &FilePath,
+        kind: TriviaKind,
+        span: Span,
+        token: Option<TokenKind>,
+    ) {
+        if span.len() == 0 {
+            return;
+        }
+        self.trivia
+            .entry(filepath.clone())
+            .or_default()
+            .push(Trivia { kind, span, token });
+    }
+
+    pub fn trivia_for_file(&self, filepath: &FilePath) -> &[Trivia] {
+        self.trivia
+            .get(filepath)
+            .map(|entries| entries.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn trivia(&self) -> impl Iterator<Item = (&FilePath, &[Trivia])> {
+        self.trivia
+            .iter()
+            .map(|(filepath, entries)| (filepath, entries.as_slice()))
     }
 }
 

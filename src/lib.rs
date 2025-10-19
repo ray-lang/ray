@@ -11,6 +11,7 @@ pub mod collections;
 pub mod convert;
 pub mod driver;
 pub mod errors;
+pub mod ide;
 pub mod libgen;
 pub mod lir;
 pub mod parse;

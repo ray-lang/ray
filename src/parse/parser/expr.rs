@@ -29,24 +29,24 @@ impl Parser<'_> {
             TokenKind::Asm => self.parse_asm(ctx),
             TokenKind::New => self.parse_new_expr(ctx),
             TokenKind::Break => {
-                let span = self.expect_sp(TokenKind::Break)?;
+                let break_span = self.expect_keyword(TokenKind::Break)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&self.srcmap.span_of(&ex));
+                    let span = break_span.extend_to(&self.srcmap.span_of(&ex));
                     (Some(Box::new(ex)), span)
                 } else {
-                    (None, span)
+                    (None, break_span)
                 };
                 Ok(self.mk_expr(Expr::Break(ex), span, ctx.path.clone()))
             }
             TokenKind::Return => {
-                let span = self.expect_sp(TokenKind::Return)?;
+                let return_span = self.expect_keyword(TokenKind::Return)?;
                 let (ex, span) = if self.is_next_expr_begin() {
                     let ex = self.parse_expr(ctx)?;
-                    let span = span.extend_to(&self.srcmap.span_of(&ex));
+                    let span = return_span.extend_to(&self.srcmap.span_of(&ex));
                     (Some(Box::new(ex)), span)
                 } else {
-                    (None, span)
+                    (None, return_span)
                 };
                 Ok(self.mk_expr(Expr::Return(ex), span, ctx.path.clone()))
             }
@@ -374,7 +374,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_new_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        let new_span = self.expect_sp(TokenKind::New)?;
+        let new_span = self.expect_keyword(TokenKind::New)?;
         let lparen_span = self.expect_sp(TokenKind::LeftParen)?;
 
         let parsed_ty = self
@@ -404,7 +404,7 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_asm(&mut self, ctx: &ParseContext) -> ExprResult {
-        let mut span = self.expect_sp(TokenKind::Asm)?;
+        let mut span = self.expect_keyword(TokenKind::Asm)?;
 
         let mut inst = vec![];
         let ret_ty = if peek!(self, TokenKind::LeftParen) {

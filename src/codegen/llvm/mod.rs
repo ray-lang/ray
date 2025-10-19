@@ -33,10 +33,7 @@ use crate::{
     pathlib::FilePath,
     span::SourceMap,
     target::Target,
-    typing::{
-        TyCtx,
-        ty::Ty,
-    },
+    typing::{TyCtx, ty::Ty},
 };
 
 use super::Codegen;

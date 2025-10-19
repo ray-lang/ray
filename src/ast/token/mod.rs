@@ -2,10 +2,12 @@ use std::cmp::PartialEq;
 use std::fmt;
 use std::string::String;
 
+use serde::{Deserialize, Serialize};
+
 use crate::ast::modifier::Modifier;
 use crate::span::Span;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IntegerBase {
     Decimal,
     Binary,
@@ -24,14 +26,14 @@ impl IntegerBase {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CommentKind {
     Line,
     Doc,
     ModuleDoc,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TokenKind {
     /// mut
     Mut,

@@ -6,6 +6,7 @@ use std::{
 
 use log::{info, warn};
 use tower_lsp::{
+    Client, LspService, Server,
     jsonrpc::Result,
     lsp_types::{
         DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
@@ -14,7 +15,6 @@ use tower_lsp::{
         SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
         ServerCapabilities, ServerInfo,
     },
-    Client, LspService, Server,
 };
 
 mod diagnostics;
@@ -22,6 +22,8 @@ mod semantic_tokens;
 
 use ray::pathlib::FilePath;
 use serde_json::Value;
+
+use crate::semantic_tokens::pretty_dump;
 
 #[derive(Clone)]
 struct DocumentData {
@@ -96,6 +98,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let _ = self.client.log_message(MessageType::INFO, message).await;
 
         self.publish_diagnostics(&uri).await;
+        self.request_semantic_tokens_refresh().await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -111,6 +114,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
 
             drop(documents);
             self.publish_diagnostics(&params.text_document.uri).await;
+            self.request_semantic_tokens_refresh().await;
         }
     }
 
@@ -127,6 +131,8 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             .client
             .publish_diagnostics(params.text_document.uri.clone(), Vec::new(), None)
             .await;
+
+        self.request_semantic_tokens_refresh().await;
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
@@ -138,6 +144,12 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
+        self.log(format!(
+            "[server] semTokens request {}",
+            params.text_document.uri
+        ))
+        .await;
+
         let uri = params.text_document.uri;
         let mut text = {
             let documents = self.documents.read().await;
@@ -151,30 +163,93 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                 .and_then(|path| std::fs::read_to_string(path).ok());
         }
 
-        log::debug!(
-            "semantic tokens request for {} (has text: {})",
+        self.log(format!(
+            "[server] semantic tokens request for {} (has text: {})",
             uri,
-            text.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
-        );
+            text.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+        ))
+        .await;
 
         let tokens = text
-            .map(|source| semantic_tokens::semantic_tokens(&source))
+            .as_ref()
+            .map(|source| semantic_tokens::semantic_tokens(source))
             .unwrap_or_else(|| SemanticTokens {
                 result_id: None,
                 data: Vec::new(),
             });
+
+        // wherever you convert your syntax tree to SemanticToken entries
+        let mut count = 0usize;
+        let mut last_line = 0u32;
+        let mut last_abs = (0u32, 0u32);
+
+        for t in tokens.data.iter() {
+            // assert strictly increasing positions
+            let abs_line = last_abs.0 + t.delta_line;
+            let abs_col = if t.delta_line == 0 {
+                last_abs.1 + t.delta_start
+            } else {
+                t.delta_start
+            };
+
+            if t.length == 0 {
+                self.log(format!(
+                    "[server] zero-length token at L{}:{}",
+                    abs_line, abs_col
+                ))
+                .await;
+            }
+            if abs_line < last_line || (abs_line == last_line && abs_col < last_abs.1) {
+                self.log(format!(
+                    "[server] out-of-order token at L{}:{} (prev L{}:{})",
+                    abs_line, abs_col, last_abs.0, last_abs.1
+                ))
+                .await;
+            }
+
+            last_line = abs_line;
+            last_abs = (abs_line, abs_col);
+            count += 1;
+
+            if count <= 20 {
+                self.log(format!(
+                    "[server] #{:03} L{}:{} len={} typeIdx={} modsBits={}",
+                    count, abs_line, abs_col, t.length, t.token_type, t.token_modifiers_bitset
+                ))
+                .await;
+            }
+        }
+        self.log(format!("[server] built {} tokens total", count))
+            .await;
+
+        let legend = semantic_tokens::legend();
+        let source_text = text.unwrap_or_default();
+        let dump = pretty_dump(&tokens.data, &source_text, &legend);
+        self.log(dump).await;
 
         Ok(Some(SemanticTokensResult::Tokens(tokens)))
     }
 }
 
 impl RayLanguageServer {
+    async fn request_semantic_tokens_refresh(&self) {
+        if let Err(err) = self.client.semantic_tokens_refresh().await {
+            warn!("failed requesting semantic token refresh: {err}");
+        }
+    }
+
+    async fn log<S: ToString>(&self, message: S) {
+        let _ = self
+            .client
+            .log_message(MessageType::INFO, message.to_string())
+            .await;
+    }
+
     async fn update_workspace_root(&self, params: &InitializeParams) {
         let root_path = params
             .root_uri
             .as_ref()
             .and_then(|uri| uri.to_file_path().ok())
-            .or_else(|| params.root_path.as_ref().map(|path| PathBuf::from(path)))
             .or_else(|| {
                 params
                     .workspace_folders

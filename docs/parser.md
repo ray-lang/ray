@@ -64,6 +64,26 @@ expressions/patterns. Instead it creates:
 Downstream passes check these variants to skip semantic work or emit follow-up
 diagnostics.
 
+### Type placeholders
+
+Type grammar recovery mirrors the expression story, but instead of manufacturing
+a `Missing` node the parser wraps a `Ty::Never` inside the surrounding
+`TyScheme`. The `Ty::Never` sentinel means “the type could not be parsed”; it is
+**not** the semantic `never` type. Downstream consumers must treat this value as
+an unknown and defer to the parse error that was recorded alongside it. As of
+the type-recovery refactor, the following constructs emit placeholders:
+
+- function parameter and return annotations,
+- struct/trait fields,
+- casts and `new` expressions,
+- array element types and malformed size literals,
+- tuple and union members,
+- `where` clause predicates,
+- trait super-type clauses.
+
+Tests under `parser/mod.rs` assert that `Ty::Never` appears in these recovery
+paths.
+
 ### `Recover` trait
 
 `src/parse/parser/recover.rs` defines a `Recover<T>` trait implemented for
@@ -89,7 +109,7 @@ The optional `stop` token ensures the recovery loop stops at a reasonable point
 ### Manual recovery helpers
 
 Some constructs still manage recovery directly (notably sequences in `atoms.rs`
-and `ty.rs`). These rely on:
+and older parts of `ty.rs`). These rely on:
 
 - `Parser::recover_after_error(stop_token)` – advances token-by-token, tracking
   nesting until a recovery point (stop token, `}`, `EOF`, newline, or next
@@ -99,6 +119,26 @@ and `ty.rs`). These rely on:
 
 Legacy code emits `_` placeholders or empty nodes; ongoing work is migrating
 remaining sites to use the `Missing` variants via `recover_with`.
+
+### `parse_type_annotation`
+
+Type annotations appear throughout the grammar (function signatures, struct
+fields, pattern bindings, etc.). Calling `parse_ty` directly made recovery
+painful because every caller had to decide how to fall back. The shared helper
+`Parser::parse_type_annotation(stop: Option<&TokenKind>)` centralises that
+logic:
+
+1. It peeks ahead; if the next token is a natural stopping point (`,`, `}`, `{`,
+   newline, EOF, or the supplied `stop` token), it records an error and produces
+   a `Ty::Never` placeholder without consuming anything else.
+2. Otherwise it delegates to `parse_ty` and wraps the call in `recover_with`
+   so the same placeholder is produced on failure.
+
+When adding new type-bearing syntax, prefer this helper. Choose a `stop` token
+that represents “we should bail before consuming the next construct” (for
+example, `Some(&TokenKind::RightParen)` inside tuples). This keeps recovery
+consistent and prevents the parser from eating the following item while trying
+to salvage a bad type.
 
 ## Tests
 

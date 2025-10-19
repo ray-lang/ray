@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-
 use crate::{
     ast::{Node, Path},
     collections::nametree::Scope,

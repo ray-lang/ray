@@ -24,7 +24,7 @@ use crate::{
     errors::{RayError, RayErrorKind},
     parse::lexer::{Lexer, Preceding},
     pathlib::FilePath,
-    span::{Pos, Source, SourceMap, Span, parsed::Parsed},
+    span::{Pos, Source, SourceMap, Span, TriviaKind, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };
 
@@ -298,6 +298,14 @@ impl<'src> Parser<'src> {
                 }),
             }
         })?;
+
+        // Drain any trivia (comments) that remain before EOF so they are recorded.
+        for trivia in self.lex.preceding() {
+            if let Preceding::Comment(comment_tok) = trivia {
+                self.record_trivia(TriviaKind::Comment, comment_tok.span, None);
+            }
+        }
+
         Ok(File {
             path,
             stmts: items.stmts,
@@ -528,6 +536,7 @@ impl<'src> Parser<'src> {
                 next_kind,
                 TokenKind::RightParen
                     | TokenKind::RightCurly
+                    | TokenKind::LeftCurly
                     | TokenKind::Comma
                     | TokenKind::Semi
                     | TokenKind::NewLine
@@ -569,6 +578,7 @@ impl<'src> Parser<'src> {
 
         for p in preceding {
             if let Preceding::Comment(c) = p {
+                self.record_trivia(TriviaKind::Comment, c.span, None);
                 if let TokenKind::Comment { ref content, kind } = c.kind {
                     let line = if let Some(stripped) = content.strip_prefix(' ') {
                         stripped.to_owned()
@@ -628,7 +638,12 @@ impl<'src> Parser<'src> {
 
     fn token(&mut self) -> ParseResult<Token> {
         let start = self.lex.position();
-        let tok = self.lex.token();
+        let (leading, tok) = self.lex.consume();
+        for trivia in leading {
+            if let Preceding::Comment(comment_tok) = trivia {
+                self.record_trivia(TriviaKind::Comment, comment_tok.span, None);
+            }
+        }
         match tok.kind {
             TokenKind::EOF => Err(self.unexpected_eof(start)),
             _ => Ok(tok),
@@ -769,6 +784,16 @@ impl<'src> Parser<'src> {
         }
     }
 
+    pub(crate) fn record_trivia(
+        &mut self,
+        kind: TriviaKind,
+        span: Span,
+        token_kind: Option<TokenKind>,
+    ) {
+        self.srcmap
+            .record_trivia(&self.options.filepath, kind, span, token_kind);
+    }
+
     fn expect(&mut self, kind: TokenKind) -> ParseResult<(Token, Span)> {
         let tok = self.token()?;
         let span = tok.span;
@@ -837,6 +862,12 @@ impl<'src> Parser<'src> {
         } else {
             Err(self.unexpected_token(&tok, kind.desc()))
         }
+    }
+
+    fn expect_keyword(&mut self, kind: TokenKind) -> ParseResult<Span> {
+        let span = self.expect_sp(kind.clone())?;
+        self.record_trivia(TriviaKind::Keyword, span, Some(kind));
+        Ok(span)
     }
 
     fn expect_start(&mut self, kind: TokenKind) -> ParseResult<Pos> {
@@ -1434,6 +1465,30 @@ struct Foo {
     }
 
     #[test]
+    fn recovers_missing_where_qualifier() {
+        let source = r#"
+fn main() where {
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing where qualifier"
+        );
+        let func = first_function(&file);
+        assert_eq!(
+            func.sig.qualifiers.len(),
+            1,
+            "expected placeholder qualifier entry"
+        );
+        let ty = func.sig.qualifiers[0].clone_value();
+        assert!(
+            matches!(ty, Ty::Never),
+            "expected Ty::Never placeholder for missing qualifier"
+        );
+    }
+
+    #[test]
     fn recovers_missing_fn_type_return() {
         let source = r#"
 struct Foo {
@@ -1473,6 +1528,145 @@ struct Foo {
             }
             other => panic!("expected function type, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn recovers_missing_union_member() {
+        let source = r#"
+struct Foo {
+    field: A | ,
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing union member"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        match ty_scheme.into_mono() {
+            Ty::Union(tys) => {
+                assert_eq!(tys.len(), 2, "expected two union members");
+                assert!(
+                    matches!(tys[1], Ty::Never),
+                    "expected Ty::Never placeholder for missing member"
+                );
+            }
+            other => panic!("expected union type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recovers_missing_union_middle_member() {
+        let source = r#"
+struct Foo {
+    field: A | | B,
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing union member"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        match ty_scheme.into_mono() {
+            Ty::Union(tys) => {
+                assert_eq!(tys.len(), 3, "expected three union members");
+                assert!(
+                    matches!(tys[1], Ty::Never),
+                    "expected missing member to be Ty::Never"
+                );
+            }
+            other => panic!("expected union type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recovers_missing_union_in_parens() {
+        let source = r#"
+struct Foo {
+    field: (A | ),
+}
+"#;
+        let (file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for missing union member inside parens"
+        );
+        let decl = file
+            .decls
+            .first()
+            .expect("expected struct declaration")
+            .value
+            .clone();
+        let st = match decl {
+            Decl::Struct(st) => st,
+            other => panic!("expected struct declaration, got {:?}", other),
+        };
+        let fields = st.fields.expect("expected fields on struct");
+        let field = &fields[0];
+        let ty_scheme = field
+            .value
+            .ty
+            .as_ref()
+            .expect("expected type placeholder on field")
+            .clone_value();
+        match ty_scheme.into_mono() {
+            Ty::Union(tys) => {
+                assert_eq!(tys.len(), 2, "expected two union elements");
+                assert!(
+                    matches!(tys[1], Ty::Never),
+                    "expected missing member to be Ty::Never"
+                );
+            }
+            other => panic!("expected union type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recovers_missing_union_at_eof() {
+        let source = r#"
+struct Foo {
+    field: A | 
+"#;
+        let (_file, errors) = parse_source(source);
+        assert!(
+            !errors.is_empty(),
+            "expected errors for dangling union member at EOF"
+        );
     }
     #[test]
     fn parses_for_loop_expression() {
@@ -1642,6 +1836,7 @@ fn main() {
         );
     }
 
+    #[test]
     fn recovers_missing_ternary_condition() {
         let source = r#"
 fn main() {

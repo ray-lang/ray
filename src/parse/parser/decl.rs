@@ -45,7 +45,7 @@ impl Parser<'_> {
             |this, kind, doc, _| match kind {
                 TokenKind::Const => {
                     // TODO: should this be wrapped in any way?
-                    this.expect_sp(TokenKind::Const)?;
+                    this.expect_keyword(TokenKind::Const)?;
                     let ex = this.parse_expr(ctx)?;
                     let span = this.srcmap.span_of(&ex);
                     let ex_desc = ex.desc().to_string();
@@ -82,7 +82,8 @@ impl Parser<'_> {
                     Ok(span.end)
                 }
                 TokenKind::Extern => {
-                    let start = this.expect_start(TokenKind::Extern)?;
+                    let extern_span = this.expect_keyword(TokenKind::Extern)?;
+                    let start = extern_span.start;
                     let decl = this.parse_extern_fn_sig(start, ctx)?;
                     let end = this.srcmap.span_of(&decl).end;
                     externs.push(decl);
@@ -120,7 +121,8 @@ impl Parser<'_> {
 
     pub(crate) fn parse_extern(&mut self, ctx: &ParseContext) -> DeclResult {
         // extern
-        let start = self.expect_start(TokenKind::Extern)?;
+        let extern_span = self.expect_keyword(TokenKind::Extern)?;
+        let start = extern_span.start;
         let (kind, span) = match self.must_peek_kind()? {
             TokenKind::Struct => {
                 let (st, span) = self.parse_struct(ctx)?;
@@ -132,10 +134,10 @@ impl Parser<'_> {
             }
             TokenKind::Fn | TokenKind::Modifier(_) => return self.parse_extern_fn_sig(start, ctx),
             TokenKind::Mut => {
-                let start = self.expect_start(TokenKind::Mut)?;
+                let mut_span = self.expect_keyword(TokenKind::Mut)?;
                 let n = self.parse_name_with_type(None)?;
                 let mut span = self.srcmap.span_of(&n);
-                span.start = start;
+                span.start = mut_span.start;
                 (Decl::Mutable(n), span)
             }
             _ => {
@@ -181,7 +183,7 @@ impl Parser<'_> {
     pub(crate) fn parse_local(&mut self, is_extern: bool, ctx: &ParseContext) -> ExprResult {
         // mut?
         let (is_mut, mut_span) = if peek!(self, TokenKind::Mut) {
-            let mut_span = self.expect_sp(TokenKind::Mut)?;
+            let mut_span = self.expect_keyword(TokenKind::Mut)?;
             (true, Some(mut_span))
         } else {
             (false, None)
@@ -210,7 +212,8 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_trait(&mut self, ctx: &ParseContext) -> DeclResult {
-        let start = self.expect_start(TokenKind::Trait)?;
+        let trait_span = self.expect_keyword(TokenKind::Trait)?;
+        let start = trait_span.start;
         let (name, span) = self.expect_id()?;
         let mut ctx = ctx.clone();
         ctx.path = ctx.path.append(&name);
@@ -235,9 +238,10 @@ impl Parser<'_> {
 
         // parse directives
         let mut directives = vec![];
-        while let Some(tok) = self.expect_kind(TokenKind::Default)? {
+        while peek!(self, TokenKind::Default) {
+            let default_span = self.expect_keyword(TokenKind::Default)?;
             let mut args = vec![];
-            let start = tok.span.start;
+            let start = default_span.start;
             self.expect_end(TokenKind::LeftParen)?;
             let end = loop {
                 let ty = self
@@ -286,7 +290,8 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_struct(&mut self, _: &ParseContext) -> ParseResult<(Struct, Span)> {
-        let start = self.expect_start(TokenKind::Struct)?;
+        let struct_span = self.expect_keyword(TokenKind::Struct)?;
+        let start = struct_span.start;
         let name = self.parse_name_with_type(Some(&TokenKind::LeftCurly))?;
         let mut end = self.srcmap.span_of(&name).end;
 
@@ -319,9 +324,15 @@ impl Parser<'_> {
         is_extern: bool,
         ctx: &ParseContext,
     ) -> ParseResult<(Impl, Span)> {
-        let start = self.expect_start(TokenKind::Impl)?;
+        let impl_span = self.expect_keyword(TokenKind::Impl)?;
+        let start = impl_span.start;
 
-        let is_object = expect_if!(self, TokenKind::Object);
+        let is_object = if peek!(self, TokenKind::Object) {
+            self.expect_keyword(TokenKind::Object)?;
+            true
+        } else {
+            false
+        };
 
         let ty = self
             .parse_type_annotation(Some(&TokenKind::LeftCurly))
@@ -403,29 +414,19 @@ impl Parser<'_> {
             return Ok(qualifiers);
         }
 
-        let has_where =
-            self.expect(TokenKind::Where)
-                .map(|_| Some(()))
-                .recover_seq(self, None, |_| None);
+        let has_where = self
+            .expect_keyword(TokenKind::Where)
+            .map(|_| Some(()))
+            .recover_seq(self, None, |_| None);
         if has_where.is_none() {
             return Ok(qualifiers);
         }
 
         loop {
-            let ty_item = self
-                .parse_ty()
-                .map(|ty| Some(ty.map(|t| t.into_mono())))
-                .recover_seq(self, None, |_| None);
-
-            match ty_item {
-                Some(ty) => qualifiers.push(ty),
-                None => {
-                    if !peek!(self, TokenKind::Comma) {
-                        break;
-                    }
-                    continue;
-                }
-            }
+            let ty = self
+                .parse_type_annotation(Some(&TokenKind::Comma))
+                .map(|t| t.into_mono());
+            qualifiers.push(ty);
 
             if !peek!(self, TokenKind::Comma) {
                 break;
