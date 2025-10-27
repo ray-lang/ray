@@ -4,7 +4,7 @@ use crate::target::Target;
 use clap::StructOpt;
 // use clap::ArgAction::
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Default, StructOpt)]
 pub struct BuildOptions {
     #[clap(name = "INPUT", help = "entrypoint of the program", action = clap::ArgAction::Set)]
     pub input_path: FilePath,

@@ -47,7 +47,9 @@ impl NameContext {
     }
 
     pub fn resolve_name(&self, scopes: &[Scope], name: &String) -> Option<Path> {
+        log::debug!("resolving name `{}` in scopes: {:?}", name, scopes);
         self.nametree.find_in_scopes(scopes, name).map(|scope| {
+            log::debug!("found scope {:?} for name `{}`", scope, name);
             let mut parts = scope.path.clone();
             parts.append_mut(name);
             parts
@@ -75,14 +77,14 @@ impl NameContext {
 
 pub struct ResolveContext<'a> {
     ncx: &'a mut NameContext,
-    srcmap: &'a SourceMap,
+    srcmap: &'a mut SourceMap,
     scope_map: &'a HashMap<Path, Vec<Scope>>,
 }
 
 impl<'a> ResolveContext<'a> {
     pub fn new(
         ncx: &'a mut NameContext,
-        srcmap: &'a SourceMap,
+        srcmap: &'a mut SourceMap,
         scope_map: &'a HashMap<Path, Vec<Scope>>,
     ) -> Self {
         Self {
@@ -136,6 +138,7 @@ impl NameResolve for Sourced<'_, Name> {
                     msg: format!("`{}` is undefined", self),
                     src: vec![self.src().clone()],
                     kind: RayErrorKind::Name,
+                    context: Some(format!("resolving name `{self}`")),
                 });
             }
         }
@@ -158,6 +161,7 @@ impl NameResolve for Sourced<'_, Path> {
                     msg: format!("`{}` is undefined", self),
                     src: vec![self.src().clone()],
                     kind: RayErrorKind::Name,
+                    context: Some(format!("resolving name from path `{self}`")),
                 });
             }
         }
@@ -298,11 +302,10 @@ impl NameResolve for Sourced<'_, FuncSig> {
 
 impl NameResolve for Sourced<'_, Struct> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
-        let (st, src) = self.unpack_mut();
-        let name = st.name.to_string();
-        if !Ty::is_builtin(&name) {
-            let fqn = src.path.clone();
-            ctx.add_path(&fqn);
+        let (st, _) = self.unpack_mut();
+        let name = st.path.name().unwrap();
+        if !Ty::is_builtin_name(&name) {
+            ctx.add_path(&st.path);
         }
 
         Ok(())
@@ -381,24 +384,14 @@ impl NameResolve for Sourced<'_, Expr> {
 impl NameResolve for Sourced<'_, Assign> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         let (assign, src) = self.unpack_mut();
-        let ids = assign
-            .lhs
-            .identifiers()
-            .into_iter()
-            .filter_map(|node| {
-                let (path, is_lvalue) = node.value;
-                if !is_lvalue {
-                    Some((node.id, path.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        for node in assign.lhs.paths_mut() {
+            let (path, is_lvalue) = node.value;
+            let full_path = src.path.clone().append_path(path.clone());
+            *path = full_path.clone();
 
-        for (id, path) in ids {
-            let full_path = src.path.clone().append_path(path);
-            set_pattern_path(&mut assign.lhs, id, full_path.clone());
-            ctx.add_path(&full_path);
+            if !is_lvalue {
+                ctx.add_path(&full_path);
+            }
         }
 
         assign.rhs.resolve_names(ctx)
@@ -483,35 +476,6 @@ impl NameResolve for Sourced<'_, Dot> {
     }
 }
 
-fn set_pattern_path(pattern: &mut Node<Pattern>, target_id: u64, new_path: Path) {
-    fn helper(pattern: &mut Node<Pattern>, target_id: u64, new_path: &Path) -> bool {
-        if pattern.id == target_id {
-            match &mut pattern.value {
-                Pattern::Name(name) | Pattern::Deref(name) => {
-                    name.path = new_path.clone();
-                    return true;
-                }
-                Pattern::Missing(_) | Pattern::Sequence(_) | Pattern::Tuple(_) => {}
-            }
-        }
-
-        match &mut pattern.value {
-            Pattern::Sequence(seq) | Pattern::Tuple(seq) => {
-                for pat in seq.iter_mut() {
-                    if helper(pat, target_id, new_path) {
-                        return true;
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        false
-    }
-
-    helper(pattern, target_id, &new_path);
-}
-
 impl NameResolve for Sourced<'_, For> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         self.expr.resolve_names(ctx)?;
@@ -553,7 +517,10 @@ impl NameResolve for Sourced<'_, Loop> {
 }
 
 impl NameResolve for Sourced<'_, New> {
-    fn resolve_names(&mut self, _: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        if let Some(count) = &mut self.count {
+            count.resolve_names(ctx)?
+        }
         Ok(())
     }
 }
@@ -601,3 +568,165 @@ impl NameResolve for Sourced<'_, While> {
         self.body.resolve_names(ctx)
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     use crate::sema::ModuleBuilder;
+
+//     #[test]
+//     fn populates_symbol_map_with_definitions_and_references() {
+//         let src = r#"
+// fn foo(x: int, y: int) -> int {
+//     z = x + y
+//     z
+// }"#;
+
+//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
+//             Ok(result) => result,
+//             Err(errors) => {
+//                 panic!(
+//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
+//                     errors
+//                 );
+//             }
+//         };
+
+//         // find definition and reference for x
+//         let x_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::foo::x"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(x_def.is_some(), "Definition for x not found");
+
+//         let x_ref = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::foo::x"
+//                 && matches!(target.role, SymbolRole::Reference)
+//         });
+
+//         assert!(x_ref.is_some(), "Reference for x not found");
+
+//         // find definition and reference for z
+//         let z_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::foo::z"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(z_def.is_some(), "Definition for z not found");
+
+//         let z_ref = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::foo::z"
+//                 && matches!(target.role, SymbolRole::Reference)
+//         });
+//         assert!(z_ref.is_some(), "Reference for z not found");
+//     }
+
+//     #[test]
+//     fn populates_symbol_map_with_deref_references() {
+//         let src = r#"
+// fn foo(ptr: *u8) {
+//     *ptr = 42
+// }"#;
+
+//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
+//             Ok(result) => result,
+//             Err(errors) => {
+//                 panic!(
+//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
+//                     errors
+//                 );
+//             }
+//         };
+
+//         // find definition and reference for ptr
+//         let ptr_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::foo::ptr"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(ptr_def.is_some(), "Definition for ptr not found");
+
+//         let ptr_ref = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::foo::ptr"
+//                 && matches!(target.role, SymbolRole::Reference)
+//         });
+
+//         assert!(ptr_ref.is_some(), "Reference for ptr not found");
+//     }
+
+//     #[test]
+//     fn populates_symbol_map_with_trait_functions() {
+//         let src = r#"
+// trait MyTrait['a] {
+//     fn foo(self: 'a, x: int) -> int
+//     fn bar(self: 'a) -> string
+// }
+// "#;
+
+//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
+//             Ok(result) => result,
+//             Err(errors) => {
+//                 panic!(
+//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
+//                     errors
+//                 );
+//             }
+//         };
+
+//         println!("Symbol map: {:#?}", result.symbol_map);
+
+//         // find trait definition
+//         let trait_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::MyTrait"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(trait_def.is_some(), "Definition for MyTrait not found");
+
+//         // find definition for MyTrait::foo
+//         let foo_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::MyTrait::foo"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(foo_def.is_some(), "Definition for MyTrait::foo not found");
+
+//         // find definition for MyTrait::bar
+//         let bar_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::MyTrait::bar"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(bar_def.is_some(), "Definition for MyTrait::bar not found");
+//     }
+
+//     #[test]
+//     fn populates_symbol_map_with_impl_functions() {
+//         let src = r#"
+// trait Foo['a] {
+//     fn foo(self: 'a) -> 'a
+// }
+
+// impl Foo[int] {
+//     fn foo(self: int) -> int {
+//         42
+//     }
+// }
+// "#;
+
+//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
+//             Ok(result) => result,
+//             Err(errors) => {
+//                 panic!(
+//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
+//                     errors
+//                 );
+//             }
+//         };
+
+//         println!("symbol map: {:#?}", result.symbol_map);
+
+//         // find the impl def
+//         let impl_def = result.symbol_map.iter().find(|(_, target)| {
+//             target.path.to_string() == "test::int::foo"
+//                 && matches!(target.role, SymbolRole::Definition)
+//         });
+//         assert!(impl_def.is_some(), "Definition for int::foo not found");
+//     }
+// }

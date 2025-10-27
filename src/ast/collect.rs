@@ -74,7 +74,7 @@ impl CollectDeclarations for Node<Decl> {
                     }
                     Decl::FnSig(sig) => {
                         let ty = sig.ty.as_ref().unwrap().clone();
-                        let fqn = sig.path.clone();
+                        let fqn = sig.path.value.clone();
                         (fqn, ty)
                     }
                     d @ _ => unreachable!("Decl::Extern: {:?}", d),
@@ -105,7 +105,7 @@ impl CollectDeclarations for Node<Decl> {
                 for decl in tr.fields.iter() {
                     let sig = variant!(decl.deref(), if Decl::FnSig(f));
                     log::debug!("trait func: {}", sig.path);
-                    env.insert(sig.path.clone(), sig.ty.clone().unwrap().into());
+                    env.insert(sig.path.value.clone(), sig.ty.clone().unwrap().into());
                 }
 
                 (
@@ -314,7 +314,7 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
             eq.info_mut().with_src(src.clone());
 
             let mut fb_env = Env::new();
-            fb_env.insert(name.clone(), Ty::Var(fn_tv.clone()));
+            fb_env.insert(name.value.clone(), Ty::Var(fn_tv.clone()));
 
             let fn_ct = ParentAttachTree::new(ret_cs, fb_ct);
 
@@ -334,7 +334,7 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
         let bg = BindingGroup::new(fb_env, fb_aset, ctree).with_src(src.clone());
         let mut sigma = Env::new();
         if let Some(anno_ty) = &func.sig.ty {
-            sigma.insert(name.clone(), anno_ty.clone());
+            sigma.insert(name.value.clone(), anno_ty.clone());
         }
 
         (Ty::Var(fn_tv).into(), bg, sigma)
@@ -1115,7 +1115,7 @@ impl CollectConstraints for (&Pattern, &Source) {
         let &(pattern, src) = self;
         let mut aset = AssumptionSet::new();
         let (ty, ctree) = match pattern {
-            Pattern::Name(name) | Pattern::Deref(name) => {
+            Pattern::Name(name) | Pattern::Deref(Node { id: _, value: name }) => {
                 let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
                 let label = ty.to_string();
                 aset.add(name.path.clone(), ty.clone());

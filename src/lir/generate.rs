@@ -567,7 +567,7 @@ impl LirGen<GenResult> for (&Pattern, &TyScheme) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>, _: &TyCtx) -> RayResult<GenResult> {
         let &(pat, ty) = self;
         match pat {
-            Pattern::Name(name) | Pattern::Deref(name) => {
+            Pattern::Name(name) | Pattern::Deref(Node { id: _, value: name }) => {
                 let name = name.to_string();
                 let idx = ctx.get_var(&name).copied().unwrap_or_else(|| {
                     // this variable is not referenced in the current block
@@ -737,13 +737,13 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
         let name = if !fn_ty.is_polymorphic() {
             sema::fn_name(base, fn_ty)
         } else {
-            base.clone()
+            base.value.clone()
         };
 
         let mut func = Node::with_id(
             func.id,
             lir::Func::new(
-                base.clone(),
+                base.value.clone(),
                 fn_ty.clone(),
                 func.sig.modifiers.clone(),
                 symbols,
@@ -1418,7 +1418,7 @@ impl LirGen<GenResult> for Node<Decl> {
             Decl::Trait(tr) => {
                 for func in tr.fields.iter() {
                     let func = variant!(func.deref(), if Decl::FnSig(f));
-                    ctx.add_trait_member(func.path.clone());
+                    ctx.add_trait_member(func.path.value.clone());
                 }
             }
             Decl::Impl(imp) => {
@@ -1461,7 +1461,7 @@ impl LirGen<GenResult> for Node<Decl> {
                     }
                     Decl::FnSig(sig) => {
                         let ty = ctx.ty_of(tcx, self.id);
-                        let map_name = sig.path.clone();
+                        let map_name = sig.path.value.clone();
                         let link_name = sig
                             .path
                             .name()

@@ -27,17 +27,28 @@ pub struct InferSystem<'a> {
     ncx: &'a mut NameContext,
 }
 
+pub type InferResult = Result<(SolveResult<TypeSystemInfo, Ty, TyVar>, SchemeEnv), Vec<TypeError>>;
+
 impl<'a> InferSystem<'a> {
     pub fn new(tcx: &'a mut TyCtx, ncx: &'a mut NameContext) -> InferSystem<'a> {
         InferSystem { tcx, ncx }
     }
 
-    pub fn infer_ty<T, U>(
-        &mut self,
+    pub fn infer<T, U>(
+        tcx: &'a mut TyCtx,
+        ncx: &'a mut NameContext,
+        srcmap: &SourceMap,
         v: &T,
-        srcmap: &mut SourceMap,
-        defs: SchemeEnv,
-    ) -> Result<(SolveResult<TypeSystemInfo, Ty, TyVar>, SchemeEnv), Vec<TypeError>>
+        defs: &SchemeEnv,
+    ) -> InferResult
+    where
+        T: CollectConstraints<Output = U> + std::fmt::Display,
+    {
+        let mut infer_system = InferSystem::new(tcx, ncx);
+        infer_system.infer_ty(v, srcmap, defs)
+    }
+
+    pub fn infer_ty<T, U>(&mut self, v: &T, srcmap: &SourceMap, defs: &SchemeEnv) -> InferResult
     where
         T: CollectConstraints<Output = U> + std::fmt::Display,
     {
@@ -50,7 +61,7 @@ impl<'a> InferSystem<'a> {
             ncx: self.ncx,
             new_defs: &mut new_defs,
             bound_names: &mut BoundNames::new(),
-            defs,
+            defs: defs.clone(),
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);

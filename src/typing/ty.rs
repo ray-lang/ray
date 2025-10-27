@@ -135,6 +135,7 @@ impl TyScheme {
                         ..Default::default()
                     }],
                     kind: RayErrorKind::Type,
+                    context: Some("function signature type inference".to_string()),
                 });
             }
         }
@@ -194,6 +195,7 @@ impl TyScheme {
                                 ..Default::default()
                             }],
                             kind: RayErrorKind::Type,
+                            context: Some("function signature type inference".to_string()),
                         });
                     }
                 };
@@ -207,6 +209,7 @@ impl TyScheme {
                             ..Default::default()
                         }],
                         kind: RayErrorKind::Type,
+                        context: Some("function signature type inference".to_string()),
                     });
                 }
 
@@ -223,6 +226,7 @@ impl TyScheme {
                             ..Default::default()
                         }],
                         kind: RayErrorKind::Type,
+                        context: Some("function signature type inference".to_string()),
                     });
                 }
 
@@ -1027,7 +1031,7 @@ impl Ty {
     pub fn resolve_fqns(&mut self, scopes: &Vec<Scope>, ncx: &NameContext) {
         match self {
             Ty::Const(name) => {
-                if Ty::is_builtin(name) {
+                if Ty::is_builtin_name(name) {
                     return;
                 }
 
@@ -1089,7 +1093,7 @@ impl Ty {
         }
     }
 
-    pub fn is_builtin(name: &str) -> bool {
+    pub fn is_builtin_name(name: &str) -> bool {
         match name {
             "string" | "char" | "bool" | "int" | "uint" | "i8" | "i16" | "i32" | "i64" | "u8"
             | "u16" | "u32" | "u64" => true,
@@ -1272,6 +1276,14 @@ impl Ty {
     pub fn is_float_ty(&self) -> bool {
         match self {
             Ty::Const(a) if matches!(a.as_str(), "float" | "f32" | "f64" | "f128") => true,
+            _ => false,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_builtin(&self) -> bool {
+        match self {
+            Ty::Const(name) => Ty::is_builtin_name(name),
             _ => false,
         }
     }

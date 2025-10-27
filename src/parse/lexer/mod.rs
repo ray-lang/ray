@@ -46,8 +46,8 @@ impl Lexer {
     pub fn new(src: &str) -> Lexer {
         Lexer {
             src: src.chars().collect(),
-            curr_pos: Pos::new(),
-            stash_pos: Pos::new(),
+            curr_pos: Pos::empty(),
+            stash_pos: Pos::empty(),
             last_tok_span: Span::new(),
             token_stash: VecDeque::new(),
             stash: VecDeque::new(),
@@ -517,9 +517,14 @@ impl Lexer {
 
     pub fn consume_count(&mut self, n: usize) -> (Vec<(Vec<Preceding>, Token)>, Span) {
         // consume the preceding whitespace/comments and token n times
-        let start = self.position();
         self.ensure_stash(n);
         let toks = self.stash.drain(0..n).collect::<Vec<_>>();
+        let start = if let Some((_, tok)) = toks.first() {
+            tok.span.start
+        } else {
+            self.position()
+        };
+
         let end = if let Some((_, tok)) = toks.last() {
             tok.span.end
         } else {

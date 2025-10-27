@@ -5,9 +5,6 @@
   "engines": {
     "vscode": "^1.84.0"
   },
-  "activationEvents": [
-    "onLanguage:ray"
-  ],
   "contributes": {
     "languages": [
       {
@@ -17,7 +14,12 @@
         ],
         "extensions": [
           ".ray"
-        ]
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/logo_black.svg",
+          "dark": "./icons/logo_white.svg"
+        }
       }
     ],
     "grammars": [

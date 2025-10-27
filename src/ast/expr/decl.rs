@@ -173,7 +173,7 @@ impl Decl {
                 }
 
                 if let Some(funcs) = &im.funcs {
-                    defs.extend(funcs.iter().map(|f| (&f.sig.path, f.sig.ty.as_ref())));
+                    defs.extend(funcs.iter().map(|f| (&f.sig.path.value, f.sig.ty.as_ref())));
                 }
 
                 if let Some(consts) = &im.consts {
@@ -191,13 +191,14 @@ impl Decl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Struct {
-    pub name: Node<Name>,
+    pub path: Node<Path>,
     pub ty_params: Option<TypeParams>,
     pub fields: Option<Vec<Node<Name>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trait {
+    pub path: Node<Path>,
     pub ty: Parsed<Ty>,
     pub fields: Vec<Node<Decl>>,
     pub super_trait: Option<Parsed<Ty>>,
@@ -244,9 +245,9 @@ impl std::fmt::Display for Decl {
 
                 if let Some(fields) = &st.fields {
                     let fields = format!("{}\n", strutils::indent_lines_iter(fields, 2));
-                    write!(f, "(struct {}{} {{\n{}}})", st.name, tp, fields)
+                    write!(f, "(struct {}{} {{\n{}}})", st.path, tp, fields)
                 } else {
-                    write!(f, "(struct {}{})", st.name, tp)
+                    write!(f, "(struct {}{})", st.path, tp)
                 }
             }
             Decl::Trait(tr) => {
@@ -318,7 +319,7 @@ impl Decl {
             Decl::Mutable(n) | Decl::Name(n) => Some(n.path.to_string()),
             Decl::Func(f) => f.sig.path.name(),
             Decl::FnSig(sig) => sig.path.name(),
-            Decl::Struct(s) => Some(s.name.path.to_string()),
+            Decl::Struct(s) => s.path.name(),
             Decl::Trait(t) => Some(t.ty.name()),
             Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) => None,
         }

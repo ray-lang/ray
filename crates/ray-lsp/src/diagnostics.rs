@@ -1,20 +1,106 @@
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use ray::{
-    ast::Path,
-    driver::RayPaths,
+    ast::{Decl, Module, Path},
+    driver::{FrontendResult, RayPaths},
     errors::RayError,
     parse::{ParseOptions, Parser},
     pathlib::FilePath,
-    sema::ModuleBuilder,
+    sema::{NameContext, SymbolMap},
     span::{Source, SourceMap},
-    typing::InferSystem,
+};
+use ray::{
+    driver::{BuildOptions, Driver},
+    libgen::DefinitionRecord,
 };
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AnalysisSnapshotData {
+    pub module_path: Path,
+    pub entry_path: FilePath,
+    pub module: Module<(), Decl>,
+    pub name_context: NameContext,
+    pub srcmap: SourceMap,
+    pub symbol_map: SymbolMap,
+    pub definitions: HashMap<Path, DefinitionRecord>,
+    pub module_paths: HashSet<Path>,
+}
+
 pub enum CollectResult {
-    Diagnostics(Vec<Diagnostic>),
+    Diagnostics {
+        diagnostics: Vec<Diagnostic>,
+        snapshot: Option<AnalysisSnapshotData>,
+    },
     ToolchainMissing,
+}
+
+fn is_core_library_uri(uri: &Url) -> bool {
+    use std::path::Component;
+    if let Ok(path) = uri.to_file_path() {
+        // Match .../lib/core/... in a platform-independent way.
+        let mut seen_lib = false;
+        for comp in path.components() {
+            match comp {
+                Component::Normal(os) if os == "lib" => seen_lib = true,
+                Component::Normal(os) if seen_lib && os == "core" => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn module_entry_path(filepath: &FilePath) -> FilePath {
+    if is_module_root_file(filepath) {
+        return filepath.dir();
+    }
+
+    let dir = filepath.dir();
+    let mut candidates: Vec<FilePath> = vec![&dir / "module.ray", &dir / "mod.ray"];
+
+    if let Some(dir_name) = dir
+        .as_ref()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|s| !s.is_empty())
+    {
+        candidates.push(&dir / format!("{}.ray", dir_name));
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return dir;
+        }
+    }
+
+    filepath.clone()
+}
+
+fn is_module_root_file(filepath: &FilePath) -> bool {
+    let file_name = match filepath.as_ref().file_name().and_then(|name| name.to_str()) {
+        Some(name) => name,
+        None => return false,
+    };
+
+    if file_name == "module.ray" || file_name == "mod.ray" {
+        return true;
+    }
+
+    let parent_name = filepath
+        .as_ref()
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str());
+
+    match parent_name {
+        Some(parent) => file_name == format!("{}.ray", parent),
+        None => false,
+    }
 }
 
 pub fn collect(
@@ -24,6 +110,9 @@ pub fn collect(
     toolchain_root: Option<&FilePath>,
 ) -> CollectResult {
     let filepath = to_filepath(uri);
+    // When editing core sources, instruct the analyzer to run with "no core" (don't load prebuilt core),
+    // so diagnostics reflect the live core files in the workspace.
+    let no_core: bool = is_core_library_uri(uri);
     let mut options = ParseOptions::default();
     options.module_path = Path::new();
     options.use_stdin = false;
@@ -40,17 +129,23 @@ pub fn collect(
         .collect();
 
     if !diagnostics.is_empty() {
-        return CollectResult::Diagnostics(diagnostics);
+        return CollectResult::Diagnostics {
+            diagnostics: dedup_diagnostics(diagnostics),
+            snapshot: None,
+        };
     }
 
-    match collect_semantic_errors(text, &filepath, workspace_root, toolchain_root) {
-        Ok(semantic_errors) => {
+    match collect_semantic_errors(text, &filepath, workspace_root, toolchain_root, no_core) {
+        Ok((semantic_errors, snapshot)) => {
             diagnostics.extend(
                 semantic_errors
                     .into_iter()
                     .flat_map(|error| map_error(error, &filepath)),
             );
-            CollectResult::Diagnostics(diagnostics)
+            CollectResult::Diagnostics {
+                diagnostics: dedup_diagnostics(diagnostics),
+                snapshot,
+            }
         }
         Err(SemanticError::ToolchainMissing) => CollectResult::ToolchainMissing,
     }
@@ -65,37 +160,71 @@ fn collect_semantic_errors(
     filepath: &FilePath,
     workspace_root: Option<&FilePath>,
     toolchain_root: Option<&FilePath>,
-) -> Result<Vec<RayError>, SemanticError> {
+    no_core: bool,
+) -> Result<(Vec<RayError>, Option<AnalysisSnapshotData>), SemanticError> {
     let ray_paths = match RayPaths::discover(toolchain_root.cloned(), workspace_root) {
         Some(paths) => paths,
         None => return Err(SemanticError::ToolchainMissing),
     };
 
-    let module_path = Path::from(filepath.clone());
-    let mut include_paths = Vec::new();
-    let c_include = ray_paths.get_c_includes_path();
-    if c_include.exists() {
-        include_paths.push(c_include);
-    }
+    let mut overlays = HashMap::new();
+    overlays.insert(filepath.clone(), text.to_string());
 
-    let mut builder = ModuleBuilder::new(&ray_paths, include_paths, false);
-    let scope = match builder.build_from_src(text.to_string(), module_path.clone()) {
-        Ok(scope) => scope,
-        Err(err) => return Ok(vec![err]),
+    let entry_path = module_entry_path(filepath);
+    let build_options = BuildOptions {
+        input_path: entry_path.clone(),
+        no_core,
+        ..Default::default()
     };
-
-    let mut result = match builder.finish(&scope.path) {
+    let driver = Driver::new(ray_paths);
+    let result = match driver.build_frontend(&build_options, Some(overlays)) {
         Ok(result) => result,
-        Err(errors) => return Ok(errors),
+        Err(errors) => return Ok((errors, None)),
     };
 
-    let mut infer = InferSystem::new(&mut result.tcx, &mut result.ncx);
-    let semantic = match infer.infer_ty(&result.module, &mut result.srcmap, result.defs) {
-        Ok(_) => Vec::new(),
-        Err(errors) => errors.into_iter().map(RayError::from).collect(),
+    let FrontendResult {
+        module_path,
+        module,
+        tcx: _,
+        ncx,
+        srcmap,
+        symbol_map,
+        defs: _,
+        libs: _,
+        paths,
+        definitions,
+    } = result;
+
+    let snapshot = AnalysisSnapshotData {
+        module_path,
+        entry_path,
+        module,
+        name_context: ncx,
+        srcmap,
+        symbol_map,
+        definitions,
+        module_paths: paths,
     };
 
-    Ok(semantic)
+    Ok((vec![], Some(snapshot)))
+}
+
+fn dedup_diagnostics(mut diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    diags.retain(|d| {
+        // Dedup by message + start position (+ severity/source). Ignore end pos to collapse double-EOF variants.
+        let sev_dbg = d.severity.as_ref().map(|s| format!("{:?}", s));
+        let key = (
+            d.message.clone(),
+            d.range.start.line,
+            d.range.start.character,
+            sev_dbg,
+            d.source.clone(),
+        );
+        seen.insert(key)
+    });
+    diags
 }
 
 fn map_error(error: RayError, target: &FilePath) -> Vec<Diagnostic> {
@@ -149,7 +278,12 @@ fn make_diagnostic(message: &str, source: &Source) -> Diagnostic {
 }
 
 fn span_to_range(span: ray::span::Span) -> Range {
-    Range::new(pos_to_position(span.start), pos_to_position(span.end))
+    let mut start = pos_to_position(span.start);
+    let mut end = pos_to_position(span.end);
+    if (end.line, end.character) < (start.line, start.character) {
+        std::mem::swap(&mut start, &mut end);
+    }
+    Range::new(start, end)
 }
 
 fn pos_to_position(pos: ray::span::Pos) -> Position {
@@ -175,7 +309,7 @@ mod tests {
 
     fn expect_diagnostics(result: CollectResult) -> Vec<Diagnostic> {
         match result {
-            CollectResult::Diagnostics(diagnostics) => diagnostics,
+            CollectResult::Diagnostics { diagnostics, .. } => diagnostics,
             CollectResult::ToolchainMissing => {
                 panic!("expected diagnostics, but toolchain was reported missing")
             }

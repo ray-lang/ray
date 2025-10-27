@@ -436,6 +436,14 @@ impl Path {
             .collect()
     }
 
+    pub fn to_short_name(&self) -> String {
+        if let Some(name) = self.name() {
+            name
+        } else {
+            self.to_string()
+        }
+    }
+
     pub fn without_func_type(&self) -> Path {
         let parts = self
             .parts
@@ -451,6 +459,14 @@ impl Path {
         let mut parts = self.parts.clone();
         parts.pop_back();
         Path { parts }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &PathPart> {
+        self.parts.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PathPart> {
+        self.parts.iter_mut()
     }
 
     // pub fn split_name(&self) -> (&[PathPart], &PathPart) {
@@ -508,6 +524,12 @@ impl From<&[String]> for Path {
     }
 }
 
+impl From<VecDeque<PathPart>> for Path {
+    fn from(parts: VecDeque<PathPart>) -> Path {
+        Path { parts }
+    }
+}
+
 impl<T> From<&T> for Path
 where
     T: Clone,
@@ -515,6 +537,12 @@ where
 {
     fn from(v: &T) -> Self {
         Path::from(v.clone())
+    }
+}
+
+impl Into<String> for Path {
+    fn into(self) -> String {
+        self.to_string()
     }
 }
 

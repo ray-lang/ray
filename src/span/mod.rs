@@ -27,8 +27,15 @@ pub struct Span {
 impl Span {
     pub fn new() -> Span {
         Span {
-            start: Pos::new(),
-            end: Pos::new(),
+            start: Pos::empty(),
+            end: Pos::empty(),
+        }
+    }
+
+    pub fn at(pos: Pos) -> Span {
+        Span {
+            start: pos,
+            end: pos,
         }
     }
 
@@ -56,6 +63,23 @@ impl Span {
             end: other.end,
         }
     }
+
+    pub fn contains_pos(&self, pos: &Pos) -> bool {
+        (pos.offset >= self.start.offset) && (pos.offset <= self.end.offset)
+    }
+
+    pub fn contains_line_col(&self, line: usize, col: usize) -> bool {
+        if line < self.start.lineno || line > self.end.lineno {
+            return false;
+        }
+        if line == self.start.lineno && col < self.start.col {
+            return false;
+        }
+        if line == self.end.lineno && col > self.end.col {
+            return false;
+        }
+        true
+    }
 }
 
 impl fmt::Display for Span {
@@ -71,7 +95,7 @@ impl From<Pos> for Span {
 }
 
 impl Pos {
-    pub fn new() -> Pos {
+    pub fn empty() -> Pos {
         Pos {
             lineno: 0,
             col: 0,
@@ -79,7 +103,7 @@ impl Pos {
         }
     }
 
-    pub fn empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.lineno == 0 && self.col == 0 && self.offset == 0
     }
 }
@@ -87,5 +111,55 @@ impl Pos {
 impl fmt::Display for Pos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}:{}", self.lineno + 1, self.col + 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Pos, Span};
+
+    fn span(start: Pos, end: Pos) -> Span {
+        Span { start, end }
+    }
+
+    fn pos(lineno: usize, col: usize) -> Pos {
+        Pos {
+            lineno,
+            col,
+            offset: 0,
+        }
+    }
+
+    #[test]
+    fn span_contains_line_col() {
+        let s1 = span(pos(2, 5), pos(4, 10));
+
+        assert!(!s1.contains_line_col(1, 0));
+        assert!(!s1.contains_line_col(5, 0));
+
+        assert!(!s1.contains_line_col(2, 4));
+        assert!(s1.contains_line_col(2, 5));
+        assert!(s1.contains_line_col(2, 10));
+        assert!(s1.contains_line_col(2, 15));
+
+        assert!(s1.contains_line_col(3, 0));
+
+        assert!(s1.contains_line_col(4, 0));
+        assert!(s1.contains_line_col(4, 5));
+        assert!(s1.contains_line_col(4, 10));
+        assert!(!s1.contains_line_col(4, 11));
+
+        let s2 = span(pos(2, 0), pos(2, 10));
+        assert!(!s2.contains_line_col(2, 11));
+        assert!(s2.contains_line_col(2, 10));
+        assert!(s2.contains_line_col(2, 0));
+        assert!(!s2.contains_line_col(2, usize::MAX));
+        assert!(!s2.contains_line_col(1, 0));
+        assert!(!s2.contains_line_col(3, 0));
+
+        let s3 = span(pos(0, 0), pos(0, 0));
+        assert!(s3.contains_line_col(0, 0));
+        assert!(!s3.contains_line_col(0, 1));
+        assert!(!s3.contains_line_col(1, 0));
     }
 }

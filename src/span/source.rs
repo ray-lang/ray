@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
     ops::{Deref, DerefMut},
 };
@@ -17,6 +17,7 @@ use super::Span;
 pub enum TriviaKind {
     Keyword,
     Comment,
+    Operator,
 }
 
 #[derive(Clone, Debug, Default, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -98,11 +99,17 @@ pub struct SourceMap {
     docs: HashMap<u64, String>,
     decorators: HashMap<u64, Vec<Decorator>>,
     trivia: HashMap<FilePath, Vec<Trivia>>,
+    #[serde(default)]
+    file_index: HashMap<FilePath, Vec<u64>>,
+    #[serde(default)]
+    synthetic_nodes: HashSet<u64>,
 }
 
 impl Extend<(u64, Source)> for SourceMap {
     fn extend<T: IntoIterator<Item = (u64, Source)>>(&mut self, iter: T) {
-        self.map.extend(iter);
+        for (id, src) in iter {
+            self.set_src_id(id, src);
+        }
     }
 }
 
@@ -122,7 +129,17 @@ impl SourceMap {
             docs: HashMap::new(),
             decorators: HashMap::new(),
             trivia: HashMap::new(),
+            file_index: HashMap::new(),
+            synthetic_nodes: HashSet::new(),
         }
+    }
+
+    pub fn mark_synthetic(&mut self, node_id: u64) {
+        self.synthetic_nodes.insert(node_id);
+    }
+
+    pub fn is_synthetic(&self, node_id: u64) -> bool {
+        self.synthetic_nodes.contains(&node_id)
     }
 
     pub fn get<T>(&self, node: &Node<T>) -> Source {
@@ -149,8 +166,27 @@ impl SourceMap {
             .unwrap()
     }
 
+    fn set_src_id(&mut self, id: u64, src: Source) {
+        if let Some(existing) = self.map.insert(id, src.clone()) {
+            if !existing.filepath.is_empty() {
+                if let Some(ids) = self.file_index.get_mut(&existing.filepath) {
+                    ids.retain(|node_id| *node_id != id);
+                    if ids.is_empty() {
+                        self.file_index.remove(&existing.filepath);
+                    }
+                }
+            }
+        }
+        if !src.filepath.is_empty() {
+            self.file_index
+                .entry(src.filepath.clone())
+                .or_default()
+                .push(id);
+        }
+    }
+
     pub fn set_src<T>(&mut self, node: &Node<T>, src: Source) {
-        self.map.insert(node.id, src);
+        self.set_src_id(node.id, src);
     }
 
     pub fn set_doc<T>(&mut self, node: &Node<T>, doc: String) {
@@ -168,7 +204,9 @@ impl SourceMap {
     pub fn extend_with(&mut self, mut other: SourceMap) {
         self.docs.extend(other.docs.drain());
         self.decorators.extend(other.decorators.drain());
-        self.map.extend(other.map.drain());
+        for (id, src) in other.map.drain() {
+            self.set_src_id(id, src);
+        }
         for (filepath, mut entries) in other.trivia.drain() {
             self.trivia
                 .entry(filepath)
@@ -224,6 +262,50 @@ impl SourceMap {
         self.trivia
             .iter()
             .map(|(filepath, entries)| (filepath, entries.as_slice()))
+    }
+
+    pub fn node_ids_for_file(&self, filepath: &FilePath) -> Option<&[u64]> {
+        self.file_index.get(filepath).map(|ids| ids.as_slice())
+    }
+
+    pub fn find_at_position(
+        &self,
+        filepath: &FilePath,
+        line: usize,
+        col: usize,
+    ) -> Option<(u64, Source)> {
+        let mut best: Option<(u64, Source, usize)> = None;
+
+        for id in self.file_index.get(filepath)?.iter() {
+            if self.is_synthetic(*id) {
+                continue;
+            }
+
+            let Some(src) = self.map.get(id) else {
+                continue;
+            };
+
+            let Some(span) = src.span.as_ref() else {
+                continue;
+            };
+
+            if !span.contains_line_col(line, col) {
+                continue;
+            }
+
+            let span_len = span.len();
+
+            let replace = match &best {
+                Some((_, _, best_len)) => span_len <= *best_len,
+                None => true,
+            };
+
+            if replace {
+                best = Some((*id, src.clone(), span_len));
+            }
+        }
+
+        best.map(|(id, src, _)| (id, src))
     }
 }
 

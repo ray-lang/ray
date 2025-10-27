@@ -92,6 +92,7 @@ impl From<lang_c::driver::Error> for RayError {
                     ..Default::default()
                 }],
                 msg: "unexpected token".to_string(),
+                context: Some("from C syntax error".to_string()),
             },
         }
     }

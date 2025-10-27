@@ -38,6 +38,7 @@ impl From<TypeError> for RayError {
             msg: err.message(),
             src: err.src,
             kind: RayErrorKind::Type,
+            context: Some("type checking".to_string()),
         }
     }
 }

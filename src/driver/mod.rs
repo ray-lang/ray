@@ -14,7 +14,7 @@ use crate::{
     errors::{RayError, RayErrorKind},
     libgen, lir,
     pathlib::FilePath,
-    sema,
+    sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
     span::{SourceMap, Span},
     typing::{
         InferSystem, TyCtx,
@@ -32,16 +32,17 @@ pub use analyze::{
 };
 pub use build::BuildOptions;
 
-struct FrontendResult {
-    module_path: Path,
-    module: Module<(), Decl>,
-    tcx: TyCtx,
-    ncx: sema::NameContext,
-    srcmap: SourceMap,
-    defs: SchemeEnv,
-    libs: Vec<lir::Program>,
-    paths: HashSet<Path>,
-    definitions: HashMap<String, libgen::DefinitionRecord>,
+pub struct FrontendResult {
+    pub module_path: Path,
+    pub module: Module<(), Decl>,
+    pub tcx: TyCtx,
+    pub ncx: sema::NameContext,
+    pub srcmap: SourceMap,
+    pub symbol_map: SymbolMap,
+    pub defs: SchemeEnv,
+    pub libs: Vec<lir::Program>,
+    pub paths: HashSet<Path>,
+    pub definitions: HashMap<Path, libgen::DefinitionRecord>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -119,7 +120,11 @@ impl Driver {
     }
 
     pub fn analyze(&mut self, options: AnalyzeOptions) -> AnalysisReport {
-        let AnalyzeOptions { input_path, format } = options;
+        let AnalyzeOptions {
+            input_path,
+            format,
+            no_core,
+        } = options;
         let build_options = BuildOptions {
             input_path: input_path.clone(),
             to_stdout: false,
@@ -128,16 +133,15 @@ impl Driver {
             emit_ir: false,
             print_ast: false,
             no_compile: true,
-            no_core: false,
             target: None,
             output_path: None,
             c_include_paths: None,
             link_modules: None,
             build_lib: false,
+            no_core,
         };
 
-        let paths = self.ray_paths.clone();
-        match self.build_frontend(&build_options, &paths) {
+        match self.build_frontend(&build_options, None) {
             Ok(frontend) => {
                 let symbols = collect_symbols(&frontend);
                 let definitions = collect_definitions(&frontend);
@@ -150,21 +154,23 @@ impl Driver {
         }
     }
 
-    fn build_frontend(
+    pub fn build_frontend(
         &self,
         options: &BuildOptions,
-        paths: &RayPaths,
+        overlays: Option<HashMap<FilePath, String>>,
     ) -> Result<FrontendResult, Vec<RayError>> {
         let mut c_include_paths = options.c_include_paths.clone().unwrap_or_else(|| vec![]);
-        let default_include = paths.get_c_includes_path();
+        let default_include = self.ray_paths.get_c_includes_path();
         if default_include.exists() && !c_include_paths.contains(&default_include) {
             c_include_paths.insert(0, default_include);
         }
-        let mut mod_builder = sema::ModuleBuilder::new(paths, c_include_paths, options.no_core);
-        let module_scope = match mod_builder.build_from_path(&options.input_path, None)? {
-            Some(module_path) => module_path,
-            None => return Err(mod_builder.take_errors()),
-        };
+        let mut mod_builder =
+            sema::ModuleBuilder::new(&self.ray_paths, c_include_paths, options.no_core);
+        let module_scope =
+            match mod_builder.build_from_path_with_overlay(&options.input_path, None, overlays)? {
+                Some(module_path) => module_path,
+                None => return Err(mod_builder.take_errors()),
+            };
         let module_path = module_scope.path;
 
         if options.print_ast {
@@ -177,9 +183,10 @@ impl Driver {
         result.module.is_lib = options.build_lib;
 
         log::debug!("{}", result.module);
-        let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
         log::info!("type checking module...");
-        let (solution, defs) = match inf.infer_ty(&result.module, &mut result.srcmap, result.defs) {
+
+        let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
+        let (solution, defs) = match inf.infer_ty(&result.module, &result.srcmap, &result.defs) {
             Ok(result) => result,
             Err(errs) => {
                 return Err(errs
@@ -188,6 +195,7 @@ impl Driver {
                         msg: err.message(),
                         src: err.src,
                         kind: RayErrorKind::Type,
+                        context: Some(format!("while type checking {module_path}")),
                     })
                     .collect());
             }
@@ -195,115 +203,12 @@ impl Driver {
 
         log::debug!("solution: {}", solution);
 
-        result.tcx.apply_subst(&solution.subst);
-        let inst_scheme_map = solution
-            .inst_type_schemes
-            .iter()
-            .map(|(v, scheme)| {
-                let ty_scheme = TyScheme::scheme(scheme.clone());
-                log::debug!(
-                    "inst_type_schemes: inserting {} => {} (has_quantifiers={})",
-                    v,
-                    ty_scheme,
-                    ty_scheme.has_quantifiers()
-                );
-                (v.clone(), ty_scheme)
-            })
-            .collect();
-        result.tcx.extend_inst_ty_map(inst_scheme_map);
-        let inst_scheme_keys = solution
-            .inst_type_schemes
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
+        result.apply_solution(solution, &defs);
 
-        let mut poly_inst_seeds = Subst::<TyVar, TyScheme>::new();
-        {
-            let tcx = &result.tcx;
-            let defs_ref = &defs;
+        let definitions =
+            libgen::collect_definition_records(&result.module, &result.srcmap, &result.tcx);
 
-            let mut seed_from_fn = |node_id: u64, path: &Path| {
-                if let Some(Ty::Var(original_tv)) = tcx.original_ty_of(node_id) {
-                    if tcx.inst_ty_of(original_tv).is_some() {
-                        log::debug!(
-                            "poly_inst_seed: {} already has instantiation; skipping path {}",
-                            original_tv,
-                            path
-                        );
-                        return;
-                    }
-
-                    if let Some(scheme) = defs_ref.get(path) {
-                        if scheme.has_quantifiers() {
-                            log::debug!(
-                                "poly_inst_seed: seeding {} with polymorphic scheme {} from {}",
-                                original_tv,
-                                scheme,
-                                path
-                            );
-                            poly_inst_seeds.insert(original_tv.clone(), scheme.clone());
-                        } else {
-                            log::debug!(
-                                "poly_inst_seed: defs entry for {} is monomorphic {}; skipping",
-                                path,
-                                scheme
-                            );
-                        }
-                    } else {
-                        log::debug!("poly_inst_seed: no defs entry for {}; skipping", path);
-                    }
-                }
-            };
-
-            for decl in &result.module.decls {
-                match &decl.value {
-                    Decl::Func(func) => seed_from_fn(decl.id, &func.sig.path),
-                    Decl::Impl(imp) => {
-                        if let Some(funcs) = &imp.funcs {
-                            for func in funcs {
-                                seed_from_fn(func.id, &func.sig.path);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if !poly_inst_seeds.is_empty() {
-            result.tcx.extend_inst_ty_map(poly_inst_seeds);
-        }
-
-        log::debug!("defs: {}", defs);
-
-        let filtered_scheme_subst = solution
-            .scheme_subst()
-            .into_iter()
-            .filter_map(|(v, s)| {
-                if inst_scheme_keys.contains(&v) {
-                    log::debug!("scheme_subst: skipping {} because instantiation exists", v);
-                    return None;
-                }
-                let scheme = TyScheme::scheme(s);
-                if scheme.has_quantifiers() {
-                    log::debug!(
-                        "scheme_subst: dropping {} => {} (has_quantifiers)",
-                        v,
-                        scheme
-                    );
-                    None
-                } else {
-                    log::debug!("scheme_subst: keeping {} => {}", v, scheme);
-                    Some((v, scheme))
-                }
-            })
-            .collect();
-        result.tcx.extend_scheme_subst(filtered_scheme_subst);
-        result.tcx.extend_predicates(solution.qualifiers.clone());
-        result.tcx.tf().skip_to(solution.unique as u64);
-
-        log::debug!("{}", result.module);
-        log::debug!("{}", result.tcx);
+        let symbol_map = build_symbol_map(SymbolBuildContext::new(&result.module, &result.srcmap));
 
         Ok(FrontendResult {
             module_path,
@@ -311,17 +216,33 @@ impl Driver {
             tcx: result.tcx,
             ncx: result.ncx,
             srcmap: result.srcmap,
+            symbol_map,
             defs,
             libs: result.libs,
             paths: result.paths,
-            definitions: result.definitions,
+            definitions,
         })
     }
 
     pub fn emit_errors(&mut self, errs: Vec<RayError>) {
         for ((kind, src), group) in &errs.into_iter().group_by(|err| (err.kind, err.src.clone())) {
-            let msg = group.map(|err| err.msg).collect::<Vec<_>>().join("\n");
-            let err = RayError { msg, src, kind };
+            let group_errs = group.collect::<Vec<_>>();
+            let msg = group_errs
+                .iter()
+                .map(|err| err.msg.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let context = group_errs
+                .iter()
+                .filter_map(|err| err.context.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let err = RayError {
+                msg,
+                src,
+                kind,
+                context: Some(context),
+            };
             err.emit();
             self.errors_emitted += 1;
         }
@@ -330,7 +251,7 @@ impl Driver {
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
         let paths = self.ray_paths.clone();
 
-        let frontend = self.build_frontend(&options, &paths)?;
+        let frontend = self.build_frontend(&options, None)?;
 
         if options.no_compile {
             return Ok(());
@@ -342,6 +263,7 @@ impl Driver {
             tcx,
             ncx,
             srcmap,
+            symbol_map: _,
             defs,
             libs,
             paths: module_paths,
@@ -372,7 +294,7 @@ impl Driver {
             modules.sort();
             log::debug!("modules: {:?}", modules);
 
-            let definitions = libgen::collect_definition_records(&module, &srcmap);
+            let definitions = libgen::collect_definition_records(&module, &srcmap, &tcx);
             let lib = libgen::serialize(program, tcx, ncx, srcmap, defs, modules, definitions);
             let path = output_path("raylib");
             let build_path = paths.get_build_path();
@@ -427,7 +349,7 @@ fn collect_symbols(frontend: &FrontendResult) -> Vec<SymbolInfo> {
                 });
             }
             Decl::Struct(st) => {
-                let name = st.name.value.path.to_string();
+                let name = st.path.value.to_string();
                 if !seen.insert(name.clone()) {
                     continue;
                 }

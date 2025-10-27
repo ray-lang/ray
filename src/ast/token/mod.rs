@@ -415,7 +415,7 @@ impl fmt::Display for TokenKind {
                 CommentKind::Line => "//".to_string(),
             },
             TokenKind::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
-            TokenKind::EOF => "".to_string(),
+            TokenKind::EOF => "EOF".to_string(),
         };
 
         write!(f, "{}", s)

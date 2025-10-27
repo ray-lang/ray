@@ -116,7 +116,7 @@ impl Expr {
     pub fn path(&self) -> Option<Path> {
         match self {
             Expr::Name(n) => Some(n.path.clone()),
-            Expr::Func(f) => Some(f.sig.path.clone()),
+            Expr::Func(f) => Some(f.sig.path.value.clone()),
             Expr::Pattern(p) => p.path().cloned(),
             Expr::Path(p) => Some(p.clone()),
             Expr::Assign(_)
@@ -228,5 +228,9 @@ impl Expr {
             Expr::Unsafe(..) => "unsafe",
             Expr::While(..) => "while",
         }
+    }
+
+    pub fn is_missing(&self) -> bool {
+        matches!(self, Expr::Missing(_))
     }
 }

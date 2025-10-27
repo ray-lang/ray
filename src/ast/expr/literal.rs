@@ -69,6 +69,7 @@ impl Literal {
                             Path::new(),
                             src_module.clone(),
                         )],
+                        context: Some(format!("integer literal raw suffix: {s}")),
                     })?;
                     (*size, s.starts_with("i"))
                 } else {
@@ -94,6 +95,7 @@ impl Literal {
                                 Path::new(),
                                 src_module.clone(),
                             )],
+                            context: Some(format!("float literal suffix: {s}")),
                         });
                     }
 
@@ -108,6 +110,7 @@ impl Literal {
                             Path::new(),
                             src_module.clone(),
                         )],
+                        context: Some(format!("float literal suffix: {s}")),
                     })?
                 } else {
                     0

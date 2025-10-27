@@ -8,7 +8,7 @@ use tower_lsp::lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
 };
 
-const TOKEN_TYPES: [SemanticTokenType; 10] = [
+const TOKEN_TYPES: [SemanticTokenType; 11] = [
     SemanticTokenType::KEYWORD,
     SemanticTokenType::FUNCTION,
     SemanticTokenType::VARIABLE,
@@ -19,6 +19,7 @@ const TOKEN_TYPES: [SemanticTokenType; 10] = [
     SemanticTokenType::OPERATOR,
     SemanticTokenType::NAMESPACE,
     SemanticTokenType::COMMENT,
+    SemanticTokenType::NUMBER,
 ];
 
 const TOKEN_TYPE_KEYWORD: usize = 0;
@@ -27,10 +28,11 @@ const TOKEN_TYPE_VARIABLE: usize = 2;
 const TOKEN_TYPE_TYPE: usize = 3;
 const TOKEN_TYPE_PARAMETER: usize = 4;
 const TOKEN_TYPE_FIELD: usize = 5;
-const TOKEN_TYPE_LITERAL: usize = 6;
+const TOKEN_TYPE_STRING: usize = 6;
 const TOKEN_TYPE_OPERATOR: usize = 7;
 const TOKEN_TYPE_NAMESPACE: usize = 8;
 const TOKEN_TYPE_COMMENT: usize = 9;
+const TOKEN_TYPE_NUMBER: usize = 10;
 
 const TOKEN_MODIFIERS: [SemanticTokenModifier; 3] = [
     SemanticTokenModifier::DECLARATION,
@@ -58,15 +60,22 @@ pub fn semantic_tokens(source: &str) -> SemanticTokens {
 
 fn encode_tokens(tokens: &[RayToken], source: &str) -> SemanticTokens {
     let line_starts = compute_line_starts(source);
-    let mut data: Vec<SemanticToken> = Vec::new();
-    let mut prev_line: u32 = 0;
-    let mut prev_col: u32 = 0;
-    let mut first = true;
+
+    // Collect absolute tokens as (line, col_utf16, len_utf16, type, mods).
+    #[derive(Clone, Copy)]
+    struct AbsTok {
+        line: u32,
+        col: u32,
+        len: u32,
+        ty: u32,
+        mods: u32,
+    }
+
+    let mut abs: Vec<AbsTok> = Vec::with_capacity(tokens.len().saturating_mul(2)); // comments may split
 
     for token in tokens {
         let start_offset = token.span.start.offset.min(source.len());
-        let mut end_offset = token.span.end.offset.min(source.len());
-
+        let end_offset = token.span.end.offset.min(source.len());
         if start_offset >= end_offset {
             continue;
         }
@@ -75,56 +84,156 @@ fn encode_tokens(tokens: &[RayToken], source: &str) -> SemanticTokens {
         let end_position_offset = end_offset.saturating_sub(1);
         let (end_line, _) = offset_to_position(end_position_offset, &line_starts, source);
 
+        let token_type = kind_to_index(token.kind) as u32;
+        let modifiers = modifiers_bitset(&token.modifiers);
+
+        // Multi-line comments: split into one token per line.
+        if end_line > start_line && matches!(token.kind, RayKind::Comment) {
+            for line in start_line..=end_line {
+                let line_start_b = line_starts[line as usize];
+                let line_end_b = *line_starts.get(line as usize + 1).unwrap_or(&source.len());
+
+                let seg_start_b = if line == start_line {
+                    start_offset
+                } else {
+                    line_start_b
+                };
+                let seg_end_b = if line == end_line {
+                    end_offset
+                } else {
+                    // Exclude the trailing '\n' if present on this line.
+                    line_end_b.saturating_sub(1).min(source.len())
+                };
+
+                if seg_end_b <= seg_start_b {
+                    continue;
+                }
+
+                let (line_idx, start_col_u16) =
+                    offset_to_position(seg_start_b, &line_starts, source);
+                let slice = &source[seg_start_b..seg_end_b];
+                let len_u16 = utf16_len(slice);
+                if len_u16 == 0 {
+                    continue;
+                }
+
+                abs.push(AbsTok {
+                    line: line_idx,
+                    col: start_col_u16,
+                    len: len_u16,
+                    ty: token_type,
+                    mods: modifiers,
+                });
+            }
+            continue;
+        }
+
+        // Non-comment (or single-line) tokens:
+        // If a token crosses lines and is not a comment, trim to the end of the first line.
+        let mut trimmed_end_offset = end_offset;
         if end_line > start_line {
             let next_start = line_starts
                 .get(start_line as usize + 1)
                 .copied()
                 .unwrap_or(source.len());
             let trimmed = next_start.saturating_sub(1);
-            end_offset = if trimmed > start_offset {
+            trimmed_end_offset = if trimmed > start_offset {
                 trimmed
             } else {
                 next_start
             };
         }
 
-        if end_offset <= start_offset {
+        if trimmed_end_offset <= start_offset {
             continue;
         }
 
-        let token_slice = &source[start_offset..end_offset];
+        let token_slice = &source[start_offset..trimmed_end_offset];
         let length = utf16_len(token_slice);
         if length == 0 {
             continue;
         }
 
+        abs.push(AbsTok {
+            line: start_line,
+            col: start_col,
+            len: length,
+            ty: token_type,
+            mods: modifiers,
+        });
+    }
+
+    // Sort by (line, col) to guarantee strict ordering, regardless of upstream ordering.
+    abs.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
+
+    // Sanitize: ensure tokens are strictly non-overlapping and monotonic on each line.
+    // VS Code will drop the remainder of the stream if it sees an invalid/overlapping span.
+    let mut sanitized: Vec<AbsTok> = Vec::with_capacity(abs.len());
+    let mut last_line: u32 = u32::MAX;
+    let mut last_end_col: u32 = 0;
+
+    for mut t in abs.into_iter() {
+        if t.line != last_line {
+            // New line: reset end tracker
+            last_line = t.line;
+            last_end_col = 0;
+        }
+
+        // If this token starts before the end of the previous token on the same line,
+        // clamp its start to avoid overlap.
+        if t.col < last_end_col {
+            let overlap = last_end_col - t.col;
+            if overlap >= t.len {
+                // Entire token would be overlapped -> drop it
+                continue;
+            }
+            // Shift start to last_end_col by reducing length
+            t.len -= overlap;
+            t.col = last_end_col;
+        }
+
+        // Skip zero-length after clamping
+        if t.len == 0 {
+            continue;
+        }
+
+        last_end_col = t.col.saturating_add(t.len);
+        sanitized.push(t);
+    }
+
+    // Use the sanitized list for delta-encoding
+    let abs = sanitized;
+
+    // Delta-encode into LSP SemanticToken list.
+    let mut data: Vec<SemanticToken> = Vec::with_capacity(abs.len());
+    let mut prev_line: u32 = 0;
+    let mut prev_col: u32 = 0;
+    let mut first = true;
+
+    for t in abs {
         let delta_line = if first {
-            start_line
+            t.line
         } else {
-            start_line.saturating_sub(prev_line)
+            t.line.saturating_sub(prev_line)
         };
-
         let delta_start = if first {
-            start_col
+            t.col
         } else if delta_line == 0 {
-            start_col.saturating_sub(prev_col)
+            t.col.saturating_sub(prev_col)
         } else {
-            start_col
+            t.col
         };
-
-        let token_type = kind_to_index(token.kind) as u32;
-        let modifiers = modifiers_bitset(&token.modifiers);
 
         data.push(SemanticToken {
             delta_line,
             delta_start,
-            length,
-            token_type,
-            token_modifiers_bitset: modifiers,
+            length: t.len,
+            token_type: t.ty,
+            token_modifiers_bitset: t.mods,
         });
 
-        prev_line = start_line;
-        prev_col = start_col;
+        prev_line = t.line;
+        prev_col = t.col;
         first = false;
     }
 
@@ -142,10 +251,11 @@ fn kind_to_index(kind: RayKind) -> usize {
         RayKind::Type | RayKind::Trait => TOKEN_TYPE_TYPE,
         RayKind::Parameter => TOKEN_TYPE_PARAMETER,
         RayKind::Field => TOKEN_TYPE_FIELD,
-        RayKind::Literal => TOKEN_TYPE_LITERAL,
+        RayKind::String => TOKEN_TYPE_STRING,
         RayKind::Operator => TOKEN_TYPE_OPERATOR,
         RayKind::Namespace => TOKEN_TYPE_NAMESPACE,
         RayKind::Comment => TOKEN_TYPE_COMMENT,
+        RayKind::Number => TOKEN_TYPE_NUMBER,
     }
 }
 
@@ -322,9 +432,9 @@ fn make(value: int) -> Foo {
             "expected at least one comment token"
         );
         assert!(
-            decoded.iter().any(|(line, _, _, ty)| {
-                *ty == TOKEN_TYPE_COMMENT as u32 && *line == 6
-            }),
+            decoded
+                .iter()
+                .any(|(line, _, _, ty)| { *ty == TOKEN_TYPE_COMMENT as u32 && *line == 7 }),
             "expected trailing comment token on function body line, got {decoded:?}"
         );
 

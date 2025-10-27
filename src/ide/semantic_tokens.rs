@@ -20,11 +20,12 @@ pub enum SemanticTokenKind {
     Variable,
     Parameter,
     Field,
-    Literal,
+    String,
     Operator,
     Namespace,
     Keyword,
     Comment,
+    Number,
 }
 
 /// Modifiers that decorate a semantic token (e.g. declaration vs. usage).
@@ -131,15 +132,15 @@ impl<'a> SemanticTokenCollector<'a> {
 
     fn visit_import(&mut self, import: &Import) {
         match &import.kind {
-            ImportKind::Path(path) => self.emit_path_node(path),
+            ImportKind::Path(path) => self.emit_path_node(path, SemanticTokenKind::Namespace, &[]),
             ImportKind::Names(path, names) => {
-                self.emit_path_node(path);
+                self.emit_path_node(path, SemanticTokenKind::Namespace, &[]);
                 for name in names {
-                    self.emit_path_node(name);
+                    self.emit_path_node(name, SemanticTokenKind::Namespace, &[]);
                 }
             }
             ImportKind::CImport(_, span) => {
-                self.emit_span(*span, SemanticTokenKind::Literal, &[]);
+                self.emit_span(*span, SemanticTokenKind::String, &[]);
             }
         }
     }
@@ -184,8 +185,8 @@ impl<'a> SemanticTokenCollector<'a> {
     }
 
     fn visit_struct(&mut self, strct: &Struct) {
-        self.emit_name_node(
-            &strct.name,
+        self.emit_path_node(
+            &strct.path,
             SemanticTokenKind::Type,
             &[SemanticTokenModifier::Declaration],
         );
@@ -312,7 +313,7 @@ impl<'a> SemanticTokenCollector<'a> {
 
     fn visit_pattern(&mut self, pattern: &Node<Pattern>) {
         match &pattern.value {
-            Pattern::Name(name) | Pattern::Deref(name) => {
+            Pattern::Name(name) | Pattern::Deref(Node { id: _, value: name }) => {
                 let span = self.srcmap.span_of(pattern);
                 self.emit_span(
                     span,
@@ -361,7 +362,13 @@ impl<'a> SemanticTokenCollector<'a> {
                 }
             }
             Expr::Call(call) => {
-                self.visit_expr(&call.callee);
+                if let Expr::Name(name) = &call.callee.value {
+                    let span = self.srcmap.span_of(&call.callee);
+                    self.emit_name(name, span, SemanticTokenKind::Function, &[]);
+                } else {
+                    self.visit_expr(&call.callee);
+                }
+
                 for arg in &call.args.items {
                     self.visit_expr(arg);
                 }
@@ -408,18 +415,28 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.visit_expr(item);
                 }
             }
-            Expr::Literal(_) => {
+            Expr::Literal(lit) => {
+                let kind = match lit {
+                    ast::Literal::Integer { .. }
+                    | ast::Literal::Float { .. }
+                    | ast::Literal::Bool(_) => SemanticTokenKind::Number,
+                    ast::Literal::String(_)
+                    | ast::Literal::ByteString(_)
+                    | ast::Literal::Byte(_)
+                    | ast::Literal::Char(_)
+                    | ast::Literal::UnicodeEscSeq(_) => SemanticTokenKind::String,
+                    ast::Literal::Nil => SemanticTokenKind::Keyword,
+                    ast::Literal::Unit => return,
+                };
+
                 let span = self.srcmap.span_of(expr);
-                self.emit_span(span, SemanticTokenKind::Literal, &[]);
+                self.emit_span(span, kind, &[]);
             }
             Expr::Loop(loop_expr) => self.visit_expr(&loop_expr.body),
             Expr::Missing(_) => {}
             Expr::Name(name) => {
                 let span = self.srcmap.span_of(expr);
-                self.emit_span(span, SemanticTokenKind::Variable, &[]);
-                if let Some(ty) = &name.ty {
-                    self.emit_parsed_tyscheme(ty, SemanticTokenKind::Type);
-                }
+                self.emit_name(name, span, SemanticTokenKind::Variable, &[]);
             }
             Expr::New(new_expr) => {
                 self.emit_node_parsed_ty(&new_expr.ty, SemanticTokenKind::Type);
@@ -471,7 +488,12 @@ impl<'a> SemanticTokenCollector<'a> {
 
     fn visit_curly(&mut self, curly: &Curly) {
         if let Some(lhs) = &curly.lhs {
-            self.emit_parsed_path(lhs, SemanticTokenKind::Type);
+            let kind = if matches!(lhs.name(), Some(n) if Ty::is_builtin_name(&n)) {
+                SemanticTokenKind::Keyword
+            } else {
+                SemanticTokenKind::Type
+            };
+            self.emit_parsed_path(lhs, kind);
         }
 
         for element in &curly.elements {
@@ -499,6 +521,26 @@ impl<'a> SemanticTokenCollector<'a> {
         }
     }
 
+    fn emit_name(
+        &mut self,
+        name: &Name,
+        span: Span,
+        kind: SemanticTokenKind,
+        modifiers: &[SemanticTokenModifier],
+    ) {
+        let kind = if let Some(name) = name.path.name()
+            && name == "self"
+        {
+            SemanticTokenKind::Keyword
+        } else {
+            kind
+        };
+        self.emit_span(span, kind, modifiers);
+        if let Some(ty) = &name.ty {
+            self.emit_parsed_tyscheme(ty, SemanticTokenKind::Type);
+        }
+    }
+
     fn emit_name_node(
         &mut self,
         name: &Node<Name>,
@@ -506,15 +548,17 @@ impl<'a> SemanticTokenCollector<'a> {
         modifiers: &[SemanticTokenModifier],
     ) {
         let span = self.srcmap.span_of(name);
-        self.emit_span(span, kind, modifiers);
-        if let Some(ty) = &name.value.ty {
-            self.emit_parsed_tyscheme(ty, SemanticTokenKind::Type);
-        }
+        self.emit_name(name, span, kind, modifiers);
     }
 
-    fn emit_path_node(&mut self, path: &Node<ast::Path>) {
+    fn emit_path_node(
+        &mut self,
+        path: &Node<ast::Path>,
+        kind: SemanticTokenKind,
+        modifiers: &[SemanticTokenModifier],
+    ) {
         let span = self.srcmap.span_of(path);
-        self.emit_span(span, SemanticTokenKind::Namespace, &[]);
+        self.emit_span(span, kind, modifiers);
     }
 
     fn emit_parsed_tyscheme(&mut self, scheme: &Parsed<TyScheme>, kind: SemanticTokenKind) {
@@ -522,6 +566,12 @@ impl<'a> SemanticTokenCollector<'a> {
             if matches!(scheme.value().mono(), Ty::Never) {
                 return;
             }
+            let kind = if scheme.value().mono().is_builtin() {
+                SemanticTokenKind::Keyword
+            } else {
+                kind
+            };
+
             self.emit_span(span, kind, &[]);
         }
     }
@@ -531,6 +581,12 @@ impl<'a> SemanticTokenCollector<'a> {
             if matches!(ty.value(), Ty::Never) {
                 return;
             }
+
+            let kind = if ty.is_builtin() {
+                SemanticTokenKind::Keyword
+            } else {
+                kind
+            };
             self.emit_span(span, kind, &[]);
         }
     }
@@ -620,6 +676,9 @@ fn append_trivia_tokens(tokens: &mut Vec<SemanticToken>, srcmap: &SourceMap) {
                 }
                 TriviaKind::Comment => {
                     tokens.push(SemanticToken::new(trivia.span, SemanticTokenKind::Comment));
+                }
+                TriviaKind::Operator => {
+                    tokens.push(SemanticToken::new(trivia.span, SemanticTokenKind::Operator));
                 }
             }
         }

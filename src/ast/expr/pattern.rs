@@ -13,7 +13,7 @@ pub enum Pattern {
     Name(Name),
     Sequence(Vec<Node<Pattern>>),
     Tuple(Vec<Node<Pattern>>),
-    Deref(Name),
+    Deref(Node<Name>),
     Missing(Missing),
 }
 
@@ -29,13 +29,14 @@ impl TryFrom<Expr> for Pattern {
                 if matches!(unop.op.deref(), PrefixOp::Deref)
                     && matches!(unop.expr.value, Expr::Name(_)) =>
             {
-                let name = variant!(unop.expr.value, if Expr::Name(n));
+                let name = unop.expr.take_map(|expr| variant!(expr, if Expr::Name(n)));
                 Ok(Pattern::Deref(name))
             }
             _ => Err(RayError {
                 kind: RayErrorKind::Parse,
                 msg: format!("{} is an invalid pattern", expr.desc()),
                 src: vec![],
+                context: Some("pattern try_from conversion".to_string()),
             }),
         }
     }
@@ -87,33 +88,44 @@ impl Pattern {
 
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Pattern::Name(n) | Pattern::Deref(n) => Some(&n.path),
+            Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&n.path),
             Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
         }
     }
 
     pub fn path_mut(&mut self) -> Option<&mut Path> {
         match self {
-            Pattern::Name(n) | Pattern::Deref(n) => Some(&mut n.path),
+            Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&mut n.path),
             Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
         }
     }
 
     pub fn get_name(&self) -> Option<String> {
         match self {
-            Pattern::Name(n) | Pattern::Deref(n) => Some(n.path.to_string()),
+            Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(n.path.to_string()),
             Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
         }
     }
 }
 
 impl Node<Pattern> {
-    pub fn identifiers(&self) -> Vec<Node<(&Path, bool)>> {
+    pub fn paths(&self) -> Vec<Node<(&Path, bool)>> {
         match &self.value {
             Pattern::Name(n) => vec![Node::with_id(self.id, (&n.path, false))],
             Pattern::Deref(n) => vec![Node::with_id(self.id, (&n.path, true))],
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
-                ps.iter().map(|p| p.identifiers()).flatten().collect()
+                ps.iter().map(|p| p.paths()).flatten().collect()
+            }
+            Pattern::Missing(_) => vec![],
+        }
+    }
+
+    pub fn paths_mut(&mut self) -> Vec<Node<(&mut Path, bool)>> {
+        match &mut self.value {
+            Pattern::Name(n) => vec![Node::with_id(self.id, (&mut n.path, false))],
+            Pattern::Deref(n) => vec![Node::with_id(n.id, (&mut n.path, true))],
+            Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
+                ps.iter_mut().map(|p| p.paths_mut()).flatten().collect()
             }
             Pattern::Missing(_) => vec![],
         }

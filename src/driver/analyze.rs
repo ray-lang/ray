@@ -3,6 +3,7 @@ use std::str::FromStr;
 use clap::StructOpt;
 
 use crate::{
+    ast::Path,
     errors::RayError,
     pathlib::FilePath,
     span::{Pos, Source, Span},
@@ -59,6 +60,14 @@ pub struct AnalyzeOptions {
         help = "Output format (text or json)"
     )]
     pub format: AnalysisFormat,
+
+    #[clap(
+        long = "no-core",
+        default_value = "false",
+        help = "Disable automatic import of `core` library",
+        action = clap::ArgAction::SetTrue
+    )]
+    pub no_core: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,11 +130,11 @@ pub struct TypeInfo {
 #[derive(Debug, Clone)]
 pub struct DefinitionInfo {
     pub usage_id: u64,
-    pub usage_path: String,
+    pub usage_path: Path,
     pub usage_filepath: FilePath,
     pub usage_span: Option<Span>,
     pub definition_id: Option<u64>,
-    pub definition_path: Option<String>,
+    pub definition_path: Option<Path>,
     pub definition_filepath: Option<FilePath>,
     pub definition_span: Option<Span>,
     pub definition_doc: Option<String>,
@@ -413,7 +422,7 @@ fn type_to_json(info: TypeInfo) -> String {
 }
 
 fn definition_to_json(def: DefinitionInfo) -> String {
-    let usage_path = escape_json(&def.usage_path);
+    let usage_path = escape_json(&def.usage_path.to_string());
     let usage_file = escape_json(&def.usage_filepath.to_string());
     let usage_span = match def.usage_span {
         Some(span) => span_to_json(span),
@@ -426,7 +435,7 @@ fn definition_to_json(def: DefinitionInfo) -> String {
     let definition_path = def
         .definition_path
         .as_ref()
-        .map(|p| format!("\"{}\"", escape_json(p)))
+        .map(|p| format!("\"{}\"", escape_json(&p.to_string())))
         .unwrap_or_else(|| "null".to_string());
     let definition_file = def
         .definition_filepath

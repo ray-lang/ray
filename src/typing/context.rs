@@ -305,6 +305,10 @@ impl TyCtx {
         self.inst_ty_map.get(tv)
     }
 
+    pub fn into_ty_map(self) -> HashMap<u64, Ty> {
+        self.ty_map
+    }
+
     pub fn inst_ty_map(&self) -> &Subst<TyVar, TyScheme> {
         &self.inst_ty_map
     }
@@ -414,6 +418,11 @@ impl TyCtx {
     }
 
     pub fn get_struct_ty(&self, fqn: &Path) -> Option<&StructTy> {
+        log::debug!(
+            "[get_struct_ty] fqn={} in struct_tys={:?}",
+            fqn,
+            self.struct_tys.keys()
+        );
         self.struct_tys.get(fqn)
     }
 

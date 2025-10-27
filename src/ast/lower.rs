@@ -49,6 +49,7 @@ fn get_ty_vars(
                         src_module.clone(),
                     )],
                     kind: RayErrorKind::Type,
+                    context: Some("get_ty_vars".to_string()),
                 });
             }
         }
@@ -251,6 +252,7 @@ impl LowerAST for Sourced<'_, Extern> {
                         msg: str!("externed function must have a name"),
                         src: vec![src.clone()],
                         kind: RayErrorKind::Type,
+                        context: Some("lower extern fn".to_string()),
                     })?
                     .clone();
 
@@ -282,11 +284,11 @@ impl LowerAST for Sourced<'_, Struct> {
 
     fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<()> {
         let (st, src) = self.unpack_mut();
-        let name = st.name.to_string();
-        let struct_path = if Ty::is_builtin(&name) {
-            Path::from(name.clone())
+        let name = st.path.name().unwrap();
+        let struct_path = if Ty::is_builtin_name(&name) {
+            Path::from(name)
         } else {
-            src.path.clone()
+            st.path.value.clone()
         };
 
         let scopes = ctx.get_scopes(src);
@@ -310,9 +312,10 @@ impl LowerAST for Sourced<'_, Struct> {
                 } else {
                     let src = ctx.srcmap.get(field);
                     return Err(RayError {
-                        msg: format!("struct field on `{}` does not have a type", st.name),
+                        msg: format!("struct field on `{}` does not have a type", st.path),
                         src: vec![src],
                         kind: RayErrorKind::Type,
+                        context: Some("lower struct field".to_string()),
                     });
                 };
 
@@ -350,6 +353,7 @@ impl LowerAST for Sourced<'_, Trait> {
                     msg: format!("expected trait type name with parameters but found `{}`", t),
                     src: vec![src.respan(ty_span)],
                     kind: RayErrorKind::Type,
+                    context: Some("lower trait".to_string()),
                 });
             }
         };
@@ -360,6 +364,7 @@ impl LowerAST for Sourced<'_, Trait> {
                 msg: format!("expected one type parameter but found {}", ty_params.len()),
                 src: vec![src.respan(ty_span)],
                 kind: RayErrorKind::Type,
+                context: Some("lower trait".to_string()),
             });
         }
 
@@ -378,6 +383,7 @@ impl LowerAST for Sourced<'_, Trait> {
                 msg: format!("expected a type parameter but found {}", tp),
                 src: vec![src.respan(ty_span)],
                 kind: RayErrorKind::Type,
+                context: Some("lower trait".to_string()),
             });
         }
 
@@ -394,6 +400,7 @@ impl LowerAST for Sourced<'_, Trait> {
                         msg: format!("trait function on `{}` does not have a name", tr.ty),
                         src: vec![src.respan(sig.span)],
                         kind: RayErrorKind::Type,
+                        context: Some("lower trait func".to_string()),
                     });
                 }
             };
@@ -432,7 +439,7 @@ impl LowerAST for Sourced<'_, Trait> {
 
             fields.push((func_name.clone(), scheme.clone()));
 
-            sig.path = func_fqn;
+            sig.path.value = func_fqn;
         }
 
         let scopes = ctx.get_scopes(src);
@@ -496,6 +503,7 @@ impl LowerAST for Sourced<'_, Impl> {
                     ),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
+                    context: Some("lower trait impl".to_string()),
                 });
             }
         };
@@ -506,6 +514,7 @@ impl LowerAST for Sourced<'_, Impl> {
                 msg: format!("expected one type argument but found {}", ty_params.len()),
                 src: vec![src.respan(*imp.ty.span().unwrap())],
                 kind: RayErrorKind::Type,
+                context: Some("lower trait impl".to_string()),
             });
         }
 
@@ -532,6 +541,7 @@ impl LowerAST for Sourced<'_, Impl> {
                         msg: format!("trait `{}` is not defined", trait_fqn),
                         src: vec![src.respan(*imp.ty.span().unwrap())],
                         kind: RayErrorKind::Type,
+                        context: Some("lower trait impl".to_string()),
                     });
                 }
             }
@@ -545,6 +555,7 @@ impl LowerAST for Sourced<'_, Impl> {
                     msg: str!("expected a type parameter for trait"),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
+                    context: Some("lower trait impl".to_string()),
                 });
             }
         };
@@ -579,12 +590,13 @@ impl LowerAST for Sourced<'_, Impl> {
                             msg: format!("trait function on `{}` does not have a name", trait_name),
                             src: vec![src.respan(func.sig.span)],
                             kind: RayErrorKind::Type,
+                            context: Some("lower trait func".to_string()),
                         });
                     }
                 };
 
                 // make this a fully-qualified name
-                func.sig.path = if imp.is_object {
+                func.sig.path.value = if imp.is_object {
                     trait_fqn.append(&func_name)
                 } else {
                     trait_fqn.append_type_args(&ty_params).append(&func_name)
@@ -615,6 +627,7 @@ impl LowerAST for Sourced<'_, Impl> {
                     msg: format!("trait implementation is missing for field `{}`", n),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
+                    context: Some("lower trait impl".to_string()),
                 });
             }
         }
@@ -653,6 +666,7 @@ impl LowerAST for Sourced<'_, Func> {
                 msg: format!("top-level function must have a name"),
                 src: vec![src.clone()],
                 kind: RayErrorKind::Name,
+                context: Some("lower func".to_string()),
             });
         }
 
@@ -743,15 +757,16 @@ impl LowerAST for ast::Assign {
 
     fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<()> {
         // check each identifier for mutability
-        for id in self.lhs.identifiers() {
-            let (path, is_lvalue) = id.value;
+        for node in self.lhs.paths() {
+            let (path, is_lvalue) = node.value;
             match ctx.identifiers.get(path) {
                 Some(ident) if !ident.is_mut && ident.in_current_scope => {
-                    let src = ctx.srcmap.get(&id);
+                    let src = ctx.srcmap.get(&node);
                     ctx.errors.push(RayError {
                         msg: format!("cannot assign to immutable identifier `{}`", path),
                         src: vec![src],
                         kind: RayErrorKind::Type,
+                        context: Some("lower assignment".to_string()),
                     });
                 }
                 Some(_) if is_lvalue => { /* do nothing */ }
@@ -778,6 +793,7 @@ impl LowerAST for ast::Assign {
                     msg: str!("cannot use expression as l-value for re-assignment"),
                     src: vec![lhs_src],
                     kind: RayErrorKind::Type,
+                    context: Some("lower assignment".to_string()),
                 }),
             }) {
                 Ok(lhs) => lhs,
@@ -884,7 +900,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
         let lhs_span = lhs_src.span.unwrap();
         let scopes = ctx.scope_map.get(self.src_module()).unwrap();
         let name = lhs.name().unwrap();
-        let struct_fqn = if Ty::is_builtin(&name) {
+        let struct_fqn = if Ty::is_builtin_name(&name) {
             Path::from(name)
         } else {
             match ctx.ncx.resolve_name(scopes, &name) {
@@ -894,6 +910,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
                         msg: format!("struct type `{}` is undefined", lhs),
                         src: vec![src.respan(lhs_span)],
                         kind: RayErrorKind::Type,
+                        context: Some("lower curly struct".to_string()),
                     });
                 }
             }
@@ -909,6 +926,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
                     msg: format!("struct type `{}` is undefined", lhs),
                     src: vec![src.respan(lhs_span)],
                     kind: RayErrorKind::Type,
+                    context: Some("lower curly struct".to_string()),
                 });
             }
         };
@@ -937,6 +955,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
                     msg: format!("struct `{}` does not have field `{}`", lhs, name),
                     src: vec![src.respan(name_span)],
                     kind: RayErrorKind::Type,
+                    context: Some("lower curly struct".to_string()),
                 });
             }
         }
@@ -948,6 +967,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
             let src = ctx.srcmap.get(&el);
             let node = Node::new(ast::CurlyElement::Labeled(n, el));
             ctx.srcmap.set_src(&node, src);
+            ctx.srcmap.mark_synthetic(node.id);
             elements.push(node);
         }
 
@@ -1015,7 +1035,9 @@ impl LowerAST for Sourced<'_, ast::Pattern> {
     fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<Self::Output> {
         let (value, src) = self.unpack_mut();
         match value {
-            ast::Pattern::Name(n) | ast::Pattern::Deref(n) => Sourced(n, src).lower(ctx)?,
+            ast::Pattern::Name(n) | ast::Pattern::Deref(Node { id: _, value: n }) => {
+                Sourced(n, src).lower(ctx)?
+            }
             ast::Pattern::Missing(_) => todo!(),
             ast::Pattern::Sequence(_) => todo!(),
             ast::Pattern::Tuple(_) => todo!(),
@@ -1090,6 +1112,7 @@ pub fn predicate_from_ast_ty(
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Type,
+                context: Some("lower predicate".to_string()),
             });
         }
     };
@@ -1103,6 +1126,7 @@ pub fn predicate_from_ast_ty(
                 ..Default::default()
             }],
             kind: RayErrorKind::Type,
+            context: Some("lower predicate".to_string()),
         });
     }
 
@@ -1119,6 +1143,7 @@ pub fn predicate_from_ast_ty(
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Type,
+                context: Some("lower predicate".to_string()),
             });
         }
     };
@@ -1131,4 +1156,114 @@ pub fn predicate_from_ast_ty(
     trait_ty.apply_subst(&sub);
     let fqn = trait_ty.get_path().unwrap();
     Ok(Predicate::class(fqn.to_string(), ty_arg))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::{
+        ast::{Curly, CurlyElement, LowerAST, LowerCtx, Name, Node, Path},
+        pathlib::FilePath,
+        sema::NameContext,
+        span::{Pos, Source, SourceMap, Sourced, Span, parsed::Parsed},
+        typing::{
+            TyCtx,
+            ty::{StructTy, Ty, TyScheme},
+        },
+    };
+
+    fn mkspan(sline: usize, scol: usize, eline: usize, ecol: usize) -> Span {
+        Span {
+            start: Pos {
+                lineno: sline,
+                col: scol,
+                offset: 0,
+            },
+            end: Pos {
+                lineno: eline,
+                col: ecol,
+                offset: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn lowers_curly_labels() {
+        let filepath = FilePath::from("test.ray");
+        let src_module = Path::from("test");
+        let mksrc = |span| Source::new(filepath.clone(), span, Path::new(), src_module.clone());
+
+        let mut tcx = TyCtx::new();
+        let mut srcmap = SourceMap::new();
+        let mut ncx = NameContext::new();
+        let mut errors = vec![];
+        let mut scope_map = HashMap::new();
+        scope_map.insert(src_module.clone(), vec![]);
+
+        let mut ctx = LowerCtx::new(&mut srcmap, &mut scope_map, &mut tcx, &mut ncx, &mut errors);
+        ctx.tcx.add_struct_ty(StructTy {
+            path: Path::from("string"),
+            fields: vec![
+                (
+                    "raw_ptr".to_string(),
+                    TyScheme::from_mono(Ty::ptr(Ty::u8())),
+                ),
+                ("len".to_string(), TyScheme::from_mono(Ty::uint())),
+            ],
+            ty: TyScheme::from_mono(Ty::string()),
+        });
+
+        // string
+        let parsed_ty_span = mkspan(0, 0, 0, 6);
+        let parsed_ty_src = mksrc(parsed_ty_span);
+        let parsed_ty = Parsed::new(Path::from("string"), parsed_ty_src);
+
+        // raw_ptr
+        let elem1 = Node::new(CurlyElement::Name(Name::new("raw_ptr")));
+        let elem1_span = mkspan(0, 9, 0, 16);
+        let elem1_src = mksrc(elem1_span);
+        ctx.srcmap.set_src(&elem1, elem1_src);
+
+        // len
+        let elem2 = Node::new(CurlyElement::Name(Name::new("len")));
+        let elem2_span = mkspan(0, 17, 0, 21);
+        let elem2_src = mksrc(elem2_span);
+        ctx.srcmap.set_src(&elem2, elem2_src);
+
+        let elements = vec![elem1, elem2];
+        let original_spans = elements
+            .iter()
+            .map(|el| ctx.srcmap.get(el).span.unwrap())
+            .collect::<Vec<_>>();
+
+        let mut curly_node = Node::new(Curly {
+            lhs: Some(parsed_ty),
+            elements,
+            curly_span: mkspan(0, 7, 0, 23),
+            ty: TyScheme::from_mono(Ty::string()),
+        });
+
+        // string { raw_ptr, len };
+        let span = mkspan(0, 0, 0, 23);
+        let curly_src = mksrc(span);
+        ctx.srcmap.set_src(&curly_node, curly_src.clone());
+
+        let mut sourced = Sourced(&mut curly_node.value, &curly_src);
+        let err = sourced.lower(&mut ctx).err();
+        assert!(err.is_none(), "expected no error, found {:?}", err);
+
+        let elements = &curly_node.value.elements;
+        assert!(elements.len() == 2);
+
+        for (elem, orig_span) in elements.iter().zip(original_spans.iter()) {
+            assert!(matches!(&elem.value, CurlyElement::Labeled(_, _)));
+            let src = ctx.srcmap.get(elem);
+            assert!(&src.span.unwrap() == orig_span);
+
+            let (_, elem_value) = variant!(&elem.value, if CurlyElement::Labeled(a, v));
+            let src = ctx.srcmap.get(elem_value);
+            assert!(&src.span.unwrap() == orig_span);
+        }
+    }
 }

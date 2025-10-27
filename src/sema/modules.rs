@@ -1,11 +1,11 @@
-use top::{Subst, Substitutable, TyVar as TopTyVar};
+use top::{Subst, Substitutable, TyVar as TopTyVar, solver::SolveResult};
 
 use crate::{
-    ast::{self, Decl, Expr, Import, Module},
+    ast::{self, Decl, Expr, Import, Module, Path},
     collections::nametree::Scope,
     driver::RayPaths,
     errors::{RayError, RayErrorKind, RayResult},
-    libgen::{self, RayLib},
+    libgen::RayLib,
     lir::Program,
     parse::{self, ParseOptions, Parser},
     pathlib::FilePath,
@@ -13,8 +13,9 @@ use crate::{
     strutils, transform,
     typing::{
         TyCtx,
+        info::TypeSystemInfo,
         state::{Env, SchemeEnv},
-        ty::{Ty, TyVar},
+        ty::{Ty, TyScheme, TyVar},
     },
 };
 
@@ -27,7 +28,7 @@ use super::NameContext;
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
-pub struct ModBuilderResult {
+pub(crate) struct ModBuilderResult {
     pub module: Module<(), Decl>,
     pub tcx: TyCtx,
     pub ncx: NameContext,
@@ -35,7 +36,6 @@ pub struct ModBuilderResult {
     pub defs: SchemeEnv,
     pub libs: Vec<Program>,
     pub paths: HashSet<ast::Path>,
-    pub definitions: HashMap<String, libgen::DefinitionRecord>,
 }
 
 #[derive(Debug, Default)]
@@ -60,10 +60,11 @@ where
     c_include_paths: Vec<FilePath>,
     paths: &'a RayPaths,
     errors: Vec<RayError>,
+    overlays: Option<HashMap<FilePath, String>>,
 }
 
 impl<'a> ModuleBuilder<'a, Expr, Decl> {
-    pub fn new(paths: &'a RayPaths, c_include_paths: Vec<FilePath>, no_core: bool) -> Self {
+    pub(crate) fn new(paths: &'a RayPaths, c_include_paths: Vec<FilePath>, no_core: bool) -> Self {
         ModuleBuilder {
             paths,
             c_include_paths,
@@ -74,10 +75,15 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             ncx: NameContext::new(),
             module_paths: HashSet::new(),
             errors: Vec::new(),
+            overlays: None,
         }
     }
 
-    pub fn from_src(src: &str, module_path: ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
+    #[allow(dead_code)]
+    pub(crate) fn from_src(
+        src: &str,
+        module_path: ast::Path,
+    ) -> Result<ModBuilderResult, Vec<RayError>> {
         let paths = RayPaths::default();
         let mut builder = ModuleBuilder::new(&paths, vec![], true);
         let scope = builder.build_from_src(src.to_string(), module_path)?;
@@ -88,7 +94,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         self.errors
     }
 
-    pub fn finish(self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
+    pub(crate) fn finish(self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
         if !self.errors.is_empty() {
             return Err(self.errors);
         }
@@ -137,9 +143,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 }
             };
 
-        let local_definitions = libgen::collect_definition_records(&module, &srcmap);
-        definitions.extend(local_definitions);
-
         Ok(ModBuilderResult {
             module,
             tcx,
@@ -148,7 +151,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             defs,
             libs,
             paths,
-            definitions,
         })
     }
 
@@ -287,7 +289,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         Ok(module_path.into())
     }
 
-    #[allow(dead_code)]
     pub fn build_from_src(
         &mut self,
         src: String,
@@ -358,24 +359,52 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         )?))
     }
 
+    pub fn build_from_path_with_overlay(
+        &mut self,
+        input_path: &FilePath,
+        module_path: Option<ast::Path>,
+        overlays: Option<HashMap<FilePath, String>>,
+    ) -> Result<Option<Scope>, RayError> {
+        let prev = if let Some(overlays) = overlays {
+            self.overlays.replace(overlays)
+        } else {
+            None
+        };
+        let result = self.build_from_path(input_path, module_path);
+        self.overlays = prev;
+        result
+    }
+
     fn build_file(
         &mut self,
         srcmap: &mut SourceMap,
         input_path: &FilePath,
         module_path: &ast::Path,
     ) -> Result<ast::File, RayError> {
-        log::info!("parsing {}", input_path);
-        let filepath = input_path.clone();
-        let original_filepath = input_path.clone();
-        Parser::parse(
-            ParseOptions {
-                filepath,
-                original_filepath,
-                module_path: module_path.clone(),
-                use_stdin: false,
-            },
-            srcmap,
-        )
+        if let Some(src) = self.overlays.as_ref().and_then(|o| o.get(input_path)) {
+            log::info!("parsing {} (overlay)", input_path);
+            Parser::parse_from_src(
+                src,
+                ParseOptions {
+                    filepath: input_path.clone(),
+                    original_filepath: input_path.clone(),
+                    module_path: module_path.clone(),
+                    use_stdin: false,
+                },
+                srcmap,
+            )
+        } else {
+            log::info!("parsing {}", input_path);
+            Parser::parse(
+                ParseOptions {
+                    filepath: input_path.clone(),
+                    original_filepath: input_path.clone(),
+                    module_path: module_path.clone(),
+                    use_stdin: false,
+                },
+                srcmap,
+            )
+        }
     }
 
     fn add_stdlib_import<I, P>(
@@ -436,6 +465,15 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             }
         }
 
+        if self
+            .overlays
+            .as_ref()
+            .map(|o| o.contains_key(path))
+            .unwrap_or_default()
+        {
+            return Ok(Some(path.clone()));
+        }
+
         if path.exists() && !path.is_dir() {
             return Ok(Some(path.clone()));
         }
@@ -468,6 +506,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
+                context: Some("root module resolution".to_string()),
             });
         } else {
             self.errors.push(RayError {
@@ -477,6 +516,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     ..Default::default()
                 }],
                 kind: RayErrorKind::IO,
+                context: Some("root module resolution".to_string()),
             });
         }
 
@@ -500,6 +540,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                         ..Default::default()
                     }],
                     kind: RayErrorKind::Parse,
+                    context: Some("loading raylib file".to_string()),
                 });
             }
         };
@@ -578,6 +619,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 span: Some(span),
                 ..Default::default()
             }],
+            context: Some("C include resolution".to_string()),
         });
 
         None
@@ -636,6 +678,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
+                context: Some("module import resolution".to_string()),
             });
         }
 
@@ -699,6 +742,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                                 ..Default::default()
                             }],
                             kind: RayErrorKind::Import,
+                            context: Some("module import resolution".to_string()),
                         });
                     }
                 }
@@ -720,6 +764,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
+                context: Some("module import resolution".to_string()),
             })
         } else if possible_paths.len() == 0 {
             Err(RayError {
@@ -730,6 +775,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
+                context: Some("module import resolution".to_string()),
             })
         } else if possible_paths.len() > 1 {
             Err(RayError {
@@ -744,6 +790,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     ..Default::default()
                 }],
                 kind: RayErrorKind::Import,
+                context: Some("module import resolution".to_string()),
             })
         } else {
             Ok(Some(possible_paths.pop().unwrap()))
@@ -809,5 +856,122 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
     fn is_submodule(&self, parent_filepath: &FilePath, filepath: &FilePath) -> bool {
         filepath.is_dir() && &filepath.dir() == parent_filepath
+    }
+}
+
+impl ModBuilderResult {
+    pub fn apply_solution(
+        &mut self,
+        solution: SolveResult<TypeSystemInfo, Ty, TyVar>,
+        defs: &SchemeEnv,
+    ) {
+        self.tcx.apply_subst(&solution.subst);
+        let inst_scheme_map = solution
+            .inst_type_schemes
+            .iter()
+            .map(|(v, scheme)| {
+                let ty_scheme = TyScheme::scheme(scheme.clone());
+                log::debug!(
+                    "inst_type_schemes: inserting {} => {} (has_quantifiers={})",
+                    v,
+                    ty_scheme,
+                    ty_scheme.has_quantifiers()
+                );
+                (v.clone(), ty_scheme)
+            })
+            .collect();
+        self.tcx.extend_inst_ty_map(inst_scheme_map);
+        let inst_scheme_keys = solution
+            .inst_type_schemes
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let mut poly_inst_seeds = Subst::<TyVar, TyScheme>::new();
+        {
+            let tcx = &self.tcx;
+
+            let mut seed_from_fn = |node_id: u64, path: &Path| {
+                if let Some(Ty::Var(original_tv)) = tcx.original_ty_of(node_id) {
+                    if tcx.inst_ty_of(original_tv).is_some() {
+                        log::debug!(
+                            "poly_inst_seed: {} already has instantiation; skipping path {}",
+                            original_tv,
+                            path
+                        );
+                        return;
+                    }
+
+                    if let Some(scheme) = defs.get(path) {
+                        if scheme.has_quantifiers() {
+                            log::debug!(
+                                "poly_inst_seed: seeding {} with polymorphic scheme {} from {}",
+                                original_tv,
+                                scheme,
+                                path
+                            );
+                            poly_inst_seeds.insert(original_tv.clone(), scheme.clone());
+                        } else {
+                            log::debug!(
+                                "poly_inst_seed: defs entry for {} is monomorphic {}; skipping",
+                                path,
+                                scheme
+                            );
+                        }
+                    } else {
+                        log::debug!("poly_inst_seed: no defs entry for {}; skipping", path);
+                    }
+                }
+            };
+
+            for decl in &self.module.decls {
+                match &decl.value {
+                    Decl::Func(func) => seed_from_fn(decl.id, &func.sig.path),
+                    Decl::Impl(imp) => {
+                        if let Some(funcs) = &imp.funcs {
+                            for func in funcs {
+                                seed_from_fn(func.id, &func.sig.path);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !poly_inst_seeds.is_empty() {
+            self.tcx.extend_inst_ty_map(poly_inst_seeds);
+        }
+
+        log::debug!("defs: {}", defs);
+
+        let filtered_scheme_subst = solution
+            .scheme_subst()
+            .into_iter()
+            .filter_map(|(v, s)| {
+                if inst_scheme_keys.contains(&v) {
+                    log::debug!("scheme_subst: skipping {} because instantiation exists", v);
+                    return None;
+                }
+                let scheme = TyScheme::scheme(s);
+                if scheme.has_quantifiers() {
+                    log::debug!(
+                        "scheme_subst: dropping {} => {} (has_quantifiers)",
+                        v,
+                        scheme
+                    );
+                    None
+                } else {
+                    log::debug!("scheme_subst: keeping {} => {}", v, scheme);
+                    Some((v, scheme))
+                }
+            })
+            .collect();
+        self.tcx.extend_scheme_subst(filtered_scheme_subst);
+        self.tcx.extend_predicates(solution.qualifiers.clone());
+        self.tcx.tf().skip_to(solution.unique as u64);
+
+        log::debug!("{}", self.module);
+        log::debug!("{}", self.tcx);
     }
 }

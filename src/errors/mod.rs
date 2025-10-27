@@ -42,6 +42,7 @@ pub struct RayError {
     pub msg: String,
     pub src: Vec<Source>,
     pub kind: RayErrorKind,
+    pub context: Option<String>,
 }
 
 const ELLIPSIS: &'static str = "...";
@@ -174,6 +175,7 @@ impl From<io::Error> for RayError {
             msg: err.to_string(),
             src: vec![],
             kind: RayErrorKind::IO,
+            context: Some("i/o operation".to_string()),
         }
     }
 }
@@ -185,6 +187,7 @@ impl From<ParseIntError> for RayError {
             msg: err.to_string(),
             src: vec![],
             kind: RayErrorKind::Compile,
+            context: Some("parsing an integer".to_string()),
         }
     }
 }

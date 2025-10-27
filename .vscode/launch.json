@@ -1,7 +1,4 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
@@ -17,7 +14,7 @@
                 "filter": {
                     "name": "ray",
                     "kind": "bin"
-                },
+                }
             },
             "args": [
                 "--log-level",
@@ -25,31 +22,6 @@
                 "build",
                 "examples/scratch.ray"
             ],
-            // "args": [
-            //     "--log-level",
-            //     "debug",
-            //     "build",
-            //     "-K",
-            //     "--lib",
-            //     "--no-core",
-            //     "examples/module"
-            // ],
-            // "args": [
-            //     "--log-level",
-            //     "debug",
-            //     "build",
-            //     // "-K",
-            //     "--no-core",
-            //     "--print-ast",
-            //     "examples/no_std.ray"
-            // ],
-            // "args": [
-            //     "--log-level",
-            //     "debug",
-            //     "build",
-            //     "--lib",
-            //     "lib/core"
-            // ],
             "env": {
                 "RUST_BACKTRACE": "1"
             },
@@ -68,7 +40,7 @@
                 "filter": {
                     "name": "ray",
                     "kind": "bin"
-                },
+                }
             },
             "args": [
                 "--log-level",
@@ -119,6 +91,6 @@
                 "LLVM_SYS_120_PREFIX": "/opt/homebrew/opt/llvm@12",
                 "RUST_LOG": "ray_lsp=debug"
             }
-        }
+        },
     ]
 }

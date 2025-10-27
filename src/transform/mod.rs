@@ -55,7 +55,7 @@ impl ModuleCombiner {
         new_module.decls.sort();
 
         // process name resolution
-        let mut ctx = ResolveContext::new(&mut self.ncx, &srcmap, &self.scope_map);
+        let mut ctx = ResolveContext::new(&mut self.ncx, &mut srcmap, &self.scope_map);
         new_module.resolve_names(&mut ctx)?;
 
         log::debug!("ncx: {:#?}", self.ncx);
@@ -151,7 +151,8 @@ impl ModuleCombiner {
 
         // create a "main" function for the stmts
         let main_path = module_path.append("main");
-        let main_decl = Node::new(Decl::Func(ast::Func::new(main_path, vec![], body)));
+        let main_path_node = Node::new(main_path);
+        let main_decl = Node::new(Decl::Func(ast::Func::new(main_path_node, vec![], body)));
         srcmap.set_src(
             &main_decl,
             Source::new(filepath.clone(), span, Path::new(), module_path.clone()),

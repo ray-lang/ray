@@ -6,6 +6,7 @@ mod modifier;
 mod module;
 mod node;
 mod path;
+mod walk;
 
 pub mod asm;
 pub mod token;
@@ -18,3 +19,4 @@ pub use module::*;
 pub use node::*;
 
 pub use path::*;
+pub use walk::*;

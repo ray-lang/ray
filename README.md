@@ -7,6 +7,8 @@ A WebAssembly-focused programming language for general purpose use
 - A strong, inference-based type system
 - Write once, run anywhere by targeting WebAssembly (specifically using WASI)
 
+See more [here](docs/goals.md)
+
 ## Tooling
 
 ### Contributing

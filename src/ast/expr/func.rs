@@ -71,7 +71,7 @@ impl FnParam {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuncSig {
-    pub path: Path,
+    pub path: Node<Path>,
     pub params: Vec<Node<FnParam>>,
     pub ty_params: Option<TypeParams>,
     pub ret_ty: Option<Parsed<Ty>>,
@@ -92,7 +92,7 @@ pub struct Func {
 }
 
 impl Func {
-    pub fn new(path: Path, params: Vec<Node<FnParam>>, body: Node<Expr>) -> Self {
+    pub fn new(path: Node<Path>, params: Vec<Node<FnParam>>, body: Node<Expr>) -> Self {
         Self {
             sig: FuncSig {
                 path,
