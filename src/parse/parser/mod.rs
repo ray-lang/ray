@@ -1086,7 +1086,7 @@ mod tests {
         ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, Path, Pattern},
         errors::{RayError, RayErrorKind},
         pathlib::FilePath,
-        span::{Source, SourceMap},
+        span::SourceMap,
         typing::ty::Ty,
     };
 

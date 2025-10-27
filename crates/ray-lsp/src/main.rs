@@ -368,8 +368,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         ) {
             Some(src) => src,
             None => {
-                self.log("goto_definition: no node found at position")
-                    .await;
+                self.log("goto_definition: no node found at position").await;
                 return Ok(None);
             }
         };

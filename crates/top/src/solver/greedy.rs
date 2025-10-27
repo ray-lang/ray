@@ -400,8 +400,8 @@ mod tests {
 
         fn eq_with_synonyms(
             &self,
-            other: &Self,
-            synonyms: &crate::OrderedTypeSynonyms<Self, u32>,
+            _: &Self,
+            _: &crate::OrderedTypeSynonyms<Self, u32>,
         ) -> Option<Self> {
             todo!()
         }
