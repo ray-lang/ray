@@ -1588,6 +1588,18 @@ impl Ty {
         matches!(self, Ty::Var(u) if u.is_unknown())
     }
 
+    pub fn is_struct(&self) -> bool {
+        match self {
+            Ty::Projection(_, _) => true,
+            Ty::Const(fqn) => match fqn.as_str() {
+                "bool" | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "char" | "u64" | "i64"
+                | "int" | "uint" => false,
+                _ => true,
+            },
+            _ => false,
+        }
+    }
+
     pub fn as_tyvar(self) -> TyVar {
         match self {
             Ty::Var(v) => v,

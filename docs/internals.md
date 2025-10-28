@@ -36,7 +36,7 @@ Diagnostics raised at any stage bubble up through `Driver::emit_errors`, which g
 ## LLVM Code Generation
 - `codegen::llvm::codegen` (`src/codegen/llvm/mod.rs`) maps LIR constructs onto LLVM IR using Inkwell. It tracks type layouts, caches struct definitions, and ensures WASI globals exist.
 - A small pass manager (promote-mem2reg, LICM, CFG simplification, etc.) runs before verification.
-- The backend emits an object file, links it with `wasi_malloc.wasm`, and calls `lld::link` with the `wasm32-wasi` triple to produce the `.wasm` output at the requested path.
+- The backend emits an object file, links it with `wasi_malloc.wasm`, and calls `lld::link` with the configured WASI triple (default: `wasm32-wasip1`, falling back to `wasm32-wasi` for older toolchains) to produce the `.wasm` output at the requested path.
 
 ## Runtime And Tooling Notes
 - The allocator shim and other C interop helpers reside in `lib/libc` and the `crates/wasi_malloc` project; they are bundled automatically during codegen.

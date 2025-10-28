@@ -11,10 +11,7 @@ use std::process::Command;
 
 lazy_static! {
     /// LLVM version used by this version of the crate.
-    static ref LLVM_VERSION: Version = {
-        // hardcode this for now
-        Version::new(12, 0, 0)
-    };
+    static ref LLVM_VERSION: Version = Version::new(17, 0, 0);
 
     static ref LLVM_CONFIG_BINARY_NAMES: Vec<String> = {
         vec![

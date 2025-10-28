@@ -17,7 +17,7 @@ colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
 fnv = "1.0"
 home = "0.5"
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
+inkwell = { version = "0.6", features = ["llvm17-0"] }
 itertools = "0.9"
 lang-c = "0.9"
 lazy_static = "1.4.0"

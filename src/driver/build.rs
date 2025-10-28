@@ -74,6 +74,6 @@ pub struct BuildOptions {
 impl BuildOptions {
     pub fn get_target(&self) -> Target {
         // TODO: get the local target
-        self.target.unwrap_or_else(|| Target::Wasm32)
+        self.target.unwrap_or_else(Target::default)
     }
 }

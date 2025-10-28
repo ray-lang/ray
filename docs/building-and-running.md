@@ -29,13 +29,13 @@ The CLI currently exposes a single `build` subcommand (`src/cli/mod.rs`):
 target/debug/ray \
   --root-path $(pwd) \
   build examples/scratch.ray \
-  --target wasm32-wasi \
+  --target wasm32-wasip1 \
   --output-path build/scratch.wasm
 ```
 
 Key switches (defined in `src/driver/build.rs`):
 - `--root-path`: tell the compiler where to find `lib/` and where to place generated `.raylib` archives. Falls back to `$RAY_PATH` or `$HOME/.ray`.
-- `--target` (`-t`): choose between `wasm32`, `wasm32-wasi`, and aliases `wasm`/`wasi` (`src/target/mod.rs`). Defaults to `wasm32`.
+- `--target` (`-t`): choose between `wasm32`, the WASI triples (`wasm32-wasip1`, `wasm32-wasip1-threads`, `wasm32-wasip2`, or legacy `wasm32-wasi`), and aliases `wasm`/`wasi` (`src/target/mod.rs`). Defaults to `wasm32-wasip1`.
 - `--stdout`: emit Wasm binaries directly to standard output; handy for piping into other tools.
 - `--assembly` (`-S`): stop after producing target assembly.
 - `--emit-ir`: dump LLVM IR next to the output file for inspection.
