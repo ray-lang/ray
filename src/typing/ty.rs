@@ -526,6 +526,23 @@ pub struct StructTy {
     pub fields: Vec<(String, TyScheme)>,
 }
 
+impl Display for StructTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {{", self.path)?;
+
+        for (i, (field, ty)) in self.fields.iter().enumerate() {
+            write!(f, " {}: {}", field, ty)?;
+            if i < self.fields.len() - 1 {
+                write!(f, ", ")?;
+            } else {
+                write!(f, " ")?;
+            }
+        }
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
 impl Hash for StructTy {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.path.hash(state);
@@ -1600,6 +1617,26 @@ impl Ty {
         }
     }
 
+    pub fn is_aggregate(&self) -> bool {
+        match self {
+            Ty::Const(fqn) => match fqn.as_str() {
+                "bool" | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "char" | "u64" | "i64"
+                | "int" | "uint" => false,
+                _ => true,
+            },
+            Ty::Projection(inner, _) => inner.is_aggregate(),
+            Ty::Tuple(tys) => tys.len() > 0,
+            Ty::Array(_, _) => true,
+            Ty::Never
+            | Ty::Any
+            | Ty::Var(_)
+            | Ty::Ptr(_)
+            | Ty::Func(_, _)
+            | Ty::Accessor(_, _)
+            | Ty::Union(_) => false,
+        }
+    }
+
     pub fn as_tyvar(self) -> TyVar {
         match self {
             Ty::Var(v) => v,
@@ -1803,6 +1840,13 @@ impl Ty {
         }
     }
 
+    pub fn get_fn_ret_ty(&self) -> Option<&Ty> {
+        match self {
+            Ty::Func(_, ty) => Some(ty.as_ref()),
+            _ => None,
+        }
+    }
+
     pub fn has_ret_placeholder(&self) -> bool {
         self.get_ret_placeholder().is_some()
     }
@@ -1816,25 +1860,4 @@ impl Ty {
             _ => None,
         }
     }
-
-    // pub fn try_unpack_fn(
-    //     self,
-    // ) -> Result<(Option<Vec<TyVar>>, Vec<TyPredicate>, Vec<Ty>, Ty), TypeError> {
-    //     if !self.is_func() {
-    //         return Err(TypeError::assertion(str!("function"), self));
-    //     }
-
-    //     match self {
-    //         Ty::All(xs, ty) => {
-    //             let (_, q, p, r) = ty.try_unpack_fn()?;
-    //             Ok((Some(xs), q, p, r))
-    //         }
-    //         Ty::Qualified(q, ty) => {
-    //             let (_, _, p, r) = ty.try_unpack_fn()?;
-    //             Ok((None, q, p, r))
-    //         }
-    //         Ty::Func(p, r) => Ok((None, vec![], p, *r)),
-    //         _ => unreachable!("attempted to unpack non-function: {:?}", self),
-    //     }
-    // }
 }

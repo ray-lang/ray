@@ -10,7 +10,7 @@ use crate::{
     convert::ToSet,
     span::Source,
     strutils::indent_lines,
-    typing::ty::{Ty, TyScheme, TyVar},
+    typing::ty::{StructTy, Ty, TyScheme, TyVar},
     utils::{join, map_join},
 };
 
@@ -149,6 +149,7 @@ where
                 | Inst::SetGlobal(_, _)
                 | Inst::SetLocal(_, _)
                 | Inst::Store(_)
+                | Inst::StructInit(_, _)
                 | Inst::SetField(_)
                 | Inst::MemCopy(_, _, _)
                 | Inst::IncRef(_, _)
@@ -598,6 +599,7 @@ pub enum Inst {
     SetLocal(usize, Value),
     If(If),
     Store(Store),
+    StructInit(Variable, StructTy),
     SetField(SetField),
     MemCopy(Variable, Variable, Atom),
     IncRef(Value, i8),
@@ -629,6 +631,7 @@ impl Display for Inst {
             Inst::SetLocal(s, v) => write!(f, "${} = {}", s, v),
             Inst::If(b) => write!(f, "{}", b),
             Inst::Store(s) => write!(f, "{}", s),
+            Inst::StructInit(v, ty) => write!(f, "{}: {}", v, ty),
             Inst::SetField(s) => write!(f, "{}", s),
             Inst::IncRef(v, i) => write!(f, "incref {} {}", v, i),
             Inst::DecRef(v) => write!(f, "decref {}", v),
@@ -656,6 +659,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             }
             Inst::If(b) => b.get_locals_mut(),
             Inst::Store(s) => s.get_locals_mut(),
+            Inst::StructInit(v, _) => v.get_locals_mut(),
             Inst::SetField(s) => s.get_locals_mut(),
             Inst::MemCopy(d, s, z) => {
                 let mut locs = d.get_locals_mut();
@@ -685,6 +689,7 @@ impl<'a> GetLocals<'a> for Inst {
                 locs
             }
             Inst::If(b) => b.get_locals(),
+            Inst::StructInit(v, _) => v.get_locals(),
             Inst::SetField(s) => s.get_locals(),
             Inst::Store(s) => s.get_locals(),
             Inst::MemCopy(d, s, z) => {
@@ -710,6 +715,7 @@ impl Substitutable<TyVar, Ty> for Inst {
             Inst::SetGlobal(_, v) => v.apply_subst(subst),
             Inst::SetLocal(_, v) => v.apply_subst(subst),
             Inst::If(b) => b.apply_subst(subst),
+            Inst::StructInit(v, _) => v.apply_subst(subst),
             Inst::SetField(s) => s.apply_subst(subst),
             Inst::Store(s) => s.apply_subst(subst),
             Inst::MemCopy(d, s, z) => {
@@ -732,6 +738,7 @@ impl Substitutable<TyVar, Ty> for Inst {
             Inst::SetGlobal(_, v) => v.apply_subst_all(subst),
             Inst::SetLocal(_, v) => v.apply_subst_all(subst),
             Inst::If(b) => b.apply_subst_all(subst),
+            Inst::StructInit(v, _) => v.apply_subst_all(subst),
             Inst::SetField(s) => s.apply_subst_all(subst),
             Inst::Store(s) => s.apply_subst_all(subst),
             Inst::MemCopy(d, s, z) => {
@@ -1741,8 +1748,8 @@ pub struct Call {
     pub original_fn_name: Path,
     pub fn_ref: Option<usize>,
     pub args: Vec<Variable>,
-    pub ty: TyScheme,
-    pub poly_ty: Option<TyScheme>,
+    pub callee_ty: TyScheme,
+    pub poly_callee_ty: Option<TyScheme>,
     pub subst: Subst<TyVar, Ty>,
     pub source: Option<Source>,
 }
@@ -1772,7 +1779,7 @@ impl Substitutable<TyVar, Ty> for Call {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
         self.fn_name.apply_subst(subst);
         self.args.apply_subst(subst);
-        self.ty.apply_subst(subst);
+        self.callee_ty.apply_subst(subst);
         for ty in self.subst.values_mut() {
             ty.apply_subst(subst);
         }
@@ -1781,7 +1788,7 @@ impl Substitutable<TyVar, Ty> for Call {
     fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
         self.fn_name.apply_subst_all(subst);
         self.args.apply_subst_all(subst);
-        self.ty.apply_subst_all(subst);
+        self.callee_ty.apply_subst_all(subst);
         for ty in self.subst.values_mut() {
             ty.apply_subst_all(subst);
         }
@@ -1809,8 +1816,8 @@ impl Call {
         Call {
             original_fn_name: fn_name.clone(),
             fn_ref: None,
-            ty,
-            poly_ty,
+            callee_ty: ty,
+            poly_callee_ty: poly_ty,
             subst,
             args,
             fn_name,
@@ -1829,8 +1836,8 @@ impl Call {
             original_fn_name: Path::new(),
             fn_name: Path::new(),
             fn_ref: Some(fn_ref),
-            ty,
-            poly_ty,
+            callee_ty: ty,
+            poly_callee_ty: poly_ty,
             subst,
             args,
             source: None,

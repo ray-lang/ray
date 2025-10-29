@@ -358,15 +358,10 @@ fn main() {
 
     println!("cargo:rustc-link-lib=static=lldCOFF");
     println!("cargo:rustc-link-lib=static=lldCommon");
-    println!("cargo:rustc-link-lib=static=lldCore");
-    println!("cargo:rustc-link-lib=static=lldDriver");
     println!("cargo:rustc-link-lib=static=lldELF");
     println!("cargo:rustc-link-lib=static=lldMachO");
-    println!("cargo:rustc-link-lib=static=lldMachO2");
     println!("cargo:rustc-link-lib=static=lldMinGW");
-    println!("cargo:rustc-link-lib=static=lldReaderWriter");
     println!("cargo:rustc-link-lib=static=lldWasm");
-    println!("cargo:rustc-link-lib=static=lldYAML");
 
     if cfg!(not(target_os = "windows")) {
         println!("cargo:rustc-link-lib=dylib=ffi");

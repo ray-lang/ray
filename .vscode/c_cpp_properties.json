@@ -4,7 +4,7 @@
             "name": "Mac",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/opt/homebrew/opt/llvm@12/include"
+                "/opt/homebrew/opt/llvm@17/include"
             ],
             "defines": [],
             "macFrameworkPath": [
@@ -12,7 +12,7 @@
             ],
             "compilerPath": "/usr/bin/clang",
             "cStandard": "c11",
-            "cppStandard": "c++98",
+            "cppStandard": "c++20",
             "intelliSenseMode": "macos-clang-arm64"
         }
     ],

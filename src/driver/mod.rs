@@ -130,7 +130,7 @@ impl Driver {
             to_stdout: false,
             write_assembly: false,
             max_optimize_level: 2,
-            emit_ir: false,
+            emit: None,
             print_ast: false,
             no_compile: true,
             target: None,
@@ -271,8 +271,12 @@ impl Driver {
         } = frontend;
 
         let mut program = lir::Program::generate(&module, &tcx, &srcmap, libs)?;
-        log::debug!("{}", program);
+        if matches!(options.emit, Some(build::EmitType::LIR)) {
+            println!("{}", program);
+            return Ok(());
+        }
 
+        log::debug!("{}", program);
         let output_path = |ext| {
             if let Some(outpath) = &options.output_path {
                 if outpath.is_dir() {
@@ -315,7 +319,15 @@ impl Driver {
 
             let lcx = inkwell::context::Context::create();
             let target = options.get_target();
-            llvm::codegen(&program, &tcx, &srcmap, &lcx, &target, output_path)
+            llvm::codegen(
+                &program,
+                &tcx,
+                &srcmap,
+                &lcx,
+                &target,
+                output_path,
+                matches!(options.emit, Some(build::EmitType::LLVMIR)),
+            )
         }
     }
 }

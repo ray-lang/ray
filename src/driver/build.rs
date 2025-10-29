@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::pathlib::FilePath;
 use crate::target::Target;
 
@@ -29,8 +31,8 @@ pub struct BuildOptions {
     )]
     pub max_optimize_level: i8,
 
-    #[clap(long, help = "Emit IR to output", action = clap::ArgAction::SetTrue)]
-    pub emit_ir: bool,
+    #[clap(long, help = "Emit LIR or LLVM IR to output", action = clap::ArgAction::Set)]
+    pub emit: Option<EmitType>,
 
     #[clap(long, help = "Print the AST after parsing", action = clap::ArgAction::SetTrue)]
     pub print_ast: bool,
@@ -71,9 +73,27 @@ pub struct BuildOptions {
     pub build_lib: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum EmitType {
+    LIR,
+    LLVMIR,
+}
+
 impl BuildOptions {
     pub fn get_target(&self) -> Target {
         // TODO: get the local target
         self.target.unwrap_or_else(Target::default)
+    }
+}
+
+impl FromStr for EmitType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "lir" => Ok(EmitType::LIR),
+            "llvm" | "llvmir" | "llvm-ir" => Ok(EmitType::LLVMIR),
+            s => Err(format!("invalid emit type: {}", s)),
+        }
     }
 }

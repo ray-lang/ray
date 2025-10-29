@@ -194,7 +194,7 @@ impl<'p> Monomorphizer<'p> {
 
         log::debug!("[monomorphize] call.orig_name = {}", call.orig_name());
         log::debug!("[monomorphize] call.name       = {}", call.fn_name);
-        log::debug!("[monomorphize] call.ty         = {}", call.ty);
+        log::debug!("[monomorphize] call.ty         = {}", call.callee_ty);
         log::debug!("[monomorphize] call.args       = {:?}", call.args);
 
         // check that the callee function type is monomorphic
@@ -356,6 +356,7 @@ impl<'p> Monomorphizer<'p> {
 
                 lir::Inst::Free(_)
                 | lir::Inst::CExternCall(_)
+                | lir::Inst::StructInit(_, _)
                 | lir::Inst::MemCopy(_, _, _)
                 | lir::Inst::If(_)
                 | lir::Inst::Break(_)
@@ -380,8 +381,8 @@ impl<'p> Monomorphizer<'p> {
         if call.fn_ref.is_some() {
             return;
         }
-        let callee_ty = call.ty.clone();
-        let poly_ty = unless!(&call.poly_ty).clone();
+        let callee_ty = call.callee_ty.clone();
+        let poly_ty = unless!(&call.poly_callee_ty).clone();
         poly_refs.push(PolyRef {
             value: PolyValue::Call(call),
             poly_ty,

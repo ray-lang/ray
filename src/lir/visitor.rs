@@ -44,6 +44,7 @@ where
                 lir::Inst::Free(_)
                 | lir::Inst::MemCopy(_, _, _)
                 | lir::Inst::If(_)
+                | lir::Inst::StructInit(_, _)
                 | lir::Inst::Break(_)
                 | lir::Inst::Goto(_) => continue,
             };

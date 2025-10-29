@@ -14,7 +14,7 @@ use crate::{
     span::SourceMap,
     typing::{
         TyCtx,
-        ty::{Ty, TyScheme, TyVar},
+        ty::{StructTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -650,10 +650,19 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
 
                 // create a `string` struct
                 //  - raw_ptr: *u8
-                //  - size: usize
+                //  - len: usize
                 let loc = ctx.local(Ty::string().into());
-                let ptr = lir::Malloc::new(Ty::string().into(), lir::Atom::uptr(1));
-                ctx.push(lir::Inst::SetLocal(loc.into(), ptr.into()));
+                ctx.push(lir::Inst::StructInit(
+                    lir::Variable::Local(loc),
+                    StructTy {
+                        path: "string".into(),
+                        ty: Ty::string().into(),
+                        fields: vec![
+                            ("raw_ptr".to_string(), Ty::ptr(Ty::u8()).into()),
+                            ("len".to_string(), Ty::uint().into()),
+                        ],
+                    },
+                ));
 
                 // store the pointer to the bytes
                 ctx.push(lir::SetField::new(
@@ -813,8 +822,19 @@ impl LirGen<GenResult> for Node<Expr> {
                 //  - inclusive: bool
                 let loc = ctx.local(ty.clone());
                 let el_ty = ctx.ty_of(tcx, range.start.id);
-                let ptr = lir::Malloc::new(ty.clone(), lir::Atom::uptr(1));
-                ctx.push(lir::Inst::SetLocal(loc.into(), ptr.into()));
+
+                ctx.push(lir::Inst::StructInit(
+                    lir::Variable::Local(loc),
+                    StructTy {
+                        path: "range".into(),
+                        ty: Ty::range(el_ty.mono().clone()).into(),
+                        fields: vec![
+                            ("start".to_string(), el_ty.clone()),
+                            ("end".to_string(), el_ty.clone()),
+                            ("inclusive".to_string(), Ty::bool().into()),
+                        ],
+                    },
+                ));
 
                 // store the start value
                 let start_val = range.start.lir_gen(ctx, tcx)?;
@@ -865,9 +885,6 @@ impl LirGen<GenResult> for Node<Expr> {
                 let tuple_loc = ctx.local(ty.clone());
                 let size = ty.mono().size_of();
                 if !size.is_zero() {
-                    let ptr = lir::Malloc::new(ty.clone(), lir::Atom::uptr(1));
-                    ctx.push(lir::Inst::SetLocal(tuple_loc.into(), ptr.into()));
-
                     // for each element of the tuple
                     let mut offset = lir::Size::zero();
                     for (el, ty) in tuple.seq.items.iter().zip(tys.iter().cloned()) {
@@ -919,13 +936,19 @@ impl LirGen<GenResult> for Node<Expr> {
                     offset += el_size;
                 }
 
-                // allocate space for the list struct
-                //   - values ptr: *'a
-                //   - len: uint
-                //   - capacity: uint
                 let list_loc = ctx.local(ty.clone());
-                let list_ptr = lir::Malloc::new(ty.clone(), lir::Atom::uptr(1));
-                ctx.push(lir::Inst::SetLocal(list_loc.into(), list_ptr.into()));
+                ctx.push(lir::Inst::StructInit(
+                    lir::Variable::Local(list_loc),
+                    StructTy {
+                        path: "list".into(),
+                        ty: Ty::list(el_ty.clone()).into(),
+                        fields: vec![
+                            ("values".to_string(), Ty::ptr(el_ty.clone()).into()),
+                            ("length".to_string(), Ty::uint().into()),
+                            ("capacity".to_string(), Ty::uint().into()),
+                        ],
+                    },
+                ));
 
                 // store the values ptr
                 ctx.push(lir::SetField::new(
@@ -1013,6 +1036,25 @@ impl LirGen<GenResult> for Node<Expr> {
             }
             Expr::Curly(curly) => {
                 let loc = ctx.local(ty.clone());
+                let fields = curly
+                    .elements
+                    .iter()
+                    .map(|elem| {
+                        let (name, _) = variant!(&elem.value, if CurlyElement::Labeled(x, y));
+                        let elem_ty = ctx.ty_of(tcx, elem.id);
+                        (name.to_string(), elem_ty)
+                    })
+                    .collect();
+
+                ctx.push(lir::Inst::StructInit(
+                    lir::Variable::Local(loc),
+                    StructTy {
+                        path: ty.mono().get_path().unwrap(),
+                        ty: ty.clone(),
+                        fields,
+                    },
+                ));
+
                 let mut field_insts = vec![];
                 for field in curly.elements.iter() {
                     let (name, field_value) =
@@ -1021,11 +1063,6 @@ impl LirGen<GenResult> for Node<Expr> {
                     let val = field_value.lir_gen(ctx, tcx)?;
                     field_insts.push((val, name.clone(), field_ty));
                 }
-
-                ctx.push(lir::Inst::SetLocal(
-                    loc.into(),
-                    lir::Malloc::new(ty.clone(), lir::Atom::uptr(1)).into(),
-                ));
 
                 for (val, name, ty) in field_insts {
                     if let Some(field_loc) = ctx.get_or_set_local(val, ty) {

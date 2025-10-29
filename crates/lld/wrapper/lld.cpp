@@ -1,7 +1,17 @@
-#include <cstdlib>
 #include <lld/Common/Driver.h>
-#include <mutex>
+
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <mutex>
+#include <string>
+#include <vector>
+
+LLD_HAS_DRIVER(coff)
+LLD_HAS_DRIVER(mingw)
+LLD_HAS_DRIVER(elf)
+LLD_HAS_DRIVER(macho)
+LLD_HAS_DRIVER(wasm)
 
 using namespace llvm;
 
@@ -16,7 +26,7 @@ const char *alloc_str(const std::string &str) {
 }
 
 // LLD seems not to be thread safe
-std::mutex _wasmMutex;
+std::mutex _mutex;
 
 extern "C" {
     struct LLDInvokeResult {
@@ -31,52 +41,63 @@ extern "C" {
     }
 
     LLDInvokeResult lld_link(const char *flavor, int argc, const char *const *argv) {
+        LLDInvokeResult result{};
+
         std::string outputString, errorString;
         llvm::raw_string_ostream outputStream(outputString);
         llvm::raw_string_ostream errorStream(errorString);
-        std::vector<const char *> args(argv, argv + argc);
-        LLDInvokeResult result;
-        std::unique_lock<std::mutex> lock(_wasmMutex);
-
-        std::string flavorStr(flavor);
-        if (flavorStr.compare("coff") == 0 ||
-            flavorStr.compare("windows") == 0) {
-            result.success = lld::coff::link(args, false, outputStream, errorStream);
-        }
-        else if (flavorStr.compare("mingw") == 0) {
-            result.success = lld::mingw::link(args, false, outputStream, errorStream);
-        }
-        else if (flavorStr.compare("elf") == 0 ||
-                 flavorStr.compare("linux") == 0 ||
-                 flavorStr.compare("unix") == 0) {
-            result.success = lld::elf::link(args, false, outputStream, errorStream);
-        }
-        else if (flavorStr.compare("mach-o") == 0 ||
-                 flavorStr.compare("darwin") == 0 ||
-                 flavorStr.compare("ios") == 0 ||
-                 flavorStr.compare("tvos") == 0 ||
-                 flavorStr.compare("macos") == 0 ||
-                 flavorStr.compare("macosx") == 0) {
-          result.success =
-              lld::mach_o::link(args, false, outputStream, errorStream);
-        }
-        // else if (flavorStr.compare("macho") == 0 ||
-        //          flavorStr.compare("darwinnew") == 0) {
-        //   result.success =
-        //       lld::macho::link(args, false, outputStream, errorStream);
+        std::unique_lock<std::mutex> lock(_mutex);
         
-        // }
-        else if (flavorStr.compare("wasm") == 0 ||
-                   flavorStr.compare("wasi") == 0 ||
-                   flavorStr.compare("wasm32") == 0 ||
-                   flavorStr.compare("wasm32-wasi") == 0 ||
-                   flavorStr.compare("wasm32-unknown-wasi") == 0) {
-          result.success =
-              lld::wasm::link(args, false, outputStream, errorStream);
-        } else {
-          result.success = false;
-          errorStream << "Unknown flavor: " << flavor << "\n";
+        std::vector<const char *> args;
+        args.reserve(static_cast<size_t>(argc) + 3);
+        args.push_back("lld");
+        args.push_back("-flavor");
+
+        std::string flavorStr = std::string(flavor);
+        std::string flavorArg = std::string();
+        if (flavorStr == "coff" || flavorStr == "windows") {
+            flavorArg = "link";
         }
+        else if (flavorStr == "mingw" ||
+                 flavorStr == "elf" ||
+                 flavorStr == "linux" ||
+                 flavorStr == "unix") {
+            flavorArg = "gnu";
+        }
+        else if (flavorStr == "mach-o" ||
+                 flavorStr == "macho" ||
+                 flavorStr == "darwin" ||
+                 flavorStr == "darwinnew" ||
+                 flavorStr == "ios" ||
+                 flavorStr == "tvos" ||
+                 flavorStr == "macos" ||
+                 flavorStr == "macosx") {
+            flavorArg = "darwin";
+        }
+        else if (flavorStr == "wasm" ||
+                 flavorStr == "wasi" ||
+                 flavorStr == "wasm32" ||
+                 flavorStr == "wasm32-wasi" ||
+                 flavorStr == "wasm32-unknown-wasi" ||
+                 flavorStr == "wasm32-wasip1" ||
+                 flavorStr == "wasm32-wasip1-threads" ||
+                 flavorStr == "wasm32-wasip2") {
+            flavorArg = "wasm";
+        } else {
+            errorStream << "Unknown flavor: " << flavor << "\n";
+            std::string resultMessage = errorStream.str();
+            result.success = false;
+            result.messages = alloc_str(resultMessage);
+            return result;
+        }
+
+        args.push_back(flavorArg.c_str());
+        for (int i = 0; i < argc; ++i) {
+            args.push_back(argv[i]);
+        }
+        
+        lld::Result lldResult = lld::lldMain(args, outputStream, errorStream, LLD_ALL_DRIVERS);
+        result.success = lldResult.retCode == 0;
 
         std::string resultMessage = errorStream.str() + outputStream.str();
         result.messages = alloc_str(resultMessage);

@@ -6,9 +6,16 @@
     // "rust-analyzer.checkOnSave.command": "build",
     // "lldb.library": "/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/LLDB",
     "rust-analyzer.cargo.extraEnv": {
-        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@12/bin/llvm-config"
+        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config"
     },
     "files.associations": {
+        "*.json.liquid": "json",
+        "*.yaml.liquid": "yaml",
+        "*.md.liquid": "markdown",
+        "*.js.liquid": "liquid-javascript",
+        "*.css.liquid": "liquid-css",
+        "*.scss.liquid": "liquid-scss",
+        "*.svg": "svg",
         "cstdlib": "cpp",
         "__bit_reference": "cpp",
         "__config": "cpp",
@@ -82,6 +89,12 @@
         "unordered_set": "cpp",
         "utility": "cpp",
         "vector": "cpp",
-        "__bits": "cpp"
+        "__bits": "cpp",
+        "__verbose_abort": "cpp",
+        "charconv": "cpp",
+        "execution": "cpp",
+        "forward_list": "cpp",
+        "print": "cpp",
+        "variant": "cpp"
     },
 }
