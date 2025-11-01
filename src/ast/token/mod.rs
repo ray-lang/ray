@@ -97,6 +97,8 @@ pub enum TokenKind {
     Asm,
     /// new
     New,
+    /// box
+    Bx,
 
     Modifier(Modifier),
 
@@ -254,6 +256,7 @@ impl TokenKind {
             TokenKind::Where => "`where`",
             TokenKind::Asm => "`asm`",
             TokenKind::New => "`new`",
+            TokenKind::Bx => "`box`",
             TokenKind::Equals => "`=`",
             TokenKind::Gt => "`>`",
             TokenKind::Lt => "`<`",
@@ -371,6 +374,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Where => "where".to_string(),
             TokenKind::Asm => "asm".to_string(),
             TokenKind::New => "new".to_string(),
+            TokenKind::Bx => "box".to_string(),
             TokenKind::Equals => "=".to_string(),
             TokenKind::Gt => ">".to_string(),
             TokenKind::Lt => "<".to_string(),

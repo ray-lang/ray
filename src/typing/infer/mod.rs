@@ -145,13 +145,55 @@ impl<'a> InferSystem<'a> {
             let errs = solution
                 .errors
                 .into_iter()
-                .map(|(_, info)| TypeError::from_info(info))
+                .map(|(_, mut info)| {
+                    info.apply_subst(&solution.subst);
+                    info.simplify();
+                    TypeError::from_info(info)
+                })
                 .collect();
             Err(errs)
         } else {
             log::debug!("defs: {:?}", defs);
+
+            // --- Instrumentation: what type vars are still printed before applying the subst?
+            let tvars_before = defs
+                .iter()
+                .flat_map(|(_, v)| v.mono().free_vars())
+                .collect::<Vec<_>>();
+            if !tvars_before.is_empty() {
+                log::debug!("[solve] tvars BEFORE apply_subst_all: {:?}", tvars_before);
+                // Show which of those have entries in the substitution we’re about to apply.
+                // We match textually on `?t###` by formatting the TyVar keys from the map.
+                // If the Subst key formatting doesn't include `?t`, we'll still see coverage in the full dump above.
+                let mut covered = Vec::new();
+                let mut missing = Vec::new();
+                for &tv in &tvars_before {
+                    // cheap textual membership test against debug dump of subst keys
+                    let has = solution.subst.contains_key(tv);
+                    if has {
+                        covered.push(tv.clone());
+                    } else {
+                        missing.push(tv.clone());
+                    }
+                }
+                log::debug!("[solve] tvars BEFORE — covered by subst: {:?}", covered);
+                log::debug!("[solve] tvars BEFORE — NOT covered by subst: {:?}", missing);
+            }
+
             defs.apply_subst_all(&solution.subst);
             defs.qualify_tys(&solution.qualifiers);
+
+            // --- Instrumentation: verify that type vars were actually eliminated.
+            let tvars_after = defs
+                .iter()
+                .flat_map(|(_, v)| v.mono().free_vars())
+                .collect::<Vec<_>>();
+            if !tvars_after.is_empty() {
+                log::debug!("[solve] tvars AFTER  apply_subst_all: {:?}", tvars_after);
+            } else {
+                log::debug!("[solve] no textual ?t### remain after apply_subst_all");
+            }
+
             log::debug!("defs: {}", defs);
             Ok((solution, defs))
         }

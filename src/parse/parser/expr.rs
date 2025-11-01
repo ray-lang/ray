@@ -4,7 +4,7 @@ use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
 
 use crate::{
     ast::{
-        Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
+        Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
         Trailing, ValueKind,
         asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
@@ -30,6 +30,7 @@ impl Parser<'_> {
             TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
             TokenKind::Asm => self.parse_asm(ctx),
             TokenKind::New => self.parse_new_expr(ctx),
+            TokenKind::Bx => self.parse_box_expr(ctx),
             TokenKind::Break => {
                 let break_span = self.expect_keyword(TokenKind::Break, ctx)?;
                 let (ex, span) = if self.is_next_expr_begin() {
@@ -392,7 +393,7 @@ impl Parser<'_> {
         ))
     }
 
-    pub fn parse_new_expr(&mut self, ctx: &ParseContext) -> ExprResult {
+    pub(crate) fn parse_new_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         ctx.with_description("parse new expression", |ctx| {
             let new_span = self.expect_keyword(TokenKind::New, ctx)?;
             let lparen_tok = self.expect(TokenKind::LeftParen, ctx)?;
@@ -424,6 +425,25 @@ impl Parser<'_> {
                     count,
                     new_span,
                     paren_span,
+                }),
+                span,
+                ctx.path.clone(),
+            ))
+        })
+    }
+
+    pub(crate) fn parse_box_expr(&mut self, ctx: &ParseContext) -> ExprResult {
+        ctx.with_description("parse box expression", |ctx| {
+            let box_span = self.expect_keyword(TokenKind::Bx, ctx)?;
+
+            let inner = self.parse_expr(ctx)?;
+            let inner_span = self.srcmap.span_of(&inner);
+
+            let span = box_span.extend_to(&inner_span);
+            Ok(self.mk_expr(
+                Expr::Boxed(Boxed {
+                    inner: Box::new(inner),
+                    box_span,
                 }),
                 span,
                 ctx.path.clone(),

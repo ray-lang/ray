@@ -32,6 +32,10 @@ impl TryFrom<Expr> for Pattern {
                 let name = unop.expr.take_map(|expr| variant!(expr, if Expr::Name(n)));
                 Ok(Pattern::Deref(name))
             }
+            Expr::Deref(deref) if matches!(deref.expr.value, Expr::Name(_)) => {
+                let name = deref.expr.take_map(|expr| variant!(expr, if Expr::Name(n)));
+                Ok(Pattern::Deref(name))
+            }
             _ => Err(RayError {
                 kind: RayErrorKind::Parse,
                 msg: format!("{} is an invalid pattern", expr.desc()),

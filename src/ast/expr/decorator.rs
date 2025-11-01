@@ -12,7 +12,7 @@ use super::Name;
 pub struct Decorator {
     pub path: Node<Path>,
     pub args: Vec<Node<Name>>,
-    pub paren_sp: Span,
+    pub paren_sp: Option<Span>,
 }
 
 impl std::fmt::Display for Decorator {

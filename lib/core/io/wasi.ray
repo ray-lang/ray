@@ -5,9 +5,17 @@ struct IOVec {
     len: uint  // Number of bytes to transfer
 }
 
-fn puts(s: string) -> () {
-    nwritten = new(uint, 1)
-    io = new(IOVec, 1)
-    *io = IOVec { base: s.raw_ptr, len: s.len }
-    _ = fd_write(1, io, 1, nwritten)
+fn writev_stdout(chunks: *string, n: uint) -> uint {
+    iovecs = new(IOVec, n)
+    mut i = 0
+    while i < n {
+        chunk = *ptr_add(chunks, i * sizeof(string))
+        ptr = ptr_add(iovecs, i * sizeof(IOVec))
+        *ptr = IOVec { base: chunk.raw_ptr, len: chunk.len }
+        i += 1
+    }
+
+    wrote = 0
+    _ = fd_write(1, iovecs, n, &wrote)
+    wrote
 }

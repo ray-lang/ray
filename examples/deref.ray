@@ -1,0 +1,6 @@
+fn main() {
+    x = 5
+    p = &x
+    y = *p + 2
+    print(y)
+}

@@ -402,8 +402,8 @@ impl Parser<'_> {
         &mut self,
         pos: Pos,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<Decorator>, Span)> {
-        let mut decs = vec![];
+    ) -> ParseResult<(Option<Vec<Decorator>>, Span)> {
+        let mut decs = None;
         let mut start = pos;
         let mut end = pos;
         let mut init_pos = false;
@@ -416,27 +416,37 @@ impl Parser<'_> {
 
             let path = self.parse_path(ctx)?;
 
-            let mut ctx = ctx.clone();
-            ctx.restrictions |= Restrictions::IN_PAREN;
-            ctx.description = Some("parse decorator args".to_string());
-            let start_tok = self.expect(TokenKind::LeftParen, &ctx)?;
-            let ps = start_tok.span.start;
-
-            let args = if !peek!(self, TokenKind::RightParen) {
-                let (args, _) =
-                    self.parse_name_seq(Trailing::Allow, Some(&TokenKind::RightParen), &ctx)?;
-                args
+            let (args, paren_sp) = if peek!(self, TokenKind::LeftParen) {
+                let mut ctx = ctx.clone();
+                ctx.restrictions |= Restrictions::IN_PAREN;
+                ctx.description = Some("parse decorator args".to_string());
+                let start_tok = self.expect(TokenKind::LeftParen, &ctx)?;
+                let ps = start_tok.span.start;
+                let args = if !peek!(self, TokenKind::RightParen) {
+                    let (args, _) =
+                        self.parse_name_seq(Trailing::Allow, Some(&TokenKind::RightParen), &ctx)?;
+                    args
+                } else {
+                    vec![]
+                };
+                let pe = self.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
+                end = pe;
+                (args, Some(Span { start: ps, end: pe }))
             } else {
-                vec![]
+                (vec![], None)
             };
-            let pe = self.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
-            end = pe;
 
-            decs.push(Decorator {
-                path,
-                args,
-                paren_sp: Span { start: ps, end: pe },
-            })
+            if decs.is_none() {
+                decs = Some(vec![]);
+            }
+
+            if let Some(decs) = decs.as_mut() {
+                decs.push(Decorator {
+                    path,
+                    args,
+                    paren_sp,
+                })
+            }
         }
 
         Ok((decs, Span { start, end }))

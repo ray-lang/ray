@@ -351,6 +351,7 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.visit_expr(stmt);
                 }
             }
+            Expr::Boxed(boxed) => self.visit_expr(&boxed.inner),
             Expr::Break(value) => {
                 if let Some(expr) = value {
                     self.visit_expr(expr);
@@ -384,6 +385,10 @@ impl<'a> SemanticTokenCollector<'a> {
                 self.visit_expr(&closure.body);
             }
             Expr::Curly(curly) => self.visit_curly(curly),
+            Expr::Deref(deref) => {
+                self.emit_span(deref.op_span, SemanticTokenKind::Operator, &[]);
+                self.visit_expr(&deref.expr);
+            }
             Expr::DefaultValue(expr) => self.visit_expr(expr),
             Expr::Dot(dot) => {
                 self.visit_expr(&dot.lhs);
@@ -454,6 +459,10 @@ impl<'a> SemanticTokenCollector<'a> {
                 self.visit_expr(&range.start);
                 self.visit_expr(&range.end);
                 self.emit_span(range.op_span, SemanticTokenKind::Operator, &[]);
+            }
+            Expr::Ref(rf) => {
+                self.emit_span(rf.op_span, SemanticTokenKind::Operator, &[]);
+                self.visit_expr(&rf.expr);
             }
             Expr::Sequence(seq) => {
                 for item in &seq.items {

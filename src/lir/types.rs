@@ -429,12 +429,21 @@ pub enum Value {
     BasicOp(BasicOp),
     Cast(Cast),
     IntConvert(IntConvert),
+    Type(TyScheme),
 }
 
 impl Value {
     pub fn local(&self) -> Option<usize> {
         if let &Value::Atom(Atom::Variable(Variable::Local(idx))) = self {
             Some(idx)
+        } else {
+            None
+        }
+    }
+
+    pub fn var(&self) -> Option<&Variable> {
+        if let Value::Atom(Atom::Variable(v)) = self {
+            Some(v)
         } else {
             None
         }
@@ -458,6 +467,7 @@ impl Display for Value {
             Value::BasicOp(a) => write!(f, "{}", a),
             Value::Cast(c) => write!(f, "{}", c),
             Value::IntConvert(a) => write!(f, "{}", a),
+            Value::Type(ty) => write!(f, "type({})", ty),
         }
     }
 }
@@ -483,7 +493,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::BasicOp(b) => b.get_locals_mut(),
             Value::Cast(c) => c.get_locals_mut(),
             Value::IntConvert(_) => todo!(),
-            Value::VarRef(_) | Value::Empty => vec![],
+            Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
         }
     }
 }
@@ -503,7 +513,7 @@ impl<'a> GetLocals<'a> for Value {
             Value::BasicOp(b) => b.get_locals(),
             Value::Cast(c) => c.get_locals(),
             Value::IntConvert(_) => todo!(),
-            Value::VarRef(_) | Value::Empty => vec![],
+            Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
         }
     }
 }
@@ -524,6 +534,7 @@ impl Substitutable<TyVar, Ty> for Value {
             Value::BasicOp(b) => b.apply_subst(subst),
             Value::Cast(c) => c.apply_subst(subst),
             Value::IntConvert(i) => i.apply_subst(subst),
+            Value::Type(ty) => ty.apply_subst(subst),
         }
     }
 
@@ -542,6 +553,7 @@ impl Substitutable<TyVar, Ty> for Value {
             Value::BasicOp(b) => b.apply_subst_all(subst),
             Value::Cast(c) => c.apply_subst_all(subst),
             Value::IntConvert(i) => i.apply_subst_all(subst),
+            Value::Type(ty) => ty.apply_subst_all(subst),
         }
     }
 }
@@ -585,6 +597,7 @@ impl Value {
             | Value::GetField(_)
             | Value::BasicOp(_)
             | Value::Cast(_)
+            | Value::Type(_)
             | Value::IntConvert(_) => None,
         }
     }
@@ -2110,15 +2123,14 @@ pub struct Store {
     pub dst: Variable,
     pub value: Value,
     pub offset: Size,
-    pub size: Size,
 }
 
 impl Display for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "store {} {} offset=({}) size=({})",
-            self.dst, self.value, self.offset, self.size
+            "store {} {} offset=({})",
+            self.dst, self.value, self.offset,
         )
     }
 }
@@ -2152,13 +2164,8 @@ impl Substitutable<TyVar, Ty> for Store {
 }
 
 impl Store {
-    pub fn new(dst: Variable, value: Value, offset: Size, size: Size) -> Inst {
-        Inst::Store(Store {
-            dst,
-            value,
-            offset,
-            size,
-        })
+    pub fn new(dst: Variable, value: Value, offset: Size) -> Inst {
+        Inst::Store(Store { dst, value, offset })
     }
 }
 
@@ -2166,18 +2173,13 @@ impl Store {
 pub struct Load {
     pub src: Variable,
     pub offset: Size,
-    pub size: Size,
 }
 
 LirImplInto!(Value for Load);
 
 impl Display for Load {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "load {} offset=({}) size=({})",
-            self.src, self.offset, self.size
-        )
+        write!(f, "load {} offset=({})", self.src, self.offset,)
     }
 }
 
@@ -2203,44 +2205,93 @@ impl Substitutable<TyVar, Ty> for Load {
     }
 }
 
+impl Load {
+    pub fn new(src: Variable, offset: Size) -> Value {
+        Value::Load(Load { src, offset })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LeaOffset {
+    Const(Size),
+    Field(TyScheme, String),
+}
+
+impl Display for LeaOffset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LeaOffset::Const(size) => write!(f, "{}", size),
+            LeaOffset::Field(ty_scheme, field) => write!(f, "offset-of({}::{})", ty_scheme, field),
+        }
+    }
+}
+
+impl Substitutable<TyVar, Ty> for LeaOffset {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            LeaOffset::Const(_) => {}
+            LeaOffset::Field(ty_scheme, _) => ty_scheme.apply_subst(subst),
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            LeaOffset::Const(_) => {}
+            LeaOffset::Field(ty_scheme, _) => ty_scheme.apply_subst_all(subst),
+        }
+    }
+}
+
+impl LeaOffset {
+    pub fn zero() -> LeaOffset {
+        LeaOffset::Const(Size::zero())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lea {
-    value: Atom,
-    src_offset: Size,
-    dst_offset: Size,
+    /// Variable to load address of
+    pub(crate) var: Variable,
+
+    /// Effective byte/ptr offset from `value`
+    pub(crate) offset: LeaOffset,
 }
 
 LirImplInto!(Value for Lea);
 
 impl Display for Lea {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "lea {} {} {}",
-            self.value, self.src_offset, self.dst_offset,
-        )
+        write!(f, "lea {} {}", self.var, self.offset)
     }
 }
 
 impl<'a> GetLocalsMut<'a> for Lea {
     fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
-        self.value.get_locals_mut()
+        self.var.get_locals_mut()
     }
 }
 
 impl<'a> GetLocals<'a> for Lea {
     fn get_locals(&'a self) -> Vec<&'a usize> {
-        self.value.get_locals()
+        self.var.get_locals()
     }
 }
 
 impl Substitutable<TyVar, Ty> for Lea {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
-        self.value.apply_subst(subst);
+        self.var.apply_subst(subst);
+        self.offset.apply_subst(subst);
     }
 
     fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
-        self.value.apply_subst_all(subst);
+        self.var.apply_subst_all(subst);
+        self.offset.apply_subst_all(subst);
+    }
+}
+
+impl Lea {
+    pub fn new(var: Variable, offset: LeaOffset) -> Value {
+        Value::Lea(Self { var, offset })
     }
 }
 

@@ -201,6 +201,9 @@ where
         I: Display + Clone + TypeConstraintInfo<I, T, V>,
     {
         for i in 0..self.state().qualifiers().len() {
+            log::debug!("--- default_qualifiers iteration {} ---", i);
+            log::debug!("predicate = {:?}", self.state().qualifier(i).0);
+
             let (predicate, _) = &self.state().qualifier(i);
             let ty = match predicate {
                 Predicate::Class(_, ty, _) => ty,
@@ -208,8 +211,11 @@ where
             };
 
             let var = match ty.maybe_var() {
+                None => {
+                    log::debug!("predicate has no type variable, skipping: {}", predicate);
+                    continue;
+                }
                 Some(v) => v,
-                None => continue,
             };
 
             if self
@@ -218,9 +224,16 @@ where
                 .find(|(vars, ..)| vars.contains(var))
                 .is_some()
             {
+                log::debug!(
+                    "skipping default for predicate {} because it contains a skolem variable {:?}",
+                    predicate,
+                    var
+                );
                 // ignore this predicate since it contains a skolem variable
                 continue;
             }
+
+            log::debug!("trying default candidates for {}", predicate);
 
             // try the default
             let defaults = self

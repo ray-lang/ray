@@ -10,7 +10,8 @@ use std::{
 };
 
 use inkwell::{
-    self as llvm, builder::BuilderError, passes::PassBuilderOptions, types::BasicMetadataTypeEnum,
+    self as llvm, attributes::Attribute, builder::BuilderError, passes::PassBuilderOptions,
+    types::BasicMetadataTypeEnum,
 };
 use llvm::{
     AddressSpace, IntPredicate,
@@ -28,7 +29,8 @@ use rand::RngCore;
 
 use crate::{
     ast::{Modifier, Node, Path},
-    codegen::collect_symbols,
+    codegen::{CodegenOptions, collect_symbols},
+    driver::OptLevel,
     errors::RayError,
     lir,
     pathlib::FilePath,
@@ -38,8 +40,6 @@ use crate::{
 };
 
 use super::Codegen;
-
-use attr::Attribute;
 
 static MALLOC_BUF: &'static [u8] = include_bytes!("../../../lib/libc/wasi_malloc.wasm");
 
@@ -54,7 +54,7 @@ pub fn codegen<'a, 'ctx, P>(
     lcx: &'a llvm::context::Context,
     target: &Target,
     output_path: P,
-    emit: bool,
+    options: CodegenOptions,
 ) -> Result<(), Vec<RayError>>
 where
     P: FnOnce(&'static str) -> FilePath,
@@ -80,10 +80,20 @@ where
     // TODO: handle optimization level
     let pass_options = PassBuilderOptions::create();
 
-    // - mem2reg
-    // - sroa (breaks up allocas)
-    // - instcombine, reassociate, gvn, simplifycfg (classic cleanups)
-    let passes = "function(mem2reg,sroa,instcombine,reassociate,gvn,simplifycfg)";
+    // always-inline
+    // function passes:
+    //   - mem2reg
+    //   - sroa (breaks up allocas)
+    //   - instcombine, reassociate, gvn, simplifycfg (classic cleanups)
+    let passes = match options.opt_level {
+        OptLevel::O0 => "function(mem2reg,sroa,instcombine,reassociate,gvn,simplifycfg)",
+        OptLevel::O1 => "default<O1>",
+        OptLevel::O2 => "default<O2>",
+        OptLevel::O3 => "default<O3>",
+        OptLevel::Os => "default<Os>",
+        OptLevel::Oz => "default<Oz>",
+    };
+
     if let Some(err) = module
         .run_passes(passes, &ctx.target_machine, pass_options)
         .err()
@@ -99,7 +109,7 @@ where
         );
     }
 
-    if emit {
+    if options.emit {
         println!("{}", module.print_to_string().to_string());
         return Ok(());
     }
@@ -141,6 +151,15 @@ where
     .ok()
     .unwrap();
     Ok(())
+}
+
+// Represents the result of lowering a call in codegen: either a normal callsite (with optional ret slot), or a folded value.
+enum LoweredCall<'ctx> {
+    Call {
+        call: CallSiteValue<'ctx>,
+        ret_slot: Option<PointerValue<'ctx>>,
+    },
+    Value(BasicValueEnum<'ctx>),
 }
 
 struct LLVMCodegenCtx<'a, 'ctx> {
@@ -404,7 +423,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         tcx: &TyCtx,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
         // get the field offset and size
-        let lhs_ty = self.type_of(var);
+        let mut lhs_ty = self.type_of(var);
+        if let Ty::Ptr(inner) = lhs_ty {
+            lhs_ty = &inner;
+        }
+
         let lhs_fqn = lhs_ty.get_path().unwrap();
         let lhs_ty = tcx.get_struct_ty(&lhs_fqn).unwrap();
         let mut offset = 0;
@@ -954,6 +977,12 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             if !symbols.contains(&ext.name) {
                 continue;
             }
+
+            // TODO: wrap in "is_intrinsic"
+            if ext.name.to_short_name() == "sizeof" {
+                continue;
+            }
+
             // define
             log::debug!("define extern: {}", ext.name);
             if let Some((_, _, param_tys, ret_ty)) = ext.ty.try_borrow_fn() {
@@ -1056,7 +1085,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             if srcmap.has_inline(f) {
                 let inline_attr = ctx
                     .lcx
-                    .create_enum_attribute(0, Attribute::ALWAYS_INLINE.bits());
+                    .create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
                 fn_val.add_attribute(AttributeLoc::Function, inline_attr);
             }
 
@@ -1066,11 +1095,6 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
 
         for (i, val) in funcs {
             let f = &self.funcs[i];
-            if srcmap.has_inline(f) {
-                // don't generate inline functions
-                continue;
-            }
-
             if let Some(selected) = fn_map.get(&f.name) {
                 if !ptr::eq(*selected, f) {
                     continue;
@@ -1151,7 +1175,13 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
                 continue;
             }
 
-            let alloca = ctx.alloca(loc.ty.mono())?;
+            let ty = loc.ty.mono();
+            // Skip compile-time meta-type locals (e.g., type['a])
+            if ty.is_meta_ty() {
+                continue;
+            }
+
+            let alloca = ctx.alloca(ty)?;
             ctx.locals.insert(loc.idx, alloca);
         }
 
@@ -1222,13 +1252,28 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
 
             lir::Inst::Free(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Call(call) => {
-                let (call, _) = call.codegen(ctx, tcx, srcmap)?;
-                call.try_as_basic_value()
-                    .either(|val| val.as_instruction_value().unwrap(), |inst| inst)
+                match call.codegen(ctx, tcx, srcmap)? {
+                    LoweredCall::Value(_v) => {
+                        // Intrinsic folded to a value in expression position; as a statement call,
+                        // this becomes a no-op.
+                        return Ok(None);
+                    }
+                    LoweredCall::Call { call, .. } => call
+                        .try_as_basic_value()
+                        .either(|val| val.as_instruction_value().unwrap(), |inst| inst),
+                }
             }
             lir::Inst::CExternCall(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::SetGlobal(_, _) => todo!("codegen lir::Inst: {}", self),
-            lir::Inst::SetLocal(idx, value) => ctx.build_set_local(*idx, value, tcx, srcmap)?,
+            lir::Inst::SetLocal(idx, value) => {
+                if ctx.local_tys[*idx].is_meta_ty() {
+                    // Meta-typed locals (e.g., type[T]) have no runtime representation.
+                    // Their RHS is also a meta expression and must not lower to LLVM at all.
+                    // Skipping codegen here avoids spurious loads/stores and keeps IR clean.
+                    return Ok(None);
+                }
+                ctx.build_set_local(*idx, value, tcx, srcmap)?
+            }
             lir::Inst::MemCopy(dest_var, src_var, size) => {
                 ctx.build_memcpy(dest_var, src_var, size, tcx, srcmap)?
             }
@@ -1269,21 +1314,22 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::Empty => Ok(ctx.unit()),
             lir::Value::Atom(a) => a.codegen(ctx, tcx, srcmap),
             lir::Value::Malloc(m) => m.codegen(ctx, tcx, srcmap),
-            lir::Value::Call(c) => {
-                let (call, ret_slot) = c.codegen(ctx, tcx, srcmap)?;
-                Ok(ret_slot
+            lir::Value::Call(c) => Ok(match c.codegen(ctx, tcx, srcmap)? {
+                LoweredCall::Value(v) => v,
+                LoweredCall::Call { call, ret_slot } => ret_slot
                     .map(|p| p.as_basic_value_enum())
-                    .unwrap_or_else(|| call.try_as_basic_value().left_or_else(|_| ctx.unit())))
-            }
+                    .unwrap_or_else(|| call.try_as_basic_value().left_or_else(|_| ctx.unit())),
+            }),
             lir::Value::CExternCall(_) => todo!("codegen lir::CExternCall: {}", self),
             lir::Value::Select(_) => todo!("codegen lir::Select: {}", self),
             lir::Value::Phi(phi) => phi.codegen(ctx, tcx, srcmap),
             lir::Value::Load(l) => l.codegen(ctx, tcx, srcmap),
-            lir::Value::Lea(_) => todo!("codegen lir::Lea: {}", self),
+            lir::Value::Lea(lea) => lea.codegen(ctx, tcx, srcmap),
             lir::Value::GetField(g) => g.codegen(ctx, tcx, srcmap),
             lir::Value::BasicOp(b) => b.codegen(ctx, tcx, srcmap),
             lir::Value::Cast(c) => c.codegen(ctx, tcx, srcmap),
             lir::Value::IntConvert(_) => todo!("codegen lir::IntConvert: {}", self),
+            lir::Value::Type(_) => todo!("codegen lir::Type: {}", self),
         }
     }
 }
@@ -1397,6 +1443,39 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Store {
             }
             lir::Variable::Unit => todo!(),
         }
+    }
+}
+
+impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Lea {
+    type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
+
+    fn codegen(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Self::Output {
+        let ptr = match &self.offset {
+            lir::LeaOffset::Const(offset) => {
+                // generate the base pointer
+                let var = self.var.codegen(ctx, tcx, srcmap)?;
+                let mut ptr = var.into_pointer_value();
+
+                // use the offset to get the pointer
+                if offset.ptrs > 0 {
+                    ptr = ctx.get_element_ptr(ptr, offset.ptrs)?;
+                }
+
+                if offset.bytes > 0 {
+                    ptr = ctx.byte_offset_ptr(ptr, offset.bytes)?;
+                }
+
+                ptr
+            }
+            lir::LeaOffset::Field(_, field) => ctx.get_field_ptr(&self.var, field, tcx)?,
+        };
+
+        Ok(ptr.as_basic_value_enum())
     }
 }
 
@@ -1550,7 +1629,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Cast {
 }
 
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
-    type Output = Result<(CallSiteValue<'ctx>, Option<PointerValue<'ctx>>), BuilderError>;
+    type Output = Result<LoweredCall<'ctx>, BuilderError>;
 
     fn codegen(
         &self,
@@ -1558,6 +1637,21 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
+        // Intrinsic: sizeof(...)
+        if self.fn_name.to_string() == "sizeof" {
+            // One meta-type argument; compute size as ptr-width uint (matches Ray `uint`).
+            let meta_ty = ctx.type_of(&self.args[0]).clone();
+            let underlying_ty = meta_ty.get_ty_param_at(0);
+            let ll = ctx.to_llvm_type(underlying_ty);
+            let raw = ll.size_of().expect("could not compute sizeof for type");
+            // Cast to target ptr-sized int (i32 on wasm32) so call sites see the right width.
+            let cast = ctx
+                .builder
+                .build_int_cast(raw, ctx.ptr_type(), "")
+                .expect("int cast for sizeof");
+            return Ok(LoweredCall::Value(cast.as_basic_value_enum()));
+        }
+
         // Marshal arguments using the same rule as Inst::Call.
         let function = *ctx.fn_index.get(&self.fn_name).expect(
             format!(
@@ -1579,13 +1673,18 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
         if ret_ty.is_aggregate() {
             let (call, ret_slot) =
                 ctx.build_sret_call(function, &self.args, &expected_params, ret_ty, tcx, srcmap)?;
-
-            return Ok((call, Some(ret_slot)));
+            return Ok(LoweredCall::Call {
+                call,
+                ret_slot: Some(ret_slot),
+            });
         }
 
         // Non-aggregate: regular call and unwrap pointer args as needed.
         let call = ctx.build_call(function, &self.args, &expected_params, tcx, srcmap)?;
-        Ok((call, None))
+        Ok(LoweredCall::Call {
+            call,
+            ret_slot: None,
+        })
     }
 }
 

@@ -4,12 +4,18 @@ use lir::SymbolSet;
 
 use crate::{
     ast::{Node, Path},
+    driver::OptLevel,
     lir,
     span::SourceMap,
     typing::TyCtx,
 };
 
 pub mod llvm;
+
+pub struct CodegenOptions {
+    pub emit: bool,
+    pub opt_level: OptLevel,
+}
 
 pub(self) fn collect_symbols(
     func: &lir::Func,

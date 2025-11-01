@@ -108,6 +108,11 @@ impl ModuleCombiner {
     ) -> Result<(), Vec<RayError>> {
         if self.module_set.contains(module_path) {
             log::debug!("module has already been collected: {}", module_path);
+
+            // make sure the source map has been removed and put in the parent
+            if let Some(srcmap) = self.srcmaps.remove(module_path) {
+                parent_srcmap.extend_with(srcmap);
+            }
             return Ok(());
         }
 
@@ -149,8 +154,8 @@ impl ModuleCombiner {
             Source::new(filepath.clone(), span, Path::new(), module_path.clone()),
         );
 
-        // create a "main" function for the stmts
-        let main_path = module_path.append("main");
+        // create a "_ray_main" function for the stmts
+        let main_path = module_path.append("_ray_main");
         let main_path_node = Node::new(main_path);
         let main_decl = Node::new(Decl::Func(ast::Func::new(main_path_node, vec![], body)));
         srcmap.set_src(

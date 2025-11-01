@@ -461,6 +461,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             let lib_path = (build_path / module_path.join("#")).with_extension("raylib");
             log::debug!("lib_path: {}", lib_path);
             if lib_path.exists() {
+                log::debug!("found lib: {}", lib_path);
                 return Ok(Some(lib_path));
             }
         }

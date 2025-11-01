@@ -59,8 +59,10 @@ impl<'a> Iterator for ModuleWalk<'a> {
             WalkItem::Expr(expr) => match &expr.value {
                 Expr::Assign(assign) => push_assign(self, assign),
                 Expr::Block(block) => push_block(self, block),
+                Expr::Boxed(boxed) => self.stack.push(WalkItem::Expr(&boxed.inner)),
                 Expr::Call(call) => push_call(self, call),
                 Expr::Closure(closure) => push_closure(self, closure),
+                Expr::Deref(deref) => self.stack.push(WalkItem::Expr(&deref.expr)),
                 Expr::Func(func) => push_func(self, func),
                 Expr::For(for_expr) => push_for(self, for_expr),
                 Expr::If(if_expr) => push_if(self, if_expr),
@@ -76,6 +78,7 @@ impl<'a> Iterator for ModuleWalk<'a> {
                 Expr::List(list) => push_list(self, list),
                 Expr::New(new) => push_new(self, new),
                 Expr::Range(range) => push_range(self, range),
+                Expr::Ref(rf) => self.stack.push(WalkItem::Expr(&rf.expr)),
                 Expr::Tuple(tuple) => push_tuple(self, tuple),
                 Expr::UnaryOp(unary) => push_unary_op(self, unary),
 

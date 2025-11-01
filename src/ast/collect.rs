@@ -5,7 +5,7 @@ use top::{Predicate, Substitutable};
 
 use crate::{
     ast,
-    span::{Source, SourceMap},
+    span::{Source, SourceMap, parsed::Parsed},
     typing::{
         TyCtx,
         assumptions::AssumptionSet,
@@ -21,8 +21,8 @@ use crate::{
 };
 
 use super::{
-    BinOp, Block, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal, Name,
-    New, Node, Path, Pattern, Range, Tuple, UnaryOp, While,
+    BinOp, Block, Boxed, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal,
+    Name, New, Node, Path, Pattern, Range, Ref, Tuple, UnaryOp, While,
     asm::{Asm, AsmOperand},
 };
 
@@ -104,8 +104,12 @@ impl CollectDeclarations for Node<Decl> {
                 let mut env = Env::new();
                 for decl in tr.fields.iter() {
                     let sig = variant!(decl.deref(), if Decl::FnSig(f));
-                    log::debug!("trait func: {}", sig.path);
-                    env.insert(sig.path.value.clone(), sig.ty.clone().unwrap().into());
+
+                    // store the polymorpphic scheme under a canonical key
+                    let raw_key = &sig.path.value;
+                    let norm_key = raw_key.with_names_only();
+                    log::debug!("trait func: raw={} norm={}", raw_key, norm_key);
+                    env.insert(norm_key, sig.ty.clone().unwrap().into());
                 }
 
                 (
@@ -139,7 +143,13 @@ impl CollectDeclarations for Node<Decl> {
                         log::debug!("fn_bg = {:?}", fn_bg);
                         log::debug!("fn_env = {:?}", fn_env);
 
-                        decl_pairs.push((fn_bg, fn_env));
+                        if imp.is_object {
+                            // Inherent impl: method is part of the type's API, include its scheme in Σ
+                            decl_pairs.push((fn_bg, fn_env));
+                        } else {
+                            // Trait impl: body provides evidence, do not extend Σ
+                            decl_pairs.push((fn_bg, Env::new()));
+                        }
                     }
                 }
 
@@ -148,21 +158,31 @@ impl CollectDeclarations for Node<Decl> {
                         let src = ctx.srcmap.get(const_node);
                         let (const_ty, const_bg, const_env) =
                             (&const_node.lhs, const_node.rhs.as_ref(), &src).collect_decls(ctx);
-                        // if let Some(path) = const_node.lhs.path() {
-                        //     const_env.insert(path.clone(), const_ty.clone());
-                        // }
 
                         ctx.tcx.set_ty(const_node.id, Ty::unit());
                         ctx.tcx.set_ty(const_node.lhs.id, const_ty);
                         log::debug!("const_bg = {:?}", const_bg);
                         log::debug!("const_env = {:?}", const_env);
-                        decl_pairs.push((const_bg, const_env));
+
+                        if imp.is_object {
+                            // Inherent associated const: expose in Σ
+                            decl_pairs.push((const_bg, const_env));
+                        } else {
+                            // Associated const in a trait impl: do not extend Σ
+                            decl_pairs.push((const_bg, Env::new()));
+                        }
                     }
                 }
 
                 if let Some(ext) = &imp.externs {
                     for (ext_bg, ext_env) in ext.iter().flat_map(|e| e.collect_decls(ctx)) {
-                        decl_pairs.push((ext_bg, ext_env));
+                        if imp.is_object {
+                            // Inherent externs (e.g., inherent associated fns declared extern)
+                            decl_pairs.push((ext_bg, ext_env));
+                        } else {
+                            // Externs inside trait impls should not pollute Σ
+                            decl_pairs.push((ext_bg, Env::new()));
+                        }
                     }
                 }
 
@@ -358,9 +378,31 @@ impl<'a> CollectConstraints for Module<(), Decl> {
         }
 
         let mono_tys = HashSet::new();
-        log::debug!("defs: {:?}", defs);
+        log::debug!("defs: {:#?}", defs);
         ctx.defs.extend(defs);
-        let sigs = ctx.defs.clone().into();
+
+        // DEBUG
+        {
+            log::debug!("BINDING GROUPS (pre-BGA):");
+            for (i, bg) in bgroups.iter().enumerate() {
+                // Each bg has an Env for its LHS bindings (fn names, etc.)
+                let names: Vec<_> = bg.env.keys().cloned().collect();
+                log::debug!("  BG#{i}: {:?}", names);
+            }
+        }
+
+        let sigs: SigmaEnv = ctx.defs.clone().into();
+
+        // DEBUG
+        {
+            let key = Path::from("traits_no_core::print").with_names_only();
+            if let Some(sigma) = sigs.get(&key) {
+                log::debug!("SIGMA[{}] = {}", key, sigma);
+            } else {
+                log::debug!("SIGMA has no entry for {}", key);
+            }
+        }
+
         let mut tf = ctx.tcx.tf();
         let mut bga = BindingGroupAnalysis::new(bgroups, &sigs, &mut tf, &mono_tys);
         let (_, aset, ct) = bga.analyze();
@@ -418,6 +460,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::Asm(ex) => (ex, src).collect_constraints(ctx),
             Expr::BinOp(ex) => (ex, src).collect_constraints(ctx),
             Expr::Block(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Boxed(ex) => (ex, src).collect_constraints(ctx),
             Expr::Break(ex) => {
                 if let Some(ex) = ex {
                     let src = &ctx.srcmap.get(ex);
@@ -431,6 +474,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::Closure(_) => todo!(),
             Expr::Curly(ex) => (ex, src).collect_constraints(ctx),
             Expr::DefaultValue(_) => todo!(),
+            Expr::Deref(ex) => (ex, src).collect_constraints(ctx),
             Expr::Dot(ex) => (ex, src).collect_constraints(ctx),
             Expr::Func(_) => todo!(),
             Expr::For(ex) => (ex, src).collect_constraints(ctx),
@@ -449,10 +493,11 @@ impl CollectConstraints for Node<Expr> {
             Expr::Path(ex) => (ex, src).collect_constraints(ctx),
             Expr::Paren(ex) => (ex, src).collect_constraints(ctx),
             Expr::Range(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Ref(ex) => (ex, src).collect_constraints(ctx),
             Expr::Return(_) => todo!(),
             Expr::Sequence(_) => todo!(),
             Expr::Tuple(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Type(_) => todo!(),
+            Expr::Type(ty) => (ty, src).collect_constraints(ctx),
             Expr::UnaryOp(ex) => (ex, src).collect_constraints(ctx),
             Expr::Unsafe(_) => todo!(),
             Expr::While(ex) => (ex, src).collect_constraints(ctx),
@@ -530,11 +575,14 @@ impl CollectConstraints for (&BinOp, &Source) {
         let (lhs_ty, lhs_aset, lhs_ct) = binop.lhs.collect_constraints(ctx);
         let (rhs_ty, rhs_aset, rhs_ct) = binop.rhs.collect_constraints(ctx);
 
+        // Operator token type
         let op_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         ctx.tcx.set_ty(binop.op.id, op_ty.clone());
 
+        // Result type of the binary expression
         let result_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
 
+        // Resolve operator symbol to FQN and its backing trait
         let name = binop.op.to_string();
         let fqn = match ctx.tcx.lookup_infix_op(&name).cloned() {
             Some((fqn, _)) => fqn,
@@ -543,118 +591,57 @@ impl CollectConstraints for (&BinOp, &Source) {
 
         log::debug!("binop fqn: {}", fqn);
 
+        // Assumptions: we "have" the operator value with type op_ty under its normalized key,
+        // so Σ lookup during InstConstraint lifting will match
         let mut aset = lhs_aset;
-        aset.add(fqn, op_ty.clone());
+        let norm_fqn = fqn.with_names_only();
+        aset.add(norm_fqn.clone(), op_ty.clone());
         aset.extend(rhs_aset);
-
         let op_src = ctx.srcmap.get(&binop.op);
         let op_ct = ReceiverTree::new(op_ty.to_string());
-        let mut eq = EqConstraint::new(
-            op_ty,
-            Ty::Func(vec![lhs_ty, rhs_ty], Box::new(result_ty.clone())),
+        let mut eq_op = EqConstraint::new(
+            op_ty.clone(),
+            Ty::Func(
+                vec![lhs_ty.clone(), rhs_ty.clone()],
+                Box::new(result_ty.clone()),
+            ),
         );
-        eq.info_mut().with_src(op_src);
+        eq_op.info_mut().with_src(op_src.clone());
 
-        (
-            result_ty,
-            aset,
-            AttachTree::new(eq, NodeTree::new(vec![lhs_ct, op_ct, rhs_ct])),
-        )
+        let ct = AttachTree::list(vec![eq_op], NodeTree::new(vec![lhs_ct, op_ct, rhs_ct]));
+        (result_ty, aset, ct)
+
+        // // Constrain operator token to have shape (lhs_ty, rhs_ty) -> result_ty
+        // // Any further relationships are enforced by Σ via InstConstraint lifting during binding analysis
+        // let op_src = ctx.srcmap.get(&binop.op);
+        // let op_ct = ReceiverTree::new(op_ty.to_string());
+        // let mut eq = EqConstraint::new(
+        //     op_ty,
+        //     Ty::Func(vec![lhs_ty.clone(), rhs_ty], Box::new(result_ty.clone())),
+        // );
+        // eq.info_mut().with_src(op_src.clone());
+
+        // // Prove the operator's backing trait for a fresh carrier τ and relate τ to the LHS
+        // // Σ controls the full scheme and qualifiers for the operator symbol
+        // // This ensures we don’t accidentally float a bare function without class evidence,
+        // // and keeps the domain anchored to the LHS (the common carrier design for binops)
+        // let trait_tv = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        // let mut prove_trait =
+        //     ProveConstraint::new(Predicate::class(trait_path.to_string(), trait_tv.clone()));
+        // prove_trait.info_mut().with_src(op_src.clone());
+
+        // // Tie τ to the LHS only (generic; no assumption that rhs/result equal τ).
+        // let mut eq_lhs_carrier = EqConstraint::new(lhs_ty.clone(), trait_tv.clone());
+        // eq_lhs_carrier.info_mut().with_src(op_src.clone());
+
+        // let ct = AttachTree::list(
+        //     vec![prove_trait, eq_lhs_carrier, eq],
+        //     NodeTree::new(vec![lhs_ct, op_ct, rhs_ct]),
+        // );
+        // (result_ty, aset, ct)
     }
 }
-
-// fn collect_expr_seq<'a, I>(exprs: I, ctx: &mut CollectCtx) -> (Ty, AssumptionSet, ConstraintTree)
-// where
-//     I: Iterator<Item = &'a Node<Expr>>,
-// {
-//     // SEQ = assign SEQ | expr SEQ | empty
-//     enum State {
-//         Exprs,
-//         Assigns,
-//     }
-
-//     let mut aset = AssumptionSet::new();
-//     let mut ty = Ty::unit();
-//     let mut groups = vec![];
-//     let mut ctrees = vec![];
-//     let mut state = State::Assigns;
-
-//     for expr in exprs {
-//         let src = ctx.srcmap.get(expr);
-//         if let Expr::Assign(assign) = &expr.value {
-//             let (lhs_ty, bg, _) = (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
-//             ctx.tcx.set_ty(expr.id, Ty::unit());
-//             ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
-
-//             // then check if there are any variables in the group
-//             // that have already been defined and create constraints
-//             let mut ctree = ConstraintTree::empty();
-//             let lhs_src = ctx.srcmap.get(&assign.lhs);
-//             for (var, ty) in bg.env().iter() {
-//                 if let Some(other_ty) = ctx.defs.get(&var) {
-//                     log::debug!("already defined: {} :: {}", var, other_ty);
-//                     log::debug!("creating equality constraint: {} == {}", ty, other_ty);
-
-//                     // create an equality constraint
-//                     ctree = AttachTree::new(
-//                         EqConstraint::new(ty.clone(), other_ty.clone()).with_src(lhs_src.clone()),
-//                         ctree,
-//                     );
-//                 } else {
-//                     // otherwise, add them to the definitions
-//                     ctx.defs.insert(var.clone(), ty.clone());
-//                 }
-//             }
-
-//             if matches!(state, State::Exprs) {
-//                 let ctree = ConstraintTree::from_vec(ctrees);
-//                 groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
-//                 log::debug!("env = {:#?}", ctx.defs);
-//                 let mut bga =
-//                     BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
-//                 let (_, groups_aset, ctree) = bga.analyze();
-//                 log::debug!("groups aset = {:#?}", groups_aset);
-//                 log::debug!("ctree = {:#?}", ctree);
-//                 aset = groups_aset;
-//                 groups = vec![];
-//                 ctrees = vec![ctree];
-//                 state = State::Assigns;
-//             }
-
-//             groups.push(bg);
-//             ctrees.push(ctree);
-//         } else {
-//             let (expr_ty, a, ct) = expr.collect_constraints(ctx);
-//             ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-//             ctx.tcx.set_ty(expr.id, ty.clone());
-//             let c = EqConstraint::new(ty.clone(), expr_ty).with_src(src);
-//             aset.extend(a);
-//             ctrees.push(AttachTree::new(c, ct));
-//             state = State::Exprs;
-//         }
-//     }
-
-//     let ctree = ConstraintTree::from_vec(ctrees);
-//     let ty = if matches!(state, State::Exprs) {
-//         ty
-//     } else {
-//         Ty::unit()
-//     };
-
-//     if groups.len() != 0 {
-//         log::debug!("aset = {:#?}", aset);
-//         log::debug!("env = {:#?}", ctx.defs);
-//         log::debug!("groups = {:#?}", groups);
-//         groups.push(BindingGroup::new(TyEnv::new(), aset, ctree));
-//         let mut bga = BindingGroupAnalysis::new(groups, &ctx.defs, ctx.tcx.tf(), ctx.mono_tys);
-//         let (_, aset, ctree) = bga.analyze();
-//         log::debug!("bga aset = {:#?}", aset);
-//         log::debug!("bga ctree = {:#?}", ctree);
-//         (ty, aset, ctree)
-//     } else {
-//         (ty, aset, ctree)
-//     }
-// }
 
 impl CollectConstraints for (&Block, &Source) {
     type Output = Ty;
@@ -714,6 +701,24 @@ impl CollectConstraints for (&Block, &Source) {
     }
 }
 
+impl CollectConstraints for (&Boxed, &Source) {
+    type Output = Ty;
+
+    fn collect_constraints(
+        &self,
+        ctx: &mut CollectCtx,
+    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        let &(boxed, src) = self;
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        let (inner_ty, aset, ct) = boxed.inner.collect_constraints(ctx);
+        let mut c = EqConstraint::new(ty.clone(), Ty::ptr(inner_ty));
+        c.info_mut().with_src(src.clone());
+
+        (ty, aset, AttachTree::new(c, ct))
+    }
+}
+
 impl CollectConstraints for (&Call, &Source) {
     type Output = Ty;
 
@@ -753,7 +758,11 @@ impl CollectConstraints for (&Call, &Source) {
             ctx.tcx.set_call_resolution(call.callee.id, fqn.clone());
             log::debug!("fqn: {}", fqn);
 
-            aset.add(fqn.clone(), field_ty.clone());
+            // add the normalized key to the assumption set
+            let norm_fqn = fqn.with_names_only();
+            log::debug!("Call::Dot adding normalized fqn: {}", norm_fqn);
+            aset.add(norm_fqn, field_ty.clone());
+
             ct1 = NodeTree::new(vec![ReceiverTree::new(field_ty.to_string()), ct1]);
             ctx.tcx.set_ty(call.callee.id, field_ty.clone());
             (field_ty, ct1)
@@ -849,6 +858,23 @@ impl CollectConstraints for (&Curly, &Source) {
     }
 }
 
+impl CollectConstraints for (&ast::Deref, &Source) {
+    type Output = Ty;
+
+    fn collect_constraints(
+        &self,
+        ctx: &mut CollectCtx,
+    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        let &(deref, src) = self;
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        let (expr_ty, aset, ct) = deref.expr.collect_constraints(ctx);
+        let mut eq = EqConstraint::new(expr_ty, Ty::ptr(ty.clone()));
+        eq.info_mut().with_src(src.clone());
+        (ty, aset, AttachTree::new(eq, ct))
+    }
+}
+
 impl CollectConstraints for (&Dot, &Source) {
     type Output = Ty;
 
@@ -866,20 +892,6 @@ impl CollectConstraints for (&Dot, &Source) {
         ));
         prove.info_mut().with_src(src.clone());
         (field_ty, aset, AttachTree::new(prove, ct))
-
-        // let accessor_tv = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-        // let mut eq = EqConstraint::new(
-        //     accessor_tv,
-        //     Ty::Accessor(Box::new(lhs_ty.clone()), Box::new(field_ty.clone())),
-        // );
-        // eq.info_mut().with_src(src.clone());
-        // let mut prove = ProveConstraint::new(Predicate::has_field(
-        //     lhs_ty,
-        //     dot.rhs.path.name().unwrap().to_string(),
-        //     field_ty.clone(),
-        // ));
-        // prove.info_mut().with_src(src.clone());
-        // (field_ty, aset, AttachTree::list(vec![eq, prove], ct))
     }
 }
 
@@ -1131,6 +1143,27 @@ impl CollectConstraints for (&Pattern, &Source) {
     }
 }
 
+impl CollectConstraints for (&Parsed<TyScheme>, &Source) {
+    type Output = Ty;
+
+    fn collect_constraints(
+        &self,
+        ctx: &mut CollectCtx,
+    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        let &(ty_scheme, src) = self;
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        let mut eq = EqConstraint::new(ty.clone(), Ty::ty_type(ty_scheme.mono().clone()));
+        eq.info_mut().with_src(src.clone());
+
+        (
+            ty,
+            AssumptionSet::new(),
+            AttachTree::new(eq, ConstraintTree::empty()),
+        )
+    }
+}
+
 impl CollectConstraints for (&Path, &Source) {
     type Output = Ty;
 
@@ -1196,6 +1229,24 @@ impl CollectConstraints for (&Range, &Source) {
     }
 }
 
+impl CollectConstraints for (&Ref, &Source) {
+    type Output = Ty;
+
+    fn collect_constraints(
+        &self,
+        ctx: &mut CollectCtx,
+    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
+        let &(rf, src) = self;
+        let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+        let (el_ty, aset, ct) = rf.expr.collect_constraints(ctx);
+        let mut eq = EqConstraint::new(ty.clone(), Ty::ptr(el_ty.clone()));
+        eq.info_mut().with_src(src.clone());
+
+        (ty, aset, AttachTree::new(eq, ct))
+    }
+}
+
 impl CollectConstraints for (&Tuple, &Source) {
     type Output = Ty;
 
@@ -1242,7 +1293,8 @@ impl CollectConstraints for (&UnaryOp, &Source) {
         log::debug!("unop fqn: {}", fqn);
 
         let mut aset = expr_aset;
-        aset.add(fqn, op_ty.clone());
+        let norm_fqn = fqn.with_names_only();
+        aset.add(norm_fqn, op_ty.clone());
 
         let op_src = ctx.srcmap.get(&unop.op);
         let op_ct = ReceiverTree::new(op_ty.to_string());

@@ -560,6 +560,19 @@ impl StructTy {
     pub fn field_tys(&self) -> Vec<TyScheme> {
         self.fields.iter().map(|(_, t)| t.clone()).collect()
     }
+
+    pub fn offset_of(&self, field: &str) -> Size {
+        let mut offset = Size::zero();
+        for (n, t) in self.fields.iter() {
+            if n == field {
+                break;
+            }
+
+            offset += t.mono().size_of();
+        }
+
+        offset
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1301,6 +1314,17 @@ impl Ty {
     pub fn is_builtin(&self) -> bool {
         match self {
             Ty::Const(name) => Ty::is_builtin_name(name),
+            _ => false,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_meta_ty(&self) -> bool {
+        match self {
+            Ty::Projection(inner, _) => match inner.as_ref() {
+                Ty::Const(fqn) => fqn == "type",
+                _ => false,
+            },
             _ => false,
         }
     }

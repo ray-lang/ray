@@ -1,0 +1,4 @@
+fn main() {
+    *ptr = 1
+    ptr = foo(ptr)
+}

@@ -10,7 +10,7 @@ use top::{Subst, Substitutable};
 
 use crate::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Path, Pattern},
-    codegen::llvm,
+    codegen::CodegenOptions,
     errors::{RayError, RayErrorKind},
     libgen, lir,
     pathlib::FilePath,
@@ -23,6 +23,8 @@ use crate::{
     },
 };
 
+use crate::codegen::llvm;
+
 mod analyze;
 mod build;
 
@@ -31,6 +33,8 @@ pub use analyze::{
     TypeInfo,
 };
 pub use build::BuildOptions;
+pub use build::EmitType;
+pub use build::OptLevel;
 
 pub struct FrontendResult {
     pub module_path: Path,
@@ -129,7 +133,7 @@ impl Driver {
             input_path: input_path.clone(),
             to_stdout: false,
             write_assembly: false,
-            max_optimize_level: 2,
+            opt_level: OptLevel::O2,
             emit: None,
             print_ast: false,
             no_compile: true,
@@ -319,6 +323,10 @@ impl Driver {
 
             let lcx = inkwell::context::Context::create();
             let target = options.get_target();
+            let codegen_options = CodegenOptions {
+                emit: matches!(options.emit, Some(build::EmitType::LLVMIR)),
+                opt_level: options.opt_level,
+            };
             llvm::codegen(
                 &program,
                 &tcx,
@@ -326,7 +334,7 @@ impl Driver {
                 &lcx,
                 &target,
                 output_path,
-                matches!(options.emit, Some(build::EmitType::LLVMIR)),
+                codegen_options,
             )
         }
     }
@@ -667,6 +675,9 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
                 collect_expr_name_refs(stmt, refs);
             }
         }
+        Expr::Boxed(boxed) => {
+            collect_expr_name_refs(&boxed.inner, refs);
+        }
         Expr::Break(value) => {
             if let Some(v) = value {
                 collect_expr_name_refs(v, refs);
@@ -690,6 +701,7 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
                 collect_curly_element_refs(element, refs);
             }
         }
+        Expr::Deref(deref) => collect_expr_name_refs(&deref.expr, refs),
         Expr::DefaultValue(value) => collect_expr_name_refs(value, refs),
         Expr::Dot(dot) => {
             collect_expr_name_refs(&dot.lhs, refs);
@@ -733,6 +745,9 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
         Expr::Range(range) => {
             collect_expr_name_refs(&range.start, refs);
             collect_expr_name_refs(&range.end, refs);
+        }
+        Expr::Ref(rf) => {
+            collect_expr_name_refs(&rf.expr, refs);
         }
         Expr::Return(value) => {
             if let Some(v) = value {

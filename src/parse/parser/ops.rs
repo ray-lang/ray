@@ -4,8 +4,8 @@ use super::{ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Restricti
 
 use crate::{
     ast::{
-        Assign, Associativity, BinOp, Cast, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
-        RangeLimits, Sequence, UnaryOp, token::TokenKind,
+        Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
+        RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
     },
     span::Span,
 };
@@ -181,14 +181,22 @@ impl Parser<'_> {
             let op = self.mk_node(op, op_span);
             let expr = self.parse_prefix_expr(ctx)?;
             let span = op_span.extend_to(&self.srcmap.span_of(&expr));
-            Ok(self.mk_expr(
-                Expr::UnaryOp(UnaryOp {
+            let expr = match op.value {
+                PrefixOp::Ref => Expr::Ref(Ref {
+                    expr: Box::new(expr),
+                    op_span,
+                }),
+                PrefixOp::Deref => Expr::Deref(Deref {
+                    expr: Box::new(expr),
+                    op_span,
+                }),
+                _ => Expr::UnaryOp(UnaryOp {
                     expr: Box::new(expr),
                     op,
                 }),
-                span,
-                ctx.path.clone(),
-            ))
+            };
+
+            Ok(self.mk_expr(expr, span, ctx.path.clone()))
         } else {
             self.parse_postfix_expr(ctx)
         }

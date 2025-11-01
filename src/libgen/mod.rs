@@ -487,6 +487,9 @@ fn register_in_expr(
                 register_in_expr(stmt, srcmap, tcx, records, parent);
             }
         }
+        Expr::Boxed(boxed) => {
+            register_in_expr(&boxed.inner, srcmap, tcx, records, parent);
+        }
         Expr::Break(node) => {
             if let Some(expr) = node {
                 register_in_expr(&expr, srcmap, tcx, records, parent);
@@ -516,6 +519,9 @@ fn register_in_expr(
                     }
                 }
             }
+        }
+        Expr::Deref(deref) => {
+            register_in_expr(&deref.expr, srcmap, tcx, records, parent);
         }
         Expr::Dot(dot) => {
             register_in_expr(&dot.lhs, srcmap, tcx, records, parent);
@@ -565,6 +571,9 @@ fn register_in_expr(
         Expr::Range(range) => {
             register_in_expr(&range.start, srcmap, tcx, records, parent);
             register_in_expr(&range.end, srcmap, tcx, records, parent);
+        }
+        Expr::Ref(rf) => {
+            register_in_expr(&rf.expr, srcmap, tcx, records, parent);
         }
         Expr::Return(node) => {
             if let Some(expr) = node {

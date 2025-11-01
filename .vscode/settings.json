@@ -5,8 +5,15 @@
     },
     // "rust-analyzer.checkOnSave.command": "build",
     // "lldb.library": "/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/LLDB",
+    "lldb.library": "/Users/jjacobson/.vscode/extensions/vadimcn.vscode-lldb-1.11.8/lldb/lib/liblldb.dylib",
+    "lldb.verboseLogging": true,
     "rust-analyzer.cargo.extraEnv": {
-        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config"
+        "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
+        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",
+    },
+    "rust-analyzer.runnables.extraEnv": {
+        "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
+        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",
     },
     "files.associations": {
         "*.json.liquid": "json",

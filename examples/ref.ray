@@ -1,0 +1,9 @@
+fn modify(x: *int) {
+    *x = 10
+}
+
+fn main() {
+    x = 1
+    modify(&x)
+    io::print(x)
+}

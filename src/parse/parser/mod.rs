@@ -81,10 +81,7 @@ bitflags::bitflags! {
 
 #[derive(Clone, Debug)]
 pub struct ParseContext {
-    pub top_level: bool,
     pub path: Path,
-    pub in_func: bool,
-    pub in_loop: bool,
     pub restrictions: Restrictions,
     pub description: Option<String>,
     pub anchor: Option<Pos>,
@@ -95,9 +92,6 @@ impl ParseContext {
     pub fn new(path: Path) -> ParseContext {
         ParseContext {
             path,
-            top_level: false,
-            in_func: false,
-            in_loop: false,
             restrictions: Restrictions::empty(),
             description: None,
             anchor: None,
@@ -355,7 +349,9 @@ impl<'src> Parser<'src> {
                 | TokenKind::Modifier(_)
                 | TokenKind::Fn => {
                     let decl = this.parse_decl(&kind, &ctx)?;
-                    if let Some(decs) = decs {
+                    if let Some(decs) = decs
+                        && decs.len() > 0
+                    {
                         this.srcmap.set_decorators(&decl, decs);
                     }
                     if let Some(doc) = doc.clone() {
@@ -418,7 +414,7 @@ impl<'src> Parser<'src> {
             let decs = match self.parse_decorators(end, ctx) {
                 Ok((dec, span)) => {
                     end = span.end;
-                    Some(dec)
+                    dec
                 }
                 Err(e) => return Err(e),
             };
@@ -482,7 +478,11 @@ impl<'src> Parser<'src> {
                 if Self::is_decl_start(&kind) {
                     break;
                 }
-                if matches!(kind, TokenKind::NewLine | TokenKind::Semi) {
+                if self.is_eol() {
+                    break;
+                }
+
+                if matches!(kind, TokenKind::Semi) {
                     let tok = self.lex.token();
                     last_end = tok.span.end;
                     consumed_any = true;
@@ -1227,6 +1227,23 @@ fn main() {
     }
 
     #[test]
+    fn parses_box_expression() {
+        let src = r#"
+fn main() {
+    x = 1
+    y = box x
+}
+"#;
+
+        let (_, errors) = parse_source(src);
+        assert!(
+            errors.is_empty(),
+            "expected parsing without errors, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn parses_ternary_expression() {
         let source = r#"
 fn main() {
@@ -1374,6 +1391,29 @@ fn main() {
         } else {
             panic!("expected assignment, found: {:#?}", deref_assign,);
         }
+    }
+
+    #[test]
+    fn parses_derefs() {
+        let src = r#"
+fn main() {
+    x = 1
+    p = &x
+    *p = 10
+    y = *p + 1
+}
+"#;
+        let (file, errors) = parse_source(src);
+        assert!(errors.is_empty(), "expected no errors, got {:#?}", errors);
+
+        let func = first_function(&file);
+        let block = function_body_block(func);
+
+        assert!(
+            block.stmts.len() == 4,
+            "expected 4 statements, found: {:#?}",
+            block.stmts
+        );
     }
 
     #[test]

@@ -711,6 +711,7 @@ impl LowerAST for Node<Expr> {
             Expr::Asm(asm) => Sourced(asm, &src).lower(ctx),
             Expr::BinOp(b) => Sourced(b, &src).lower(ctx),
             Expr::Block(b) => b.lower(ctx),
+            Expr::Boxed(b) => b.inner.lower(ctx),
             Expr::Break(value) => {
                 if let Some(value) = value {
                     value.lower(ctx)?;
@@ -722,6 +723,7 @@ impl LowerAST for Node<Expr> {
             Expr::Closure(_) => todo!("lower: Expr::Closure: {:?}", self),
             Expr::Curly(c) => Sourced(c, &src).lower(ctx),
             Expr::DefaultValue(_) => todo!("lower: Expr::DefaultValue: {:?}", self),
+            Expr::Deref(d) => d.expr.lower(ctx),
             Expr::Dot(d) => d.lower(ctx),
             Expr::Func(_) => todo!("lower: Expr::Fn: {:?}", self),
             Expr::For(_) => todo!("lower: Expr::For: {:?}", self),
@@ -737,10 +739,11 @@ impl LowerAST for Node<Expr> {
             Expr::Path(p) => Sourced(p, &src).lower(ctx),
             Expr::Paren(ex) => ex.lower(ctx),
             Expr::Range(r) => r.lower(ctx),
+            Expr::Ref(r) => r.lower(ctx),
             Expr::Return(_) => todo!("lower: Expr::Return: {:?}", self),
             Expr::Sequence(seq) => seq.lower(ctx),
             Expr::Tuple(t) => t.lower(ctx),
-            Expr::Type(_) => todo!("lower: Expr::Type: {:?}", self),
+            Expr::Type(ty) => Sourced(ty, &src).lower(ctx),
             Expr::TypeAnnotated(_, _) => {
                 todo!()
             }
@@ -1056,6 +1059,14 @@ impl LowerAST for ast::Range {
     }
 }
 
+impl LowerAST for ast::Ref {
+    type Output = ();
+
+    fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<Self::Output> {
+        self.expr.lower(ctx)
+    }
+}
+
 impl LowerAST for ast::Sequence {
     type Output = ();
 
@@ -1069,6 +1080,17 @@ impl LowerAST for ast::Tuple {
 
     fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<Self::Output> {
         self.seq.lower(ctx)
+    }
+}
+
+impl LowerAST for Sourced<'_, Parsed<TyScheme>> {
+    type Output = ();
+
+    fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<Self::Output> {
+        let (ty_scheme, src) = self.unpack_mut();
+        let scopes = ctx.get_scopes(&src);
+        ty_scheme.mono_mut().resolve_fqns(scopes, ctx.ncx);
+        Ok(())
     }
 }
 

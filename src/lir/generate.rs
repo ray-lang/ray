@@ -658,8 +658,8 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                         path: "string".into(),
                         ty: Ty::string().into(),
                         fields: vec![
-                            ("raw_ptr".to_string(), Ty::ptr(Ty::u8()).into()),
-                            ("len".to_string(), Ty::uint().into()),
+                            (str!("raw_ptr"), Ty::ptr(Ty::u8()).into()),
+                            (str!("len"), Ty::uint().into()),
                         ],
                     },
                 ));
@@ -878,6 +878,51 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 lir::Atom::new(lir::Variable::Local(loc)).into()
             }
+            Expr::Ref(rf) => {
+                // &expr has type *T, recover T
+                let pointee_ty = variant!(ty.mono(), if Ty::Ptr(ty));
+
+                // generate the value for the expression
+                let (value, offset) = match &rf.expr.as_ref().value {
+                    Expr::Dot(dot) => {
+                        let lhs_val = dot.lhs.lir_gen(ctx, tcx)?;
+                        let lhs_ty = ctx.ty_of(tcx, dot.lhs.id);
+                        let lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone()).unwrap();
+
+                        let offset =
+                            lir::LeaOffset::Field(lhs_ty.clone(), dot.rhs.path.to_short_name());
+
+                        (
+                            lir::Value::Atom(lir::Variable::Local(lhs_loc).into()),
+                            offset,
+                        )
+                    }
+                    _ => (rf.expr.lir_gen(ctx, tcx)?, lir::LeaOffset::zero()),
+                };
+
+                let var = if let Some(var) = value.var() {
+                    // if the value is already a variable, use it directly
+                    var.clone()
+                } else {
+                    // otherwise create a new local
+                    let loc = ctx
+                        .get_or_set_local(value, pointee_ty.as_ref().clone().into())
+                        .unwrap();
+                    lir::Variable::Local(loc)
+                };
+
+                lir::Lea::new(var, offset)
+            }
+            Expr::Deref(deref) => {
+                // `*E` — the inner expression E has type *T, the whole deref has type T.
+                // Allocate the temp for E using its OWN type (*T), not the outer T.
+                let ptr_ty = ctx.ty_of(tcx, deref.expr.id); // *T
+                let value = deref.expr.lir_gen(ctx, tcx)?;
+                let loc = ctx.get_or_set_local(value, ptr_ty).unwrap();
+                let src = lir::Variable::Local(loc);
+
+                lir::Load::new(src, lir::Size::zero())
+            }
             Expr::Tuple(tuple) => {
                 let tys = variant!(ty.mono(), if Ty::Tuple(tys));
 
@@ -897,7 +942,6 @@ impl LirGen<GenResult> for Node<Expr> {
                                 lir::Variable::Local(tuple_loc),
                                 lir::Atom::new(lir::Variable::Local(el_loc)).into(),
                                 offset,
-                                size,
                             ));
                         }
 
@@ -929,7 +973,6 @@ impl LirGen<GenResult> for Node<Expr> {
                             lir::Variable::Local(values_loc),
                             lir::Variable::Local(item_loc).into(),
                             offset,
-                            el_size,
                         ));
                     }
 
@@ -1042,7 +1085,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     .map(|elem| {
                         let (name, _) = variant!(&elem.value, if CurlyElement::Labeled(x, y));
                         let elem_ty = ctx.ty_of(tcx, elem.id);
-                        (name.to_string(), elem_ty)
+                        (name.path.name().unwrap(), elem_ty)
                     })
                     .collect();
 
@@ -1068,7 +1111,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     if let Some(field_loc) = ctx.get_or_set_local(val, ty) {
                         ctx.push(lir::SetField::new(
                             lir::Variable::Local(loc),
-                            name.to_string(),
+                            name.path.name().unwrap(),
                             lir::Variable::Local(field_loc).into(),
                         ));
                     }
@@ -1086,6 +1129,22 @@ impl LirGen<GenResult> for Node<Expr> {
                 }
 
                 last.unwrap_or_default()
+            }
+            Expr::Boxed(boxed) => {
+                let ptr_loc = ctx.local(ty.clone());
+                let pointee_ty = variant!(ty.mono(), if Ty::Ptr(p));
+                let ptr_malloc =
+                    lir::Malloc::new(pointee_ty.as_ref().clone().into(), lir::Atom::uptr(1));
+
+                ctx.push(lir::Inst::SetLocal(ptr_loc, ptr_malloc));
+                let value = boxed.inner.lir_gen(ctx, tcx)?;
+                ctx.push(lir::Store::new(
+                    lir::Variable::Local(ptr_loc),
+                    value,
+                    lir::Size::zero(),
+                ));
+
+                lir::Variable::Local(ptr_loc).into()
             }
             Expr::Assign(assign) => {
                 // get types of both sides
@@ -1107,12 +1166,10 @@ impl LirGen<GenResult> for Node<Expr> {
                 if let (Some(lhs_loc), Some(rhs_loc)) = (maybe_lhs_loc, maybe_rhs_loc) {
                     log::debug!("  EMIT: ${} = ${}", lhs_loc, rhs_loc);
                     if let Pattern::Deref(_) = &assign.lhs.value {
-                        let rhs_ty = ctx.ty_of(tcx, assign.rhs.id);
                         ctx.push(lir::Store::new(
                             lir::Variable::Local(lhs_loc),
                             lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
                             lir::Size::zero(),
-                            rhs_ty.mono().size_of(),
                         ))
                     } else {
                         ctx.push(lir::Inst::SetLocal(
@@ -1393,7 +1450,7 @@ impl LirGen<GenResult> for Node<Expr> {
             Expr::Loop(_) => todo!("lir_gen: Expr::Loop: {}", self.value),
             Expr::Return(_) => todo!("lir_gen: Expr::Return: {}", self.value),
             Expr::Sequence(_) => todo!("lir_gen: Expr::Sequence: {}", self.value),
-            Expr::Type(_) => todo!("lir_gen: Expr::Type: {}", self.value),
+            Expr::Type(ty) => lir::Value::Type(ty.clone_value()),
             Expr::UnaryOp(unop) => unop.lir_gen(ctx, tcx)?,
             Expr::Unsafe(_) => todo!("lir_gen: Expr::Unsafe: {}", self.value),
             Expr::While(while_stmt) => {

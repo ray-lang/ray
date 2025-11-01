@@ -2,8 +2,8 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 use top::{
-    InfoDetail, PolyTypeConstraintInfo, Predicate, Predicates, Scheme, TypeConstraintInfo,
-    util::Join,
+    InfoDetail, PolyTypeConstraintInfo, Predicate, Predicates, Scheme, Subst, Substitutable,
+    TypeConstraintInfo, util::Join,
 };
 
 use crate::span::Source;
@@ -24,6 +24,72 @@ pub enum Info {
     InstantiatedTypeScheme(Scheme<Predicates<Ty, TyVar>, Ty, TyVar>),
     SkolemizedTypeScheme(Vec<Ty>, Scheme<Predicates<Ty, TyVar>, Ty, TyVar>),
     Detail(String),
+}
+
+impl Substitutable<TyVar, Ty> for Info {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Info::EqualityTypePair(ty1, ty2) => {
+                ty1.apply_subst(subst);
+                ty2.apply_subst(subst);
+            }
+            Info::AmbiguousPredicate(predicate)
+            | Info::PredicateArisingFrom(predicate)
+            | Info::ParentPredicate(predicate) => predicate.apply_subst(subst),
+            Info::UnsolvedPredicate(predicate, type_system_info)
+            | Info::NeverDirective(predicate, type_system_info) => {
+                predicate.apply_subst(subst);
+                type_system_info.apply_subst(subst);
+            }
+            Info::CloseDirective(_, type_system_info) => {
+                type_system_info.apply_subst(subst);
+            }
+            Info::DisjointDirective(_, ts1, _, ts2) => {
+                ts1.apply_subst(subst);
+                ts2.apply_subst(subst);
+            }
+            Info::InstantiatedTypeScheme(for_all) => {
+                for_all.apply_subst(subst);
+            }
+            Info::SkolemizedTypeScheme(items, for_all) => {
+                items.apply_subst(subst);
+                for_all.apply_subst(subst);
+            }
+            Info::EscapedSkolems(_) | Info::Detail(_) => {}
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        match self {
+            Info::EqualityTypePair(ty1, ty2) => {
+                ty1.apply_subst_all(subst);
+                ty2.apply_subst_all(subst);
+            }
+            Info::AmbiguousPredicate(predicate)
+            | Info::PredicateArisingFrom(predicate)
+            | Info::ParentPredicate(predicate) => predicate.apply_subst_all(subst),
+            Info::UnsolvedPredicate(predicate, type_system_info)
+            | Info::NeverDirective(predicate, type_system_info) => {
+                predicate.apply_subst_all(subst);
+                type_system_info.apply_subst_all(subst);
+            }
+            Info::CloseDirective(_, type_system_info) => {
+                type_system_info.apply_subst_all(subst);
+            }
+            Info::DisjointDirective(_, ts1, _, ts2) => {
+                ts1.apply_subst_all(subst);
+                ts2.apply_subst_all(subst);
+            }
+            Info::InstantiatedTypeScheme(for_all) => {
+                for_all.apply_subst_all(subst);
+            }
+            Info::SkolemizedTypeScheme(items, for_all) => {
+                items.apply_subst_all(subst);
+                for_all.apply_subst_all(subst);
+            }
+            Info::EscapedSkolems(_) | Info::Detail(_) => {}
+        }
+    }
 }
 
 impl Display for Info {
@@ -158,6 +224,20 @@ impl PolyTypeConstraintInfo<TypeSystemInfo, Ty, TyVar> for TypeSystemInfo {
     }
 }
 
+impl Substitutable<TyVar, Ty> for TypeSystemInfo {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        for info in self.info.iter_mut() {
+            info.apply_subst(subst);
+        }
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        for info in self.info.iter_mut() {
+            info.apply_subst_all(subst);
+        }
+    }
+}
+
 impl TypeSystemInfo {
     pub fn with_src(&mut self, src: Source) {
         self.source.push(src);
@@ -166,5 +246,12 @@ impl TypeSystemInfo {
     pub fn extend(&mut self, other: TypeSystemInfo) {
         self.info.extend(other.info);
         self.source.extend(other.source);
+    }
+
+    pub fn simplify(&mut self) {
+        self.info.retain(|info| match info {
+            Info::EqualityTypePair(t1, t2) => t1 != t2,
+            _ => true,
+        });
     }
 }

@@ -1,6 +1,20 @@
 import super::ToStr
+import super::ptr_add
+import super::sizeof
 
 fn print(v: 'a) -> () where ToStr['a] {
-    puts(v.to_str())
-    puts("\n")
+    s = v.to_str()
+    nl = "\n"
+
+    chunks = new(string, 2)
+    mut ptr = chunks
+    *ptr = s
+    ptr = ptr_add(ptr, sizeof(string))
+    *ptr = nl
+
+    _ = writev_stdout(chunks, 2)
+}
+
+fn puts(s: string) -> () {
+    _ = writev_stdout(&s, 1)
 }

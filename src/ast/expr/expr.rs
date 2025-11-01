@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use crate::{
-    ast::{Node, Path, asm::Asm},
+    ast::{Boxed, Node, Path, Ref, asm::Asm, expr::deref::Deref},
     span::parsed::Parsed,
     typing::ty::TyScheme,
 };
@@ -17,12 +17,14 @@ pub enum Expr {
     Asm(Asm),
     BinOp(BinOp),
     Block(Block),
+    Boxed(Boxed),
     Break(Option<Box<Node<Expr>>>),
     Call(Call),
     Cast(Cast),
     Closure(Closure),
     Curly(Curly),
     DefaultValue(Box<Node<Expr>>),
+    Deref(Deref),
     Dot(Dot),
     Func(Func),
     For(For),
@@ -39,6 +41,7 @@ pub enum Expr {
     Pattern(Pattern),
     Paren(Box<Node<Expr>>),
     Range(Range),
+    Ref(Ref),
     Return(Option<Box<Node<Expr>>>),
     Sequence(Sequence),
     Tuple(Tuple),
@@ -73,6 +76,7 @@ impl std::fmt::Display for Expr {
                 Expr::Asm(ex) => ex.to_string(),
                 Expr::BinOp(ex) => ex.to_string(),
                 Expr::Block(ex) => ex.to_string(),
+                Expr::Boxed(ex) => ex.to_string(),
                 Expr::Break(ex) => ex.as_ref().map_or_else(
                     || "(break)".to_string(),
                     |ex| format!("(break {})", ex.to_string())
@@ -82,6 +86,7 @@ impl std::fmt::Display for Expr {
                 Expr::Closure(ex) => ex.to_string(),
                 Expr::Curly(ex) => ex.to_string(),
                 Expr::DefaultValue(ex) => ex.to_string(),
+                Expr::Deref(ex) => ex.to_string(),
                 Expr::Dot(ex) => ex.to_string(),
                 Expr::Func(ex) => ex.to_string(),
                 Expr::For(ex) => ex.to_string(),
@@ -97,6 +102,7 @@ impl std::fmt::Display for Expr {
                 Expr::Pattern(ex) => ex.to_string(),
                 Expr::Paren(ex) => ex.to_string(),
                 Expr::Range(ex) => ex.to_string(),
+                Expr::Ref(ex) => ex.to_string(),
                 Expr::Return(ex) => ex
                     .as_ref()
                     .map_or_else(|| "(return)".to_string(), |ex| format!("(return {})", ex)),
@@ -123,12 +129,14 @@ impl Expr {
             | Expr::Asm(_)
             | Expr::BinOp(_)
             | Expr::Block(_)
+            | Expr::Boxed(_)
             | Expr::Break(_)
             | Expr::Call(_)
             | Expr::Cast(_)
             | Expr::Closure(_)
             | Expr::Curly(_)
             | Expr::DefaultValue(_)
+            | Expr::Deref(_)
             | Expr::Dot(_)
             | Expr::For(_)
             | Expr::If(_)
@@ -141,6 +149,7 @@ impl Expr {
             | Expr::New(_)
             | Expr::Paren(_)
             | Expr::Range(_)
+            | Expr::Ref(_)
             | Expr::Return(_)
             | Expr::Sequence(_)
             | Expr::Tuple(_)
@@ -162,12 +171,14 @@ impl Expr {
             | Expr::Asm(_)
             | Expr::BinOp(_)
             | Expr::Block(_)
+            | Expr::Boxed(_)
             | Expr::Break(_)
             | Expr::Call(_)
             | Expr::Cast(_)
             | Expr::Closure(_)
             | Expr::Curly(_)
             | Expr::DefaultValue(_)
+            | Expr::Deref(_)
             | Expr::Dot(_)
             | Expr::For(_)
             | Expr::If(_)
@@ -180,6 +191,7 @@ impl Expr {
             | Expr::New(_)
             | Expr::Paren(_)
             | Expr::Range(_)
+            | Expr::Ref(_)
             | Expr::Return(_)
             | Expr::Sequence(_)
             | Expr::Tuple(_)
@@ -198,12 +210,14 @@ impl Expr {
             Expr::Asm(..) => "asm",
             Expr::BinOp(..) => "binary operation",
             Expr::Block(..) => "block",
+            Expr::Boxed(..) => "box",
             Expr::Break(..) => "break",
             Expr::Call(..) => "call",
             Expr::Cast(..) => "cast",
             Expr::Closure(..) => "closure",
             Expr::Curly(..) => "curly",
             Expr::DefaultValue(..) => "default value",
+            Expr::Deref(..) => "deref",
             Expr::Dot(..) => "dot",
             Expr::Func(..) => "function",
             Expr::For(..) => "for",
@@ -219,6 +233,7 @@ impl Expr {
             Expr::Path(..) => "path",
             Expr::Paren(..) => "paren",
             Expr::Range(..) => "range",
+            Expr::Ref(..) => "ref",
             Expr::Return(..) => "return",
             Expr::Sequence(..) => "sequence",
             Expr::Tuple(..) => "tuple",

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::collections::HashSet as _HashSet;
 
 use itertools::Itertools;
 use top::Substitutable;
@@ -138,7 +139,7 @@ impl<'a> BindingGroupAnalysis<'a> {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct BindingGroup {
-    env: TyEnv,
+    pub(crate) env: TyEnv,
     aset: AssumptionSet,
     ctree: ConstraintTree,
     info: TypeSystemInfo,
@@ -260,6 +261,13 @@ impl BindingGroup {
                 (s, c)
             })
             .collect::<Vec<_>>();
+        {
+            let mut fv = _HashSet::new();
+            for (_, c) in cl1.iter() {
+                fv.extend(c.free_vars());
+            }
+            log::debug!("[binding][Cl1 Inst A1≼Σ] count={} fv={:?}", cl1.len(), fv);
+        }
 
         // Cl2 = E ≽M Σ;
         // A skolemization constraint is created for each variable in E
@@ -273,10 +281,22 @@ impl BindingGroup {
                 (s, c)
             })
             .collect::<Vec<_>>();
+        {
+            let mut fv = _HashSet::new();
+            for (_, c) in cl2.iter() {
+                fv.extend(c.free_vars());
+            }
+            log::debug!("[binding][Cl2 Skol E≽MΣ] count={} fv={:?}", cl2.len(), fv);
+        }
 
         // A1' = A1\dom(Σ); E' = E\dom(Σ)
         let lhs_aset = lhs_aset - sigs.keys();
         let env = env - sigs.keys();
+        log::debug!(
+            "[binding] A1' size={}  E' size={}",
+            lhs_aset.len(),
+            env.len()
+        );
 
         // Cl3 = A1' ≡ E'
         let cl3 = EqConstraint::lift(&lhs_aset, &env)
@@ -286,6 +306,13 @@ impl BindingGroup {
                 (s, c)
             })
             .collect::<Vec<_>>();
+        {
+            let mut fv = _HashSet::new();
+            for (_, c) in cl3.iter() {
+                fv.extend(c.free_vars());
+            }
+            log::debug!("[binding][Cl3 Eq A1'≡E'] count={} fv={:?}", cl3.len(), fv);
+        }
 
         // A1'' = A1'\dom(E')
         // note: we used to have a line here that created a new assumption set
@@ -298,6 +325,10 @@ impl BindingGroup {
             .sorted()
             .map(|x| (x.clone(), svar_factory.next()))
             .collect::<Vec<_>>();
+        log::debug!(
+            "[binding] implicits (fresh σ-vars) = {:?}",
+            implicits.iter().map(|(s, v)| (s, v)).collect::<Vec<_>>()
+        );
 
         let mut c4 = vec![];
         for (x, sv) in implicits.iter() {
@@ -311,6 +342,13 @@ impl BindingGroup {
                 c4.push(c);
             }
         }
+        {
+            let mut fv = _HashSet::new();
+            for c in c4.iter() {
+                fv.extend(c.free_vars());
+            }
+            log::debug!("[binding][C4 Gen σ] count={} fv={:?}", c4.len(), fv);
+        }
 
         let implicit_map = implicits
             .into_iter()
@@ -323,12 +361,24 @@ impl BindingGroup {
                 (s, c)
             })
             .collect::<Vec<_>>();
+        {
+            let mut fv = _HashSet::new();
+            for (_, c) in cl5.iter() {
+                fv.extend(c.free_vars());
+            }
+            log::debug!("[binding][Cl5 Inst A2'≼σ] count={} fv={:?}", cl5.len(), fv);
+        }
 
         // A2' = A2\dom(E')
         let rhs_aset = rhs_aset - env.keys();
 
         let mut m = mono_tys.clone();
         m.extend(cl3.iter().flat_map(|(_, c)| c.free_vars()).cloned());
+        log::debug!(
+            "[binding] mono_tys (before adding Cl3 fvs) = {:?}",
+            mono_tys
+        );
+        log::debug!("[binding] mono_tys (after  adding Cl3 fvs) = {:?}", m);
 
         // (Cl1 ≪◦ (Cl2 ≥◦ (Cl3 ≥◦ TC1)))
 

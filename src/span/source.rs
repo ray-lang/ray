@@ -215,6 +215,10 @@ impl SourceMap {
         }
     }
 
+    pub fn decorators(&self) -> &HashMap<u64, Vec<Decorator>> {
+        &self.decorators
+    }
+
     pub fn set_decorators<T>(&mut self, node: &Node<T>, decorators: Vec<Decorator>) {
         self.decorators.insert(node.id, decorators);
     }

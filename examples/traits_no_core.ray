@@ -8,6 +8,7 @@ trait Int['a] {
 }
 
 impl Int[int] {}
+impl Int[uint] {}
 
 trait ToStr['a] {
     fn to_str(self: 'a) -> string
@@ -19,10 +20,10 @@ impl ToStr[int] {
     }
 }
 
-fn use_it(v: 'a) -> string where ToStr['a] {
-    v.to_str()
+fn print(v: 'a) -> () where ToStr['a] {
+    s = v.to_str()
 }
 
 fn main() {
-    _ = use_it(42)
+    print(42)
 }

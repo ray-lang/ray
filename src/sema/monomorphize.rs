@@ -47,9 +47,14 @@ impl<'p> Monomorphizer<'p> {
             .collect();
 
         let name_set = program.funcs.iter().map(|f| f.name.clone()).collect();
-        log::debug!("name set: {:#?}", name_set);
-        let mut extern_set = program.extern_map.keys().cloned().to_set();
-        extern_set.extend(program.trait_member_set.clone());
+        log::debug!("[monomorphize] name set: {:#?}", name_set);
+        let mut extern_set = program
+            .extern_map
+            .keys()
+            .map(|p| p.with_names_only())
+            .to_set();
+        extern_set.extend(program.trait_member_set.iter().map(|p| p.with_names_only()));
+        log::debug!("[monomorphize] extern set: {:#?}", extern_set);
         Monomorphizer {
             program: Rc::new(RefCell::new(program)),
             poly_fn_map,
@@ -172,6 +177,30 @@ impl<'p> Monomorphizer<'p> {
         }
     }
 
+    #[inline]
+    fn is_trait_or_extern(&self, p: &Path) -> bool {
+        let key = p.with_names_only();
+        if self.extern_set.contains(&key) {
+            return true;
+        }
+
+        if let Some(base) = key.name() {
+            if self
+                .extern_set
+                .iter()
+                .any(|q| q.name().map_or(false, |qb| qb == base))
+            {
+                log::debug!(
+                    "[monomorphize] is_trait_or_extern base-name match: {} ~ {:?}",
+                    base,
+                    key
+                );
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn monomorphize_call(
         &mut self,
         call: &mut lir::Call,
@@ -187,15 +216,43 @@ impl<'p> Monomorphizer<'p> {
         // the type is contained in a monomorphized polymorphic function in which case
         // the function type has been monomorphized previously
 
-        let poly_fqn = call.orig_name().without_func_type();
+        // with_names_only() also removes function type suffixes; no need to call without_func_type()
+        let poly_fqn = call.orig_name().with_names_only();
         log::debug!("[monomorphize] poly_fqn: {}", poly_fqn);
         log::debug!("[monomorphize] poly_ty: {}", poly_ty);
         log::debug!("[monomorphize] callee_ty: {}", callee_ty);
+        // Free-var fingerprints using real type vars (no string scanning)
+        let fv_poly: Vec<_> = poly_ty.free_vars().into_iter().cloned().collect();
+        let fv_callee: Vec<_> = callee_ty.free_vars().into_iter().cloned().collect();
+        log::debug!("[monomorphize] fv(poly_ty)   = {:?}", fv_poly);
+        log::debug!("[monomorphize] fv(callee_ty) = {:?}", fv_callee);
 
         log::debug!("[monomorphize] call.orig_name = {}", call.orig_name());
-        log::debug!("[monomorphize] call.name       = {}", call.fn_name);
-        log::debug!("[monomorphize] call.ty         = {}", call.callee_ty);
-        log::debug!("[monomorphize] call.args       = {:?}", call.args);
+        log::debug!("[monomorphize] call.name      = {}", call.fn_name);
+        log::debug!("[monomorphize] call.ty        = {}", call.callee_ty);
+        log::debug!("[monomorphize] call.args      = {:?}", call.args);
+
+        // Fast path: trait members / externs are not monomorphized here.
+        // We already have the concrete resolved name in the call; just return it.
+        let is_trait_like = self.is_trait_or_extern(&poly_fqn)
+            || self.is_trait_or_extern(&call.fn_name)
+            || self.is_trait_or_extern(&call.orig_name());
+        if is_trait_like {
+            // Keep the polymorphic side as the logical (names-only) key, but use the concrete name for mono.
+            let poly_name = sema::fn_name(&poly_fqn.with_names_only(), poly_ty);
+            let mono_name = call.fn_name.clone();
+            log::debug!(
+                "[monomorphize] fast-path trait/extern: poly_name={} mono_name={}",
+                poly_name,
+                mono_name
+            );
+            // Ensure we do not try to treat this as a clonable poly function later.
+            call.set_name(mono_name.clone());
+            self.mono_poly_fn_idx
+                .insert(poly_name.clone(), mono_name.clone());
+            self.add_mono_fn_mapping(&poly_name, &mono_name, callee_ty.clone().into_mono());
+            return (poly_name, mono_name);
+        }
 
         // check that the callee function type is monomorphic
         if callee_ty.is_polymorphic() {
@@ -204,6 +261,30 @@ impl<'p> Monomorphizer<'p> {
                 callee_ty
             );
             log::debug!("[monomorphize]   here's the polymorphic type: {}", poly_ty);
+
+            // Diagnostic: try an MGU on the monomorphic shapes to see if the shape would bind vars here.
+            match mgu(poly_ty.mono(), callee_ty.mono()) {
+                Ok((_, test_subst)) => {
+                    log::debug!(
+                        "[monomorphize] (diag) mgu(poly.mono, callee.mono) = {:#?}",
+                        test_subst
+                    );
+                    let fv_callee_now: Vec<_> =
+                        callee_ty.free_vars().into_iter().cloned().collect();
+                    for tv in &fv_callee_now {
+                        let present = test_subst.contains_key(tv);
+                        log::debug!(
+                            "[monomorphize] (diag) var {:?} present_in_mgu_subst = {}",
+                            tv,
+                            present
+                        );
+                    }
+                }
+                Err(_) => {
+                    log::debug!("[monomorphize] (diag) mgu(poly.mono, callee.mono) = <none>");
+                }
+            }
+
             panic!(
                 "cannot monomorphize function where the callee type is polymorphic: {}",
                 callee_ty

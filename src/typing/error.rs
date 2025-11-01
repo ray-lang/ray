@@ -107,6 +107,20 @@ impl TypeError {
         }
     }
 
+    pub fn unsolved_predicate(&self) -> Option<(&Predicate<Ty, TyVar>, &TypeSystemInfo)> {
+        let TypeErrorKind::WithInfo(info) = &self.kind else {
+            return None;
+        };
+
+        info.iter().find_map(|info| {
+            let Info::UnsolvedPredicate(p, i) = info else {
+                return None;
+            };
+
+            Some((p, i.as_ref()))
+        })
+    }
+
     pub fn message(&self) -> String {
         match &self.kind {
             TypeErrorKind::Message(_) => todo!(),
@@ -130,7 +144,15 @@ impl TypeError {
             TypeErrorKind::WithInfo(info) => {
                 let mut msg = String::new();
                 for (x, i) in info.iter().enumerate() {
-                    msg.push_str(&i.to_string());
+                    if let Info::UnsolvedPredicate(Predicate::Class(name, ty, _), _extra_info) = i {
+                        msg.push_str(&format!(
+                            "type `{}` does not implement trait `{}`\n",
+                            ty, name
+                        ));
+                    } else {
+                        msg.push_str(&i.to_string());
+                    }
+
                     if x < info.len() - 1 {
                         msg.push_str("\n");
                     }

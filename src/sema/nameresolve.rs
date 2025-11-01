@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{
-        Assign, BinOp, Block, Call, Cast, Closure, Curly, CurlyElement, Decl, Dot, Expr, Extern,
-        FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module, Name, New, Node,
-        Path, Pattern, Range, Sequence, Struct, Trait, Tuple, UnaryOp, While,
+        Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dot,
+        Expr, Extern, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module,
+        Name, New, Node, Path, Pattern, Range, Ref, Sequence, Struct, Trait, Tuple, UnaryOp, While,
         asm::{Asm, AsmOperand},
     },
     collections::nametree::{NameTree, Scope},
@@ -345,12 +345,14 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::Asm(asm) => Sourced(asm, src).resolve_names(ctx),
             Expr::BinOp(bin_op) => Sourced(bin_op, src).resolve_names(ctx),
             Expr::Block(block) => Sourced(block, src).resolve_names(ctx),
+            Expr::Boxed(boxed) => Sourced(boxed, src).resolve_names(ctx),
             Expr::Break(break_) => Sourced(break_, src).resolve_names(ctx),
             Expr::Call(call) => Sourced(call, src).resolve_names(ctx),
             Expr::Cast(cast) => Sourced(cast, src).resolve_names(ctx),
             Expr::Closure(closure) => Sourced(closure, src).resolve_names(ctx),
             Expr::Curly(curly) => Sourced(curly, src).resolve_names(ctx),
             Expr::DefaultValue(default_value) => Sourced(default_value, src).resolve_names(ctx),
+            Expr::Deref(deref) => Sourced(deref, src).resolve_names(ctx),
             Expr::Dot(dot) => Sourced(dot, src).resolve_names(ctx),
             Expr::Func(func) => Sourced(func, src).resolve_names(ctx),
             Expr::For(for_) => Sourced(for_, src).resolve_names(ctx),
@@ -366,6 +368,7 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::Pattern(pattern) => Sourced(pattern, src).resolve_names(ctx),
             Expr::Paren(paren) => Sourced(paren, src).resolve_names(ctx),
             Expr::Range(range) => Sourced(range, src).resolve_names(ctx),
+            Expr::Ref(rf) => Sourced(rf, src).resolve_names(ctx),
             Expr::Return(return_) => Sourced(return_, src).resolve_names(ctx),
             Expr::Sequence(sequence) => Sourced(sequence, src).resolve_names(ctx),
             Expr::Tuple(tuple) => Sourced(tuple, src).resolve_names(ctx),
@@ -435,6 +438,12 @@ impl NameResolve for Sourced<'_, Block> {
     }
 }
 
+impl NameResolve for Sourced<'_, Boxed> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        self.inner.resolve_names(ctx)
+    }
+}
+
 impl NameResolve for Sourced<'_, Call> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         self.callee.resolve_names(ctx)?;
@@ -467,6 +476,12 @@ impl NameResolve for Node<CurlyElement> {
             CurlyElement::Name(n) => Sourced(n, &src).resolve_names(ctx),
             CurlyElement::Labeled(_, rhs) => rhs.resolve_names(ctx),
         }
+    }
+}
+
+impl NameResolve for Sourced<'_, Deref> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        self.expr.resolve_names(ctx)
     }
 }
 
@@ -535,6 +550,12 @@ impl NameResolve for Sourced<'_, Range> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         self.start.resolve_names(ctx)?;
         self.end.resolve_names(ctx)
+    }
+}
+
+impl NameResolve for Sourced<'_, Ref> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        self.expr.resolve_names(ctx)
     }
 }
 

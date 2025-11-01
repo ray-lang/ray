@@ -9,6 +9,10 @@ edition = "2024"
 [workspace]
 members = ["crates/top", "crates/wasi_malloc", "crates/ray-lsp"]
 
+# [features]
+# codegen = []          # opt-in for codegen/inkwell uses
+# inproc-lld = []       # opt-in for lld crate call
+
 [dependencies]
 bincode = "1.3"
 bitflags = "1.2"

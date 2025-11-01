@@ -4,7 +4,16 @@ use crate::pathlib::FilePath;
 use crate::target::Target;
 
 use clap::StructOpt;
-// use clap::ArgAction::
+
+#[derive(Debug, Copy, Clone)]
+pub enum OptLevel {
+    O0,
+    O1,
+    O2,
+    O3,
+    Os,
+    Oz,
+}
 
 #[derive(Debug, Default, StructOpt)]
 pub struct BuildOptions {
@@ -29,7 +38,7 @@ pub struct BuildOptions {
         default_value = "2",
         action = clap::ArgAction::Set
     )]
-    pub max_optimize_level: i8,
+    pub opt_level: OptLevel,
 
     #[clap(long, help = "Emit LIR or LLVM IR to output", action = clap::ArgAction::Set)]
     pub emit: Option<EmitType>,
@@ -95,5 +104,27 @@ impl FromStr for EmitType {
             "llvm" | "llvmir" | "llvm-ir" => Ok(EmitType::LLVMIR),
             s => Err(format!("invalid emit type: {}", s)),
         }
+    }
+}
+
+impl Default for OptLevel {
+    fn default() -> Self {
+        OptLevel::O2
+    }
+}
+
+impl FromStr for OptLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "0" => OptLevel::O0,
+            "1" => OptLevel::O1,
+            "2" => OptLevel::O2,
+            "3" => OptLevel::O3,
+            "s" => OptLevel::Os,
+            "z" => OptLevel::Oz,
+            _ => OptLevel::O2,
+        })
     }
 }
