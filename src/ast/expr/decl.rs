@@ -9,7 +9,7 @@ use crate::{
     ast::{Assign, Func, FuncSig, Name, Node, Path, TypeParams},
     span::parsed::Parsed,
     strutils,
-    typing::ty::{Ty, TyScheme},
+    typing::ty::{NominalKind, Ty, TyScheme},
     utils::join,
 };
 
@@ -112,7 +112,7 @@ impl Decl {
             Decl::Declare(_) => todo!("variable"),
             Decl::Func(_) => str!("function"),
             Decl::FnSig(_) => str!("function signature"),
-            Decl::Struct(_) => str!("struct"),
+            Decl::Struct(st) => st.kind.to_string(),
             Decl::Trait(_) => str!("trait"),
             Decl::TypeAlias(_, _) => str!("type alias"),
             Decl::Impl(_) => str!("impl"),
@@ -191,6 +191,7 @@ impl Decl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Struct {
+    pub kind: NominalKind,
     pub path: Node<Path>,
     pub ty_params: Option<TypeParams>,
     pub fields: Option<Vec<Node<Name>>>,

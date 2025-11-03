@@ -36,7 +36,10 @@ use crate::{
     pathlib::FilePath,
     span::SourceMap,
     target::Target,
-    typing::{TyCtx, ty::Ty},
+    typing::{
+        TyCtx,
+        ty::{NominalKind, Ty},
+    },
 };
 
 use super::Codegen;
@@ -304,9 +307,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         self.pointee_tys.get(&ptr).unwrap()
     }
 
-    fn get_element_ty(&self, ptr: PointerValue<'ctx>, index: usize) -> Ty {
-        match self.get_pointee_ty(ptr) {
-            ty if ty.is_struct() => {
+    fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
+        match container_ty {
+            ty if ty.is_struct(self.tcx) => {
                 let fqn = ty
                     .get_path()
                     .expect("struct type missing fully-qualified name");
@@ -366,29 +369,56 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         ptr: PointerValue<'ctx>,
         index: usize,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
-        let element_ty = self.get_element_ty(ptr, index);
-        let container_ty = self.get_pointee_ty(ptr).clone();
+        let mut container_ty = self.get_pointee_ty(ptr).clone();
+        let mut base_ptr = ptr;
+        if let Ty::Ptr(inner) = &container_ty {
+            container_ty = inner.as_ref().clone();
+            base_ptr = self.load_pointer(base_ptr)?.into_pointer_value();
+        }
+
+        // Compute the element (field) Ray type after resolving the actual container type.
+        let field_ray_ty = self.get_element_ty(&container_ty, index);
         let offset = self.ptr_type().const_int(index as u64, false);
 
-        let gep = match container_ty {
-            ty if ty.is_struct() => {
+        // Build the GEP and determine the correct pointee mapping for the resulting pointer.
+        let (gep, gep_pointee_ty) = match container_ty {
+            ty if ty.is_struct(self.tcx) => {
                 let fqn = ty
                     .get_path()
                     .expect("struct type missing fully-qualified name");
                 let llvm_struct = self.get_struct_type(&fqn);
-                unsafe {
+
+                // For struct fields, the *storage* type may be a pointer (e.g., when the Ray field
+                // type is itself a struct and we lower structs-as-references). If the storage is a
+                // pointer, the GEP points at a pointer slot, so the pointee type we track should be
+                // `Ptr(field_ty)`; otherwise it is just `field_ty`.
+                let field_storage_llty = self.to_llvm_type(&field_ray_ty);
+                let gep = unsafe {
                     self.builder
-                        .build_gep(llvm_struct, ptr, &[self.zero(), offset], "")?
-                }
+                        .build_gep(llvm_struct, base_ptr, &[self.zero(), offset], "")?
+                };
+                let pointee = match field_storage_llty {
+                    BasicTypeEnum::PointerType(_) => Ty::Ptr(Box::new(field_ray_ty.clone())),
+                    _ => field_ray_ty.clone(),
+                };
+                (gep, pointee)
             }
-            Ty::Array(_, _) | Ty::Ptr(_) => unsafe {
-                self.builder
-                    .build_gep(self.to_llvm_type(&element_ty), ptr, &[offset], "")?
-            },
+            Ty::Array(_, _) | Ty::Ptr(_) => {
+                // For arrays/pointers, the element storage type is exactly `field_ray_ty`.
+                let gep = unsafe {
+                    self.builder.build_gep(
+                        self.to_llvm_type(&field_ray_ty),
+                        base_ptr,
+                        &[offset],
+                        "",
+                    )?
+                };
+                (gep, field_ray_ty.clone())
+            }
             ty => panic!("container is not indexable: {:?}", ty),
         };
 
-        self.pointee_tys.insert(gep, element_ty.clone());
+        self.pointee_tys.insert(gep, gep_pointee_ty);
         Ok(gep)
     }
 
@@ -491,8 +521,15 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 "u64" | "i64" => self.lcx.i64_type().into(),
                 "int" | "uint" => self.ptr_type().into(),
                 _ => {
-                    let path = Path::from(fqn.clone());
-                    self.get_struct_type(&path).as_basic_type_enum()
+                    let fqn = ty.get_path().unwrap();
+                    let def = self.tcx.get_struct_ty(&fqn).unwrap();
+                    match def.kind {
+                        NominalKind::Record => self.get_struct_type(&fqn).as_basic_type_enum(),
+                        NominalKind::Struct => self
+                            .lcx
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum(),
+                    }
                 }
             },
         }
@@ -504,7 +541,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         ret_ty: &Ty,
     ) -> llvm::types::FunctionType<'ctx> {
         // If returning an aggregate, lower as sret: return void and prepend a retptr parameter.
-        if ret_ty.is_aggregate() {
+        if ret_ty.is_aggregate() && !ret_ty.is_struct(self.tcx) {
             let mut ll_params: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(param_tys.len() + 1);
             // retptr is a pointer to the return aggregate type
             let retptr_ty = self
@@ -559,7 +596,15 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         let llvm_ty = self.to_llvm_type(ty);
         let alloca = self.builder.build_alloca(llvm_ty, "")?;
-        self.pointee_tys.insert(alloca, ty.clone());
+        // Struct values lower to raw pointers; local slots holding a struct therefore
+        // contain a pointer value
+        // Track that as Ty::Ptr(struct_ty) so later loads know to unwrap once
+        if ty.is_struct(self.tcx) {
+            self.pointee_tys
+                .insert(alloca, Ty::Ptr(Box::new(ty.clone())));
+        } else {
+            self.pointee_tys.insert(alloca, ty.clone());
+        }
 
         // restore the position
         if let Some(bb) = saved_bb {
@@ -591,7 +636,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         // 2) Otherwise fall back to pointer/scalar-aware store semantics.
         let dest_ty = self.get_pointee_ty(ptr).clone();
 
-        if dest_ty.is_aggregate() {
+        if dest_ty.is_aggregate() && !dest_ty.is_struct(self.tcx) {
             // If RHS is already a pointer to an aggregate, memcpy directly.
             if let BasicValueEnum::PointerValue(rhs_ptr) = value {
                 if self.get_pointee_ty(rhs_ptr).is_aggregate() {
@@ -677,7 +722,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         // If destination is an aggregate (struct/tuple/array), copy bytes via memcpy
         // instead of performing an aggregate load+store.
-        if dst_ty.is_aggregate() {
+        if dst_ty.is_aggregate() && !dst_ty.is_struct(self.tcx) {
             let src_val = value.codegen(self, tcx, srcmap)?;
             return self.memcpy_aggregate_from_value(dst_ptr, &dst_ty, src_val);
         }
@@ -855,13 +900,13 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn build_typed_return(
         &mut self,
         ret_ty: &Ty,
-        mut ret_val: BasicValueEnum<'ctx>,
+        ret_val: BasicValueEnum<'ctx>,
     ) -> Result<InstructionValue<'ctx>, BuilderError> {
         let fn_val = self.get_fn();
         let llvm_ret_is_void = fn_val.get_type().get_return_type().is_none();
         if llvm_ret_is_void {
             // If Ray return type is aggregate, store into sret param and return void.
-            if ret_ty.is_aggregate() {
+            if ret_ty.is_aggregate() && !ret_ty.is_struct(self.tcx) {
                 let dst_ptr = self
                     .sret_param
                     .expect("missing sret_param for aggregate return");
@@ -870,7 +915,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             return self.builder.build_return(None);
         }
 
-        if ret_ty.is_aggregate() {
+        if ret_ty.is_aggregate() && !ret_ty.is_struct(self.tcx) {
             // Aggregate returns should be sret; interim behavior:
             // - If LLVM return type is a pointer, pass pointer as-is.
             // - Else load once to return by value.
@@ -891,11 +936,20 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
 
         // Non-aggregate return: if it's a pointer, load once into a value.
-        if ret_val.is_pointer_value() {
-            let ptr = ret_val.into_pointer_value();
-            ret_val = self.load_pointer(ptr)?;
+        let fn_val = self.get_fn();
+        let llvm_ret_ty = fn_val.get_type().get_return_type().unwrap();
+
+        // If LLVM expects a pointer, return the pointer as-is; otherwise, load once.
+        match (ret_val, llvm_ret_ty) {
+            (BasicValueEnum::PointerValue(p), BasicTypeEnum::PointerType(_)) => {
+                self.builder.build_return(Some(&p.as_basic_value_enum()))
+            }
+            (BasicValueEnum::PointerValue(p), _) => {
+                let loaded = self.load_pointer(p)?;
+                self.builder.build_return(Some(&loaded))
+            }
+            (v, _) => self.builder.build_return(Some(&v)),
         }
-        self.builder.build_return(Some(&ret_val))
     }
 
     fn fn_attr(&self, fn_val: FunctionValue<'ctx>, key: &str, val: &str) {
@@ -1155,7 +1209,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
         ctx.builder.position_at_end(entry);
 
         let mut params_iter = fn_val.get_param_iter();
-        if ret_ty.is_aggregate() {
+        if ret_ty.is_aggregate() && !ret_ty.is_struct(tcx) {
             // First LLVM param is the sret pointer
             if let Some(retptr_val) = params_iter.next() {
                 let retptr = retptr_val.into_pointer_value();
@@ -1248,7 +1302,36 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
         srcmap: &SourceMap,
     ) -> Self::Output {
         Ok(Some(match self {
-            lir::Inst::StructInit(_, _) => return Ok(None),
+            lir::Inst::StructInit(dst, _) => {
+                // Destination must be a local slot. We store a freshly allocated
+                // struct payload pointer into that slot.
+                let slot = match dst {
+                    lir::Variable::Local(idx) => ctx.get_local(*idx),
+                    other => panic!("StructInit destination must be a local, got: {:?}", other),
+                };
+
+                // The slot for a struct local holds a pointer value (Ty::Ptr(struct_ty)).
+                let slot_pointee = ctx.get_pointee_ty(slot).clone();
+                let struct_ty = match slot_pointee {
+                    Ty::Ptr(inner) => inner.as_ref().clone(),
+                    ty => ty, // best effort: if already a struct type
+                };
+
+                // Resolve the LLVM payload type for the struct and allocate it.
+                let fqn = struct_ty
+                    .get_path()
+                    .expect("struct type missing fully-qualified name");
+                let llvm_struct = ctx.get_struct_type(&fqn);
+                let ptr = ctx.builder.build_malloc(llvm_struct, "")?;
+
+                // Track the pointee type of the allocated pointer as the struct type.
+                ctx.pointee_tys.insert(ptr, struct_ty);
+
+                // Store the pointer VALUE into the local slot (which itself points to Ty::Ptr(...)).
+                let _ = ctx.builder.build_store(slot, ptr)?;
+
+                return Ok(None);
+            }
 
             lir::Inst::Free(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Call(call) => {
@@ -1584,7 +1667,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::SetField {
 
         // If the field itself is an aggregate (struct/tuple/array), copy bytes via memcpy.
         let value = self.value.codegen(ctx, tcx, srcmap)?;
-        if field_ty.is_aggregate() {
+        if field_ty.is_aggregate() && !field_ty.is_struct(tcx) {
             return ctx.memcpy_aggregate_from_value(ptr, &field_ty, value);
         }
 
@@ -1670,7 +1753,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
                 self.fn_name, self.callee_ty
             )
         });
-        if ret_ty.is_aggregate() {
+        if ret_ty.is_aggregate() && !ret_ty.is_struct(tcx) {
             let (call, ret_slot) =
                 ctx.build_sret_call(function, &self.args, &expected_params, ret_ty, tcx, srcmap)?;
             return Ok(LoweredCall::Call {

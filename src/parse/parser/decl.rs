@@ -1,17 +1,21 @@
 use std::ops::Deref;
 
+use itertools::Itertools;
+
 use super::{
-    DeclResult, ExprResult, ParseContext, ParseResult, ParsedDecl, Parser, Recover, Restrictions,
+    DeclResult, ExprResult, ParseResult, ParsedDecl, Parser, Recover, RecoveryCtx, Restrictions,
+    context::{ParseContext, SeqSpec},
 };
 
 use crate::{
     ast::{
         Assign, Decl, Decorator, Expr, Extern, Func, Impl, Modifier, Name, Node, Pattern, Struct,
-        Trailing, Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
+        TrailingPolicy, Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
     },
     errors::{RayError, RayErrorKind},
-    span::{Pos, Span, parsed::Parsed},
-    typing::ty::Ty,
+    parse::lexer::NewlineMode,
+    span::{Pos, Span, TriviaKind, parsed::Parsed},
+    typing::ty::{NominalKind, Ty},
 };
 
 impl Parser<'_> {
@@ -35,74 +39,74 @@ impl Parser<'_> {
         only_sigs: bool,
         ctx: &ParseContext,
     ) -> ParseResult<(Vec<Node<Func>>, Vec<ParsedDecl>, Vec<Node<Assign>>)> {
-        ctx.with_description("parse impl body", |ctx| {
-            let mut funcs = vec![];
-            let mut externs = vec![];
-            let mut consts = vec![];
-            self.parse_items(
-                start,
-                Some(TokenKind::RightCurly),
-                &ctx,
-                |this, kind, doc, _| match kind {
-                    TokenKind::Const => {
-                        this.expect_keyword(TokenKind::Const, ctx)?;
-                        let ex = this.parse_expr(ctx)?;
-                        let span = this.srcmap.span_of(&ex);
-                        let ex_desc = ex.desc().to_string();
-                        let assign_node = ex.try_take_map(|ex| {
-                            maybe_variant!(ex, if Expr::Assign(a))
-                                .and_then(|assign| {
-                                    if matches!(assign.lhs.deref(), Pattern::Name(_)) {
-                                        Some(assign)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .ok_or_else(|| {
-                                    this.parse_error(
-                                        format!(
-                                            "expected a constant assignment expression, but found {}",
-                                            ex_desc,
-                                        ),
-                                        span,
-                                        ctx,
-                                    )
-                                })
-                        })?;
+        let mut funcs = vec![];
+        let mut externs = vec![];
+        let mut consts = vec![];
 
-                        let end = this.srcmap.span_of(&assign_node).end;
-                        consts.push(assign_node);
-                        Ok(end)
-                    }
-                    TokenKind::Fn | TokenKind::Modifier(_) => {
-                        let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
-                        f.sig.doc_comment = doc;
-                        f.sig.is_method = true;
-                        let func_node = this.mk_node_with_path(f, span, ctx.path.clone());
-                        funcs.push(func_node);
-                        Ok(span.end)
-                    }
-                    TokenKind::Extern => {
-                        let extern_span =
-                            this.expect_keyword(TokenKind::Extern, ctx)?;
-                        let start = extern_span.start;
-                        let decl = this.parse_extern_fn_sig(start, ctx)?;
-                        let end = this.srcmap.span_of(&decl).end;
-                        externs.push(decl);
-                        Ok(end)
-                    }
-                    _ => {
-                        let tok = this.token()?;
-                        Err(this.unexpected_token(
-                            &tok,
-                            "a function modifier or signature",
-                            ctx
-                        ))
-                    }
-                },
-            )?;
-            Ok((funcs, externs, consts))
-        })
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse impl body")
+            .with_newline_mode(NewlineMode::Emit);
+        let ctx = &parser.ctx_clone();
+
+        parser.parse_items(
+            start,
+            Some(TokenKind::RightCurly),
+            &ctx,
+            |this, kind, doc, _| match kind {
+                TokenKind::Const => {
+                    this.expect_keyword(TokenKind::Const, ctx)?;
+                    let ex = this.parse_expr(ctx)?;
+                    let span = this.srcmap.span_of(&ex);
+                    let ex_desc = ex.desc().to_string();
+                    let assign_node = ex.try_take_map(|ex| {
+                        maybe_variant!(ex, if Expr::Assign(a))
+                            .and_then(|assign| {
+                                if matches!(assign.lhs.deref(), Pattern::Name(_)) {
+                                    Some(assign)
+                                } else {
+                                    None
+                                }
+                            })
+                            .ok_or_else(|| {
+                                this.parse_error(
+                                    format!(
+                                        "expected a constant assignment expression, but found {}",
+                                        ex_desc,
+                                    ),
+                                    span,
+                                    ctx,
+                                )
+                            })
+                    })?;
+
+                    let end = this.srcmap.span_of(&assign_node).end;
+                    consts.push(assign_node);
+                    Ok(end)
+                }
+                TokenKind::Fn | TokenKind::Modifier(_) => {
+                    let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
+                    f.sig.doc_comment = doc;
+                    f.sig.is_method = true;
+                    let func_node = this.mk_node_with_path(f, span, ctx.path.clone());
+                    funcs.push(func_node);
+                    Ok(span.end)
+                }
+                TokenKind::Extern => {
+                    let extern_span = this.expect_keyword(TokenKind::Extern, ctx)?;
+                    let start = extern_span.start;
+                    let decl = this.parse_extern_fn_sig(start, ctx)?;
+                    let end = this.srcmap.span_of(&decl).end;
+                    externs.push(decl);
+                    Ok(end)
+                }
+                _ => {
+                    let tok = this.token()?;
+                    Err(this.unexpected_token(&tok, "a function modifier or signature", ctx))
+                }
+            },
+        )?;
+        Ok((funcs, externs, consts))
     }
 
     pub(crate) fn parse_decl(&mut self, kind: &TokenKind, ctx: &ParseContext) -> DeclResult {
@@ -166,27 +170,28 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_extern_fn_sig(&mut self, start: Pos, ctx: &ParseContext) -> DeclResult {
-        ctx.with_description("parse extern fn sig", |ctx| {
-            let decl = match self.must_peek_kind()? {
-                TokenKind::Fn | TokenKind::Modifier(_) => {
-                    let sig = self.parse_fn_sig(ctx)?;
-                    let span = sig.span;
-                    let path = sig.path.value.clone();
-                    self.mk_decl(Decl::FnSig(sig), span, path)
-                }
-                _ => {
-                    let tok = self.token()?;
-                    return Err(self.unexpected_token(&tok, "a function signature", ctx));
-                }
-            };
+        let parser = &mut self.with_scope(ctx).with_description("parse extern fn sig");
+        let ctx = &parser.ctx_clone();
 
-            let end = self.srcmap.span_of(&decl).end;
-            Ok(self.mk_decl(
-                Decl::Extern(Extern::new(decl)),
-                Span { start, end },
-                ctx.path.clone(),
-            ))
-        })
+        let decl = match parser.must_peek_kind()? {
+            TokenKind::Fn | TokenKind::Modifier(_) => {
+                let sig = parser.parse_fn_sig(ctx)?;
+                let span = sig.span;
+                let path = sig.path.value.clone();
+                parser.mk_decl(Decl::FnSig(sig), span, path)
+            }
+            _ => {
+                let tok = parser.token()?;
+                return Err(parser.unexpected_token(&tok, "a function signature", ctx));
+            }
+        };
+
+        let end = parser.srcmap.span_of(&decl).end;
+        Ok(parser.mk_decl(
+            Decl::Extern(Extern::new(decl)),
+            Span { start, end },
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_local(&mut self, is_extern: bool, ctx: &ParseContext) -> ExprResult {
@@ -231,22 +236,28 @@ impl Parser<'_> {
         let start = trait_span.start;
         let (name_str, name_span) = self.expect_id(ctx)?;
 
-        let mut ctx = ctx.clone();
         let raw_path = ctx.path.append(&name_str);
         let path = self.mk_node(raw_path, name_span);
-        ctx.path = path.value.clone();
 
-        ctx.description = Some("parsing trait declaration".to_string());
-        let ty = self
+        let parser = &mut self
+            .with_scope(&ctx)
+            .with_path(path.value.clone())
+            .with_description("parsing trait declaration");
+        let ctx = &parser.ctx_clone();
+
+        let ty = parser
             .parse_ty_with_name(name_str, name_span, &ctx)
-            .recover_with(self, Some(&TokenKind::LeftCurly), |parser, recovered| {
-                parser.missing_type(name_span.start, recovered)
-            })
+            .recover_with_ctx(
+                parser,
+                RecoveryCtx::expr(Some(&TokenKind::LeftCurly)).with_ternary_sensitive(false),
+                |parser, recovered| parser.missing_type(name_span.start, recovered),
+            )
             .map(|t| t.into_mono());
 
-        let super_trait = if expect_if!(self, TokenKind::Colon) {
+        let super_trait = if expect_if!(parser, TokenKind::Colon) {
             Some(
-                self.parse_type_annotation(Some(&TokenKind::LeftCurly), &ctx)
+                parser
+                    .parse_type_annotation(Some(&TokenKind::LeftCurly), &ctx)
                     .map(|t| t.into_mono()),
             )
         } else {
@@ -256,54 +267,42 @@ impl Parser<'_> {
         let mut fields = vec![];
         let mut directives = vec![];
 
-        ctx.with_description("parse trait fields", |ctx| {
-            self.expect(TokenKind::LeftCurly, ctx)?;
+        let parser = &mut parser
+            .with_scope(&ctx)
+            .with_description("parse trait fields");
+        let ctx = &parser.ctx_clone();
 
-            // parse directives
-            while peek!(self, TokenKind::Default) {
-                let default_span = self.expect_keyword(TokenKind::Default, ctx)?;
-                let mut args = vec![];
-                let start = default_span.start;
-                self.expect(TokenKind::LeftParen, ctx)?;
-                let end = loop {
-                    let ty = self
-                        .parse_type_annotation(Some(&TokenKind::RightParen), &ctx)
-                        .map(|t| t.into_mono());
-                    args.push(ty);
+        (|| {
+            parser.expect(TokenKind::LeftCurly, &ctx)?;
+            parser.consume_newlines(ctx)?;
 
-                    if let Some(tok) = self.expect_kind(TokenKind::RightParen)? {
-                        break tok.span.end;
-                    }
-
-                    self.expect_kind(TokenKind::Comma)?;
-                };
-
-                directives.push(Parsed::new(
-                    TraitDirective {
-                        kind: TraitDirectiveKind::Default,
-                        args,
-                    },
-                    self.mk_src(Span { start, end }),
-                ));
-            }
+            parser.parse_trait_directives(&mut directives, ctx)?;
 
             loop {
-                if peek!(self, TokenKind::RightCurly) {
+                parser.consume_newlines(ctx)?;
+                if peek!(parser, TokenKind::RightCurly) {
                     break;
                 }
 
-                let sig = self.parse_trait_fn_sig(&ctx)?;
+                let sig = parser.parse_trait_fn_sig(&ctx)?;
                 let span = sig.span;
-                fields.push(self.mk_decl(Decl::FnSig(sig), span, ctx.path.clone()));
+                fields.push(parser.mk_decl(Decl::FnSig(sig), span, ctx.path.clone()));
             }
 
-            ParseResult::Ok(())
-        })
-        .recover_with(self, Some(&TokenKind::RightCurly), |_, _| ());
+            Ok(())
+        })()
+        .recover_with_ctx(
+            parser,
+            RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
+                .with_newline(true)
+                .with_decl_stops(false),
+            |_, _| (),
+        );
 
-        let end = self.expect_end(TokenKind::RightCurly, &ctx)?;
+        let end = parser.expect_end(TokenKind::RightCurly, &ctx)?;
 
-        Ok(self.mk_decl(
+        let scope_path = parser.ctx().path.clone();
+        Ok(parser.mk_decl(
             Decl::Trait(Trait {
                 path,
                 ty,
@@ -312,13 +311,74 @@ impl Parser<'_> {
                 directives,
             }),
             Span { start, end },
-            ctx.path,
+            scope_path,
         ))
     }
 
+    fn parse_trait_directives(
+        &mut self,
+        directives: &mut Vec<Parsed<TraitDirective>>,
+        ctx: &ParseContext,
+    ) -> ParseResult<()> {
+        self.consume_newlines(ctx)?;
+
+        while peek!(self, TokenKind::Default) {
+            let default_span = self.expect_keyword(TokenKind::Default, ctx)?;
+            let start = default_span.start;
+            let spec = SeqSpec {
+                delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+                trailing: TrailingPolicy::Forbid,
+                newline: NewlineMode::Suppress,
+                restrictions: Restrictions::IN_PAREN,
+            };
+
+            let ((args, _), spans) =
+                self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+                    parser.parse_sep_seq(
+                        &TokenKind::Comma,
+                        trailing,
+                        stop.as_ref(),
+                        ctx,
+                        |parser, ctx| {
+                            Ok(parser
+                                .parse_type_annotation(stop.as_ref(), ctx)
+                                .map(|t| t.into_mono()))
+                        },
+                    )
+                })?;
+
+            let end = spans.map(|(_, right)| right.end).unwrap_or(start);
+
+            directives.push(Parsed::new(
+                TraitDirective {
+                    kind: TraitDirectiveKind::Default,
+                    args,
+                },
+                self.mk_src(Span { start, end }),
+            ));
+
+            // Allow blank lines between directives without looping on them.
+            self.consume_newlines(ctx)?;
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn parse_struct(&mut self, ctx: &ParseContext) -> ParseResult<(Struct, Span)> {
-        let struct_span = self.expect_keyword(TokenKind::Struct, ctx)?;
-        let start = struct_span.start;
+        let keyword_kinds = &[TokenKind::Struct, TokenKind::Record];
+        let Some(kw) = self.expect_one_of(keyword_kinds, Some(TriviaKind::Keyword), ctx)? else {
+            let tok = self.token()?;
+            let expected = keyword_kinds.iter().map(TokenKind::to_string).join(" or ");
+            return Err(self.unexpected_token(&tok, &expected, ctx));
+        };
+
+        let kind = match kw.kind {
+            TokenKind::Struct => NominalKind::Struct,
+            TokenKind::Record => NominalKind::Record,
+            _ => unreachable!("expected nominal kind token"),
+        };
+
+        let start = kw.span.start;
 
         // parse name of struct
         let (name_str, name_span) = self.expect_id(ctx)?;
@@ -332,7 +392,9 @@ impl Parser<'_> {
             end = tp.rb_span.end;
         }
 
-        let fields = if expect_if!(self, TokenKind::LeftCurly) {
+        let fields = if peek!(self, TokenKind::LeftCurly) {
+            self.expect(TokenKind::LeftCurly, ctx)?;
+            self.consume_newlines(ctx)?;
             let f = self.parse_fields(ctx)?;
             end = self.expect_end(TokenKind::RightCurly, ctx)?;
             Some(f)
@@ -342,6 +404,7 @@ impl Parser<'_> {
 
         Ok((
             Struct {
+                kind,
                 path,
                 ty_params,
                 fields,
@@ -417,21 +480,33 @@ impl Parser<'_> {
             let path = self.parse_path(ctx)?;
 
             let (args, paren_sp) = if peek!(self, TokenKind::LeftParen) {
-                let mut ctx = ctx.clone();
-                ctx.restrictions |= Restrictions::IN_PAREN;
-                ctx.description = Some("parse decorator args".to_string());
-                let start_tok = self.expect(TokenKind::LeftParen, &ctx)?;
-                let ps = start_tok.span.start;
-                let args = if !peek!(self, TokenKind::RightParen) {
-                    let (args, _) =
-                        self.parse_name_seq(Trailing::Allow, Some(&TokenKind::RightParen), &ctx)?;
-                    args
-                } else {
-                    vec![]
+                let spec = SeqSpec {
+                    delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+                    trailing: TrailingPolicy::Allow,
+                    newline: NewlineMode::Suppress,
+                    restrictions: Restrictions::IN_PAREN,
                 };
-                let pe = self.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
-                end = pe;
-                (args, Some(Span { start: ps, end: pe }))
+
+                let ((args, _trailing), spans) =
+                    self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+                        parser.parse_sep_seq(
+                            &TokenKind::Comma,
+                            trailing,
+                            stop.as_ref(),
+                            ctx,
+                            |parser, ctx| parser.parse_name_with_type(stop.as_ref(), ctx),
+                        )
+                    })?;
+
+                let (l_span, r_span) = spans.expect("decorator args should have paren spans");
+                end = r_span.end;
+                (
+                    args,
+                    Some(Span {
+                        start: l_span.start,
+                        end: r_span.end,
+                    }),
+                )
             } else {
                 (vec![], None)
             };
@@ -456,56 +531,63 @@ impl Parser<'_> {
         &mut self,
         ctx: &ParseContext,
     ) -> ParseResult<Vec<Parsed<Ty>>> {
-        ctx.with_description("parse where clause", |ctx| {
-            let mut qualifiers = vec![];
-            if !peek!(self, TokenKind::Where) {
-                return Ok(qualifiers);
-            }
+        let mut parser = self.with_scope(ctx).with_description("parse where clause");
+        let ctx = &parser.ctx_clone();
 
-            let has_where = self
-                .expect_keyword(TokenKind::Where, ctx)
-                .map(|_| Some(()))
-                .recover_seq(self, None, |_| None);
-            if has_where.is_none() {
-                return Ok(qualifiers);
-            }
+        let mut qualifiers = vec![];
+        if !peek!(parser, TokenKind::Where) {
+            return Ok(qualifiers);
+        }
 
-            loop {
-                let ty = self
+        let has_where = parser
+            .expect_keyword(TokenKind::Where, ctx)
+            .map(|_| Some(()))
+            .recover_seq_with_ctx(
+                &mut parser,
+                RecoveryCtx::default_seq(None)
+                    .with_trailing(TrailingPolicy::Allow)
+                    .with_newline(false),
+                |_| None,
+            );
+        if has_where.is_none() {
+            return Ok(qualifiers);
+        }
+
+        parser = parser.with_newline_mode(NewlineMode::Suppress);
+        let (tys, _) = parser.parse_sep_seq(
+            &TokenKind::Comma,
+            TrailingPolicy::Allow,
+            None,
+            ctx,
+            |parser, ctx| {
+                Ok(parser
                     .parse_type_annotation(Some(&TokenKind::Comma), ctx)
-                    .map(|t| t.into_mono());
-                qualifiers.push(ty);
+                    .map(|t| t.into_mono()))
+            },
+        )?;
+        qualifiers.extend(tys);
 
-                if !peek!(self, TokenKind::Comma) {
-                    break;
-                }
-
-                let has_comma = self
-                    .expect(TokenKind::Comma, ctx)
-                    .map(|_| Some(()))
-                    .recover_seq(self, None, |_| None);
-                if has_comma.is_none() {
-                    if peek!(self, TokenKind::Comma) {
-                        continue;
-                    }
-                    break;
-                }
-            }
-
-            Ok(qualifiers)
-        })
+        Ok(qualifiers)
     }
 
     fn parse_fields(&mut self, ctx: &ParseContext) -> ParseResult<Vec<Node<Name>>> {
         let mut fields = Vec::new();
         loop {
+            self.consume_newlines(ctx)?;
             if !peek!(self, TokenKind::Identifier { .. }) {
                 break;
             }
+
             let field = self
                 .parse_name_with_type(Some(&TokenKind::RightCurly), ctx)
                 .map(Some)
-                .recover_with(self, Some(&TokenKind::RightCurly), |_, _| None);
+                .recover_with_ctx(
+                    self,
+                    RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
+                        .with_newline(true)
+                        .with_decl_stops(false),
+                    |_, _| None,
+                );
 
             match field {
                 Some(n) => {
@@ -520,9 +602,11 @@ impl Parser<'_> {
                             kind: RayErrorKind::Parse,
                             context: Some("struct field parsing".to_string()),
                         })
-                        .recover_with(
+                        .recover_with_ctx(
                             self,
-                            Some(&TokenKind::RightCurly),
+                            RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
+                                .with_newline(true)
+                                .with_decl_stops(false),
                             |_, _| (),
                         );
                         if peek!(self, TokenKind::RightCurly) || self.is_eof() {

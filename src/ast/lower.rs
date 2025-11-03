@@ -327,6 +327,7 @@ impl LowerAST for Sourced<'_, Struct> {
         let ty = Ty::with_vars(&struct_path, &ty_vars);
         let struct_ty = TyScheme::new(ty_vars, Predicates::new(), ty);
         ctx.tcx.add_struct_ty(StructTy {
+            kind: st.kind,
             path: struct_path,
             ty: struct_ty,
             fields,
@@ -788,7 +789,7 @@ impl LowerAST for ast::Assign {
         if let ast::InfixOp::AssignOp(op) = &mut self.op {
             let lhs_src = ctx.srcmap.get(&self.lhs);
             let lhs = match self.lhs.clone().try_take_map(|pat| match pat {
-                ast::Pattern::Name(n) => Ok(Expr::Name(n)),
+                ast::Pattern::Name(_) | ast::Pattern::Dot(_, _) => Ok(pat.into()),
                 ast::Pattern::Sequence(_)
                 | ast::Pattern::Tuple(_)
                 | ast::Pattern::Deref(_)
@@ -935,6 +936,14 @@ impl LowerAST for Sourced<'_, ast::Curly> {
         };
 
         curly.ty = struct_ty.ty.clone();
+        log::debug!("lower Curly: set ty for {:?} to {}", struct_fqn, curly.ty);
+        // Must be a concrete struct scheme by now.
+        debug_assert!(
+            matches!(curly.ty.mono(), Ty::Const(_)),
+            "Curly.ty not Const after lowering: {}",
+            curly.ty
+        );
+
         let mut idx = HashMap::new();
         for (i, (f, _)) in struct_ty.fields.iter().enumerate() {
             idx.insert(f.clone(), i);
@@ -947,7 +956,10 @@ impl LowerAST for Sourced<'_, ast::Curly> {
                 ast::CurlyElement::Name(n) => {
                     (n.clone(), el_span, Node::with_id(el.id, Expr::Name(n)))
                 }
-                ast::CurlyElement::Labeled(n, ex) => (n, el_span, ex),
+                ast::CurlyElement::Labeled(n, mut ex) => {
+                    ex.lower(ctx)?;
+                    (n, el_span, ex)
+                }
             };
 
             let field_name = name.path.name().unwrap();
@@ -1040,6 +1052,12 @@ impl LowerAST for Sourced<'_, ast::Pattern> {
         match value {
             ast::Pattern::Name(n) | ast::Pattern::Deref(Node { id: _, value: n }) => {
                 Sourced(n, src).lower(ctx)?
+            }
+            ast::Pattern::Dot(lhs, rhs) => {
+                let lhs_src = ctx.srcmap.get(lhs);
+                Sourced(&mut lhs.as_mut().value, &lhs_src).lower(ctx)?;
+                let rhs_src = ctx.srcmap.get(rhs);
+                Sourced(&mut rhs.value, &rhs_src).lower(ctx)?;
             }
             ast::Pattern::Missing(_) => todo!(),
             ast::Pattern::Sequence(_) => todo!(),
@@ -1191,7 +1209,7 @@ mod tests {
         span::{Pos, Source, SourceMap, Sourced, Span, parsed::Parsed},
         typing::{
             TyCtx,
-            ty::{StructTy, Ty, TyScheme},
+            ty::{NominalKind, StructTy, Ty, TyScheme},
         },
     };
 
@@ -1225,6 +1243,7 @@ mod tests {
 
         let mut ctx = LowerCtx::new(&mut srcmap, &mut scope_map, &mut tcx, &mut ncx, &mut errors);
         ctx.tcx.add_struct_ty(StructTy {
+            kind: NominalKind::Struct,
             path: Path::from("string"),
             fields: vec![
                 (

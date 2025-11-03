@@ -1,0 +1,31 @@
+struct A {
+    x: i32
+}
+
+struct B {
+    x: i32
+    y: i32
+}
+
+fn make_a() -> A {
+    A { x: 10i32 }
+}
+
+fn make_b() -> B {
+    B { x: 10i32, y: 8i32 }
+}
+
+fn poke(b: B) {
+    b.y = 29i32
+}
+
+fn read(b: B) -> i32 {
+    b.x
+}
+
+fn main() {
+    a = make_a()
+    b = make_b()
+    poke(b)
+    x = read(b)
+}

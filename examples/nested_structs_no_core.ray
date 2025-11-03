@@ -1,0 +1,18 @@
+struct A {
+    b: B
+    z: i32
+}
+
+struct B {
+    x: i32
+    y: i32
+}
+
+fn poke(a: A) {
+    a.b.y = 4i32
+}
+
+fn main() {
+    a = A { b: B { x: 2i32, y: 3i32 }, z: 6i32 }
+    poke(a)
+}

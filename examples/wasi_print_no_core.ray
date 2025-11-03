@@ -1,0 +1,46 @@
+extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) -> uint
+
+record IOVec {
+    base: *u8
+    len: uint
+}
+
+fn ptr_add['a](p: *'a, n: uint) -> *'a =>
+    ((p as uint) + n) as *'a
+
+fn index_stride['a](p: *'a, i: uint, stride: uint) -> *'a =>
+    ptr_add(p, i * stride)
+
+fn writev_stdout(chunks: *string, n: uint) -> uint {
+    iovecs = new(IOVec, n)
+    mut i = 0u
+    stride_str = sizeof(string)
+    stride_iov = sizeof(IOVec)
+
+    while i < n {
+        chunk_ptr = index_stride[string](chunks, i, stride_str)
+        chunk = *chunk_ptr
+
+        iov_ptr = index_stride[IOVec](iovecs, i, stride_iov)
+        *iov_ptr = IOVec { base: chunk.raw_ptr, len: chunk.len }
+
+        i += 1u
+    }
+
+    wrote = 0u
+    _ = fd_write(1, iovecs, n, &wrote)
+    wrote
+}
+
+fn main() {
+    base = new(string, 2u)
+    stride_str = sizeof(string)
+
+    p0 = index_stride[string](base, 0u, stride_str)
+    *p0 = "hello, world"
+
+    p1 = index_stride[string](base, 1u, stride_str)
+    *p1 = "\n"
+
+    _ = writev_stdout(base, 2u)
+}

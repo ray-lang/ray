@@ -14,7 +14,7 @@ use crate::{
     span::SourceMap,
     typing::{
         TyCtx,
-        ty::{StructTy, Ty, TyScheme, TyVar},
+        ty::{NominalKind, StructTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -564,7 +564,7 @@ impl<'a> GenCtx<'a> {
 pub type GenResult = lir::Value;
 
 impl LirGen<GenResult> for (&Pattern, &TyScheme) {
-    fn lir_gen(&self, ctx: &mut GenCtx<'_>, _: &TyCtx) -> RayResult<GenResult> {
+    fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
         let &(pat, ty) = self;
         match pat {
             Pattern::Name(name) | Pattern::Deref(Node { id: _, value: name }) => {
@@ -576,6 +576,19 @@ impl LirGen<GenResult> for (&Pattern, &TyScheme) {
                     idx
                 });
                 Ok(lir::Value::new(lir::Variable::Local(idx)))
+            }
+            Pattern::Dot(lhs, rhs) => {
+                // For pattern-as-value contexts (rare), read the field value like `Expr::Dot`.
+                // We compute the base value/local, then produce a GetField value.
+                let lhs_ty = ctx.ty_of(tcx, lhs.id);
+                let lhs_val = (&lhs.value, &lhs_ty).lir_gen(ctx, tcx)?;
+                let lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone()).unwrap();
+
+                Ok(lir::GetField {
+                    src: lir::Variable::Local(lhs_loc),
+                    field: rhs.path.name().unwrap(),
+                }
+                .into())
             }
             Pattern::Missing(_) => todo!(),
             Pattern::Sequence(_) => todo!(),
@@ -655,6 +668,7 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(loc),
                     StructTy {
+                        kind: NominalKind::Struct,
                         path: "string".into(),
                         ty: Ty::string().into(),
                         fields: vec![
@@ -826,6 +840,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(loc),
                     StructTy {
+                        kind: NominalKind::Struct,
                         path: "range".into(),
                         ty: Ty::range(el_ty.mono().clone()).into(),
                         fields: vec![
@@ -983,6 +998,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(list_loc),
                     StructTy {
+                        kind: NominalKind::Struct,
                         path: "list".into(),
                         ty: Ty::list(el_ty.clone()).into(),
                         fields: vec![
@@ -1089,9 +1105,11 @@ impl LirGen<GenResult> for Node<Expr> {
                     })
                     .collect();
 
+                let kind = ty.mono().nominal_kind(tcx).unwrap();
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(loc),
                     StructTy {
+                        kind,
                         path: ty.mono().get_path().unwrap(),
                         ty: ty.clone(),
                         fields,
@@ -1147,14 +1165,32 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Variable::Local(ptr_loc).into()
             }
             Expr::Assign(assign) => {
-                // get types of both sides
-                let lhs_ty = ctx.ty_of(tcx, assign.lhs.id);
+                // Look up the type and generate RHS first
                 let rhs_ty = ctx.ty_of(tcx, assign.rhs.id);
-
                 let rhs_val = assign.rhs.lir_gen(ctx, tcx)?;
+                let maybe_rhs_loc = ctx.get_or_set_local(rhs_val, rhs_ty);
+
+                // If the LHS is a field projection (`a.x = expr`), emit SetField instead of SetLocal.
+                if let Pattern::Dot(base_pat, field_name) = &assign.lhs.value {
+                    let base_ty = ctx.ty_of(tcx, base_pat.id);
+                    let base_val = (&base_pat.value, &base_ty).lir_gen(ctx, tcx)?;
+                    if let (Some(base_loc), Some(rhs_loc)) = (
+                        ctx.get_or_set_local(base_val, base_ty.clone()),
+                        maybe_rhs_loc,
+                    ) {
+                        ctx.push(lir::SetField::new(
+                            lir::Variable::Local(base_loc),
+                            field_name.path.name().unwrap(),
+                            lir::Variable::Local(rhs_loc).into(),
+                        ));
+                    }
+                    return Ok(lir::Value::Empty);
+                }
+
+                // Otherwise, compute the LHS location and fall back to normal SetLocal/Store
+                let lhs_ty = ctx.ty_of(tcx, assign.lhs.id);
                 let lhs_val = (&assign.lhs.value, &lhs_ty).lir_gen(ctx, tcx)?;
                 let maybe_lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone());
-                let maybe_rhs_loc = ctx.get_or_set_local(rhs_val, rhs_ty);
 
                 log::debug!("ASSIGN {:?} := {:?}", assign.lhs, assign.rhs);
                 log::debug!(
@@ -1190,7 +1226,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 lir::GetField {
                     src: lir::Variable::Local(lhs_loc),
-                    field: dot.rhs.path.to_string(),
+                    field: dot.rhs.path.name().unwrap(),
                 }
                 .into()
             }

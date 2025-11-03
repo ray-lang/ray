@@ -59,9 +59,9 @@ pub enum ValueKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Trailing {
+pub enum TrailingPolicy {
     Allow,
-    Disallow,
+    Forbid,
     Warn,
 }
 

@@ -519,8 +519,24 @@ impl TyVar {
     // }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NominalKind {
+    Struct,
+    Record,
+}
+
+impl Display for NominalKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NominalKind::Struct => write!(f, "struct"),
+            NominalKind::Record => write!(f, "record"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructTy {
+    pub kind: NominalKind,
     pub path: ast::Path,
     pub ty: TyScheme,
     pub fields: Vec<(String, TyScheme)>,
@@ -1384,171 +1400,6 @@ impl Ty {
         }
     }
 
-    // pub fn skolemize_freevars(self) -> Ty {
-    //     match self {
-    //         Ty::All(xs, t) => {
-    //             let consts = xs
-    //                 .iter()
-    //                 .enumerate()
-    //                 .map(|(i, _)| Ty::Var(TyVar::from(format!("${}", i))))
-    //                 .collect::<Vec<_>>();
-    //             let sub = Subst::from_types(xs.clone(), consts);
-    //             Ty::All(xs, t).apply_subst(&sub)
-    //         }
-    //         t @ _ => t,
-    //     }
-    // }
-
-    // pub fn quantify(self, tyvars: Vec<TyVar>) -> Ty {
-    //     if tyvars.len() != 0 {
-    //         let t = match self {
-    //             Ty::All(_, t) => t,
-    //             _ => Box::new(self),
-    //         };
-    //         Ty::All(tyvars, t)
-    //     } else {
-    //         self
-    //     }
-    // }
-
-    // pub fn quantify_in_place(&mut self) {
-    //     let freevars = HashSet::new();
-    //     replace(self, |ty| ty.quantify_with_freevars(&freevars));
-    // }
-
-    // pub fn quantify_with_freevars(self, freevars: &HashSet<&TyVar>) -> Ty {
-    //     let mut tyvars = self.collect_tyvars();
-    //     let mut i = 0;
-    //     while i < tyvars.len() {
-    //         let t = &tyvars[i];
-    //         if t.is_ret_placeholder() || freevars.contains(&t) {
-    //             tyvars.remove(i);
-    //         } else {
-    //             i += 1;
-    //         }
-    //     }
-
-    //     self.quantify(tyvars)
-    // }
-
-    // pub fn unquantify(self) -> Ty {
-    //     match self {
-    //         Ty::All(_, t) => *t,
-    //         t => t,
-    //     }
-    // }
-
-    // pub fn formalize(self, path: &Path, tyvars: &HashSet<TyVar>) -> (Ty, Subst) {
-    //     log::debug!("formalize: {}", self);
-    //     let mut subst = Subst::new();
-    //     if let Ty::All(xs, _) = &self {
-    //         // bind all type variables in the function type
-    //         let mut c = 'a' as u8;
-    //         for v in xs.iter().filter(|x| !tyvars.contains(x)) {
-    //             if !subst.contains_key(v) {
-    //                 let path = path.append(format!("'{}", c as char));
-    //                 let u = TyVar(path);
-    //                 if v == &u {
-    //                     continue;
-    //                 }
-
-    //                 subst.insert(v.clone(), Ty::Var(u));
-    //                 c += 1;
-    //             }
-    //         }
-    //         let ty = self.apply_subst(&subst);
-    //         return (ty, subst);
-    //     }
-
-    //     (self, subst)
-    // }
-
-    // pub fn qualify_in_place(&mut self, preds: &Vec<TyPredicate>) {
-    //     log::debug!("qualify in place: {}", self);
-    //     let tyvars = self.collect_tyvars();
-    //     let ty = std::mem::replace(self, Ty::unit());
-    //     *self = ty.qualify(preds, &tyvars);
-    // }
-
-    // pub fn qualify(self, preds: &Vec<TyPredicate>, tyvars: &Vec<TyVar>) -> Ty {
-    //     log::debug!("preds: {:?}", preds);
-    //     log::debug!("tyvars: {:?}", tyvars);
-    //     let tyvar_set = tyvars.to_set();
-    //     let mut preds = preds
-    //         .iter()
-    //         .filter_map(|p| {
-    //             if !p.collect_tyvars().iter().to_set().is_disjoint(&tyvar_set) {
-    //                 Some(p.clone())
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //         .collect::<Vec<_>>();
-
-    //     log::debug!("preds: {:?}", preds);
-    //     log::debug!("tyvar_set: {:?}", tyvar_set);
-
-    //     preds.sort();
-    //     preds.dedup();
-    //     self.qualify_with(preds)
-    // }
-
-    // fn qualify_with(self, preds: Vec<TyPredicate>) -> Ty {
-    //     if preds.len() != 0 {
-    //         // wrap the type in a qualified type if there are type variables
-    //         match self {
-    //             Ty::All(xs, t) => Ty::All(xs, Box::new(t.qualify_with(preds))),
-    //             Ty::Qualified(q, t) => {
-    //                 log::debug!("prev preds: {:?}", q);
-    //                 Ty::Qualified(preds, t)
-    //             }
-    //             _ => Ty::Qualified(preds, Box::new(self)),
-    //         }
-    //     } else {
-    //         self
-    //     }
-    // }
-
-    // pub fn unqualify(self) -> Ty {
-    //     match self {
-    //         Ty::All(xs, t) => Ty::All(xs, Box::new(t.unqualify())),
-    //         Ty::Qualified(_, t) => *t,
-    //         t => t,
-    //     }
-    // }
-
-    // pub fn qualifiers(&self) -> Option<&Vec<TyPredicate>> {
-    //     match self {
-    //         Ty::All(_, t) => t.qualifiers(),
-    //         Ty::Qualified(q, _) => Some(q),
-    //         _ => None,
-    //     }
-    // }
-
-    // pub fn has_qualifier(&self, pred: &TyPredicate) -> bool {
-    //     match self {
-    //         Ty::All(_, ty) => ty.has_qualifier(pred),
-    //         Ty::Qualified(preds, _) => preds.contains(pred),
-    //         _ => false,
-    //     }
-    // }
-
-    // pub fn in_hnf(&self) -> bool {
-    //     match self {
-    //         Ty::Never => todo!(),
-    //         Ty::Any => todo!(),
-    //         Ty::Var(_) => todo!(),
-    //         Ty::Tuple(_) => todo!(),
-    //         Ty::Ptr(_) => todo!(),
-    //         Ty::Union(_) => todo!(),
-    //         Ty::Array(_, _) => todo!(),
-    //         Ty::Func(_, _) => todo!(),
-    //         Ty::Projection(_, _) => todo!(),
-    //         Ty::Qualified(_, _) => todo!(),
-    //         Ty::All(_, _) => todo!(),
-    //     }
-    // }
-
     pub fn nilable(t: Ty) -> Ty {
         Ty::Union(vec![t, Ty::nil()])
     }
@@ -1592,14 +1443,8 @@ impl Ty {
         !self.free_vars().is_empty()
     }
 
-    // #[inline(always)]
-    // pub fn is_forall(&self) -> bool {
-    //     matches!(self, Ty::All(..))
-    // }
-
     pub fn is_func(&self) -> bool {
         match &self {
-            // Ty::All(_, ty) | Ty::Qualified(_, ty) => ty.is_func(),
             Ty::Func(..) => true,
             _ => false,
         }
@@ -1607,7 +1452,6 @@ impl Ty {
 
     pub fn is_funcs_union(&self) -> bool {
         match &self {
-            // Ty::All(_, ty) => ty.is_funcs_union(),
             Ty::Union(tys) => tys.iter().all(|t| t.is_func()),
             _ => false,
         }
@@ -1615,7 +1459,6 @@ impl Ty {
 
     pub fn is_union(&self) -> bool {
         match &self {
-            // Ty::All(_, ty) => ty.is_union(),
             Ty::Union(_) => true,
             _ => false,
         }
@@ -1627,18 +1470,6 @@ impl Ty {
 
     pub fn is_unknown_tyvar(&self) -> bool {
         matches!(self, Ty::Var(u) if u.is_unknown())
-    }
-
-    pub fn is_struct(&self) -> bool {
-        match self {
-            Ty::Projection(_, _) => true,
-            Ty::Const(fqn) => match fqn.as_str() {
-                "bool" | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "char" | "u64" | "i64"
-                | "int" | "uint" => false,
-                _ => true,
-            },
-            _ => false,
-        }
     }
 
     pub fn is_aggregate(&self) -> bool {
@@ -1659,6 +1490,20 @@ impl Ty {
             | Ty::Accessor(_, _)
             | Ty::Union(_) => false,
         }
+    }
+
+    pub fn nominal_kind(&self, tcx: &TyCtx) -> Option<NominalKind> {
+        self.get_path()
+            .and_then(|fqn| tcx.get_struct_ty(&fqn))
+            .map(|s| s.kind)
+    }
+
+    pub fn is_record(&self, tcx: &TyCtx) -> bool {
+        self.nominal_kind(tcx) == Some(NominalKind::Record)
+    }
+
+    pub fn is_struct(&self, tcx: &TyCtx) -> bool {
+        self.nominal_kind(tcx) == Some(NominalKind::Struct)
     }
 
     pub fn as_tyvar(self) -> TyVar {

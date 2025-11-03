@@ -1,47 +1,58 @@
 use std::convert::TryFrom;
 
-use super::{DocComments, ExprResult, ParseContext, ParseResult, Parser, Recover, Restrictions};
+use super::{
+    DocComments, ExprResult, ParseResult, Parser, Recover, RecoveryCtx, Restrictions,
+    context::ParseContext,
+};
+use crate::ast::token::Token;
+use crate::parse::lexer::NewlineMode;
 
+use crate::parse::parser::context::SeqSpec;
 use crate::{
     ast::{
-        Block, Closure, Expr, Literal, Missing, Name, Node, Path, Pattern, Sequence, Trailing,
-        Tuple, ValueKind, token::TokenKind,
+        Block, Closure, Expr, Literal, Missing, Name, Node, Path, Pattern, Sequence,
+        TrailingPolicy, Tuple, ValueKind, token::TokenKind,
     },
     span::{Pos, Span},
 };
 
 impl Parser<'_> {
     pub(crate) fn parse_atom(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parsing an atomic expression", |ctx| {
-            let tok = self.peek()?;
-            match tok.kind {
-                TokenKind::Integer { .. }
-                | TokenKind::Float { .. }
-                | TokenKind::Bool(..)
-                | TokenKind::Nil => {
-                    let tok = self.token()?;
-                    let span = tok.span;
-                    Ok(self.mk_expr(
-                        Expr::Literal(Literal::from_token(tok, &self.options.filepath, &ctx.path)?),
-                        span,
-                        ctx.path.clone(),
-                    ))
-                }
-                _ => {
-                    let expected = if ctx
-                        .restrictions
-                        .contains(Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA)
-                    {
-                        "an expression after the previous comma"
-                    } else {
-                        "an expression"
-                    };
-                    let pos = self.lex.position();
-                    log::debug!("expected expression but found {} at pos {}", tok, pos);
-                    Err(self.unexpected_token(&tok, expected, ctx))
-                }
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parsing an atomic expression");
+
+        let ctx = &parser.ctx_clone();
+
+        let tok = parser.peek();
+        match tok.kind {
+            TokenKind::Integer { .. }
+            | TokenKind::Float { .. }
+            | TokenKind::Bool(..)
+            | TokenKind::Nil => {
+                let tok = parser.token()?;
+                let span = tok.span;
+                let fp = parser.options.filepath.clone();
+                Ok(parser.mk_expr(
+                    Expr::Literal(Literal::from_token(tok, fp, &ctx.path)?),
+                    span,
+                    ctx.path.clone(),
+                ))
             }
-        })
+            _ => {
+                let expected = if ctx
+                    .restrictions
+                    .contains(Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA)
+                {
+                    "an expression after the previous comma"
+                } else {
+                    "an expression"
+                };
+                let pos = parser.lex.position();
+                log::debug!("expected expression but found {} at pos {}", tok, pos);
+                Err(parser.unexpected_token(&tok, expected, ctx))
+            }
+        }
     }
 
     pub(crate) fn parse_path(&mut self, ctx: &ParseContext) -> ParseResult<Node<Path>> {
@@ -75,30 +86,44 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Node<Pattern>> {
-        ctx.with_description("parse pattern", |ctx| {
-            Ok(if peek!(self, TokenKind::LeftParen) {
-                self.parse_paren_pattern(ctx)?
-            } else {
-                let start = self.lex.position();
-                let seq = self.parse_expr_seq(ValueKind::LValue, Trailing::Warn, None, ctx)?;
-                let end = self.lex.position();
-                let span = Span { start, end };
-                if seq.items.len() == 0 {
-                    return Err(self.parse_error(
-                        "expected one or more items in pattern, but found none".to_string(),
-                        span,
-                        ctx,
-                    ));
-                }
-                self.mk_node(
-                    Pattern::try_from(seq).map_err(|mut e| {
-                        let src = self.mk_src(span);
-                        e.src.push(src);
-                        e
-                    })?,
+        self.parse_pattern_with_stop(None, ctx)
+    }
+
+    pub(crate) fn parse_pattern_with_stop(
+        &mut self,
+        stop: Option<&TokenKind>,
+        ctx: &ParseContext,
+    ) -> ParseResult<Node<Pattern>> {
+        let parser = &mut self.with_scope(ctx).with_description("parse pattern");
+        let ctx = &parser.ctx_clone();
+
+        Ok(if peek!(parser, TokenKind::LeftParen) {
+            parser.parse_paren_pattern(ctx)?
+        } else {
+            let start = parser.lex.position();
+            let seq = parser.parse_expr_seq(
+                ValueKind::LValue,
+                TrailingPolicy::Warn,
+                stop.cloned(),
+                ctx,
+            )?;
+            let end = parser.lex.position();
+            let span = Span { start, end };
+            if seq.items.len() == 0 {
+                return Err(parser.parse_error(
+                    "expected one or more items in pattern, but found none".to_string(),
                     span,
-                )
-            })
+                    ctx,
+                ));
+            }
+
+            let value = Pattern::try_from(seq).map_err(|mut e| {
+                let src = parser.mk_src(span);
+                e.src.push(src);
+                e
+            })?;
+
+            parser.mk_node(value, span)
         })
     }
 
@@ -128,19 +153,26 @@ impl Parser<'_> {
         ctx.restrictions |= Restrictions::IN_PAREN;
         ctx.description = Some("parse paren pattern".to_string());
 
-        // '('
-        let start_tok = self.expect(TokenKind::LeftParen, &ctx)?;
-        let start = start_tok.span.start;
-        let mut seq = self.parse_expr_seq(
-            ctx.get_vkind(),
-            Trailing::Allow,
-            Some(TokenKind::RightParen),
+        let mut parser = self
+            .with_scope(&ctx)
+            .with_description("parsing paren pattern");
+        let ctx = parser.ctx_clone();
+
+        let (mut seq, delims) = parser.parse_delimited_seq(
+            SeqSpec {
+                delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+                trailing: TrailingPolicy::Allow,
+                newline: NewlineMode::Suppress,
+                restrictions: Restrictions::IN_PAREN,
+            },
             &ctx,
+            |parser, trailing, stop, ctx| {
+                parser.parse_expr_seq(ctx.get_vkind(), trailing, stop, ctx)
+            },
         )?;
 
-        // ')'
-        let end = self.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
-        let span = Span { start, end };
+        let (l_span, r_span) = delims.unwrap();
+        let span = l_span.extend_to(&r_span);
         let pattern = if seq.items.len() == 1 && !seq.trailing {
             let item = seq.items.pop().unwrap();
             match item.value {
@@ -149,232 +181,164 @@ impl Parser<'_> {
             }
         } else {
             Pattern::tuple(seq).map_err(|mut e| {
-                let src = self.mk_src(span);
+                let src = parser.mk_src(span);
                 e.src.push(src);
                 e
             })?
         };
 
-        Ok(self.mk_node(pattern, span))
+        Ok(parser.mk_node(pattern, span))
     }
 
     pub(crate) fn parse_paren_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse paren expression", |ctx| {
-            // '('
-            let start_tok = self.expect(TokenKind::LeftParen, ctx)?;
-            let start = start_tok.span.start;
-            let mut ctx = ctx.clone();
-            ctx.restrictions |= Restrictions::IN_PAREN;
-            let kind = if !peek!(self, TokenKind::RightParen) {
-                ctx.stop_token = Some(TokenKind::RightParen);
-                let ex = self.parse_expr(&ctx)?;
-                if let Expr::Sequence(seq) = ex.value {
-                    Expr::Tuple(Tuple { seq })
-                } else {
-                    Expr::Paren(Box::new(ex))
-                }
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse paren expression");
+        let ctx = &parser.ctx_clone();
+
+        // '('
+        let start_tok = parser.expect(TokenKind::LeftParen, ctx)?;
+        let start = start_tok.span.start;
+        let mut ctx = ctx.clone();
+        ctx.restrictions |= Restrictions::IN_PAREN;
+        let kind = if !peek!(parser, TokenKind::RightParen) {
+            ctx.stop_token = Some(TokenKind::RightParen);
+            let ex = parser.parse_expr(&ctx)?;
+            if let Expr::Sequence(seq) = ex.value {
+                Expr::Tuple(Tuple { seq })
             } else {
-                Expr::Tuple(Tuple {
-                    seq: Sequence {
-                        items: vec![],
-                        trailing: false,
-                    },
-                })
-            };
-            // ')'
-            let end = self.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
-
-            if peek!(self, TokenKind::FatArrow) {
-                // closure expression!
-                let args = match kind {
-                    Expr::Tuple(tuple) => tuple.seq,
-                    Expr::Paren(ex) => Sequence {
-                        items: vec![*ex],
-                        trailing: false,
-                    },
-                    _ => unreachable!(),
-                };
-                return self.parse_closure_expr_with_seq(
-                    args,
-                    false,
-                    None,
-                    Span { start, end },
-                    &ctx,
-                );
+                Expr::Paren(Box::new(ex))
             }
+        } else {
+            Expr::Tuple(Tuple {
+                seq: Sequence {
+                    items: vec![],
+                    trailing: false,
+                },
+            })
+        };
+        // ')'
+        let end = parser.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
 
-            Ok(self.mk_expr(kind, Span { start, end }, ctx.path.clone()))
-        })
+        if peek!(parser, TokenKind::FatArrow) {
+            // closure expression!
+            let args = match kind {
+                Expr::Tuple(tuple) => tuple.seq,
+                Expr::Paren(ex) => Sequence {
+                    items: vec![*ex],
+                    trailing: false,
+                },
+                _ => unreachable!(),
+            };
+            return parser.parse_closure_expr_with_seq(
+                args,
+                false,
+                None,
+                Span { start, end },
+                &ctx,
+            );
+        }
+
+        Ok(parser.mk_expr(kind, Span { start, end }, ctx.path.clone()))
     }
 
     pub(crate) fn parse_name_seq(
         &mut self,
-        trail: Trailing,
+        trail: TrailingPolicy,
         stop: Option<&TokenKind>,
         ctx: &ParseContext,
     ) -> ParseResult<(Vec<Node<Name>>, Span)> {
-        ctx.with_description("parse name sequence", |ctx| {
-            let mut names = vec![];
-            let mut start = Pos::empty();
-            let mut end = Pos::empty();
-            loop {
-                let maybe_name =
-                    self.parse_name_with_type(stop, ctx)
-                        .map(Some)
-                        .recover_seq(self, None, |_| None);
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse name sequence")
+            .with_newline_mode(NewlineMode::Suppress);
+        let ctx = parser.ctx_clone();
 
-                match maybe_name {
-                    Some(n) => {
-                        let span = self.srcmap.span_of(&n);
-                        if start.is_empty() {
-                            start = span.start;
-                        }
-                        end = span.end;
-                        names.push(n);
-                    }
-                    None => {
-                        if peek!(self, TokenKind::Comma) {
-                            let span = self.expect_sp(TokenKind::Comma, ctx)?;
-                            if matches!(trail, Trailing::Disallow) {
-                                Err(self.parse_error(
-                                    "unexpected trailing comma".to_string(),
-                                    span,
-                                    ctx,
-                                ))
-                                .recover_seq(self, None, |_| ());
-                                break;
-                            }
-                            continue;
-                        }
-                        if !peek!(self, TokenKind::Identifier(_)) {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-
-                if !peek!(self, TokenKind::Identifier(_)) {
-                    if peek!(self, TokenKind::Comma) {
-                        let span = self.expect_sp(TokenKind::Comma, ctx)?;
-                        match trail {
-                            Trailing::Disallow => {
-                                Err(self.parse_error(
-                                    "unexpected trailing comma".to_string(),
-                                    span,
-                                    ctx,
-                                ))
-                                .recover_seq(self, None, |_| ());
-                            }
-                            _ => {}
-                        }
-                    }
-                    break;
-                }
+        let comma = TokenKind::Comma;
+        let (names, _) = parser.parse_sep_seq(&comma, trail, stop, &ctx, |parser, ctx| {
+            if !matches!(parser.peek_kind(), TokenKind::Identifier(_)) {
+                let tok = parser.peek();
+                return Err(parser.unexpected_token(&tok, "identifier", ctx));
             }
+            parser.parse_name_with_type(stop, ctx)
+        })?;
 
-            Ok((names, Span { start, end }))
-        })
+        let mut start = Pos::empty();
+        let mut end = Pos::empty();
+        if let Some(first) = names.first() {
+            let span = parser.srcmap.span_of(first);
+            start = span.start;
+        }
+        if let Some(last) = names.last() {
+            let span = parser.srcmap.span_of(last);
+            end = span.end;
+        }
+
+        Ok((names, Span { start, end }))
     }
 
     pub(crate) fn parse_expr_seq(
         &mut self,
         vkind: ValueKind,
-        trail: Trailing,
+        trail: TrailingPolicy,
         stop_token: Option<TokenKind>,
         ctx: &ParseContext,
     ) -> ParseResult<Sequence> {
-        ctx.with_description("parse expression sequence", |ctx| {
-            let mut items = vec![];
-            let mut trailing = false;
-            loop {
-                let next_kind = match self.must_peek_kind().map(Some).recover_seq(
-                    self,
-                    stop_token.as_ref(),
-                    |_| None,
-                ) {
-                    Some(k) => k,
-                    None => break,
-                };
-                match (vkind, next_kind, &stop_token) {
-                    (_, k, Some(t)) if &k == t => break,
-                    (ValueKind::LValue, TokenKind::Identifier(_), _) => {
-                        let maybe_name = self
-                            .parse_name_with_type(stop_token.as_ref(), ctx)
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse expression sequence")
+            .with_newline_mode(NewlineMode::Suppress);
+        let ctx = parser.ctx_clone();
+        log::debug!(
+            "[parser] parse_expr_seq: mode={:?} stop={:?} next={:?}",
+            parser.lex.newline_mode(),
+            stop_token,
+            parser.peek_kind()
+        );
+        let stop_ref = stop_token.as_ref();
+        let seq_ctx = RecoveryCtx::default_seq(stop_ref)
+            .with_trailing(trail)
+            .with_newline(false);
+
+        let (mut items, trailing) =
+            parser.parse_sep_seq(&TokenKind::Comma, trail, stop_ref, &ctx, |parser, ctx| {
+                match vkind {
+                    ValueKind::LValue => {
+                        if !matches!(parser.peek_kind(), TokenKind::Identifier(_)) {
+                            let tok = parser.peek();
+                            return Err(parser.unexpected_token(&tok, "identifier", ctx));
+                        }
+                        let name = parser.parse_name_with_type(stop_ref, ctx)?;
+                        let span = parser.srcmap.span_of(&name);
+                        Ok(parser.mk_expr(Expr::Name(name.value), span, ctx.path.clone()))
+                    }
+                    ValueKind::RValue => {
+                        let expr = parser
+                            .parse_expr(ctx)
                             .map(Some)
-                            .recover_seq(self, stop_token.as_ref(), |_| None);
-                        match maybe_name {
-                            Some(n) => {
-                                let span = self.srcmap.span_of(&n);
-                                items.push(self.mk_expr(
-                                    Expr::Name(n.value),
-                                    span,
-                                    ctx.path.clone(),
-                                ))
-                            }
-                            None => {
-                                if expect_if!(self, TokenKind::Comma) {
-                                    trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
-                                    continue;
-                                }
-                                if let Some(stop) = stop_token.as_ref() {
-                                    if self.peek_kind().similar_to(stop) {
-                                        break;
-                                    }
-                                }
-                                if self.is_eof() {
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
+                            .recover_seq_with_ctx(parser, seq_ctx.clone(), |_| None)
+                            .ok_or_else(|| {
+                                let tok = parser.peek();
+                                parser.unexpected_token(&tok, "expression", ctx)
+                            })?;
+                        Ok(expr)
                     }
-                    (ValueKind::RValue, _, _) => {
-                        let maybe_expr = self.parse_expr(ctx).map(Some).recover_seq(
-                            self,
-                            stop_token.as_ref(),
-                            |_| None,
-                        );
-                        match maybe_expr {
-                            Some(ex) => {
-                                if let Expr::Sequence(seq) = ex.value {
-                                    items.extend(seq.items);
-                                } else {
-                                    items.push(ex);
-                                }
-                            }
-                            None => {
-                                if expect_if!(self, TokenKind::Comma) {
-                                    trailing = matches!(trail, Trailing::Allow | Trailing::Warn);
-                                    continue;
-                                }
-                                if let Some(stop) = stop_token.as_ref() {
-                                    if self.peek_kind().similar_to(stop) {
-                                        break;
-                                    }
-                                }
-                                if self.is_eof() {
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    (_, TokenKind::Comma, _)
-                        if matches!(trail, Trailing::Allow | Trailing::Warn) =>
-                    {
-                        trailing = true;
-                    }
-                    _ => break,
                 }
+            })?;
 
-                if !peek!(self, TokenKind::Comma) {
-                    break;
+        if let ValueKind::RValue = vkind {
+            let mut flattened = Vec::with_capacity(items.len());
+            for expr in items.drain(..) {
+                if let Expr::Sequence(seq) = expr.value {
+                    flattened.extend(seq.items);
+                } else {
+                    flattened.push(expr);
                 }
-
-                self.expect(TokenKind::Comma, ctx)?;
             }
-            Ok(Sequence { items, trailing })
-        })
+            items = flattened;
+        }
+
+        Ok(Sequence { items, trailing })
     }
 
     pub(crate) fn parse_closure_expr_with_seq(
@@ -385,157 +349,224 @@ impl Parser<'_> {
         mut span: Span,
         ctx: &ParseContext,
     ) -> ExprResult {
-        ctx.with_description("parsing closure expression with sequence", |ctx| {
-            let arrow_span = Some(self.expect_sp(TokenKind::FatArrow, ctx)?);
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parsing closure expression with sequence");
+        let ctx = &parser.ctx_clone();
 
-            let body = self.parse_expr(ctx)?;
+        let arrow_span = Some(parser.expect_sp(TokenKind::FatArrow, ctx)?);
 
-            if has_curly {
-                let r = self.expect_sp(TokenKind::RightCurly, ctx)?;
-                span.end = r.end;
-                if let Some((l, _)) = curly_spans {
-                    curly_spans = Some((l, r));
-                }
+        let body = parser.parse_expr(ctx)?;
+
+        if has_curly {
+            let r = parser.expect_sp(TokenKind::RightCurly, ctx)?;
+            span.end = r.end;
+            if let Some((l, _)) = curly_spans {
+                curly_spans = Some((l, r));
             }
+        }
 
-            Ok(self.mk_expr(
-                Expr::Closure(Closure {
-                    args,
-                    arrow_span,
-                    curly_spans,
-                    body: Box::new(body),
-                }),
-                span,
-                ctx.path.clone(),
-            ))
-        })
+        Ok(parser.mk_expr(
+            Expr::Closure(Closure {
+                args,
+                arrow_span,
+                curly_spans,
+                body: Box::new(body),
+            }),
+            span,
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_closure_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse closure expression", |ctx| {
-            let mut span = Span::new();
-            let has_curly = peek!(self, TokenKind::LeftCurly);
-            let mut curly_spans = None;
-            if has_curly {
-                let l = self.expect_sp(TokenKind::LeftCurly, ctx)?;
-                span.start = l.start;
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse closure expression");
+        let ctx = &parser.ctx_clone();
 
-                // handle an empty closure
-                if peek!(self, TokenKind::RightCurly) {
-                    let r = self.expect_sp(TokenKind::RightCurly, ctx)?;
-                    span.end = r.end;
-                    curly_spans = Some((l, r));
-                    let body = Box::new(self.mk_expr(
-                        Expr::Tuple(Tuple {
-                            seq: Sequence::empty(),
-                        }),
-                        span,
-                        ctx.path.clone(),
-                    ));
-                    return Ok(self.mk_expr(
-                        Expr::Closure(Closure {
-                            args: Sequence::empty(),
-                            arrow_span: None,
-                            curly_spans,
-                            body,
-                        }),
-                        span,
-                        ctx.path.clone(),
-                    ));
-                }
+        let mut span = Span::new();
+        let has_curly = peek!(parser, TokenKind::LeftCurly);
+        let mut curly_spans = None;
+        if has_curly {
+            let l = parser.expect_sp(TokenKind::LeftCurly, ctx)?;
+            span.start = l.start;
 
-                curly_spans = Some((l, Span::new()));
+            // handle an empty closure
+            if peek!(parser, TokenKind::RightCurly) {
+                let r = parser.expect_sp(TokenKind::RightCurly, ctx)?;
+                span.end = r.end;
+                curly_spans = Some((l, r));
+                let body = Box::new(parser.mk_expr(
+                    Expr::Tuple(Tuple {
+                        seq: Sequence::empty(),
+                    }),
+                    span,
+                    ctx.path.clone(),
+                ));
+                return Ok(parser.mk_expr(
+                    Expr::Closure(Closure {
+                        args: Sequence::empty(),
+                        arrow_span: None,
+                        curly_spans,
+                        body,
+                    }),
+                    span,
+                    ctx.path.clone(),
+                ));
             }
 
-            let args = if peek!(self, TokenKind::LeftParen) {
-                let mut ctx = ctx.clone();
-                ctx.restrictions |= Restrictions::IN_PAREN;
-                ctx.description = Some("parse closure expression args".to_string());
+            curly_spans = Some((l, Span::new()));
+        }
 
-                let start_tok = self.expect(TokenKind::LeftParen, &ctx)?;
-                if !has_curly {
-                    span.start = start_tok.span.start;
-                }
-
-                let seq = self.parse_expr_seq(
-                    ctx.get_vkind(),
-                    Trailing::Allow,
-                    Some(TokenKind::RightParen),
-                    &ctx,
-                )?;
-
-                span.end = self.expect_matching(&start_tok, TokenKind::RightParen, &ctx)?;
-                seq
-            } else {
-                // single arg or underscore
-                let name = self.parse_name_with_type(None, ctx)?;
-                let name_span = self.srcmap.span_of(&name);
-                if !has_curly {
-                    span.start = name_span.start;
-                }
-
-                span.end = name_span.end;
-                Sequence {
-                    items: vec![self.mk_expr(Expr::Name(name.value), name_span, ctx.path.clone())],
-                    trailing: false,
-                }
+        let args = if peek!(parser, TokenKind::LeftParen) {
+            let spec = SeqSpec {
+                delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+                trailing: TrailingPolicy::Allow,
+                newline: NewlineMode::Suppress,
+                restrictions: Restrictions::IN_PAREN,
             };
 
-            self.parse_closure_expr_with_seq(args, has_curly, curly_spans, span, ctx)
-        })
+            let (seq, spans) =
+                parser.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+                    parser.parse_expr_seq(ctx.get_vkind(), trailing, stop, ctx)
+                })?;
+
+            let (l_paren, r_paren) = spans.expect("closure arguments should have paren spans");
+            if !has_curly {
+                span.start = l_paren.start;
+            }
+            span.end = r_paren.end;
+            seq
+        } else {
+            // single arg or underscore
+            let name = parser.parse_name_with_type(None, ctx)?;
+            let name_span = parser.srcmap.span_of(&name);
+            if !has_curly {
+                span.start = name_span.start;
+            }
+
+            span.end = name_span.end;
+            Sequence {
+                items: vec![parser.mk_expr(Expr::Name(name.value), name_span, ctx.path.clone())],
+                trailing: false,
+            }
+        };
+
+        parser.parse_closure_expr_with_seq(args, has_curly, curly_spans, span, ctx)
     }
 
     pub(crate) fn parse_block(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse block", |ctx| {
-            // '{'
-            let start = self.expect(TokenKind::LeftCurly, &ctx)?.span.start;
-            let mut stmts = vec![];
-            while !peek!(self, TokenKind::RightCurly) {
+        let parser = &mut self.with_scope(ctx).with_description("parse block");
+        let ctx = &parser.ctx_clone();
+
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftCurly, TokenKind::RightCurly)),
+            trailing: TrailingPolicy::Allow,
+            newline: NewlineMode::Emit,
+            restrictions: Restrictions::empty(),
+        };
+
+        let (stmts, spans) = parser.parse_delimited_seq(spec, ctx, |parser, _, stop, ctx| {
+            let stop_kind = stop.clone();
+            let stop_ref = stop_kind.as_ref();
+            let mut stmts = Vec::new();
+
+            loop {
+                log::debug!(
+                    "[parser] parse_block loop: newline_mode={:?} next={:?} stop={:?}",
+                    parser.lex.newline_mode(),
+                    parser.peek_kind(),
+                    stop_ref
+                );
+                if stop_ref
+                    .map(|stop_tok| parser.peek_kind().similar_to(stop_tok))
+                    .unwrap_or(false)
+                {
+                    log::debug!("[parser] parse_block: stopping before statement");
+                    break;
+                }
+
                 let DocComments {
                     module: _,
                     item: doc,
-                } = self.parse_doc_comments();
-                let stmt = self.parse_stmt(None, doc, ctx).recover_with(
-                    self,
-                    Some(&TokenKind::RightCurly),
+                } = parser.parse_doc_comments();
+                log::debug!(
+                    "[parser] parse_block: after doc comments next={:?}",
+                    parser.peek_kind()
+                );
+
+                while matches!(parser.peek_kind(), TokenKind::NewLine) {
+                    log::debug!("[parser] parse_block: skipping newline");
+                    parser.expect(TokenKind::NewLine, ctx)?;
+                    if stop_ref
+                        .map(|stop_tok| parser.peek_kind().similar_to(stop_tok))
+                        .unwrap_or(false)
+                    {
+                        log::debug!(
+                            "[parser] parse_block: stop after newline next={:?}",
+                            parser.peek_kind()
+                        );
+                        break;
+                    }
+                }
+
+                if stop_ref
+                    .map(|stop_tok| parser.peek_kind().similar_to(stop_tok))
+                    .unwrap_or(false)
+                {
+                    log::debug!("[parser] parse_block: stopping before stmt parse");
+                    break;
+                }
+
+                let stmt = parser.parse_stmt(None, doc, ctx).recover_with_ctx(
+                    parser,
+                    RecoveryCtx::stmt(stop_ref)
+                        .with_decl_stops(true)
+                        .with_newline(true),
                     |parser, _| {
                         let info = Missing::new("statement", Some(ctx.path.to_string()));
                         parser.mk_expr(Expr::Missing(info), Span::new(), ctx.path.clone())
                     },
                 );
+                log::debug!(
+                    "[parser] parse_block: parsed stmt kind={:?}",
+                    stmt.value.desc()
+                );
+
                 if matches!(stmt.value, Expr::Missing(_))
-                    && (peek!(self, TokenKind::RightCurly) || self.is_eof())
+                    && (stop_ref
+                        .map(|stop_tok| parser.peek_kind().similar_to(stop_tok))
+                        .unwrap_or(false)
+                        || parser.is_eof())
                 {
+                    log::debug!("[parser] parse_block: missing stmt, breaking");
                     break;
                 }
+
                 stmts.push(stmt);
 
-                if peek!(self, TokenKind::RightCurly) {
+                if stop_ref
+                    .map(|stop_tok| parser.peek_kind().similar_to(stop_tok))
+                    .unwrap_or(false)
+                {
+                    log::debug!("[parser] parse_block: stopping after stmt");
                     break;
                 }
-                self.expect_semi_or_eol(ctx)?;
+
+                parser.expect_semi_or_eol(ctx)?;
+                log::debug!(
+                    "[parser] parse_block: after expect_semi_or_eol next={:?}",
+                    parser.peek_kind()
+                );
             }
+            Ok(stmts)
+        })?;
 
-            // '}'
-            let end = self.expect_end(TokenKind::RightCurly, ctx).recover_with(
-                self,
-                Some(&TokenKind::RightCurly),
-                |parser, recovered_end| {
-                    if peek!(parser, TokenKind::RightCurly) {
-                        parser
-                            .expect_end(TokenKind::RightCurly, ctx)
-                            .unwrap_or(recovered_end)
-                    } else {
-                        recovered_end
-                    }
-                },
-            );
-
-            Ok(self.mk_expr(
-                Expr::Block(Block::new(stmts)),
-                Span { start, end },
-                ctx.path.clone(),
-            ))
-        })
+        let (l_span, r_span) = spans.expect("block should have braces");
+        Ok(parser.mk_expr(
+            Expr::Block(Block::new(stmts)),
+            l_span.extend_to(&r_span),
+            ctx.path.clone(),
+        ))
     }
 }

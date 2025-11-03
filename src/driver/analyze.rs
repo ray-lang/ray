@@ -89,6 +89,7 @@ impl AnalysisStatus {
 pub enum SymbolKind {
     Function,
     Struct,
+    Record,
     Trait,
     TypeAlias,
     Field, // Added to represent struct fields
@@ -99,6 +100,7 @@ impl SymbolKind {
         match self {
             SymbolKind::Function => "function",
             SymbolKind::Struct => "struct",
+            SymbolKind::Record => "record",
             SymbolKind::Trait => "trait",
             SymbolKind::TypeAlias => "type_alias",
             SymbolKind::Field => "field", // Added string representation for Field

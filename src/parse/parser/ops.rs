@@ -1,6 +1,8 @@
 use std::convert::TryFrom;
 
-use super::{ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Restrictions};
+use super::{
+    ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Recover, RecoveryCtx, Restrictions,
+};
 
 use crate::{
     ast::{
@@ -17,162 +19,187 @@ impl Parser<'_> {
         lhs: Option<ParsedExpr>,
         ctx: &ParseContext,
     ) -> ExprResult {
-        ctx.with_description("parse infix expression", |ctx| {
-            let mut lhs = if let Some(lhs) = lhs {
-                lhs
-            } else {
-                self.parse_prefix_expr(ctx)?
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse infix expression");
+        let ctx = &parser.ctx_clone();
+        let mut lhs = if let Some(lhs) = lhs {
+            lhs
+        } else {
+            parser.parse_prefix_expr(ctx)?
+        };
+
+        let mut ctx = ctx.clone();
+        while let Some((op, tok_count)) = parser.peek_infix_op(&ctx)? {
+            log::debug!("infix op = {:?}", op);
+            let prec = op.precedence();
+            if prec < min_prec {
+                break;
+            }
+
+            if op == InfixOp::Else && ctx.restrictions.contains(Restrictions::IF_ELSE) {
+                // handle the if .. else case
+                // TODO: is there a case of `if .. else .. else`?
+                break;
+            }
+
+            let (_, op_span) = parser.lex.consume_count(tok_count);
+            if let InfixOp::AssignOp(op) = &op {
+                let src = parser.mk_src(op_span.sub(1));
+                parser.srcmap.set_src(op.as_ref(), src)
+            }
+
+            match (parser.peek_kind(), &ctx.stop_token) {
+                (k, Some(t)) if &k == t => {
+                    if matches!(op, InfixOp::Comma) {
+                        if let Expr::Sequence(seq) = &mut lhs.value {
+                            seq.trailing = true;
+                        } else {
+                            let span = parser.srcmap.span_of(&lhs).extend_to(&op_span);
+                            lhs = parser.mk_expr(
+                                Expr::Sequence(Sequence {
+                                    items: vec![lhs],
+                                    trailing: true,
+                                }),
+                                span,
+                                ctx.path.clone(),
+                            )
+                        }
+                    }
+                    break;
+                }
+                _ => (),
             };
 
-            let mut ctx = ctx.clone();
-            while let Some((op, tok_count)) = self.peek_infix_op(&ctx)? {
-                log::debug!("infix op = {:?}", op);
-                let prec = op.precedence();
-                if prec < min_prec {
-                    break;
-                }
+            if op == InfixOp::RangeInclusive || op == InfixOp::RangeExclusive {
+                lhs = parser.parse_range_expr(prec, lhs, op, op_span, &ctx)?;
+                break;
+            }
 
-                if op == InfixOp::Else && ctx.restrictions.contains(Restrictions::IF_ELSE) {
-                    // handle the if .. else case
-                    // TODO: is there a case of `if .. else .. else`?
-                    break;
-                }
+            if op == InfixOp::As {
+                lhs = parser.parse_cast_expr(lhs, op_span, &ctx)?;
+                continue;
+            }
 
-                let (_, op_span) = self.lex.consume_count(tok_count);
-                if let InfixOp::AssignOp(op) = &op {
-                    let src = self.mk_src(op_span.sub(1));
-                    self.srcmap.set_src(op.as_ref(), src)
-                }
+            let associativity = op.associativity();
+            let prec_adjustment = match associativity {
+                Associativity::Right => 0,
+                Associativity::Left | Associativity::None => 1,
+            };
 
-                match (self.peek_kind(), &ctx.stop_token) {
-                    (k, Some(t)) if &k == t => {
-                        if matches!(op, InfixOp::Comma) {
-                            if let Expr::Sequence(seq) = &mut lhs.value {
-                                seq.trailing = true;
-                            } else {
-                                let span = self.srcmap.span_of(&lhs).extend_to(&op_span);
-                                lhs = self.mk_expr(
-                                    Expr::Sequence(Sequence {
-                                        items: vec![lhs],
-                                        trailing: true,
-                                    }),
-                                    span,
-                                    ctx.path.clone(),
-                                )
-                            }
-                        }
-                        break;
-                    }
-                    _ => (),
-                };
-
-                if op == InfixOp::RangeInclusive || op == InfixOp::RangeExclusive {
-                    lhs = self.parse_range_expr(prec, lhs, op, op_span, &ctx)?;
-                    break;
-                }
-
-                if op == InfixOp::As {
-                    lhs = self.parse_cast_expr(lhs, op_span, &ctx)?;
-                    continue;
-                }
-
-                let associativity = op.associativity();
-                let prec_adjustment = match associativity {
-                    Associativity::Right => 0,
-                    Associativity::Left | Associativity::None => 1,
-                };
-
-                if matches!(op, InfixOp::Assign | InfixOp::AssignOp(_)) {
-                    ctx.restrictions |= Restrictions::RVALUE;
-                } else if matches!(op, InfixOp::Comma) {
-                    ctx = ctx.clone();
-                    ctx.restrictions |= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
-                } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
-                    // this is a typed expression
-                    let ty = self.parse_type_annotation(None, &ctx);
-                    let rhs = self.mk_tyscheme(ty, ctx.path.clone());
-                    let span = self
-                        .srcmap
-                        .span_of(&lhs)
-                        .extend_to(&self.srcmap.span_of(&rhs));
-                    lhs = self.mk_expr(
-                        Expr::TypeAnnotated(Box::new(lhs), rhs),
-                        span,
-                        ctx.path.clone(),
-                    );
-                    continue;
-                }
-
-                let rhs = self.parse_infix_expr(prec + prec_adjustment, None, &ctx)?;
-                ctx.restrictions -= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
-
-                let span = self
+            if matches!(op, InfixOp::Assign | InfixOp::AssignOp(_)) {
+                ctx.restrictions |= Restrictions::RVALUE;
+            } else if matches!(op, InfixOp::Comma) {
+                ctx = ctx.clone();
+                ctx.restrictions |= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
+            } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
+                // this is a typed expression
+                let ty = parser.parse_type_annotation(None, &ctx);
+                let rhs = parser.mk_tyscheme(ty, ctx.path.clone());
+                let span = parser
                     .srcmap
                     .span_of(&lhs)
-                    .extend_to(&self.srcmap.span_of(&rhs));
+                    .extend_to(&parser.srcmap.span_of(&rhs));
+                lhs = parser.mk_expr(
+                    Expr::TypeAnnotated(Box::new(lhs), rhs),
+                    span,
+                    ctx.path.clone(),
+                );
+                continue;
+            }
 
-                if matches!(op, InfixOp::Colon) && matches!(lhs.value, Expr::Name(_)) {
-                    lhs = self.mk_expr(
-                        Expr::Labeled(Box::new(lhs), Box::new(rhs)),
-                        span,
-                        ctx.path.clone(),
-                    );
-                    continue;
-                }
+            let newline_breaks_stmt =
+                parser.is_eol() && !ctx.restrictions.contains(Restrictions::IN_PAREN);
+            let rhs_res = if newline_breaks_stmt {
+                let err = parser.parse_error(
+                    format!("expected expression after `{}`", op),
+                    Span {
+                        start: op_span.end,
+                        end: op_span.end,
+                    },
+                    &ctx,
+                );
+                Err(err)
+            } else {
+                parser.parse_infix_expr(prec + prec_adjustment, None, &ctx)
+            };
 
-                let kind = match op {
-                    InfixOp::Assign | InfixOp::AssignOp(_) => {
-                        let src = self.srcmap.get(&lhs);
-                        let lhs =
-                            lhs.try_take_map(|expr| Pattern::try_from(expr))
-                                .map_err(|mut e| {
-                                    e.src.push(src);
-                                    e
-                                })?;
-                        Expr::Assign(Assign {
-                            lhs,
-                            rhs: Box::new(rhs),
-                            is_mut: false,
-                            mut_span: None,
-                            op,
-                            op_span,
-                        })
-                    }
-                    InfixOp::Comma => {
-                        let mut items = if let Expr::Sequence(lhs_seq) = lhs.value {
-                            lhs_seq.items
-                        } else {
-                            vec![lhs]
-                        };
+            let rhs = rhs_res.recover_with_ctx(
+                parser,
+                RecoveryCtx::expr(ctx.stop_token.as_ref())
+                    .with_ternary_sensitive(true)
+                    .with_last_op(Some(op.clone()))
+                    .with_newline_breaks(newline_breaks_stmt),
+                |parser, _| parser.missing_expr(op_span.end, op_span.end, &ctx),
+            );
+            ctx.restrictions -= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
 
-                        if let Expr::Sequence(rhs_seq) = rhs.value {
-                            items.extend(rhs_seq.items);
-                        } else {
-                            items.push(rhs)
-                        };
+            let span = parser
+                .srcmap
+                .span_of(&lhs)
+                .extend_to(&parser.srcmap.span_of(&rhs));
 
-                        Expr::Sequence(Sequence {
-                            items,
-                            trailing: false,
-                        })
-                    }
-                    _ => Expr::BinOp(BinOp {
-                        lhs: Box::new(lhs),
+            if matches!(op, InfixOp::Colon) && matches!(lhs.value, Expr::Name(_)) {
+                lhs = parser.mk_expr(
+                    Expr::Labeled(Box::new(lhs), Box::new(rhs)),
+                    span,
+                    ctx.path.clone(),
+                );
+                continue;
+            }
+
+            let kind = match op {
+                InfixOp::Assign | InfixOp::AssignOp(_) => {
+                    let src = parser.srcmap.get(&lhs);
+                    let lhs =
+                        lhs.try_take_map(|expr| Pattern::try_from(expr))
+                            .map_err(|mut e| {
+                                e.src.push(src);
+                                e
+                            })?;
+                    Expr::Assign(Assign {
+                        lhs,
                         rhs: Box::new(rhs),
-                        op: self.mk_node(op, op_span),
-                    }),
-                };
+                        is_mut: false,
+                        mut_span: None,
+                        op,
+                        op_span,
+                    })
+                }
+                InfixOp::Comma => {
+                    let mut items = if let Expr::Sequence(lhs_seq) = lhs.value {
+                        lhs_seq.items
+                    } else {
+                        vec![lhs]
+                    };
 
-                lhs = self.mk_expr(kind, span, ctx.path.clone())
-            }
+                    if let Expr::Sequence(rhs_seq) = rhs.value {
+                        items.extend(rhs_seq.items);
+                    } else {
+                        items.push(rhs)
+                    };
 
-            while peek!(self, TokenKind::If) && !self.at_stmt_boundary() {
-                let then = lhs;
-                lhs = self.parse_ternary_expr(then, &ctx)?;
-            }
+                    Expr::Sequence(Sequence {
+                        items,
+                        trailing: false,
+                    })
+                }
+                _ => Expr::BinOp(BinOp {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    op: parser.mk_node(op, op_span),
+                }),
+            };
 
-            Ok(lhs)
-        })
+            lhs = parser.mk_expr(kind, span, ctx.path.clone())
+        }
+
+        while peek!(parser, TokenKind::If) && !parser.at_stmt_boundary() {
+            let then = lhs;
+            lhs = parser.parse_ternary_expr(then, &ctx)?;
+        }
+
+        Ok(lhs)
     }
 
     pub(crate) fn parse_prefix_expr(&mut self, ctx: &ParseContext) -> ExprResult {

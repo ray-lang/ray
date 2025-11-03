@@ -49,7 +49,7 @@ impl Literal {
         }
     }
 
-    pub fn from_token(token: Token, fp: &FilePath, src_module: &Path) -> RayResult<Literal> {
+    pub fn from_token(token: Token, fp: FilePath, src_module: &Path) -> RayResult<Literal> {
         Ok(match token.kind {
             TokenKind::Integer {
                 value,
@@ -63,12 +63,7 @@ impl Literal {
                     let size = parsed.as_ref().map_err(|e| RayError {
                         msg: e.to_string(),
                         kind: RayErrorKind::Parse,
-                        src: vec![Source::new(
-                            fp.clone(),
-                            span,
-                            Path::new(),
-                            src_module.clone(),
-                        )],
+                        src: vec![Source::new(fp, span, Path::new(), src_module.clone())],
                         context: Some(format!("integer literal raw suffix: {s}")),
                     })?;
                     (*size, s.starts_with("i"))

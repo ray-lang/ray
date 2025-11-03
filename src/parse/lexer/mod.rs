@@ -28,6 +28,13 @@ pub struct Lexer {
     last_tok_span: Span,
     token_stash: VecDeque<Token>,
     stash: VecDeque<(Vec<Preceding>, Token)>,
+    newline_mode: NewlineMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NewlineMode {
+    Emit,
+    Suppress,
 }
 
 fn is_tok_comment(tok: &Token) -> bool {
@@ -51,7 +58,16 @@ impl Lexer {
             last_tok_span: Span::new(),
             token_stash: VecDeque::new(),
             stash: VecDeque::new(),
+            newline_mode: NewlineMode::Suppress,
         }
+    }
+
+    pub fn set_newline_mode(&mut self, mode: NewlineMode) {
+        self.newline_mode = mode;
+    }
+
+    pub fn newline_mode(&self) -> NewlineMode {
+        self.newline_mode
     }
 
     pub fn is_eof(&self) -> bool {
@@ -205,6 +221,7 @@ impl Lexer {
             "async" => TokenKind::Async,
             "extern" => TokenKind::Extern,
             "struct" => TokenKind::Struct,
+            "record" => TokenKind::Record,
             "enum" => TokenKind::Enum,
             "trait" => TokenKind::Trait,
             "default" => TokenKind::Default,
@@ -242,7 +259,10 @@ impl Lexer {
             if let Some(c) = self.next_char() {
                 let kind = match c {
                     // newline and whitespace
-                    '\n' => TokenKind::NewLine,
+                    '\n' => match self.newline_mode {
+                        NewlineMode::Emit => TokenKind::NewLine,
+                        NewlineMode::Suppress => TokenKind::Whitespace,
+                    },
                     c if c.is_whitespace() => TokenKind::Whitespace,
 
                     // single symbol tokens
@@ -336,8 +356,11 @@ impl Lexer {
                                     .to_owned(),
                                 kind,
                             };
-                            // consume the newline character
-                            self.next_char();
+                            if self.newline_mode == NewlineMode::Suppress {
+                                // When suppressing newlines we eagerly consume the trailing
+                                // line break so callers continue seeing only trivia.
+                                self.next_char();
+                            }
                             com
                         }
                         _ => TokenKind::Slash,
@@ -457,15 +480,64 @@ impl Lexer {
         }
     }
 
+    fn promote_pending_newline(&mut self) {
+        if self.newline_mode != NewlineMode::Emit {
+            return;
+        }
+
+        loop {
+            let newline_token = self.stash.front_mut().and_then(|(preceding, _)| {
+                preceding
+                    .iter()
+                    .position(|p| match p {
+                        Preceding::Whitespace(tok) => {
+                            tok.kind == TokenKind::NewLine || tok.span.lines() > 1
+                        }
+                        _ => false,
+                    })
+                    .and_then(|idx| match preceding.remove(idx) {
+                        Preceding::Whitespace(mut tok) => {
+                            tok.kind = TokenKind::NewLine;
+                            Some(tok)
+                        }
+                        _ => None,
+                    })
+            });
+            let Some(tok) = newline_token else {
+                break;
+            };
+
+            log::debug!("[lexer] promote_pending_newline: injecting {:?}", tok.span);
+            self.stash.push_front((Vec::new(), tok));
+        }
+    }
+
     fn next_preceding(&mut self) -> Vec<Preceding> {
         let mut preceding = vec![];
         loop {
             if let Some(t) = self.take_token_if(is_tok_comment) {
                 preceding.push(Preceding::Comment(t))
-            } else if let Some(t) = self.take_token_if(is_tok_whitespace) {
-                preceding.push(Preceding::Whitespace(t))
             } else {
-                break;
+                // When newline emission is enabled we must leave newline tokens
+                // in the main stream so the parser can treat them as statement
+                // terminators. Detect that upfront and stop draining trivia so
+                // the next caller observes the newline token.
+                if self.newline_mode == NewlineMode::Emit
+                    && matches!(self.get_token().kind, TokenKind::NewLine)
+                {
+                    log::debug!(
+                        "[lexer] next_preceding: leaving newline in stream at {:?}",
+                        self.get_token().span
+                    );
+                    break;
+                }
+
+                if let Some(t) = self.take_token_if(is_tok_whitespace) {
+                    log::debug!("[lexer] next_preceding: consuming whitespace {:?}", t.span);
+                    preceding.push(Preceding::Whitespace(t))
+                } else {
+                    break;
+                }
             }
         }
 
@@ -504,10 +576,12 @@ impl Lexer {
 
     fn ensure_stash(&mut self, n: usize) {
         while self.stash.len() < n {
+            self.promote_pending_newline();
             let p = self.next_preceding();
             let t = self.take_token();
             self.stash.push_back((p, t));
         }
+        self.promote_pending_newline();
     }
 
     pub fn consume(&mut self) -> (Vec<Preceding>, Token) {

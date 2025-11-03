@@ -648,7 +648,7 @@ fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(u64, Path)>) {
 
 fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(u64, Path)>) {
     match pattern {
-        Pattern::Missing(_) | Pattern::Name(_) | Pattern::Deref(_) => {}
+        Pattern::Missing(_) | Pattern::Name(_) | Pattern::Deref(_) | Pattern::Dot(_, _) => {}
         Pattern::Sequence(patterns) | Pattern::Tuple(patterns) => {
             for pat in patterns {
                 collect_pattern_refs(&pat.value, refs);

@@ -32,6 +32,27 @@ impl CollectPatterns for Node<Pattern> {
             Pattern::Name(n) => n.path.collect_patterns(srcmap, tcx),
             Pattern::Sequence(_) => todo!("collect patterns: {}", self),
             Pattern::Tuple(_) => todo!("collect patterns: {}", self),
+            Pattern::Dot(lhs_pat, field_name) => {
+                let src = srcmap.get(self);
+                // Collect constraints for the left pattern to obtain its type and env
+                let (lhs_ty, env, ctree) = lhs_pat.collect_patterns(srcmap, tcx);
+
+                // Fresh type variable for the field
+                let field_ty = Ty::Var(tcx.tf().next());
+
+                // Prove that the LHS type has the named field with the given type
+                let mut prove = ProveConstraint::new(Predicate::has_field(
+                    lhs_ty,
+                    field_name.path.name().unwrap().to_string(),
+                    field_ty.clone(),
+                ));
+                prove.info_mut().with_src(src);
+
+                // Set this pattern's type to the field type
+                tcx.set_ty(self.id, field_ty.clone());
+
+                (field_ty, env, AttachTree::new(prove, ctree))
+            }
             Pattern::Missing(_) => {
                 let ty = Ty::Var(tcx.tf().next());
                 tcx.set_ty(self.id, ty.clone());
@@ -658,11 +679,40 @@ impl CollectConstraints for (&Block, &Source) {
             for stmt in block.stmts.iter() {
                 let src = ctx.srcmap.get(stmt);
                 let bg = if let Expr::Assign(assign) = &stmt.value {
-                    let (lhs_ty, bg, _) =
-                        (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
-                    if let Ty::Var(tv) = &lhs_ty {
-                        mono_tys.insert(tv.clone());
-                    }
+                    // Special case: field assignment (`a.x = rhs`).
+                    let (lhs_ty, bg) = if let Pattern::Dot(_, _) = &assign.lhs.value {
+                        // Collect constraints for LHS place and RHS value, then equate their types.
+                        let (lhs_ty, lhs_aset, lhs_ct) =
+                            (&assign.lhs.value, &src).collect_constraints(ctx);
+                        let (rhs_ty, rhs_aset, rhs_ct) =
+                            assign.rhs.as_ref().collect_constraints(ctx);
+
+                        let mut eq = EqConstraint::new(lhs_ty.clone(), rhs_ty);
+                        eq.info_mut().with_src(src.clone());
+
+                        let mut aset = lhs_aset;
+                        aset.extend(rhs_aset);
+                        let ctree = AttachTree::new(eq, NodeTree::new(vec![lhs_ct, rhs_ct]));
+
+                        if let Ty::Var(tv) = &lhs_ty {
+                            mono_tys.insert(tv.clone());
+                        }
+
+                        // No new names are introduced by a field assignment; env is empty.
+                        (
+                            lhs_ty,
+                            BindingGroup::new(TyEnv::new(), aset, ctree).with_src(src),
+                        )
+                    } else {
+                        // Default: use declaration collection (patterns may bind names).
+                        let (lhs_ty, bg, _) =
+                            (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
+                        if let Ty::Var(tv) = &lhs_ty {
+                            mono_tys.insert(tv.clone());
+                        }
+
+                        (lhs_ty, bg)
+                    };
 
                     ctx.tcx.set_ty(stmt.id, Ty::unit());
                     ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
@@ -1125,21 +1175,48 @@ impl CollectConstraints for (&Pattern, &Source) {
         ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(pattern, src) = self;
-        let mut aset = AssumptionSet::new();
-        let (ty, ctree) = match pattern {
+        match pattern {
             Pattern::Name(name) | Pattern::Deref(Node { id: _, value: name }) => {
-                let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                // Reuse existing binding for assignments/uses; only create a fresh
+                // variable if this name is not yet bound in the current scope.
+                let ty = if let Some(existing_ty) = ctx.bound_names.get(&name.path) {
+                    existing_ty.clone()
+                } else {
+                    let fresh = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                    ctx.bound_names.insert(name.path.clone(), fresh.clone());
+                    fresh
+                };
                 let label = ty.to_string();
+                let mut aset = AssumptionSet::new();
                 aset.add(name.path.clone(), ty.clone());
                 let ctree = ReceiverTree::new(label);
-                ctx.bound_names.insert(name.path.clone(), ty.clone());
-                (ty, ctree)
+                (ty, aset, ctree)
+            }
+            Pattern::Dot(lhs_pat, field_name) => {
+                // Evaluate constraints for the base pattern to get its type
+                let lhs_src = ctx.srcmap.get(lhs_pat);
+                let (lhs_ty, aset, ctree) = (&lhs_pat.value, &lhs_src).collect_constraints(ctx);
+
+                // Record the type of the base pattern node so later passes (LIR gen) can query it by id.
+                ctx.tcx.set_ty(lhs_pat.id, lhs_ty.clone());
+
+                // Fresh type variable for the field
+                let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+                // Prove the has_field predicate tying the base type to the field type
+                let mut prove = ProveConstraint::new(Predicate::has_field(
+                    lhs_ty,
+                    field_name.path.name().unwrap().to_string(),
+                    field_ty.clone(),
+                ));
+                prove.info_mut().with_src(src.clone());
+
+                (field_ty, aset, AttachTree::new(prove, ctree))
             }
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
             Pattern::Missing(_) => todo!(),
-        };
-        (ty, aset, ctree)
+        }
     }
 }
 

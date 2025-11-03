@@ -1,7 +1,11 @@
-use super::{ParseContext, ParseResult, Parser, Recover, Restrictions};
+use super::{
+    ParseResult, Parser, Recover, RecoveryCtx, Restrictions,
+    context::{ParseContext, SeqSpec},
+};
 
 use crate::{
-    ast::{self, FnParam, FuncSig, Missing, Name, Node, Path, token::TokenKind},
+    ast::{self, FnParam, FuncSig, Missing, Name, Node, Path, TrailingPolicy, token::TokenKind},
+    parse::lexer::NewlineMode,
     span::Span,
 };
 
@@ -21,15 +25,19 @@ impl Parser<'_> {
         let body = if !only_sigs {
             let body_start = self.lex.position();
             let expr = if expect_if!(self, TokenKind::FatArrow) {
-                self.parse_expr(&ctx).recover_with(
+                self.parse_expr(&ctx).recover_with_ctx(
                     self,
-                    Some(&TokenKind::RightCurly),
+                    RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
+                        .with_newline(true)
+                        .with_decl_stops(false),
                     |parser, body_end| parser.missing_expr(body_start, body_end, &ctx),
                 )
             } else {
-                self.parse_block(&ctx).recover_with(
+                self.parse_block(&ctx).recover_with_ctx(
                     self,
-                    Some(&TokenKind::RightCurly),
+                    RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
+                        .with_newline(true)
+                        .with_decl_stops(false),
                     |parser, body_end| parser.missing_block_expr(body_start, body_end, &ctx),
                 )
             };
@@ -65,34 +73,46 @@ impl Parser<'_> {
     where
         F: Fn(&mut Parser) -> ParseResult<(Vec<Node<FnParam>>, Span)>,
     {
-        let modifiers = self.parse_modifiers()?;
-        let fn_span = self.expect_keyword(TokenKind::Fn, ctx)?;
+        let mut parser = self
+            .with_scope(ctx)
+            .with_description("parse function signature");
+        let ctx = parser.ctx_clone();
+
+        let modifiers = parser.parse_modifiers()?;
+        let fn_span = parser.expect_keyword(TokenKind::Fn, &ctx)?;
         let start = fn_span.start;
-        let name: Option<(String, Span)> = self.parse_fn_name(ctx)?;
+        let name: Option<(String, Span)> = parser.parse_fn_name(&ctx)?;
         let is_anon = name.is_none();
         let path = if let Some((name, span)) = &name {
             let path = ctx.path.append(name);
-            self.mk_node(path, *span)
+            parser.mk_node(path, *span)
         } else {
             Node::new(ctx.path.append("<anon>"))
         };
 
-        let ty_params =
-            self.parse_ty_params(ctx)
-                .recover_seq(self, Some(&TokenKind::RightParen), |_| None);
-        let (params, param_span) = parse_params(self)?;
+        let ty_params = parser.parse_ty_params(&ctx).recover_seq_with_ctx(
+            &mut parser,
+            RecoveryCtx::default_seq(Some(&TokenKind::RightParen))
+                .with_trailing(TrailingPolicy::Allow)
+                .with_newline(false),
+            |_| None,
+        );
+        let (params, param_span) = parse_params(&mut parser)?;
         let mut end = param_span.end;
-        let ret_ty = if self.expect_if_operator(TokenKind::Arrow)?.is_some() {
-            let t = self
-                .parse_type_annotation(Some(&TokenKind::LeftCurly), ctx)
+
+        // After parameters, aliases are still inside the signature; suppress
+        // newline tokens so multi-line arrows/where clauses parse correctly.
+        parser = parser.with_newline_mode(NewlineMode::Suppress);
+        let ret_ty = if parser.expect_if_operator(TokenKind::Arrow)?.is_some() {
+            let t = parser
+                .parse_type_annotation(Some(&TokenKind::LeftCurly), &ctx)
                 .map(|t| t.into_mono());
             end = t.span().unwrap().end;
             Some(t)
         } else {
             None
         };
-
-        let qualifiers = self.parse_where_clause(ctx)?;
+        let qualifiers = parser.parse_where_clause(&ctx)?;
 
         Ok(FuncSig {
             path,
@@ -180,45 +200,72 @@ impl Parser<'_> {
     where
         F: Fn(&mut Parser) -> ParseResult<Node<FnParam>>,
     {
-        let mut ctx = ctx.clone();
-        ctx.restrictions |= Restrictions::IN_PAREN;
-        ctx.description = Some("parse params".to_string());
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+            trailing: TrailingPolicy::Allow,
+            newline: NewlineMode::Suppress,
+            restrictions: Restrictions::IN_PAREN,
+        };
 
-        let lparen_tok = self.expect(TokenKind::LeftParen, &ctx)?;
-        let start = lparen_tok.span.start;
+        let f = &f;
+        let ((params, _), spans) = self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+            let stop_ref = stop.as_ref();
+            let seq_ctx = RecoveryCtx::default_seq(stop_ref)
+                .with_trailing(trailing)
+                .with_newline(false);
 
-        let mut params = vec![];
-        loop {
-            if peek!(self, TokenKind::RightParen) {
-                break;
-            }
+            parser.parse_sep_seq(
+                &TokenKind::Comma,
+                trailing,
+                stop_ref,
+                ctx,
+                |parser, ctx| {
+                    let fault_pos = parser.lex.position();
+                    let mut param = f(parser)
+                        .map(Some)
+                        .recover_seq_with_ctx(parser, seq_ctx.clone(), |parser| {
+                            let span = Span {
+                                start: fault_pos,
+                                end: fault_pos,
+                            };
+                            let info = Missing::new("parameter", Some(ctx.path.to_string()));
+                            let placeholder = Name::new("_");
+                            Some(parser.mk_node(FnParam::Missing { info, placeholder }, span))
+                        })
+                        .unwrap_or_else(|| {
+                            let span = Span {
+                                start: fault_pos,
+                                end: fault_pos,
+                            };
+                            let info = Missing::new("parameter", Some(ctx.path.to_string()));
+                            let placeholder = Name::new("_");
+                            parser.mk_node(FnParam::Missing { info, placeholder }, span)
+                        });
 
-            let mut param =
-                f(self).recover_with(self, Some(&TokenKind::RightParen), |parser, recovered| {
-                    let span = Span {
-                        start: recovered,
-                        end: recovered,
-                    };
-                    let info = Missing::new("parameter", Some(ctx.path.clone()));
-                    let placeholder = Name::new("_");
-                    parser.mk_node(FnParam::Missing { info, placeholder }, span)
-                });
-            if expect_if!(self, TokenKind::Equals) {
-                let d = self.parse_expr(&ctx)?;
-                let span = self
-                    .srcmap
-                    .span_of(&param)
-                    .extend_to(&self.srcmap.span_of(&d));
-                param = self.mk_node(FnParam::DefaultValue(Box::new(param), Box::new(d)), span);
-            }
-            params.push(param);
+                    if expect_if!(parser, TokenKind::Equals) {
+                        let default = parser.parse_expr(ctx)?;
+                        let span = parser
+                            .srcmap
+                            .span_of(&param)
+                            .extend_to(&parser.srcmap.span_of(&default));
+                        param = parser.mk_node(
+                            FnParam::DefaultValue(Box::new(param), Box::new(default)),
+                            span,
+                        );
+                    }
 
-            if !peek!(self, TokenKind::RightParen) {
-                self.expect(TokenKind::Comma, &ctx)?;
-            }
-        }
+                    Ok(param)
+                },
+            )
+        })?;
 
-        let end = self.expect_matching(&lparen_tok, TokenKind::RightParen, &ctx)?;
-        Ok((params, Span { start, end }))
+        let (l_span, r_span) = spans.expect("function parameters should have paren spans");
+        Ok((
+            params,
+            Span {
+                start: l_span.start,
+                end: r_span.end,
+            },
+        ))
     }
 }

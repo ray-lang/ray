@@ -1,8 +1,9 @@
 use std::{convert::TryFrom, ops::Deref};
 
 use crate::{
-    ast::{Missing, Node, Path, PrefixOp},
+    ast::{self, Missing, Node, Path, PrefixOp, Tuple},
     errors::{RayError, RayErrorKind},
+    span::Span,
     utils::join,
 };
 
@@ -14,7 +15,45 @@ pub enum Pattern {
     Sequence(Vec<Node<Pattern>>),
     Tuple(Vec<Node<Pattern>>),
     Deref(Node<Name>),
+    Dot(Box<Node<Pattern>>, Node<Name>),
     Missing(Missing),
+}
+
+impl Into<Expr> for Pattern {
+    fn into(self) -> Expr {
+        match self {
+            Pattern::Name(name) => Expr::Name(name),
+            Pattern::Sequence(nodes) => Expr::Sequence(Sequence {
+                items: nodes
+                    .into_iter()
+                    .map(|node| node.take_map(Pattern::into))
+                    .collect(),
+                trailing: false,
+            }),
+            Pattern::Tuple(nodes) => Expr::Tuple(Tuple {
+                seq: Sequence {
+                    items: nodes
+                        .into_iter()
+                        .map(|node| node.take_map(Pattern::into))
+                        .collect(),
+                    trailing: false,
+                },
+            }),
+            Pattern::Deref(node) => Expr::Deref(ast::Deref {
+                expr: Box::new(node.take_map(Expr::Name)),
+                op_span: Span::new(),
+            }),
+            Pattern::Dot(lhs, rhs) => Expr::Dot(ast::Dot {
+                lhs: Box::new(lhs.take_map(Pattern::into)),
+                rhs,
+                dot: ast::token::Token {
+                    kind: ast::token::TokenKind::Dot,
+                    span: Span::new(),
+                },
+            }),
+            Pattern::Missing(missing) => Expr::Missing(missing),
+        }
+    }
 }
 
 impl TryFrom<Expr> for Pattern {
@@ -35,6 +74,10 @@ impl TryFrom<Expr> for Pattern {
             Expr::Deref(deref) if matches!(deref.expr.value, Expr::Name(_)) => {
                 let name = deref.expr.take_map(|expr| variant!(expr, if Expr::Name(n)));
                 Ok(Pattern::Deref(name))
+            }
+            Expr::Dot(dot) => {
+                let lhs = dot.lhs.try_take_map(|lhs| Pattern::try_from(lhs))?;
+                Ok(Pattern::Dot(Box::new(lhs), dot.rhs))
             }
             _ => Err(RayError {
                 kind: RayErrorKind::Parse,
@@ -74,6 +117,7 @@ impl std::fmt::Display for Pattern {
                 Pattern::Sequence(seq) => join(seq, ", "),
                 Pattern::Tuple(seq) => format!("(tuple ({}))", join(seq, ", ")),
                 Pattern::Deref(n) => format!("(deref {})", n),
+                Pattern::Dot(lhs, name) => format!("(dot {}.{})", lhs, name),
                 Pattern::Missing(m) => format!("(missing {})", m),
             }
         )
@@ -93,21 +137,27 @@ impl Pattern {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&n.path),
-            Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
+            Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
+                None
+            }
         }
     }
 
     pub fn path_mut(&mut self) -> Option<&mut Path> {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&mut n.path),
-            Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
+            Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
+                None
+            }
         }
     }
 
     pub fn get_name(&self) -> Option<String> {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(n.path.to_string()),
-            Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => None,
+            Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
+                None
+            }
         }
     }
 }
@@ -117,6 +167,11 @@ impl Node<Pattern> {
         match &self.value {
             Pattern::Name(n) => vec![Node::with_id(self.id, (&n.path, false))],
             Pattern::Deref(n) => vec![Node::with_id(self.id, (&n.path, true))],
+            Pattern::Dot(lhs, n) => lhs
+                .paths()
+                .into_iter()
+                .chain(std::iter::once(Node::with_id(n.id, (&n.path, true))))
+                .collect(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
                 ps.iter().map(|p| p.paths()).flatten().collect()
             }
@@ -128,6 +183,11 @@ impl Node<Pattern> {
         match &mut self.value {
             Pattern::Name(n) => vec![Node::with_id(self.id, (&mut n.path, false))],
             Pattern::Deref(n) => vec![Node::with_id(n.id, (&mut n.path, true))],
+            Pattern::Dot(lhs, n) => lhs
+                .paths_mut()
+                .into_iter()
+                .chain(std::iter::once(Node::with_id(n.id, (&mut n.path, true))))
+                .collect(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
                 ps.iter_mut().map(|p| p.paths_mut()).flatten().collect()
             }

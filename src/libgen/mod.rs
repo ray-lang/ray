@@ -653,7 +653,7 @@ fn register_in_pattern(
                 register_in_pattern(node, srcmap, tcx, records);
             }
         }
-        Pattern::Deref(_) | Pattern::Missing(_) => {
+        Pattern::Deref(_) | Pattern::Dot(_, _) | Pattern::Missing(_) => {
             // ignore
         }
     }

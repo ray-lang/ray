@@ -324,6 +324,11 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.emit_parsed_tyscheme(ty, SemanticTokenKind::Type);
                 }
             }
+            Pattern::Dot(lhs, rhs) => {
+                self.visit_pattern(lhs);
+                let span = self.srcmap.span_of(rhs);
+                self.emit_span(span, SemanticTokenKind::Variable, &[]);
+            }
             Pattern::Sequence(seq) | Pattern::Tuple(seq) => {
                 for pat in seq {
                     self.visit_pattern(pat);

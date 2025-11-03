@@ -187,6 +187,10 @@ fn push_pattern<'a>(walk: &mut ModuleWalk<'a>, pattern: &'a Pattern) {
         Pattern::Deref(name) => {
             walk.stack.push(WalkItem::Name(name));
         }
+        Pattern::Dot(lhs, rhs) => {
+            walk.stack.push(WalkItem::Name(rhs));
+            walk.stack.push(WalkItem::Pattern(lhs));
+        }
         Pattern::Name(_) | Pattern::Missing(_) => {}
     }
 }

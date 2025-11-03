@@ -1,11 +1,15 @@
 use std::convert::TryFrom;
 
-use super::{ExprResult, ParseContext, ParsedExpr, Parser, Restrictions};
+use super::{
+    ExprResult, ParsedExpr, Parser, Restrictions,
+    context::{ParseContext, SeqSpec},
+};
+use crate::parse::lexer::NewlineMode;
 
 use crate::{
     ast::{
         Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
-        Trailing, ValueKind,
+        TrailingPolicy, ValueKind,
         asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
     },
@@ -15,10 +19,14 @@ use crate::{
 
 impl Parser<'_> {
     pub(crate) fn parse_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse expression", |ctx| {
-            let ex = self.parse_infix_expr(0, None, ctx)?;
-            Ok(ex)
-        })
+        let suppress_newlines = ctx.restrictions.contains(Restrictions::IN_PAREN);
+        let mut parser = self.with_scope(ctx).with_description("parse expression");
+        if suppress_newlines {
+            parser = parser.with_newline_mode(NewlineMode::Suppress);
+        }
+
+        let ctx = &parser.ctx_clone();
+        parser.parse_infix_expr(0, None, &ctx)
     }
 
     pub(crate) fn parse_base_expr(&mut self, ctx: &ParseContext) -> ExprResult {
@@ -143,17 +151,15 @@ impl Parser<'_> {
                 continue;
             }
 
-            if let Some(tok) = self.expect_kind(TokenKind::LeftParen)? {
+            if peek!(self, TokenKind::LeftParen) {
                 // expr(...)
-                let mut ctx = ctx.clone();
-                ctx.restrictions |= Restrictions::IN_PAREN;
-                ex = self.parse_fn_call_expr(ex, tok, &ctx)?;
+                ex = self.parse_fn_call_expr(ex, &ctx)?;
                 continue;
             }
 
-            if let Some(tok) = self.expect_kind(TokenKind::LeftBracket)? {
+            if peek!(self, TokenKind::LeftBracket) {
                 // expr[...]
-                ex = self.parse_index_expr(ex, tok, ctx)?;
+                ex = self.parse_index_expr(ex, ctx)?;
                 continue;
             }
 
@@ -171,22 +177,25 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_unsafe_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parsing an unsafe expression", |ctx| {
-            let tok = self.token()?;
-            if !matches!(tok.kind, TokenKind::Modifier(Modifier::Unsafe)) {
-                return Err(self.unexpected_token(&tok, "`unsafe`", ctx));
-            }
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parsing an unsafe expression");
+        let ctx = &parser.ctx_clone();
 
-            let start = tok.span.start;
-            let ex = self.parse_expr(ctx)?;
-            let end = self.srcmap.span_of(&ex).end;
+        let tok = parser.token()?;
+        if !matches!(tok.kind, TokenKind::Modifier(Modifier::Unsafe)) {
+            return Err(parser.unexpected_token(&tok, "`unsafe`", ctx));
+        }
 
-            Ok(self.mk_expr(
-                Expr::Unsafe(Box::new(ex)),
-                Span { start, end },
-                ctx.path.clone(),
-            ))
-        })
+        let start = tok.span.start;
+        let ex = parser.parse_expr(ctx)?;
+        let end = parser.srcmap.span_of(&ex).end;
+
+        Ok(parser.mk_expr(
+            Expr::Unsafe(Box::new(ex)),
+            Span { start, end },
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_dot_expr(
@@ -209,12 +218,7 @@ impl Parser<'_> {
         ))
     }
 
-    pub(crate) fn parse_fn_call_expr(
-        &mut self,
-        lhs: ParsedExpr,
-        lparen_tok: Token,
-        ctx: &ParseContext,
-    ) -> ExprResult {
+    pub(crate) fn parse_fn_call_expr(&mut self, lhs: ParsedExpr, ctx: &ParseContext) -> ExprResult {
         let start = self.srcmap.span_of(&lhs).start;
 
         let expects_type = if let Expr::Name(n) = &lhs.value {
@@ -226,51 +230,54 @@ impl Parser<'_> {
             false
         };
 
-        let (mut args, args_span) = if !peek!(self, TokenKind::RightParen) {
-            if expects_type {
-                let ty = self.parse_type_annotation(Some(&TokenKind::RightParen), ctx);
-                let span = *ty.span().unwrap();
-                (
-                    Sequence {
-                        items: vec![self.mk_expr(Expr::Type(ty), span, ctx.path.clone())],
-                        trailing: false,
-                    },
-                    span,
-                )
-            } else {
-                let mut ctx = ctx.clone();
-                ctx.stop_token = Some(TokenKind::RightParen);
-                let args = self.parse_expr(&ctx)?;
-                let span = self.srcmap.span_of(&args);
-                (
-                    if let Expr::Sequence(seq) = args.value {
-                        seq
-                    } else {
-                        Sequence {
-                            items: vec![args],
-                            trailing: false,
-                        }
-                    },
-                    span,
-                )
-            }
-        } else if expects_type {
-            let span = self.expect(TokenKind::RightParen, ctx)?.span;
-            return Err(self.parse_error(str!("expected type but found `)`"), span, ctx));
-        } else {
-            (
-                Sequence {
-                    items: vec![],
-                    trailing: false,
-                },
-                Span {
-                    start: lparen_tok.span.end,
-                    end: self.lex.position(),
-                },
-            )
+        let paren_spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+            trailing: TrailingPolicy::Allow,
+            newline: NewlineMode::Suppress,
+            restrictions: Restrictions::IN_PAREN,
         };
-        let rparen_end = self.expect_matching(&lparen_tok, TokenKind::RightParen, ctx)?;
-        let mut end = rparen_end;
+
+        let (mut args, spans) =
+            self.parse_delimited_seq(paren_spec, ctx, |parser, trailing, stop, ctx| {
+                if expects_type {
+                    if peek!(parser, TokenKind::RightParen) {
+                        let span = parser.expect(TokenKind::RightParen, ctx)?.span;
+                        return Err(parser.parse_error(
+                            str!("expected type but found `)`"),
+                            span,
+                            ctx,
+                        ));
+                    }
+                    let ty_scheme = parser.parse_type_annotation(Some(&TokenKind::RightParen), ctx);
+                    let span = ty_scheme.span().unwrap().clone();
+                    let seq = Sequence {
+                        items: vec![parser.mk_expr(Expr::Type(ty_scheme), span, ctx.path.clone())],
+                        trailing: false,
+                    };
+                    Ok(seq)
+                } else {
+                    parser.parse_expr_seq(ValueKind::RValue, trailing, stop, ctx)
+                }
+            })?;
+
+        let (l_span, r_span) = spans.expect("function call should have paren spans");
+        let paren_span = l_span.extend_to(&r_span);
+
+        let args_span = if let (Some(first), Some(last)) = (args.items.first(), args.items.last()) {
+            let first_span = self.srcmap.span_of(first);
+            let last_span = self.srcmap.span_of(last);
+            Span {
+                start: first_span.start,
+                end: last_span.end,
+            }
+        } else {
+            Span {
+                start: l_span.end,
+                end: r_span.start,
+            }
+        };
+
+        let mut end = paren_span.end;
 
         if peek!(self, TokenKind::LeftCurly) {
             let closure = self.parse_closure_expr(ctx)?;
@@ -283,30 +290,53 @@ impl Parser<'_> {
                 callee: Box::new(lhs),
                 args,
                 args_span,
-                paren_span: Span {
-                    start: lparen_tok.span.start,
-                    end: rparen_end,
-                },
+                paren_span,
             }),
             Span { start, end },
             ctx.path.clone(),
         ))
     }
 
-    pub(crate) fn parse_index_expr(
-        &mut self,
-        lhs: ParsedExpr,
-        lbrack_tok: Token,
-        ctx: &ParseContext,
-    ) -> ExprResult {
-        let index = self.parse_expr(ctx)?;
-        let rbrack_tok = self.expect(TokenKind::RightBracket, ctx)?;
-        let span = self.srcmap.span_of(&lhs).extend_to(&rbrack_tok.span);
+    pub(crate) fn parse_index_expr(&mut self, lhs: ParsedExpr, ctx: &ParseContext) -> ExprResult {
+        // Parse the contents with sequence-aware recovery
+        let seq_spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftBracket, TokenKind::RightBracket)),
+            trailing: TrailingPolicy::Forbid,
+            newline: NewlineMode::Suppress,
+            restrictions: ctx.restrictions,
+        };
+
+        let (seq, spans) =
+            self.parse_delimited_seq(seq_spec, ctx, |parser, trailing, stop, ctx| {
+                parser.parse_expr_seq(ValueKind::RValue, trailing, stop, ctx)
+            })?;
+
+        let (lbrack_span, rbrack_span) = spans.unwrap();
+
+        let bracket_span = lbrack_span.extend_to(&rbrack_span);
+        let span = self.srcmap.span_of(&lhs).extend_to(&rbrack_span);
+
+        // Choose the index expression:
+        //  - 0 items  -> Missing expression
+        //  - 1 item   -> that item
+        //  - >1 items -> keep them as a Sequence to preserve tokens
+        let index_expr = match seq.items.len() {
+            0 => self.missing_expr(lbrack_span.start, rbrack_span.end, ctx),
+            1 => seq.items.into_iter().next().unwrap(),
+            _ => {
+                let idx_span = Span {
+                    start: lbrack_span.end,
+                    end: rbrack_span.start,
+                };
+                self.mk_expr(Expr::Sequence(seq), idx_span, ctx.path.clone())
+            }
+        };
+
         Ok(self.mk_expr(
             Expr::Index(Index {
                 lhs: Box::new(lhs),
-                index: Box::new(index),
-                bracket_span: lbrack_tok.span.extend_to(&rbrack_tok.span),
+                index: Box::new(index_expr),
+                bracket_span,
             }),
             span,
             ctx.path.clone(),
@@ -335,14 +365,17 @@ impl Parser<'_> {
             None
         };
 
-        let lcurly_tok = self.expect(TokenKind::LeftCurly, ctx)?;
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftCurly, TokenKind::RightCurly)),
+            trailing: TrailingPolicy::Allow,
+            newline: NewlineMode::Emit,
+            restrictions: Restrictions::empty(),
+        };
 
-        let seq = self.parse_expr_seq(
-            ValueKind::RValue,
-            Trailing::Allow,
-            Some(TokenKind::RightCurly),
-            ctx,
-        )?;
+        let (seq, spans) = self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+            parser.parse_expr_seq(ValueKind::RValue, trailing, stop, ctx)
+        })?;
+        let (lcurly_span, rcurly_span) = spans.expect("curly expression requires braces");
 
         let mut elements = vec![];
         for item in seq.items {
@@ -378,8 +411,7 @@ impl Parser<'_> {
             });
         }
 
-        let rcurly_span = self.expect(TokenKind::RightCurly, ctx)?.span;
-        let curly_span = lcurly_tok.span.extend_to(&rcurly_span);
+        let curly_span = lcurly_span.extend_to(&rcurly_span);
         let span = begin.extend_to(&rcurly_span);
         Ok(self.mk_expr(
             Expr::Curly(Curly {
@@ -394,119 +426,132 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_new_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse new expression", |ctx| {
-            let new_span = self.expect_keyword(TokenKind::New, ctx)?;
-            let lparen_tok = self.expect(TokenKind::LeftParen, ctx)?;
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse new expression");
+        let ctx = &parser.ctx_clone();
 
-            let parsed_ty = self
-                .parse_type_annotation(Some(&TokenKind::RightParen), ctx)
-                .map(|t| t.into_mono());
-            let ty = self.mk_ty(parsed_ty, ctx.path.clone());
+        let new_span = parser.expect_keyword(TokenKind::New, ctx)?;
 
-            let after_ty = self.lex.position();
-            log::debug!(
-                "new(): after type pos={:?} next={:?}",
-                after_ty,
-                self.peek_kind()
-            );
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+            trailing: TrailingPolicy::Forbid,
+            newline: NewlineMode::Suppress,
+            restrictions: Restrictions::IN_PAREN,
+        };
 
-            let count = if expect_if!(self, TokenKind::Comma) {
-                Some(Box::new(self.parse_expr(ctx)?))
-            } else {
-                None
-            };
-            let rparen_tok = self.expect(TokenKind::RightParen, ctx)?;
+        let ((parsed_ty, count), spans) =
+            parser.parse_delimited_seq(spec, ctx, |parser, _, stop, ctx| {
+                let ty = parser
+                    .parse_type_annotation(stop.as_ref(), ctx)
+                    .map(|t| t.into_mono());
 
-            let paren_span = lparen_tok.span.extend_to(&rparen_tok.span);
-            let span = new_span.extend_to(&rparen_tok.span);
-            Ok(self.mk_expr(
-                Expr::New(New {
-                    ty,
-                    count,
-                    new_span,
-                    paren_span,
-                }),
-                span,
-                ctx.path.clone(),
-            ))
-        })
+                let count = if expect_if!(parser, TokenKind::Comma) {
+                    Some(Box::new(parser.parse_expr(ctx)?))
+                } else {
+                    None
+                };
+
+                Ok((ty, count))
+            })?;
+
+        let (lparen_span, rparen_span) = spans.expect("new expression requires parentheses");
+        let ty = parser.mk_ty(parsed_ty, ctx.path.clone());
+        let paren_span = lparen_span.extend_to(&rparen_span);
+        let span = new_span.extend_to(&rparen_span);
+        Ok(parser.mk_expr(
+            Expr::New(New {
+                ty,
+                count,
+                new_span,
+                paren_span,
+            }),
+            span,
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_box_expr(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse box expression", |ctx| {
-            let box_span = self.expect_keyword(TokenKind::Bx, ctx)?;
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse box expression");
+        let ctx = &parser.ctx_clone();
 
-            let inner = self.parse_expr(ctx)?;
-            let inner_span = self.srcmap.span_of(&inner);
+        let box_span = parser.expect_keyword(TokenKind::Bx, ctx)?;
 
-            let span = box_span.extend_to(&inner_span);
-            Ok(self.mk_expr(
-                Expr::Boxed(Boxed {
-                    inner: Box::new(inner),
-                    box_span,
-                }),
-                span,
-                ctx.path.clone(),
-            ))
-        })
+        let inner = parser.parse_expr(ctx)?;
+        let inner_span = parser.srcmap.span_of(&inner);
+
+        let span = box_span.extend_to(&inner_span);
+        Ok(parser.mk_expr(
+            Expr::Boxed(Boxed {
+                inner: Box::new(inner),
+                box_span,
+            }),
+            span,
+            ctx.path.clone(),
+        ))
     }
 
     pub(crate) fn parse_asm(&mut self, ctx: &ParseContext) -> ExprResult {
-        ctx.with_description("parse asm expression", |ctx| {
-            let mut span = self.expect_keyword(TokenKind::Asm, ctx)?;
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse asm expression");
+        let ctx = &parser.ctx_clone();
 
-            let mut inst = vec![];
-            let ret_ty = if peek!(self, TokenKind::LeftParen) {
-                self.expect(TokenKind::LeftParen, ctx)?;
-                let t = self
-                    .parse_type_annotation(Some(&TokenKind::RightParen), ctx)
-                    .map(|t| t.into_mono());
-                self.expect(TokenKind::RightParen, ctx)?;
-                Some(t)
-            } else {
-                None
+        let mut span = parser.expect_keyword(TokenKind::Asm, ctx)?;
+
+        let mut inst = vec![];
+        let ret_ty = if peek!(parser, TokenKind::LeftParen) {
+            parser.expect(TokenKind::LeftParen, ctx)?;
+            let t = parser
+                .parse_type_annotation(Some(&TokenKind::RightParen), ctx)
+                .map(|t| t.into_mono());
+            parser.expect(TokenKind::RightParen, ctx)?;
+            Some(t)
+        } else {
+            None
+        };
+
+        parser.expect(TokenKind::LeftCurly, ctx)?;
+        while !peek!(parser, TokenKind::RightCurly) {
+            parser.expect_operator(TokenKind::Dollar, ctx)?;
+            let (op, span) = parser.expect_id(ctx)?;
+            let op = match AsmOp::try_from(op.as_str()) {
+                Ok(op) => op,
+                Err(s) => {
+                    return Err(parser.parse_error(
+                        format!("invalid asm operator `${}`", s),
+                        span,
+                        ctx,
+                    ));
+                }
             };
 
-            self.expect(TokenKind::LeftCurly, ctx)?;
-            while !peek!(self, TokenKind::RightCurly) {
-                self.expect_operator(TokenKind::Dollar, ctx)?;
-                let (op, span) = self.expect_id(ctx)?;
-                let op = match AsmOp::try_from(op.as_str()) {
-                    Ok(op) => op,
-                    Err(s) => {
-                        return Err(self.parse_error(
-                            format!("invalid asm operator `${}`", s),
-                            span,
-                            ctx,
-                        ));
+            let mut operands = vec![];
+            loop {
+                let kind = parser.peek_kind();
+                operands.push(match kind {
+                    TokenKind::Identifier(_) => {
+                        let (id, _) = parser.expect_id(ctx)?;
+                        AsmOperand::Var(id)
                     }
-                };
-
-                let mut operands = vec![];
-                loop {
-                    let kind = self.peek_kind();
-                    operands.push(match kind {
-                        TokenKind::Identifier(_) => {
-                            let (id, _) = self.expect_id(ctx)?;
-                            AsmOperand::Var(id)
-                        }
-                        TokenKind::Integer { .. } => {
-                            let tok = self.token()?;
-                            let i = match tok.kind {
-                                TokenKind::Integer { value, .. } => value.parse::<u64>()?,
-                                _ => unreachable!(),
-                            };
-                            AsmOperand::Int(i)
-                        }
-                        _ => break,
-                    });
-                }
-
-                inst.push((op, operands));
+                    TokenKind::Integer { .. } => {
+                        let tok = parser.token()?;
+                        let i = match tok.kind {
+                            TokenKind::Integer { value, .. } => value.parse::<u64>()?,
+                            _ => unreachable!(),
+                        };
+                        AsmOperand::Int(i)
+                    }
+                    _ => break,
+                });
             }
 
-            span.end = self.expect_end(TokenKind::RightCurly, ctx)?;
-            Ok(self.mk_expr(Expr::Asm(Asm { ret_ty, inst }), span, ctx.path.clone()))
-        })
+            inst.push((op, operands));
+        }
+
+        span.end = parser.expect_end(TokenKind::RightCurly, ctx)?;
+        Ok(parser.mk_expr(Expr::Asm(Asm { ret_ty, inst }), span, ctx.path.clone()))
     }
 }

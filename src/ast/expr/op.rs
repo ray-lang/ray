@@ -1,6 +1,6 @@
 use std::{fmt, ops::Deref};
 
-use crate::ast::Node;
+use crate::ast::{Node, token::TokenKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Associativity {
@@ -197,6 +197,34 @@ impl InfixOp {
             | ShiftRight | BitAnd | BitXor | BitOr | Lt | Gt | LtEq | GtEq | Eq | NotEq | And
             | Or => Associativity::Left,
             RangeExclusive | RangeInclusive => Associativity::None,
+        }
+    }
+
+    pub(crate) fn matches_token_kind(&self, kind: &TokenKind) -> bool {
+        use TokenKind::*;
+        match self {
+            InfixOp::Eq => matches!(kind, Equals),
+            InfixOp::NotEq => matches!(kind, Exclamation),
+            InfixOp::Lt | InfixOp::LtEq | InfixOp::ShiftLeft => matches!(kind, Lt),
+            InfixOp::Gt | InfixOp::GtEq | InfixOp::ShiftRight => matches!(kind, Gt),
+            InfixOp::Add => matches!(kind, Plus),
+            InfixOp::Sub => matches!(kind, Minus),
+            InfixOp::Div => matches!(kind, Slash),
+            InfixOp::Mod => matches!(kind, Percent),
+            InfixOp::Mul | InfixOp::Pow => matches!(kind, Asterisk),
+            InfixOp::And => matches!(kind, Ampersand),
+            InfixOp::Or => matches!(kind, Pipe),
+            InfixOp::BitAnd => matches!(kind, Ampersand),
+            InfixOp::BitOr => matches!(kind, Pipe),
+            InfixOp::BitXor => matches!(kind, Caret),
+            InfixOp::RangeExclusive => matches!(kind, RangeExclusive),
+            InfixOp::RangeInclusive => matches!(kind, RangeInclusive),
+            InfixOp::As => matches!(kind, As),
+            InfixOp::Else => matches!(kind, Else),
+            InfixOp::Comma => matches!(kind, Comma),
+            InfixOp::Colon => matches!(kind, Colon),
+            InfixOp::Assign => matches!(kind, Equals),
+            InfixOp::AssignOp(inner) => inner.matches_token_kind(kind),
         }
     }
 }

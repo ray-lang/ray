@@ -73,7 +73,7 @@
         },
         {
           "name": "keyword.declaration.ray",
-          "match": "\\b(fn|struct|trait|impl|type|extern|let|mut|where)\\b"
+          "match": "\\b(fn|struct|record|trait|impl|type|extern|let|mut|where)\\b"
         },
         {
           "name": "keyword.operator.arrow.ray",

@@ -14,16 +14,22 @@
                 "filter": {
                     "name": "ray",
                     "kind": "bin"
+                },
+                "env": {
+                    "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
+                    "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",
                 }
             },
             "args": [
-                "--log-level",
-                "debug",
+                "--log-level=debug",
                 "build",
-                "examples/scratch.ray"
+                "-O0",
+                "--no-core",
+                "--emit=llvm",
+                "examples/wasi_print_no_core.ray"
             ],
             "env": {
-                "RUST_BACKTRACE": "1"
+                "RUST_BACKTRACE": "1",
             },
             "cwd": "${workspaceFolder}"
         },
