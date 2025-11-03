@@ -4,16 +4,14 @@ use super::{
     DocComments, ExprResult, ParseResult, Parser, Recover, RecoveryCtx, Restrictions,
     context::ParseContext,
 };
-use crate::ast::token::Token;
-use crate::parse::lexer::NewlineMode;
 
-use crate::parse::parser::context::SeqSpec;
 use crate::{
     ast::{
         Block, Closure, Expr, Literal, Missing, Name, Node, Path, Pattern, Sequence,
         TrailingPolicy, Tuple, ValueKind, token::TokenKind,
     },
-    span::{Pos, Span},
+    parse::{lexer::NewlineMode, parser::context::SeqSpec},
+    span::Span,
 };
 
 impl Parser<'_> {
@@ -83,10 +81,6 @@ impl Parser<'_> {
         }
 
         Ok(self.mk_node(Path::from(parts), span))
-    }
-
-    pub(crate) fn parse_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Node<Pattern>> {
-        self.parse_pattern_with_stop(None, ctx)
     }
 
     pub(crate) fn parse_pattern_with_stop(
@@ -240,41 +234,6 @@ impl Parser<'_> {
         }
 
         Ok(parser.mk_expr(kind, Span { start, end }, ctx.path.clone()))
-    }
-
-    pub(crate) fn parse_name_seq(
-        &mut self,
-        trail: TrailingPolicy,
-        stop: Option<&TokenKind>,
-        ctx: &ParseContext,
-    ) -> ParseResult<(Vec<Node<Name>>, Span)> {
-        let parser = &mut self
-            .with_scope(ctx)
-            .with_description("parse name sequence")
-            .with_newline_mode(NewlineMode::Suppress);
-        let ctx = parser.ctx_clone();
-
-        let comma = TokenKind::Comma;
-        let (names, _) = parser.parse_sep_seq(&comma, trail, stop, &ctx, |parser, ctx| {
-            if !matches!(parser.peek_kind(), TokenKind::Identifier(_)) {
-                let tok = parser.peek();
-                return Err(parser.unexpected_token(&tok, "identifier", ctx));
-            }
-            parser.parse_name_with_type(stop, ctx)
-        })?;
-
-        let mut start = Pos::empty();
-        let mut end = Pos::empty();
-        if let Some(first) = names.first() {
-            let span = parser.srcmap.span_of(first);
-            start = span.start;
-        }
-        if let Some(last) = names.last() {
-            let span = parser.srcmap.span_of(last);
-            end = span.end;
-        }
-
-        Ok((names, Span { start, end }))
     }
 
     pub(crate) fn parse_expr_seq(

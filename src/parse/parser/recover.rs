@@ -5,6 +5,7 @@ use crate::{
 
 use super::{Parser, Pos, TokenKind};
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delimiter {
     Paren,

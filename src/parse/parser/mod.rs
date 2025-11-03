@@ -23,8 +23,7 @@ use std::{fs, io, mem};
 
 use crate::{
     ast::{
-        Decl, Decorator, Expr, File, Import, InfixOp, Missing, Node, Path, Pattern, Sequence,
-        TrailingPolicy,
+        Decl, Decorator, Expr, File, Import, InfixOp, Missing, Node, Path, Pattern, TrailingPolicy,
         token::{CommentKind, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
@@ -1315,16 +1314,6 @@ impl<'src> Parser<'src> {
         } else {
             Err(self.unexpected_token(&tok, kind.desc(), ctx))
         }
-    }
-
-    fn expect_kind(&mut self, kind: TokenKind) -> ParseResult<Option<Token>> {
-        let is_kind = self.lex.peek_token().kind == kind;
-        Ok(if is_kind {
-            let tok = self.token()?;
-            Some(tok)
-        } else {
-            None
-        })
     }
 
     fn expect_string(&mut self, ctx: &ParseContext) -> ParseResult<(String, Span)> {

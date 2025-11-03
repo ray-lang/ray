@@ -62,11 +62,6 @@ impl<'a, 'src> ParseScope<'a, 'src> {
         self
     }
 
-    pub fn stopping_at(mut self, k: TokenKind) -> Self {
-        self.ctx.stop_token = Some(k);
-        self
-    }
-
     // chainable lexer/plumbing mutators (record undo)
     pub fn with_newline_mode(mut self, mode: NewlineMode) -> Self {
         let prev = self.p.lex.newline_mode();
