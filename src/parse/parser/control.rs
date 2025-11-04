@@ -143,12 +143,12 @@ impl Parser<'_> {
         let pat = parser
             .parse_pattern_with_stop(Some(&TokenKind::In), ctx)
             .recover_with_ctx(
-            parser,
-            RecoveryCtx::stmt(Some(&TokenKind::In))
-                .with_newline(true)
-                .with_decl_stops(false),
-            |parser, pat_end| parser.missing_pattern(pat_start, pat_end, ctx),
-        );
+                parser,
+                RecoveryCtx::stmt(Some(&TokenKind::In))
+                    .with_newline(true)
+                    .with_decl_stops(false),
+                |parser, pat_end| parser.missing_pattern(pat_start, pat_end, ctx),
+            );
 
         let in_start = parser.lex.position();
         let in_span = parser.expect_keyword(TokenKind::In, ctx).recover_with_ctx(

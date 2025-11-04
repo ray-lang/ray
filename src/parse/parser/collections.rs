@@ -3,7 +3,7 @@ use super::{ExprResult, Parser, context::ParseContext};
 use crate::ast::{Expr, List, TrailingPolicy, ValueKind, token::TokenKind};
 use crate::parse::{
     lexer::NewlineMode,
-    parser::{context::SeqSpec, Restrictions},
+    parser::{Restrictions, context::SeqSpec},
 };
 
 impl Parser<'_> {

@@ -482,7 +482,7 @@ impl Parser<'_> {
                     RecoveryCtx::stmt(stop_ref)
                         .with_decl_stops(true)
                         .with_newline(true),
-                    |parser, outcome| {
+                    |parser, _outcome| {
                         let info = Missing::new("statement", Some(ctx.path.to_string()));
                         parser.mk_expr(Expr::Missing(info), Span::new(), ctx.path.clone())
                     },

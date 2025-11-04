@@ -13,11 +13,13 @@ pub enum Delimiter {
     Curly,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryStop {
     Guard,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryOutcome {
     Progress { end: Pos },
@@ -27,8 +29,7 @@ pub enum RecoveryOutcome {
 impl RecoveryOutcome {
     pub fn end(self) -> Pos {
         match self {
-            RecoveryOutcome::Progress { end }
-            | RecoveryOutcome::Stopped { end, .. } => end,
+            RecoveryOutcome::Progress { end } | RecoveryOutcome::Stopped { end, .. } => end,
         }
     }
 }
@@ -211,9 +212,7 @@ impl<T> Recover<T> for Result<T, RayError> {
                 let value = fallback(parser, RecoveryOutcome::Progress { end: recovered_end });
                 Recovered {
                     value,
-                    outcome: RecoveryOutcome::Progress {
-                        end: recovered_end,
-                    },
+                    outcome: RecoveryOutcome::Progress { end: recovered_end },
                 }
             }
         }
