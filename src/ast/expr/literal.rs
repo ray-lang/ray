@@ -57,16 +57,21 @@ impl Literal {
                 suffix,
             } => {
                 let (size, signed) = if let Some(suffix) = suffix {
-                    let s = suffix.trim_start_matches('_');
+                    let suffix = suffix.trim_start_matches('_');
                     let span = token.span;
-                    let parsed = s[1..].parse::<usize>();
-                    let size = parsed.as_ref().map_err(|e| RayError {
-                        msg: e.to_string(),
-                        kind: RayErrorKind::Parse,
-                        src: vec![Source::new(fp, span, Path::new(), src_module.clone())],
-                        context: Some(format!("integer literal raw suffix: {s}")),
-                    })?;
-                    (*size, s.starts_with("i"))
+                    let raw_size = &suffix[1..];
+                    let size = if raw_size.len() > 0 {
+                        let parsed = raw_size.parse::<usize>();
+                        *parsed.as_ref().map_err(|e| RayError {
+                            msg: e.to_string(),
+                            kind: RayErrorKind::Parse,
+                            src: vec![Source::new(fp, span, Path::new(), src_module.clone())],
+                            context: Some(format!("integer literal raw suffix: {suffix}")),
+                        })?
+                    } else {
+                        0
+                    };
+                    (size, suffix.starts_with("i"))
                 } else {
                     (0, true)
                 };

@@ -6,7 +6,7 @@ use crate::{
     errors::{RayError, RayErrorKind},
     pathlib::FilePath,
     span::SourceMap,
-    typing::ty::Ty,
+    typing::ty::{NominalKind, Ty},
 };
 
 #[allow(dead_code)]
@@ -84,7 +84,7 @@ fn parse_from_src_with_diagnostics_reports_parse_errors() {
         "expected partial parse even with errors"
     );
     assert!(!result.errors.is_empty());
-    assert_eq!(result.errors[0].kind, RayErrorKind::Parse);
+    assert_eq!(result.errors[0].kind, RayErrorKind::UnexpectedToken);
     assert!(result.errors[0].src.first().and_then(|s| s.span).is_some());
 }
 
@@ -1138,6 +1138,61 @@ fn main() {
     let raw_ptr_elem_span = raw_ptr_elem_src.span.expect("expected span");
     assert!(raw_ptr_elem_span.start.lineno == 4);
     assert!(raw_ptr_elem_span.end.lineno == 4);
+}
+
+#[test]
+fn parses_record() {
+    let src = r#"
+record R {
+    x: i32,
+    y: i32
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected trait to parse without errors, got: {:?}",
+        errors
+    );
+
+    let decl = file
+        .decls
+        .first()
+        .expect("expected record declaration")
+        .value
+        .clone();
+    let rec = match decl {
+        Decl::Struct(st) => st,
+        other => panic!("expected record declaration, got {:?}", other),
+    };
+    assert_eq!(rec.kind, NominalKind::Record);
+    assert_eq!(rec.path.to_string(), "test::R");
+}
+
+#[test]
+fn parses_oneline_record() {
+    let src = r#"
+record R { x: u32, y: u32 }
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected trait to parse without errors, got: {:?}",
+        errors
+    );
+
+    let decl = file
+        .decls
+        .first()
+        .expect("expected record declaration")
+        .value
+        .clone();
+    let rec = match decl {
+        Decl::Struct(st) => st,
+        other => panic!("expected record declaration, got {:?}", other),
+    };
+    assert_eq!(rec.kind, NominalKind::Record);
+    assert_eq!(rec.path.to_string(), "test::R");
 }
 
 #[test]

@@ -1506,6 +1506,14 @@ impl Ty {
         self.nominal_kind(tcx) == Some(NominalKind::Struct)
     }
 
+    pub fn innermost(&self) -> &Ty {
+        let mut inner = self;
+        while let Ty::Ptr(ty) = inner {
+            inner = ty.as_ref();
+        }
+        inner
+    }
+
     pub fn as_tyvar(self) -> TyVar {
         match self {
             Ty::Var(v) => v,

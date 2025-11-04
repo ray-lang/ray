@@ -1,10 +1,10 @@
 use std::convert::TryFrom;
 
 use super::{
-    ExprResult, ParsedExpr, Parser, Restrictions,
+    ExprResult, ParsedExpr, Parser, RecoveryCtx, Restrictions,
     context::{ParseContext, SeqSpec},
 };
-use crate::parse::lexer::NewlineMode;
+use crate::parse::{lexer::NewlineMode, parser::Recover};
 
 use crate::{
     ast::{
@@ -447,7 +447,13 @@ impl Parser<'_> {
                     .map(|t| t.into_mono());
 
                 let count = if expect_if!(parser, TokenKind::Comma) {
-                    Some(Box::new(parser.parse_expr(ctx)?))
+                    let count_start = parser.lex.position();
+                    let expr = parser.parse_expr(ctx).recover_with_ctx(
+                        parser,
+                        RecoveryCtx::expr(stop.as_ref()).with_ternary_sensitive(false),
+                        |parser, recovered| parser.missing_expr(count_start, recovered, ctx),
+                    );
+                    Some(Box::new(expr))
                 } else {
                     None
                 };

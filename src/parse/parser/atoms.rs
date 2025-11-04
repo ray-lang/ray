@@ -477,16 +477,17 @@ impl Parser<'_> {
                     break;
                 }
 
-                let stmt = parser.parse_stmt(None, doc, ctx).recover_with_ctx(
+                let stmt_recovered = parser.parse_stmt(None, doc, ctx).recover_with_ctx_outcome(
                     parser,
                     RecoveryCtx::stmt(stop_ref)
                         .with_decl_stops(true)
                         .with_newline(true),
-                    |parser, _| {
+                    |parser, outcome| {
                         let info = Missing::new("statement", Some(ctx.path.to_string()));
                         parser.mk_expr(Expr::Missing(info), Span::new(), ctx.path.clone())
                     },
                 );
+                let stmt = stmt_recovered.value;
                 log::debug!(
                     "[parser] parse_block: parsed stmt kind={:?}",
                     stmt.value.desc()

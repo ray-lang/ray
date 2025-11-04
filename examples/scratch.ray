@@ -1,3 +1,88 @@
-fn main()  {
-    print("hello, world")
+extern fn sizeof(t: type['a]) -> uint
+
+extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) -> uint
+
+trait Int['a] {
+    default(int)
+}
+
+trait Add['a] {
+    fn +(a: 'a, b: 'a) -> 'a
+}
+
+trait Mul['a] {
+    fn *(a: 'a, b: 'a) -> 'a
+}
+
+trait Lt['a] {
+    fn <(a: 'a, b: 'a) -> bool
+}
+
+impl Int[int] {}
+
+impl Int[uint] {}
+
+impl Add[uint] {
+    @inline
+    fn +(a: uint, b: uint) -> uint => asm { $uint_add a b }
+}
+
+impl Mul[uint] {
+    @inline
+    fn *(a: uint, b: uint) -> uint => asm { $uint_mul a b }
+}
+
+impl Lt[uint] {
+    @inline
+    fn <(a: uint, b: uint) -> bool => asm { $uint_lt a b }
+}
+
+struct string {
+    raw_ptr: *u8
+    len: uint
+}
+
+record IOVec {
+    base: *u8
+    len: uint
+}
+
+fn ptr_add['a](p: *'a, n: uint) -> *'a =>
+    ((p as uint) + n) as *'a
+
+fn index_stride['a](p: *'a, i: uint, stride: uint) -> *'a =>
+    ptr_add(p, i * stride)
+
+fn writev_stdout(chunks: *string, n: uint) -> uint {
+    iovecs = new(IOVec, n)
+    mut i = 0u
+    stride_str = sizeof(string)
+    stride_iov = sizeof(IOVec)
+
+    while i < n {
+        chunk_ptr = index_stride(chunks, i, stride_str)
+        chunk = *chunk_ptr
+
+        iov_ptr = index_stride(iovecs, i, stride_iov)
+        *iov_ptr = IOVec { base: chunk.raw_ptr, len: chunk.len }
+
+        i += 1u
+    }
+
+    wrote = 0u
+    _ = fd_write(1, iovecs, n, &wrote)
+    wrote
+}
+
+fn main() {
+    base = new(string, 2u)
+    stride_str = sizeof(string)
+
+    p0 = index_stride(base, 0u, stride_str)
+    *p0 = "hello, world"
+
+    p1 = index_stride(base, 1u, stride_str)
+    *p1 = "\n"
+
+    _ = writev_stdout(base, 2u)
 }

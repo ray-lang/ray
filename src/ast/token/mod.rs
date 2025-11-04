@@ -415,7 +415,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Dollar => "$".to_string(),
             TokenKind::Hash => "#".to_string(),
             TokenKind::Underscore => "_".to_string(),
-            TokenKind::NewLine => "\n".to_string(),
+            TokenKind::NewLine => "\\n".to_string(),
             TokenKind::Whitespace => " ".to_string(),
             TokenKind::Comment { kind, .. } => match kind {
                 CommentKind::ModuleDoc => "//!".to_string(),

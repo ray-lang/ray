@@ -7,7 +7,7 @@ use crate::{
     errors::{RayError, RayErrorKind, RayResult},
     libgen::RayLib,
     lir::Program,
-    parse::{self, ParseOptions, Parser},
+    parse::{self, ParseDiagnostics, ParseOptions, Parser},
     pathlib::FilePath,
     span::{Source, SourceMap, Span},
     strutils, transform,
@@ -161,7 +161,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         root_fp: &FilePath,
         input_path: &FilePath,
         module_path: ast::Path,
-    ) -> Result<Scope, RayError> {
+    ) -> Result<Scope, Vec<RayError>> {
         let mut filepaths = vec![root_fp.clone()];
         let mut submodules = vec![];
         let mut stmts = root_file.stmts.drain(..).collect::<Vec<_>>();
@@ -179,7 +179,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                         stmts.extend(f.stmts);
                         decls.extend(f.decls);
                     }
-                    Err(e) => self.errors.push(e),
+                    Err(e) => self.errors.extend(e),
                 }
             }
 
@@ -188,7 +188,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 match self.build_from_path(&f, Some(m)) {
                     Ok(Some(m)) => submodules.push(m.path),
                     Ok(None) => { /* do nothing */ }
-                    Err(e) => self.errors.push(e),
+                    Err(e) => self.errors.extend(e),
                 }
             }
         }
@@ -258,7 +258,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                                 }
                                 imports.push(scope)
                             }
-                            Err(err) => self.errors.push(err),
+                            Err(err) => self.errors.extend(err),
                             Ok(None) => continue,
                         }
                     }
@@ -293,7 +293,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &mut self,
         src: String,
         module_path: ast::Path,
-    ) -> Result<Scope, RayError> {
+    ) -> Result<Scope, Vec<RayError>> {
         // check if module has already been built
         if self.module_paths.contains(&module_path) {
             return Ok(module_path.into());
@@ -302,7 +302,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         self.module_paths.insert(module_path.clone());
 
         let mut srcmap = SourceMap::new();
-        let root_file = Parser::parse_from_src(
+        let root_file = match Parser::parse_from_src(
             &src,
             ParseOptions {
                 filepath: FilePath::new(),
@@ -311,7 +311,13 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 use_stdin: false,
             },
             &mut srcmap,
-        )?;
+        ) {
+            ParseDiagnostics {
+                value: Some(file),
+                errors,
+            } if errors.is_empty() => file,
+            ParseDiagnostics { value: _, errors } => return Err(errors),
+        };
 
         // the "filepath"
         let fpath = FilePath::new();
@@ -322,7 +328,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &mut self,
         input_path: &FilePath,
         module_path: Option<ast::Path>,
-    ) -> Result<Option<Scope>, RayError> {
+    ) -> Result<Option<Scope>, Vec<RayError>> {
         log::debug!(
             "build from path: {} (module_path = {:?})",
             input_path,
@@ -364,7 +370,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         input_path: &FilePath,
         module_path: Option<ast::Path>,
         overlays: Option<HashMap<FilePath, String>>,
-    ) -> Result<Option<Scope>, RayError> {
+    ) -> Result<Option<Scope>, Vec<RayError>> {
         let prev = if let Some(overlays) = overlays {
             self.overlays.replace(overlays)
         } else {
@@ -380,8 +386,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         srcmap: &mut SourceMap,
         input_path: &FilePath,
         module_path: &ast::Path,
-    ) -> Result<ast::File, RayError> {
-        if let Some(src) = self.overlays.as_ref().and_then(|o| o.get(input_path)) {
+    ) -> Result<ast::File, Vec<RayError>> {
+        let diag = if let Some(src) = self.overlays.as_ref().and_then(|o| o.get(input_path)) {
             log::info!("parsing {} (overlay)", input_path);
             Parser::parse_from_src(
                 src,
@@ -404,7 +410,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 },
                 srcmap,
             )
-        }
+        };
+
+        diag.into()
     }
 
     fn add_stdlib_import<I, P>(
@@ -428,7 +436,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             match self.build_from_path(&input_path, Some(core_path)) {
                 Ok(Some(scope)) => imports.push(scope),
                 Ok(None) => { /* do nothing */ }
-                Err(err) => self.errors.push(err),
+                Err(err) => self.errors.extend(err),
             }
         }
     }
@@ -667,7 +675,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                         named_path: Some(path),
                     });
                 }
-                Err(e) => self.errors.push(e),
+                Err(e) => self.errors.extend(e),
             }
         } else {
             // we couldn't find a module based on the path

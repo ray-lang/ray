@@ -25,8 +25,13 @@ impl Parser<'_> {
         let body = if !only_sigs {
             let body_start = self.lex.position();
             let expr = if expect_if!(self, TokenKind::FatArrow) {
-                self.parse_expr(&ctx).recover_with_ctx(
-                    self,
+                let parser = &mut self
+                    .with_scope(&ctx)
+                    .with_description("parse arrow expression")
+                    .with_newline_mode(NewlineMode::Suppress);
+                let arrow_ctx = parser.ctx_clone();
+                parser.parse_expr(&arrow_ctx).recover_with_ctx(
+                    parser,
                     RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
                         .with_newline(true)
                         .with_decl_stops(false),
@@ -208,18 +213,14 @@ impl Parser<'_> {
         };
 
         let f = &f;
-        let ((params, _), spans) = self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
-            let stop_ref = stop.as_ref();
-            let seq_ctx = RecoveryCtx::default_seq(stop_ref)
-                .with_trailing(trailing)
-                .with_newline(false);
+        let ((params, _), spans) =
+            self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+                let stop_ref = stop.as_ref();
+                let seq_ctx = RecoveryCtx::default_seq(stop_ref)
+                    .with_trailing(trailing)
+                    .with_newline(false);
 
-            parser.parse_sep_seq(
-                &TokenKind::Comma,
-                trailing,
-                stop_ref,
-                ctx,
-                |parser, ctx| {
+                parser.parse_sep_seq(&TokenKind::Comma, trailing, stop_ref, ctx, |parser, ctx| {
                     let fault_pos = parser.lex.position();
                     let mut param = f(parser)
                         .map(Some)
@@ -255,9 +256,8 @@ impl Parser<'_> {
                     }
 
                     Ok(param)
-                },
-            )
-        })?;
+                })
+            })?;
 
         let (l_span, r_span) = spans.expect("function parameters should have paren spans");
         Ok((

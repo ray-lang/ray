@@ -112,7 +112,7 @@ impl Parser<'_> {
     pub(crate) fn parse_decl(&mut self, kind: &TokenKind, ctx: &ParseContext) -> DeclResult {
         Ok(match kind {
             TokenKind::Extern => self.parse_extern(ctx)?,
-            TokenKind::Struct => {
+            TokenKind::Struct | TokenKind::Record => {
                 let (st, span) = self.parse_struct(ctx)?;
                 let path = ctx.path.append(&st.path);
                 self.mk_decl(Decl::Struct(st), span, path)
@@ -594,8 +594,8 @@ impl Parser<'_> {
                     let end = self.srcmap.span_of(&n).end;
                     fields.push(n);
 
-                    let next_comma = expect_if!(self, TokenKind::Comma);
-                    if !self.is_eol() && !next_comma {
+                    let next_comma = peek!(self, TokenKind::Comma);
+                    if !self.is_eol() && !next_comma && !peek!(self, TokenKind::RightCurly) {
                         Result::<(), RayError>::Err(RayError {
                             msg: "fields must be separated by a newline or comma".to_string(),
                             src: vec![self.mk_src(Span { start: end, end })],
@@ -609,9 +609,15 @@ impl Parser<'_> {
                                 .with_decl_stops(false),
                             |_, _| (),
                         );
-                        if peek!(self, TokenKind::RightCurly) || self.is_eof() {
-                            break;
-                        }
+                    }
+
+                    if next_comma {
+                        // consume it
+                        let _ = self.token();
+                    }
+
+                    if peek!(self, TokenKind::RightCurly) || self.is_eof() {
+                        break;
                     }
                 }
                 None => {

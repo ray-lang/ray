@@ -80,6 +80,11 @@ where
         );
     }
 
+    log::debug!(
+        "LLVM Module (BEFORE PASSES):\n--------------\n{}",
+        module.print_to_string().to_string()
+    );
+
     // TODO: handle optimization level
     let pass_options = PassBuilderOptions::create();
 
@@ -89,7 +94,7 @@ where
     //   - sroa (breaks up allocas)
     //   - instcombine, reassociate, gvn, simplifycfg (classic cleanups)
     let passes = match options.opt_level {
-        OptLevel::O0 => "function(mem2reg,sroa,instcombine,reassociate,gvn,simplifycfg)",
+        OptLevel::O0 => "",
         OptLevel::O1 => "default<O1>",
         OptLevel::O2 => "default<O2>",
         OptLevel::O3 => "default<O3>",
@@ -97,11 +102,13 @@ where
         OptLevel::Oz => "default<Oz>",
     };
 
-    if let Some(err) = module
-        .run_passes(passes, &ctx.target_machine, pass_options)
-        .err()
-    {
-        panic!("error during passes: {}", err);
+    if !passes.is_empty() {
+        if let Some(err) = module
+            .run_passes(passes, &ctx.target_machine, pass_options)
+            .err()
+        {
+            panic!("error during passes: {}", err);
+        }
     }
 
     if let Err(err) = module.verify() {
@@ -246,11 +253,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 .module
                 .add_global(i32_ty, Some(AddressSpace::default()), name);
             global.set_linkage(Linkage::External);
-            global.set_initializer(&i32_ty.const_zero());
-            global.set_constant(false);
 
             let ptr = global.as_pointer_value();
-            self.pointee_tys.insert(ptr, Ty::i32());
+            self.register_pointee_ty(ptr, Ty::i32());
         }
     }
 
@@ -307,9 +312,14 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         self.pointee_tys.get(&ptr).unwrap()
     }
 
+    fn register_pointee_ty(&mut self, ptr: PointerValue<'ctx>, ty: Ty) {
+        log::debug!("[register_pointee_ty] ptr={} ty={}", ptr.to_string(), ty);
+        self.pointee_tys.insert(ptr, ty);
+    }
+
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
         match container_ty {
-            ty if ty.is_struct(self.tcx) => {
+            ty if ty.is_struct(self.tcx) || ty.is_record(self.tcx) => {
                 let fqn = ty
                     .get_path()
                     .expect("struct type missing fully-qualified name");
@@ -348,19 +358,30 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         self.load_pointer(ptr)
     }
 
+    fn is_local_slot(&mut self, ptr: &PointerValue<'ctx>) -> bool {
+        self.locals.values().any(|slot_ptr| ptr == slot_ptr)
+    }
+
     fn load_pointer(
         &mut self,
         ptr: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, BuilderError> {
         let pointee_ty = self.get_pointee_ty(ptr).clone();
         let llvm_ty = self.to_llvm_type(&pointee_ty);
-        let loaded = self.builder.build_load(llvm_ty, ptr, "")?;
+        let loaded = self
+            .builder
+            .build_load(llvm_ty, ptr, &format!("load:<{}>", pointee_ty))?;
         if let Ty::Ptr(inner) = &pointee_ty {
             if let BasicValueEnum::PointerValue(new_ptr) = loaded {
-                self.pointee_tys.insert(new_ptr, inner.as_ref().clone());
+                self.register_pointee_ty(new_ptr, inner.as_ref().clone());
             }
         }
 
+        log::debug!(
+            "[load_pointer] returning loaded value loaded={:?} from ptr={}",
+            loaded,
+            ptr
+        );
         Ok(loaded)
     }
 
@@ -369,41 +390,109 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         ptr: PointerValue<'ctx>,
         index: usize,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
+        log::debug!(
+            "[get_element_ptr] entered with ptr={} index={}",
+            ptr.to_string(),
+            index
+        );
         let mut container_ty = self.get_pointee_ty(ptr).clone();
+        // Debug log: original pointee type and if base is a local slot
+        let original_pointee = self.get_pointee_ty(ptr).clone();
+        log::debug!(
+            "[get_element_ptr] original_pointee_ty={} (local_slot={}) index={}",
+            original_pointee,
+            self.is_local_slot(&ptr),
+            index
+        );
         let mut base_ptr = ptr;
-        if let Ty::Ptr(inner) = &container_ty {
-            container_ty = inner.as_ref().clone();
+        log::debug!(
+            "[get_element_ptr] container_ty={:?} base_ptr={:?} index={}",
+            container_ty,
+            base_ptr,
+            index
+        );
+        while let Ty::Ptr(inner) = &container_ty {
+            let inner_ty = inner.as_ref();
+            if !(inner_ty.is_struct(self.tcx) || inner_ty.is_record(self.tcx)) {
+                log::debug!(
+                    "[get_element_ptr] breaking before load: inner_ty is not struct/record (inner_ty={})",
+                    inner_ty
+                );
+                break;
+            }
+
+            container_ty = inner_ty.clone();
+            log::debug!(
+                "[get_element_ptr] loading base_ptr to reach struct/record payload: inner_ty={}",
+                container_ty
+            );
             base_ptr = self.load_pointer(base_ptr)?.into_pointer_value();
+            log::debug!(
+                "[get_element_ptr] loaded pointer: container_ty={:?} base_ptr={:?}",
+                container_ty,
+                base_ptr,
+            );
         }
 
+        log::debug!(
+            "[get_element_ptr] after_chase: base_ptr={} container_ty={} (local_slot={})",
+            base_ptr.to_string(),
+            container_ty,
+            self.is_local_slot(&base_ptr)
+        );
         // Compute the element (field) Ray type after resolving the actual container type.
         let field_ray_ty = self.get_element_ty(&container_ty, index);
+        log::debug!("[get_element_ptr] field_ray_ty={:?}", field_ray_ty);
+
+        let field_storage_llty = self.to_llvm_type(&field_ray_ty);
+        log::debug!(
+            "[get_element_ptr] field_storage_llvm_ty={}",
+            field_storage_llty.print_to_string().to_string()
+        );
+
         let offset = self.ptr_type().const_int(index as u64, false);
 
         // Build the GEP and determine the correct pointee mapping for the resulting pointer.
-        let (gep, gep_pointee_ty) = match container_ty {
-            ty if ty.is_struct(self.tcx) => {
+        let (gep, gep_pointee_ty) = match &container_ty {
+            ty if ty.is_struct(self.tcx) || ty.is_record(self.tcx) => {
                 let fqn = ty
                     .get_path()
                     .expect("struct type missing fully-qualified name");
                 let llvm_struct = self.get_struct_type(&fqn);
+                log::debug!(
+                    "[get_element_ptr] struct/record GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
+                    fqn,
+                    base_ptr.to_string(),
+                    index,
+                    llvm_struct.print_to_string().to_string()
+                );
 
                 // For struct fields, the *storage* type may be a pointer (e.g., when the Ray field
                 // type is itself a struct and we lower structs-as-references). If the storage is a
                 // pointer, the GEP points at a pointer slot, so the pointee type we track should be
                 // `Ptr(field_ty)`; otherwise it is just `field_ty`.
-                let field_storage_llty = self.to_llvm_type(&field_ray_ty);
                 let gep = unsafe {
                     self.builder
                         .build_gep(llvm_struct, base_ptr, &[self.zero(), offset], "")?
                 };
                 let pointee = match field_storage_llty {
-                    BasicTypeEnum::PointerType(_) => Ty::Ptr(Box::new(field_ray_ty.clone())),
+                    BasicTypeEnum::PointerType(_) if field_ray_ty.is_struct(self.tcx) => {
+                        Ty::Ptr(Box::new(field_ray_ty.clone()))
+                    }
                     _ => field_ray_ty.clone(),
                 };
                 (gep, pointee)
             }
             Ty::Array(_, _) | Ty::Ptr(_) => {
+                log::debug!(
+                    "[get_element_ptr] array/ptr GEP: base_ptr={} index={} element_ray_ty={} element_llvm_ty={}",
+                    base_ptr.to_string(),
+                    index,
+                    field_ray_ty,
+                    self.to_llvm_type(&field_ray_ty)
+                        .print_to_string()
+                        .to_string()
+                );
                 // For arrays/pointers, the element storage type is exactly `field_ray_ty`.
                 let gep = unsafe {
                     self.builder.build_gep(
@@ -413,12 +502,27 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                         "",
                     )?
                 };
+                log::debug!(
+                    "[get_element_ptr] array/ptr pointee mapping: tracked_pointee={}",
+                    field_ray_ty
+                );
                 (gep, field_ray_ty.clone())
             }
             ty => panic!("container is not indexable: {:?}", ty),
         };
 
-        self.pointee_tys.insert(gep, gep_pointee_ty);
+        log::debug!(
+            "[get_element_ptr] registering pointee: gep_ptr={} pointee_ty={}",
+            gep.to_string(),
+            gep_pointee_ty
+        );
+        self.register_pointee_ty(gep, gep_pointee_ty);
+        log::debug!(
+            "[get_element_ptr] done: returning gep_ptr={} for index={} (final_container_ty={})",
+            gep.to_string(),
+            index,
+            container_ty
+        );
         Ok(gep)
     }
 
@@ -436,7 +540,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             self.builder
                 .build_gep(self.lcx.i8_type(), ptr, &[offset], "")?
         };
-        self.pointee_tys.insert(gep, Ty::i8());
+        self.register_pointee_ty(gep, Ty::i8());
         Ok(gep)
     }
 
@@ -474,7 +578,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             panic!("cannot find field {} on {}", field, lhs_fqn);
         }
 
-        // TODO: what to do about size???
         match var {
             lir::Variable::Data(..) => todo!(),
             lir::Variable::Global(..) => todo!(),
@@ -595,16 +698,20 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
 
         let llvm_ty = self.to_llvm_type(ty);
-        let alloca = self.builder.build_alloca(llvm_ty, "")?;
+
         // Struct values lower to raw pointers; local slots holding a struct therefore
         // contain a pointer value
         // Track that as Ty::Ptr(struct_ty) so later loads know to unwrap once
-        if ty.is_struct(self.tcx) {
-            self.pointee_tys
-                .insert(alloca, Ty::Ptr(Box::new(ty.clone())));
+        let pointee_ty = if ty.innermost().is_struct(self.tcx) {
+            Ty::ptr(ty.clone())
         } else {
-            self.pointee_tys.insert(alloca, ty.clone());
-        }
+            ty.clone()
+        };
+
+        let alloca = self
+            .builder
+            .build_alloca(llvm_ty, &format!("alloca:<{}>", pointee_ty))?;
+        self.register_pointee_ty(alloca, pointee_ty);
 
         // restore the position
         if let Some(bb) = saved_bb {
@@ -631,24 +738,34 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         mut value: BasicValueEnum<'ctx>,
     ) -> Result<InstructionValue<'ctx>, BuilderError> {
         // Decide how to treat the RHS based on what the destination slot expects.
-        // 1) If destination is an aggregate (struct/tuple/array), copy bytes via memcpy.
+        // 1) If destination is an aggregate (record/tuple/array), copy bytes via memcpy.
         //    If RHS is not a pointer, spill it to a stack temp first so we can memcpy.
         // 2) Otherwise fall back to pointer/scalar-aware store semantics.
         let dest_ty = self.get_pointee_ty(ptr).clone();
+        log::debug!("[store] dest_ty = {}", dest_ty);
 
         if dest_ty.is_aggregate() && !dest_ty.is_struct(self.tcx) {
             // If RHS is already a pointer to an aggregate, memcpy directly.
             if let BasicValueEnum::PointerValue(rhs_ptr) = value {
-                if self.get_pointee_ty(rhs_ptr).is_aggregate() {
+                let src_ty = self.get_pointee_ty(rhs_ptr).clone();
+                log::debug!("[store] value is pointer: src_ty = {}", src_ty);
+                if src_ty.is_aggregate() {
                     let td = self.target_machine.get_target_data();
                     let dst_llty = self.to_llvm_type(&dest_ty);
                     let size = dst_llty.size_of().unwrap();
                     let dst_align = td.get_abi_alignment(&dst_llty);
 
-                    let src_ty = self.get_pointee_ty(rhs_ptr).clone();
                     let src_llty = self.to_llvm_type(&src_ty);
                     let src_align = td.get_abi_alignment(&src_llty);
 
+                    log::debug!(
+                        "[store] is_aggregate=true building memcpy: ptr={} dst_align={} rhs_ptr={}, src_align={} size={}",
+                        ptr,
+                        dst_align,
+                        rhs_ptr,
+                        src_align,
+                        size
+                    );
                     return Ok(self
                         .builder
                         .build_memcpy(ptr, dst_align, rhs_ptr, src_align, size)
@@ -661,7 +778,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             // Spill non-pointer (value) aggregates to a stack temp, then memcpy.
             let tmp = self.alloca(&dest_ty)?;
             // tmp points to dest_ty; remember its pointee
-            self.pointee_tys.insert(tmp, dest_ty.clone());
+            self.register_pointee_ty(tmp, dest_ty.clone());
 
             // Store the value into the temp. For pointer RHS that's not an aggregate pointee,
             // ensure we load to a value first.
@@ -677,6 +794,15 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             let dst_align = td.get_abi_alignment(&dst_llty);
             let src_align = dst_align; // same type we just spilled
 
+            log::debug!(
+                "[store] building memcpy ptr={} dst_align={} tmp={} src_align={} size={}",
+                ptr,
+                dst_align,
+                tmp,
+                src_align,
+                size
+            );
+
             return Ok(self
                 .builder
                 .build_memcpy(ptr, dst_align, tmp, src_align, size)
@@ -685,28 +811,61 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 .unwrap());
         }
 
+        log::debug!(
+            "[store] dest_ptr={} dest_ty={} value_kind={:?}",
+            ptr.to_string(),
+            dest_ty,
+            value
+        );
+        log::debug!("[store] initial RHS kind={:?}", value);
+
         // Non-aggregate destinations:
-        match dest_ty {
-            Ty::Ptr(_) => {
-                if let BasicValueEnum::PointerValue(rhs_ptr) = value {
+        if let BasicValueEnum::PointerValue(rhs_ptr) = value
+            && self.is_local_slot(&rhs_ptr)
+        {
+            match dest_ty {
+                Ty::Ptr(_) => {
                     if let Some(rhs_pointee) = self.pointee_tys.get(&rhs_ptr) {
                         if matches!(rhs_pointee, Ty::Ptr(_)) {
-                            // Storing to a pointer slot, but RHS is an address of a pointer.
+                            log::debug!(
+                                "[store] loading pointer RHS {} -> {:?}",
+                                rhs_ptr.to_string(),
+                                rhs_pointee
+                            );
+                            // Storing to a pointer slot, but RHS points at another pointer.
                             // Load once so we store the pointer VALUE, not the address of that pointer.
                             value = self.load_pointer(rhs_ptr)?;
+                            log::debug!(
+                                "[store] post-load value kind={:?} (from rhs_ptr={})",
+                                value,
+                                rhs_ptr.to_string()
+                            );
                         }
                     }
                 }
-            }
-            _ => {
-                if let BasicValueEnum::PointerValue(rhs_ptr) = value {
+                _ => {
+                    log::debug!(
+                        "[store] dest scalar, loading pointer RHS {}",
+                        rhs_ptr.to_string()
+                    );
                     // Destination expects a non-pointer (scalar) value.
                     value = self.load_pointer(rhs_ptr)?;
+                    log::debug!(
+                        "[store] post-load value kind={:?} (from rhs_ptr={})",
+                        value,
+                        rhs_ptr.to_string()
+                    );
                 }
             }
         }
 
-        self.builder.build_store(ptr, value)
+        let iv = self.builder.build_store(ptr, value)?;
+        log::debug!(
+            "[store] completed store: dest_ptr={} value_kind={:?}",
+            ptr.to_string(),
+            value
+        );
+        Ok(iv)
     }
 
     /// Builds set local for local index
@@ -779,6 +938,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         dst_ty: &Ty,
         src_val: BasicValueEnum<'ctx>,
     ) -> Result<InstructionValue<'ctx>, BuilderError> {
+        log::debug!(
+            "[memcpy_aggregate_from_value] entered: dst_ptr={} dst_ty={:?}",
+            dst_ptr.to_string(),
+            dst_ty
+        );
         // Resolve a source pointer to the aggregate storage.
         let src_ptr = if let BasicValueEnum::PointerValue(p) = src_val {
             // If p already points to an aggregate, use it directly.
@@ -939,10 +1103,20 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         let fn_val = self.get_fn();
         let llvm_ret_ty = fn_val.get_type().get_return_type().unwrap();
 
-        // If LLVM expects a pointer, return the pointer as-is; otherwise, load once.
+        // If LLVM expects a pointer, return the pointer as-is; otherwise, load once,
+        // but if the pointer is a slot holding a pointer (Ty::Ptr(_)), load once so we
+        // return the pointer value, not the address of the slot.
         match (ret_val, llvm_ret_ty) {
             (BasicValueEnum::PointerValue(p), BasicTypeEnum::PointerType(_)) => {
-                self.builder.build_return(Some(&p.as_basic_value_enum()))
+                // If this pointer is actually a local slot that contains a pointer value
+                // (we track such slots with pointee type Ty::Ptr(_)), load once so the
+                // function returns the pointer VALUE and not the address of the slot.
+                if matches!(self.get_pointee_ty(p), Ty::Ptr(_)) {
+                    let loaded = self.load_pointer(p)?;
+                    self.builder.build_return(Some(&loaded))
+                } else {
+                    self.builder.build_return(Some(&p.as_basic_value_enum()))
+                }
             }
             (BasicValueEnum::PointerValue(p), _) => {
                 let loaded = self.load_pointer(p)?;
@@ -1072,7 +1246,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             );
 
             let ptr = global.as_pointer_value();
-            ctx.pointee_tys.insert(ptr, Ty::i8());
+            ctx.register_pointee_ty(ptr, Ty::i8());
             ctx.data_addrs.insert(d.key(), global);
         }
 
@@ -1085,7 +1259,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             global_val.set_initializer(&init_value);
 
             let ptr = global_val.as_pointer_value();
-            ctx.pointee_tys.insert(ptr, global.ty.mono().clone());
+            ctx.register_pointee_ty(ptr, global.ty.mono().clone());
             ctx.globals.insert(global.key(), global_val);
         }
 
@@ -1214,7 +1388,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
             if let Some(retptr_val) = params_iter.next() {
                 let retptr = retptr_val.into_pointer_value();
                 ctx.sret_param = Some(retptr);
-                ctx.pointee_tys.insert(retptr, ret_ty.clone());
+                ctx.register_pointee_ty(retptr, ret_ty.clone());
             }
         }
         for (param_val, param) in params_iter.zip(self.params.iter()) {
@@ -1321,14 +1495,24 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                 let fqn = struct_ty
                     .get_path()
                     .expect("struct type missing fully-qualified name");
-                let llvm_struct = ctx.get_struct_type(&fqn);
-                let ptr = ctx.builder.build_malloc(llvm_struct, "")?;
 
-                // Track the pointee type of the allocated pointer as the struct type.
-                ctx.pointee_tys.insert(ptr, struct_ty);
+                let struct_def = ctx.tcx.get_struct_ty(&fqn).unwrap();
 
-                // Store the pointer VALUE into the local slot (which itself points to Ty::Ptr(...)).
-                let _ = ctx.builder.build_store(slot, ptr)?;
+                match struct_def.kind {
+                    NominalKind::Struct => {
+                        let llvm_struct = ctx.get_struct_type(&fqn);
+                        let ptr = ctx
+                            .builder
+                            .build_malloc(llvm_struct, &format!("malloc:<*{}>", struct_ty))?;
+
+                        // Track the pointee type of the allocated pointer as the struct type.
+                        ctx.register_pointee_ty(ptr, struct_ty);
+
+                        // Store the pointer VALUE into the local slot (which itself points to Ty::Ptr(...)).
+                        let _ = ctx.builder.build_store(slot, ptr)?;
+                    }
+                    NominalKind::Record => { /* do nothing */ }
+                }
 
                 return Ok(None);
             }
@@ -1426,12 +1610,28 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
-        let pointee_ty = match self.ty.mono() {
-            Ty::Ptr(pointee_ty) => &pointee_ty,
+        let orig_ty = self.ty.mono();
+        let element_ty = match orig_ty.clone() {
+            Ty::Ptr(inner) => *inner,
             ty => ty,
         };
 
-        let ty = ctx.to_llvm_type(pointee_ty);
+        let pointee_ty = if orig_ty.innermost().is_struct(tcx) {
+            Ty::Ptr(Box::new(element_ty.clone()))
+        } else {
+            element_ty.clone()
+        };
+
+        let llvm_elem_ty = ctx.to_llvm_type(&element_ty);
+
+        log::debug!(
+            "[malloc] orig_ty={} pointee_ty={} elem_ray_ty={} elem_llvm_ty={} count={:?}",
+            orig_ty,
+            pointee_ty,
+            element_ty,
+            llvm_elem_ty,
+            self.count,
+        );
 
         let size = match &self.count {
             lir::Atom::Variable(v) => {
@@ -1443,8 +1643,10 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
             }
             &lir::Atom::UintConst(count, _) => {
                 if count == 1 {
-                    let ptr = ctx.builder.build_malloc(ty, "")?;
-                    ctx.pointee_tys.insert(ptr, pointee_ty.clone());
+                    let ptr = ctx
+                        .builder
+                        .build_malloc(llvm_elem_ty, &format!("malloc1:<*{}>", pointee_ty))?;
+                    ctx.register_pointee_ty(ptr, pointee_ty.clone());
                     return Ok(ptr.as_basic_value_enum());
                 }
 
@@ -1463,10 +1665,12 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
             ),
         };
 
-        let ptr = ctx
-            .builder
-            .build_array_malloc(ty, size.into_int_value(), "")?;
-        ctx.pointee_tys.insert(ptr, pointee_ty.clone());
+        let ptr = ctx.builder.build_array_malloc(
+            llvm_elem_ty,
+            size.into_int_value(),
+            &format!("malloc_array:<*{}>", pointee_ty),
+        )?;
+        ctx.register_pointee_ty(ptr, pointee_ty);
         Ok(ptr.as_basic_value_enum())
     }
 }
@@ -1480,17 +1684,38 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Load {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
+        log::debug!("[load] generating: {:?}", self);
         let mut ptr = self.src.codegen(ctx, tcx, srcmap)?.into_pointer_value();
+        if ctx.is_local_slot(&ptr) {
+            // since slots themselves are pointers to whatever is inside
+            // we need to do an initial load of the slot first
+            log::debug!("[load] loading pointer from local slot: {}", ptr);
+            ptr = ctx.load_pointer(ptr)?.into_pointer_value();
+            log::debug!("[load] loaded pointer from local slot: {}", ptr);
+        }
 
         if self.offset.ptrs > 0 {
+            log::debug!(
+                "[load] get element pointer offset.ptrs={}",
+                self.offset.ptrs
+            );
             ptr = ctx.get_element_ptr(ptr, self.offset.ptrs)?;
+            log::debug!("[load] loaded pointer after GEP: {}", ptr);
         }
 
         if self.offset.bytes > 0 {
+            log::debug!(
+                "[load] byte offset pointer offset.bytes={}",
+                self.offset.bytes
+            );
             ptr = ctx.byte_offset_ptr(ptr, self.offset.bytes)?;
+            log::debug!("[load] loaded pointer after byte offset: {}", ptr);
         }
 
-        ctx.load_pointer(ptr)
+        log::debug!("[load] dereferencing: {}", ptr);
+        let value = ctx.load_pointer(ptr)?;
+        log::debug!("[load] derefenced ptr into: {}", value);
+        Ok(value)
     }
 }
 
@@ -1647,9 +1872,18 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::GetField {
         tcx: &TyCtx,
         _: &SourceMap,
     ) -> Self::Output {
-        Ok(ctx
-            .get_field_ptr(&self.src, &self.field, tcx)?
-            .as_basic_value_enum())
+        let ptr = ctx.get_field_ptr(&self.src, &self.field, tcx)?;
+
+        log::debug!(
+            "[GetField] src={:?} field={} ptr={} pointee_ty={}",
+            self.src,
+            self.field,
+            ptr.to_string(),
+            ctx.get_pointee_ty(ptr)
+        );
+
+        // we expect the value of the field here, so load it
+        ctx.load_pointer(ptr)
     }
 }
 
@@ -1665,9 +1899,18 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::SetField {
         let ptr = ctx.get_field_ptr(&self.dst, &self.field, tcx)?;
         let field_ty = ctx.get_pointee_ty(ptr).clone();
 
+        log::debug!(
+            "[SetField] dst={:?} field={} ptr={} field_ty={}",
+            self.dst,
+            self.field,
+            ptr.to_string(),
+            field_ty
+        );
+
         // If the field itself is an aggregate (struct/tuple/array), copy bytes via memcpy.
         let value = self.value.codegen(ctx, tcx, srcmap)?;
         if field_ty.is_aggregate() && !field_ty.is_struct(tcx) {
+            log::debug!("[SetField] aggregate field; using memcpy");
             return ctx.memcpy_aggregate_from_value(ptr, &field_ty, value);
         }
 

@@ -13,6 +13,38 @@ pub enum Delimiter {
     Curly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStop {
+    Guard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryOutcome {
+    Progress { end: Pos },
+    Stopped { end: Pos, reason: RecoveryStop },
+}
+
+impl RecoveryOutcome {
+    pub fn end(self) -> Pos {
+        match self {
+            RecoveryOutcome::Progress { end }
+            | RecoveryOutcome::Stopped { end, .. } => end,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recovered<T> {
+    pub value: T,
+    pub outcome: RecoveryOutcome,
+}
+
+impl<T> Recovered<T> {
+    pub fn into_value(self) -> T {
+        self.value
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryMode {
     Stmt {
@@ -137,6 +169,13 @@ impl<'a> RecoveryCtx<'a> {
 }
 
 pub trait Recover<T> {
+    fn recover_with_ctx_outcome(
+        self,
+        parser: &mut Parser<'_>,
+        ctx: RecoveryCtx<'_>,
+        fallback: impl FnOnce(&mut Parser<'_>, RecoveryOutcome) -> T,
+    ) -> Recovered<T>;
+
     fn recover_with_ctx(
         self,
         parser: &mut Parser<'_>,
@@ -153,20 +192,43 @@ pub trait Recover<T> {
 }
 
 impl<T> Recover<T> for Result<T, RayError> {
+    fn recover_with_ctx_outcome(
+        self,
+        parser: &mut Parser<'_>,
+        ctx: RecoveryCtx<'_>,
+        fallback: impl FnOnce(&mut Parser<'_>, RecoveryOutcome) -> T,
+    ) -> Recovered<T> {
+        match self {
+            Ok(value) => Recovered {
+                value,
+                outcome: RecoveryOutcome::Progress {
+                    end: parser.lex.position(),
+                },
+            },
+            Err(err) => {
+                parser.record_parse_error(err);
+                let recovered_end = parser.recover_stmt_with_ctx(ctx);
+                let value = fallback(parser, RecoveryOutcome::Progress { end: recovered_end });
+                Recovered {
+                    value,
+                    outcome: RecoveryOutcome::Progress {
+                        end: recovered_end,
+                    },
+                }
+            }
+        }
+    }
+
     fn recover_with_ctx(
         self,
         parser: &mut Parser<'_>,
         ctx: RecoveryCtx<'_>,
         fallback: impl FnOnce(&mut Parser<'_>, Pos) -> T,
     ) -> T {
-        match self {
-            Ok(value) => value,
-            Err(err) => {
-                parser.record_parse_error(err);
-                let recovered = parser.recover_stmt_with_ctx(ctx);
-                fallback(parser, recovered)
-            }
-        }
+        self.recover_with_ctx_outcome(parser, ctx, |parser, outcome| {
+            fallback(parser, outcome.end())
+        })
+        .into_value()
     }
 
     fn recover_seq_with_ctx(

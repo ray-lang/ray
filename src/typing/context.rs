@@ -418,11 +418,6 @@ impl TyCtx {
     }
 
     pub fn get_struct_ty(&self, fqn: &Path) -> Option<&StructTy> {
-        log::debug!(
-            "[get_struct_ty] fqn={} in struct_tys={:?}",
-            fqn,
-            self.struct_tys.keys()
-        );
         self.struct_tys.get(fqn)
     }
 

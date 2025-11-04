@@ -65,7 +65,7 @@ bitflags::bitflags! {
     /// * the shape of diagnostics when recovery has to fabricate placeholders
     ///   (e.g. requiring that an expression follow a comma so the error reads
     ///   "expected expression after the previous comma").
-    pub struct Restrictions: u8 {
+    pub struct Restrictions: u16 {
         /// The next token must begin an expression (set after a comma);
         /// combined with `AFTER_COMMA` it gives better error messages.
         const EXPECT_EXPR   = 1 << 0;
@@ -88,6 +88,8 @@ bitflags::bitflags! {
         /// Currently parsing inside parentheses (newline handling differs);
         /// it relaxes newline handling so multiline expressions can be parsed.
         const IN_PAREN      = 1 << 7;
+        /// The parsing is at the top-level
+        const AT_TOP_LEVEL  = 1 << 8;
     }
 }
 
@@ -99,6 +101,12 @@ pub struct ParseOptions {
     pub original_filepath: FilePath,
 }
 
+#[derive(Default)]
+struct DocComments {
+    module: Option<String>,
+    item: Option<String>,
+}
+
 /// Result of attempting to parse a Ray source module, including any diagnostics.
 #[derive(Debug)]
 pub struct ParseDiagnostics<T> {
@@ -106,10 +114,26 @@ pub struct ParseDiagnostics<T> {
     pub errors: Vec<RayError>,
 }
 
-#[derive(Default)]
-struct DocComments {
-    module: Option<String>,
-    item: Option<String>,
+impl<T> Into<Result<T, Vec<RayError>>> for ParseDiagnostics<T> {
+    fn into(self) -> Result<T, Vec<RayError>> {
+        if !self.errors.is_empty() {
+            return Err(self.errors);
+        }
+
+        if let Some(value) = self.value {
+            return Ok(value);
+        }
+
+        // we shouldn't get here, because we should either have:
+        // - a value with zero or more errors
+        // - no value and zero or more errors
+        Err(vec![RayError {
+            msg: "unknown error".to_string(),
+            src: vec![],
+            kind: RayErrorKind::Unknown,
+            context: None,
+        }])
+    }
 }
 
 impl<T> ParseDiagnostics<T> {
@@ -212,15 +236,7 @@ pub struct Parser<'src> {
 }
 
 impl<'src> Parser<'src> {
-    pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseResult<File> {
-        let src = Self::get_src(&options)?;
-        Self::parse_from_src(&src, options, srcmap)
-    }
-
-    pub fn parse_with_diagnostics(
-        options: ParseOptions,
-        srcmap: &'src mut SourceMap,
-    ) -> ParseDiagnostics<File> {
+    pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseDiagnostics<File> {
         let src = match Self::get_src(&options) {
             Ok(src) => src,
             Err(err) => return ParseDiagnostics::failure(err),
@@ -232,7 +248,7 @@ impl<'src> Parser<'src> {
         src: &str,
         options: ParseOptions,
         srcmap: &'src mut SourceMap,
-    ) -> ParseResult<File> {
+    ) -> ParseDiagnostics<File> {
         let lex = Lexer::new(src);
         let mut parser = Self {
             lex,
@@ -240,12 +256,20 @@ impl<'src> Parser<'src> {
             srcmap,
             errors: Vec::new(),
         };
-        let file = parser.parse_into_file()?;
-        let extra_errors = mem::take(&mut parser.errors);
-        if let Some(err) = extra_errors.into_iter().next() {
-            Err(err)
-        } else {
-            Ok(file)
+
+        match parser.parse_into_file() {
+            Ok(file) => {
+                let errors = mem::take(&mut parser.errors);
+                ParseDiagnostics::success(file, errors)
+            }
+            Err(err) => {
+                let mut errors = mem::take(&mut parser.errors);
+                errors.insert(0, err);
+                ParseDiagnostics {
+                    value: None,
+                    errors,
+                }
+            }
         }
     }
 
@@ -332,6 +356,7 @@ impl<'src> Parser<'src> {
                 }
                 TokenKind::Extern
                 | TokenKind::Struct
+                | TokenKind::Record
                 | TokenKind::Trait
                 | TokenKind::TypeAlias
                 | TokenKind::Impl
@@ -351,12 +376,32 @@ impl<'src> Parser<'src> {
                     items.decls.push(decl);
                     Ok(end)
                 }
-                _ => this.parse_stmt(decs, doc, &ctx).and_then(|stmt| {
-                    items.stmts.push(stmt);
+                _ => {
+                    this.parse_stmt(decs, doc, &ctx)
+                        .map_err(|err| {
+                            if err.kind == RayErrorKind::UnexpectedToken {
+                                let tok = this.peek();
+                                let msg = format!(
+                                    "expected a top-level statement or expression, but found `{}`",
+                                    tok
+                                );
+                                return RayError {
+                                    msg,
+                                    src: err.src,
+                                    kind: RayErrorKind::Parse,
+                                    context: err.context,
+                                };
+                            }
 
-                    // make sure we're at the end of the line or there's a semi-colon
-                    this.expect_semi_or_eol(&ctx)
-                }),
+                            err
+                        })
+                        .and_then(|stmt| {
+                            items.stmts.push(stmt);
+
+                            // make sure we're at the end of the line or there's a semi-colon
+                            this.expect_semi_or_eol(&ctx)
+                        })
+                }
             }
         })?;
 
@@ -584,6 +629,19 @@ impl<'src> Parser<'src> {
     }
 
     fn record_parse_error(&mut self, err: RayError) {
+        if let Some(last_err) = self.errors.last() {
+            if last_err == &err {
+                // This is guardrail to prevent looping on the same location
+                let tok = self.lex.token();
+                log::debug!(
+                    "[record parse error] DUPLICATE ERROR: consuming token {:?}",
+                    tok
+                );
+                return;
+            }
+        }
+
+        log::debug!("[record parse error] {:#?}", err);
         self.errors.push(err);
     }
 
@@ -1553,7 +1611,7 @@ impl<'src> Parser<'src> {
                 filepath: self.options.filepath.clone(),
                 ..Default::default()
             }],
-            kind: RayErrorKind::Parse,
+            kind: RayErrorKind::UnexpectedToken,
             context: ctx.description.clone(),
         }
     }

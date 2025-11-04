@@ -229,6 +229,7 @@ impl Driver {
     }
 
     pub fn emit_errors(&mut self, errs: Vec<RayError>) {
+        log::debug!("emitting errors: {:#?}", errs);
         for ((kind, src), group) in &errs.into_iter().group_by(|err| (err.kind, err.src.clone())) {
             let group_errs = group.collect::<Vec<_>>();
             let msg = group_errs
