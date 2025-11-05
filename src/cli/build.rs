@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use log;
 
-use crate::driver::{BuildOptions, Driver};
+use ray_driver::{BuildOptions, Driver};
 
 pub(super) fn action(driver: &mut Driver, options: BuildOptions) {
     let start_time = Instant::now();

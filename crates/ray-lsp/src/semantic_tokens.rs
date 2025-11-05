@@ -1,6 +1,6 @@
 //! Semantic token support for `ray-lsp`.
 
-use ray::ide::semantic_tokens::{
+use ray_core::ide::semantic_tokens::{
     self as semantic, SemanticToken as RayToken, SemanticTokenKind as RayKind,
     SemanticTokenModifier as RayModifier,
 };

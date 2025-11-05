@@ -1,14 +1,18 @@
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+};
+
 use top::{Subst, Substitutable, TyVar as TopTyVar, solver::SolveResult};
 
 use crate::{
     ast::{self, Decl, Expr, Import, Module, Path},
     collections::nametree::Scope,
-    driver::RayPaths,
     errors::{RayError, RayErrorKind, RayResult},
     libgen::RayLib,
     lir::Program,
     parse::{self, ParseDiagnostics, ParseOptions, Parser},
-    pathlib::FilePath,
+    pathlib::{FilePath, RayPaths},
     span::{Source, SourceMap, Span},
     strutils, transform,
     typing::{
@@ -19,16 +23,11 @@ use crate::{
     },
 };
 
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-};
-
 use super::NameContext;
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
-pub(crate) struct ModBuilderResult {
+pub struct ModBuilderResult {
     pub module: Module<(), Decl>,
     pub tcx: TyCtx,
     pub ncx: NameContext,
@@ -64,7 +63,7 @@ where
 }
 
 impl<'a> ModuleBuilder<'a, Expr, Decl> {
-    pub(crate) fn new(paths: &'a RayPaths, c_include_paths: Vec<FilePath>, no_core: bool) -> Self {
+    pub fn new(paths: &'a RayPaths, c_include_paths: Vec<FilePath>, no_core: bool) -> Self {
         ModuleBuilder {
             paths,
             c_include_paths,
@@ -79,11 +78,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn from_src(
-        src: &str,
-        module_path: ast::Path,
-    ) -> Result<ModBuilderResult, Vec<RayError>> {
+    pub fn from_src(src: &str, module_path: ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
         let paths = RayPaths::default();
         let mut builder = ModuleBuilder::new(&paths, vec![], true);
         let scope = builder.build_from_src(src.to_string(), module_path)?;
@@ -94,7 +89,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         self.errors
     }
 
-    pub(crate) fn finish(self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
+    pub fn finish(self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
         if !self.errors.is_empty() {
             return Err(self.errors);
         }

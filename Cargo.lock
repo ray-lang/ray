@@ -1141,12 +1141,57 @@ dependencies = [
  "petgraph",
  "pprof",
  "rand",
- "ray_tyinf",
+ "ray-core",
+ "ray-driver",
+ "ray-lsp",
+ "ray-shared",
  "serde",
  "serde_derive",
  "structopt",
  "top",
  "xxhash-rust",
+]
+
+[[package]]
+name = "ray-core"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bitflags 1.2.1",
+ "clap 3.2.2",
+ "colored 2.0.0",
+ "fern",
+ "fnv",
+ "home",
+ "inkwell",
+ "itertools",
+ "lang-c",
+ "lazy_static",
+ "lld",
+ "log",
+ "parity-wasm",
+ "petgraph",
+ "pprof",
+ "rand",
+ "ray-shared",
+ "serde",
+ "serde_derive",
+ "structopt",
+ "top",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "ray-driver"
+version = "0.1.0"
+dependencies = [
+ "clap 3.2.2",
+ "inkwell",
+ "itertools",
+ "log",
+ "ray-core",
+ "ray-shared",
+ "top",
 ]
 
 [[package]]
@@ -1156,15 +1201,20 @@ dependencies = [
  "env_logger",
  "log",
  "pretty_assertions",
- "ray",
+ "ray-core",
+ "ray-driver",
  "serde_json",
  "tokio",
  "tower-lsp",
 ]
 
 [[package]]
-name = "ray_tyinf"
+name = "ray-shared"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_derive",
+]
 
 [[package]]
 name = "redox_syscall"

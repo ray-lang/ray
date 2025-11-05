@@ -3,7 +3,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::ops::Div;
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};

@@ -3,8 +3,8 @@ use crate::{
         self, Assign, Curly, CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Import, ImportKind,
         Name, Node, Pattern, Struct, Trait,
     },
-    parse::{ParseDiagnostics, ParseOptions, Parser},
     pathlib::FilePath,
+    parse::{ParseDiagnostics, ParseOptions, Parser},
     span::{Pos, SourceMap, Span, TriviaKind, parsed::Parsed},
     typing::ty::{Ty, TyScheme},
 };

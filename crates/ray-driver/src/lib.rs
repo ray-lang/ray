@@ -1,19 +1,16 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    env, fs,
-    path::PathBuf,
+    fs,
 };
 
 use itertools::Itertools;
-use top::{Subst, Substitutable};
-
-use crate::{
+use ray_core::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Path, Pattern},
-    codegen::CodegenOptions,
+    codegen::{CodegenOptions, llvm},
     errors::{RayError, RayErrorKind},
     libgen, lir,
-    pathlib::FilePath,
+    pathlib::{FilePath, RayPaths},
     sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
     span::{SourceMap, Span},
     typing::{
@@ -22,11 +19,14 @@ use crate::{
         ty::{Ty, TyScheme, TyVar},
     },
 };
-
-use crate::codegen::llvm;
+use ray_shared::optlevel::OptLevel;
+use top::{Subst, Substitutable};
 
 mod analyze;
 mod build;
+
+#[cfg(test)]
+mod tests;
 
 pub use analyze::{
     AnalysisFormat, AnalysisReport, AnalyzeOptions, DefinitionInfo, SymbolInfo, SymbolKind,
@@ -34,7 +34,6 @@ pub use analyze::{
 };
 pub use build::BuildOptions;
 pub use build::EmitType;
-pub use build::OptLevel;
 
 pub struct FrontendResult {
     pub module_path: Path,
@@ -47,66 +46,6 @@ pub struct FrontendResult {
     pub libs: Vec<lir::Program>,
     pub paths: HashSet<Path>,
     pub definitions: HashMap<Path, libgen::DefinitionRecord>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RayPaths {
-    root: FilePath,
-}
-
-impl RayPaths {
-    pub fn new(root: FilePath) -> Self {
-        Self { root }
-    }
-
-    pub fn discover(explicit: Option<FilePath>, workspace_hint: Option<&FilePath>) -> Option<Self> {
-        fn has_toolchain_root(candidate: &FilePath) -> bool {
-            (candidate / "lib" / "core").exists()
-        }
-
-        let mut candidates: Vec<FilePath> = Vec::new();
-
-        if let Some(path) = explicit {
-            candidates.push(path);
-        }
-
-        if let Ok(path) = env::var("RAY_PATH") {
-            if !path.is_empty() {
-                candidates.push(FilePath::from(PathBuf::from(path)));
-            }
-        }
-
-        if let Some(hint) = workspace_hint {
-            candidates.push(hint.clone());
-        }
-
-        if let Some(home) = home::home_dir() {
-            candidates.push(FilePath::from(home) / ".ray");
-        }
-
-        candidates.push(FilePath::from("/opt/ray"));
-
-        candidates
-            .into_iter()
-            .find(|candidate| has_toolchain_root(candidate))
-            .map(Self::new)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.root.is_empty()
-    }
-
-    pub fn get_build_path(&self) -> FilePath {
-        &self.root / "build"
-    }
-
-    pub fn get_lib_path(&self) -> FilePath {
-        &self.root / "lib"
-    }
-
-    pub fn get_c_includes_path(&self) -> FilePath {
-        &self.root / "wasi-sysroot" / "include"
-    }
 }
 
 #[derive(Debug)]

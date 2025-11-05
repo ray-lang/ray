@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use lir::SymbolSet;
 
+use ray_shared::optlevel::OptLevel;
+
 use crate::{
     ast::{Node, Path},
-    driver::OptLevel,
     lir,
     span::SourceMap,
     typing::TyCtx,

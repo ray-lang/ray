@@ -1,8 +1,7 @@
 use std::str::FromStr;
 
 use clap::StructOpt;
-
-use crate::{
+use ray_core::{
     ast::Path,
     errors::RayError,
     pathlib::FilePath,

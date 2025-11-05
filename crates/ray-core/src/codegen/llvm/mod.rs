@@ -26,11 +26,11 @@ use llvm::{
     },
 };
 use rand::RngCore;
+use ray_shared::optlevel::OptLevel;
 
 use crate::{
     ast::{Modifier, Node, Path},
     codegen::{CodegenOptions, collect_symbols},
-    driver::OptLevel,
     errors::RayError,
     lir,
     pathlib::FilePath,
@@ -44,7 +44,7 @@ use crate::{
 
 use super::Codegen;
 
-static MALLOC_BUF: &'static [u8] = include_bytes!("../../../lib/libc/wasi_malloc.wasm");
+static MALLOC_BUF: &'static [u8] = include_bytes!("../../../../../lib/libc/wasi_malloc.wasm");
 
 lazy_static! {
     static ref MALLOC_BUF_HASH: u64 = xxhash_rust::xxh3::xxh3_64(MALLOC_BUF);

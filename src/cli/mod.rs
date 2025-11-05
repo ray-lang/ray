@@ -9,14 +9,12 @@ use clap::StructOpt;
 use colored::{Color, ColoredString, Colorize};
 use log::Level;
 use pprof::protos::Message;
-
-use crate::{
-    driver::{AnalyzeOptions, BuildOptions, Driver, RayPaths},
-    pathlib::FilePath,
-};
+use ray_core::pathlib::{FilePath, RayPaths};
+use ray_driver::{AnalyzeOptions, BuildOptions, Driver};
 
 mod analyze;
 mod build;
+mod lsp;
 
 #[derive(Debug, StructOpt)]
 pub struct Cli {
@@ -64,6 +62,7 @@ pub struct GlobalOptions {
 pub enum Command {
     Build(BuildOptions),
     Analyze(AnalyzeOptions),
+    Lsp(lsp::LspOptions),
 }
 
 pub struct CmdError {
@@ -76,33 +75,64 @@ impl<E: Error> From<E> for CmdError {
     }
 }
 
+impl Command {
+    fn configure_logger(&self) -> Option<fern::Dispatch> {
+        match self {
+            Command::Build(_) | Command::Analyze(_) => { /* ignore */ }
+            Command::Lsp(options) => {
+                if let Some(log_file) = &options.log_file {
+                    return Some(
+                        fern::Dispatch::new()
+                            .format(move |out, message, record| {
+                                let level = record.level();
+                                out.finish(format_args!(
+                                    "{}: {}",
+                                    level.to_string().to_lowercase(),
+                                    message,
+                                ))
+                            })
+                            .chain(fern::log_file(log_file).unwrap()),
+                    );
+                }
+            }
+        }
+
+        None
+    }
+}
+
 pub fn run() {
     // get the subcommand
     let cli = Cli::parse();
 
     // set up logging
-    fern::Dispatch::new()
-        .format(move |out, message, record| {
-            let level = record.level();
-            let color = match level {
-                Level::Error => Color::Red,
-                Level::Warn => Color::Yellow,
-                Level::Info => Color::Blue,
-                Level::Debug => Color::Magenta,
-                Level::Trace => Color::Green,
-            };
-            out.finish(format_args!(
-                "{} {}",
-                ColoredString::from((level.to_string().to_lowercase() + ":").as_str())
-                    .color(color)
-                    .to_string(),
-                message
-            ))
-        })
-        .level(cli.global_options.log_level)
-        .chain(io::stderr())
-        .apply()
-        .unwrap();
+    let mut dispatch = fern::Dispatch::new().level(cli.global_options.log_level);
+
+    if let Some(sub_logger) = cli.cmd.configure_logger() {
+        dispatch = dispatch.chain(sub_logger)
+    } else {
+        dispatch = dispatch
+            .format(move |out, message, record| {
+                let level = record.level();
+                let color = match level {
+                    Level::Error => Color::Red,
+                    Level::Warn => Color::Yellow,
+                    Level::Info => Color::Blue,
+                    Level::Debug => Color::Magenta,
+                    Level::Trace => Color::Green,
+                };
+                out.finish(format_args!(
+                    "{} {}",
+                    ColoredString::from((level.to_string().to_lowercase() + ":").as_str())
+                        .color(color)
+                        .to_string(),
+                    message
+                ))
+            })
+            .chain(io::stderr())
+    }
+
+    dispatch.apply().unwrap();
 
     // get the ray_path
     let explicit_root = cli.global_options.ray_path.clone();
@@ -127,6 +157,7 @@ pub fn run() {
     match cli.cmd {
         Command::Build(options) => build::action(&mut driver, options),
         Command::Analyze(options) => analyze::action(&mut driver, options),
+        Command::Lsp(options) => lsp::action(&mut driver, options),
     }
 
     if let Some(prof) = prof {

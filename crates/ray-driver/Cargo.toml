@@ -1,0 +1,13 @@
+[package]
+name = "ray-driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "3.2", features = ["derive", "env"] }
+itertools = "0.9"
+log = "0.4"
+inkwell = { version = "0.6", features = ["llvm17-0"] }
+ray-core = { path = "../ray-core" }
+ray-shared = { path = "../ray-shared" }
+top = { path = "../top" }
