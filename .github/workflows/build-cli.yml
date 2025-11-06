@@ -12,15 +12,12 @@ env:
   CARGO_TERM_COLOR: always
   LLVM_SYS_170_PREFIX: /usr/lib/llvm-17
   LLVM_CONFIG_PATH: /usr/lib/llvm-17/bin/llvm-config
-  PATH: /usr/lib/llvm-17/bin:${{ env.PATH }}
   CC: clang-17
   CXX: clang++-17
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CLI_BASENAME: ray-cli-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}
 
     steps:
       - name: Checkout repository
@@ -54,6 +51,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y llvm-17 lld-17 clang-17 libclang-17-dev
+          echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
 
       - name: Build ray CLI
         run: cargo build --release -p ray
@@ -79,6 +77,7 @@ jobs:
           file: dist/${{ env.CLI_BASENAME }}
           asset_name: ${{ env.CLI_BASENAME }}
           tag: ${{ github.ref_name }}
+          release_name: ${{ github.ref_name }}
           overwrite: true
 
       - name: Upload CLI to nightly release

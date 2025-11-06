@@ -12,7 +12,6 @@ env:
   CARGO_TERM_COLOR: always
   LLVM_SYS_170_PREFIX: /usr/lib/llvm-17
   LLVM_CONFIG_PATH: /usr/lib/llvm-17/bin/llvm-config
-  PATH: /usr/lib/llvm-17/bin:${{ env.PATH }}
   CC: clang-17
   CXX: clang++-17
 
@@ -54,6 +53,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y llvm-17 lld-17 clang-17 libclang-17-dev
+          echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
 
       - name: Download ray CLI package
         uses: dawidd6/action-download-artifact@v3
