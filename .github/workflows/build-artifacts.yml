@@ -135,6 +135,7 @@ jobs:
           cp target/release/ray-backend build/toolchain/bin/
           ./target/release/ray --root-path $PWD/build/toolchain build lib/core --lib --no-core
           cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
+          rm -rf build/toolchain/build
 
       - name: Archive toolchain
         run: |
