@@ -52,6 +52,7 @@ fn main() {
     let wasi_target = probe_wasi_target().expect("Failed to find a supported WASI target");
 
     Command::new(cargo_cmd())
+        .env("CARGO_TARGET_DIR", project_dir.join("target/wasi-malloc"))
         .args(&[
             "rustc",
             &format!("--target={}", wasi_target),
@@ -68,7 +69,6 @@ fn main() {
         .status()
         .unwrap();
 
-    // fs::remove_file(project_dir.join("lib/libc/wasi_malloc.wasm")).unwrap();
     fs::remove_file(project_dir.join("lib/libc/wasi_malloc.d")).unwrap();
 
     println!("cargo:rerun-if-changed=crates/wasi_malloc/src");
