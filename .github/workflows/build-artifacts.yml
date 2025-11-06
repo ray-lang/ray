@@ -51,7 +51,7 @@ jobs:
       - name: Install LLVM 17
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev clang-17 libclang-17-dev
+          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev clang-17 libclang-17-dev libpolly-17-dev
           echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
 
       - name: Build ray CLI
@@ -131,7 +131,7 @@ jobs:
       - name: Install LLVM 17
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev clang-17 libclang-17-dev
+          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev clang-17 libclang-17-dev libpolly-17-dev
           echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
 
       - name: Download ray CLI artifact
