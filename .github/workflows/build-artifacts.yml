@@ -67,7 +67,16 @@ jobs:
             LABEL="$REF_NAME"
           fi
 
+          if [ "$REF_TYPE" = "tag" ]; then
+            CHANNEL="stable"
+          elif [[ "$LABEL" == nightly-* ]]; then
+            CHANNEL="nightly"
+          else
+            CHANNEL="nightly"
+          fi
+
           echo "REF_LABEL=$LABEL" >> "$GITHUB_ENV"
+          echo "CHANNEL_HINT=$CHANNEL" >> "$GITHUB_ENV"
 
       - name: Prepare artifact names
         run: |
@@ -146,11 +155,16 @@ jobs:
               cp -P /usr/lib/x86_64-linux-gnu/libzstd.so.1 build/toolchain/lib/ || true
             fi
           fi
+          cat <<EOF > build/toolchain/manifest.toml
+version = "${REF_LABEL}"
+channel = "${CHANNEL_HINT}"
+triple = "wasm32-wasi"
+EOF
           rm -rf build/toolchain/build
 
       - name: Archive toolchain
         run: |
-          tar -C build -cf ${TOOLCHAIN_BASENAME}.tar toolchain
+          tar -C build/toolchain -cf ${TOOLCHAIN_BASENAME}.tar .
           zstd -q ${TOOLCHAIN_BASENAME}.tar
           mv ${TOOLCHAIN_BASENAME}.tar.zst build/${TOOLCHAIN_BASENAME}.tar.zst
           rm ${TOOLCHAIN_BASENAME}.tar
@@ -195,6 +209,17 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
           asset_name: ${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
+          tag: ${{ env.REF_LABEL }}
+          release_name: ${{ env.REF_LABEL }}
+          prerelease: ${{ github.ref_type != 'tag' }}
+          overwrite: true
+
+      - name: Upload manifest to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/toolchain/manifest.toml
+          asset_name: ray-toolchain-manifest-${{ env.REF_LABEL }}.toml
           tag: ${{ env.REF_LABEL }}
           release_name: ${{ env.REF_LABEL }}
           prerelease: ${{ github.ref_type != 'tag' }}

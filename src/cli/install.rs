@@ -9,10 +9,9 @@ use ray_toolchain::{InstallSource, InstallSpec, ToolchainManager};
 pub struct InstallOptions {
     #[arg(
         value_name = "CHANNEL|VERSION",
-        default_value = "stable",
-        help = "toolchain channel or version"
+        help = "toolchain channel or version (defaults to manifest value when omitted)"
     )]
-    pub channel_or_version: String,
+    pub channel_or_version: Option<String>,
 
     #[arg(
         long,
@@ -90,8 +89,6 @@ pub(super) fn action(ray_paths: Option<RayPaths>, options: InstallOptions, globa
         log::info!("created toolchain root at {}", root_path.display());
     }
 
-    let version = options.channel_or_version;
-
     let source = if let Some(dir) = options.dir.as_ref() {
         InstallSource::PathDir(dir.as_path())
     } else if let Some(archive) = options.archive.as_ref() {
@@ -108,7 +105,7 @@ pub(super) fn action(ray_paths: Option<RayPaths>, options: InstallOptions, globa
 
     let spec = InstallSpec {
         root_path,
-        version,
+        requested_version: options.channel_or_version.clone(),
         triple: options.triple.clone(),
         source,
         set_channel: options.set_channel.clone(),

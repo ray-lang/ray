@@ -47,18 +47,30 @@ pub(crate) fn copy_dir_contents(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn extract_tar_zst(archive: &Path, dst: &Path) -> anyhow::Result<()> {
-    log::info!("extracting {} into {}", archive.display(), dst.display());
+pub(crate) fn extract_tar_zst(archive_path: &Path, dst: &Path) -> anyhow::Result<()> {
+    log::info!(
+        "extracting {} into {}",
+        archive_path.display(),
+        dst.display()
+    );
 
-    let file = File::open(archive)?;
+    let file = File::open(archive_path)?;
     let decoder = zstd::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(dst)?;
 
+    // remove the original archive so it doesn't interfere with downstream
+    // checks (and to avoid leaving stray files in the final toolchain)
+    if std::fs::remove_file(archive_path).is_ok() {
+        log::debug!("removed archive {} after unpacking", archive_path.display());
+    }
+
     // Flatten single top-level folder if present (common in release tarballs)
     if let Ok(rd) = std::fs::read_dir(dst) {
         let mut entries = rd.flatten().collect::<Vec<_>>();
-        if entries.len() == 1 && entries[0].file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        // ignore any leftover non-directory files when considering flattening
+        entries.retain(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false));
+        if entries.len() == 1 {
             log::info!("flattening archive");
             let inner = entries.remove(0).path();
             let has_expected = inner.join("bin").exists() || inner.join("lib").exists();

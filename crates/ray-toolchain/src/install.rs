@@ -1,5 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
-use toml_edit::{Item, Table};
+use toml_edit::{DocumentMut, Item, Table};
 
 use ray_cfg::RayConfig;
 
@@ -22,8 +23,8 @@ pub enum InstallSource<'a> {
 #[derive(Clone, Debug)]
 pub struct InstallSpec<'a> {
     pub root_path: std::path::PathBuf, // --root-path
-    pub version: String,               // "0.1.0" or "nightly-2025-11-05" or "dev"
-    pub triple: String,                // "wasm32-wasi"
+    pub requested_version: Option<String>,
+    pub triple: String, // "wasm32-wasi"
     pub source: InstallSource<'a>,
     pub set_channel: Option<String>, // e.g. Some("stable") or None
     pub set_default: bool,
@@ -49,13 +50,10 @@ impl ToolchainManager {
         };
         log::info!("installing toolchain from {}", mode_label);
         log::info!("  root:    {}", spec.root_path.display());
-        log::info!("  version: {}", spec.version);
-        log::info!("  triple:  {}", spec.triple);
         log::info!("  source:  {}", spec.source);
 
         let toolchains_dir = spec.root_path.join("toolchains");
-        let dest_root = toolchains_dir.join(&spec.version).join(&spec.triple);
-        let tmp_dir = toolchains_dir.join(format!(".tmp-install-{}-{}", spec.version, spec.triple));
+        let tmp_dir = toolchains_dir.join(format!(".tmp-install-{}", std::process::id()));
         if tmp_dir.exists() {
             fs::remove_dir_all(&tmp_dir)?;
         }
@@ -82,6 +80,32 @@ impl ToolchainManager {
             }
         }
 
+        let manifest = match read_manifest(&tmp_dir) {
+            Ok(m) => m,
+            Err(err) => {
+                log::warn!("failed to read manifest: {}", err);
+                None
+            }
+        };
+
+        let effective_version = manifest
+            .as_ref()
+            .map(|m| m.version.clone())
+            .or_else(|| spec.requested_version.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("toolchain version not specified in manifest or CLI arguments")
+            })?;
+        let effective_triple = manifest
+            .as_ref()
+            .map(|m| m.triple.clone())
+            .unwrap_or_else(|| spec.triple.clone());
+        let dest_root = toolchains_dir
+            .join(&effective_version)
+            .join(&effective_triple);
+
+        log::info!("==> version: {}", effective_version);
+        log::info!("==> triple:  {}", effective_triple);
+
         // Move into final destination
         log::info!("installing toolchain into {}", dest_root.display());
         fs::create_dir_all(dest_root.parent().unwrap())?;
@@ -94,8 +118,8 @@ impl ToolchainManager {
             root: dest_root.clone(),
             bin_dir: dest_root.join("bin"),
             lib_dir: dest_root.join("lib").join("ray"),
-            version: spec.version.clone(),
-            triple: spec.triple.clone(),
+            version: effective_version.clone(),
+            triple: effective_triple.clone(),
         };
 
         if !tc.bin_dir.exists() {
@@ -112,13 +136,12 @@ impl ToolchainManager {
             );
         }
 
+        let manifest_channel = manifest.as_ref().map(|m| m.channel.clone());
         let channel_to_set = spec
             .set_channel
             .clone()
-            .or_else(|| match spec.version.as_str() {
-                "stable" => Some(spec.version.clone()),
-                _ => None,
-            });
+            .or(manifest_channel)
+            .or_else(|| infer_channel_from_version(&effective_version));
 
         if let Some(ch) = channel_to_set {
             ToolchainManager::set_channel(&spec.root_path, &ch, &tc)?;
@@ -130,8 +153,8 @@ impl ToolchainManager {
 
         log::info!(
             "finished installing toolchain {}-{}",
-            spec.version,
-            spec.triple
+            effective_version,
+            effective_triple
         );
         Ok(tc)
     }
@@ -174,4 +197,35 @@ impl ToolchainManager {
             doc["default"]["target"] = toml_edit::value(&tc.triple);
         })
     }
+}
+
+fn infer_channel_from_version(version: &str) -> Option<String> {
+    if version == "stable" {
+        Some("stable".to_string())
+    } else if version == "nightly" || version.starts_with("nightly-") {
+        Some("nightly".to_string())
+    } else if version == "beta" || version.starts_with("beta-") {
+        Some("beta".to_string())
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+struct ToolchainManifest {
+    version: String,
+    channel: String,
+    triple: String,
+}
+
+fn read_manifest(dir: &std::path::Path) -> anyhow::Result<Option<ToolchainManifest>> {
+    let manifest_path = dir.join("manifest.toml");
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let contents = std::fs::read_to_string(&manifest_path)?;
+    let tc = toml::from_str::<ToolchainManifest>(&contents)
+        .map_err(|e| anyhow::anyhow!("parsing manifest.toml: {}", e))?;
+    Ok(Some(tc))
 }
