@@ -456,16 +456,17 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         module_path: &Option<ast::Path>,
     ) -> Result<Option<FilePath>, RayError> {
         // first if not an entrypoint, check if there's a
-        // pre-built .raylib in the build cache on disk
+        // pre-built .raylib in the build cache on disk or in the lib path
         let is_entrypoint = module_path.is_none();
         if let Some(module_path) = module_path {
-            let build_path = self.paths.get_build_path();
-            log::debug!("build_path: {}", build_path);
-            let lib_path = (build_path / module_path.join("#")).with_extension("raylib");
-            log::debug!("lib_path: {}", lib_path);
-            if lib_path.exists() {
-                log::debug!("found lib: {}", lib_path);
-                return Ok(Some(lib_path));
+            let paths = &[self.paths.get_build_path(), self.paths.get_lib_path()];
+            for path in paths {
+                let lib_path = (path / module_path.join("#")).with_extension("raylib");
+                log::debug!("lib_path: {}", lib_path);
+                if lib_path.exists() {
+                    log::debug!("found lib: {}", lib_path);
+                    return Ok(Some(lib_path));
+                }
             }
         }
 

@@ -53,7 +53,7 @@ impl ResolvedToolchain {
         Ok(ResolvedToolchain {
             root: tc.clone(),
             bin_dir: tc.join("bin"),
-            lib_dir: tc.join("lib"),
+            lib_dir: tc.join("lib").join("ray"),
             version: "path".into(),
             triple: triple.into(),
         })
@@ -69,7 +69,7 @@ impl ResolvedToolchain {
             Some(ResolvedToolchain {
                 root: p.clone(),
                 bin_dir: p.join("bin"),
-                lib_dir: p.join("lib"),
+                lib_dir: p.join("lib").join("ray"),
                 version: v.into(),
                 triple: triple.into(),
             })
@@ -88,7 +88,7 @@ impl ResolvedToolchain {
             Some(ResolvedToolchain {
                 root: p.clone(),
                 bin_dir: p.join("bin"),
-                lib_dir: p.join("lib"),
+                lib_dir: p.join("lib").join("ray"),
                 version: name.into(),
                 triple: triple.into(),
             })
@@ -160,7 +160,7 @@ impl ResolvedToolchain {
             return Ok(Some(ResolvedToolchain {
                 root: tc.clone(),
                 bin_dir: tc.join("bin"),
-                lib_dir: tc.join("lib"),
+                lib_dir: tc.join("lib").join("ray"),
                 version,
                 triple: target.to_string(),
             }));
@@ -215,7 +215,7 @@ impl ToolchainManager {
                 return Ok(ResolvedToolchain {
                     root: root.clone(),
                     bin_dir: root.join("bin"),
-                    lib_dir: root.join("lib"),
+                    lib_dir: root.join("lib").join("ray"),
                     version: "dev-flat".into(),
                     triple,
                 });

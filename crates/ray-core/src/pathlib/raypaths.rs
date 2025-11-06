@@ -73,7 +73,7 @@ impl RayPaths {
     }
 
     pub fn get_lib_path(&self) -> FilePath {
-        &self.root / "lib"
+        &self.root / "lib" / "ray"
     }
 
     pub fn get_c_includes_path(&self) -> FilePath {

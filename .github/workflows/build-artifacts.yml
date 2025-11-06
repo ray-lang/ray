@@ -131,10 +131,21 @@ jobs:
 
       - name: Prepare toolchain layout
         run: |
-          mkdir -p build/toolchain/bin build/toolchain/lib build/toolchain/build
+          mkdir -p build/toolchain/bin build/toolchain/lib/ray build/toolchain/build
           cp target/release/ray-backend build/toolchain/bin/
           ./target/release/ray --root-path $PWD/build/toolchain build lib/core --lib --no-core
-          cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
+          cp build/toolchain/build/core.raylib build/toolchain/lib/ray/core.raylib
+          mkdir -p build/toolchain/lib
+          if [ "${{ matrix.system }}" = "macos" ]; then
+            cp -P "$LLVM_SYS_170_PREFIX"/lib/libunwind*.dylib build/toolchain/lib/ || true
+            if [ -d "/opt/homebrew/opt/zstd/lib" ]; then
+              cp -P /opt/homebrew/opt/zstd/lib/libzstd*.dylib build/toolchain/lib/ || true
+            fi
+          else
+            if [ -f /usr/lib/x86_64-linux-gnu/libzstd.so.1 ]; then
+              cp -P /usr/lib/x86_64-linux-gnu/libzstd.so.1 build/toolchain/lib/ || true
+            fi
+          fi
           rm -rf build/toolchain/build
 
       - name: Archive toolchain

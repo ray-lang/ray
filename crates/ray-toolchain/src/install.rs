@@ -93,7 +93,7 @@ impl ToolchainManager {
         let tc = ResolvedToolchain {
             root: dest_root.clone(),
             bin_dir: dest_root.join("bin"),
-            lib_dir: dest_root.join("lib"),
+            lib_dir: dest_root.join("lib").join("ray"),
             version: spec.version.clone(),
             triple: spec.triple.clone(),
         };
@@ -102,6 +102,13 @@ impl ToolchainManager {
             anyhow::bail!(
                 "toolchain missing bin/ directory at {}",
                 tc.bin_dir.display()
+            );
+        }
+
+        if !tc.lib_dir.exists() {
+            anyhow::bail!(
+                "toolchain missing lib/ray/ directory at {}",
+                tc.lib_dir.display()
             );
         }
 

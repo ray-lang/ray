@@ -12,11 +12,7 @@ fn cargo_cmd() -> String {
 }
 
 fn probe_wasi_target() -> Result<String, String> {
-    let candidates = [
-        "wasm32-wasip1",
-        "wasm32-wasip1-threads",
-        "wasm32-wasip2",
-    ];
+    let candidates = ["wasm32-wasip1", "wasm32-wasip1-threads", "wasm32-wasip2"];
 
     for target in candidates {
         let out = Command::new(rustc_cmd())
@@ -41,7 +37,10 @@ fn probe_wasi_target() -> Result<String, String> {
         }
     }
 
-    Err("No supported WASI target found. Install a wasm32-wasip* target (e.g. wasm32-wasip1).".into())
+    Err(
+        "No supported WASI target found. Install a wasm32-wasip* target (e.g. wasm32-wasip1)."
+            .into(),
+    )
 }
 
 fn main() {
