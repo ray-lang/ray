@@ -1,9 +1,8 @@
 use std::{process, str::FromStr};
 
-use clap::StructOpt;
+use clap::Args;
 use log::error;
 use ray_core::pathlib::FilePath;
-use ray_driver::Driver;
 
 #[derive(Debug, Clone, Copy)]
 pub enum LspTransport {
@@ -12,19 +11,17 @@ pub enum LspTransport {
     // Daemon,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Args)]
 pub struct LspOptions {
-    #[clap(
+    #[arg(
         long = "transport",
         default_value = "stdio",
-        action = clap::ArgAction::Set,
         help = "Select the transport mechanism used by the language server"
     )]
     pub transport: LspTransport,
 
-    #[clap(
+    #[arg(
         long = "log-file",
-        action = clap::ArgAction::Set,
         help = "Write language server logs to the specified file"
     )]
     pub log_file: Option<FilePath>,
@@ -43,7 +40,7 @@ impl FromStr for LspTransport {
     }
 }
 
-pub(super) fn action(_driver: &mut Driver, options: LspOptions) {
+pub(super) fn action(options: LspOptions) {
     match options.transport {
         LspTransport::Stdio => {
             log::info!("starting LSP server");

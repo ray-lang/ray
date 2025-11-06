@@ -5,64 +5,49 @@ use std::{
     process,
 };
 
-use clap::StructOpt;
+use clap::{Parser, Subcommand, builder::styling};
 use colored::{Color, ColoredString, Colorize};
 use log::Level;
 use pprof::protos::Message;
-use ray_core::pathlib::{FilePath, RayPaths};
-use ray_driver::{AnalyzeOptions, BuildOptions, Driver};
+use ray_core::pathlib::RayPaths;
+use ray_driver::{AnalyzeOptions, BuildOptions, GlobalOptions};
+use ray_shared::logger;
 
 mod analyze;
+mod backend;
 mod build;
+mod install;
 mod lsp;
 
-#[derive(Debug, StructOpt)]
+const STYLES: styling::Styles = styling::Styles::styled()
+    .header(styling::AnsiColor::Green.on_default().bold())
+    .usage(styling::AnsiColor::Green.on_default().bold())
+    .literal(styling::AnsiColor::Blue.on_default().bold())
+    .placeholder(styling::AnsiColor::Cyan.on_default());
+
+#[derive(Debug, Parser)]
+#[command(
+    color = clap::ColorChoice::Auto,
+    styles = STYLES,
+)]
 pub struct Cli {
-    #[structopt(flatten)]
+    #[command(flatten)]
     global_options: GlobalOptions,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     cmd: Command,
 }
 
-#[derive(Debug, StructOpt)]
-pub struct GlobalOptions {
-    #[clap(
-        name = "root-path",
-        long = "root-path",
-        takes_value = true,
-        env = "RAY_PATH",
-        help = "root path for ray libraries and sources",
-        long_help = "If not provided, it will default to `$HOME/.ray`. If that path is inaccessible, then /opt/ray will be used.",
-        global = true,
-        action = clap::ArgAction::Set,
-    )]
-    ray_path: Option<FilePath>,
-
-    #[clap(
-        long, env = "LOG_LEVEL",
-        help = "Sets the log level",
-        default_value = "info",
-        hide = true,
-        global = true,
-        action = clap::ArgAction::Set,
-    )]
-    log_level: log::LevelFilter,
-
-    #[structopt(
-        long,
-        help = "Runs in profiling mode, outputting to profile-<DATE>.pb",
-        global = true,
-        action = clap::ArgAction::SetTrue,
-    )]
-    profile: bool,
-}
-
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Build a module or file into a binary, or library
     Build(BuildOptions),
+    /// Analyze a module or file
     Analyze(AnalyzeOptions),
+    /// Run the language server
     Lsp(lsp::LspOptions),
+    /// Install a toolchain
+    Install(install::InstallOptions),
 }
 
 pub struct CmdError {
@@ -78,7 +63,6 @@ impl<E: Error> From<E> for CmdError {
 impl Command {
     fn configure_logger(&self) -> Option<fern::Dispatch> {
         match self {
-            Command::Build(_) | Command::Analyze(_) => { /* ignore */ }
             Command::Lsp(options) => {
                 if let Some(log_file) = &options.log_file {
                     return Some(
@@ -95,6 +79,7 @@ impl Command {
                     );
                 }
             }
+            _ => { /* ignore */ }
         }
 
         None
@@ -106,46 +91,29 @@ pub fn run() {
     let cli = Cli::parse();
 
     // set up logging
-    let mut dispatch = fern::Dispatch::new().level(cli.global_options.log_level);
+    let mut dispatch = logger::base(cli.global_options.log_level);
 
     if let Some(sub_logger) = cli.cmd.configure_logger() {
         dispatch = dispatch.chain(sub_logger)
     } else {
-        dispatch = dispatch
-            .format(move |out, message, record| {
-                let level = record.level();
-                let color = match level {
-                    Level::Error => Color::Red,
-                    Level::Warn => Color::Yellow,
-                    Level::Info => Color::Blue,
-                    Level::Debug => Color::Magenta,
-                    Level::Trace => Color::Green,
-                };
-                out.finish(format_args!(
-                    "{} {}",
-                    ColoredString::from((level.to_string().to_lowercase() + ":").as_str())
-                        .color(color)
-                        .to_string(),
-                    message
-                ))
-            })
-            .chain(io::stderr())
+        dispatch = logger::stderr(dispatch);
     }
 
     dispatch.apply().unwrap();
 
     // get the ray_path
-    let explicit_root = cli.global_options.ray_path.clone();
-    let ray_paths = if let Some(paths) = RayPaths::discover(explicit_root.clone(), None) {
-        paths
-    } else if let Some(path) = explicit_root {
-        RayPaths::new(path)
-    } else {
+    let explicit_root = cli.global_options.root_path.clone();
+    let discovered_paths = RayPaths::discover(explicit_root.clone(), None);
+    let ray_paths = discovered_paths.clone().or_else(|| {
+        explicit_root.clone().map(RayPaths::new)
+    });
+
+    if ray_paths.is_none() && !matches!(cli.cmd, Command::Install(_)) {
         eprintln!(
             "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
         );
         process::exit(1);
-    };
+    }
 
     let prof = if cli.global_options.profile {
         Some(pprof::ProfilerGuard::new(100).unwrap())
@@ -153,11 +121,17 @@ pub fn run() {
         None
     };
 
-    let mut driver = Driver::new(ray_paths);
     match cli.cmd {
-        Command::Build(options) => build::action(&mut driver, options),
-        Command::Analyze(options) => analyze::action(&mut driver, options),
-        Command::Lsp(options) => lsp::action(&mut driver, options),
+        Command::Build(options) => {
+            let paths = ray_paths.clone().expect("ray_paths validated for build command");
+            build::action(paths, options, cli.global_options)
+        }
+        Command::Analyze(options) => {
+            let paths = ray_paths.clone().expect("ray_paths validated for analyze command");
+            analyze::action(paths, options, cli.global_options)
+        }
+        Command::Lsp(options) => lsp::action(options),
+        Command::Install(options) => install::action(ray_paths, options, cli.global_options),
     }
 
     if let Some(prof) = prof {

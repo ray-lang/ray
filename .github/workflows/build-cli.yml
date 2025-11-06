@@ -1,0 +1,94 @@
+name: Build CLI
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  schedule:
+    - cron: "0 5 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_SYS_170_PREFIX: /usr/lib/llvm-17
+  LLVM_CONFIG_PATH: /usr/lib/llvm-17/bin/llvm-config
+  PATH: /usr/lib/llvm-17/bin:${{ env.PATH }}
+  CC: clang-17
+  CXX: clang++-17
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CLI_BASENAME: ray-cli-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine release label
+        run: |
+          EVENT="${GITHUB_EVENT_NAME}"
+          REF_TYPE="${GITHUB_REF_TYPE:-}"
+          REF_NAME="${GITHUB_REF_NAME:-}"
+
+          if [ "$EVENT" = "schedule" ]; then
+            LABEL="nightly-$(date -u +%Y-%m-%d)"
+          elif [ "$EVENT" = "workflow_dispatch" ] && [ "$REF_TYPE" != "tag" ]; then
+            LABEL="nightly-$(date -u +%Y-%m-%d)"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            LABEL="$REF_NAME"
+          else
+            LABEL="$REF_NAME"
+          fi
+          echo "REF_LABEL=$LABEL" >> "$GITHUB_ENV"
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          profile: minimal
+
+      - name: Install LLVM 17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-17 lld-17 clang-17 libclang-17-dev
+
+      - name: Build ray CLI
+        run: cargo build --release -p ray
+
+      - name: Package ray CLI
+        run: |
+          mkdir -p dist
+          BASENAME="ray-cli-${RUNNER_OS}-${RUNNER_ARCH}-${REF_LABEL}"
+          cp target/release/ray "dist/${BASENAME}"
+          echo "CLI_BASENAME=${BASENAME}" >> "$GITHUB_ENV"
+
+      - name: Upload ray CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CLI_BASENAME }}
+          path: dist/${{ env.CLI_BASENAME }}
+
+      - name: Upload CLI to tagged release
+        if: github.ref_type == 'tag'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/${{ env.CLI_BASENAME }}
+          asset_name: ${{ env.CLI_BASENAME }}
+          tag: ${{ github.ref_name }}
+          overwrite: true
+
+      - name: Upload CLI to nightly release
+        if: github.ref_type != 'tag'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/${{ env.CLI_BASENAME }}
+          asset_name: ${{ env.CLI_BASENAME }}
+          tag: nightly
+          release_name: Nightly
+          prerelease: true
+          overwrite: true

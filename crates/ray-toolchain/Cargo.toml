@@ -1,0 +1,16 @@
+[package]
+name = "ray-toolchain"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+ray-cfg = { path = "../ray-cfg" }
+ray-shared = { path = "../ray-shared" }
+reqwest = { version = "0.12", features = ["blocking"] }
+sha2 = "0.10"
+tar = "0.4"
+toml_edit = "0.23"
+walkdir = "2.5"
+zstd = "0.13"

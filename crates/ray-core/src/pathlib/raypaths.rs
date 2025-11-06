@@ -12,9 +12,16 @@ impl RayPaths {
         Self { root }
     }
 
+    pub fn bootstrap_root() -> Self {
+        if let Some(home) = home::home_dir() {
+            return RayPaths::new(FilePath::from(home) / ".ray");
+        }
+        RayPaths::new(FilePath::from("/opt/ray"))
+    }
+
     pub fn discover(explicit: Option<FilePath>, workspace_hint: Option<&FilePath>) -> Option<Self> {
         fn has_toolchain_root(candidate: &FilePath) -> bool {
-            (candidate / "lib" / "core").exists()
+            candidate.exists()
         }
 
         let mut candidates: Vec<FilePath> = Vec::new();
@@ -47,6 +54,18 @@ impl RayPaths {
 
     pub fn is_empty(&self) -> bool {
         self.root.is_empty()
+    }
+
+    pub fn get_root(&self) -> &FilePath {
+        &self.root
+    }
+
+    pub fn get_bin_path(&self) -> FilePath {
+        &self.root / "bin"
+    }
+
+    pub fn get_backend_path(&self) -> FilePath {
+        &self.root / "bin" / "ray-backend"
     }
 
     pub fn get_build_path(&self) -> FilePath {

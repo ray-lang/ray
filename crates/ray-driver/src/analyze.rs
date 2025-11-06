@@ -1,12 +1,14 @@
-use std::str::FromStr;
+use std::{ffi::OsString, str::FromStr};
 
-use clap::StructOpt;
+use clap::Args;
 use ray_core::{
     ast::Path,
     errors::RayError,
     pathlib::FilePath,
     span::{Pos, Source, Span},
 };
+
+use crate::GlobalOptions;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AnalysisFormat {
@@ -19,6 +21,15 @@ impl AnalysisFormat {
         match self {
             AnalysisFormat::Text => "text",
             AnalysisFormat::Json => "json",
+        }
+    }
+}
+
+impl std::fmt::Display for AnalysisFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalysisFormat::Text => write!(f, "text"),
+            AnalysisFormat::Json => write!(f, "json"),
         }
     }
 }
@@ -42,31 +53,49 @@ fn parse_analysis_format(input: &str) -> Result<AnalysisFormat, String> {
     AnalysisFormat::from_str(input)
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Args)]
 pub struct AnalyzeOptions {
-    #[clap(
-        name = "INPUT",
-        help = "Ray source file to analyze",
-        action = clap::ArgAction::Set
-    )]
+    #[arg(value_name = "INPUT", help = "Ray source file to analyze")]
     pub input_path: FilePath,
 
-    #[clap(
+    #[arg(
         long = "format",
         default_value = "text",
         value_parser = parse_analysis_format,
-        action = clap::ArgAction::Set,
         help = "Output format (text or json)"
     )]
     pub format: AnalysisFormat,
 
-    #[clap(
+    #[arg(
         long = "no-core",
         default_value = "false",
         help = "Disable automatic import of `core` library",
         action = clap::ArgAction::SetTrue
     )]
     pub no_core: bool,
+}
+
+impl AnalyzeOptions {
+    pub fn to_argv(self, globals: GlobalOptions) -> Vec<OsString> {
+        let mut args = vec![];
+
+        if let Some(root_path) = globals.root_path {
+            args.push("--root-path".into());
+            args.push(root_path.to_string().into());
+        }
+
+        args.push("--log-level".into());
+        args.push(globals.log_level.to_string().into());
+
+        args.push("--format".into());
+        args.push(self.format.to_string().into());
+
+        if self.no_core {
+            args.push("--no-core".into());
+        }
+
+        args
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

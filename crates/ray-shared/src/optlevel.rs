@@ -16,6 +16,26 @@ impl Default for OptLevel {
     }
 }
 
+impl std::fmt::Display for OptLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s: String = self.into();
+        write!(f, "{}", s)
+    }
+}
+
+impl Into<String> for &OptLevel {
+    fn into(self) -> String {
+        match self {
+            OptLevel::O0 => "0".into(),
+            OptLevel::O1 => "1".into(),
+            OptLevel::O2 => "2".into(),
+            OptLevel::O3 => "3".into(),
+            OptLevel::Os => "s".into(),
+            OptLevel::Oz => "z".into(),
+        }
+    }
+}
+
 impl FromStr for OptLevel {
     type Err = String;
 

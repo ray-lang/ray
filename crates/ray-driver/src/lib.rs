@@ -24,6 +24,7 @@ use top::{Subst, Substitutable};
 
 mod analyze;
 mod build;
+mod global_options;
 
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,7 @@ pub use analyze::{
 };
 pub use build::BuildOptions;
 pub use build::EmitType;
+pub use global_options::*;
 
 pub struct FrontendResult {
     pub module_path: Path,
@@ -264,7 +266,7 @@ impl Driver {
             let lcx = inkwell::context::Context::create();
             let target = options.get_target();
             let codegen_options = CodegenOptions {
-                emit: matches!(options.emit, Some(build::EmitType::LLVMIR)),
+                emit: matches!(options.emit, Some(build::EmitType::LLVM)),
                 opt_level: options.opt_level,
             };
             llvm::codegen(
