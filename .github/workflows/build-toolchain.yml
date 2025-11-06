@@ -90,9 +90,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TOOLCHAIN_BASENAME }}
-          path:
-            - build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
-            - build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
+          path: |
+            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
+            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
 
       - name: Upload toolchain to tagged release (archive)
         if: github.ref_type == 'tag'
