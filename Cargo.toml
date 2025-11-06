@@ -19,33 +19,16 @@ members = [
 ]
 
 [dependencies]
-bincode = "1.3"
-bitflags = "1.2"
 clap = { version = "4.5", features = ["color", "derive", "env"] }
 colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
-fnv = "1.0"
-home = "0.5"
-inkwell = { version = "0.6", features = ["llvm17-0"] }
-itertools = "0.9"
-lang-c = "0.9"
-lazy_static = "1.4.0"
-lld = { path = "./crates/lld" }
 log = "0.4"
-parity-wasm = { git = "https://github.com/ray-lang/parity-wasm", features = ["bulk"] }
-petgraph = { version = "0.5.1", features = ["serde-1"] }
 pprof = { version = "0.15.0", features = ["protobuf-codec", "flamegraph"] }
-rand = "0.8"
 ray-core = { path = "crates/ray-core" }
 ray-driver = { path = "crates/ray-driver" }
 ray-lsp = { path = "crates/ray-lsp" }
 ray-shared = { path = "crates/ray-shared" }
 ray-toolchain = { path = "crates/ray-toolchain" }
-serde = { version = "1.0", features = ["derive", "rc"] }
-serde_derive = "1.0.228"
-structopt = "0.3"
-top = { path = "./crates/top" }
-xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
 
 [profile.dev]
 opt-level = 0

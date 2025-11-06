@@ -1,13 +1,7 @@
-use std::{
-    error::Error,
-    fs::File,
-    io::{self, Write},
-    process,
-};
+use std::{error::Error, fs::File, io::Write, process};
 
 use clap::{Parser, Subcommand, builder::styling};
-use colored::{Color, ColoredString, Colorize};
-use log::Level;
+use colored::Colorize;
 use pprof::protos::Message;
 use ray_core::pathlib::RayPaths;
 use ray_driver::{AnalyzeOptions, BuildOptions, GlobalOptions};
@@ -104,9 +98,9 @@ pub fn run() {
     // get the ray_path
     let explicit_root = cli.global_options.root_path.clone();
     let discovered_paths = RayPaths::discover(explicit_root.clone(), None);
-    let ray_paths = discovered_paths.clone().or_else(|| {
-        explicit_root.clone().map(RayPaths::new)
-    });
+    let ray_paths = discovered_paths
+        .clone()
+        .or_else(|| explicit_root.clone().map(RayPaths::new));
 
     if ray_paths.is_none() && !matches!(cli.cmd, Command::Install(_)) {
         eprintln!(
@@ -123,11 +117,15 @@ pub fn run() {
 
     match cli.cmd {
         Command::Build(options) => {
-            let paths = ray_paths.clone().expect("ray_paths validated for build command");
+            let paths = ray_paths
+                .clone()
+                .expect("ray_paths validated for build command");
             build::action(paths, options, cli.global_options)
         }
         Command::Analyze(options) => {
-            let paths = ray_paths.clone().expect("ray_paths validated for analyze command");
+            let paths = ray_paths
+                .clone()
+                .expect("ray_paths validated for analyze command");
             analyze::action(paths, options, cli.global_options)
         }
         Command::Lsp(options) => lsp::action(options),

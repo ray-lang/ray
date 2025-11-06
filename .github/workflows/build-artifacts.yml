@@ -10,18 +10,46 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  LLVM_SYS_170_PREFIX: /usr/lib/llvm-17
-  LLVM_CONFIG_PATH: /usr/lib/llvm-17/bin/llvm-config
-  CC: clang-17
-  CXX: clang++-17
 
 jobs:
-  build-cli:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            system: ubuntu
+          - os: macos-latest
+            system: macos
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Detect host platform
+        run: |
+          HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          HOST_ARCH=$(uname -m | tr '[:upper:]' '[:lower:]')
+          echo "HOST_OS=$HOST_OS" >> "$GITHUB_ENV"
+          echo "HOST_ARCH=$HOST_ARCH" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ env.HOST_ARCH }}-cargo-target-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ env.HOST_ARCH }}-cargo-target-
 
       - name: Determine release label
         run: |
@@ -41,6 +69,13 @@ jobs:
 
           echo "REF_LABEL=$LABEL" >> "$GITHUB_ENV"
 
+      - name: Prepare artifact names
+        run: |
+          CLI_BASENAME="ray-cli-${HOST_OS}-${HOST_ARCH}-${REF_LABEL}"
+          TOOLCHAIN_BASENAME="ray-toolchain-${HOST_OS}-${HOST_ARCH}-${REF_LABEL}"
+          echo "CLI_BASENAME=$CLI_BASENAME" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_BASENAME=$TOOLCHAIN_BASENAME" >> "$GITHUB_ENV"
+
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -48,11 +83,30 @@ jobs:
           override: true
           profile: minimal
 
-      - name: Install LLVM 17
+      - name: Install LLVM 17 (Ubuntu)
+        if: matrix.system == 'ubuntu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev clang-17 libclang-17-dev libpolly-17-dev
+          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev libpolly-17-dev clang-17 libclang-17-dev
           echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
+          echo "LLVM_SYS_170_PREFIX=/usr/lib/llvm-17" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG_PATH=/usr/lib/llvm-17/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "CC=clang-17" >> "$GITHUB_ENV"
+          echo "CXX=clang++-17" >> "$GITHUB_ENV"
+          echo "AR=llvm-ar-17" >> "$GITHUB_ENV"
+
+      - name: Install LLVM 17 (macOS)
+        if: matrix.system == 'macos'
+        run: |
+          brew update
+          brew install llvm@17
+          LLVM_PREFIX=$(brew --prefix llvm@17)
+          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "CC=$LLVM_PREFIX/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
+          echo "AR=$LLVM_PREFIX/bin/llvm-ar" >> "$GITHUB_ENV"
 
       - name: Build ray CLI
         run: cargo build --release -p ray
@@ -60,15 +114,42 @@ jobs:
       - name: Package ray CLI
         run: |
           mkdir -p dist
-          BASENAME="ray-cli-${RUNNER_OS}-${RUNNER_ARCH}-${REF_LABEL}"
-          cp target/release/ray "dist/${BASENAME}"
-          echo "CLI_BASENAME=${BASENAME}" >> "$GITHUB_ENV"
+          cp target/release/ray "dist/${CLI_BASENAME}"
 
       - name: Upload ray CLI artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.CLI_BASENAME }}
           path: dist/${{ env.CLI_BASENAME }}
+
+      - name: Build ray backend
+        run: cargo build --release -p ray-backend
+
+      - name: Prepare toolchain layout
+        run: |
+          mkdir -p build/toolchain/bin build/toolchain/lib build/toolchain/build
+          cp target/release/ray-backend build/toolchain/bin/
+          ./target/release/ray --root-path $PWD/build/toolchain build lib/core --lib --no-core
+          cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
+
+      - name: Archive toolchain
+        run: |
+          tar -C build -cf ${TOOLCHAIN_BASENAME}.tar toolchain
+          zstd -q ${TOOLCHAIN_BASENAME}.tar
+          mv ${TOOLCHAIN_BASENAME}.tar.zst build/${TOOLCHAIN_BASENAME}.tar.zst
+          rm ${TOOLCHAIN_BASENAME}.tar
+
+      - name: Generate checksum
+        run: |
+          shasum -a 256 build/${TOOLCHAIN_BASENAME}.tar.zst > build/${TOOLCHAIN_BASENAME}.tar.zst.sha256
+
+      - name: Upload toolchain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TOOLCHAIN_BASENAME }}
+          path: |
+            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
+            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
 
       - name: Upload CLI to tagged release
         if: github.ref_type == 'tag'
@@ -92,85 +173,6 @@ jobs:
           release_name: Nightly
           prerelease: true
           overwrite: true
-
-  build-toolchain:
-    runs-on: ubuntu-latest
-    needs: build-cli
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Determine release label
-        run: |
-          EVENT="${GITHUB_EVENT_NAME}"
-          REF_TYPE="${GITHUB_REF_TYPE:-}"
-          REF_NAME="${GITHUB_REF_NAME:-}"
-
-          if [ "$EVENT" = "schedule" ]; then
-            LABEL="nightly-$(date -u +%Y-%m-%d)"
-          elif [ "$EVENT" = "workflow_dispatch" ] && [ "$REF_TYPE" != "tag" ]; then
-            LABEL="nightly-$(date -u +%Y-%m-%d)"
-          elif [ "$REF_TYPE" = "tag" ]; then
-            LABEL="$REF_NAME"
-          else
-            LABEL="$REF_NAME"
-          fi
-
-          echo "REF_LABEL=$LABEL" >> "$GITHUB_ENV"
-          echo "CLI_BASENAME=ray-cli-${RUNNER_OS}-${RUNNER_ARCH}-${LABEL}" >> "$GITHUB_ENV"
-          echo "TOOLCHAIN_BASENAME=ray-toolchain-${RUNNER_OS}-${RUNNER_ARCH}-${LABEL}" >> "$GITHUB_ENV"
-
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-          profile: minimal
-
-      - name: Install LLVM 17
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev clang-17 libclang-17-dev libpolly-17-dev
-          echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
-
-      - name: Download ray CLI artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.CLI_BASENAME }}
-          path: dist/ray-cli
-
-      - name: Make ray CLI executable
-        run: chmod +x dist/ray-cli/${CLI_BASENAME}
-
-      - name: Build ray backend
-        run: cargo build --release -p ray-backend
-
-      - name: Prepare toolchain layout
-        run: |
-          mkdir -p build/toolchain/bin build/toolchain/lib build/toolchain/build
-          cp target/release/ray-backend build/toolchain/bin/
-          ./dist/ray-cli/${CLI_BASENAME} --root-path $PWD/build/toolchain build lib/core --lib --no-core
-          cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
-
-      - name: Archive toolchain
-        run: |
-          tar -C build -cf ${TOOLCHAIN_BASENAME}.tar toolchain
-          zstd -q ${TOOLCHAIN_BASENAME}.tar
-          mv ${TOOLCHAIN_BASENAME}.tar.zst build/${TOOLCHAIN_BASENAME}.tar.zst
-          rm ${TOOLCHAIN_BASENAME}.tar
-
-      - name: Generate checksum
-        run: |
-          shasum -a 256 build/${TOOLCHAIN_BASENAME}.tar.zst > build/${TOOLCHAIN_BASENAME}.tar.zst.sha256
-
-      - name: Upload toolchain artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.TOOLCHAIN_BASENAME }}
-          path: |
-            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
-            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
 
       - name: Upload toolchain archive to tagged release
         if: github.ref_type == 'tag'
