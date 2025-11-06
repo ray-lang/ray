@@ -155,11 +155,7 @@ jobs:
               cp -P /usr/lib/x86_64-linux-gnu/libzstd.so.1 build/toolchain/lib/ || true
             fi
           fi
-          cat <<EOF > build/toolchain/manifest.toml
-version = "${REF_LABEL}"
-channel = "${CHANNEL_HINT}"
-triple = "wasm32-wasi"
-EOF
+          printf 'version = "%s"\nchannel = "%s"\ntriple = "wasm32-wasi"\n' "${REF_LABEL}" "${CHANNEL_HINT}" > build/toolchain/manifest.toml
           rm -rf build/toolchain/build
 
       - name: Archive toolchain
