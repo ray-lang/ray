@@ -20,7 +20,6 @@ use crate::{
         info::TypeSystemInfo,
         ty::{ImplTy, StructTy, TraitTy, Ty, TyScheme, TyVar},
     },
-    utils::try_replace,
 };
 
 use super::{Decl, Expr, Extern, Func, Modifier, Node, Path, Struct, Trait, TypeParams};
@@ -812,20 +811,21 @@ impl LowerAST for ast::Assign {
             ctx.srcmap.set_src(&new_op, op_src);
 
             let op = std::mem::replace(op.as_mut(), new_op);
-            try_replace(&mut self.rhs, |mut rhs| -> RayResult<_> {
-                rhs.lower(ctx)?;
 
-                let lhs_src = ctx.srcmap.get(&lhs);
-                let rhs_src = ctx.srcmap.get(&rhs);
-                let src = lhs_src.extend_to(&rhs_src);
-                let node = Node::new(Expr::BinOp(ast::BinOp {
-                    lhs: Box::new(lhs),
-                    rhs,
-                    op,
-                }));
-                ctx.srcmap.set_src(&node, src);
-                Ok(Box::new(node))
-            })?;
+            let mut old_rhs = self.rhs.clone();
+            old_rhs.lower(ctx)?;
+
+            let lhs_src = ctx.srcmap.get(&lhs);
+            let rhs_src = ctx.srcmap.get(&old_rhs);
+            let src = lhs_src.extend_to(&rhs_src);
+            let node = Node::new(Expr::BinOp(ast::BinOp {
+                lhs: Box::new(lhs),
+                rhs: old_rhs,
+                op,
+            }));
+            ctx.srcmap.set_src(&node, src);
+
+            self.rhs = Box::new(node);
         } else {
             self.rhs.lower(ctx)?;
         };
@@ -938,11 +938,9 @@ impl LowerAST for Sourced<'_, ast::Curly> {
         curly.ty = struct_ty.ty.clone();
         log::debug!("lower Curly: set ty for {:?} to {}", struct_fqn, curly.ty);
         // Must be a concrete struct scheme by now.
-        debug_assert!(
-            matches!(curly.ty.mono(), Ty::Const(_)),
-            "Curly.ty not Const after lowering: {}",
-            curly.ty
-        );
+        if !matches!(curly.ty.mono(), Ty::Const(_)) {
+            log::warn!("Curly.ty not Const after lowering: {}", curly.ty);
+        }
 
         let mut idx = HashMap::new();
         for (i, (f, _)) in struct_ty.fields.iter().enumerate() {

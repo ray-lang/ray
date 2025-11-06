@@ -16,7 +16,7 @@ use crate::{
     pathlib::FilePath,
     sema::NameContext,
     span::{Source, SourceMap},
-    utils::{join, replace},
+    utils::join,
 };
 
 use super::{
@@ -1647,15 +1647,21 @@ impl Ty {
                     tys.push(ty);
                 }
             }
-            (ty, Ty::Union(mut tys)) => replace(ty, |t| {
-                if !tys.contains(&t) {
-                    tys.insert(0, t);
-                }
-                Ty::Union(tys)
-            }),
+            (ty, Ty::Union(mut tys)) => {
+                let prev = ty.clone();
+                *ty = {
+                    if !tys.contains(&prev) {
+                        tys.insert(0, prev);
+                    }
+                    Ty::Union(tys)
+                };
+            }
             (Ty::Func(..), Ty::Func(..)) => {}
             (Ty::Projection(a, x), Ty::Projection(b, y)) if a == &b && x == &y => {}
-            (t, u) if t != &u => replace(t, |t| Ty::Union(vec![t, u])),
+            (t, u) if t != &u => {
+                let prev_t = t.clone();
+                *t = Ty::Union(vec![prev_t, u])
+            }
             _ => {}
         }
     }

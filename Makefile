@@ -21,3 +21,12 @@ dev-toolchain: build build-backend
 	@cp target/debug/ray-backend .ray/bin/ray-backend
 	@target/debug/ray --root-path $(PWD)/.ray build lib/core --lib --no-core
 	@cp lib/core/.raylib .ray/lib/core.raylib
+
+release-toolchain:
+	@cargo build --release -p ray-backend
+	@cargo build --release
+	@mkdir -p build/toolchain/bin build/toolchain/lib
+	@cp target/release/ray-backend build/toolchain/bin/ray-backend
+	@target/release/ray --root-path $(PWD)/build/toolchain build lib/core --lib --no-core
+	@cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
+	@rm -rf build/toolchain/build

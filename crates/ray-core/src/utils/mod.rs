@@ -36,28 +36,3 @@ where
 {
     i.into_iter().map(f).collect::<Vec<_>>().join(sep.into())
 }
-
-pub fn replace<F, T>(dest: &mut T, f: F)
-where
-    F: FnOnce(T) -> T,
-{
-    unsafe {
-        let old = std::mem::replace(dest, std::mem::MaybeUninit::uninit().assume_init());
-        let src = f(old);
-        let uninit = std::mem::replace(dest, src);
-        std::mem::forget(uninit);
-    }
-}
-
-pub fn try_replace<F, T, E>(dest: &mut T, f: F) -> Result<(), E>
-where
-    F: FnOnce(T) -> Result<T, E>,
-{
-    unsafe {
-        let old = std::mem::replace(dest, std::mem::MaybeUninit::uninit().assume_init());
-        let src = f(old)?;
-        let uninit = std::mem::replace(dest, src);
-        std::mem::forget(uninit);
-        Ok(())
-    }
-}

@@ -133,7 +133,7 @@ jobs:
         run: |
           mkdir -p build/toolchain/bin build/toolchain/lib build/toolchain/build
           cp target/release/ray-backend build/toolchain/bin/
-          ./target/release/ray --log-level debug --root-path $PWD/build/toolchain build lib/core --lib --no-core
+          ./target/release/ray --root-path $PWD/build/toolchain build lib/core --lib --no-core
           cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
 
       - name: Archive toolchain

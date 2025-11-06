@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use crate::{typing::traits::TreeWalk, utils::replace};
+use crate::typing::traits::TreeWalk;
 
 use super::Constraint;
 
@@ -268,7 +268,8 @@ impl ConstraintTree {
         T: Into<ConstraintTree>,
         F: FnOnce(ConstraintTree) -> T,
     {
-        replace(self, |old| f(old).into());
+        let old = self.clone();
+        *self = f(old).into();
     }
 
     pub fn flatten<W>(self, walker: W) -> Vec<Constraint>
