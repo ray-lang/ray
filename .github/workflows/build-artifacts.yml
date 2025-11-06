@@ -194,6 +194,12 @@ jobs:
     if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ''
+          depth: 1
+
       - name: Prune old nightly releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
