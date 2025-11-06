@@ -16,8 +16,6 @@ fn probe_wasi_target() -> Result<String, String> {
         "wasm32-wasip1",
         "wasm32-wasip1-threads",
         "wasm32-wasip2",
-        // legacy last, for older toolchains
-        "wasm32-wasi",
     ];
 
     for target in candidates {
@@ -43,7 +41,7 @@ fn probe_wasi_target() -> Result<String, String> {
         }
     }
 
-    Err("No supported WASI target found. Install wasm32-wasip1 or use an older toolchain that still has wasm32-wasi.".into())
+    Err("No supported WASI target found. Install a wasm32-wasip* target (e.g. wasm32-wasip1).".into())
 }
 
 fn main() {

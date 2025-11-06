@@ -84,7 +84,8 @@ jobs:
           profile: minimal
 
       - name: Install WASI targets
-        run: rustup target add wasm32-wasip1 wasm32-wasi
+        run: |
+          rustup target add wasm32-wasip1 wasm32-wasip1-threads wasm32-wasip2
 
       - name: Install LLVM 17 (Ubuntu)
         if: matrix.system == 'ubuntu'
