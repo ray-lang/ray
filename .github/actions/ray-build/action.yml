@@ -23,9 +23,6 @@ inputs:
   packages:
     description: "Shell commands to install platform-specific dependencies (LLVM, etc.)"
     required: true
-  cargo-target-dir:
-    description: "Override cargo target dir"
-    required: false
   repo-token:
     description: "GitHub token for release uploads"
     required: true
@@ -52,8 +49,6 @@ runs:
 
     - name: Cargo build (ray)
       shell: bash
-      env:
-        CARGO_TARGET_DIR: ${{ inputs.cargo-target-dir }}
       run: |
         cargo build --release -p ray
 
