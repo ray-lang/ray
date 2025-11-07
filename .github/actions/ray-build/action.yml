@@ -36,6 +36,22 @@ runs:
         override: true
         profile: minimal
 
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Cache cargo target
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-${{ inputs.system }}-${{ inputs.arch }}-target-${{ hashFiles('Cargo.lock') }}
+
     - name: Install WASI targets
       shell: bash
       run: |
