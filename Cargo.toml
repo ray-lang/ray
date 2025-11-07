@@ -10,12 +10,10 @@ edition = "2024"
 members = [
     "crates/top",
     "crates/wasi_malloc",
-    "crates/ray-backend",
     "crates/ray-cfg",
     "crates/ray-core",
     "crates/ray-lsp",
     "crates/ray-shared",
-    "crates/ray-toolchain",
 ]
 
 [dependencies]
@@ -28,7 +26,6 @@ ray-core = { path = "crates/ray-core" }
 ray-driver = { path = "crates/ray-driver" }
 ray-lsp = { path = "crates/ray-lsp" }
 ray-shared = { path = "crates/ray-shared" }
-ray-toolchain = { path = "crates/ray-toolchain" }
 
 [profile.dev]
 opt-level = 0

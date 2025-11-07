@@ -11,6 +11,23 @@ See more [here](docs/goals.md)
 
 ## Tooling
 
+### Installing Ray
+
+The Ray CLI and standard library bundle live in the GitHub release artifacts. The easiest way to
+bootstrap them is via the hosted install script:
+
+```bash
+curl -fsSL https://ray-lang.org/install.sh | bash -s nightly-2025-11-06
+```
+
+Replace the tag (`nightly-YYYY-MM-DD`, `v0.x.y`, etc.) with the release you want. The script:
+
+- Detects your OS/arch and downloads the matching `ray` binary and toolchain bundle.
+- Installs the CLI into `${RAY_PATH:-$HOME/.ray}/bin/ray` and symlinks it to `${INSTALL_BIN:-$HOME/.local/bin}/ray`.
+- Extracts `core.raylib` and other assets into `${RAY_PATH:-$HOME/.ray}`.
+
+If `${INSTALL_BIN}` isn’t on your `PATH`, add it so `ray` is globally available.
+
 ### Contributing
 
 If you plan to work on Ray, please read through the

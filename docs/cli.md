@@ -74,7 +74,7 @@ Key principles:
 
 ## Internal Architecture
 
-- Shared crates for `ray-config`, `ray-toolchain`, `ray-workspace`, `ray-lsp`, `ray-build`, `ray-analyze`, and `ray-ext`.
+- Shared crates for `ray-config`, `ray-workspace`, `ray-lsp`, `ray-build`, `ray-analyze`, and `ray-ext`.
 - CLI crate remains thin, wiring subcommands to shared services.
 - Adopt a shared async runtime (e.g., Tokio) if concurrency primitives are required by LSP or tooling.
 - Use trait-based plugin interfaces where internal components may be optional.
@@ -82,7 +82,7 @@ Key principles:
 ## Rollout Plan
 
 1. Refactor LSP crate into reusable library and add `ray lsp launch`.
-2. Introduce shared configuration and toolchain crates consumed by build, analyze, and LSP modules.
+2. Introduce shared configuration crates consumed by build, analyze, and LSP modules.
 3. Implement `setup`, `run`, and `pkg` commands with consistent UX over existing functionality.
 4. Add plugin discovery and `ray ext` lifecycle commands.
 5. Harden `ray doctor`, telemetry toggles, and machine-readable outputs.

@@ -135,27 +135,12 @@ jobs:
           name: ${{ env.CLI_BASENAME }}
           path: dist/${{ env.CLI_BASENAME }}
 
-      - name: Build ray backend
-        run: cargo build --release -p ray-backend
-
       - name: Prepare toolchain layout
         run: |
-          mkdir -p build/toolchain/bin build/toolchain/lib/ray build/toolchain/build
-          cp target/release/ray-backend build/toolchain/bin/
+          mkdir -p build/toolchain/lib build/toolchain/build
           ./target/release/ray --root-path $PWD/build/toolchain build lib/core --lib --no-core
-          cp build/toolchain/build/core.raylib build/toolchain/lib/ray/core.raylib
-          mkdir -p build/toolchain/lib
-          if [ "${{ matrix.system }}" = "macos" ]; then
-            cp -P "$LLVM_SYS_170_PREFIX"/lib/libunwind*.dylib build/toolchain/lib/ || true
-            if [ -d "/opt/homebrew/opt/zstd/lib" ]; then
-              cp -P /opt/homebrew/opt/zstd/lib/libzstd*.dylib build/toolchain/lib/ || true
-            fi
-          else
-            if [ -f /usr/lib/x86_64-linux-gnu/libzstd.so.1 ]; then
-              cp -P /usr/lib/x86_64-linux-gnu/libzstd.so.1 build/toolchain/lib/ || true
-            fi
-          fi
-          printf 'version = "%s"\nchannel = "%s"\ntriple = "wasm32-wasi"\n' "${REF_LABEL}" "${CHANNEL_HINT}" > build/toolchain/manifest.toml
+          cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
+          printf 'version = "%s"\nchannel = "%s"\n' "${REF_LABEL}" "${CHANNEL_HINT}" > build/toolchain/manifest.toml
           rm -rf build/toolchain/build
 
       - name: Archive toolchain

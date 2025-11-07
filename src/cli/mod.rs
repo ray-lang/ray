@@ -4,13 +4,11 @@ use clap::{Parser, Subcommand, builder::styling};
 use colored::Colorize;
 use pprof::protos::Message;
 use ray_core::pathlib::RayPaths;
-use ray_driver::{AnalyzeOptions, BuildOptions, GlobalOptions};
+use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions};
 use ray_shared::logger;
 
 mod analyze;
-mod backend;
 mod build;
-mod install;
 mod lsp;
 
 const STYLES: styling::Styles = styling::Styles::styled()
@@ -40,8 +38,6 @@ pub enum Command {
     Analyze(AnalyzeOptions),
     /// Run the language server
     Lsp(lsp::LspOptions),
-    /// Install a toolchain
-    Install(install::InstallOptions),
 }
 
 pub struct CmdError {
@@ -102,7 +98,7 @@ pub fn run() {
         .clone()
         .or_else(|| explicit_root.clone().map(RayPaths::new));
 
-    if ray_paths.is_none() && !matches!(cli.cmd, Command::Install(_)) {
+    if ray_paths.is_none() {
         eprintln!(
             "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
         );
@@ -117,19 +113,14 @@ pub fn run() {
 
     match cli.cmd {
         Command::Build(options) => {
-            let paths = ray_paths
-                .clone()
-                .expect("ray_paths validated for build command");
-            build::action(paths, options, cli.global_options)
+            let mut driver = Driver::new(ray_paths.unwrap());
+            build::action(&mut driver, options);
         }
         Command::Analyze(options) => {
-            let paths = ray_paths
-                .clone()
-                .expect("ray_paths validated for analyze command");
-            analyze::action(paths, options, cli.global_options)
+            let mut driver = Driver::new(ray_paths.unwrap());
+            analyze::action(&mut driver, options);
         }
         Command::Lsp(options) => lsp::action(options),
-        Command::Install(options) => install::action(ray_paths, options, cli.global_options),
     }
 
     if let Some(prof) = prof {

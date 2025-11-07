@@ -64,16 +64,12 @@ impl RayPaths {
         &self.root / "bin"
     }
 
-    pub fn get_backend_path(&self) -> FilePath {
-        &self.root / "bin" / "ray-backend"
-    }
-
     pub fn get_build_path(&self) -> FilePath {
         &self.root / "build"
     }
 
     pub fn get_lib_path(&self) -> FilePath {
-        &self.root / "lib" / "ray"
+        &self.root / "lib"
     }
 
     pub fn get_c_includes_path(&self) -> FilePath {
