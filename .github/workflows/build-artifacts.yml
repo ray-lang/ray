@@ -142,6 +142,7 @@ jobs:
             LLVM_PREFIX='C:/Program Files/LLVM'
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+            echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   windows-arm64:
@@ -162,6 +163,7 @@ jobs:
             LLVM_PREFIX='C:/Program Files/LLVM'
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+            echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   toolchain:
