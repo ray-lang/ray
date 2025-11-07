@@ -29,7 +29,7 @@ jobs:
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-17.0.6.src.tar.xz"
           $archive = "$(Resolve-Path .)\llvm-src.tar.xz"
           Invoke-WebRequest -Uri $url -OutFile $archive
-          tar -xf $archive
+          tar -xf $archive -C .
 
       - name: Configure build
         shell: pwsh
