@@ -178,12 +178,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.LINUX_CLI_BASENAME }}
-          path: dist
 
       - name: Install CLI artifact
         run: |
           mkdir -p target/release
-          cp dist/${LINUX_CLI_BASENAME} target/release/ray
+          cp ${LINUX_CLI_BASENAME} target/release/ray
           chmod +x target/release/ray
 
       - name: Prepare toolchain layout

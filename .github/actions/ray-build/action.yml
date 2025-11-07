@@ -61,7 +61,9 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        eval "${{ inputs.packages }}"
+        bash -eo pipefail <<'RUN_PACKAGES'
+        ${{ inputs.packages }}
+        RUN_PACKAGES
 
     - name: Cargo build (ray)
       shell: bash
@@ -79,28 +81,26 @@ runs:
       run: |
         set -euo pipefail
         name="${ARTIFACT_NAME:-ray-cli-${SYSTEM}-${ARCH}-${REF_LABEL}}"
-        mkdir -p dist
         src="target/release/ray"
         if [[ "$(uname -s)" == MINGW* ]]; then
           src+=".exe"
           name="${name}.exe"
         fi
-        cp "$src" "dist/${name}"
         echo "cli_basename=${name}" >> $GITHUB_OUTPUT
-        echo "cli_source=${src}" >> $GITHUB_OUTPUT
+        echo "cli_src_path=${src}" >> $GITHUB_OUTPUT
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.prepare-cli.outputs.cli_basename }}
-        path: ${{ steps.prepare-cli.outputs.cli_source }}
+        path: ${{ steps.prepare-cli.outputs.cli_src_path }}
 
     - name: Upload CLI asset to release
       if: inputs.upload-release == 'true'
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ inputs.repo-token }}
-        file: ${{ steps.prepare-cli.outputs.cli_source }}
+        file: ${{ steps.prepare-cli.outputs.cli_src_path }}
         asset_name: ${{ steps.prepare-cli.outputs.cli_basename }}
         tag: ${{ inputs.ref-label }}
         release_name: ${{ inputs.ref-label }}
