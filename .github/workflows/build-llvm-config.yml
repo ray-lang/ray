@@ -26,15 +26,15 @@ jobs:
       - name: Download LLVM sources
         shell: pwsh
         run: |
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.zip"
-          $zip = "$(Resolve-Path .)\llvm-project.zip"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath .
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-17.0.6.src.tar.xz"
+          $archive = "$(Resolve-Path .)\llvm-src.tar.xz"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          tar -xf $archive
 
       - name: Configure build
         shell: pwsh
         run: |
-          cmake -S llvm-project-17.0.6.src/llvm `
+          cmake -S llvm-17.0.6.src/llvm `
             -B build `
             -G "Ninja" `
             -DLLVM_TARGETS_TO_BUILD="${{ matrix.targets }}" `
