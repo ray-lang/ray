@@ -138,7 +138,7 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            choco install llvm --version=17.0.1 --allow-downgrade -y
+            choco install llvm --version=17.0.6 --allow-downgrade -y
             LLVM_PREFIX='C:/Program Files/LLVM'
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
@@ -159,7 +159,7 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            choco install llvm --version=17.0.1 --allow-downgrade -y
+            choco install llvm --version=17.0.6 --allow-downgrade -y
             LLVM_PREFIX='C:/Program Files/LLVM'
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
