@@ -12,46 +12,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            system: ubuntu
-          - os: macos-latest
-            system: macos
-
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      ref_label: ${{ steps.release-label.outputs.ref_label }}
+      channel_hint: ${{ steps.release-label.outputs.channel_hint }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Detect host platform
-        run: |
-          HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-          HOST_ARCH=$(uname -m | tr '[:upper:]' '[:lower:]')
-          echo "HOST_OS=$HOST_OS" >> "$GITHUB_ENV"
-          echo "HOST_ARCH=$HOST_ARCH" >> "$GITHUB_ENV"
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ env.HOST_ARCH }}-cargo-target-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ env.HOST_ARCH }}-cargo-target-
-
       - name: Determine release label
+        id: release-label
         run: |
           EVENT="${GITHUB_EVENT_NAME}"
           REF_TYPE="${GITHUB_REF_TYPE:-}"
@@ -75,65 +43,130 @@ jobs:
             CHANNEL="nightly"
           fi
 
-          echo "REF_LABEL=$LABEL" >> "$GITHUB_ENV"
-          echo "CHANNEL_HINT=$CHANNEL" >> "$GITHUB_ENV"
+          echo "ref_label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "channel_hint=$CHANNEL" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare artifact names
-        run: |
-          CLI_BASENAME="ray-cli-${HOST_OS}-${HOST_ARCH}-${REF_LABEL}"
-          TOOLCHAIN_BASENAME="ray-toolchain-${HOST_OS}-${HOST_ARCH}-${REF_LABEL}"
-          echo "CLI_BASENAME=$CLI_BASENAME" >> "$GITHUB_ENV"
-          echo "TOOLCHAIN_BASENAME=$TOOLCHAIN_BASENAME" >> "$GITHUB_ENV"
-
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+  linux-x86_64:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build Linux x86_64 CLI
+        uses: ./.github/actions/ray-build
         with:
-          toolchain: stable
-          override: true
-          profile: minimal
+          system: linux
+          arch: x86_64
+          ref-label: ${{ needs.metadata.outputs.ref_label }}
+          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+          packages: |
+            sudo apt-get update
+            sudo apt-get install -y llvm-17 lld-17 liblld-17-dev libpolly-17-dev clang-17 libclang-17-dev
+            echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
 
-      - name: Install WASI targets
-        run: |
-          rustup target add wasm32-wasip1 wasm32-wasip1-threads wasm32-wasip2
-
-      - name: Install LLVM 17 (Ubuntu)
-        if: matrix.system == 'ubuntu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm-17 lld-17 liblld-17-dev libpolly-17-dev clang-17 libclang-17-dev
-          echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
-          echo "LLVM_SYS_170_PREFIX=/usr/lib/llvm-17" >> "$GITHUB_ENV"
-          echo "LLVM_CONFIG_PATH=/usr/lib/llvm-17/bin/llvm-config" >> "$GITHUB_ENV"
-          echo "CC=clang-17" >> "$GITHUB_ENV"
-          echo "CXX=clang++-17" >> "$GITHUB_ENV"
-          echo "AR=llvm-ar-17" >> "$GITHUB_ENV"
-
-      - name: Install LLVM 17 (macOS)
-        if: matrix.system == 'macos'
-        run: |
-          brew update
-          brew install llvm@17
-          LLVM_PREFIX=$(brew --prefix llvm@17)
-          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
-          echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
-          echo "LLVM_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
-          echo "CC=$LLVM_PREFIX/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
-          echo "AR=$LLVM_PREFIX/bin/llvm-ar" >> "$GITHUB_ENV"
-
-      - name: Build ray CLI
-        run: cargo build --release -p ray
-
-      - name: Package ray CLI
-        run: |
-          mkdir -p dist
-          cp target/release/ray "dist/${CLI_BASENAME}"
-
-      - name: Upload ray CLI artifact
-        uses: actions/upload-artifact@v4
+  linux-arm64:
+    needs: metadata
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Build Linux arm64 CLI
+        uses: ./.github/actions/ray-build
         with:
-          name: ${{ env.CLI_BASENAME }}
-          path: dist/${{ env.CLI_BASENAME }}
+          system: linux
+          arch: arm64
+          ref-label: ${{ needs.metadata.outputs.ref_label }}
+          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+          packages: |
+            sudo apt-get update
+            sudo apt-get install -y llvm-17 lld-17 liblld-17-dev libpolly-17-dev clang-17 libclang-17-dev
+            echo "/usr/lib/llvm-17/bin" >> "$GITHUB_PATH"
+
+  macos-arm64:
+    needs: metadata
+    runs-on: macos-15
+    steps:
+      - name: Build macOS arm64 CLI
+        uses: ./.github/actions/ray-build
+        with:
+          system: macos
+          arch: arm64
+          ref-label: ${{ needs.metadata.outputs.ref_label }}
+          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+          packages: |
+            brew update
+            brew install llvm@17
+            LLVM_PREFIX=$(brew --prefix llvm@17)
+            echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+
+  macos-x86_64:
+    needs: metadata
+    runs-on: macos-15-intel
+    steps:
+      - name: Build macOS x86_64 CLI
+        uses: ./.github/actions/ray-build
+        with:
+          system: macos
+          arch: x86_64
+          ref-label: ${{ needs.metadata.outputs.ref_label }}
+          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+          packages: |
+            brew update
+            brew install llvm@17
+            LLVM_PREFIX=$(brew --prefix llvm@17)
+            echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+
+  windows-x86_64:
+    needs: metadata
+    runs-on: windows-2025
+    steps:
+      - name: Build Windows x86_64 CLI
+        uses: ./.github/actions/ray-build
+        with:
+          system: windows
+          arch: x86_64
+          ref-label: ${{ needs.metadata.outputs.ref_label }}
+          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+          packages: |
+            choco install llvm --version=17.0.1 -y
+            echo 'C:/Program Files/LLVM/bin' >> "$GITHUB_PATH"
+
+  windows-arm64:
+    needs: metadata
+    runs-on: windows-11-arm
+    steps:
+      - name: Build Windows arm64 CLI
+        uses: ./.github/actions/ray-build
+        with:
+          system: windows
+          arch: arm64
+          ref-label: ${{ needs.metadata.outputs.ref_label }}
+          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+          packages: |
+            choco install llvm --version=17.0.1 -y
+            echo 'C:/Program Files/LLVM/bin' >> "$GITHUB_PATH"
+
+  toolchain:
+    needs: 
+      - metadata
+      - linux-x86_64
+    runs-on: ubuntu-latest
+    env:
+      REF_LABEL: ${{ needs.metadata.outputs.ref_label }}
+      CHANNEL_HINT: ${{ needs.metadata.outputs.channel_hint }}
+      TOOLCHAIN_BASENAME: ray-toolchain-${{ needs.metadata.outputs.ref_label }}
+      LINUX_CLI_BASENAME: ray-cli-linux-x86_64-${{ needs.metadata.outputs.ref_label }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux CLI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LINUX_CLI_BASENAME }}
+          path: dist
+
+      - name: Install CLI artifact
+        run: |
+          mkdir -p target/release
+          cp dist/${LINUX_CLI_BASENAME} target/release/ray
+          chmod +x target/release/ray
 
       - name: Prepare toolchain layout
         run: |
@@ -161,17 +194,6 @@ jobs:
           path: |
             build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
             build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
-
-      - name: Upload CLI asset to release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/${{ env.CLI_BASENAME }}
-          asset_name: ${{ env.CLI_BASENAME }}
-          tag: ${{ env.REF_LABEL }}
-          release_name: ${{ env.REF_LABEL }}
-          prerelease: ${{ github.ref_type != 'tag' }}
-          overwrite: true
 
       - name: Upload toolchain archive to release
         uses: svenstaro/upload-release-action@v2

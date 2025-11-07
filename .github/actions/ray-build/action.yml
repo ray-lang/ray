@@ -1,0 +1,97 @@
+name: "Ray CLI Build"
+description: "Builds the ray CLI for a specific host + arch and uploads artifacts"
+inputs:
+  system:
+    description: "Host system identifier (e.g., linux, macos, windows)"
+    required: true
+  arch:
+    description: "Architecture identifier (e.g., x86_64, arm64)"
+    required: true
+  ref-label:
+    description: "Release/ref label (e.g., nightly-YYYY-MM-DD, v0.2.0)"
+    required: true
+  channel-hint:
+    description: "Channel hint (stable/nightly/etc.)"
+    required: false
+  artifact-name:
+    description: "Override CLI artifact base name"
+    required: false
+  upload-release:
+    description: "Whether to upload the CLI binary to the GitHub release"
+    required: false
+    default: 'true'
+  packages:
+    description: "Shell commands to install platform-specific dependencies (LLVM, etc.)"
+    required: true
+  cargo-target-dir:
+    description: "Override cargo target dir"
+    required: false
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+        profile: minimal
+
+    - name: Install WASI targets
+      shell: bash
+      run: |
+        rustup target add wasm32-wasip1 wasm32-wasip1-threads wasm32-wasip2
+
+    - name: Install packages
+      shell: bash
+      run: |
+        set -euo pipefail
+        eval "${{ inputs.packages }}"
+
+    - name: Cargo build (ray)
+      shell: bash
+      env:
+        CARGO_TARGET_DIR: ${{ inputs.cargo-target-dir }}
+      run: |
+        cargo build --release -p ray
+
+    - name: Prepare CLI artifact
+      id: prepare-cli
+      shell: bash
+      env:
+        SYSTEM: ${{ inputs.system }}
+        ARCH: ${{ inputs.arch }}
+        REF_LABEL: ${{ inputs.ref-label }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        set -euo pipefail
+        name="${ARTIFACT_NAME:-ray-cli-${SYSTEM}-${ARCH}-${REF_LABEL}}"
+        mkdir -p dist
+        src="target/release/ray"
+        if [[ "$(uname -s)" == MINGW* ]]; then
+          src+=".exe"
+          name="${name}.exe"
+        fi
+        cp "$src" "dist/${name}"
+        echo "cli_basename=${name}" >> $GITHUB_OUTPUT
+        echo "cli_source=${src}" >> $GITHUB_OUTPUT
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.prepare-cli.outputs.cli_basename }}
+        path: ${{ steps.prepare-cli.outputs.cli_source }}
+
+    - name: Upload CLI asset to release
+      if: inputs.upload-release == 'true'
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: ${{ steps.prepare-cli.outputs.cli_source }}
+        asset_name: ${{ steps.prepare-cli.outputs.cli_basename }}
+        tag: ${{ inputs.ref-label }}
+        release_name: ${{ inputs.ref-label }}
+        prerelease: ${{ github.ref_type != 'tag' }}
+        overwrite: true
