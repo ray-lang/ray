@@ -138,7 +138,7 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            choco install llvm --version=17.0.1 -y
+            choco install llvm --version=17.0.1 --allow-downgrade -y
             echo 'C:/Program Files/LLVM/bin' >> "$GITHUB_PATH"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -156,7 +156,7 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            choco install llvm --version=17.0.1 -y
+            choco install llvm --version=17.0.1 --allow-downgrade -y
             echo 'C:/Program Files/LLVM/bin' >> "$GITHUB_PATH"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -178,11 +178,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.LINUX_CLI_BASENAME }}
+          path: dist
 
       - name: Install CLI artifact
         run: |
           mkdir -p target/release
-          cp ${LINUX_CLI_BASENAME} target/release/ray
+          cp dist/${LINUX_CLI_BASENAME} target/release/ray
           chmod +x target/release/ray
 
       - name: Prepare toolchain layout

@@ -81,13 +81,16 @@ runs:
       run: |
         set -euo pipefail
         name="${ARTIFACT_NAME:-ray-cli-${SYSTEM}-${ARCH}-${REF_LABEL}}"
+        mkdir -p dist
         src="target/release/ray"
         if [[ "$(uname -s)" == MINGW* ]]; then
           src+=".exe"
           name="${name}.exe"
         fi
+        dest="dist/${name}"
+        cp "$src" "$dest"
         echo "cli_basename=${name}" >> $GITHUB_OUTPUT
-        echo "cli_src_path=${src}" >> $GITHUB_OUTPUT
+        echo "cli_src_path=${dest}" >> $GITHUB_OUTPUT
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
