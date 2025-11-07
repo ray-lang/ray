@@ -54,3 +54,13 @@ jobs:
         with:
           name: llvm-config-windows-${{ matrix.arch }}
           path: build/bin/llvm-config.exe
+
+      - name: Upload llvm-config to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/bin/llvm-config.exe
+          asset_name: llvm-config-windows-${{ matrix.arch }}-17.0.6.exe
+          tag: llvm-config-17.0.6
+          release_name: llvm-config-17.0.6
+          overwrite: true
