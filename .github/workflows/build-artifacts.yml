@@ -139,7 +139,9 @@ jobs:
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
             choco install llvm --version=17.0.1 --allow-downgrade -y
-            echo 'C:/Program Files/LLVM/bin' >> "$GITHUB_PATH"
+            LLVM_PREFIX='C:/Program Files/LLVM'
+            echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+            echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   windows-arm64:
@@ -157,7 +159,9 @@ jobs:
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
             choco install llvm --version=17.0.1 --allow-downgrade -y
-            echo 'C:/Program Files/LLVM/bin' >> "$GITHUB_PATH"
+            LLVM_PREFIX='C:/Program Files/LLVM'
+            echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+            echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   toolchain:
