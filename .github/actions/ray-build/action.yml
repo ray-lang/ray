@@ -26,6 +26,9 @@ inputs:
   cargo-target-dir:
     description: "Override cargo target dir"
     required: false
+  repo-token:
+    description: "GitHub token for release uploads"
+    required: true
 runs:
   using: "composite"
   steps:
@@ -85,7 +88,7 @@ runs:
       if: inputs.upload-release == 'true'
       uses: svenstaro/upload-release-action@v2
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        repo_token: ${{ inputs.repo-token }}
         file: ${{ steps.prepare-cli.outputs.cli_source }}
         asset_name: ${{ steps.prepare-cli.outputs.cli_basename }}
         tag: ${{ inputs.ref-label }}
