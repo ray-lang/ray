@@ -34,7 +34,7 @@ jobs:
       - name: Configure build
         shell: pwsh
         run: |
-          cmake -S llvm-17.0.6.src `
+          cmake -S llvm-17.0.6.src/llvm `
             -B build `
             -G "Ninja" `
             -DLLVM_TARGETS_TO_BUILD="${{ matrix.targets }}" `
