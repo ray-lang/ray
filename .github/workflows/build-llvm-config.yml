@@ -23,12 +23,6 @@ jobs:
         with:
           arch: ${{ matrix.host }}
 
-      - name: Install build tools
-        shell: pwsh
-        run: |
-          choco install ninja -y --no-progress
-          choco install cmake -y --no-progress
-
       - name: Download LLVM sources
         shell: pwsh
         run: |
