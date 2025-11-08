@@ -397,6 +397,15 @@ fn llvm_config_ex<S: AsRef<OsStr>>(binary: S, arg: &str) -> io::Result<String> {
 
 /// Get the LLVM version using llvm-config.
 fn llvm_version<S: AsRef<OsStr>>(binary: S) -> io::Result<Version> {
+    if cfg!(target_os = "windows") {
+        // Assume this one windows
+        return Ok(Version::new(
+            LLVM_VERSION.major,
+            LLVM_VERSION.minor,
+            LLVM_VERSION.patch,
+        ));
+    }
+
     let version_str = llvm_config_ex(binary.as_ref(), "--version")?;
 
     // LLVM isn't really semver and uses version suffixes to build
