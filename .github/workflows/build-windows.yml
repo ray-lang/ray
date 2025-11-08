@@ -96,4 +96,4 @@ jobs:
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
             pwsh -Command "Write-Output 'LLVM built for x86_64'"
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
