@@ -173,6 +173,8 @@ fn llvm_config(arg: &str) -> String {
 fn windows_llvm_config(arg: &str) -> String {
     let prefix =
         env::var("LLVM_SYS_170_PREFIX").expect("LLVM_SYS_170_PREFIX must be set on Windows");
+    let include_path = PathBuf::from(&prefix).join("include");
+    let lib_path = PathBuf::from(&prefix).join("lib");
     match arg {
         "--system-libs" => "".into(),
         "--libnames" => WINDOWS_LLVM_LIBS
@@ -181,14 +183,15 @@ fn windows_llvm_config(arg: &str) -> String {
             .collect::<Vec<_>>()
             .join(" "),
         "--cxxflags" => format!(
-            "-I{prefix}\\include -std:c++17 /EHs-c- /GR- \
+            "-I\"{}\" -std:c++17 /EHs-c- /GR- \
              -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS \
              -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS \
              -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS \
-             -DUNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
+             -DUNICODE -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS",
+            include_path.display()
         ),
         "--build-mode" => "Release".to_string(),
-        "--libdir" => format!(r#"{prefix}\lib"#),
+        "--libdir" => lib_path.display().to_string(),
         other => panic!("unsupported llvm-config flag on windows: {other}"),
     }
 }
