@@ -55,17 +55,17 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            pwsh -Command "
-              choco install llvm --version=17.0.6 --allow-downgrade -y
-              $install = 'C:\Program Files\LLVM'
-              $prefix = 'C:\llvm-x64'
-              if (Test-Path $prefix) { Remove-Item -Recurse -Force $prefix }
-              Copy-Item -Recurse -Force $install $prefix
-              Write-Output \"Using LLVM prefix: $prefix\"
-              Write-Output ($prefix + '\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              Write-Output ('LLVM_SYS_170_PREFIX=' + $prefix) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-              Write-Output ('LLVM_SYS_CONFIG_PATH=' + $prefix + '\bin\llvm-config.exe') | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "
+            pwsh -Command @'
+            choco install llvm --version=17.0.6 --allow-downgrade -y
+            $install = 'C:\Program Files\LLVM'
+            $prefix = 'C:\llvm-x64'
+            if (Test-Path $prefix) { Remove-Item -Recurse -Force $prefix }
+            Copy-Item -Recurse -Force $install $prefix
+            Write-Output ("Using LLVM prefix: " + $prefix)
+            Add-Content -Path $env:GITHUB_PATH -Value ($prefix + '\bin')
+            Add-Content -Path $env:GITHUB_ENV -Value ("LLVM_SYS_170_PREFIX=" + $prefix)
+            Add-Content -Path $env:GITHUB_ENV -Value ("LLVM_SYS_CONFIG_PATH=" + $prefix + '\bin\llvm-config.exe')
+            '@
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   windows-arm64:
@@ -82,15 +82,15 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            pwsh -Command "
-              choco install llvm --version=17.0.6 --allow-downgrade -y
-              $install = 'C:\Program Files\LLVM'
-              $prefix = 'C:\llvm-arm64'
-              if (Test-Path $prefix) { Remove-Item -Recurse -Force $prefix }
-              Copy-Item -Recurse -Force $install $prefix
-              Write-Output \"Using LLVM prefix: $prefix\"
-              Write-Output ($prefix + '\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              Write-Output ('LLVM_SYS_170_PREFIX=' + $prefix) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-              Write-Output ('LLVM_SYS_CONFIG_PATH=' + $prefix + '\bin\llvm-config.exe') | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "
+            pwsh -Command @'
+            choco install llvm --version=17.0.6 --allow-downgrade -y
+            $install = 'C:\Program Files\LLVM'
+            $prefix = 'C:\llvm-arm64'
+            if (Test-Path $prefix) { Remove-Item -Recurse -Force $prefix }
+            Copy-Item -Recurse -Force $install $prefix
+            Write-Output ("Using LLVM prefix: " + $prefix)
+            Add-Content -Path $env:GITHUB_PATH -Value ($prefix + '\bin')
+            Add-Content -Path $env:GITHUB_ENV -Value ("LLVM_SYS_170_PREFIX=" + $prefix)
+            Add-Content -Path $env:GITHUB_ENV -Value ("LLVM_SYS_CONFIG_PATH=" + $prefix + '\bin\llvm-config.exe')
+            '@
           repo-token: ${{ secrets.GITHUB_TOKEN }}
