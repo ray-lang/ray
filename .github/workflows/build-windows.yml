@@ -51,16 +51,21 @@ jobs:
         id: cache-llvm
         uses: actions/cache@v4
         with:
-          path: |
-            C:\llvm-x64
+          path: C:\llvm-x64
           key: windows-llvm17-x64-msvc-minimal-v1
+      - name: Cache LLVM source
+        id: cache-llvm-src
+        uses: actions/cache@v4
+        with:
+          path: llvm-project-17.0.6.src
+          key: windows-llvm-src-17.0.6
       - name: Setup MSVC
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
       - name: Download LLVM sources
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.cache-llvm.outputs.cache-hit != 'true' && steps.cache-llvm-src.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.tar.xz"
