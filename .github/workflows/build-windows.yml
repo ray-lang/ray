@@ -56,12 +56,9 @@ jobs:
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
             choco install llvm --version=17.0.6 --allow-downgrade -y
-            LLVM_PREFIX=$(pwsh -Command "(Get-Command llvm-config).Source | Split-Path -Parent | Split-Path -Parent")
             echo "Detected LLVM prefix: $LLVM_PREFIX"
-            "$LLVM_PREFIX/bin/llvm-config.exe" --version
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
-            echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   windows-arm64:
@@ -79,9 +76,7 @@ jobs:
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
             choco install llvm --version=17.0.6 --allow-downgrade -y
-            LLVM_PREFIX=$(pwsh -Command "(Get-Command llvm-config).Source | Split-Path -Parent | Split-Path -Parent")
             echo "Detected LLVM prefix: $LLVM_PREFIX"
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
-            echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
