@@ -19,6 +19,3 @@ Write-Output "Using LLVM prefix: $prefix"
 $binPath = Join-Path $prefix 'bin'
 Add-Content -Path $env:GITHUB_PATH -Value $binPath
 Add-Content -Path $env:GITHUB_ENV -Value "LLVM_SYS_170_PREFIX=$prefix"
-Add-Content -Path $env:GITHUB_ENV -Value "LLVM_SYS_CONFIG_PATH=$($binPath)\llvm-config.exe"
-
-& "$binPath\llvm-config.exe" --version

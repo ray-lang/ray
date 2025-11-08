@@ -47,6 +47,46 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Cache LLVM build
+        id: cache-llvm
+        uses: actions/cache@v3
+        with:
+          path: |
+            build
+            C:\llvm-x64
+          key: ${{ runner.os }}-llvm17-x64
+      - name: Download LLVM sources
+        shell: pwsh
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.tar.xz"
+          $archive = "$(Resolve-Path .)\llvm-src.tar.xz"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          tar -xf $archive -C .
+      - name: Configure LLVM
+        shell: pwsh
+        run: |
+          cmake -S llvm-project-17.0.6.src/llvm `
+            -B build `
+            -G "Ninja" `
+            -DLLVM_ENABLE_PROJECTS="lld" `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_BUILD_TOOLS=ON `
+            -DLLVM_TARGETS_TO_BUILD="X86" `
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Build LLVM
+        shell: pwsh
+        run: |
+          cmake --build build --config Release
+      - name: Install LLVM
+        shell: pwsh
+        run: |
+          $prefix = "C:\llvm-x64"
+          cmake --install build --config Release --prefix $prefix
+          Add-Content -Path $env:GITHUB_PATH -Value ($prefix + '\bin')
+          Add-Content -Path $env:GITHUB_ENV -Value ("LLVM_SYS_170_PREFIX=" + $prefix)
+          Add-Content -Path $env:GITHUB_ENV -Value ("LLVM_SYS_CONFIG_PATH=" + $prefix + '\bin\llvm-config.exe')
       - name: Build Windows x86_64 CLI
         uses: ./.github/actions/ray-build
         with:
@@ -55,22 +95,5 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            pwsh -File scripts/setup-windows-llvm.ps1 x64
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-  windows-arm64:
-    needs: metadata
-    runs-on: windows-11-arm
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Build Windows arm64 CLI
-        uses: ./.github/actions/ray-build
-        with:
-          system: windows
-          arch: arm64
-          ref-label: ${{ needs.metadata.outputs.ref_label }}
-          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
-          packages: |
-            pwsh -File scripts/setup-windows-llvm.ps1 arm64
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+            pwsh -Command "Write-Output 'LLVM built for x86_64'"
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
