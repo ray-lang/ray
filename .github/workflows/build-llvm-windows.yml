@@ -37,7 +37,7 @@ jobs:
           release-name: windows-x64-llvm-17.0.6
           repo-token: ${{ secrets.GITHUB_TOKEN }}
   windows-arm64:
-    runs-on: windows-2025
+    runs-on: windows-11-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
