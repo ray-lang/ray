@@ -42,6 +42,38 @@ function New-TempDirectory {
     return (New-Item -ItemType Directory -Path $dir -Force).FullName
 }
 
+function Ensure-UserPathContains {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Entry
+    )
+
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $currentEntries = if ($userPath) {
+        $userPath.Split(';') | Where-Object { $_ -ne '' }
+    } else {
+        @()
+    }
+
+    if ($currentEntries | Where-Object { $_.Trim().ToLowerInvariant() -eq $Entry.Trim().ToLowerInvariant() }) {
+        return $false
+    }
+
+    $newPath = if ([string]::IsNullOrEmpty($userPath)) {
+        $Entry
+    } else {
+        "$userPath;$Entry"
+    }
+
+    try {
+        [System.Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        return $true
+    } catch {
+        Write-Warning "Unable to modify user PATH automatically: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 if ($env:OS -ne 'Windows_NT') {
     throw "error: install-ray.ps1 is intended for Windows hosts only"
 }
@@ -71,34 +103,27 @@ try {
     Write-Host "==> bootstrapping toolchain via ray bootstrap $ReleaseTag"
     & $rayBin bootstrap $ReleaseTag
 
-    $installBinDir = if ($env:INSTALL_BIN) { $env:INSTALL_BIN } else { Join-Path $env:USERPROFILE '.local\bin' }
-    $null = New-Item -ItemType Directory -Path $installBinDir -Force
-    $cliTarget = Join-Path $installBinDir 'ray.exe'
-
-    $symlinked = $false
-    try {
-        if (Test-Path $cliTarget) {
-            Remove-Item -Path $cliTarget -Force
+    $updatedPath = Ensure-UserPathContains -Entry $rayBinDir
+    if ($updatedPath) {
+        if (-not (($env:PATH -split ';') -contains $rayBinDir)) {
+            $env:PATH = "$env:PATH;$rayBinDir"
         }
-        New-Item -ItemType SymbolicLink -Path $cliTarget -Target $rayBin -Force | Out-Null
-        $symlinked = $true
-        Write-Host "==> symlinked CLI to $cliTarget"
-    } catch {
-        Write-Warning "unable to create symlink at $cliTarget; copying CLI instead"
-        Copy-Item -Path $rayBin -Destination $cliTarget -Force
+        Write-Host "==> added $rayBinDir to your PATH"
+    } elseif ((($env:PATH -split ';') -contains $rayBinDir) -or (([System.Environment]::GetEnvironmentVariable("Path", "User") -split ';') -contains $rayBinDir)) {
+        Write-Host "==> $rayBinDir already present in PATH"
+    } else {
+        Write-Warning "Add '$rayBinDir' to your PATH manually to use 'ray' globally."
     }
 
     Write-Host ""
     Write-Host "Ray installed!"
     Write-Host "- CLI:   $rayBin"
     Write-Host "- Root:  $rayRoot"
-    if (-not $symlinked) {
-        Write-Host "- Bin:   $cliTarget"
-    }
-
-    $pathEntries = ($env:PATH -split ';') | Where-Object { $_ -ne '' }
-    if ($pathEntries -notcontains $installBinDir) {
-        Write-Warning "Add '$installBinDir' to your PATH to use 'ray' globally."
+    $onPath = (($env:PATH -split ';') -contains $rayBinDir) -or (([System.Environment]::GetEnvironmentVariable("Path", "User") -split ';') -contains $rayBinDir) -or (([System.Environment]::GetEnvironmentVariable("Path", "Machine") -split ';') -contains $rayBinDir)
+    if ($onPath) {
+        Write-Host "- Bin:   $rayBinDir (on PATH)"
+    } else {
+        Write-Host "- Bin:   $rayBinDir (not yet on PATH)"
     }
 } finally {
     if (Test-Path $tempDir) {
