@@ -76,7 +76,7 @@ case "$HOST_ARCH" in
 esac
 
 CLI_ASSET="ray-cli-${HOST_OS}-${HOST_ARCH}-${RELEASE_TAG}"
-TOOLCHAIN_ASSET="ray-toolchain-${HOST_OS}-${HOST_ARCH}-${RELEASE_TAG}.tar.zst"
+TOOLCHAIN_ASSET="ray-toolchain-${RELEASE_TAG}.tar.zst"
 
 TMP_DIR=$(mktemp -d)
 cleanup() {
