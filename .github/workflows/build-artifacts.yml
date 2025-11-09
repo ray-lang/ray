@@ -138,37 +138,48 @@ jobs:
           ref-label: ${{ needs.metadata.outputs.ref_label }}
           channel-hint: ${{ needs.metadata.outputs.channel_hint }}
           packages: |
-            choco install llvm --version=17.0.6 --allow-downgrade -y
-            LLVM_PREFIX=$(pwsh -Command "(Get-Command llvm-config).Source | Split-Path -Parent | Split-Path -Parent")
-            echo "Detected LLVM prefix: $LLVM_PREFIX"
-            "$LLVM_PREFIX/bin/llvm-config.exe" --version
+            set -euo pipefail
+            LLVM_ZIP_URL="https://github.com/ray-lang/ray/releases/download/windows-x64-llvm-17.0.6/windows-x64-llvm-17.0.6.zip"
+            LLVM_PREFIX="C:/llvm-x64"
+            pwsh -Command "
+              \$ErrorActionPreference = 'Stop'
+              \$zipUrl = '$LLVM_ZIP_URL'
+              \$zipPath = 'C:\llvm-x64.zip'
+              \$installDir = 'C:\llvm-x64'
+              Write-Host ('Downloading prebuilt LLVM bundle from ' + \$zipUrl)
+              Invoke-WebRequest -Uri \$zipUrl -OutFile \$zipPath
+              if (Test-Path \$installDir) { Remove-Item -Recurse -Force \$installDir }
+              New-Item -ItemType Directory -Force -Path \$installDir | Out-Null
+              Expand-Archive -Path \$zipPath -DestinationPath \$installDir -Force
+              Remove-Item -Force \$zipPath
+            "
             echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
             echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
             echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-  windows-arm64:
-    needs: metadata
-    runs-on: windows-11-arm
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Build Windows arm64 CLI
-        uses: ./.github/actions/ray-build
-        with:
-          system: windows
-          arch: arm64
-          ref-label: ${{ needs.metadata.outputs.ref_label }}
-          channel-hint: ${{ needs.metadata.outputs.channel_hint }}
-          packages: |
-            choco install llvm --version=17.0.6 --allow-downgrade -y
-            LLVM_PREFIX=$(pwsh -Command "(Get-Command llvm-config).Source | Split-Path -Parent | Split-Path -Parent")
-            echo "Detected LLVM prefix: $LLVM_PREFIX"
-            "$LLVM_PREFIX/bin/llvm-config.exe" --version
-            echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
-            echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
-            echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+  # windows-arm64:
+  #   needs: metadata
+  #   runs-on: windows-11-arm
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #     - name: Build Windows arm64 CLI
+  #       uses: ./.github/actions/ray-build
+  #       with:
+  #         system: windows
+  #         arch: arm64
+  #         ref-label: ${{ needs.metadata.outputs.ref_label }}
+  #         channel-hint: ${{ needs.metadata.outputs.channel_hint }}
+  #         packages: |
+  #           choco install llvm --version=17.0.6 --allow-downgrade -y
+  #           LLVM_PREFIX=$(pwsh -Command "(Get-Command llvm-config).Source | Split-Path -Parent | Split-Path -Parent")
+  #           echo "Detected LLVM prefix: $LLVM_PREFIX"
+  #           "$LLVM_PREFIX/bin/llvm-config.exe" --version
+  #           echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+  #           echo "LLVM_SYS_170_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+  #           echo "LLVM_SYS_CONFIG_PATH=$LLVM_PREFIX/bin/llvm-config.exe" >> "$GITHUB_ENV"
+  #         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   toolchain:
     needs: 
