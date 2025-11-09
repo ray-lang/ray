@@ -1,7 +1,6 @@
-use std::{error::Error, fs::File, io::Write, process};
+use std::process;
 
 use clap::{Parser, Subcommand, builder::styling};
-use colored::Colorize;
 use ray_core::pathlib::RayPaths;
 use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions};
 use ray_shared::logger;
@@ -37,16 +36,6 @@ pub enum Command {
     Analyze(AnalyzeOptions),
     /// Run the language server
     Lsp(lsp::LspOptions),
-}
-
-pub struct CmdError {
-    msg: String,
-}
-
-impl<E: Error> From<E> for CmdError {
-    fn from(e: E) -> Self {
-        CmdError { msg: e.to_string() }
-    }
 }
 
 impl Command {
