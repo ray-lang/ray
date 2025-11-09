@@ -163,9 +163,9 @@ fn is_compatible_llvm(llvm_version: &Version) -> bool {
 /// Lazily searches for or compiles LLVM as configured by the environment
 /// variables.
 fn llvm_config(arg: &str) -> String {
-    if cfg!(target_os = "windows") {
-        return windows_llvm_config(arg);
-    }
+    // if cfg!(target_os = "windows") {
+    //     return windows_llvm_config(arg);
+    // }
     llvm_config_ex(&*LLVM_CONFIG_PATH, arg).expect("Surprising failure from llvm-config")
 }
 
