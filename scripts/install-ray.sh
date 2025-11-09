@@ -50,7 +50,10 @@ REPO_BASE="https://github.com/ray-lang/ray/releases/download/${RELEASE_TAG}"
 
 HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$HOST_OS" in
-  linux|darwin)
+  linux)
+    ;;
+  darwin)
+    HOST_OS="macos"
     ;;
   *)
     echo "error: unsupported OS '$HOST_OS'" >&2
