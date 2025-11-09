@@ -6,13 +6,13 @@ use std::{
 };
 
 use crate::{
+    TyVar,
     constraint::{EqualityConstraint, Solvable, TypeConstraintInfo},
     directives::TypeClassDirective,
     interface::{
         basic::HasBasic, qualification::HasQual, subst::HasSubst, type_inference::HasTypeInference,
     },
     types::{ClassEnv, Entailment, Predicate, Subst, Substitutable, Ty},
-    TyVar,
 };
 
 use super::HasState;

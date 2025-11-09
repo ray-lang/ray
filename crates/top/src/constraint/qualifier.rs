@@ -1,11 +1,11 @@
 use std::fmt::{Debug, Display};
 
 use crate::{
+    TyVar,
     interface::{
         basic::HasBasic, qualification::HasQual, subst::HasSubst, type_inference::HasTypeInference,
     },
     types::{Predicate, Subst, Substitutable, Ty},
-    TyVar,
 };
 
 use super::{PolyTypeConstraintInfo, Solvable};

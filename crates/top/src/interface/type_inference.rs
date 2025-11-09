@@ -1,10 +1,10 @@
 use std::{collections::HashMap, fmt::Display};
 
 use crate::{
+    Predicates, SigmaPredicates, Subst, TyVar,
     constraint::TypeConstraintInfo,
     state::HasState,
     types::{ForAll, OrderedTypeSynonyms, Scheme, Sigma, Substitutable, Ty},
-    Predicates, SigmaPredicates, Subst, TyVar,
 };
 
 use super::{basic::HasBasic, subst::HasSubst};

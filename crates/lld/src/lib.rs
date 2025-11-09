@@ -10,9 +10,13 @@ struct LLDInvokeResult {
     messages: *const c_char,
 }
 
-extern "C" {
-    fn lld_link(flavor: *const c_char, argc: c_int, argv: *const *const c_char) -> LLDInvokeResult;
-    fn link_free_result(result: *mut LLDInvokeResult);
+unsafe extern "C" {
+    unsafe fn lld_link(
+        flavor: *const c_char,
+        argc: c_int,
+        argv: *const *const c_char,
+    ) -> LLDInvokeResult;
+    unsafe fn link_free_result(result: *mut LLDInvokeResult);
 }
 
 pub enum LLDError {

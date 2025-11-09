@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    Substitutable, Ty, TyVar,
     constraint::{Constraint, InfoDetail, PolyTypeConstraintInfo, Solvable, TypeConstraintInfo},
     interface::{
         basic::HasBasic,
@@ -12,7 +13,6 @@ use crate::{
         type_inference::{HasTypeInference, TypeInferState},
     },
     state::{BasicState, HasState, OverloadingState, SimpleState},
-    Substitutable, Ty, TyVar,
 };
 
 use super::{SolveOptions, SolveResult, Solver};
@@ -235,10 +235,10 @@ mod tests {
     use std::fmt::Display;
 
     use crate::{
+        Subst, Substitutable, TyVar,
         constraint::{Constraint, EqualityConstraint},
         solver::{SolveOptions, Solver, TopInfo},
         types::Ty,
-        Subst, Substitutable, TyVar,
     };
 
     use super::GreedySolver;

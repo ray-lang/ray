@@ -4,10 +4,10 @@ use std::{
 };
 
 use crate::{
+    TyVar,
     constraint::InfoDetail,
     interface::{basic::HasBasic, subst::HasSubst, type_inference::HasTypeInference},
-    types::{mgu_with_synonyms, Subst, Ty},
-    TyVar,
+    types::{Subst, Ty, mgu_with_synonyms},
 };
 
 mod basic;

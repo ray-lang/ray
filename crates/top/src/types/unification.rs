@@ -76,7 +76,7 @@ where
                     a.to_string(),
                     b.to_string(),
                 )),
-            }
+            };
         }
         _ => {}
     }

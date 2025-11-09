@@ -2,7 +2,7 @@
 name = "lld"
 version = "0.1.0"
 authors = ["Jeremy Jacobson <me@jjacobson.io>"]
-edition = "2018"
+edition = "2024"
 
 [dependencies]
 libc = "0.2.97"

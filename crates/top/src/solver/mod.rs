@@ -4,10 +4,10 @@ use std::{
 };
 
 use crate::{
+    ForAll, Predicates, Qualification, Substitutable, Ty, TyVar,
     constraint::Constraint,
     directives::TypeClassDirective,
     types::{ClassEnv, OrderedTypeSynonyms, Scheme, Subst},
-    ForAll, Predicates, Qualification, Substitutable, Ty, TyVar,
 };
 
 pub mod greedy;

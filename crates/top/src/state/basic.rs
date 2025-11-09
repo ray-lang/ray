@@ -1,4 +1,4 @@
-use crate::{constraint::Constraint, interface::basic::HasBasic, state::HasState, Ty, TyVar};
+use crate::{Ty, TyVar, constraint::Constraint, interface::basic::HasBasic, state::HasState};
 
 #[derive(Debug, Default)]
 pub struct BasicState<I, T, V>

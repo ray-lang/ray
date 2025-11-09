@@ -163,225 +163,7 @@ fn is_compatible_llvm(llvm_version: &Version) -> bool {
 /// Lazily searches for or compiles LLVM as configured by the environment
 /// variables.
 fn llvm_config(arg: &str) -> String {
-    // if cfg!(target_os = "windows") {
-    //     return windows_llvm_config(arg);
-    // }
     llvm_config_ex(&*LLVM_CONFIG_PATH, arg).expect("Surprising failure from llvm-config")
-}
-
-#[cfg(target_os = "windows")]
-fn windows_llvm_config(arg: &str) -> String {
-    let prefix =
-        env::var("LLVM_SYS_170_PREFIX").expect("LLVM_SYS_170_PREFIX must be set on Windows");
-    let include_path = PathBuf::from(&prefix).join("include");
-    let lib_path = PathBuf::from(&prefix).join("lib");
-    match arg {
-        "--system-libs" => "".into(),
-        "--libnames" => WINDOWS_LLVM_LIBS
-            .iter()
-            .map(|name| format!("{name}.lib"))
-            .collect::<Vec<_>>()
-            .join(" "),
-        "--cxxflags" => format!(
-            "-I\"{}\" -std:c++17 /EHs-c- /GR- \
-             -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS \
-             -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS \
-             -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS \
-             -DUNICODE -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS",
-            include_path.display()
-        ),
-        "--build-mode" => "Release".to_string(),
-        "--libdir" => lib_path.display().to_string(),
-        other => panic!("unsupported llvm-config flag on windows: {other}"),
-    }
-}
-
-#[cfg(target_os = "windows")]
-const WINDOWS_LLVM_LIBS: &[&str] = &[
-    "LLVMWindowsManifest",
-    "LLVMXRay",
-    "LLVMLibDriver",
-    "LLVMDlltoolDriver",
-    "LLVMCoverage",
-    "LLVMLineEditor",
-    "LLVMXCoreDisassembler",
-    "LLVMXCoreCodeGen",
-    "LLVMXCoreDesc",
-    "LLVMXCoreInfo",
-    "LLVMX86TargetMCA",
-    "LLVMX86Disassembler",
-    "LLVMX86AsmParser",
-    "LLVMX86CodeGen",
-    "LLVMX86Desc",
-    "LLVMX86Info",
-    "LLVMWebAssemblyDisassembler",
-    "LLVMWebAssemblyAsmParser",
-    "LLVMWebAssemblyCodeGen",
-    "LLVMWebAssemblyUtils",
-    "LLVMWebAssemblyDesc",
-    "LLVMWebAssemblyInfo",
-    "LLVMVEDisassembler",
-    "LLVMVEAsmParser",
-    "LLVMVECodeGen",
-    "LLVMVEDesc",
-    "LLVMVEInfo",
-    "LLVMSystemZDisassembler",
-    "LLVMSystemZAsmParser",
-    "LLVMSystemZCodeGen",
-    "LLVMSystemZDesc",
-    "LLVMSystemZInfo",
-    "LLVMSparcDisassembler",
-    "LLVMSparcAsmParser",
-    "LLVMSparcCodeGen",
-    "LLVMSparcDesc",
-    "LLVMSparcInfo",
-    "LLVMRISCVTargetMCA",
-    "LLVMRISCVDisassembler",
-    "LLVMRISCVAsmParser",
-    "LLVMRISCVCodeGen",
-    "LLVMRISCVDesc",
-    "LLVMRISCVInfo",
-    "LLVMPowerPCDisassembler",
-    "LLVMPowerPCAsmParser",
-    "LLVMPowerPCCodeGen",
-    "LLVMPowerPCDesc",
-    "LLVMPowerPCInfo",
-    "LLVMNVPTXCodeGen",
-    "LLVMNVPTXDesc",
-    "LLVMNVPTXInfo",
-    "LLVMMSP430Disassembler",
-    "LLVMMSP430AsmParser",
-    "LLVMMSP430CodeGen",
-    "LLVMMSP430Desc",
-    "LLVMMSP430Info",
-    "LLVMMipsDisassembler",
-    "LLVMMipsAsmParser",
-    "LLVMMipsCodeGen",
-    "LLVMMipsDesc",
-    "LLVMMipsInfo",
-    "LLVMLoongArchDisassembler",
-    "LLVMLoongArchAsmParser",
-    "LLVMLoongArchCodeGen",
-    "LLVMLoongArchDesc",
-    "LLVMLoongArchInfo",
-    "LLVMLanaiDisassembler",
-    "LLVMLanaiCodeGen",
-    "LLVMLanaiAsmParser",
-    "LLVMLanaiDesc",
-    "LLVMLanaiInfo",
-    "LLVMHexagonDisassembler",
-    "LLVMHexagonCodeGen",
-    "LLVMHexagonAsmParser",
-    "LLVMHexagonDesc",
-    "LLVMHexagonInfo",
-    "LLVMBPFDisassembler",
-    "LLVMBPFAsmParser",
-    "LLVMBPFCodeGen",
-    "LLVMBPFDesc",
-    "LLVMBPFInfo",
-    "LLVMAVRDisassembler",
-    "LLVMAVRAsmParser",
-    "LLVMAVRCodeGen",
-    "LLVMAVRDesc",
-    "LLVMAVRInfo",
-    "LLVMARMDisassembler",
-    "LLVMARMAsmParser",
-    "LLVMARMCodeGen",
-    "LLVMARMDesc",
-    "LLVMARMUtils",
-    "LLVMARMInfo",
-    "LLVMAMDGPUTargetMCA",
-    "LLVMAMDGPUDisassembler",
-    "LLVMAMDGPUAsmParser",
-    "LLVMAMDGPUCodeGen",
-    "LLVMAMDGPUDesc",
-    "LLVMAMDGPUUtils",
-    "LLVMAMDGPUInfo",
-    "LLVMAArch64Disassembler",
-    "LLVMAArch64AsmParser",
-    "LLVMAArch64CodeGen",
-    "LLVMAArch64Desc",
-    "LLVMAArch64Utils",
-    "LLVMAArch64Info",
-    "LLVMOrcJIT",
-    "LLVMWindowsDriver",
-    "LLVMMCJIT",
-    "LLVMJITLink",
-    "LLVMInterpreter",
-    "LLVMExecutionEngine",
-    "LLVMRuntimeDyld",
-    "LLVMOrcTargetProcess",
-    "LLVMOrcShared",
-    "LLVMDWP",
-    "LLVMDebugInfoLogicalView",
-    "LLVMDebugInfoGSYM",
-    "LLVMOption",
-    "LLVMObjectYAML",
-    "LLVMObjCopy",
-    "LLVMMCA",
-    "LLVMMCDisassembler",
-    "LLVMLTO",
-    "LLVMCFGuard",
-    "LLVMFrontendOpenACC",
-    "LLVMFrontendHLSL",
-    "LLVMExtensions",
-    "Polly",
-    "PollyISL",
-    "LLVMPasses",
-    "LLVMCoroutines",
-    "LLVMipo",
-    "LLVMInstrumentation",
-    "LLVMVectorize",
-    "LLVMLinker",
-    "LLVMFrontendOpenMP",
-    "LLVMDWARFLinkerParallel",
-    "LLVMDWARFLinker",
-    "LLVMGlobalISel",
-    "LLVMMIRParser",
-    "LLVMAsmPrinter",
-    "LLVMSelectionDAG",
-    "LLVMCodeGen",
-    "LLVMTarget",
-    "LLVMObjCARCOpts",
-    "LLVMCodeGenTypes",
-    "LLVMIRPrinter",
-    "LLVMInterfaceStub",
-    "LLVMFileCheck",
-    "LLVMFuzzMutate",
-    "LLVMScalarOpts",
-    "LLVMInstCombine",
-    "LLVMAggressiveInstCombine",
-    "LLVMTransformUtils",
-    "LLVMBitWriter",
-    "LLVMAnalysis",
-    "LLVMProfileData",
-    "LLVMSymbolize",
-    "LLVMDebugInfoBTF",
-    "LLVMDebugInfoPDB",
-    "LLVMDebugInfoMSF",
-    "LLVMDebugInfoDWARF",
-    "LLVMObject",
-    "LLVMTextAPI",
-    "LLVMMCParser",
-    "LLVMIRReader",
-    "LLVMAsmParser",
-    "LLVMMC",
-    "LLVMDebugInfoCodeView",
-    "LLVMBitReader",
-    "LLVMFuzzerCLI",
-    "LLVMCore",
-    "LLVMRemarks",
-    "LLVMBitstreamReader",
-    "LLVMBinaryFormat",
-    "LLVMTargetParser",
-    "LLVMTableGen",
-    "LLVMSupport",
-    "LLVMDemangle",
-];
-
-#[cfg(not(target_os = "windows"))]
-fn windows_llvm_config(_arg: &str) -> String {
-    unreachable!("windows llvm-config helper should not be called on non-windows targets");
 }
 
 /// Invoke the specified binary as llvm-config.
@@ -496,7 +278,7 @@ fn get_link_libraries() -> Vec<String> {
         .collect::<Vec<String>>()
 }
 
-fn get_llvm_cxxflags() -> String {
+fn get_llvm_cxxflags() -> Vec<String> {
     let output = llvm_config("--cxxflags");
 
     // llvm-config includes cflags from its own compilation with --cflags that
@@ -509,18 +291,18 @@ fn get_llvm_cxxflags() -> String {
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
     .is_some();
+
+    let iter = output.split(&[' ', '\n'][..]);
     if no_clean || cfg!(target_env = "msvc") {
         // MSVC doesn't accept -W... options, so don't try to strip them and
         // possibly strip something that should be retained. Also do nothing if
         // the user requests it.
-        return output;
+        return iter.map(str::to_owned).collect::<Vec<_>>();
     }
 
-    llvm_config("--cxxflags")
-        .split(&[' ', '\n'][..])
-        .filter(|word| !word.starts_with("-W"))
+    iter.filter(|word| !word.starts_with("-W"))
+        .map(str::to_owned)
         .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn is_llvm_debug() -> bool {
@@ -530,11 +312,13 @@ fn is_llvm_debug() -> bool {
 
 fn main() {
     // Build the extra wrapper functions.
-    std::env::set_var("CXXFLAGS", get_llvm_cxxflags());
-    cc::Build::new()
-        .cpp(true)
-        .file("wrapper/lld.cpp")
-        .compile("lldwrapper");
+    let mut build = cc::Build::new();
+    build.cpp(true).file("wrapper/lld.cpp").warnings(false);
+    for flag in get_llvm_cxxflags() {
+        build.flag(&flag);
+    }
+
+    build.compile("lldwrapper");
 
     if cfg!(feature = "no-llvm-linking") {
         return;

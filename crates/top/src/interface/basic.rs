@@ -1,4 +1,4 @@
-use crate::{constraint::Constraint, Ty, TyVar};
+use crate::{Ty, TyVar, constraint::Constraint};
 
 pub trait HasBasic<I, T, V>
 where

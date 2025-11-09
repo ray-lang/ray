@@ -1,12 +1,12 @@
 use std::fmt::{Debug, Display};
 
 use crate::{
+    SigmaPredicates, TyVar,
     interface::{
         basic::HasBasic, qualification::HasQual, subst::HasSubst, type_inference::HasTypeInference,
     },
     types::{ShowQuantors, Sigma, Subst, Substitutable, Ty},
     util::Join,
-    SigmaPredicates, TyVar,
 };
 
 use super::{Constraint, EqualityConstraint, PolyTypeConstraintInfo, Solvable};

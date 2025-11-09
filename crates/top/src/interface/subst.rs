@@ -1,4 +1,4 @@
-use crate::{types::Subst, TyVar};
+use crate::{TyVar, types::Subst};
 
 pub trait HasSubst<I, T, V>
 where

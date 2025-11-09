@@ -11,11 +11,11 @@ pub use polymorphism::*;
 pub use qualifier::*;
 
 use crate::{
+    Ty, TyVar,
     interface::{
         basic::HasBasic, qualification::HasQual, subst::HasSubst, type_inference::HasTypeInference,
     },
     types::{Subst, Substitutable},
-    Ty, TyVar,
 };
 
 pub trait Solvable<State, T, V>

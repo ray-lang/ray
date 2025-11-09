@@ -4,10 +4,10 @@ use std::{
 };
 
 use crate::{
+    Predicates, TyVar,
     constraint::TypeConstraintInfo,
     directives::TypeClassDirective,
     types::{ClassEnv, Predicate, Qualification, Scheme, Substitutable, Ty},
-    Predicates, TyVar,
 };
 
 use super::{basic::HasBasic, subst::HasSubst, type_inference::HasTypeInference};

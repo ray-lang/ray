@@ -1,14 +1,15 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 use log;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tower_lsp::{
+    Client,
     jsonrpc::Result,
     lsp_types::{
         DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
@@ -19,7 +20,6 @@ use tower_lsp::{
         SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
         TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
     },
-    Client,
 };
 
 use ray_core::{libgen, pathlib::FilePath, span::Span};
@@ -575,7 +575,7 @@ impl RayLanguageServer {
             let client = self.client.clone();
             let flag = Arc::clone(&self.semantic_refresh_pending);
             tokio::spawn(async move {
-                use tokio::time::{sleep, Duration};
+                use tokio::time::{Duration, sleep};
                 sleep(Duration::from_millis(100)).await;
                 let _ = client.semantic_tokens_refresh().await;
                 flag.store(false, Ordering::SeqCst);

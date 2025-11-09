@@ -1,6 +1,6 @@
 use crate::{
-    types::{Predicate, Scheme, Ty},
     Predicates, TyVar,
+    types::{Predicate, Scheme, Ty},
 };
 
 pub trait InfoDetail {

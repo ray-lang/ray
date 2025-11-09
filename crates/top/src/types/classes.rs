@@ -9,9 +9,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{mgu_ref_slices, TyVar};
+use crate::{TyVar, mgu_ref_slices};
 
-use super::{mgu_with_synonyms, OrderedTypeSynonyms, ShowQualifiers, Subst, Substitutable, Ty};
+use super::{OrderedTypeSynonyms, ShowQualifiers, Subst, Substitutable, Ty, mgu_with_synonyms};
 
 pub trait Entailment<Other, T, V>
 where

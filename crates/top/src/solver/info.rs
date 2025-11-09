@@ -1,10 +1,10 @@
 use std::{collections::HashMap, fmt::Display};
 
 use crate::{
+    Predicates, TyVar,
     constraint::{InfoDetail, PolyTypeConstraintInfo, TypeConstraintInfo},
     types::{Predicate, Scheme, Ty},
     util::Join,
-    Predicates, TyVar,
 };
 
 #[derive(Debug, Default, Clone)]

@@ -1,9 +1,9 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use crate::{
+    TyVar,
     interface::{subst::HasSubst, type_inference::HasTypeInference},
     types::{Subst, Substitutable, Ty},
-    TyVar,
 };
 
 use super::{Solvable, TypeConstraintInfo};

@@ -3,9 +3,9 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    TyVar,
     types::{Predicate, Ty},
     util::Join,
-    TyVar,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

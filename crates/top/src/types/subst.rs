@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{interface::subst::HasSubst, types::Ty, TyVar};
+use crate::{TyVar, interface::subst::HasSubst, types::Ty};
 
 use super::ForAll;
 
