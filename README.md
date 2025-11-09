@@ -14,10 +14,14 @@ See more [here](docs/goals.md)
 ### Installing Ray
 
 The Ray CLI and standard library bundle live in the GitHub release artifacts. The easiest way to
-bootstrap them is via the hosted install script:
+bootstrap them is via the hosted install scripts:
 
 ```bash
 curl -fsSL https://ray-lang.org/install.sh | bash -s nightly-2025-11-06
+```
+
+```powershell
+iex "& { $(irm https://ray-lang.org/install.ps1) } nightly-2025-11-06"
 ```
 
 Replace the tag (`nightly-YYYY-MM-DD`, `v0.x.y`, etc.) with the release you want. The script:
