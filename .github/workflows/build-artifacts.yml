@@ -274,7 +274,7 @@ jobs:
       - macos-arm64
       - macos-x86_64
       - windows-x86_64
-      - windows-arm64
+      # - windows-arm64
       - toolchain
     if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
