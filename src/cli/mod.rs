@@ -2,7 +2,6 @@ use std::{error::Error, fs::File, io::Write, process};
 
 use clap::{Parser, Subcommand, builder::styling};
 use colored::Colorize;
-use pprof::protos::Message;
 use ray_core::pathlib::RayPaths;
 use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions};
 use ray_shared::logger;
@@ -105,12 +104,6 @@ pub fn run() {
         process::exit(1);
     }
 
-    let prof = if cli.global_options.profile {
-        Some(pprof::ProfilerGuard::new(100).unwrap())
-    } else {
-        None
-    };
-
     match cli.cmd {
         Command::Build(options) => {
             let mut driver = Driver::new(ray_paths.unwrap());
@@ -121,31 +114,5 @@ pub fn run() {
             analyze::action(&mut driver, options);
         }
         Command::Lsp(options) => lsp::action(options),
-    }
-
-    if let Some(prof) = prof {
-        if let Some(err) = prof
-            .report()
-            .build()
-            .map_err(CmdError::from)
-            .and_then(|report| {
-                let d = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let mut file = File::create(format!("profile-{}.pb", d))?;
-                let mut content = Vec::new();
-                let profile = report.pprof()?;
-                profile.write_to_vec(&mut content)?;
-                file.write_all(&content)?;
-
-                let file = File::create(format!("flamegraph-{}.svg", d))?;
-                report.flamegraph(file)?;
-                Ok(())
-            })
-            .err()
-        {
-            eprintln!("{} {}", "profiling error:".red(), err.msg)
-        }
     }
 }

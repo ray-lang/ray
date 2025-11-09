@@ -21,7 +21,6 @@ clap = { version = "4.5", features = ["color", "derive", "env"] }
 colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
 log = "0.4"
-pprof = { version = "0.15.0", features = ["protobuf-codec", "flamegraph"] }
 ray-core = { path = "crates/ray-core" }
 ray-driver = { path = "crates/ray-driver" }
 ray-lsp = { path = "crates/ray-lsp" }
