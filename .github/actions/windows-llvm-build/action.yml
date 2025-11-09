@@ -1,0 +1,114 @@
+name: windows-llvm-build
+description: Build, package, and upload a Windows LLVM bundle.
+inputs:
+  llvm-version:
+    description: LLVM release version to build (e.g. 17.0.6)
+    required: false
+    default: "17.0.6"
+  msvc-arch:
+    description: Architecture passed to MSVC developer command prompt.
+    required: false
+    default: x64
+  llvm-targets:
+    description: Semicolon-separated LLVM targets to build.
+    required: false
+    default: X86
+  install-prefix:
+    description: Directory where LLVM should be installed (defaults to C:\llvm-<arch>).
+    required: false
+    default: ""
+  asset-name:
+    description: Release asset name (e.g. windows-x64-llvm-17.0.6.zip).
+    required: true
+  release-tag:
+    description: Tag to use or overwrite on the release.
+    required: true
+  release-name:
+    description: Release title.
+    required: true
+  repo-token:
+    description: GitHub token used for uploading release assets.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Setup MSVC environment
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ inputs.msvc-arch }}
+
+    - name: Build and install LLVM
+      id: build
+      shell: pwsh
+      run: |
+        $llvmVersion = "${{ inputs.llvm-version }}"
+        $sourceDir = "llvm-project-$llvmVersion.src"
+        $archive = "$sourceDir.tar.xz"
+        if (-not (Test-Path $sourceDir)) {
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/$archive"
+          Write-Host "Downloading LLVM $llvmVersion from $url"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          tar -xf $archive -C .
+          if (-not (Test-Path $sourceDir)) {
+            $extractedDir = Get-ChildItem -Directory | Where-Object { $_.Name -like 'llvm-project-*' } | Select-Object -First 1
+            if ($extractedDir) {
+              Rename-Item $extractedDir.FullName $sourceDir
+            } else {
+              throw "Unable to locate extracted LLVM sources."
+            }
+          }
+        }
+
+        if (Test-Path build) {
+          Remove-Item -Recurse -Force build
+        }
+
+        $prefix = "${{ inputs.install-prefix }}"
+        if ([string]::IsNullOrWhiteSpace($prefix)) {
+          $prefix = "C:\llvm-${{ inputs.msvc-arch }}"
+        }
+
+        cmake -S "$sourceDir\llvm" `
+          -B build `
+          -G "Ninja" `
+          -DLLVM_ENABLE_PROJECTS="lld" `
+          -DLLVM_INCLUDE_TESTS=OFF `
+          -DLLVM_INCLUDE_EXAMPLES=OFF `
+          -DLLVM_INCLUDE_BENCHMARKS=OFF `
+          -DLLVM_BUILD_TOOLS=ON `
+          -DLLVM_TARGETS_TO_BUILD="${{ inputs.llvm-targets }}" `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DBUILD_SHARED_LIBS=OFF `
+          -DCMAKE_INSTALL_PREFIX="$prefix"
+
+        cmake --build build --config Release
+        cmake --install build --config Release --prefix $prefix
+
+        "install-prefix=$prefix" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    - name: Package LLVM archive
+      id: package
+      shell: pwsh
+      run: |
+        $prefix = "${{ steps.build.outputs.install-prefix }}"
+        if ([string]::IsNullOrWhiteSpace($prefix)) {
+          throw "Missing install prefix from build step."
+        }
+        $zipPath = "$prefix.zip"
+        if (Test-Path $zipPath) {
+          Remove-Item -Force $zipPath
+        }
+        $contentPath = Join-Path $prefix '*'
+        Compress-Archive -Path $contentPath -DestinationPath $zipPath -Force
+        "zip-path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    - name: Upload LLVM release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ inputs.repo-token }}
+        file: ${{ steps.package.outputs.zip-path }}
+        asset_name: ${{ inputs.asset-name }}
+        tag: ${{ inputs.release-tag }}
+        release_name: ${{ inputs.release-name }}
+        prerelease: false
+        overwrite: true

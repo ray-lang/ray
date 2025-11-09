@@ -1,0 +1,36 @@
+name: Build Windows LLVM
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    steps:
+      - name: Cache LLVM build
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: C:\llvm-x64
+          key: windows-llvm17-x64
+      - name: Cache LLVM source
+        id: cache-llvm-src
+        uses: actions/cache@v4
+        with:
+          path: llvm-project-17.0.6.src
+          key: windows-llvm-src-17.0.6
+      - name: Build and publish LLVM bundle
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        uses: ./.github/actions/windows-llvm-build
+        with:
+          msvc-arch: x64
+          llvm-version: 17.0.6
+          llvm-targets: X86
+          install-prefix: C:\llvm-x64
+          asset-name: windows-x64-llvm-17.0.6.zip
+          release-tag: windows-x64-llvm-17.0.6
+          release-name: windows-x64-llvm-17.0.6
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
