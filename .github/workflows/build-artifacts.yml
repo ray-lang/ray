@@ -228,29 +228,27 @@ jobs:
 
       - name: Archive toolchain
         run: |
-          tar -C build/toolchain -cf ${TOOLCHAIN_BASENAME}.tar .
-          zstd -q ${TOOLCHAIN_BASENAME}.tar
-          mv ${TOOLCHAIN_BASENAME}.tar.zst build/${TOOLCHAIN_BASENAME}.tar.zst
-          rm ${TOOLCHAIN_BASENAME}.tar
+          set -euo pipefail
+          tar -C build/toolchain -czf build/${TOOLCHAIN_BASENAME}.tar.gz .
 
       - name: Generate checksum
         run: |
-          shasum -a 256 build/${TOOLCHAIN_BASENAME}.tar.zst > build/${TOOLCHAIN_BASENAME}.tar.zst.sha256
+          shasum -a 256 build/${TOOLCHAIN_BASENAME}.tar.gz > build/${TOOLCHAIN_BASENAME}.tar.gz.sha256
 
       - name: Upload toolchain artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TOOLCHAIN_BASENAME }}
           path: |
-            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
-            build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
+            build/${{ env.TOOLCHAIN_BASENAME }}.tar.gz
+            build/${{ env.TOOLCHAIN_BASENAME }}.tar.gz.sha256
 
       - name: Upload toolchain archive to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst
-          asset_name: ${{ env.TOOLCHAIN_BASENAME }}.tar.zst
+          file: build/${{ env.TOOLCHAIN_BASENAME }}.tar.gz
+          asset_name: ${{ env.TOOLCHAIN_BASENAME }}.tar.gz
           tag: ${{ env.REF_LABEL }}
           release_name: ${{ env.REF_LABEL }}
           prerelease: ${{ github.ref_type != 'tag' }}
@@ -260,8 +258,8 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
-          asset_name: ${{ env.TOOLCHAIN_BASENAME }}.tar.zst.sha256
+          file: build/${{ env.TOOLCHAIN_BASENAME }}.tar.gz.sha256
+          asset_name: ${{ env.TOOLCHAIN_BASENAME }}.tar.gz.sha256
           tag: ${{ env.REF_LABEL }}
           release_name: ${{ env.REF_LABEL }}
           prerelease: ${{ github.ref_type != 'tag' }}
@@ -285,7 +283,7 @@ jobs:
       - macos-arm64
       - macos-x86_64
       - windows-x86_64
-      # - windows-arm64
+      - windows-arm64
       - toolchain
     if: github.ref_type != 'tag'
     runs-on: ubuntu-latest

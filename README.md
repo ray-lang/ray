@@ -32,6 +32,15 @@ Replace the tag (`nightly-YYYY-MM-DD`, `v0.x.y`, etc.) with the release you want
 
 If `${INSTALL_BIN}` isn’t on your `PATH`, add it so `ray` is globally available.
 
+Once the CLI is installed, you can refresh the toolchain at any time with:
+
+```bash
+ray bootstrap            # installs the latest release
+ray bootstrap v0.2.0    # installs a specific tag
+```
+
+The bootstrap command mirrors the install scripts: it detects your platform, downloads the bundled `.tar.gz` toolchain archive, and extracts it into `${RAY_PATH:-$HOME/.ray}`.
+
 ### Contributing
 
 If you plan to work on Ray, please read through the

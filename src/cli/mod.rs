@@ -6,6 +6,7 @@ use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions};
 use ray_shared::logger;
 
 mod analyze;
+mod bootstrap;
 mod build;
 mod lsp;
 
@@ -36,6 +37,8 @@ pub enum Command {
     Analyze(AnalyzeOptions),
     /// Run the language server
     Lsp(lsp::LspOptions),
+    /// Download and install the Ray toolchain
+    Bootstrap(bootstrap::BootstrapOptions),
 }
 
 impl Command {
@@ -86,20 +89,34 @@ pub fn run() {
         .clone()
         .or_else(|| explicit_root.clone().map(RayPaths::new));
 
-    if ray_paths.is_none() {
-        eprintln!(
-            "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
-        );
-        process::exit(1);
-    }
-
     match cli.cmd {
+        Command::Bootstrap(options) => {
+            let install_root = ray_paths
+                .clone()
+                .unwrap_or_else(RayPaths::bootstrap_root);
+            if let Err(err) = bootstrap::action(install_root, options) {
+                eprintln!("error: {err:?}");
+                process::exit(1);
+            }
+        }
         Command::Build(options) => {
-            let mut driver = Driver::new(ray_paths.unwrap());
+            let ray_paths = ray_paths.unwrap_or_else(|| {
+                eprintln!(
+                    "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
+                );
+                process::exit(1);
+            });
+            let mut driver = Driver::new(ray_paths);
             build::action(&mut driver, options);
         }
         Command::Analyze(options) => {
-            let mut driver = Driver::new(ray_paths.unwrap());
+            let ray_paths = ray_paths.unwrap_or_else(|| {
+                eprintln!(
+                    "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
+                );
+                process::exit(1);
+            });
+            let mut driver = Driver::new(ray_paths);
             analyze::action(&mut driver, options);
         }
         Command::Lsp(options) => lsp::action(options),

@@ -76,7 +76,7 @@ case "$HOST_ARCH" in
 esac
 
 CLI_ASSET="ray-cli-${HOST_OS}-${HOST_ARCH}-${RELEASE_TAG}"
-TOOLCHAIN_ASSET="ray-toolchain-${RELEASE_TAG}.tar.zst"
+TOOLCHAIN_ASSET="ray-toolchain-${RELEASE_TAG}.tar.gz"
 
 TMP_DIR=$(mktemp -d)
 cleanup() {
@@ -107,17 +107,8 @@ echo "==> installing CLI to $RAY_BIN" >&2
 cp "$CLI_PATH" "$RAY_BIN"
 chmod +x "$RAY_BIN"
 
-echo "==> extracting toolchain into $RAY_ROOT" >&2
-if tar --help 2>&1 | grep -q -- '--zstd'; then
-  tar --zstd -xf "$TOOLCHAIN_PATH" -C "$RAY_ROOT"
-else
-  if ! command -v zstd >/dev/null 2>&1; then
-    echo "error: tar lacks --zstd support and zstd is not installed" >&2
-    exit 1
-  fi
-  zstd -d "$TOOLCHAIN_PATH" -o "$TMP_DIR/toolchain.tar"
-  tar -xf "$TMP_DIR/toolchain.tar" -C "$RAY_ROOT"
-fi
+echo "==> bootstrapping toolchain with ray bootstrap $RELEASE_TAG" >&2
+"$RAY_BIN" bootstrap "$RELEASE_TAG"
 
 echo
 echo "Ray installed!" >&2

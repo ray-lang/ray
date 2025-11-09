@@ -21,6 +21,13 @@ clap = { version = "4.5", features = ["color", "derive", "env"] }
 colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
 log = "0.4"
+anyhow = "1.0"
+flate2 = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tar = "0.4"
+tempfile = "3.10"
+ureq = { version = "3.1", features = ["json"] }
 ray-core = { path = "crates/ray-core" }
 ray-driver = { path = "crates/ray-driver" }
 ray-lsp = { path = "crates/ray-lsp" }
