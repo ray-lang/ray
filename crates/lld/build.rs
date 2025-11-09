@@ -292,7 +292,7 @@ fn get_llvm_cxxflags() -> Vec<String> {
     ))
     .is_some();
 
-    let iter = output.split(&[' ', '\n'][..]);
+    let iter = output.split_whitespace();
     if no_clean || cfg!(target_env = "msvc") {
         // MSVC doesn't accept -W... options, so don't try to strip them and
         // possibly strip something that should be retained. Also do nothing if
