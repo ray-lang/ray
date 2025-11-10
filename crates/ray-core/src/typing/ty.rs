@@ -511,25 +511,17 @@ impl TyVar {
     pub fn is_unknown(&self) -> bool {
         matches!(self.path().name().as_deref(), Some(n) if n.starts_with("?"))
     }
-
-    // pub fn to_u32(&self) -> u32 {
-    //     let mut hasher = DefaultHasher::new();
-    //     self.hash(&mut hasher);
-    //     (hasher.finish() % (u32::MAX as u64)) as u32
-    // }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NominalKind {
     Struct,
-    Record,
 }
 
 impl Display for NominalKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NominalKind::Struct => write!(f, "struct"),
-            NominalKind::Record => write!(f, "record"),
         }
     }
 }
@@ -1496,10 +1488,6 @@ impl Ty {
         self.get_path()
             .and_then(|fqn| tcx.get_struct_ty(&fqn))
             .map(|s| s.kind)
-    }
-
-    pub fn is_record(&self, tcx: &TyCtx) -> bool {
-        self.nominal_kind(tcx) == Some(NominalKind::Record)
     }
 
     pub fn is_struct(&self, tcx: &TyCtx) -> bool {

@@ -61,8 +61,6 @@ pub enum TokenKind {
     Extern,
     /// struct
     Struct,
-    /// record
-    Record,
     /// enum
     Enum,
     /// trait
@@ -241,7 +239,6 @@ impl TokenKind {
             TokenKind::Extern => "`extern`",
             TokenKind::TypeAlias => "`typealias`",
             TokenKind::Struct => "`struct`",
-            TokenKind::Record => "`record`",
             TokenKind::Enum => "`enum`",
             TokenKind::Trait => "`trait`",
             TokenKind::Default => "`default`",
@@ -359,7 +356,6 @@ impl fmt::Display for TokenKind {
             TokenKind::Async => "async".to_string(),
             TokenKind::Extern => "extern".to_string(),
             TokenKind::Struct => "struct".to_string(),
-            TokenKind::Record => "record".to_string(),
             TokenKind::Enum => "enum".to_string(),
             TokenKind::Trait => "trait".to_string(),
             TokenKind::Default => "default".to_string(),

@@ -42,7 +42,7 @@ struct string {
     len: uint
 }
 
-record IOVec {
+struct IOVec {
     base: *u8
     len: uint
 }

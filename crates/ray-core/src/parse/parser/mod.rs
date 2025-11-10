@@ -356,7 +356,6 @@ impl<'src> Parser<'src> {
                 }
                 TokenKind::Extern
                 | TokenKind::Struct
-                | TokenKind::Record
                 | TokenKind::Trait
                 | TokenKind::TypeAlias
                 | TokenKind::Impl
@@ -1000,7 +999,6 @@ impl<'src> Parser<'src> {
             TokenKind::Fn
                 | TokenKind::UpperFn
                 | TokenKind::Struct
-                | TokenKind::Record
                 | TokenKind::Trait
                 | TokenKind::Enum
                 | TokenKind::TypeAlias

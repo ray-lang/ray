@@ -112,7 +112,7 @@ impl Parser<'_> {
     pub(crate) fn parse_decl(&mut self, kind: &TokenKind, ctx: &ParseContext) -> DeclResult {
         Ok(match kind {
             TokenKind::Extern => self.parse_extern(ctx)?,
-            TokenKind::Struct | TokenKind::Record => {
+            TokenKind::Struct => {
                 let (st, span) = self.parse_struct(ctx)?;
                 let path = ctx.path.append(&st.path);
                 self.mk_decl(Decl::Struct(st), span, path)
@@ -365,7 +365,7 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_struct(&mut self, ctx: &ParseContext) -> ParseResult<(Struct, Span)> {
-        let keyword_kinds = &[TokenKind::Struct, TokenKind::Record];
+        let keyword_kinds = &[TokenKind::Struct];
         let Some(kw) = self.expect_one_of(keyword_kinds, Some(TriviaKind::Keyword), ctx)? else {
             let tok = self.token()?;
             let expected = keyword_kinds.iter().map(TokenKind::to_string).join(" or ");
@@ -374,7 +374,6 @@ impl Parser<'_> {
 
         let kind = match kw.kind {
             TokenKind::Struct => NominalKind::Struct,
-            TokenKind::Record => NominalKind::Record,
             _ => unreachable!("expected nominal kind token"),
         };
 

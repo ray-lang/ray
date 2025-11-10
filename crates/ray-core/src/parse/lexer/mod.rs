@@ -221,7 +221,6 @@ impl Lexer {
             "async" => TokenKind::Async,
             "extern" => TokenKind::Extern,
             "struct" => TokenKind::Struct,
-            "record" => TokenKind::Record,
             "enum" => TokenKind::Enum,
             "trait" => TokenKind::Trait,
             "default" => TokenKind::Default,

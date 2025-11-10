@@ -11,7 +11,7 @@
 - **Delimiters:** `(` `)` `[` `]` `{` `}`
 - **Terminators:** newline, `;`
 - **Separators:** `,`
-- **Decl starters:** `fn, struct, record, trait, enum, type, impl, extern, object, import`
+- **Decl starters:** `fn, struct, trait, enum, type, impl, extern, object, import`
 
 ## Newline semantics
 - Newline at depth 0 ends a statement.

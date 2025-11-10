@@ -91,9 +91,7 @@ pub fn run() {
 
     match cli.cmd {
         Command::Bootstrap(options) => {
-            let install_root = ray_paths
-                .clone()
-                .unwrap_or_else(RayPaths::bootstrap_root);
+            let install_root = ray_paths.clone().unwrap_or_else(RayPaths::bootstrap_root);
             if let Err(err) = bootstrap::action(install_root, options) {
                 eprintln!("error: {err:?}");
                 process::exit(1);

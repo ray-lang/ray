@@ -1141,12 +1141,9 @@ fn main() {
 }
 
 #[test]
-fn parses_record() {
+fn parses_oneline_struct() {
     let src = r#"
-record R {
-    x: i32,
-    y: i32
-}
+struct T { x: u32, y: u32 }
 "#;
     let (file, errors) = parse_source(src);
     assert!(
@@ -1158,41 +1155,15 @@ record R {
     let decl = file
         .decls
         .first()
-        .expect("expected record declaration")
+        .expect("expected struct declaration")
         .value
         .clone();
-    let rec = match decl {
+    let st = match decl {
         Decl::Struct(st) => st,
-        other => panic!("expected record declaration, got {:?}", other),
+        other => panic!("expected struct declaration, got {:?}", other),
     };
-    assert_eq!(rec.kind, NominalKind::Record);
-    assert_eq!(rec.path.to_string(), "test::R");
-}
-
-#[test]
-fn parses_oneline_record() {
-    let src = r#"
-record R { x: u32, y: u32 }
-"#;
-    let (file, errors) = parse_source(src);
-    assert!(
-        errors.is_empty(),
-        "expected trait to parse without errors, got: {:?}",
-        errors
-    );
-
-    let decl = file
-        .decls
-        .first()
-        .expect("expected record declaration")
-        .value
-        .clone();
-    let rec = match decl {
-        Decl::Struct(st) => st,
-        other => panic!("expected record declaration, got {:?}", other),
-    };
-    assert_eq!(rec.kind, NominalKind::Record);
-    assert_eq!(rec.path.to_string(), "test::R");
+    assert_eq!(st.kind, NominalKind::Struct);
+    assert_eq!(st.path.to_string(), "test::T");
 }
 
 #[test]
