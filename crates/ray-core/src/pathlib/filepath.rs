@@ -116,6 +116,16 @@ impl FilePath {
         }
     }
 
+    pub fn parent_dir(&self) -> Option<FilePath> {
+        if let Some(parent) = self.buf.parent() {
+            Some(FilePath {
+                buf: parent.to_path_buf(),
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn is_dir(&self) -> bool {
         self.buf.is_dir()
     }

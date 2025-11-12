@@ -19,12 +19,12 @@ When you run `ray build`, the driver resolves imports inside this hierarchy usin
 These modules avoid dependencies on the richer `std` facilities, making them safe to include for freestanding or embedded builds.
 
 ## Standard Modules
-- **Collections**: `std::array`, `std::dict`, and `std::tuple` add higher-level containers and iteration helpers. Many implement the `Iterable` and `Iterator` protocols from `lib/std/module.ray`.
+- **Collections**: `std::array`, `std::dict`, and `std::tuple` add higher-level containers and iteration helpers. Many implement the `Iterable` and `Iterator` protocols from `lib/std/mod.ray`.
 - **Strings and text**: `std::string` extends the core string with slicing, UTF-8 decoding (`for b in ch_bytes` style loops), and formatting helpers.
 - **IO**: `std::io` wraps libc-style `FILE` handles, offering `File::open` and `File::write` for buffered output.
 - **Math and time**: packages in `lib/std/math/` and `lib/std/datetime/` expose numeric utilities and time abstractions intended for WASI environments.
 - **Platform support**: `lib/std/platform` contains WASM-specific helpers, and `lib/std/sys` aggregates system-level entry points.
-- **Utilities**: hashing (`lib/std/hash.ray`), printing (`lib/std/print.ray`), and protocol definitions (`lib/std/module.ray`) provide traits and adapters adopted by user code.
+- **Utilities**: hashing (`lib/std/hash.ray`), printing (`lib/std/print.ray`), and protocol definitions (`lib/std/mod.ray`) provide traits and adapters adopted by user code.
 
 Each of these modules is an ordinary Ray file; you can inspect and extend them just like project sources.
 

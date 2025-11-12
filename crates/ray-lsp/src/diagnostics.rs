@@ -61,7 +61,8 @@ fn module_entry_path(filepath: &FilePath) -> FilePath {
     }
 
     let dir = filepath.dir();
-    let mut candidates: Vec<FilePath> = vec![&dir / "module.ray", &dir / "mod.ray"];
+    let base = dir.file_name();
+    let mut candidates: Vec<FilePath> = vec![&dir / "mod.ray", &dir / format!("{base}.ray")];
 
     if let Some(dir_name) = dir
         .as_ref()
@@ -87,7 +88,8 @@ fn is_module_root_file(filepath: &FilePath) -> bool {
         None => return false,
     };
 
-    if file_name == "module.ray" || file_name == "mod.ray" {
+    let base = filepath.dir().file_name();
+    if file_name == "mod.ray" || file_name == format!("{base}.ray") {
         return true;
     }
 

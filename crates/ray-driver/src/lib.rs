@@ -111,11 +111,10 @@ impl Driver {
         }
         let mut mod_builder =
             sema::ModuleBuilder::new(&self.ray_paths, c_include_paths, options.no_core);
-        let module_scope =
-            match mod_builder.build_from_path_with_overlay(&options.input_path, None, overlays)? {
-                Some(module_path) => module_path,
-                None => return Err(mod_builder.take_errors()),
-            };
+        let module_scope = match mod_builder.build(&options.input_path, overlays)? {
+            Some(module_path) => module_path,
+            None => return Err(mod_builder.take_errors()),
+        };
         let module_path = module_scope.path;
 
         if options.print_ast {
@@ -195,8 +194,6 @@ impl Driver {
     }
 
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
-        let paths = self.ray_paths.clone();
-
         let frontend = self.build_frontend(&options, None)?;
 
         if options.no_compile {
@@ -247,17 +244,9 @@ impl Driver {
             let definitions = libgen::collect_definition_records(&module, &srcmap, &tcx);
             let lib = libgen::serialize(program, tcx, ncx, srcmap, defs, modules, definitions);
             let path = output_path("raylib");
-            let build_path = paths.get_build_path();
-            if !build_path.exists() {
-                fs::create_dir_all(build_path).map_err(|err| vec![err.into()])?;
-            }
 
-            let cache_path =
-                (paths.get_build_path() / module_path.join("#")).with_extension("raylib");
             log::info!("writing to {}", path);
-            fs::write(cache_path, &lib)
-                .and_then(|_| fs::write(path, lib))
-                .map_err(|err| vec![err.into()])
+            fs::write(path, lib).map_err(|err| vec![err.into()])
         } else {
             log::debug!("program before monomorphization:\n{}", program);
             program.monomorphize();

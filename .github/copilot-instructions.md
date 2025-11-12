@@ -43,7 +43,7 @@ cargo build --release  # Release build
 
 #### Module System
 - Modules map to directories by default
-- Entry points defined in `module.ray`
+- Entry points defined in `mod.ray`
 - Cross-module dependencies handled in `src/sema/modules.rs`
 
 ## Common Tasks

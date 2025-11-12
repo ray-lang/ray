@@ -64,10 +64,6 @@ impl RayPaths {
         &self.root / "bin"
     }
 
-    pub fn get_build_path(&self) -> FilePath {
-        &self.root / "build"
-    }
-
     pub fn get_lib_path(&self) -> FilePath {
         &self.root / "lib"
     }

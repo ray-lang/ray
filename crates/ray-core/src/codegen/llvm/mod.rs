@@ -36,10 +36,7 @@ use crate::{
     pathlib::FilePath,
     span::SourceMap,
     target::Target,
-    typing::{
-        TyCtx,
-        ty::{NominalKind, Ty},
-    },
+    typing::{TyCtx, ty::Ty},
 };
 
 use super::Codegen;
@@ -1457,7 +1454,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
         srcmap: &SourceMap,
     ) -> Self::Output {
         Ok(Some(match self {
-            lir::Inst::StructInit(dst, _) => {
+            lir::Inst::StructInit(_, _) => {
                 // Struct locals are value-typed now, so StructInit has no codegen work.
                 return Ok(None);
             }
