@@ -2,6 +2,7 @@ mod mangle;
 mod modules;
 mod monomorphize;
 mod nameresolve;
+pub mod root;
 mod symbols;
 mod ty;
 

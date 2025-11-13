@@ -5,7 +5,7 @@ LLVM_SYS_CONFIG_PATH := $(LLVM_SYS_170_PREFIX)/bin/llvm-config
 export LLVM_SYS_170_PREFIX
 export LLVM_SYS_CONFIG_PATH
 
-.PHONY: build build-release core dev-toolchain release-toolchain
+.PHONY: build build-release core dev-toolchain release-toolchain vscode-ext
 
 build:
 	@cargo build
@@ -28,8 +28,15 @@ release-toolchain:
 	@echo "==> staging toolchain contents"
 	@mkdir -p build/toolchain/lib
 	@target/release/ray --root-path $(PWD)/build/toolchain build lib/core --lib --no-core
-	@cp build/toolchain/build/core.raylib build/toolchain/lib/core.raylib
+	@cp lib/core/.raylib build/toolchain/lib/core.raylib
 	@echo "==> writing toolchain manifest"
 	@printf 'version = "%s"\nchannel = "%s"\n' "local" "local" > build/toolchain/manifest.toml
 	@echo "==> cleaning staging artifacts"
 	@rm -rf build/toolchain/build
+
+vscode-ext:
+	@cd editors/vscode
+	@echo "==> compiling extension from TS"
+	@npm run compile
+	@echo "==> packaging extension VSIX"
+	@vsce package --skip-license

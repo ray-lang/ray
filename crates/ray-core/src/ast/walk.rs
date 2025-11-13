@@ -4,7 +4,7 @@ use crate::ast::{
     expr::{Assign, Block, Call, Closure, For, Func, If, Loop, Sequence, While},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum WalkItem<'a> {
     Module(&'a Module<(), Decl>),
     Decl(&'a Node<Decl>),

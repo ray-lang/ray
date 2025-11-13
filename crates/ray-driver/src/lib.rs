@@ -37,6 +37,7 @@ pub use build::BuildOptions;
 pub use build::EmitType;
 pub use global_options::*;
 
+#[derive(Debug)]
 pub struct FrontendResult {
     pub module_path: Path,
     pub module: Module<(), Decl>,
@@ -91,11 +92,25 @@ impl Driver {
                 let symbols = collect_symbols(&frontend);
                 let definitions = collect_definitions(&frontend);
                 let types = collect_types(&frontend);
-                AnalysisReport::new(format, input_path, Vec::new(), symbols, types, definitions)
+                AnalysisReport::new(
+                    format,
+                    input_path,
+                    frontend.module_path,
+                    Vec::new(),
+                    symbols,
+                    types,
+                    definitions,
+                )
             }
-            Err(errs) => {
-                AnalysisReport::new(format, input_path, errs, Vec::new(), Vec::new(), Vec::new())
-            }
+            Err(errs) => AnalysisReport::new(
+                format,
+                input_path,
+                Path::new(),
+                errs,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
         }
     }
 
@@ -153,6 +168,21 @@ impl Driver {
             libgen::collect_definition_records(&result.module, &result.srcmap, &result.tcx);
 
         let symbol_map = build_symbol_map(SymbolBuildContext::new(&result.module, &result.srcmap));
+
+        log::debug!("[build_frontend] Frontend Summary");
+        log::debug!("[build_frontend] ----------------");
+        log::debug!("[build_frontend] symbol_map:");
+        for (_, sym) in symbol_map.iter() {
+            log::debug!(
+                "[build_frontend]   {} @ {}:{}:{} (role = {:?})",
+                sym.path,
+                sym.filepath,
+                sym.span.start.lineno + 1,
+                sym.span.start.col + 1,
+                sym.role,
+            );
+        }
+        log::debug!("[build_frontend] ----------------");
 
         Ok(FrontendResult {
             module_path,

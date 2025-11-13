@@ -2,7 +2,7 @@ use std::{ffi::OsString, str::FromStr};
 
 use clap::Args;
 use ray_core::{
-    ast::Path,
+    ast::{self, Path},
     errors::RayError,
     pathlib::FilePath,
     span::{Pos, Source, Span},
@@ -172,6 +172,7 @@ pub struct DefinitionInfo {
 pub struct AnalysisReport {
     pub format: AnalysisFormat,
     pub input_path: FilePath,
+    pub module_path: ast::Path,
     pub diagnostics: Vec<RayError>,
     pub symbols: Vec<SymbolInfo>,
     pub types: Vec<TypeInfo>,
@@ -182,6 +183,7 @@ impl AnalysisReport {
     pub fn new(
         format: AnalysisFormat,
         input_path: FilePath,
+        module_path: ast::Path,
         diagnostics: Vec<RayError>,
         symbols: Vec<SymbolInfo>,
         types: Vec<TypeInfo>,
@@ -190,6 +192,7 @@ impl AnalysisReport {
         Self {
             format,
             input_path,
+            module_path,
             diagnostics,
             symbols,
             types,
@@ -217,6 +220,7 @@ impl AnalysisReport {
         let AnalysisReport {
             format: _,
             input_path,
+            module_path,
             diagnostics,
             symbols,
             types,
@@ -236,6 +240,10 @@ impl AnalysisReport {
 
         for err in diagnostics {
             emit_text_diagnostic(err);
+        }
+
+        if !module_path.is_empty() {
+            println!("module path: {}", module_path);
         }
 
         if !symbols.is_empty() {
@@ -259,6 +267,7 @@ impl AnalysisReport {
         let AnalysisReport {
             format: _,
             input_path,
+            module_path,
             diagnostics,
             symbols,
             types,
@@ -287,9 +296,10 @@ impl AnalysisReport {
             .join(",");
 
         println!(
-            "{{\"status\":\"{}\",\"input\":\"{}\",\"diagnostics\":[{}],\"symbols\":[{}],\"types\":[{}],\"definitions\":[{}]}}",
+            "{{\"status\":\"{}\",\"input\":\"{}\",\"module_path\":\"{}\",\"diagnostics\":[{}],\"symbols\":[{}],\"types\":[{}],\"definitions\":[{}]}}",
             status.as_str(),
             escape_json(&input_path.to_string()),
+            module_path,
             diagnostics,
             symbols,
             types,

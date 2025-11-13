@@ -8,7 +8,7 @@ use ray_core::{
     errors::RayError,
     libgen::DefinitionRecord,
     parse::{ParseOptions, Parser},
-    sema::{NameContext, SymbolMap},
+    sema::{NameContext, SymbolMap, root},
     span::{Source, SourceMap},
 };
 use ray_core::{
@@ -53,56 +53,6 @@ fn is_core_library_uri(uri: &Url) -> bool {
         }
     }
     false
-}
-
-fn module_entry_path(filepath: &FilePath) -> FilePath {
-    if is_module_root_file(filepath) {
-        return filepath.dir();
-    }
-
-    let dir = filepath.dir();
-    let base = dir.file_name();
-    let mut candidates: Vec<FilePath> = vec![&dir / "mod.ray", &dir / format!("{base}.ray")];
-
-    if let Some(dir_name) = dir
-        .as_ref()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|s| !s.is_empty())
-    {
-        candidates.push(&dir / format!("{}.ray", dir_name));
-    }
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return dir;
-        }
-    }
-
-    filepath.clone()
-}
-
-fn is_module_root_file(filepath: &FilePath) -> bool {
-    let file_name = match filepath.as_ref().file_name().and_then(|name| name.to_str()) {
-        Some(name) => name,
-        None => return false,
-    };
-
-    let base = filepath.dir().file_name();
-    if file_name == "mod.ray" || file_name == format!("{base}.ray") {
-        return true;
-    }
-
-    let parent_name = filepath
-        .as_ref()
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|name| name.to_str());
-
-    match parent_name {
-        Some(parent) => file_name == format!("{}.ray", parent),
-        None => false,
-    }
 }
 
 pub fn collect(
@@ -172,9 +122,10 @@ fn collect_semantic_errors(
     let mut overlays = HashMap::new();
     overlays.insert(filepath.clone(), text.to_string());
 
-    let entry_path = module_entry_path(filepath);
+    // let entry_path = root::module_entry_path(filepath);
     let build_options = BuildOptions {
-        input_path: entry_path.clone(),
+        // input_path: entry_path.clone(),
+        input_path: filepath.clone(),
         no_core,
         ..Default::default()
     };
@@ -199,7 +150,7 @@ fn collect_semantic_errors(
 
     let snapshot = AnalysisSnapshotData {
         module_path,
-        entry_path,
+        entry_path: filepath.clone(),
         module,
         name_context: ncx,
         srcmap,

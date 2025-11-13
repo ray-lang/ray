@@ -76,6 +76,10 @@
           "match": "\\b(fn|struct|trait|impl|type|extern|let|mut|where)\\b"
         },
         {
+          "name": "keyword.other.ray",
+          "match": "\\b(import|wasi)\\b"
+        },
+        {
           "name": "keyword.operator.arrow.ray",
           "match": "->"
         },

@@ -23,15 +23,23 @@ export function activate(context: vscode.ExtensionContext) {
 
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionUri.fsPath;
 
-  const serverCommand = process.env.RAY_LSP_COMMAND ?? "cargo";
+  const serverCommand =
+    process.env.RAY_LSP_COMMAND ||
+    vscode.workspace.getConfiguration("ray").get<string>("rayPath") ||
+    "ray";
+
+  const extraArgs = vscode.workspace.getConfiguration("ray").get<string[]>("serverArgs") ?? [];
+
   const serverArgs = process.env.RAY_LSP_ARGS
     ? JSON.parse(process.env.RAY_LSP_ARGS)
-    : ["run", "--quiet", "-p", "ray-lsp"];
+    : ["lsp", ...extraArgs];
 
   const toolchainPath = resolveToolchainPath();
+  const extraEnv = vscode.workspace.getConfiguration("ray").get<Record<string, string>>("extraEnv") ?? {};
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    RAY_TOOLCHAIN_PATH: toolchainPath
+    RAY_PATH: toolchainPath,
+    ...extraEnv,
   };
   const serverOptions: ServerOptions = {
     run: {

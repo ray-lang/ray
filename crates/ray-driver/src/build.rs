@@ -62,7 +62,7 @@ pub struct BuildOptions {
 
     #[arg(
         long = "lib",
-        help = "Build a library (without library)",
+        help = "Build a library",
         action = clap::ArgAction::SetTrue,
     )]
     pub build_lib: bool,

@@ -15,14 +15,18 @@ use tower_lsp::{
         DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
         HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
-        Location, MarkupContent, MarkupKind, MessageType, SemanticTokens,
+        Location, MarkupContent, MarkupKind, MessageType, Position, SemanticTokens,
         SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
         SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
         TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
     },
 };
 
-use ray_core::{libgen, pathlib::FilePath, span::Span};
+use ray_core::{
+    libgen,
+    pathlib::FilePath,
+    span::{Source, Span},
+};
 use serde_json::Value;
 
 use crate::{
@@ -340,37 +344,9 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let snapshot = {
-            let cache = self.analysis_cache.read().await;
-            cache.get(&uri).cloned()
-        };
-
-        let Some(snapshot) = snapshot else {
-            self.log("goto_definition: no cached analysis snapshot; returning None")
-                .await;
+        let Some((snapshot, node_id, source)) = self.lookup_symbol_targets_at(&uri, position).await
+        else {
             return Ok(None);
-        };
-
-        let filepath = match uri_to_filepath(&uri) {
-            Some(path) => path,
-            None => {
-                self.log("goto_definition: unable to convert URI to filepath")
-                    .await;
-                return Ok(None);
-            }
-        };
-
-        let canon = filepath.canonicalize().unwrap_or(filepath.clone());
-        let (node_id, source) = match snapshot.data.srcmap.find_at_position(
-            &canon,
-            position.line as usize,
-            position.character as usize,
-        ) {
-            Some(src) => src,
-            None => {
-                self.log("goto_definition: no node found at position").await;
-                return Ok(None);
-            }
         };
 
         self.log(format!(
@@ -430,40 +406,9 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let snapshot = {
-            let cache = self.analysis_cache.read().await;
-            cache.get(&uri).cloned()
-        };
-
-        let Some(snapshot) = snapshot else {
-            self.log("hover: no cached analysis snapshot; returning None")
-                .await;
+        let Some((snapshot, node_id, source)) = self.lookup_symbol_targets_at(&uri, position).await
+        else {
             return Ok(None);
-        };
-
-        self.log(format!(
-            "[server] hover: snapshot module={} defs={}",
-            snapshot.data.module_path,
-            snapshot.data.definitions.len()
-        ))
-        .await;
-
-        let filepath = match uri_to_filepath(&uri) {
-            Some(path) => path,
-            None => {
-                self.log("hover: unable to convert URI to filepath").await;
-                return Ok(None);
-            }
-        };
-
-        let canon = filepath.canonicalize().unwrap_or(filepath.clone());
-        let (node_id, source) = match snapshot.data.srcmap.find_at_position(
-            &canon,
-            position.line as usize,
-            position.character as usize,
-        ) {
-            Some(src) => src,
-            None => return Ok(None),
         };
 
         self.log(format!(
@@ -504,7 +449,9 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                     ))
                     .await;
 
-                    hover_entries.push((record.to_string(), symbol_target.span));
+                    if let Some(span) = source.span {
+                        hover_entries.push((record.to_string(), span));
+                    }
                 }
                 None => {
                     self.log(format!(
@@ -513,7 +460,9 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                     ))
                     .await;
 
-                    hover_entries.push((symbol_target.path.to_string(), symbol_target.span));
+                    if let Some(span) = source.span {
+                        hover_entries.push((symbol_target.path.to_string(), span));
+                    }
                 }
             }
         }
@@ -787,5 +736,45 @@ impl RayLanguageServer {
         for uri in uris {
             self.publish_diagnostics(&uri).await;
         }
+    }
+
+    async fn lookup_symbol_targets_at(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Option<(AnalysisSnapshot, u64, Source)> {
+        // 1. snapshot
+        let snapshot = {
+            let cache = self.analysis_cache.read().await;
+            cache.get(uri).cloned()
+        }?;
+
+        self.log(format!(
+            "[server] lookup_symbol_targets_at: snapshot version={:?} module={} defs={} symbols={}",
+            snapshot.version,
+            snapshot.data.module_path,
+            snapshot.data.definitions.len(),
+            snapshot.data.symbol_map.len(),
+        ))
+        .await;
+
+        // 2. filepath
+        let filepath = uri_to_filepath(uri)?;
+        let canon = filepath.canonicalize().unwrap_or(filepath.clone());
+
+        // 3. node + source span in this file
+        let (node_id, source) = snapshot.data.srcmap.find_at_position(
+            &canon,
+            position.line as usize,
+            position.character as usize,
+        )?;
+
+        self.log(format!(
+            "[server] lookup_symbol_targets_at: node_id={} source_span={:?}",
+            node_id, source.span
+        ))
+        .await;
+
+        Some((snapshot, node_id, source))
     }
 }

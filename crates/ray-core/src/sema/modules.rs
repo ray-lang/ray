@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-use super::NameContext;
+use super::{NameContext, root};
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
@@ -80,6 +80,7 @@ where
     pub ncx: NameContext,
     no_core: bool,
     module_paths: HashSet<ast::Path>,
+    top_level_roots: HashMap<ast::Path, FilePath>,
     c_include_paths: Vec<FilePath>,
     paths: &'a RayPaths,
     errors: Vec<RayError>,
@@ -97,6 +98,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             libs: HashMap::new(),
             ncx: NameContext::new(),
             module_paths: HashSet::new(),
+            top_level_roots: HashMap::new(),
             errors: Vec::new(),
             overlays: None,
         }
@@ -203,7 +205,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         mut root_file: ast::File,
         mut srcmap: SourceMap,
         root_fp: &FilePath,
-        input_path: &FilePath,
         module_path: ast::Path,
     ) -> Result<Scope, Vec<RayError>> {
         let mut filepaths = vec![root_fp.clone()];
@@ -211,10 +212,25 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let mut stmts = root_file.stmts.drain(..).collect::<Vec<_>>();
         let mut decls = root_file.decls.drain(..).collect::<Vec<_>>();
 
-        if input_path.is_dir() {
+        let module_dir = root_fp.dir();
+        let has_dir_root = root::is_dir_module(&module_dir);
+        if has_dir_root {
+            self.register_top_level_root(&module_path, &module_dir);
+        }
+        let module_root = self.lookup_top_level_root(&module_path);
+
+        log::debug!(
+            "[build_from_file] root_fp={}, module_dir={}, has_dir_root={}, module_root={:?}",
+            root_fp,
+            module_dir,
+            has_dir_root,
+            module_root
+        );
+
+        if has_dir_root {
             self.build_submodules(
                 root_fp,
-                input_path,
+                &module_dir,
                 &module_path,
                 &mut filepaths,
                 &mut submodules,
@@ -224,7 +240,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             )?;
         }
 
-        let imports = self.build_imports(&root_file, &module_path, &mut decls);
+        let imports =
+            self.build_imports(&root_file, &module_path, &mut decls, module_root.as_ref());
 
         self.srcmaps.insert(module_path.clone(), srcmap);
         self.modules.insert(
@@ -278,7 +295,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
         // the "filepath"
         let fpath = FilePath::new();
-        self.build_from_file(root_file, srcmap, &fpath, &fpath, module_path)
+        self.build_from_file(root_file, srcmap, &fpath, module_path)
     }
 
     pub fn build_from_path(&mut self, input: BuildInput) -> Result<Option<Scope>, Vec<RayError>> {
@@ -287,31 +304,42 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             input.filepath,
             input.module_path
         );
-        let root_fp = match self.get_root_module(&input)? {
+        let module_filepath = match self.get_module_filepath(&input)? {
             Some(fp) => fp,
             None => return Ok(None),
         };
 
+        log::debug!(
+            "[build_from_path] filepath={}, module_path={}, is_entry={}, module_filepath={}",
+            input.filepath,
+            input.module_path,
+            input.is_entry,
+            module_filepath
+        );
+
         // check if module has already been built
         if self.module_paths.contains(&input.module_path) {
+            log::debug!(
+                "[build_from_path] module already built: {}",
+                input.module_path
+            );
             return Ok(Some(input.module_path.into()));
         }
 
         self.module_paths.insert(input.module_path.clone());
 
         // the library file can be used instead
-        if root_fp.has_extension("raylib") || root_fp.file_name() == ".raylib" {
-            self.load_library(root_fp, &input.module_path)?;
+        if module_filepath.has_extension("raylib") || module_filepath.file_name() == ".raylib" {
+            self.load_library(module_filepath, &input.module_path)?;
             return Ok(Some(input.module_path.into()));
         }
 
         let mut srcmap = SourceMap::new();
-        let root_file = self.parse_file(&mut srcmap, &root_fp, &input.module_path)?;
+        let file = self.parse_file(&mut srcmap, &module_filepath, &input.module_path)?;
         Ok(Some(self.build_from_file(
-            root_file,
+            file,
             srcmap,
-            &root_fp,
-            &input.filepath,
+            &module_filepath,
             input.module_path,
         )?))
     }
@@ -363,7 +391,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
         if !self.module_paths.contains(&core_path) {
             self.add_import(module_path, &core_path);
-            let input_path = &self.paths.get_lib_path() / core_path.to_filepath();
+            let core_fp = &self.paths.get_lib_path() / core_path.to_filepath();
+            let input_path = core_fp.canonicalize().unwrap_or(core_fp.clone());
             let input = BuildInput::new(input_path, core_path);
             match self.build_from_path(input) {
                 Ok(Some(scope)) => imports.push(scope),
@@ -392,6 +421,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         root_file: &ast::File,
         module_path: &ast::Path,
         decls: &mut Vec<ast::Node<ast::Decl>>,
+        module_root: Option<&FilePath>,
     ) -> Vec<Scope> {
         let mut imports = vec![];
 
@@ -404,7 +434,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         // then build all of the imports from the root file
         let mut c_decl_set = HashSet::new();
         for import in root_file.imports.iter() {
-            match self.resolve_import(&root_file.filepath, &module_path, import) {
+            match self.resolve_import(&root_file.filepath, &module_path, import, module_root) {
                 // C includes have no module path or named path
                 Ok(ResolvedImport {
                     filepath: Some(filepath),
@@ -434,6 +464,35 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         }
 
         imports
+    }
+
+    fn register_top_level_root(&mut self, module_path: &ast::Path, module_dir: &FilePath) {
+        let root_path = match module_path.root() {
+            Some(root) => root,
+            None => return,
+        };
+
+        if self.top_level_roots.contains_key(&root_path) {
+            return;
+        }
+
+        let mut top_dir = module_dir.clone();
+        let depth = module_path.len().saturating_sub(1);
+        for _ in 0..depth {
+            if let Some(parent) = top_dir.parent_dir() {
+                top_dir = parent;
+            } else {
+                break;
+            }
+        }
+
+        let canonical = top_dir.canonicalize().unwrap_or(top_dir.clone());
+        self.top_level_roots.insert(root_path, canonical);
+    }
+
+    fn lookup_top_level_root(&self, module_path: &ast::Path) -> Option<FilePath> {
+        let key = module_path.root()?;
+        self.top_level_roots.get(&key).cloned()
     }
 
     fn build_submodules(
@@ -536,68 +595,78 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         }
     }
 
-    pub fn get_root_module(&mut self, input: &BuildInput) -> Result<Option<FilePath>, RayError> {
+    pub fn get_module_filepath(
+        &mut self,
+        input: &BuildInput,
+    ) -> Result<Option<FilePath>, RayError> {
         let path = &input.filepath;
-        if self.is_overlay(path) {
-            return Ok(Some(path.clone()));
-        }
-
-        if path.exists() && !path.is_dir() {
-            return Ok(Some(path.clone()));
-        }
 
         if path.is_dir() {
-            // We found a directory that could be a module.
-            // RFC rule: prefer source if present; only fall back to a local .raylib when no source file exists.
-            let base = path.canonicalize()?.file_name();
-
-            // 1) Prefer source entry files inside the directory.
-            for name in ["mod.ray", &format!("{}.ray", base)].iter() {
-                let fp = path / name;
-                if fp.exists() {
-                    return Ok(Some(fp));
-                }
-            }
-
-            // 2) If no source files, allow a *local* .raylib only when we are not treating this directory
-            //    as the implicit entrypoint (i.e., when module_path is Some). For entrypoints, ignore local .raylib.
-            let local_lib = path / ".raylib";
-            if local_lib.exists() && !input.is_entry {
-                return Ok(Some(local_lib));
-            }
-
-            // 3) Final fallback: try cached artifacts in build/lib roots from the module path.
-            if let Some(lib_path) = self.resolve_library(&input.module_path) {
-                return Ok(Some(lib_path));
-            }
-
-            self.errors.push(RayError {
-                msg: format!(
-                    "No root module file. mod.ray or {base}.ray should exist in the directory {path}",
-                ),
-                src: vec![Source {
-                    filepath: path.clone(),
-                    ..Default::default()
-                }],
-                kind: RayErrorKind::Import,
-                context: Some("root module resolution".to_string()),
-            });
-        } else {
-            // If the provided path does not exist, attempt to resolve by cached artifact with the module path.
-            if let Some(lib_path) = self.resolve_library(&input.module_path) {
-                return Ok(Some(lib_path));
-            }
-
-            self.errors.push(RayError {
-                msg: format!("{} does not exist or is not a directory", path),
-                src: vec![Source {
-                    filepath: path.clone(),
-                    ..Default::default()
-                }],
-                kind: RayErrorKind::IO,
-                context: Some("root module resolution".to_string()),
-            });
+            return self.get_module_filepath_for_dir(input);
         }
+
+        if path.exists() {
+            return Ok(Some(root::module_entry_path(path)));
+        }
+
+        // If the provided path does not exist, attempt to resolve by cached artifact with the module path.
+        if let Some(lib_path) = self.resolve_library(&input.module_path) {
+            return Ok(Some(lib_path));
+        }
+
+        self.errors.push(RayError {
+            msg: format!("{} does not exist or is not a directory", path),
+            src: vec![Source {
+                filepath: path.clone(),
+                ..Default::default()
+            }],
+            kind: RayErrorKind::IO,
+            context: Some("root module resolution".to_string()),
+        });
+
+        Ok(None)
+    }
+
+    fn get_module_filepath_for_dir(
+        &mut self,
+        input: &BuildInput,
+    ) -> Result<Option<FilePath>, RayError> {
+        // We found a directory that could be a module.
+        // RFC rule: prefer source if present; only fall back to a local .raylib when no source file exists.
+        let path = &input.filepath;
+        let base = path.canonicalize()?.file_name();
+
+        // 1) Prefer source entry files inside the directory.
+        for name in ["mod.ray", &format!("{}.ray", base)].iter() {
+            let fp = path / name;
+            if fp.exists() {
+                return Ok(Some(fp));
+            }
+        }
+
+        // 2) If no source files, allow a *local* .raylib only when we are not treating this directory
+        //    as the implicit entrypoint (i.e., when module_path is Some). For entrypoints, ignore local .raylib.
+        let local_lib = path / ".raylib";
+        if local_lib.exists() && !input.is_entry {
+            return Ok(Some(local_lib));
+        }
+
+        // 3) Final fallback: try cached artifacts in build/lib roots from the module path.
+        if let Some(lib_path) = self.resolve_library(&input.module_path) {
+            return Ok(Some(lib_path));
+        }
+
+        self.errors.push(RayError {
+            msg: format!(
+                "No root module file. mod.ray or {base}.ray should exist in the directory {path}",
+            ),
+            src: vec![Source {
+                filepath: path.clone(),
+                ..Default::default()
+            }],
+            kind: RayErrorKind::Import,
+            context: Some("root module resolution".to_string()),
+        });
 
         Ok(None)
     }
@@ -652,18 +721,27 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         parent_filepath: &FilePath,
         parent_module_path: &ast::Path,
         import: &Import,
+        module_root: Option<&FilePath>,
     ) -> Result<ResolvedImport, RayError> {
         log::debug!("resolve import from {}: {}", parent_filepath, import);
         match &import.kind {
-            ast::ImportKind::Path(path) => {
-                self.resolve_path_import(path, parent_filepath, parent_module_path, &import.span)
-            }
+            ast::ImportKind::Path(path) => self.resolve_path_import(
+                path,
+                parent_filepath,
+                parent_module_path,
+                &import.span,
+                module_root,
+            ),
             ast::ImportKind::Names(path, _) => {
-                let filepath =
-                    match self.resolve_module_import(path, parent_filepath, &import.span)? {
-                        Some(fp) => fp,
-                        None => return Ok(ResolvedImport::default()),
-                    };
+                let filepath = match self.resolve_module_import(
+                    path,
+                    parent_filepath,
+                    &import.span,
+                    module_root,
+                )? {
+                    Some(fp) => fp,
+                    None => return Ok(ResolvedImport::default()),
+                };
 
                 let module_path = parent_module_path.append_path(&path.value.clone());
                 log::debug!("resolved path import: {}", module_path);
@@ -724,10 +802,11 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         parent_filepath: &FilePath,
         parent_module_path: &ast::Path,
         span: &Span,
+        module_root: Option<&FilePath>,
     ) -> Result<ResolvedImport, RayError> {
         // the path can either be a path to a module or name within a module
         // first, check if the path is a module path
-        match self.resolve_module_import(path, parent_filepath, span) {
+        match self.resolve_module_import(path, parent_filepath, span, module_root) {
             Ok(Some(filepath)) => {
                 let module_path = parent_module_path.append_path(path);
                 log::debug!("resolved path import: {}", module_path);
@@ -744,7 +823,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         // try to find a module that contains the name
         // get the parent path and try to resolve that as a module
         let parent_path = path.parent();
-        if let Some(filepath) = self.resolve_module_import(&parent_path, parent_filepath, span)? {
+        if let Some(filepath) =
+            self.resolve_module_import(&parent_path, parent_filepath, span, module_root)?
+        {
             // we found a module and now we need to see if we can find a name in the module
             let path = parent_module_path.append_path(path.clone()).canonicalize();
             let (parent_module_path, module_path) =
@@ -784,14 +865,28 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         path: &ast::Path,
         parent_filepath: &FilePath,
         span: &Span,
+        module_root: Option<&FilePath>,
     ) -> Result<Option<FilePath>, RayError> {
         log::debug!("resolve module import from {}: {}", parent_filepath, path);
 
-        let curr_dirpath = if parent_filepath.is_dir() {
-            parent_filepath.clone()
-        } else {
-            parent_filepath.dir()
-        };
+        if module_root.is_none() && path.is_relative() {
+            return Err(RayError {
+                msg: format!(
+                    "Cannot use `super` imports in single-file module when resolving {}",
+                    path
+                ),
+                src: vec![Source {
+                    filepath: parent_filepath.clone(),
+                    span: Some(*span),
+                    ..Default::default()
+                }],
+                kind: RayErrorKind::Import,
+                context: Some("module import resolution".to_string()),
+            });
+        }
+
+        // `dir` clones the path if already a directory, otherwise returns the parent (directory) path
+        let curr_dirpath = parent_filepath.dir();
 
         // the module could be in the library path or in the current directory
         let mut paths_to_check = vec![curr_dirpath];
@@ -811,7 +906,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             let filepath = dirpath.with_extension("ray");
             // TODO: ensure that if the filepath is relative it doesn't go outside the root module
             if filepath.exists() {
-                possible_paths.push(filepath);
+                let canonical = filepath.canonicalize().unwrap_or(filepath.clone());
+                self.ensure_within_root(&canonical, module_root, path, parent_filepath, span)?;
+                possible_paths.push(canonical);
                 continue;
             }
 
@@ -841,10 +938,12 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     }
                 }
 
-                if self.is_submodule(&parent_filepath, &filepath) {
-                    submodule_paths.push(filepath);
+                let canonical = filepath.canonicalize().unwrap_or(filepath.clone());
+                self.ensure_within_root(&canonical, module_root, path, parent_filepath, span)?;
+                if self.is_submodule(&parent_filepath, &canonical) {
+                    submodule_paths.push(canonical);
                 } else {
-                    possible_paths.push(filepath);
+                    possible_paths.push(canonical);
                 }
             }
         }
@@ -891,6 +990,35 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         }
     }
 
+    fn ensure_within_root(
+        &self,
+        candidate: &FilePath,
+        module_root: Option<&FilePath>,
+        path: &ast::Path,
+        parent_filepath: &FilePath,
+        span: &Span,
+    ) -> Result<(), RayError> {
+        if let Some(root) = module_root {
+            let canonical_root = root.canonicalize().unwrap_or(root.clone());
+            if !candidate.as_ref().starts_with(canonical_root.as_ref()) {
+                return Err(RayError {
+                    msg: format!(
+                        "Import {} resolves outside the module root {}",
+                        path, canonical_root
+                    ),
+                    src: vec![Source {
+                        filepath: parent_filepath.clone(),
+                        span: Some(*span),
+                        ..Default::default()
+                    }],
+                    kind: RayErrorKind::Import,
+                    context: Some("module import resolution".to_string()),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn get_subs(
         &mut self,
         root_fp: &FilePath,
@@ -903,7 +1031,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         for entry in dir.flatten() {
             let fp = FilePath::from(entry.path());
             if &fp != root_fp {
-                if self.is_dir_module(&fp) {
+                if root::is_dir_module(&fp) {
                     let base = fp.file_stem();
                     let sub_path = mod_path.append(&base);
                     submods.push((fp, sub_path));
@@ -926,12 +1054,12 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let mut chain: Vec<FilePath> = Vec::new();
         let mut curr = module_dir.clone();
         loop {
-            if !self.is_dir_module(&curr) {
+            if !root::is_dir_module(&curr) {
                 break;
             }
             chain.push(curr.clone());
             match curr.parent_dir() {
-                Some(parent) if self.is_dir_module(&parent) => {
+                Some(parent) if root::is_dir_module(&parent) => {
                     curr = parent;
                 }
                 _ => break,
@@ -946,27 +1074,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         // Build the path from the TOPMOST contiguous entry dir down to `module_dir`.
         let parts: Vec<String> = chain.iter().rev().map(|d| d.file_name()).collect();
         ast::Path::from(parts)
-    }
-
-    fn is_dir_module(&self, dir: &FilePath) -> bool {
-        if !dir.is_dir() {
-            return false;
-        }
-
-        let entries = match dir.read_dir() {
-            Ok(entries) => entries,
-            Err(_) => return false,
-        };
-
-        let base = dir.file_name();
-        for entry in entries.flatten() {
-            let fp = FilePath::from(entry.path());
-            if fp.file_name() == "mod.ray" || fp.file_name() == format!("{base}.ray") {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     fn is_submodule(&self, parent_filepath: &FilePath, filepath: &FilePath) -> bool {

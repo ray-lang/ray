@@ -176,6 +176,14 @@ impl Path {
         self.parts.len()
     }
 
+    pub fn root(&self) -> Option<Path> {
+        self.parts.front().cloned().map(|part| {
+            let mut parts = VecDeque::new();
+            parts.push_back(part);
+            Path { parts }
+        })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
     }
@@ -216,7 +224,8 @@ impl Path {
                 PathPart::Name(s) | PathPart::TypeArgs(s) | PathPart::FuncType(s) => fp.push(s),
             }
         }
-        fp.into()
+
+        fp
     }
 
     pub fn to_mangled(&self) -> String {
