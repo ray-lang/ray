@@ -6,7 +6,11 @@ use std::{
 use crate::{
     TyVar,
     constraint::InfoDetail,
-    interface::{basic::HasBasic, subst::HasSubst, type_inference::HasTypeInference},
+    interface::{
+        basic::HasBasic,
+        subst::HasSubst,
+        type_inference::{HasTypeInference, VarKind},
+    },
     types::{Subst, Ty, mgu_with_synonyms},
 };
 
@@ -40,7 +44,39 @@ where
         rhs.apply_subst_from(self);
         match mgu_with_synonyms(&lhs, &rhs, &Subst::new(), synonyms) {
             Ok((_, subst)) => {
-                self.state_mut().union(subst);
+                let mut filtered = Subst::new();
+                for (var, ty) in subst.into_iter() {
+                    // If the key is rigid but the value is a flexible var, flip the binding:
+                    if self.is_rigid(&var) {
+                        if let Some(other_var) = ty.maybe_var() {
+                            // Same rigid var: no-op, nothing to record.
+                            if &var == other_var {
+                                continue;
+                            }
+
+                            // rigid := flexible_meta  → flip to flexible_meta := rigid
+                            if !self.is_rigid(other_var) {
+                                filtered.insert(other_var.clone(), T::var(var.clone()));
+                                continue;
+                            }
+
+                            // At this point we have rigid1 := rigid2 (different skolems).
+                            // For now, treat this as a no-op rather than an error,
+                            // since it's usually just equating two skolemized signatures.
+                            continue;
+                        }
+
+                        let mut info = info.clone();
+                        info.add_detail(&format!(
+                            "cannot bind rigid type variable {} during unification",
+                            var
+                        ));
+                        self.add_labeled_err("rigid type variable", info);
+                        return;
+                    }
+                    filtered.insert(var, ty);
+                }
+                self.state_mut().union(filtered);
             }
             Err(err) => {
                 let mut info = info.clone();

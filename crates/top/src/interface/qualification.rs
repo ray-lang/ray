@@ -4,13 +4,17 @@ use std::{
 };
 
 use crate::{
-    Predicates, TyVar,
+    Predicates, Subst, TyVar,
     constraint::TypeConstraintInfo,
     directives::TypeClassDirective,
     types::{ClassEnv, Predicate, Qualification, Scheme, Substitutable, Ty},
 };
 
-use super::{basic::HasBasic, subst::HasSubst, type_inference::HasTypeInference};
+use super::{
+    basic::HasBasic,
+    subst::HasSubst,
+    type_inference::{HasTypeInference, VarKind},
+};
 
 pub trait HasQual<I, T, V>
 where
@@ -168,12 +172,19 @@ where
                 let (curr_pred, curr_info) = &predicates[i];
                 let (other_pred, other_info) = &predicates[j];
                 if let (
-                    Predicate::Class(curr_name, curr_ty, ..),
-                    Predicate::Class(other_name, other_ty, ..),
+                    Predicate::Class(curr_name, curr_ty, curr_params, ..),
+                    Predicate::Class(other_name, other_ty, other_params, ..),
                 ) = (curr_pred, other_pred)
                 {
                     match self.find_disjoint_directive(curr_name, other_name) {
-                        Some(info) if other_ty == curr_ty => {
+                        Some(info)
+                            if other_ty == curr_ty
+                                && curr_params.len() == other_params.len()
+                                && curr_params
+                                    .iter()
+                                    .zip(other_params.iter())
+                                    .all(|(a, b)| a == b) =>
+                        {
                             let mut info = info.clone();
                             info.disjoint_directive(&curr_name, curr_info, &other_name, other_info);
                             self.add_labeled_err("disjoint predicates", info);
@@ -215,7 +226,12 @@ where
             let synonyms = self.type_synonyms();
             let class_env = self.class_env();
             match class_env.by_instance(&predicate, synonyms) {
-                Some(predicates) => {
+                Some((subst, predicates)) => {
+                    let flexible_subst = subst
+                        .into_iter()
+                        .filter(|(var, _)| !self.is_rigid(var))
+                        .collect::<Subst<V, T>>();
+                    self.get_subst_mut().union(flexible_subst);
                     let predicates = predicates
                         .into_iter()
                         .map(|p| {

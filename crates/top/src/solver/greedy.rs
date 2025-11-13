@@ -10,7 +10,7 @@ use crate::{
     interface::{
         basic::HasBasic,
         qualification::HasQual,
-        type_inference::{HasTypeInference, TypeInferState},
+        type_inference::{HasTypeInference, TypeInferState, VarKind},
     },
     state::{BasicState, HasState, OverloadingState, SimpleState},
 };
@@ -159,6 +159,7 @@ where
             ..
         } = options;
         self.set_unique(unique);
+        self.mark_var_range(0, unique, VarKind::Flexible);
         self.type_synonyms_mut().extend(type_synonyms);
         self.class_env_mut().extend(class_env);
         self.directives_mut().extend(type_class_directives);

@@ -19,18 +19,7 @@ use crate::{
     utils::join,
 };
 
-use super::{
-    // predicate::TyPredicate,
-    // state::TyVarFactory,
-    // subst::{ApplySubst, Subst},
-    // traits::{
-    //     CollectTyVars, Generalize, HasFreeVars, HoistTypes, Instantiate, Polymorphize, Skolemize,
-    // },
-    TypeError,
-    context::TyCtx,
-    info::TypeSystemInfo,
-    traits::QualifyTypes,
-};
+use super::{TypeError, context::TyCtx, info::TypeSystemInfo, traits::QualifyTypes};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TyScheme(top::SchemePredicates<Ty, TyVar>);
@@ -183,7 +172,7 @@ impl TyScheme {
                 q.resolve_fqns(scopes, ncx);
                 q.map_vars(fn_tcx);
 
-                let (s, v) = match q {
+                let (s, mut ty_args) = match q {
                     Ty::Projection(s, v) => (s.name(), v),
                     Ty::Const(name) => (name, vec![]),
                     _ => {
@@ -200,21 +189,10 @@ impl TyScheme {
                     }
                 };
 
-                if v.len() != 1 {
-                    return Err(RayError {
-                        msg: format!("traits must have one type argument, but found {}", v.len()),
-                        src: vec![Source {
-                            span: Some(ty_span),
-                            filepath: filepath.clone(),
-                            ..Default::default()
-                        }],
-                        kind: RayErrorKind::Type,
-                        context: Some("function signature type inference".to_string()),
-                    });
+                for arg in ty_args.iter_mut() {
+                    arg.map_vars(fn_tcx);
                 }
 
-                let mut ty_arg = v[0].clone();
-                ty_arg.map_vars(fn_tcx);
                 let fqn = Path::from(s.as_str());
                 log::debug!("converting from ast type: {}", fqn);
                 if fn_tcx.get_trait_ty(&fqn).is_none() {
@@ -230,7 +208,8 @@ impl TyScheme {
                     });
                 }
 
-                preds.push(Predicate::class(fqn.to_string(), ty_arg));
+                let ty_arg = ty_args.remove(0);
+                preds.push(Predicate::class(fqn.to_string(), ty_arg, ty_args));
             }
             Self::new(vars, preds, ty)
         } else if vars.len() != 0 {
@@ -602,6 +581,7 @@ impl TraitTy {
 pub struct ImplTy {
     pub base_ty: Ty,
     pub trait_ty: Ty,
+    pub ty_args: Vec<Ty>,
     pub predicates: Vec<Predicate<Ty, TyVar>>,
 }
 
@@ -1653,52 +1633,6 @@ impl Ty {
             _ => {}
         }
     }
-
-    // pub fn add_to_union(&mut self, ty: Ty) {
-    //     if let Ty::All(_, t) = self {
-    //         t.as_mut().add_to_union(ty);
-    //     } else if let Ty::Union(tys) = self {
-    //         tys.push(ty);
-    //     }
-    // }
-
-    // pub fn unpack_quantified_ty(self) -> (Vec<TyVar>, Ty) {
-    //     match self {
-    //         Ty::All(q, t) => (q, *t),
-    //         t => (vec![], t),
-    //     }
-    // }
-
-    // pub fn unpack_qualified_ty(self) -> (Vec<TyPredicate>, Ty) {
-    //     match self {
-    //         Ty::All(xs, t) => {
-    //             let (q, t) = t.unpack_qualified_ty();
-    //             (q, Ty::All(xs, Box::new(t)))
-    //         }
-    //         Ty::Qualified(q, t) => (q, *t),
-    //         t => (vec![], t),
-    //     }
-    // }
-
-    // pub fn unpack_tuple(self) -> Vec<Ty> {
-    //     match self {
-    //         Ty::Tuple(tys) => tys,
-    //         _ => panic!("not a tuple type"),
-    //     }
-    // }
-
-    // pub fn try_unpack_overloaded_fn<T: Copy + Clone>(self) -> Result<Vec<Ty>, TypeError> {
-    //     if !self.is_func() && !self.is_funcs_union() {
-    //         return Err(TypeError::assertion(str!("function"), self));
-    //     }
-
-    //     match self {
-    //         Ty::Func(p, r) => Ok(vec![Ty::Func(p, r)]),
-    //         Ty::All(xs, t) if t.is_func() => Ok(vec![Ty::All(xs, t)]),
-    //         Ty::Union(tys) => Ok(tys),
-    //         t => unreachable!("attempted to unpack non-function: {:?}", t),
-    //     }
-    // }
 
     pub fn try_borrow_fn(&self) -> Result<(&Vec<Ty>, &Ty), TypeError> {
         if !self.is_func() {

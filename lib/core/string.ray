@@ -7,7 +7,7 @@ impl ToStr[string] {
     fn to_str(self) => self
 }
 
-impl Add[string] {
+impl Add[string, string, string] {
     fn +(a: string, b: string) -> string {
         len = a.len + b.len
         raw_ptr = malloc(len) as *u8

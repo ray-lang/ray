@@ -89,6 +89,26 @@ where
     T: Ty<V>,
     V: TyVar,
 {
+    fn instantiate_super_params(
+        param_vars: &[T],
+        actual_args: &[T],
+        mut template: Vec<T>,
+    ) -> Option<Vec<T>> {
+        if param_vars.len() != actual_args.len() {
+            return None;
+        }
+
+        let mut subst = Subst::new();
+        for (param, arg) in param_vars.iter().zip(actual_args) {
+            if let Some(var) = param.maybe_var() {
+                subst.insert(var.clone(), arg.clone());
+            }
+        }
+
+        template.apply_subst(&subst);
+        Some(template)
+    }
+
     pub fn new() -> Self {
         ClassEnv {
             classes: HashMap::new(),
@@ -112,7 +132,7 @@ where
             .push(predicate);
     }
 
-    pub fn superclasses(&self, class_name: &str) -> Option<&Vec<String>> {
+    pub fn superclasses(&self, class_name: &str) -> Option<&Vec<(String, Vec<T>)>> {
         self.classes
             .get(class_name)
             .map(|class| &class.superclasses)
@@ -128,12 +148,28 @@ where
 
     pub fn by_superclass(&self, predicate: &Predicate<T, V>) -> Vec<Predicate<T, V>> {
         match predicate {
-            Predicate::Class(name, ty, _) => {
+            Predicate::Class(name, ty, params, _) => {
                 let mut result = vec![predicate.clone()];
 
-                for superclass in self.superclasses(name).unwrap_or(&vec![]) {
-                    let pred = Predicate::class(superclass.clone(), ty.clone());
-                    result.extend(self.by_superclass(&pred));
+                if let Some(class) = self.classes.get(name) {
+                    let mut actual_args = Vec::with_capacity(1 + params.len());
+                    actual_args.push(ty.clone());
+                    actual_args.extend(params.iter().cloned());
+
+                    for (superclass, super_params) in &class.superclasses {
+                        if let Some(instantiated_params) = Self::instantiate_super_params(
+                            &class.param_vars,
+                            &actual_args,
+                            super_params.clone(),
+                        ) {
+                            let mut iter = instantiated_params.into_iter();
+                            if let Some(base) = iter.next() {
+                                let pred =
+                                    Predicate::class(superclass.clone(), base, iter.collect());
+                                result.extend(self.by_superclass(&pred));
+                            }
+                        }
+                    }
                 }
 
                 result
@@ -146,23 +182,40 @@ where
         &self,
         predicate: &Predicate<T, V>,
         synonyms: &OrderedTypeSynonyms<T, V>,
-    ) -> Option<Vec<Predicate<T, V>>>
+    ) -> Option<(Subst<V, T>, Vec<Predicate<T, V>>)>
     where
         V: Display,
         <V as FromStr>::Err: Debug,
     {
         log::debug!("by_instance: predicate = {}", predicate);
         match predicate {
-            Predicate::Class(class_name, _, _) => self
+            Predicate::Class(class_name, _, _, _) => self
                 .instances(class_name)?
                 .into_iter()
                 .find_map(|instance| {
-                    let subst = predicate.match_with(&instance.head, synonyms)?;
+                    log::debug!("by_instance: instance = {:?}", instance);
+                    let Some(subst) = predicate.match_with(&instance.head, synonyms) else {
+                        log::debug!(
+                            "by_instance: predicates do not match: predicate={} & instance_head={}",
+                            predicate,
+                            instance.head
+                        );
+                        return None;
+                    };
+                    log::debug!("by_instance: subst = {:?}", subst);
                     let mut predicates = instance.predicates.clone();
+                    log::debug!(
+                        "by_instance: instance predicates (before apply_subst) = {:?}",
+                        predicates
+                    );
                     predicates.apply_subst(&subst);
-                    Some(predicates)
+                    log::debug!(
+                        "by_instance: instance predicates (after apply_subst) = {:?}",
+                        predicates
+                    );
+                    Some((subst, predicates))
                 })
-                .map(|preds| preds.into()),
+                .map(|(subst, preds)| (subst, preds.into())),
             Predicate::HasField(_, field_name, _, _) => self
                 .record_types(field_name)?
                 .into_iter()
@@ -170,7 +223,7 @@ where
                     predicate.match_with(field_predicate, synonyms)?;
                     Some(vec![])
                 })
-                .map(|preds| preds.into()),
+                .map(|preds| (Subst::new(), preds.into())),
         }
     }
 
@@ -192,7 +245,8 @@ where
     T: Ty<V>,
     V: TyVar,
 {
-    pub superclasses: Vec<String>,
+    pub param_vars: Vec<T>,
+    pub superclasses: Vec<(String, Vec<T>)>,
     pub instances: Vec<Instance<T, V>>,
 }
 
@@ -201,8 +255,13 @@ where
     T: Ty<V>,
     V: TyVar,
 {
-    pub fn new(superclasses: Vec<String>, instances: Vec<Instance<T, V>>) -> Self {
+    pub fn new(
+        param_vars: Vec<T>,
+        superclasses: Vec<(String, Vec<T>)>,
+        instances: Vec<Instance<T, V>>,
+    ) -> Self {
         Class {
+            param_vars,
             superclasses,
             instances,
         }
@@ -235,7 +294,7 @@ where
     T: Ty<V>,
     V: TyVar,
 {
-    Class(String, T, PhantomData<V>),
+    Class(String, T, Vec<T>, PhantomData<V>),
     HasField(T, String, T, PhantomData<V>),
 }
 
@@ -246,10 +305,11 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Class(name, ty, _) => f
+            Self::Class(name, ty, params, _) => f
                 .debug_struct("Class")
                 .field("name", name)
                 .field("ty", ty)
+                .field("params", params)
                 .finish(),
             Self::HasField(ty, field, field_ty, _) => f
                 .debug_struct("HasField")
@@ -268,7 +328,15 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Predicate::Class(name, ty, _) => write!(f, "{}[{}]", name, ty),
+            Predicate::Class(name, ty, params, _) => {
+                let params = params
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let comma = if !params.is_empty() { ", " } else { "" };
+                write!(f, "{}[{}{}{}]", name, ty, comma, params)
+            }
             Predicate::HasField(ty, name, field, _) => {
                 write!(f, "{}::{} : {}", ty, name, field)
             }
@@ -293,8 +361,9 @@ where
 {
     fn apply_subst(&mut self, subst: &Subst<V, T>) {
         match self {
-            Predicate::Class(_, ty, _) => {
+            Predicate::Class(_, ty, params, _) => {
                 ty.apply_subst(subst);
+                params.apply_subst(subst);
             }
             Predicate::HasField(ty, _, field, _) => {
                 ty.apply_subst(subst);
@@ -305,8 +374,9 @@ where
 
     fn apply_subst_all(&mut self, subst: &Subst<V, T>) {
         match self {
-            Predicate::Class(_, ty, _) => {
+            Predicate::Class(_, ty, params, _) => {
                 ty.apply_subst_all(subst);
+                params.apply_subst_all(subst);
             }
             Predicate::HasField(ty, _, field, _) => {
                 ty.apply_subst_all(subst);
@@ -317,7 +387,11 @@ where
 
     fn free_vars(&self) -> Vec<&V> {
         match self {
-            Predicate::Class(_, ty, _) => ty.free_vars(),
+            Predicate::Class(_, ty, params, _) => ty
+                .free_vars()
+                .into_iter()
+                .chain(params.free_vars())
+                .collect(),
             Predicate::HasField(ty, _, field, _) => ty
                 .free_vars()
                 .into_iter()
@@ -341,7 +415,7 @@ where
     ) -> bool {
         class_env.superclass_entails(self, predicate)
             || match class_env.by_instance(predicate, synonyms) {
-                Some(qs) => qs.iter().all(|q| self.entails(q, synonyms, class_env)),
+                Some((_, qs)) => qs.iter().all(|q| self.entails(q, synonyms, class_env)),
                 None => false,
             }
     }
@@ -370,8 +444,8 @@ where
     T: Ty<V>,
     V: TyVar,
 {
-    pub fn class(name: String, ty: T) -> Self {
-        Predicate::Class(name, ty, PhantomData)
+    pub fn class(name: String, ty: T, params: Vec<T>) -> Self {
+        Predicate::Class(name, ty, params, PhantomData)
     }
 
     pub fn has_field(ty: T, name: String, field: T) -> Self {
@@ -384,7 +458,7 @@ where
 
     pub fn in_head_normal_form(&self) -> bool {
         match self {
-            Predicate::Class(_, ty, _) => ty.in_head_normal_form(),
+            Predicate::Class(_, ty, _, _) => ty.in_head_normal_form(),
             Predicate::HasField(ty, _, field_ty, _) => {
                 ty.in_head_normal_form() || field_ty.in_head_normal_form()
             }
@@ -401,17 +475,18 @@ where
         <V as FromStr>::Err: Debug,
     {
         match (self, other) {
-            (Predicate::Class(name1, lhs, _), Predicate::Class(name2, rhs, _))
-                if name1 == name2 =>
-            {
-                let lhs = lhs.freeze_vars();
-                match mgu_with_synonyms(&lhs, rhs, &Subst::new(), synonyms) {
-                    Ok((_, mut subst)) => {
-                        for (_, ty) in subst.iter_mut() {
-                            *ty = ty.unfreeze_vars();
-                        }
-                        Some(subst)
-                    }
+            (
+                Predicate::Class(name1, lhs, lhs_params, _),
+                Predicate::Class(name2, rhs, rhs_params, _),
+            ) if name1 == name2 => {
+                let lhs_all = std::iter::once(lhs)
+                    .chain(lhs_params.iter())
+                    .collect::<Vec<_>>();
+                let rhs_all = std::iter::once(rhs)
+                    .chain(rhs_params.iter())
+                    .collect::<Vec<_>>();
+                match mgu_ref_slices(&lhs_all, &rhs_all, &Subst::new(), synonyms) {
+                    Ok((_, subst)) => Some(subst),
                     Err(_) => None,
                 }
             }

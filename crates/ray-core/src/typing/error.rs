@@ -3,14 +3,11 @@ use top::Predicate;
 use crate::{
     errors::{RayError, RayErrorKind},
     span::Source,
-    // typing::subst::ApplySubst,
 };
 
 use super::{
     info::{Info, TypeSystemInfo},
-    // predicate::TyPredicate,
     ty::{Ty, TyVar},
-    // Subst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,7 +141,9 @@ impl TypeError {
             TypeErrorKind::WithInfo(info) => {
                 let mut msg = String::new();
                 for (x, i) in info.iter().enumerate() {
-                    if let Info::UnsolvedPredicate(Predicate::Class(name, ty, _), _extra_info) = i {
+                    if let Info::UnsolvedPredicate(Predicate::Class(name, ty, _, _), _extra_info) =
+                        i
+                    {
                         msg.push_str(&format!(
                             "type `{}` does not implement trait `{}`\n",
                             ty, name

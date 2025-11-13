@@ -206,7 +206,7 @@ where
 
             let (predicate, _) = &self.state().qualifier(i);
             let ty = match predicate {
-                Predicate::Class(_, ty, _) => ty,
+                Predicate::Class(_, ty, _, _) => ty,
                 _ => continue,
             };
 
@@ -241,7 +241,7 @@ where
                 .iter()
                 .filter_map(|directive| {
                     if let TypeClassDirective::Default(name, tys, info) = directive {
-                        if matches!(predicate, Predicate::Class(pred_name, _, _) if pred_name == name) {
+                        if matches!(predicate, Predicate::Class(pred_name, _, _, _) if pred_name == name) {
                             return Some((tys, info));
                         }
                     }
@@ -337,7 +337,9 @@ where
             let (predicate, info) = &self.state().qualifier(i);
             log::debug!("checking predicate: {}", predicate);
             let tys = match predicate {
-                Predicate::Class(_, ty, _) => vec![ty],
+                Predicate::Class(_, ty, params, _) => {
+                    std::iter::once(ty).chain(params.iter()).collect()
+                }
                 Predicate::HasField(record_ty, _, field_ty, _) => vec![record_ty, field_ty],
             };
 

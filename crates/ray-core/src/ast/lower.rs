@@ -5,7 +5,7 @@ use std::{
 };
 
 use ast::Impl;
-use top::{Predicate, Predicates, Substitutable, directives::TypeClassDirective};
+use top::{Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective};
 
 use crate::{
     ast::{self, TraitDirectiveKind},
@@ -344,7 +344,6 @@ impl LowerAST for Sourced<'_, Trait> {
         let ty_span = *tr.ty.span().unwrap();
         let scopes = ctx.get_scopes(src);
         tr.ty.resolve_fqns(scopes, ctx.ncx);
-        // tr.ty.resolve_fqns(trait_fqn, ctx.ncx);
 
         let (_, mut ty_params) = match tr.ty.deref() {
             Ty::Projection(n, tp) => (n.name(), tp.clone()),
@@ -358,27 +357,14 @@ impl LowerAST for Sourced<'_, Trait> {
             }
         };
 
-        // traits should only have one type parameter
-        if ty_params.len() != 1 {
-            return Err(RayError {
-                msg: format!("expected one type parameter but found {}", ty_params.len()),
-                src: vec![src.respan(ty_span)],
-                kind: RayErrorKind::Type,
-                context: Some("lower trait".to_string()),
-            });
-        }
-
         let fqn = trait_fqn.to_string();
         let mut trait_tcx = ctx.tcx.clone();
         ty_params
             .iter_mut()
             .for_each(|t| t.map_vars(&mut trait_tcx));
 
-        let mut ty_vars = vec![];
         let tp = &ty_params[0];
-        if let Ty::Var(v) = tp {
-            ty_vars.push(v.clone());
-        } else {
+        if !matches!(tp, Ty::Var(_)) {
             return Err(RayError {
                 msg: format!("expected a type parameter but found {}", tp),
                 src: vec![src.respan(ty_span)],
@@ -412,10 +398,11 @@ impl LowerAST for Sourced<'_, Trait> {
             // add the trait type to the qualifiers
             let scheme = sig.ty.as_mut().unwrap();
             let base_ty = base_ty.clone();
-            scheme
-                .ty
-                .qualifiers_mut()
-                .insert(0, Predicate::class(trait_fqn.to_string(), base_ty.clone()));
+            let ty_args = ty_params[1..].iter().cloned().collect::<Vec<_>>();
+            scheme.ty.qualifiers_mut().insert(
+                0,
+                Predicate::class(trait_fqn.to_string(), base_ty.clone(), ty_args),
+            );
 
             log::debug!("trait func scheme = {:?}", scheme);
 
@@ -443,12 +430,22 @@ impl LowerAST for Sourced<'_, Trait> {
         }
 
         let scopes = ctx.get_scopes(src);
-        let super_trait = tr.super_trait.clone().map(|ty| {
-            let mut ty = ty.take_value();
-            // ty.resolve_fqns(&parent_scope, ctx.ncx);
+        let super_trait = if let Some(ty) = &tr.super_trait {
+            let (mut ty, src) = ty.clone().take();
+            if !matches!(ty, Ty::Projection(_, _)) {
+                return Err(RayError {
+                    msg: format!("expected super trait of form T[..], but found {}", ty),
+                    src: vec![src],
+                    kind: RayErrorKind::Type,
+                    context: Some("lower trait".to_string()),
+                });
+            }
+
             ty.resolve_fqns(scopes, ctx.ncx);
-            ty
-        });
+            Some(ty)
+        } else {
+            None
+        };
 
         let directives = tr
             .directives
@@ -490,9 +487,8 @@ impl LowerAST for Sourced<'_, Impl> {
         let (imp, src) = self.unpack_mut();
         let scopes = ctx.get_scopes(src);
         imp.ty.resolve_fqns(scopes, ctx.ncx);
-        // imp.ty.resolve_fqns(scope, ctx.ncx);
 
-        let (trait_name, ty_params) = match imp.ty.deref() {
+        let (trait_name, ty_args) = match imp.ty.deref() {
             Ty::Projection(ty, ty_params) => (ty.name(), ty_params.clone()),
             t => {
                 return Err(RayError {
@@ -507,16 +503,6 @@ impl LowerAST for Sourced<'_, Impl> {
                 });
             }
         };
-
-        // traits should only have one type parameter
-        if !imp.is_object && ty_params.len() != 1 {
-            return Err(RayError {
-                msg: format!("expected one type argument but found {}", ty_params.len()),
-                src: vec![src.respan(*imp.ty.span().unwrap())],
-                kind: RayErrorKind::Type,
-                context: Some("lower trait impl".to_string()),
-            });
-        }
 
         // lookup the trait in the context
         let trait_fqn = Path::from(trait_name.as_str());
@@ -548,22 +534,25 @@ impl LowerAST for Sourced<'_, Impl> {
         };
 
         // get the type parameter of the original trait
-        let ty_param = match trait_ty.ty.get_ty_params()[0] {
-            Ty::Var(v) => v.clone(),
-            _ => {
+        let orig_trait_tps = trait_ty.ty.get_ty_params();
+        let mut trait_ty_params = Vec::with_capacity(orig_trait_tps.len());
+        for ty in orig_trait_tps {
+            let Ty::Var(v) = ty else {
                 return Err(RayError {
                     msg: str!("expected a type parameter for trait"),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
                     context: Some("lower trait impl".to_string()),
                 });
-            }
-        };
+            };
+
+            trait_ty_params.push(v.clone());
+        }
 
         let base_ty = if imp.is_object {
             imp.ty.deref().clone()
         } else {
-            ty_params[0].clone()
+            ty_args[0].clone()
         };
         let impl_scope = base_ty.get_path().unwrap();
         log::debug!("impl fqn: {}", impl_scope);
@@ -599,7 +588,7 @@ impl LowerAST for Sourced<'_, Impl> {
                 func.sig.path.value = if imp.is_object {
                     trait_fqn.append(&func_name)
                 } else {
-                    trait_fqn.append_type_args(&ty_params).append(&func_name)
+                    trait_fqn.append_type_args(&ty_args).append(&func_name)
                 };
                 log::debug!("func fqn: {}", func.sig.path);
                 ctx.ncx
@@ -632,8 +621,26 @@ impl LowerAST for Sourced<'_, Impl> {
             }
         }
 
+        if trait_ty_params.len() != ty_args.len() {
+            return Err(RayError {
+                msg: format!(
+                    "trait expected {} type argument(s) but found {}",
+                    trait_ty_params.len(),
+                    ty_args.len()
+                ),
+                src: vec![src.respan(*imp.ty.span().unwrap())],
+                kind: RayErrorKind::Type,
+                context: Some("lower trait impl".to_string()),
+            });
+        }
+
         // create a subst mapping the type parameter to the argument
-        let sub = subst! { ty_param => base_ty.clone() };
+        let mut sub = Subst::new();
+        sub.insert(trait_ty_params[0].clone(), base_ty.clone());
+        for (i, ty_param) in trait_ty_params[1..].iter().enumerate() {
+            sub.insert(ty_param.clone(), ty_args[i + 1].clone());
+        }
+
         let mut trait_ty = trait_ty.ty.clone();
         trait_ty.apply_subst(&sub);
         let mut predicates = vec![];
@@ -649,6 +656,7 @@ impl LowerAST for Sourced<'_, Impl> {
         let impl_ty = ImplTy {
             trait_ty,
             base_ty,
+            ty_args: ty_args[1..].to_vec(),
             predicates,
         };
         ctx.tcx.add_impl(trait_fqn, impl_ty);
@@ -1138,7 +1146,7 @@ pub fn predicate_from_ast_ty(
     // resolve the type
     let ty_span = *q.span().unwrap();
     let q = q.clone_value();
-    let (s, v) = match q {
+    let (s, mut ty_args) = match q {
         Ty::Projection(s, v) => (s.name(), v),
         _ => {
             return Err(RayError {
@@ -1155,17 +1163,8 @@ pub fn predicate_from_ast_ty(
         }
     };
 
-    if v.len() != 1 {
-        return Err(RayError {
-            msg: format!("traits must have one type argument, but found {}", v.len()),
-            src: vec![Source {
-                span: Some(ty_span),
-                filepath: filepath.clone(),
-                ..Default::default()
-            }],
-            kind: RayErrorKind::Type,
-            context: Some("lower predicate".to_string()),
-        });
+    for ty_arg in ty_args.iter_mut() {
+        ty_arg.map_vars(tcx);
     }
 
     let fqn = Path::from(s.as_str());
@@ -1187,13 +1186,23 @@ pub fn predicate_from_ast_ty(
     };
 
     let mut trait_ty = trait_ty.ty.clone();
-    let mut ty_arg = v[0].clone();
-    ty_arg.map_vars(tcx);
-    let ty_param = variant!(trait_ty.get_ty_param_at(0).clone(), if Ty::Var(t));
-    let sub = subst! { ty_param.clone() => ty_arg.clone() };
+    let ty_param_vars = trait_ty
+        .get_ty_params()
+        .iter()
+        .map(|ty| variant!(ty, if Ty::Var(v)))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut sub = Subst::new();
+    for (v, t) in ty_param_vars.iter().zip(ty_args.iter()) {
+        sub.insert(v.clone(), t.clone());
+    }
+
     trait_ty.apply_subst(&sub);
+
+    let base_ty = ty_args.remove(0);
     let fqn = trait_ty.get_path().unwrap();
-    Ok(Predicate::class(fqn.to_string(), ty_arg))
+    Ok(Predicate::class(fqn.to_string(), base_ty, ty_args))
 }
 
 #[cfg(test)]

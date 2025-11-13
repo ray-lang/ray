@@ -7,6 +7,7 @@
     // "lldb.library": "/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/LLDB",
     "lldb.library": "/Users/jjacobson/.vscode/extensions/vadimcn.vscode-lldb-1.11.8/lldb/lib/liblldb.dylib",
     "lldb.verboseLogging": true,
+    "ray.rayPath": "/Users/jjacobson/code/ray/ray-lang/ray/target/debug/ray",
     "rust-analyzer.cargo.extraEnv": {
         "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
         "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",

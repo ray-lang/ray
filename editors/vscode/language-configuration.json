@@ -35,13 +35,6 @@
             "notIn": [
                 "string"
             ]
-        },
-        {
-            "open": "'",
-            "close": "'",
-            "notIn": [
-                "string"
-            ]
         }
     ],
     "surroundingPairs": [
@@ -60,10 +53,6 @@
         {
             "open": "\"",
             "close": "\""
-        },
-        {
-            "open": "'",
-            "close": "'"
         }
     ]
 }

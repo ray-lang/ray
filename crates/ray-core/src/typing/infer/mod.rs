@@ -86,10 +86,25 @@ impl<'a> InferSystem<'a> {
 
         // convert the traits/impls into classes/instances
         for (path, trait_ty) in self.tcx.traits() {
+            let param_vars = trait_ty
+                .ty
+                .get_ty_params()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>();
             let superclasses = trait_ty
                 .super_traits
                 .iter()
-                .map(|super_trait| super_trait.get_path().unwrap().to_string())
+                .map(|super_trait| {
+                    (
+                        super_trait.get_path().unwrap().to_string(),
+                        super_trait
+                            .get_ty_params()
+                            .into_iter()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )
+                })
                 .collect();
             let instances = self
                 .tcx
@@ -100,10 +115,12 @@ impl<'a> InferSystem<'a> {
                         .iter()
                         .map(|impl_ty| {
                             let base_ty = impl_ty.base_ty.clone();
+                            let ty_args = impl_ty.ty_args.clone();
                             Instance::new(
                                 Predicate::class(
                                     impl_ty.trait_ty.get_path().unwrap().to_string(),
                                     base_ty,
+                                    ty_args,
                                 ),
                                 Predicates::from(impl_ty.predicates.clone()),
                             )
@@ -111,7 +128,7 @@ impl<'a> InferSystem<'a> {
                         .collect()
                 })
                 .unwrap_or_default();
-            let class = Class::new(superclasses, instances);
+            let class = Class::new(param_vars, superclasses, instances);
             options.class_env.add_class(path.to_string(), class);
             options
                 .type_class_directives

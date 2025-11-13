@@ -35,8 +35,7 @@ release-toolchain:
 	@rm -rf build/toolchain/build
 
 vscode-ext:
-	@cd editors/vscode
 	@echo "==> compiling extension from TS"
-	@npm run compile
+	@cd editors/vscode && npm run compile
 	@echo "==> packaging extension VSIX"
-	@vsce package --skip-license
+	@cd editors/vscode && vsce package --skip-license

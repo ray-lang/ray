@@ -13,7 +13,6 @@ use super::{
     ty::SigmaTy,
 };
 
-mod list;
 mod satisfiable;
 pub mod tree;
 

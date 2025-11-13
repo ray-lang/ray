@@ -532,46 +532,4 @@ impl TyCtx {
                 })
         })
     }
-
-    // pub fn instance_of(&self, t: &Ty, u: &Ty) -> bool {
-    //     log::debug!("{} instanceof {}", t, u);
-    //     match (t, u) {
-    //         (Ty::All(_, t), Ty::All(_, u)) => {
-    //             let sub = t.mgu(u).unwrap_or_default();
-    //             let t = t.clone().apply_subst(&sub);
-    //             let u = u.clone().apply_subst(&sub);
-    //             self.instance_of(&t, &u)
-    //         }
-    //         (Ty::All(vs, t), _) => {
-    //             let free_vars = u.free_vars();
-    //             self.instance_of(t, u) && vs.iter().all(|v| !free_vars.contains(v))
-    //         }
-    //         (_, Ty::All(_, u)) => {
-    //             let sub = t.mgu(u).unwrap_or_default();
-    //             let t = t.clone().apply_subst(&sub);
-    //             let u = u.clone().apply_subst(&sub);
-    //             self.instance_of(&t, &u)
-    //         }
-    //         (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
-    //             p.entails(q, self) && self.instance_of(t, u)
-    //         }
-    //         (Ty::Qualified(_, t), u) => self.instance_of(t, u),
-    //         (t, Ty::Qualified(p, u)) => vec![].entails(p, self) && self.instance_of(t, u),
-    //         (Ty::Func(p, q), Ty::Func(r, s)) if p.len() == r.len() => {
-    //             p.iter().zip(r.iter()).all(|(x, y)| self.instance_of(x, y))
-    //                 && self.instance_of(q, s)
-    //         }
-    //         (Ty::Ptr(t), Ty::Ptr(u)) => self.instance_of(t, u),
-    //         (Ty::Projection(s, xs), Ty::Projection(t, ys)) if s == t && xs.len() == ys.len() => xs
-    //             .iter()
-    //             .zip(ys.iter())
-    //             .all(|(x, y)| self.instance_of(x, y)),
-    //         (Ty::Union(xs), Ty::Union(ys)) if xs.len() == ys.len() => xs
-    //             .iter()
-    //             .zip(ys.iter())
-    //             .all(|(x, y)| self.instance_of(x, y)),
-    //         // (_, Ty::Var(_)) => true,
-    //         _ => t == u,
-    //     }
-    // }
 }

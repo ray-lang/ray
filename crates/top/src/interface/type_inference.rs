@@ -9,6 +9,12 @@ use crate::{
 
 use super::{basic::HasBasic, subst::HasSubst};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarKind {
+    Flexible,
+    Rigid,
+}
+
 pub trait HasTypeInference<I, T, V>
 where
     T: Ty<V>,
@@ -34,6 +40,20 @@ where
 
     fn instantiated_type_scheme(&mut self, var: V, type_scheme: Scheme<Predicates<T, V>, T, V>);
 
+    fn set_var_kind(&mut self, var: V, kind: VarKind);
+
+    fn var_kind_of(&self, var: &V) -> Option<VarKind>;
+
+    fn is_rigid(&self, var: &V) -> bool {
+        matches!(self.var_kind_of(var), Some(VarKind::Rigid))
+    }
+
+    fn mark_var_range(&mut self, start: u32, end: u32, kind: VarKind) {
+        for id in start..end {
+            self.set_var_kind(V::from_u32(id), kind);
+        }
+    }
+
     fn add_skolem(&mut self, skolem: (Vec<V>, I, Vec<T>)) {
         self.skolems_mut().push(skolem);
     }
@@ -44,6 +64,7 @@ where
     {
         let unique = self.get_unique();
         let (new_unique, ty) = forall.instantiate(unique);
+        self.mark_var_range(unique, new_unique, VarKind::Flexible);
         self.set_unique(new_unique);
         ty
     }
@@ -55,6 +76,7 @@ where
     {
         let unique = self.get_unique();
         let (new_unique, ty) = forall.skolemize(unique);
+        self.mark_var_range(unique, new_unique, VarKind::Rigid);
         self.set_unique(new_unique);
         ty
     }
@@ -72,6 +94,7 @@ where
             mono_tys,
         );
         self.add_skolem(skolem);
+        self.mark_var_range(unique, new_unique, VarKind::Rigid);
         self.set_unique(new_unique);
         ty
     }
@@ -254,6 +277,7 @@ where
     pub(crate) skolems: Vec<(Vec<V>, I, Vec<T>)>,
     pub(crate) type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
     pub(crate) inst_type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
+    pub(crate) var_kinds: HashMap<V, VarKind>,
 }
 
 impl<I, T, U, V> HasTypeInference<I, T, V> for U
@@ -301,5 +325,13 @@ where
 
     fn instantiated_type_scheme(&mut self, var: V, type_scheme: Scheme<Predicates<T, V>, T, V>) {
         self.state_mut().inst_type_schemes.insert(var, type_scheme);
+    }
+
+    fn set_var_kind(&mut self, var: V, kind: VarKind) {
+        self.state_mut().var_kinds.insert(var, kind);
+    }
+
+    fn var_kind_of(&self, var: &V) -> Option<VarKind> {
+        self.state().var_kinds.get(var).copied()
     }
 }

@@ -631,36 +631,6 @@ impl CollectConstraints for (&BinOp, &Source) {
 
         let ct = AttachTree::list(vec![eq_op], NodeTree::new(vec![lhs_ct, op_ct, rhs_ct]));
         (result_ty, aset, ct)
-
-        // // Constrain operator token to have shape (lhs_ty, rhs_ty) -> result_ty
-        // // Any further relationships are enforced by Σ via InstConstraint lifting during binding analysis
-        // let op_src = ctx.srcmap.get(&binop.op);
-        // let op_ct = ReceiverTree::new(op_ty.to_string());
-        // let mut eq = EqConstraint::new(
-        //     op_ty,
-        //     Ty::Func(vec![lhs_ty.clone(), rhs_ty], Box::new(result_ty.clone())),
-        // );
-        // eq.info_mut().with_src(op_src.clone());
-
-        // // Prove the operator's backing trait for a fresh carrier τ and relate τ to the LHS
-        // // Σ controls the full scheme and qualifiers for the operator symbol
-        // // This ensures we don’t accidentally float a bare function without class evidence,
-        // // and keeps the domain anchored to the LHS (the common carrier design for binops)
-        // let trait_tv = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-
-        // let mut prove_trait =
-        //     ProveConstraint::new(Predicate::class(trait_path.to_string(), trait_tv.clone()));
-        // prove_trait.info_mut().with_src(op_src.clone());
-
-        // // Tie τ to the LHS only (generic; no assumption that rhs/result equal τ).
-        // let mut eq_lhs_carrier = EqConstraint::new(lhs_ty.clone(), trait_tv.clone());
-        // eq_lhs_carrier.info_mut().with_src(op_src.clone());
-
-        // let ct = AttachTree::list(
-        //     vec![prove_trait, eq_lhs_carrier, eq],
-        //     NodeTree::new(vec![lhs_ct, op_ct, rhs_ct]),
-        // );
-        // (result_ty, aset, ct)
     }
 }
 
@@ -1065,6 +1035,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     let mut prove = ProveConstraint::new(Predicate::class(
                         int_trait_fqn.to_string(),
                         t.clone(),
+                        vec![],
                     ));
                     prove.info_mut().with_src(src.clone());
                     ctree = AttachTree::list(vec![prove], ctree);
@@ -1076,8 +1047,11 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("f{}", size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    let mut prove =
-                        ProveConstraint::new(Predicate::class(str!("core::Float"), t.clone()));
+                    let mut prove = ProveConstraint::new(Predicate::class(
+                        str!("core::Float"),
+                        t.clone(),
+                        vec![],
+                    ));
                     prove.info_mut().with_src(src.clone());
                     ctree = AttachTree::list(vec![prove], ctree);
                     t

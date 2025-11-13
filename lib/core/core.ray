@@ -2,11 +2,11 @@
 extern fn sizeof(t: type['a]) -> uint
 extern fn malloc(size: uint) -> *u8
 
-@inline()
+@inline
 fn ptr_add(ptr: *'a, n: uint) -> *'a =>
     ((ptr as uint) + n) as *'a
 
-@inline()
+@inline
 fn ptr_sub(ptr: *'a, n: uint) -> *'a =>
     ((ptr as uint) - n) as *'a
 

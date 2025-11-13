@@ -182,7 +182,7 @@ fn dedup_diagnostics(mut diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
 
 fn map_error(error: RayError, target: &FilePath) -> Vec<Diagnostic> {
     let RayError { msg, src, .. } = error;
-    let mut diagnostics: Vec<Diagnostic> = src
+    let diagnostics: Vec<Diagnostic> = src
         .into_iter()
         .filter_map(|mut source| {
             if source.filepath.is_empty() {
@@ -197,19 +197,19 @@ fn map_error(error: RayError, target: &FilePath) -> Vec<Diagnostic> {
         })
         .collect();
 
-    if diagnostics.is_empty() {
-        diagnostics.push(Diagnostic {
-            range: default_range(),
-            severity: Some(DiagnosticSeverity::ERROR),
-            code: None,
-            code_description: None,
-            source: Some("ray".to_string()),
-            message: msg,
-            related_information: None,
-            tags: None,
-            data: None,
-        });
-    }
+    // if diagnostics.is_empty() {
+    //     diagnostics.push(Diagnostic {
+    //         range: default_range(),
+    //         severity: Some(DiagnosticSeverity::ERROR),
+    //         code: None,
+    //         code_description: None,
+    //         source: Some("ray".to_string()),
+    //         message: msg,
+    //         related_information: None,
+    //         tags: None,
+    //         data: None,
+    //     });
+    // }
 
     diagnostics
 }
