@@ -186,6 +186,7 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     blocks: HashMap<usize, BasicBlock<'ctx>>,
     pointee_tys: HashMap<PointerValue<'ctx>, Ty>,
     sret_param: Option<PointerValue<'ctx>>,
+    intrinsics: HashMap<Path, lir::IntrinsicKind>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -237,6 +238,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             blocks: HashMap::new(),
             pointee_tys: HashMap::new(),
             sret_param: None,
+            intrinsics: HashMap::new(),
         }
     }
 
@@ -1184,8 +1186,11 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
                 continue;
             }
 
-            // TODO: wrap in "is_intrinsic"
-            if ext.name.to_short_name() == "sizeof" {
+            if ext.is_intrinsic {
+                let kind = ext
+                    .intrinsic_kind
+                    .expect("intrinsic extern missing kind metadata");
+                ctx.intrinsics.insert(ext.name.clone(), kind);
                 continue;
             }
 
@@ -1901,19 +1906,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
-        // Intrinsic: sizeof(...)
-        if self.fn_name.to_string() == "sizeof" {
-            // One meta-type argument; compute size as ptr-width uint (matches Ray `uint`).
-            let meta_ty = ctx.type_of(&self.args[0]).clone();
-            let underlying_ty = meta_ty.get_ty_param_at(0);
-            let ll = ctx.to_llvm_type(underlying_ty);
-            let raw = ll.size_of().expect("could not compute sizeof for type");
-            // Cast to target ptr-sized int (i32 on wasm32) so call sites see the right width.
-            let cast = ctx
-                .builder
-                .build_int_cast(raw, ctx.ptr_type(), "")
-                .expect("int cast for sizeof");
-            return Ok(LoweredCall::Value(cast.as_basic_value_enum()));
+        if let Some(&kind) = ctx.intrinsics.get(&self.fn_name) {
+            return self.codegen_intrinsic(kind, ctx, tcx, srcmap);
         }
 
         // Marshal arguments using the same rule as Inst::Call.
@@ -1949,6 +1943,108 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
             call,
             ret_slot: None,
         })
+    }
+}
+
+impl<'a, 'ctx> lir::Call {
+    fn codegen_intrinsic(
+        &self,
+        kind: lir::IntrinsicKind,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<LoweredCall<'ctx>, BuilderError> {
+        match kind {
+            lir::IntrinsicKind::PtrAdd => self.codegen_ptr_offset(ctx, tcx, srcmap, true),
+            lir::IntrinsicKind::PtrSub => self.codegen_ptr_offset(ctx, tcx, srcmap, false),
+            lir::IntrinsicKind::SizeOf => self.codegen_sizeof(ctx),
+        }
+    }
+
+    fn codegen_ptr_offset(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+        is_add: bool,
+    ) -> Result<LoweredCall<'ctx>, BuilderError> {
+        let ptr_val = self.eval_intrinsic_ptr(ctx, tcx, srcmap, 0)?;
+        let offset_val = self.eval_intrinsic_int(ctx, tcx, srcmap, 1)?;
+        let pointee_ty = ctx.get_pointee_ty(ptr_val).clone();
+        let elem_size = ctx
+            .to_llvm_type(&pointee_ty)
+            .size_of()
+            .expect("element size must be computable");
+
+        let ptr_int = ctx
+            .builder
+            .build_ptr_to_int(ptr_val, ctx.ptr_type(), "ptr_as_int")?;
+        let offset_cast = ctx
+            .builder
+            .build_int_cast(offset_val, ctx.ptr_type(), "ptr_offset")?;
+        let scaled_offset = ctx
+            .builder
+            .build_int_mul(offset_cast, elem_size, "ptr_offset_scaled")?;
+
+        let combined = if is_add {
+            ctx.builder.build_int_add(ptr_int, scaled_offset, "ptr_add")?
+        } else {
+            ctx.builder.build_int_sub(ptr_int, scaled_offset, "ptr_sub")?
+        };
+
+        let result_ptr = ctx
+            .builder
+            .build_int_to_ptr(combined, ptr_val.get_type(), "ptr_result")?;
+
+        Ok(LoweredCall::Value(result_ptr.as_basic_value_enum()))
+    }
+
+    fn codegen_sizeof(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+    ) -> Result<LoweredCall<'ctx>, BuilderError> {
+        // One meta-type argument; compute size as ptr-width uint (matches Ray `uint`).
+        let meta_ty = ctx.type_of(&self.args[0]).clone();
+        let underlying_ty = meta_ty.get_ty_param_at(0);
+        let ll = ctx.to_llvm_type(underlying_ty);
+        let raw = ll.size_of().expect("could not compute sizeof for type");
+        let cast = ctx.builder.build_int_cast(raw, ctx.ptr_type(), "")?;
+        Ok(LoweredCall::Value(cast.as_basic_value_enum()))
+    }
+
+    fn eval_intrinsic_ptr(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+        idx: usize,
+    ) -> Result<PointerValue<'ctx>, BuilderError> {
+        let mut val = self.args[idx].codegen(ctx, tcx, srcmap)?;
+        if let BasicValueEnum::PointerValue(ptr) = val {
+            if ctx.is_local_slot(&ptr) {
+                val = ctx.load_pointer(ptr)?;
+            }
+        }
+
+        match val {
+            BasicValueEnum::PointerValue(p) => Ok(p),
+            _ => panic!("intrinsic pointer operand was not a pointer"),
+        }
+    }
+
+    fn eval_intrinsic_int(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+        idx: usize,
+    ) -> Result<IntValue<'ctx>, BuilderError> {
+        let val = self.args[idx].codegen(ctx, tcx, srcmap)?;
+        let loaded = ctx.maybe_load_pointer(val)?;
+        match loaded {
+            BasicValueEnum::IntValue(int) => Ok(int),
+            _ => panic!("intrinsic integer operand was not an integer"),
+        }
     }
 }
 

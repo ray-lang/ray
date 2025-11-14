@@ -1,3 +1,4 @@
+@intrinsic
 extern fn sizeof(t: type['a]) -> uint
 
 extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) -> uint

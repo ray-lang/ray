@@ -1,2 +1,0 @@
-extern fn rand_int() -> Int
-extern fn rand_int64() -> Int64

@@ -978,7 +978,27 @@ pub struct Extern {
     pub ty: TyScheme,
     pub is_mutable: bool,
     pub modifiers: Vec<Modifier>,
+    pub is_intrinsic: bool,
+    pub intrinsic_kind: Option<IntrinsicKind>,
     pub src: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum IntrinsicKind {
+    PtrAdd,
+    PtrSub,
+    SizeOf,
+}
+
+impl IntrinsicKind {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        match path.to_short_name().as_str() {
+            "__ptr_add" => Some(Self::PtrAdd),
+            "__ptr_sub" => Some(Self::PtrSub),
+            "sizeof" => Some(Self::SizeOf),
+            _ => None,
+        }
+    }
 }
 
 impl Display for Extern {

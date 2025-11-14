@@ -1,4 +1,0 @@
-import math
-
-HASH_PREFIX = math.rand_int64()
-HASH_SUFFIX = math.rand_int64()

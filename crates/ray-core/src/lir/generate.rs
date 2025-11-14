@@ -337,6 +337,8 @@ impl<'a> GenCtx<'a> {
         ty: TyScheme,
         is_mutable: bool,
         modifiers: Vec<Modifier>,
+        is_intrinsic: bool,
+        intrinsic_kind: Option<lir::IntrinsicKind>,
         src: Option<String>,
     ) {
         let idx = self.prog.borrow().externs.len();
@@ -347,6 +349,8 @@ impl<'a> GenCtx<'a> {
             ty,
             is_mutable,
             modifiers,
+            is_intrinsic,
+            intrinsic_kind,
             src,
         });
     }
@@ -1575,6 +1579,16 @@ impl LirGen<GenResult> for Node<Decl> {
             Decl::Extern(ext) => {
                 let decl = ext.decl();
                 let src = ext.src();
+                let has_intrinsic = ctx.srcmap.has_intrinsic(self);
+                let intrinsic_kind = if has_intrinsic {
+                    lir::IntrinsicKind::from_path(match decl {
+                        Decl::FnSig(sig) => &sig.path.value,
+                        Decl::Mutable(name) | Decl::Name(name) => &name.path,
+                        _ => unreachable!("unexpected extern declaration {:?}", decl),
+                    })
+                } else {
+                    None
+                };
                 match ext.decl() {
                     Decl::Mutable(name) | Decl::Name(name) => {
                         let is_mutable = matches!(decl, Decl::Mutable(_));
@@ -1586,6 +1600,8 @@ impl LirGen<GenResult> for Node<Decl> {
                             ty,
                             is_mutable,
                             vec![],
+                            has_intrinsic,
+                            intrinsic_kind.clone(),
                             src.clone(),
                         );
                     }
@@ -1603,6 +1619,8 @@ impl LirGen<GenResult> for Node<Decl> {
                             ty,
                             false,
                             sig.modifiers.clone(),
+                            has_intrinsic,
+                            intrinsic_kind,
                             src.clone(),
                         );
                     }

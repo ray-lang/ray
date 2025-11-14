@@ -1,2 +1,0 @@
-extern fn decref(a: Any)
-extern fn incref(a: Any)

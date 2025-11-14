@@ -3,7 +3,7 @@
 Ray’s pointer arithmetic story focuses on explicit, unsafe operations that allow `*'a` pointers to move by integer offsets without round-tripping through integers. This document captures the current requirements, unsafe semantics, trait-model changes, and the implementation roadmap.
 
 ## Scope & Requirements
-- **Operators**: Only `+` and `-` are in scope. They accept a `*'a` pointer on the left and a `uint` offset on the right, producing another `*'a`.
+- **Operators**: Only `+` and `-` are in scope. They accept a `*'a` pointer on the left and a `uint` offset on the right, producing another `*'a`. The offset counts elements, not raw bytes, so the implementation multiplies it by `sizeof(pointee)` before adjusting the pointer.
 - **Operand validation**: LHS must be a raw pointer type; RHS must be an integer compatible with `uint`. Pointer subtraction is only defined when both operands share the same pointee type; mismatches raise a type error.
 - **Allocation provenance**: Arithmetic must stay within the allocation that produced the pointer. The compiler cannot currently prove this, so we document that violating it is undefined behavior.
 - **Overflow/underflow**: Crossing the machine address space traps or is undefined behavior (decision pending). Diagnostics should note the risk.
@@ -16,13 +16,10 @@ Ray’s pointer arithmetic story focuses on explicit, unsafe operations that all
 
 ## Operator Traits with Multiple Operands
 - The existing operator traits (`Add`, `Sub`, etc.) only model a single type parameter (the implementor), which prevents heterogeneous operands. Ray’s impl declarations use `impl Trait[TypeArgs] { ... }`, so we simply spell the differing operand types inside those brackets when needed.
-- Redefine each trait with associated types:
+- Redefine each trait multiple type parameters:
   ```ray
-  trait Add {
-      type Lhs = Self;
-      type Rhs = Self;
-      type Output = Self;
-      fn add(lhs: Lhs, rhs: Rhs) -> Output;
+  trait Add['a, 'b, 'c] {
+      fn add(lhs: 'a, rhs: 'b) -> 'c;
   }
   ```
   `Sub`, `Mul`, and the rest follow the same pattern.
@@ -32,11 +29,7 @@ Ray’s pointer arithmetic story focuses on explicit, unsafe operations that all
 ## Pointer Arithmetic Implementations
 - Add intrinsic-style impls in `lib/core/ops.ray`:
   ```ray
-  impl Add[*'a, uint] {
-      type Lhs = *'a;
-      type Rhs = uint;
-      type Output = *'a;
-
+  impl Add[*'a, uint, *'a] {
       fn add(lhs: *'a, rhs: uint) -> *'a {
           unsafe { __ptr_add(lhs, rhs) }
       }

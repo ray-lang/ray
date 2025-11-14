@@ -1,6 +1,0 @@
-protocol ToString {
-    fn to_string() -> String
-}
-
-extern impl String: ToString
-extern impl Tuple: ToString

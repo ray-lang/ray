@@ -239,6 +239,11 @@ impl SourceMap {
         self.has_decorator(node, &path)
     }
 
+    pub fn has_intrinsic<T>(&self, node: &Node<T>) -> bool {
+        let path = Path::from("intrinsic");
+        self.has_decorator(node, &path)
+    }
+
     pub fn record_trivia(
         &mut self,
         filepath: &FilePath,

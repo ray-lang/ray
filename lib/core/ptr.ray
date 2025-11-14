@@ -1,0 +1,13 @@
+@intrinsic
+extern fn __ptr_add(ptr: *'a, offset: uint) -> *'a
+
+@intrinsic
+extern fn __ptr_sub(ptr: *'a, offset: uint) -> *'a
+
+impl Add[*'a, uint, *'a] {
+    fn +(lhs: *'a, rhs: uint) -> *'a => __ptr_add(lhs, rhs)
+}
+
+impl Sub[*'a, uint, *'a] {
+    fn -(lhs: *'a, rhs: uint) -> *'a => __ptr_sub(lhs, rhs)
+}
