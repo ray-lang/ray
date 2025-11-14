@@ -436,7 +436,7 @@ impl Parser<'_> {
         let qualifiers = self.parse_where_clause(ctx)?;
 
         let (funcs, externs, consts) = if !is_extern {
-            let impl_ty = ty.get_ty_param_at(0).get_path().unwrap();
+            let impl_ty = ty.get_ty_param_at(0).get_path();
             let mut ctx = ctx.clone();
             ctx.path = ctx.path.append_path(impl_ty);
             let start = self.expect_end(TokenKind::LeftCurly, &ctx)?;

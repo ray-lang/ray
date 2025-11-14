@@ -760,11 +760,7 @@ impl CollectConstraints for (&Call, &Source) {
             let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
             log::debug!("rhs: {}", dot.rhs.path);
             let method_name = dot.rhs.path.name().unwrap().to_string();
-            let fallback = Path::from(format!(
-                "{}::{}",
-                self_ty.clone().get_path().unwrap(),
-                dot.rhs.path
-            ));
+            let fallback = Path::from(format!("{}::{}", self_ty.clone().get_path(), dot.rhs.path));
 
             log::debug!("Call::Dot fallback: {}", fallback);
 

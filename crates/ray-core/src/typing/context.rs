@@ -443,13 +443,10 @@ impl TyCtx {
     }
 
     pub fn get_super_traits_from_ty(&self, ty: &Ty) -> Option<&Vec<Ty>> {
-        if let Some(fqn) = ty.get_path() {
-            match self.get_trait_ty(&fqn) {
-                Some(trait_ty) => Some(&trait_ty.super_traits),
-                _ => None,
-            }
-        } else {
-            None
+        let fqn = ty.get_path();
+        match self.get_trait_ty(&fqn) {
+            Some(trait_ty) => Some(&trait_ty.super_traits),
+            _ => None,
         }
     }
 
@@ -475,7 +472,7 @@ impl TyCtx {
     }
 
     pub fn get_impls(&self, ty: &Ty) -> Option<&Vec<ImplTy>> {
-        let fqn = ty.get_path().unwrap();
+        let fqn = ty.get_path();
         self.impls.get(&fqn)
     }
 
@@ -516,7 +513,7 @@ impl TyCtx {
                         if !type_args.is_empty() {
                             type_args[0] = receiver_ty.to_string();
                         }
-                        method_path = method_path.append_type_args(&type_args);
+                        method_path = method_path.append_type_args(type_args.iter());
                     }
 
                     log::debug!(

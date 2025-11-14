@@ -122,21 +122,25 @@ impl NameTree {
     }
 
     pub fn add_full_name(&mut self, fqn: &[String]) {
+        log::debug!("[add_full_name] fqn = {:?}", fqn);
         if fqn.len() == 0 {
             return;
         }
 
         let (name, scope) = fqn.split_last().unwrap();
+        log::debug!("[add_full_name] name = {}, scope = {:?}", name, scope);
         self.add_name_in_scope(scope, name.clone());
     }
 
     pub fn add_name_in_scope(&mut self, scope: &[String], name: String) {
+        log::debug!("[add_name_in_scope] name={}, scope={:?}", name, scope);
         if scope.len() == 0 {
             self.names.insert(name);
             return;
         }
 
         let (first, scope) = scope.split_first().unwrap();
+        log::debug!("[add_name_in_scope] first={}, scope={:?}", first, scope);
         if !self.children.contains_key(first) {
             self.children
                 .insert(first.clone(), Box::new(NameTree::new()));
@@ -175,11 +179,17 @@ impl NameTree {
     }
 
     pub fn find_scope(&self, scope: &Scope) -> Option<&NameTree> {
+        log::debug!("[NameTree::find_scope] scope={:?}", scope);
         if scope.is_empty() {
+            log::debug!(
+                "[NameTree::find_scope] scope is empty, returning name tree => {:?}",
+                self
+            );
             return Some(self);
         }
 
         let (first, scope) = scope.split_first();
+        log::debug!("[NameTree::find_scope] first={}, scope={:?}", first, scope);
         if let Some(child) = self.children.get(&first) {
             return child.find_scope(&scope);
         }
@@ -188,12 +198,37 @@ impl NameTree {
     }
 
     pub fn find_in_scope(&self, scope: &Scope, name: &String) -> bool {
-        self.find_scope(scope)
-            .map(|t| scope.contains(name) && t.names.contains(name))
-            .unwrap_or_default()
+        log::debug!("[NameTree::find_in_scope] scope={:?}, name={}", scope, name);
+        let result = self.find_scope(scope)
+            .map(|t| {
+                let scope_contains_name = scope.contains(name);
+                let tree_contains_name = t.names.contains(name);
+                log::debug!(
+                    "[NameTree::find_in_scope] scope={:?}, name={}, tree={:?}, scope_contains_name={}, tree_contains_name={}",
+                    scope,
+                    name,
+                    t,
+                    scope_contains_name,
+                    tree_contains_name,
+                );
+                scope_contains_name && tree_contains_name
+            })
+            .unwrap_or_default();
+        log::debug!(
+            "[NameTree::find_in_scope] scope={:?}, name={} => result={}",
+            scope,
+            name,
+            result
+        );
+        result
     }
 
     fn find_from_parts(&self, scope: &Scope, parts: &[String]) -> Option<(Vec<String>, String)> {
+        log::debug!(
+            "[NameTree::find_from_parts] scope={:?}, parts={:?}",
+            scope,
+            parts
+        );
         if parts.len() == 0 {
             return None;
         }
@@ -205,6 +240,11 @@ impl NameTree {
         }
 
         let (name, child_scope) = parts.split_last().unwrap();
+        log::debug!(
+            "[NameTree::find_from_parts] name={}, child_scope={:?}",
+            name,
+            child_scope
+        );
         let child_scope = Scope::from(child_scope);
         self.find_scope(scope)
             .and_then(|t| t.find_scope(&child_scope))
@@ -237,6 +277,11 @@ impl NameTree {
         scopes: &'a [Scope],
         parts: &'a [String],
     ) -> Option<(Vec<String>, String)> {
+        log::debug!(
+            "[NameTree::find_from_parts_in_scopes] scopes={:?}, parts={:?}",
+            scopes,
+            parts
+        );
         scopes
             .iter()
             .find_map(|scope| self.find_from_parts(scope, parts))

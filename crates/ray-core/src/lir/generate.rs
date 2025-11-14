@@ -1114,7 +1114,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     lir::Variable::Local(loc),
                     StructTy {
                         kind,
-                        path: ty.mono().get_path().unwrap(),
+                        path: ty.mono().get_path(),
                         ty: ty.clone(),
                         fields,
                     },

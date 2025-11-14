@@ -57,12 +57,20 @@ impl NameContext {
     }
 
     pub fn resolve_path(&self, scopes: &[Scope], path: &Path) -> Option<Path> {
+        log::debug!("[resolve_path] scopes={:?}, path={}", scopes, path);
         let parts = path.to_name_vec();
+        log::debug!("[resolve_path] parts={:?}", parts);
         self.nametree
             .find_from_parts_in_scopes(scopes, &parts)
             .map(|(scope, name)| {
-                let mut path = Path::from(scope);
-                path.append_mut(name);
+                let mut path = Path::from(&scope);
+                path.append_mut(&name);
+                log::debug!(
+                    "[resolve_path] found name={} in scope={:?} => {}",
+                    name,
+                    scope,
+                    path
+                );
                 path
             })
     }
@@ -127,13 +135,18 @@ impl NameResolve for Sourced<'_, Name> {
         let mut scopes = ctx.scope_map.get(self.src_module()).unwrap().clone();
         scopes.push(Scope::from(scope));
         // let scopes = vec![scope];
-        log::debug!("looking for name `{}` in scopes: {:?}", name, scopes);
+        log::debug!(
+            "[Name::resolve_names] looking for name `{}` in scopes: {:?}",
+            name,
+            scopes
+        );
         match ctx.ncx.resolve_name(&scopes, &name) {
             Some(fqn) => {
                 log::debug!("fqn for `{}`: {}", name, fqn);
                 self.path = fqn.clone();
             }
             _ => {
+                log::debug!("nametree: {:#?}", ctx.ncx.nametree());
                 return Err(RayError {
                     msg: format!("`{}` is undefined", self),
                     src: vec![self.src().clone()],
@@ -149,7 +162,11 @@ impl NameResolve for Sourced<'_, Name> {
 impl NameResolve for Sourced<'_, Path> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         let scopes = ctx.scope_map.get(self.src_module()).unwrap();
-        log::debug!("looking for name `{}` in scopes: {:?}", self, scopes);
+        log::debug!(
+            "[Path::resolve_names] looking for name `{}` in scopes: {:?}",
+            self,
+            scopes
+        );
         match ctx.ncx.resolve_path(scopes, &self) {
             Some(fqn) => {
                 log::debug!("fqn for `{}`: {}", self, fqn);

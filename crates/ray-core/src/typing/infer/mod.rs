@@ -97,7 +97,7 @@ impl<'a> InferSystem<'a> {
                 .iter()
                 .map(|super_trait| {
                     (
-                        super_trait.get_path().unwrap().to_string(),
+                        super_trait.get_path().to_string(),
                         super_trait
                             .get_ty_params()
                             .into_iter()
@@ -118,7 +118,7 @@ impl<'a> InferSystem<'a> {
                             let ty_args = impl_ty.ty_args.clone();
                             Instance::new(
                                 Predicate::class(
-                                    impl_ty.trait_ty.get_path().unwrap().to_string(),
+                                    impl_ty.trait_ty.get_path().to_string(),
                                     base_ty,
                                     ty_args,
                                 ),

@@ -407,7 +407,9 @@ impl LowerAST for Sourced<'_, Trait> {
             log::debug!("trait func scheme = {:?}", scheme);
 
             let (param_tys, _) = scheme.unquantified().ty().try_borrow_fn()?;
-            let func_fqn = trait_fqn.append_type_args(&ty_params).append(&func_name);
+            let func_fqn = trait_fqn
+                .append_type_args(ty_params.iter())
+                .append(&func_name);
             log::debug!("add fqn: {} => {}", func_name, func_fqn);
 
             if param_tys.len() == 2 && ast::InfixOp::is(&func_name) {
@@ -554,7 +556,7 @@ impl LowerAST for Sourced<'_, Impl> {
         } else {
             ty_args[0].clone()
         };
-        let impl_scope = base_ty.get_path().unwrap();
+        let impl_scope = base_ty.get_path();
         log::debug!("impl fqn: {}", impl_scope);
         let mut impl_ctx = ctx.tcx.clone();
         let mut impl_set = HashSet::new();
@@ -588,7 +590,9 @@ impl LowerAST for Sourced<'_, Impl> {
                 func.sig.path.value = if imp.is_object {
                     trait_fqn.append(&func_name)
                 } else {
-                    trait_fqn.append_type_args(&ty_args).append(&func_name)
+                    trait_fqn
+                        .append_type_args(ty_args.iter())
+                        .append(&func_name)
                 };
                 log::debug!("func fqn: {}", func.sig.path);
                 ctx.ncx
@@ -1201,7 +1205,7 @@ pub fn predicate_from_ast_ty(
     trait_ty.apply_subst(&sub);
 
     let base_ty = ty_args.remove(0);
-    let fqn = trait_ty.get_path().unwrap();
+    let fqn = trait_ty.get_path();
     Ok(Predicate::class(fqn.to_string(), base_ty, ty_args))
 }
 

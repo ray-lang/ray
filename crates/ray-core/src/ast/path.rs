@@ -288,11 +288,15 @@ impl Path {
         Path { parts }
     }
 
-    pub fn append_type_args<T: ToString>(&self, args: &[T]) -> Path {
+    pub fn append_type_args<I, T>(&self, args: I) -> Path
+    where
+        I: Iterator<Item = T>,
+        I::Item: ToString,
+    {
         let mut parts = self.parts.clone();
         parts.push_back(PathPart::TypeArgs(format!(
             "[{}]",
-            args.iter().map(|s| s.to_string()).join(",")
+            args.into_iter().map(|s| s.to_string()).join(",")
         )));
         Path { parts }
     }

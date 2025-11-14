@@ -352,7 +352,7 @@ fn register_decl_paths(
                 }
             }
 
-            insert_definition_record(records, &im.ty.get_path().unwrap(), decl.id, srcmap, kind);
+            insert_definition_record(records, &im.ty.get_path(), decl.id, srcmap, kind);
         }
         Decl::Struct(st) => {
             let kind = DefinitionKind::Struct {

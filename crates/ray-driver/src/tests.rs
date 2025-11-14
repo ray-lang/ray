@@ -70,7 +70,7 @@ fn find_impl<'a>(module: &'a Module<(), Decl>, path: &'a Path, ty: &Ty) -> &'a I
         .iter()
         .find_map(|decl| match &decl.value {
             Decl::Impl(i) => {
-                let impl_path = i.ty.get_path().unwrap();
+                let impl_path = i.ty.get_path();
                 let ty_param = i.ty.first_ty_param();
                 if path == &impl_path && ty == ty_param {
                     Some(i)

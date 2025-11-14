@@ -319,9 +319,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
         match container_ty {
             ty if ty.is_struct(self.tcx) => {
-                let fqn = ty
-                    .get_path()
-                    .expect("struct type missing fully-qualified name");
+                let fqn = ty.get_path();
                 let struct_ty = self
                     .tcx
                     .get_struct_ty(&fqn)
@@ -454,9 +452,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         // Build the GEP and determine the correct pointee mapping for the resulting pointer.
         let (gep, gep_pointee_ty) = match &container_ty {
             ty if ty.is_struct(self.tcx) => {
-                let fqn = ty
-                    .get_path()
-                    .expect("struct type missing fully-qualified name");
+                let fqn = ty.get_path();
                 let llvm_struct = self.get_struct_type(&fqn);
                 log::debug!(
                     "[get_element_ptr] struct GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
@@ -556,7 +552,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             lhs_ty = &inner;
         }
 
-        let lhs_fqn = lhs_ty.get_path().unwrap();
+        let lhs_fqn = lhs_ty.get_path();
         let lhs_ty = tcx.get_struct_ty(&lhs_fqn).unwrap();
         let mut offset = 0;
         let mut found = false;
@@ -618,9 +614,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 "u64" | "i64" => self.lcx.i64_type().into(),
                 "int" | "uint" => self.ptr_type().into(),
                 _ => {
-                    let fqn = ty
-                        .get_path()
-                        .expect("named type missing fully-qualified path");
+                    let fqn = ty.get_path();
                     self.get_struct_type(&fqn).as_basic_type_enum()
                 }
             },
@@ -1982,19 +1976,21 @@ impl<'a, 'ctx> lir::Call {
         let offset_cast = ctx
             .builder
             .build_int_cast(offset_val, ctx.ptr_type(), "ptr_offset")?;
-        let scaled_offset = ctx
-            .builder
-            .build_int_mul(offset_cast, elem_size, "ptr_offset_scaled")?;
+        let scaled_offset =
+            ctx.builder
+                .build_int_mul(offset_cast, elem_size, "ptr_offset_scaled")?;
 
         let combined = if is_add {
-            ctx.builder.build_int_add(ptr_int, scaled_offset, "ptr_add")?
+            ctx.builder
+                .build_int_add(ptr_int, scaled_offset, "ptr_add")?
         } else {
-            ctx.builder.build_int_sub(ptr_int, scaled_offset, "ptr_sub")?
+            ctx.builder
+                .build_int_sub(ptr_int, scaled_offset, "ptr_sub")?
         };
 
-        let result_ptr = ctx
-            .builder
-            .build_int_to_ptr(combined, ptr_val.get_type(), "ptr_result")?;
+        let result_ptr =
+            ctx.builder
+                .build_int_to_ptr(combined, ptr_val.get_type(), "ptr_result")?;
 
         Ok(LoweredCall::Value(result_ptr.as_basic_value_enum()))
     }

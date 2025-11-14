@@ -1318,19 +1318,32 @@ impl Ty {
     }
 
     #[inline(always)]
-    pub fn get_path(&self) -> Option<Path> {
+    pub fn get_path(&self) -> Path {
         match self {
-            Ty::Never => Some(Path::from("never")),
-            Ty::Any => Some(Path::from("any")),
-            Ty::Var(v) => Some(v.path().clone()),
-            Ty::Const(s) => Some(Path::from(s.clone())),
-            Ty::Projection(ty, _) => ty.get_path(),
-            Ty::Array(..)
-            | Ty::Ptr(_)
-            | Ty::Tuple(_)
-            | Ty::Union(_)
-            | Ty::Func(_, _)
-            | Ty::Accessor(_, _) => None,
+            Ty::Never => Path::from("never"),
+            Ty::Any => Path::from("any"),
+            Ty::Var(v) => v.path().clone(),
+            Ty::Const(s) => Path::from(s.clone()),
+            Ty::Projection(ty, params) => {
+                let base_path = ty.get_path();
+                base_path.append_type_args(params.iter())
+            }
+            Ty::Array(ty, size) => {
+                let base_path = Path::from("array");
+                let args = &[ty.to_string(), size.to_string()];
+                base_path.append_type_args(args.iter())
+            }
+            Ty::Ptr(ty) => {
+                let base_path = Path::from("pointer");
+                base_path.append_type_args(std::iter::once(ty))
+            }
+            Ty::Tuple(tys) => {
+                let base_path = Path::from("tuple");
+                base_path.append_type_args(tys.iter())
+            }
+            Ty::Union(_) | Ty::Func(_, _) | Ty::Accessor(_, _) => {
+                unimplemented!()
+            }
         }
     }
 
@@ -1465,9 +1478,8 @@ impl Ty {
     }
 
     pub fn nominal_kind(&self, tcx: &TyCtx) -> Option<NominalKind> {
-        self.get_path()
-            .and_then(|fqn| tcx.get_struct_ty(&fqn))
-            .map(|s| s.kind)
+        let fqn = self.get_path();
+        tcx.get_struct_ty(&fqn).map(|s| s.kind)
     }
 
     pub fn is_struct(&self, tcx: &TyCtx) -> bool {
