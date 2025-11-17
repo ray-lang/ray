@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    Substitutable, Ty, TyVar,
+    InfoJoin, Substitutable, Ty, TyVar,
     constraint::{Constraint, InfoDetail, PolyTypeConstraintInfo, Solvable, TypeConstraintInfo},
     interface::{
         basic::HasBasic,
@@ -137,6 +137,7 @@ where
         + Clone
         + Default
         + InfoDetail
+        + InfoJoin
         + TypeConstraintInfo<I, T, V>
         + PolyTypeConstraintInfo<I, T, V>
         + 'static,
@@ -213,13 +214,7 @@ where
             })
             .collect();
 
-        let skolems = state
-            .infer_state
-            .skolems
-            .into_iter()
-            .flat_map(|(vars, _, _)| vars)
-            .collect();
-
+        let skolems = state.infer_state.skolems;
         let var_kinds = state.infer_state.var_kinds;
         log::debug!("[solve (POST)] variable kinds: {:?}", var_kinds);
 
@@ -243,6 +238,7 @@ mod tests {
     use crate::{
         Subst, Substitutable, TyVar,
         constraint::{Constraint, EqualityConstraint},
+        interface::basic::ErrorLabel,
         solver::{SolveOptions, Solver, TopInfo},
         types::Ty,
     };
@@ -457,7 +453,7 @@ mod tests {
         let solver = GreedySolver::default();
         let result = solver.solve(options, constraints);
         if let Some((label, err)) = result.errors.first() {
-            assert_eq!(label, "unification");
+            assert_eq!(label, &ErrorLabel::Unification);
             assert_eq!(err.get("detail"), Some("constant mismatch: bool != int"));
         } else {
             panic!("no errors");

@@ -7,7 +7,7 @@ use crate::{
     TyVar,
     constraint::InfoDetail,
     interface::{
-        basic::HasBasic,
+        basic::{ErrorLabel, HasBasic},
         subst::HasSubst,
         type_inference::{HasTypeInference, VarKind},
     },
@@ -83,7 +83,7 @@ where
                             "cannot bind rigid type variable {} during unification",
                             var
                         ));
-                        self.add_labeled_err("rigid type variable", info);
+                        self.add_labeled_err(ErrorLabel::RigidTypeVariable, info);
                         return;
                     }
 
@@ -100,7 +100,7 @@ where
             Err(err) => {
                 let mut info = info.clone();
                 info.add_detail(&err.to_string());
-                self.add_labeled_err("unification", info);
+                self.add_labeled_err(ErrorLabel::Unification, info);
             }
         }
     }

@@ -2,8 +2,8 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 use top::{
-    InfoDetail, PolyTypeConstraintInfo, Predicate, Predicates, Scheme, Subst, Substitutable,
-    TypeConstraintInfo, util::Join,
+    InfoDetail, InfoJoin, PolyTypeConstraintInfo, Predicate, Predicates, Scheme, Subst,
+    Substitutable, TypeConstraintInfo, util::Join,
 };
 
 use crate::span::Source;
@@ -13,6 +13,7 @@ use super::ty::{Ty, TyVar};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Info {
     EqualityTypePair(Ty, Ty),
+    MissingPredicate(Predicate<Ty, TyVar>),
     AmbiguousPredicate(Predicate<Ty, TyVar>),
     UnsolvedPredicate(Predicate<Ty, TyVar>, Box<TypeSystemInfo>),
     PredicateArisingFrom(Predicate<Ty, TyVar>),
@@ -34,6 +35,7 @@ impl Substitutable<TyVar, Ty> for Info {
                 ty2.apply_subst(subst);
             }
             Info::AmbiguousPredicate(predicate)
+            | Info::MissingPredicate(predicate)
             | Info::PredicateArisingFrom(predicate)
             | Info::ParentPredicate(predicate) => predicate.apply_subst(subst),
             Info::UnsolvedPredicate(predicate, type_system_info)
@@ -66,6 +68,7 @@ impl Substitutable<TyVar, Ty> for Info {
                 ty2.apply_subst_all(subst);
             }
             Info::AmbiguousPredicate(predicate)
+            | Info::MissingPredicate(predicate)
             | Info::PredicateArisingFrom(predicate)
             | Info::ParentPredicate(predicate) => predicate.apply_subst_all(subst),
             Info::UnsolvedPredicate(predicate, type_system_info)
@@ -97,6 +100,7 @@ impl Display for Info {
         match self {
             Info::EqualityTypePair(a, b) => write!(f, "EqualityTypePair({}, {})", a, b),
             Info::AmbiguousPredicate(p) => write!(f, "AmbiguousPredicate({})", p),
+            Info::MissingPredicate(p) => write!(f, "MissingPredicate({})", p),
             Info::UnsolvedPredicate(p, _) => write!(f, "UnsolvedPredicate({})", p),
             Info::PredicateArisingFrom(p) => write!(f, "PredicateArisingFrom({})", p),
             Info::ParentPredicate(p) => write!(f, "ParentPredicate({})", p),
@@ -143,6 +147,14 @@ impl Display for TypeSystemInfo {
     }
 }
 
+impl InfoJoin for TypeSystemInfo {
+    fn join(mut self, other: Self) -> Self {
+        self.info.extend(other.info);
+        self.source.extend(other.source);
+        self
+    }
+}
+
 impl InfoDetail for TypeSystemInfo {
     fn add_detail(&mut self, detail: &str) {
         self.info.push(Info::Detail(detail.to_string()));
@@ -153,6 +165,10 @@ impl TypeConstraintInfo<TypeSystemInfo, Ty, TyVar> for TypeSystemInfo {
     fn equality_type_pair(&mut self, lhs: &Ty, rhs: &Ty) {
         self.info
             .push(Info::EqualityTypePair(lhs.clone(), rhs.clone()));
+    }
+
+    fn missing_predicate(&mut self, predicate: &Predicate<Ty, TyVar>) {
+        self.info.push(Info::MissingPredicate(predicate.clone()));
     }
 
     fn ambiguous_predicate(&mut self, predicate: &Predicate<Ty, TyVar>) {

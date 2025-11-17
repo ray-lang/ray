@@ -386,15 +386,24 @@ where
     T: Ty<V>,
     V: TyVar,
 {
-    pub fn introduce_tyvars(self, i: u32) -> (u32, Q) {
+    pub fn introduce_tyvars_with_map(self, i: u32) -> (u32, Q, Vec<(V, V)>) {
         let ForAll { vars, mut ty, .. } = self;
-        let subst = vars
-            .iter()
-            .zip(i..)
-            .map(|(t, u)| (t.clone(), Ty::var(V::from_u32(u))))
-            .collect::<Subst<V, T>>();
+        let mut subst = Subst::new();
+        let mut map = Vec::new();
+        let mut counter = i;
+        for var in vars.iter() {
+            let new_var = V::from_u32(counter);
+            subst.insert(var.clone(), Ty::var(new_var.clone()));
+            map.push((new_var, var.clone()));
+            counter += 1;
+        }
         ty.apply_subst(&subst);
-        (i + vars.len() as u32, ty)
+        (counter, ty, map)
+    }
+
+    pub fn introduce_tyvars(self, i: u32) -> (u32, Q) {
+        let (new_unique, ty, _) = self.introduce_tyvars_with_map(i);
+        (new_unique, ty)
     }
 
     pub fn introduce_skolems(self, i: u32) -> (u32, Q)
@@ -414,6 +423,11 @@ where
     pub fn instantiate(&self, n: u32) -> (u32, Q) {
         let forall = self.clone();
         forall.introduce_tyvars(n)
+    }
+
+    pub fn instantiate_with_map(&self, n: u32) -> (u32, Q, Vec<(V, V)>) {
+        let forall = self.clone();
+        forall.introduce_tyvars_with_map(n)
     }
 
     pub fn skolemize(self, i: u32) -> (u32, Q)

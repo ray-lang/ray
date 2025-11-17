@@ -8,11 +8,14 @@ use std::{
 use itertools::Itertools;
 
 use crate::{
-    TyVar,
+    InfoJoin, TyVar,
     constraint::{EqualityConstraint, Solvable, TypeConstraintInfo},
     directives::TypeClassDirective,
     interface::{
-        basic::HasBasic, qualification::HasQual, subst::HasSubst, type_inference::HasTypeInference,
+        basic::{ErrorLabel, HasBasic},
+        qualification::HasQual,
+        subst::HasSubst,
+        type_inference::HasTypeInference,
     },
     types::{ClassEnv, Entailment, Predicate, Subst, Substitutable, Ty},
 };
@@ -501,7 +504,7 @@ where
             if self
                 .skolems()
                 .iter()
-                .find(|(vars, ..)| vars.contains(var))
+                .find(|skolem| skolem.contains(var))
                 .is_some()
             {
                 log::debug!(
@@ -620,7 +623,7 @@ where
             if self
                 .skolems()
                 .iter()
-                .find(|(vars, ..)| vars.contains(var))
+                .find(|skolem| skolem.contains(var))
                 .is_some()
             {
                 // ignore this predicate since it contains a skolem variable
@@ -651,8 +654,8 @@ where
 
     fn ambiguous_qualifiers(&mut self)
     where
-        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
-        I: Clone + Display + TypeConstraintInfo<I, T, V>,
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V> + HasTypeInference<I, T, V>,
+        I: Clone + Display + TypeConstraintInfo<I, T, V> + InfoJoin,
         T: Display,
         V: Display + Eq,
     {
@@ -673,15 +676,14 @@ where
                     None => continue,
                 };
 
-                match self.skolems().iter().find(|(vars, ..)| vars.contains(var)) {
-                    Some((_, info, _)) => {
-                        errs.push(("predicate missing in signature", info.clone()));
-                    }
-                    None => {
-                        let mut info = info.clone();
-                        info.ambiguous_predicate(predicate);
-                        errs.push(("ambiguous predicate", info));
-                    }
+                if let Some(skolem) = self.skolems().iter().find(|skolem| skolem.contains(var)) {
+                    let mut info = info.clone().join(skolem.info.clone());
+                    info.missing_predicate(predicate);
+                    errs.push((ErrorLabel::MissingPredicate, info));
+                } else {
+                    let mut info = info.clone();
+                    info.ambiguous_predicate(predicate);
+                    errs.push((ErrorLabel::AmbiguousPredicate, info));
                 }
                 break;
             }

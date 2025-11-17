@@ -1,4 +1,9 @@
-use crate::{Ty, TyVar, constraint::Constraint, interface::basic::HasBasic, state::HasState};
+use crate::{
+    Ty, TyVar,
+    constraint::Constraint,
+    interface::basic::{ErrorLabel, HasBasic},
+    state::HasState,
+};
 
 #[derive(Debug, Default)]
 pub struct BasicState<I, T, V>
@@ -7,7 +12,7 @@ where
     V: TyVar,
 {
     pub(crate) constraints: Vec<Constraint<I, T, V>>,
-    pub(crate) errors: Vec<(String, I)>,
+    pub(crate) errors: Vec<(ErrorLabel, I)>,
     pub(crate) conditions: Vec<(String, bool)>,
     pub(crate) stop_after_first_error: bool,
     pub(crate) check_conditions: bool,
@@ -36,15 +41,15 @@ where
         self.state_mut().constraints.clear();
     }
 
-    fn add_labeled_err(&mut self, label: &str, info: I) {
+    fn add_labeled_err(&mut self, label: ErrorLabel, info: I) {
         let state = self.state_mut();
-        state.errors.push((label.to_string(), info));
+        state.errors.push((label, info));
         if state.stop_after_first_error {
             self.discard_constraints();
         }
     }
 
-    fn get_labeled_errs(&self) -> &Vec<(String, I)> {
+    fn get_labeled_errs(&self) -> &Vec<(ErrorLabel, I)> {
         &self.state().errors
     }
 

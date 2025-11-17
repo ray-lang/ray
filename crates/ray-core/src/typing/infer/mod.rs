@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use top::{
-    Class, Instance, Predicate, Predicates, Substitutable,
+    Class, Instance, Predicate, Predicates, Subst, Substitutable, TypeConstraintInfo,
     solver::{SolveOptions, SolveResult, Solver, greedy::GreedySolver},
 };
 
@@ -159,13 +159,36 @@ impl<'a> InferSystem<'a> {
         log::debug!("solution: {}", solution);
 
         if solution.errors.len() != 0 {
+            let mut rename_subst = self
+                .tcx
+                .inverted_var_map()
+                .borrow()
+                .iter()
+                .map(|(u, v)| (u.clone(), Ty::Var(v.clone())))
+                .collect::<Subst<_, _>>();
+
+            let skolem_subst = solution
+                .skolems
+                .iter()
+                .flat_map(|skolem| {
+                    skolem.vars.iter().map(|(skolem_var, original)| {
+                        (skolem_var.clone(), Ty::Var(original.clone()))
+                    })
+                })
+                .collect::<Subst<_, _>>();
+
+            rename_subst.union(skolem_subst);
+
+            log::debug!("[infer_ty] rename_subst = {:?}", rename_subst);
+
             let errs = solution
                 .errors
                 .into_iter()
-                .map(|(_, mut info)| {
+                .map(|(label, mut info)| {
                     info.apply_subst(&solution.subst);
+                    info.apply_subst(&rename_subst);
                     info.simplify();
-                    TypeError::from_info(info)
+                    TypeError::from_info(label, info)
                 })
                 .collect();
             Err(errs)

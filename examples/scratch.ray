@@ -4,19 +4,14 @@ trait Lt['a, 'b] {
     fn <(a: 'a, b: 'b) -> bool
 }
 
-trait Mul['a, 'b, 'c] {
-    fn *(a: 'a, b: 'b) -> 'c
-}
-
 trait Neg['a, 'b] {
     fn -(a: 'a) -> 'b
 }
 
-fn abs(a: 'a) -> 'a where Lt['a, 'a], Mul['a, 'a, 'a] {
+fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
     if a < 0 {
-        a * -1
+        -a
     } else {
         a
     }
 }
-

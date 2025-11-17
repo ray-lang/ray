@@ -3,6 +3,7 @@ use std::{collections::HashMap, fmt::Display};
 use crate::{
     Predicates, SigmaPredicates, Subst, TyVar,
     constraint::TypeConstraintInfo,
+    interface::basic::ErrorLabel,
     state::HasState,
     types::{ForAll, OrderedTypeSynonyms, Scheme, Sigma, Substitutable, Ty},
 };
@@ -13,6 +14,27 @@ use super::{basic::HasBasic, subst::HasSubst};
 pub enum VarKind {
     Flexible,
     Rigid,
+}
+
+#[derive(Debug)]
+pub struct Skolem<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    pub vars: Vec<(V, V)>,
+    pub mono_tys: Vec<T>,
+    pub info: I,
+}
+
+impl<I, T, V> Skolem<I, T, V>
+where
+    T: Ty<V>,
+    V: TyVar,
+{
+    pub fn contains(&self, v: &V) -> bool {
+        self.vars.iter().any(|(u, _)| u == v)
+    }
 }
 
 pub trait HasTypeInference<I, T, V>
@@ -28,9 +50,9 @@ where
 
     fn type_synonyms_mut(&mut self) -> &mut OrderedTypeSynonyms<T, V>;
 
-    fn skolems(&self) -> &Vec<(Vec<V>, I, Vec<T>)>;
+    fn skolems(&self) -> &Vec<Skolem<I, T, V>>;
 
-    fn skolems_mut(&mut self) -> &mut Vec<(Vec<V>, I, Vec<T>)>;
+    fn skolems_mut(&mut self) -> &mut Vec<Skolem<I, T, V>>;
 
     fn all_type_schemes(&self) -> &HashMap<V, Scheme<Predicates<T, V>, T, V>>;
 
@@ -70,7 +92,7 @@ where
         }
     }
 
-    fn add_skolem(&mut self, skolem: (Vec<V>, I, Vec<T>)) {
+    fn add_skolem(&mut self, skolem: Skolem<I, T, V>) {
         self.skolems_mut().push(skolem);
     }
 
@@ -79,7 +101,7 @@ where
         A: Substitutable<V, T> + Clone,
     {
         let unique = self.get_unique();
-        let (new_unique, ty) = forall.instantiate(unique);
+        let (new_unique, ty, _) = forall.instantiate_with_map(unique);
         self.mark_var_range(unique, new_unique, VarKind::Flexible);
         self.set_unique(new_unique);
         ty
@@ -100,15 +122,16 @@ where
     fn skolemize_faked<A>(&mut self, info: I, mono_tys: Vec<T>, forall: ForAll<A, T, V>) -> A
     where
         A: Substitutable<V, T> + Clone,
-        I: Clone,
+        I: Clone + TypeConstraintInfo<I, T, V>,
     {
         let unique = self.get_unique();
-        let (new_unique, ty) = forall.instantiate(unique);
-        let skolem = (
-            (unique..new_unique).map(|u| V::from_u32(u)).collect(),
-            info,
+        let (new_unique, ty, var_map) = forall.instantiate_with_map(unique);
+        let skolem_vars = var_map.clone();
+        let skolem = Skolem {
+            vars: skolem_vars,
             mono_tys,
-        );
+            info,
+        };
         self.add_skolem(skolem);
         self.mark_var_range(unique, new_unique, VarKind::Rigid);
         self.set_unique(new_unique);
@@ -137,28 +160,29 @@ where
         // find skolems that are mapped to a type constant
         let (skolems, ty_const_errs): (Vec<_>, Vec<_>) = skolems
             .into_iter()
-            .map(|(vars, info, mono_tys)| {
-                (
-                    vars.iter()
-                        .cloned()
-                        .zip(vars.iter().map(|var| self.find_subst_for_var(var)))
-                        .collect::<Vec<_>>(),
-                    info.clone(),
-                    mono_tys,
-                )
+            .map(|skolem| {
+                let vars = skolem.vars.clone();
+                let pairs = vars
+                    .iter()
+                    .map(|(skolem_var, _)| {
+                        (skolem_var.clone(), self.find_subst_for_var(skolem_var))
+                    })
+                    .collect::<Vec<_>>();
+                (vars, pairs, skolem.info.clone(), skolem.mono_tys)
             })
-            .partition(|(vars, _, _)| vars.iter().all(|(_, ty)| ty.is_tyvar()));
+            .partition(|(_, pairs, _, _)| pairs.iter().all(|(_, ty)| ty.is_tyvar()));
 
         let ty_const_errs = ty_const_errs
             .into_iter()
-            .map(|(_, info, _)| info)
+            .map(|(_, _, info, _)| info)
             .collect::<Vec<_>>();
 
         // find skolems that are mapped to another skolem
         let mut skolem_const_errs = skolems
             .iter()
-            .flat_map(|(vars, info, _)| {
-                vars.into_iter()
+            .flat_map(|(_, pairs, info, _)| {
+                pairs
+                    .into_iter()
                     .filter_map(|(_, ty)| {
                         if let Some(var) = ty.maybe_var() {
                             Some((var.clone(), info.clone()))
@@ -192,7 +216,7 @@ where
 
             skolems
                 .into_iter()
-                .filter(|(pairs, _, _)| {
+                .filter(|(_, pairs, _, _)| {
                     pairs
                         .iter()
                         .flat_map(|(_, t)| t.free_vars())
@@ -206,7 +230,7 @@ where
         // escaping skolem constants
         let (skolems, escaping_skolems) = skolems.into_iter().fold(
             (vec![], vec![]),
-            |(mut acc, mut esc), (pairs, info, mono_tys)| {
+            |(mut acc, mut esc), (vars, pairs, info, mono_tys)| {
                 let mut mono_tys = mono_tys.clone();
                 mono_tys.apply_subst_from(self);
 
@@ -228,7 +252,7 @@ where
 
                 if escaped_skolems.is_empty() {
                     // the intersection is empty
-                    acc.push((pairs, info, mono_tys));
+                    acc.push((vars, pairs, info, mono_tys));
                 } else {
                     let mut info = info.clone();
                     info.escaped_skolems(&escaped_skolems);
@@ -242,30 +266,26 @@ where
         // store the remaining skolem constants (that are consistent with the current substitution).
         let skolems = skolems
             .into_iter()
-            .map(|(vars, info, mono_tys)| {
-                (
-                    vars.into_iter()
-                        .flat_map(|(_, ty)| ty.free_vars().into_iter().cloned().collect::<Vec<_>>())
-                        .collect::<Vec<_>>(),
-                    info,
-                    mono_tys,
-                )
+            .map(|(vars, _pairs, info, mono_tys)| Skolem {
+                vars,
+                info,
+                mono_tys,
             })
             .collect::<Vec<_>>();
 
         self.skolems_mut().extend(skolems);
 
         for info in ty_const_errs {
-            self.add_labeled_err("skolem versus constant", info);
+            self.add_labeled_err(ErrorLabel::SkolemVersusConstant, info);
         }
 
         for (_, infos) in skolem_const_errs {
             let info = infos.into_iter().next().unwrap();
-            self.add_labeled_err("skolem versus skolem", info);
+            self.add_labeled_err(ErrorLabel::SkolemVersusSkolem, info);
         }
 
         for info in escaping_skolems {
-            self.add_labeled_err("escaping skolem", info);
+            self.add_labeled_err(ErrorLabel::EscapingSkolem, info);
         }
 
         log::debug!("[check_skolems] AFTER: {:?}", self.skolems());
@@ -294,7 +314,7 @@ where
 {
     pub(crate) unique: u32,
     pub(crate) type_synonyms: OrderedTypeSynonyms<T, V>,
-    pub(crate) skolems: Vec<(Vec<V>, I, Vec<T>)>,
+    pub(crate) skolems: Vec<Skolem<I, T, V>>,
     pub(crate) type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
     pub(crate) inst_type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
     pub(crate) var_kinds: HashMap<V, VarKind>,
@@ -323,11 +343,11 @@ where
         &mut self.state_mut().type_synonyms
     }
 
-    fn skolems(&self) -> &Vec<(Vec<V>, I, Vec<T>)> {
+    fn skolems(&self) -> &Vec<Skolem<I, T, V>> {
         &self.state().skolems
     }
 
-    fn skolems_mut(&mut self) -> &mut Vec<(Vec<V>, I, Vec<T>)> {
+    fn skolems_mut(&mut self) -> &mut Vec<Skolem<I, T, V>> {
         &mut self.state_mut().skolems
     }
 

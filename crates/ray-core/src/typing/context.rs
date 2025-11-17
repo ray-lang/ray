@@ -23,6 +23,8 @@ use super::{
     ty::{ImplTy, StructTy, TraitTy, Ty, TyScheme, TyVar},
 };
 
+pub type InvertedVarMap = HashMap<TyVar, TyVar>;
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TyCtx {
     ty_map: HashMap<u64, Ty>,
@@ -39,6 +41,7 @@ pub struct TyCtx {
     impls: HashMap<Path, Vec<ImplTy>>,
     call_resolutions: HashMap<u64, Path>,
     tf: Rc<RefCell<TyVarFactory>>,
+    inverted_var_map: Rc<RefCell<InvertedVarMap>>,
 }
 
 impl Clone for TyCtx {
@@ -58,6 +61,7 @@ impl Clone for TyCtx {
             impls: self.impls.clone(),
             call_resolutions: self.call_resolutions.clone(),
             tf: Rc::clone(&self.tf),
+            inverted_var_map: Rc::clone(&self.inverted_var_map),
         }
     }
 }
@@ -215,6 +219,7 @@ impl TyCtx {
             impls: HashMap::new(),
             call_resolutions: HashMap::new(),
             tf: Rc::new(RefCell::new(TyVarFactory::new("?t"))),
+            inverted_var_map: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -389,11 +394,16 @@ impl TyCtx {
 
     pub fn add_var_mapping(&mut self, lhs: TyVar, rhs: TyVar) {
         log::debug!("add var mapping: {} -> {}", lhs, rhs);
-        self.var_map.insert(lhs, rhs);
+        self.var_map.insert(lhs.clone(), rhs.clone());
+        self.inverted_var_map.borrow_mut().entry(rhs).or_insert(lhs);
     }
 
     pub fn get_var_mapping(&self, var: &TyVar) -> Option<&TyVar> {
         self.var_map.get(var)
+    }
+
+    pub fn inverted_var_map(&self) -> &Rc<RefCell<InvertedVarMap>> {
+        &self.inverted_var_map
     }
 
     pub fn resolve_signature(

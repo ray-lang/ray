@@ -4,9 +4,10 @@ use std::{
 };
 
 use crate::{
-    Predicates, Subst, TyVar,
+    InfoJoin, Predicates, Subst, TyVar,
     constraint::TypeConstraintInfo,
     directives::TypeClassDirective,
+    interface::basic::ErrorLabel,
     state::{HasState, OverloadingState},
     types::{ClassEnv, Predicate, Qualification, Scheme, Substitutable, Ty},
 };
@@ -96,7 +97,7 @@ where
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
         T: Display,
-        I: Clone + Display + TypeConstraintInfo<I, T, V>;
+        I: Clone + Display + TypeConstraintInfo<I, T, V> + InfoJoin;
 
     fn class_env(&self) -> &ClassEnv<T, V>;
     fn class_env_mut(&mut self) -> &mut ClassEnv<T, V>;
@@ -151,7 +152,7 @@ where
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
         T: Display,
-        I: Clone + Debug + Display + TypeConstraintInfo<I, T, V>,
+        I: Clone + Debug + Display + TypeConstraintInfo<I, T, V> + InfoJoin,
     {
         self.context_reduction();
         self.ambiguous_qualifiers();
@@ -165,6 +166,7 @@ where
             + HasState<OverloadingState<I, T, V>>
             + HasBasic<I, T, V>,
         I: Clone + TypeConstraintInfo<I, T, V> + std::fmt::Debug,
+        V: Display + Eq,
         <V as FromStr>::Err: Debug,
     {
         for index in 0..self.state().qualifiers().len() {
@@ -196,7 +198,7 @@ where
                         },
                     }
 
-                    self.add_labeled_err("unresolved predicate", new_info);
+                    self.add_labeled_err(ErrorLabel::UnsolvedPredicate, new_info);
                 }
             }
         }
@@ -264,7 +266,7 @@ where
                         {
                             let mut info = info.clone();
                             info.disjoint_directive(&curr_name, curr_info, &other_name, other_info);
-                            self.add_labeled_err("disjoint predicates", info);
+                            self.add_labeled_err(ErrorLabel::DisjointPredicates, info);
                             predicates.remove(j);
                             removed = true;
                             continue;

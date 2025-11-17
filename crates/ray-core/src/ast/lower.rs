@@ -363,6 +363,15 @@ impl LowerAST for Sourced<'_, Trait> {
             .iter_mut()
             .for_each(|t| t.map_vars(&mut trait_tcx));
 
+        if ty_params.is_empty() {
+            return Err(RayError {
+                msg: format!("expected a type parameter but found none"),
+                src: vec![src.respan(ty_span)],
+                kind: RayErrorKind::Type,
+                context: Some("lower trait".to_string()),
+            });
+        }
+
         let tp = &ty_params[0];
         if !matches!(tp, Ty::Var(_)) {
             return Err(RayError {

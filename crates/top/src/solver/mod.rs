@@ -7,6 +7,7 @@ use crate::{
     ForAll, Predicates, Qualification, Substitutable, Ty, TyVar,
     constraint::Constraint,
     directives::TypeClassDirective,
+    interface::{basic::ErrorLabel, type_inference::Skolem},
     types::{ClassEnv, OrderedTypeSynonyms, Scheme, Subst},
 };
 
@@ -71,9 +72,9 @@ where
     pub type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
     pub inst_type_schemes: Subst<V, Scheme<Predicates<T, V>, T, V>>,
     pub qualifiers: Predicates<T, V>,
-    pub errors: Vec<(String, I)>,
+    pub errors: Vec<(ErrorLabel, I)>,
     pub solved_constraints: Vec<Constraint<I, T, V>>,
-    pub skolems: Vec<V>,
+    pub skolems: Vec<Skolem<I, T, V>>,
 }
 
 impl<I, T, V> Display for SolveResult<I, T, V>
@@ -138,8 +139,10 @@ where
             write!(f, "  skolems: [],\n")?;
         } else {
             write!(f, "  skolems: [\n")?;
-            for v in &self.skolems {
-                write!(f, "    {}\n", v)?;
+            for skolem in &self.skolems {
+                for (u, v) in skolem.vars.iter() {
+                    write!(f, "    ({}, {})\n", u, v)?;
+                }
             }
             write!(f, "  ],\n")?;
         }
@@ -218,7 +221,10 @@ where
         let mut flipped = Vec::new();
         for (k, v) in self.subst.iter() {
             if let Some(v2) = v.maybe_var() {
-                if self.skolems.contains(k) && !self.skolems.contains(v2) && k != v2 {
+                if self.skolems.iter().any(|s| s.contains(k))
+                    && !self.skolems.iter().any(|s| s.contains(v2))
+                    && k != v2
+                {
                     flipped.push((k.clone(), v2.clone()));
                 }
             }

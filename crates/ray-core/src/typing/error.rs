@@ -1,4 +1,4 @@
-use top::Predicate;
+use top::{Predicate, interface::basic::ErrorLabel};
 
 use crate::{
     errors::{RayError, RayErrorKind},
@@ -20,7 +20,7 @@ pub enum TypeErrorKind {
     UnsolvableTyVar(TyVar),
     Predicate(Predicate<Ty, TyVar>),
     RecursiveUnification(Ty, Ty),
-    WithInfo(Vec<Info>),
+    WithInfo(ErrorLabel, Vec<Info>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,9 +48,9 @@ impl TypeError {
         }
     }
 
-    pub fn from_info(info: TypeSystemInfo) -> Self {
+    pub fn from_info(label: ErrorLabel, info: TypeSystemInfo) -> Self {
         Self {
-            kind: TypeErrorKind::WithInfo(info.info),
+            kind: TypeErrorKind::WithInfo(label, info.info),
             src: info.source,
         }
     }
@@ -105,7 +105,7 @@ impl TypeError {
     }
 
     pub fn unsolved_predicate(&self) -> Option<(&Predicate<Ty, TyVar>, &TypeSystemInfo)> {
-        let TypeErrorKind::WithInfo(info) = &self.kind else {
+        let TypeErrorKind::WithInfo(_, info) = &self.kind else {
             return None;
         };
 
@@ -138,36 +138,93 @@ impl TypeError {
             TypeErrorKind::RecursiveUnification(a, b) => {
                 format!("recursive unification: {} and {}", a, b)
             }
-            TypeErrorKind::WithInfo(info) => {
+            TypeErrorKind::WithInfo(label, info) => {
                 let mut msg = String::new();
-                for (x, i) in info.iter().enumerate() {
-                    if let Info::UnsolvedPredicate(
-                        Predicate::Class(name, ty, params, _),
-                        _extra_info,
-                    ) = i
-                    {
-                        let suffix = if !params.is_empty() {
-                            format!(
-                                " with parameters [{}]",
-                                params
-                                    .iter()
-                                    .map(|p| format!("`{}`", p))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
-                        } else {
-                            "".to_string()
-                        };
-                        msg.push_str(&format!(
-                            "type `{}` does not implement trait `{}`{}\n",
-                            ty, name, suffix,
-                        ));
-                    } else {
-                        msg.push_str(&i.to_string());
+                let mut first = true;
+                let mut add_line = |msg: &mut String, str: &str| {
+                    if str.is_empty() {
+                        return;
                     }
 
-                    if x < info.len() - 1 {
+                    if !first {
                         msg.push_str("\n");
+                    }
+
+                    first = false;
+                    msg.push_str(&str);
+                };
+
+                match label {
+                    ErrorLabel::MissingPredicate => {
+                        // the unsolved predicate info
+                        let mut found = vec![];
+                        let pred_info = info.iter().enumerate().find_map(|(idx, info)| {
+                            let Info::MissingPredicate(Predicate::Class(name, ty, params, _)) =
+                                info
+                            else {
+                                return None;
+                            };
+
+                            Some((idx, (name, ty, params)))
+                        });
+
+                        let scheme_info = info.iter().enumerate().find_map(|(idx, info)| {
+                            let Info::SkolemizedTypeScheme(_, scheme) = info else {
+                                return None;
+                            };
+
+                            Some((idx, scheme))
+                        });
+
+                        if let (Some((pred_idx, (name, ty, params))), Some((scheme_idx, scheme))) =
+                            (pred_info, scheme_info)
+                        {
+                            let suffix = if !params.is_empty() {
+                                format!(
+                                    " with parameters [{}]",
+                                    params
+                                        .iter()
+                                        .map(|p| format!("`{}`", p))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )
+                            } else {
+                                "".to_string()
+                            };
+
+                            add_line(
+                                &mut msg,
+                                &format!(
+                                    "type `{}` in this signature\n  {}\ndoes not implement trait `{}`{}",
+                                    ty, scheme, name, suffix,
+                                ),
+                            );
+
+                            found.push(pred_idx);
+                            found.push(scheme_idx);
+                        }
+
+                        // iterate through the rest
+                        for (idx, i) in info.iter().enumerate() {
+                            if found.contains(&idx) {
+                                continue;
+                            }
+
+                            add_line(&mut msg, &i.to_string());
+                        }
+                    }
+                    ErrorLabel::AmbiguousPredicate
+                    | ErrorLabel::DisjointPredicates
+                    | ErrorLabel::UnsolvedPredicate
+                    | ErrorLabel::SkolemVersusConstant
+                    | ErrorLabel::SkolemVersusSkolem
+                    | ErrorLabel::EscapingSkolem
+                    | ErrorLabel::RigidTypeVariable
+                    | ErrorLabel::Unification => {
+                        for i in info.iter() {
+                            let str = i.to_string();
+                            add_line(&mut msg, &str);
+                        }
                     }
                 }
                 msg

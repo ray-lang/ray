@@ -1,6 +1,6 @@
-fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Mul['a, 'a, 'a] {
+fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
     if a < 0 {
-        a * -1
+        -a
     } else {
         a
     }

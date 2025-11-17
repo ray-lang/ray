@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 use crate::{
-    Predicates, TyVar,
+    InfoJoin, Predicates, TyVar,
     constraint::{InfoDetail, PolyTypeConstraintInfo, TypeConstraintInfo},
     types::{Predicate, Scheme, Ty},
     util::Join,
@@ -23,6 +23,13 @@ impl Display for TopInfo {
     }
 }
 
+impl InfoJoin for TopInfo {
+    fn join(mut self, other: Self) -> Self {
+        self.info.extend(other.info);
+        self
+    }
+}
+
 impl InfoDetail for TopInfo {
     fn add_detail(&mut self, detail: &str) {
         self.info.insert("detail".to_string(), detail.to_string());
@@ -39,6 +46,11 @@ where
             "equality type pair".to_string(),
             format!("({}, {})", lhs, rhs),
         );
+    }
+
+    fn missing_predicate(&mut self, predicate: &Predicate<T, V>) {
+        self.info
+            .insert("missing predicate".to_string(), format!("{}", predicate));
     }
 
     fn ambiguous_predicate(&mut self, predicate: &Predicate<T, V>) {

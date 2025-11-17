@@ -53,7 +53,6 @@ impl RayError {
     pub fn emit(self) {
         let kind = format!("{}:", self.kind);
         let mut msg_lines = self.msg.lines().collect::<Vec<_>>();
-        msg_lines.sort();
         msg_lines.dedup();
         let msg = if msg_lines.len() == 1 {
             msg_lines.pop().unwrap().to_string()
@@ -93,14 +92,7 @@ impl RayError {
                 };
                 let full_spacing = " ".repeat(max_num_width);
                 let pipe = "|".bold();
-
-                eprintln!(
-                    "{}{} {}:{}",
-                    " ".repeat(max_num_width - 1),
-                    arrow,
-                    src.filepath,
-                    span
-                );
+                eprintln!("  {} {}:{}", arrow, src.filepath, span);
                 eprintln!("{}{}", full_spacing, pipe);
 
                 // skip to the start line
