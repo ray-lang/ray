@@ -208,8 +208,13 @@ impl TyScheme {
                     });
                 }
 
+                // TODO: CHECK that ty_args > 0
                 let ty_arg = ty_args.remove(0);
-                preds.push(Predicate::class(fqn.to_string(), ty_arg, ty_args));
+                preds.push(Predicate::class(
+                    fqn.without_type_args().to_string(),
+                    ty_arg,
+                    ty_args,
+                ));
             }
             Self::new(vars, preds, ty)
         } else if vars.len() != 0 {

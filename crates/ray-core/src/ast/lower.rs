@@ -401,7 +401,11 @@ impl LowerAST for Sourced<'_, Trait> {
             let ty_args = ty_params[1..].iter().cloned().collect::<Vec<_>>();
             scheme.ty.qualifiers_mut().insert(
                 0,
-                Predicate::class(trait_fqn.to_string(), base_ty.clone(), ty_args),
+                Predicate::class(
+                    trait_fqn.without_type_args().to_string(),
+                    base_ty.clone(),
+                    ty_args,
+                ),
             );
 
             log::debug!("trait func scheme = {:?}", scheme);
@@ -1205,7 +1209,7 @@ pub fn predicate_from_ast_ty(
     trait_ty.apply_subst(&sub);
 
     let base_ty = ty_args.remove(0);
-    let fqn = trait_ty.get_path();
+    let fqn = trait_ty.get_path().without_type_args();
     Ok(Predicate::class(fqn.to_string(), base_ty, ty_args))
 }
 

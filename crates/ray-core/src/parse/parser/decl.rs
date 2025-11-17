@@ -465,18 +465,15 @@ impl Parser<'_> {
         pos: Pos,
         ctx: &ParseContext,
     ) -> ParseResult<(Option<Vec<Decorator>>, Span)> {
+        log::debug!("[parse_decorators] pos={:?}", pos);
         let mut decs = None;
-        let mut start = pos;
+        let start = pos;
         let mut end = pos;
-        let mut init_pos = false;
         while peek!(self, TokenKind::At) {
-            let pos = self.expect_end(TokenKind::At, ctx)?;
-            if !init_pos {
-                start = pos;
-                init_pos = true;
-            }
-
+            let _: Pos = self.expect_end(TokenKind::At, ctx)?;
             let path = self.parse_path(ctx)?;
+            end = self.srcmap.get(&path).span.unwrap().end;
+            log::debug!("[parse_decorators] path={:?}", path);
 
             let (args, paren_sp) = if peek!(self, TokenKind::LeftParen) {
                 let spec = SeqSpec {
@@ -507,6 +504,7 @@ impl Parser<'_> {
                     }),
                 )
             } else {
+                log::debug!("[parse_decorators] no parameters");
                 (vec![], None)
             };
 
@@ -523,6 +521,12 @@ impl Parser<'_> {
             }
         }
 
+        log::debug!(
+            "[parse_decorators] start={:?}, end={:?}, decs={:?}",
+            start,
+            end,
+            decs
+        );
         Ok((decs, Span { start, end }))
     }
 

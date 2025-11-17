@@ -1,9 +1,11 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, HashSet, VecDeque},
     fmt::{Debug, Display},
     marker::PhantomData,
     str::FromStr,
 };
+
+use itertools::Itertools;
 
 use crate::{
     TyVar,
@@ -160,6 +162,33 @@ where
             .collect()
     }
 
+    fn qualifiers(&self) -> Vec<&Predicate<T, V>> {
+        self.state()
+            .predicate_map
+            .qualifiers
+            .iter()
+            .map(|(q, _)| q)
+            .collect::<Vec<_>>()
+    }
+
+    fn generalized_qualifiers(&self) -> Vec<&Predicate<T, V>> {
+        self.state()
+            .predicate_map
+            .generalized_qualifiers
+            .iter()
+            .map(|(q, _)| q)
+            .collect::<Vec<_>>()
+    }
+
+    fn assumptions(&self) -> Vec<&Predicate<T, V>> {
+        self.state()
+            .predicate_map
+            .assumptions
+            .iter()
+            .map(|(q, _)| q)
+            .collect::<Vec<_>>()
+    }
+
     fn simplify_qualifiers(&mut self)
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
@@ -182,7 +211,11 @@ where
             .collect::<Vec<_>>();
         while i < new_preds.len() {
             let (predicate, _) = &new_preds[i];
+            // If this predicate still contains any *flexible* type vars,
+            // do NOT try to discharge it via entails. Leave it for defaults / later passes.
+            let has_flexible_tvar = self.has_flexible_var(predicate.free_vars());
             if predicate.is_record_qualifier()
+                || has_flexible_tvar
                 || !assumptions.entails(predicate, self.type_synonyms(), self.class_env())
             {
                 i += 1;
@@ -195,6 +228,241 @@ where
         self.state_mut().qualifiers_mut().extend(new_preds);
     }
 
+    fn improve_qualifiers_by_instance(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Clone + Display + TypeConstraintInfo<I, T, V>,
+    {
+        // We run an instance-driven "improvement" step on the current qualifiers.
+        // The goal is to use available instances to refine flexible type
+        // variables that are already constrained by *concrete* type arguments
+        // (for example, Mul[α, uint, uint] should pin α to uint before we
+        // fall back to defaulting).
+        //
+        // We intentionally:
+        //   - Only consider predicates that are in head-normal form.
+        //   - Only consider predicates that contain at least one flexible
+        //     type variable.
+        //   - Only consider predicates that have at least one argument that
+        //     is fully concrete (no free type variables).
+        //
+        // This mirrors the "improvement" ideas from qualified types: use
+        // instance heads to refine ambiguous type variables, but do not
+        // discharge predicates or touch rigid/skolem variables here.
+
+        // Helper to check whether a predicate has at least one fully
+        // concrete argument (no free type variables).
+        fn has_concrete_arg<T, V>(pred: &Predicate<T, V>) -> bool
+        where
+            T: Ty<V>,
+            V: TyVar,
+        {
+            let is_concrete = |ty: &T| ty.free_vars().is_empty();
+
+            match pred {
+                Predicate::Class(_, ty, params, _) => {
+                    is_concrete(ty) || params.iter().any(|p| is_concrete(p))
+                }
+                Predicate::HasField(record_ty, _, field_ty, _) => {
+                    is_concrete(record_ty) || is_concrete(field_ty)
+                }
+            }
+        }
+
+        log::debug!("[improve_qualifiers_by_instance] ---- START");
+        loop {
+            let mut changed = false;
+            for index in 0..self.state().qualifiers().len() {
+                let (pred, _) = self.state().qualifier(index);
+
+                // Skip predicates that do not mention any *flexible* type variables.
+                let has_flexible_tvar = self.has_flexible_var(pred.free_vars());
+                if !has_flexible_tvar {
+                    log::debug!(
+                        "[improve_qualifiers_by_instance] predicate does NOT have flexible type variables: {:?}",
+                        pred
+                    );
+                    continue;
+                }
+
+                // We only use predicates that have at least one concrete argument
+                // as "improvement hints". Purely-polymorphic predicates are left
+                // for defaulting / ambiguity checking.
+                if !has_concrete_arg(&pred) {
+                    log::debug!(
+                        "[improve_qualifiers_by_instance] predicate does NOT have any concrete args: {:?}",
+                        pred
+                    );
+                    continue;
+                }
+
+                log::debug!("[improve_qualifiers_by_instance] trying predicate {}", pred);
+
+                let synonyms = self.type_synonyms();
+                let class_env = self.class_env();
+
+                if let Some((subst, _instance_preds)) = class_env.by_instance(&pred, synonyms) {
+                    // Only keep mappings for flexible (non-rigid) type variables.
+                    let orig_subst = subst.clone();
+                    let flexible_subst = subst
+                        .into_iter()
+                        .filter(|(var, _)| !self.is_rigid(var))
+                        .collect::<Subst<V, T>>();
+
+                    if !flexible_subst.is_empty() {
+                        log::debug!(
+                            "[improve_qualifiers_by_instance] applying flexible_subst={:?} from {}",
+                            flexible_subst,
+                            pred
+                        );
+                        let global_subst = self.get_subst_mut();
+                        global_subst.union(flexible_subst);
+                        changed = true;
+                    } else {
+                        log::debug!(
+                            "[improve_qualifiers_by_instance] flexible subst is empty after by_instance for predicate={:?}, original_subst={:?}",
+                            pred,
+                            orig_subst
+                        );
+                    }
+                }
+            }
+
+            if !changed {
+                break;
+            }
+
+            self.make_subst_consistent();
+            self.apply_subst_to_qualifiers();
+        }
+
+        log::debug!("[improve_qualifiers_by_instance] ---- END");
+    }
+
+    fn improve_qualifiers_by_receiver(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Debug + Clone + Display + TypeConstraintInfo<I, T, V>,
+    {
+        log::debug!("[improve_qualifiers_by_receiver] ---- START");
+
+        // iterate qualifiers ("wanted") and assumptions ("given")
+        // and group Class predicates by name AND receiver type
+        let mut groups: BTreeMap<(String, T), Vec<(T, Vec<T>, I)>> = BTreeMap::new();
+        for (predicate, info) in self
+            .state()
+            .qualifiers()
+            .iter()
+            .chain(self.state().assumptions().iter())
+        {
+            let Predicate::Class(name, recv_ty, params, _) = predicate else {
+                continue;
+            };
+
+            if params.is_empty() {
+                // ignore single-parameter classes
+                continue;
+            }
+
+            groups
+                .entry((name.clone(), recv_ty.clone()))
+                .or_default()
+                .push((recv_ty.clone(), params.clone(), info.clone()))
+        }
+
+        loop {
+            // iterate over each group and unify the elements
+            let mut changed = false;
+            for ((class_name, recv_ty), group) in groups.iter() {
+                log::debug!(
+                    "[improve_qualifiers_by_receiver] group for {}[{}, ..]",
+                    class_name,
+                    recv_ty,
+                );
+
+                for (recv_ty, params, _) in group.iter() {
+                    log::debug!(
+                        "[improve_qualifiers_by_receiver]     [{}, {}]",
+                        recv_ty,
+                        params
+                            .iter()
+                            .map(|p| format!("{:?}", p))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+
+                for i in 0..group.len() {
+                    let (lhs_recv_ty, lhs_params, lhs_info) = &group[i];
+                    let mut lhs_recv_ty = lhs_recv_ty.clone();
+                    lhs_recv_ty.apply_subst_from(self);
+
+                    let mut lhs_params = lhs_params.clone();
+                    lhs_params.apply_subst_from(self);
+
+                    for j in (i + 1)..group.len() {
+                        let (rhs_recv_ty, rhs_params, _rhs_info) = &group[j];
+                        let mut rhs_recv_ty = rhs_recv_ty.clone();
+
+                        rhs_recv_ty.apply_subst_from(self);
+
+                        if lhs_recv_ty != rhs_recv_ty {
+                            // cannot unify with receiver types that are not equal
+                            log::debug!(
+                                "[improve_qualifiers_by_receiver] cannot unify with receiver types that are not equal: {} != {}",
+                                lhs_recv_ty,
+                                rhs_recv_ty,
+                            );
+                            continue;
+                        }
+
+                        let mut rhs_params = rhs_params.clone();
+                        rhs_params.apply_subst_from(self);
+
+                        for (lhs, rhs) in lhs_params.iter().zip(rhs_params.iter()) {
+                            if lhs == rhs
+                                || (lhs.free_vars().is_empty() && rhs.free_vars().is_empty())
+                            {
+                                // ignore types that are already equal or where neither contain free variables
+                                log::debug!(
+                                    "[improve_qualifiers_by_receiver] ignore types that are already equal or where neither contain free variables: {} and {}",
+                                    lhs,
+                                    rhs,
+                                );
+                                continue;
+                            }
+
+                            // snapshot the current global subst
+                            let before_subst = self.get_subst().clone();
+
+                            // TODO: merge the info together
+                            log::debug!(
+                                "[improve_qualifiers_by_receiver] unify terms: {} == {}",
+                                lhs,
+                                rhs,
+                            );
+                            self.unify_terms(&lhs_info, lhs, rhs);
+                            let after_subst = self.get_subst().clone();
+                            if before_subst != after_subst {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !changed {
+                log::debug!("[improve_qualifiers_by_receiver] no more changes");
+                break;
+            }
+
+            self.make_subst_consistent();
+            self.apply_subst_to_qualifiers();
+        }
+
+        log::debug!("[improve_qualifiers_by_receiver] ---- END");
+    }
+
     fn default_qualifiers(&mut self)
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
@@ -202,12 +470,15 @@ where
     {
         for i in 0..self.state().qualifiers().len() {
             log::debug!("--- default_qualifiers iteration {} ---", i);
-            log::debug!("predicate = {:?}", self.state().qualifier(i).0);
-
             let (predicate, _) = &self.state().qualifier(i);
+            log::debug!("predicate = {:?}", predicate);
+
             let ty = match predicate {
                 Predicate::Class(_, ty, _, _) => ty,
-                _ => continue,
+                _ => {
+                    log::debug!("not a class predicate");
+                    continue;
+                }
             };
 
             let var = match ty.maybe_var() {
@@ -217,6 +488,15 @@ where
                 }
                 Some(v) => v,
             };
+
+            if self.is_rigid(var) {
+                log::debug!(
+                    "skipping default for {:?} because {:?} is rigid",
+                    predicate,
+                    var
+                );
+                continue;
+            }
 
             if self
                 .skolems()
@@ -230,6 +510,39 @@ where
                     var
                 );
                 // ignore this predicate since it contains a skolem variable
+                continue;
+            }
+
+            let head_vars = ty.free_vars().into_iter().collect::<HashSet<_>>();
+
+            // Does head_vars appear anywhere else?
+            let shared = self
+                .state()
+                .qualifiers()
+                .iter()
+                .enumerate()
+                .any(|(j, (q, _))| {
+                    if j == i {
+                        return false;
+                    }
+
+                    let q_vars = q.free_vars();
+                    let found = q_vars.iter().any(|v| head_vars.contains(v));
+                    log::debug!(
+                        "[default_qualifiers] checked if other predicate {:?} has vars in head vars {:?} => found={}",
+                        q,
+                        head_vars,
+                        found
+                    );
+                    found
+                });
+
+            if shared {
+                // This Int[...] is *not* ambiguous, so do not default it.
+                log::debug!(
+                    "skipping default for predicate {} because it is not ambiguous",
+                    predicate,
+                );
                 continue;
             }
 
@@ -252,6 +565,11 @@ where
 
             // if there is exactly one default
             if let &[(tys, info)] = &defaults[..] {
+                log::debug!(
+                    "found a single default directive: tys={:?}, info={}",
+                    tys,
+                    info
+                );
                 // find all the possible candidates for the default
                 // if they match the predicate, then we have a match
                 let mut candidates = tys.iter().fold(VecDeque::new(), |mut acc, ty| {
@@ -265,7 +583,13 @@ where
                 });
 
                 if let Some((ty, info)) = candidates.pop_front() {
+                    log::debug!("found the default candidate: ty={:?}, info={}", ty, info);
                     if candidates.iter().all(|(other_ty, _)| &ty == other_ty) {
+                        log::debug!(
+                            "creating a equality constraint and solving: {} == {}",
+                            var,
+                            ty
+                        );
                         let mut constraint =
                             EqualityConstraint::new(T::var(var.clone()), ty.clone(), info);
                         constraint.solve(self);

@@ -18,19 +18,13 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NameContext {
     nametree: NameTree,
-    imports: HashMap<Path, Vec<Path>>,
 }
 
 impl NameContext {
     pub fn new() -> Self {
         Self {
             nametree: NameTree::new(),
-            imports: HashMap::new(),
         }
-    }
-
-    pub fn imports_mut(&mut self) -> &mut HashMap<Path, Vec<Path>> {
-        &mut self.imports
     }
 
     pub fn nametree(&self) -> &NameTree {
@@ -43,7 +37,6 @@ impl NameContext {
 
     pub fn extend(&mut self, ncx: NameContext) {
         self.nametree.extend(ncx.nametree);
-        self.imports.extend(ncx.imports);
     }
 
     pub fn resolve_name(&self, scopes: &[Scope], name: &String) -> Option<Path> {

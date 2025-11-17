@@ -496,7 +496,7 @@ impl fmt::Display for Path {
 
 impl fmt::Debug for Path {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.join("::"))
+        write!(f, "{:?}", self.join("::"))
     }
 }
 

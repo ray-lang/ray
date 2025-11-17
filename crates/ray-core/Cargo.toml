@@ -11,7 +11,7 @@ fern = { version = "0.6", features = ["colored"] }
 fnv = "1.0"
 home = "0.5"
 inkwell = { version = "0.6", features = ["llvm17-0"] }
-itertools = "0.9"
+itertools = "0.14"
 lang-c = "0.9"
 lazy_static = "1.4.0"
 lld = { path = "../lld" }

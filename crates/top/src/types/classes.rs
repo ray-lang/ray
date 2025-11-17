@@ -414,7 +414,7 @@ where
         class_env: &ClassEnv<T, V>,
     ) -> bool {
         class_env.superclass_entails(self, predicate)
-            || match class_env.by_instance(predicate, synonyms) {
+            || match class_env.by_instance(&predicate.freeze_vars(), synonyms) {
                 Some((_, qs)) => qs.iter().all(|q| self.entails(q, synonyms, class_env)),
                 None => false,
             }
@@ -465,6 +465,44 @@ where
         }
     }
 
+    pub fn freeze_vars(&self) -> Self {
+        match self {
+            Predicate::Class(name, ty, params, ph) => Predicate::Class(
+                name.clone(),
+                ty.freeze_vars(),
+                params.iter().map(T::freeze_vars).collect(),
+                ph.clone(),
+            ),
+            Predicate::HasField(ty, field_name, field_ty, ph) => Predicate::HasField(
+                ty.freeze_vars().clone(),
+                field_name.clone(),
+                field_ty.freeze_vars(),
+                ph.clone(),
+            ),
+        }
+    }
+
+    pub fn unfreeze_vars(&self) -> Self
+    where
+        V: FromStr,
+        <V as FromStr>::Err: std::fmt::Debug,
+    {
+        match self {
+            Predicate::Class(name, ty, params, ph) => Predicate::Class(
+                name.clone(),
+                ty.unfreeze_vars(),
+                params.iter().map(T::unfreeze_vars).collect(),
+                ph.clone(),
+            ),
+            Predicate::HasField(ty, field_name, field_ty, ph) => Predicate::HasField(
+                ty.unfreeze_vars().clone(),
+                field_name.clone(),
+                field_ty.unfreeze_vars(),
+                ph.clone(),
+            ),
+        }
+    }
+
     pub fn match_with(
         &self,
         other: &Predicate<T, V>,
@@ -486,7 +524,13 @@ where
                     .chain(rhs_params.iter())
                     .collect::<Vec<_>>();
                 match mgu_ref_slices(&lhs_all, &rhs_all, &Subst::new(), synonyms) {
-                    Ok((_, subst)) => Some(subst),
+                    Ok((_, mut subst)) => {
+                        // unfreeze any variables inside subst
+                        for (_, ty) in subst.iter_mut() {
+                            *ty = ty.unfreeze_vars();
+                        }
+                        Some(subst)
+                    }
                     Err(_) => None,
                 }
             }

@@ -1115,10 +1115,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         let opaque = self.lcx.opaque_struct_type(&key);
         self.struct_types.insert(key.clone(), opaque);
 
-        let struct_ty = self
-            .tcx
-            .get_struct_ty(path)
-            .expect("could not find struct type definition");
+        let Some(struct_ty) = self.tcx.get_struct_ty(path) else {
+            panic!("cannot find struct type definition: path={:?}", path);
+        };
 
         let field_types = struct_ty
             .fields
@@ -1189,7 +1188,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             }
 
             // define
-            log::debug!("define extern: {}", ext.name);
+            log::debug!("define extern: {:?}", ext);
             if let Some((_, _, param_tys, ret_ty)) = ext.ty.try_borrow_fn() {
                 let fn_ty = ctx.to_llvm_fn_ty(param_tys, ret_ty);
                 let name = ext.name.to_string();

@@ -1,6 +1,6 @@
 use crate::{
     ast::{
-        Path,
+        Path, PrefixOp,
         token::{IntegerBase, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind, RayResult},
@@ -15,10 +15,12 @@ pub enum Literal {
         base: IntegerBase,
         size: usize,
         signed: bool,
+        explicit_sign: Option<PrefixOp>,
     },
     Float {
         value: String,
         size: usize,
+        explicit_sign: Option<PrefixOp>,
     },
     String(String),
     ByteString(String),
@@ -37,6 +39,7 @@ impl Literal {
             base: IntegerBase::Decimal,
             size: 0,
             signed: true,
+            explicit_sign: None,
         }
     }
 
@@ -46,6 +49,7 @@ impl Literal {
             base: IntegerBase::Decimal,
             size: 0,
             signed: false,
+            explicit_sign: None,
         }
     }
 
@@ -80,6 +84,7 @@ impl Literal {
                     base,
                     size,
                     signed,
+                    explicit_sign: None,
                 }
             }
             TokenKind::Float { value, suffix } => {
@@ -115,13 +120,41 @@ impl Literal {
                 } else {
                     0
                 };
-                Literal::Float { value, size }
+                Literal::Float {
+                    value,
+                    size,
+                    explicit_sign: None,
+                }
             }
             TokenKind::Bool(b) => Literal::Bool(b),
             TokenKind::UnicodeEscSeq(s) => Literal::UnicodeEscSeq(s),
             TokenKind::Nil => Literal::Nil,
             _ => unreachable!(),
         })
+    }
+
+    pub fn with_explicit_sign(&mut self, op: PrefixOp) {
+        match self {
+            Literal::Integer {
+                signed,
+                explicit_sign,
+                ..
+            } => {
+                *signed = true;
+                *explicit_sign = Some(op);
+            }
+            Literal::Float { explicit_sign, .. } => {
+                *explicit_sign = Some(op);
+            }
+            Literal::String(_)
+            | Literal::ByteString(_)
+            | Literal::Byte(_)
+            | Literal::Char(_)
+            | Literal::Bool(_)
+            | Literal::UnicodeEscSeq(_)
+            | Literal::Unit
+            | Literal::Nil => unreachable!("invalid use of negative sign with literal: {:?}", self),
+        }
     }
 }
 
@@ -133,6 +166,7 @@ impl std::fmt::Display for Literal {
                 base,
                 size,
                 signed,
+                explicit_sign,
             } => {
                 let prefix = match base {
                     IntegerBase::Binary => "0b",
@@ -148,11 +182,25 @@ impl std::fmt::Display for Literal {
                 } else {
                     "".to_string()
                 };
-                write!(f, "(int {}{}{})", prefix, value, suffix)
+                let explicit_sign = if let Some(explicit_sign) = explicit_sign {
+                    format!("{}", explicit_sign)
+                } else {
+                    "".to_string()
+                };
+                write!(f, "(int {}{}{}{})", explicit_sign, prefix, value, suffix)
             }
-            Literal::Float { value, size } => write!(
+            Literal::Float {
+                value,
+                size,
+                explicit_sign,
+            } => write!(
                 f,
-                "(float {}{})",
+                "(float {}{}{})",
+                if let Some(explicit_sign) = explicit_sign {
+                    format!("{}", explicit_sign)
+                } else {
+                    "".to_string()
+                },
                 value,
                 format!(
                     "_f{}",

@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
 };
 
@@ -12,7 +12,7 @@ use ray_core::{
     libgen, lir,
     pathlib::{FilePath, RayPaths},
     sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
-    span::{SourceMap, Span},
+    span::{Source, SourceMap, Span},
     typing::{
         InferSystem, TyCtx,
         state::SchemeEnv,
@@ -200,14 +200,22 @@ impl Driver {
 
     pub fn emit_errors(&mut self, errs: Vec<RayError>) {
         log::debug!("emitting errors: {:#?}", errs);
-        for ((kind, src), group) in &errs.into_iter().group_by(|err| (err.kind, err.src.clone())) {
-            let group_errs = group.collect::<Vec<_>>();
-            let msg = group_errs
+
+        // group the errors first by (kind, src)
+        let mut groups: BTreeMap<(RayErrorKind, Vec<Source>), Vec<RayError>> = BTreeMap::new();
+        for err in errs {
+            let key = (err.kind, err.src.clone());
+            groups.entry(key).or_default().push(err);
+        }
+
+        // then convert to a single error and emit them
+        for ((kind, src), errs) in groups.into_iter() {
+            let msg = errs
                 .iter()
                 .map(|err| err.msg.clone())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let context = group_errs
+            let context = errs
                 .iter()
                 .filter_map(|err| err.context.clone())
                 .collect::<Vec<_>>()

@@ -6,8 +6,8 @@ use super::{
 
 use crate::{
     ast::{
-        Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
-        RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
+        Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Literal, Node, Pattern, PrefixOp,
+        Range, RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
     },
     span::Span,
 };
@@ -206,17 +206,21 @@ impl Parser<'_> {
         if let Some((op, tok_count)) = self.peek_prefix_op()? {
             let (_, op_span) = self.lex.consume_count(tok_count);
             let op = self.mk_node(op, op_span);
-            let expr = self.parse_prefix_expr(ctx)?;
+            let mut expr = self.parse_prefix_expr(ctx)?;
             let span = op_span.extend_to(&self.srcmap.span_of(&expr));
-            let expr = match op.value {
-                PrefixOp::Ref => Expr::Ref(Ref {
+            let expr = match (&op.value, &mut expr.value) {
+                (PrefixOp::Ref, _) => Expr::Ref(Ref {
                     expr: Box::new(expr),
                     op_span,
                 }),
-                PrefixOp::Deref => Expr::Deref(Deref {
+                (PrefixOp::Deref, _) => Expr::Deref(Deref {
                     expr: Box::new(expr),
                     op_span,
                 }),
+                (PrefixOp::Negative, Expr::Literal(lit)) => {
+                    lit.with_explicit_sign(PrefixOp::Negative);
+                    expr.value
+                }
                 _ => Expr::UnaryOp(UnaryOp {
                     expr: Box::new(expr),
                     op,

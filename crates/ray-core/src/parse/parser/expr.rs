@@ -279,7 +279,11 @@ impl Parser<'_> {
 
         let mut end = paren_span.end;
 
-        if peek!(self, TokenKind::LeftCurly) {
+        if !ctx
+            .restrictions
+            .contains(Restrictions::NO_CURLY_EXPR)
+            && peek!(self, TokenKind::LeftCurly)
+        {
             let closure = self.parse_closure_expr(ctx)?;
             end = self.srcmap.span_of(&closure).end;
             args.items.push(closure);

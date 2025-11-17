@@ -392,14 +392,14 @@ impl<'a> CollectConstraints for Module<(), Decl> {
         let mut bgroups = vec![];
         let mut defs = Env::new();
         for (bg, decl_env) in self.decls.iter().flat_map(|d| d.collect_decls(ctx)) {
-            log::debug!("bg = {:#?}", bg);
-            log::debug!("decl_env = {:#?}", decl_env);
+            log::debug!("bg = {:?}", bg);
+            log::debug!("decl_env = {:?}", decl_env);
             bgroups.push(bg);
             defs.extend(decl_env);
         }
 
         let mono_tys = HashSet::new();
-        log::debug!("defs: {:#?}", defs);
+        log::debug!("defs: {:?}", defs);
         ctx.defs.extend(defs);
 
         // DEBUG

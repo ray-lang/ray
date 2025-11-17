@@ -10,39 +10,51 @@ use crate::ast::{Path, PathPart};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
     pub path: Path,
-    pub names: Option<HashSet<String>>,
+    pub whitelist: Option<HashSet<String>>,
 }
 
 impl From<Vec<String>> for Scope {
     fn from(names: Vec<String>) -> Self {
+        log::debug!("[Scope::from(Vec<String>)] names={:?}", names);
         Self {
             path: Path::from(names),
-            names: None,
+            whitelist: None,
         }
     }
 }
 
 impl From<&[&str]> for Scope {
     fn from(names: &[&str]) -> Self {
+        log::debug!("[Scope::from(&[&str])] names={:?}", names);
         Self {
             path: Path::from(names.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
-            names: None,
+            whitelist: None,
         }
     }
 }
 
 impl From<&[String]> for Scope {
     fn from(names: &[String]) -> Self {
+        log::debug!("[Scope::from(&[String])] names={:?}", names);
         Self {
             path: Path::from(names),
-            names: None,
+            whitelist: None,
         }
     }
 }
 
 impl From<Path> for Scope {
     fn from(path: Path) -> Self {
-        Self { path, names: None }
+        let canonical = path.without_type_args();
+        log::debug!(
+            "[Scope::from(Path)] path={:?}, canonical={:?}",
+            path,
+            canonical
+        );
+        Self {
+            path: canonical,
+            whitelist: None,
+        }
     }
 }
 
@@ -55,8 +67,8 @@ impl Scope {
         self.path.is_empty()
     }
 
-    pub fn contains(&self, name: &String) -> bool {
-        self.names
+    pub fn allows(&self, name: &String) -> bool {
+        self.whitelist
             .as_ref()
             .map(|names| names.contains(name))
             .unwrap_or(true)
@@ -67,11 +79,11 @@ impl Scope {
     }
 
     pub fn add_name(&mut self, name: String) {
-        if self.names.is_none() {
-            self.names = Some(HashSet::new());
+        if self.whitelist.is_none() {
+            self.whitelist = Some(HashSet::new());
         }
 
-        self.names.as_mut().unwrap().insert(name);
+        self.whitelist.as_mut().unwrap().insert(name);
     }
 
     pub fn split_first(&self) -> (String, Scope) {
@@ -81,7 +93,7 @@ impl Scope {
             name,
             Scope {
                 path,
-                names: self.names.clone(),
+                whitelist: self.whitelist.clone(),
             },
         )
     }
@@ -128,19 +140,25 @@ impl NameTree {
         }
 
         let (name, scope) = fqn.split_last().unwrap();
-        log::debug!("[add_full_name] name = {}, scope = {:?}", name, scope);
+        log::debug!("[add_full_name] name = {:?}, scope = {:?}", name, scope);
         self.add_name_in_scope(scope, name.clone());
     }
 
     pub fn add_name_in_scope(&mut self, scope: &[String], name: String) {
-        log::debug!("[add_name_in_scope] name={}, scope={:?}", name, scope);
+        log::debug!("[add_name_in_scope] name={:?}, scope={:?}", name, scope);
         if scope.len() == 0 {
+            log::debug!(
+                "[add_name_in_scope] inserting name={:?}, scope={:?}, tree={:?}",
+                name,
+                scope,
+                self
+            );
             self.names.insert(name);
             return;
         }
 
         let (first, scope) = scope.split_first().unwrap();
-        log::debug!("[add_name_in_scope] first={}, scope={:?}", first, scope);
+        log::debug!("[add_name_in_scope] first={:?}, scope={:?}", first, scope);
         if !self.children.contains_key(first) {
             self.children
                 .insert(first.clone(), Box::new(NameTree::new()));
@@ -189,7 +207,11 @@ impl NameTree {
         }
 
         let (first, scope) = scope.split_first();
-        log::debug!("[NameTree::find_scope] first={}, scope={:?}", first, scope);
+        log::debug!(
+            "[NameTree::find_scope] first={:?}, scope={:?}",
+            first,
+            scope
+        );
         if let Some(child) = self.children.get(&first) {
             return child.find_scope(&scope);
         }
@@ -198,24 +220,28 @@ impl NameTree {
     }
 
     pub fn find_in_scope(&self, scope: &Scope, name: &String) -> bool {
-        log::debug!("[NameTree::find_in_scope] scope={:?}, name={}", scope, name);
+        log::debug!(
+            "[NameTree::find_in_scope] scope={:?}, name={:?}",
+            scope,
+            name
+        );
         let result = self.find_scope(scope)
             .map(|t| {
-                let scope_contains_name = scope.contains(name);
+                let scope_whitelist_allows = scope.allows(name);
                 let tree_contains_name = t.names.contains(name);
                 log::debug!(
-                    "[NameTree::find_in_scope] scope={:?}, name={}, tree={:?}, scope_contains_name={}, tree_contains_name={}",
+                    "[NameTree::find_in_scope] scope={:?}, name={:?}, tree={:?}, scope_whitelist_allows={}, tree_contains_name={}",
                     scope,
                     name,
                     t,
-                    scope_contains_name,
+                    scope_whitelist_allows,
                     tree_contains_name,
                 );
-                scope_contains_name && tree_contains_name
+                scope_whitelist_allows && tree_contains_name
             })
             .unwrap_or_default();
         log::debug!(
-            "[NameTree::find_in_scope] scope={:?}, name={} => result={}",
+            "[NameTree::find_in_scope] scope={:?}, name={:?} => result={}",
             scope,
             name,
             result
@@ -241,7 +267,7 @@ impl NameTree {
 
         let (name, child_scope) = parts.split_last().unwrap();
         log::debug!(
-            "[NameTree::find_from_parts] name={}, child_scope={:?}",
+            "[NameTree::find_from_parts] name={:?}, child_scope={:?}",
             name,
             child_scope
         );
@@ -249,7 +275,7 @@ impl NameTree {
         self.find_scope(scope)
             .and_then(|t| t.find_scope(&child_scope))
             .and_then(|t| {
-                if !scope.contains(name) {
+                if !scope.allows(name) {
                     return None;
                 }
 

@@ -219,7 +219,15 @@ impl SourceMap {
         &self.decorators
     }
 
-    pub fn set_decorators<T>(&mut self, node: &Node<T>, decorators: Vec<Decorator>) {
+    pub fn set_decorators<T>(&mut self, node: &Node<T>, decorators: Vec<Decorator>)
+    where
+        T: std::fmt::Debug,
+    {
+        log::debug!(
+            "[set_decorators] decorators={:?}, node={:?}",
+            decorators,
+            node
+        );
         self.decorators.insert(node.id, decorators);
     }
 

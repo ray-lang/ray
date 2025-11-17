@@ -77,11 +77,14 @@ impl InstConstraint {
 
             if let Some((sig_path, rhs_ty)) = entry {
                 log::debug!("sig: {} :: {}", sig_path, rhs_ty);
+                if tys.is_empty() {
+                    log::debug!("ty is EMPTY");
+                }
+
                 for lhs_ty in tys {
-                    cl.push((
-                        lhs_ty.to_string(),
-                        InstConstraint::new(lhs_ty.clone(), rhs_ty.clone()),
-                    ));
+                    let inst = InstConstraint::new(lhs_ty.clone(), rhs_ty.clone());
+                    log::debug!("creating instantiate constraint: {}", inst);
+                    cl.push((lhs_ty.to_string(), inst));
                 }
             } else {
                 log::debug!("InstConstraint::lift: {} is not in the sigs, {:?}", x, sigs);

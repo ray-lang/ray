@@ -118,7 +118,7 @@ impl<'a> InferSystem<'a> {
                             let ty_args = impl_ty.ty_args.clone();
                             Instance::new(
                                 Predicate::class(
-                                    impl_ty.trait_ty.get_path().to_string(),
+                                    impl_ty.trait_ty.get_path().without_type_args().to_string(),
                                     base_ty,
                                     ty_args,
                                 ),

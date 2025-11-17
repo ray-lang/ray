@@ -4,11 +4,12 @@ use colored::*;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+use std::num::ParseFloatError;
 use std::{fmt, num::ParseIntError};
 
 pub type RayResult<T = ()> = Result<T, RayError>;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub enum RayErrorKind {
     Parse,
     UnexpectedToken,
@@ -183,12 +184,22 @@ impl From<io::Error> for RayError {
 
 impl From<ParseIntError> for RayError {
     fn from(err: ParseIntError) -> Self {
-        // todo
         RayError {
             msg: err.to_string(),
             src: vec![],
             kind: RayErrorKind::Compile,
             context: Some("parsing an integer".to_string()),
+        }
+    }
+}
+
+impl From<ParseFloatError> for RayError {
+    fn from(err: ParseFloatError) -> Self {
+        RayError {
+            msg: err.to_string(),
+            src: vec![],
+            kind: RayErrorKind::Compile,
+            context: Some("parsing a float".to_string()),
         }
     }
 }

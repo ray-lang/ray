@@ -141,12 +141,26 @@ impl TypeError {
             TypeErrorKind::WithInfo(info) => {
                 let mut msg = String::new();
                 for (x, i) in info.iter().enumerate() {
-                    if let Info::UnsolvedPredicate(Predicate::Class(name, ty, _, _), _extra_info) =
-                        i
+                    if let Info::UnsolvedPredicate(
+                        Predicate::Class(name, ty, params, _),
+                        _extra_info,
+                    ) = i
                     {
+                        let suffix = if !params.is_empty() {
+                            format!(
+                                " with parameters [{}]",
+                                params
+                                    .iter()
+                                    .map(|p| format!("`{}`", p))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        } else {
+                            "".to_string()
+                        };
                         msg.push_str(&format!(
-                            "type `{}` does not implement trait `{}`\n",
-                            ty, name
+                            "type `{}` does not implement trait `{}`{}\n",
+                            ty, name, suffix,
                         ));
                     } else {
                         msg.push_str(&i.to_string());

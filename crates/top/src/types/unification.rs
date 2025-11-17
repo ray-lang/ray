@@ -56,6 +56,14 @@ where
     let (lhs_lsp, lhs_tys) = lhs.left_spine();
     let (rhs_lsp, rhs_tys) = rhs.left_spine();
 
+    log::debug!(
+        "[mgu_with_synonyms] lhs_lsp={:?}, lhs_tys={:?}, rhs_lsp={:?}, rhs_tys={:?}",
+        lhs_lsp,
+        lhs_tys,
+        rhs_lsp,
+        rhs_tys
+    );
+
     match (lhs_lsp.maybe_var(), rhs_lsp.maybe_var()) {
         (Some(tyvar), _) if lhs_tys.is_empty() => return mgu_type_var(tyvar, rhs, subst, synonyms),
         (_, Some(tyvar)) if rhs_tys.is_empty() => return mgu_type_var(tyvar, lhs, subst, synonyms),
@@ -123,30 +131,46 @@ where
     T: Ty<V>,
     V: TyVar,
 {
+    log::debug!("[mgu_type_var] tyvar={:?}, ty={:?}", tyvar, ty);
     match subst.get(tyvar) {
-        Some(other_ty) => match mgu_with_synonyms(ty, other_ty, subst, synonyms) {
-            Ok((true, mut subst)) => {
-                let mut a = ty.clone();
-                let mut b = other_ty.clone();
-                a.apply_subst(&subst);
-                b.apply_subst(&subst);
-                match a.eq_with_synonyms(&b, synonyms) {
-                    Some(ty) => {
-                        subst.remove(&tyvar);
-                        subst.union(Subst::single(tyvar.clone(), ty));
-                        Ok((true, subst))
+        Some(other_ty) => {
+            log::debug!("[mgu_type_var] in subst: {:?} => {:?}", tyvar, other_ty);
+            match mgu_with_synonyms(ty, other_ty, subst, synonyms) {
+                Ok((true, mut subst)) => {
+                    let mut a = ty.clone();
+                    let mut b = other_ty.clone();
+                    a.apply_subst(&subst);
+                    b.apply_subst(&subst);
+                    match a.eq_with_synonyms(&b, synonyms) {
+                        Some(ty) => {
+                            subst.remove(&tyvar);
+                            subst.union(Subst::single(tyvar.clone(), ty));
+                            log::debug!(
+                                "[mgu_type_var] (after eq_with_synonyms) returning subst: {:?}",
+                                subst
+                            );
+                            Ok((true, subst))
+                        }
+                        _ => Err(UnificationError::TypeMismatch(a, b)),
                     }
-                    _ => Err(UnificationError::TypeMismatch(a, b)),
+                }
+                result => {
+                    log::debug!("[mgu_type_var] result => {:?}", result);
+                    result
                 }
             }
-            result => result,
-        },
+        }
         _ => {
             let mut ty = ty.clone();
             ty.apply_subst(&subst);
 
             if let Some(other_tyvar) = ty.maybe_var() {
                 if tyvar == other_tyvar {
+                    log::debug!(
+                        "[mgu_type_var] ignore equal type vars: {:?} == {:?}",
+                        tyvar,
+                        other_tyvar
+                    );
                     return Ok((false, subst.clone()));
                 }
             }
@@ -157,6 +181,7 @@ where
             } else {
                 let mut subst = subst.clone();
                 subst.union(Subst::single(tyvar.clone(), ty));
+                log::debug!("[mgu_type_var] returning substitution: {:?}", subst,);
                 Ok((false, subst))
             }
         }
@@ -182,11 +207,17 @@ where
 
     let mut changed = false;
     let mut subst = subst.clone();
+    log::debug!("[mgu_slices] lhs={:?}, rhs={:?}", lhs, rhs);
     for (lhs, rhs) in lhs.iter().zip(rhs) {
         let (changed_, subst_) = mgu_with_synonyms(lhs, rhs, &subst, synonyms)?;
         changed = changed || changed_;
         subst = subst_.clone();
     }
+    log::debug!(
+        "[mgu_slices] returning subst (changed={}): {:?}",
+        changed,
+        subst
+    );
     Ok((changed, subst))
 }
 
@@ -209,28 +240,16 @@ where
 
     let mut subst = subst.clone();
     let mut changed = false;
+    log::debug!("[mgu_ref_slices] lhs={:?}, rhs={:?}", lhs, rhs);
     for (&lhs, &rhs) in lhs.iter().zip(rhs) {
         let (changed_, subst_) = mgu_with_synonyms(lhs, rhs, &subst, synonyms)?;
         changed = changed || changed_;
         subst = subst_.clone();
     }
+    log::debug!(
+        "[mgu_ref_slices] returning subst (changed={}): {:?}",
+        changed,
+        subst
+    );
     Ok((changed, subst))
 }
-
-// pub fn mgu_maybe_slices<T, V>(
-//     lhs: Option<&Vec<T>>,
-//     rhs: Option<&Vec<T>>,
-//     subst: &Subst<V, T>,
-//     synonyms: &OrderedTypeSynonyms<T, V>,
-// ) -> Result<(bool, Subst<V, T>), UnificationError<T, V>>
-// where
-//     T: Ty<V>,
-//     V: TyVar,
-// {
-//     match (lhs, rhs) {
-//         (Some(lhs), Some(rhs)) => mgu_slices(lhs, rhs, synonyms),
-//         (Some(lhs), _) => mgu_slices(lhs, &vec![], synonyms),
-//         (_, Some(rhs)) => mgu_slices(&vec![], rhs, synonyms),
-//         _ => Ok((false, Subst::new())),
-//     }
-// }

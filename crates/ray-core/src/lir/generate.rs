@@ -4,7 +4,7 @@ use top::{Subst, Substitutable, mgu};
 
 use crate::{
     ast::{
-        self, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node, Path, Pattern,
+        self, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node, Path, Pattern, PrefixOp,
         RangeLimits, UnaryOp,
         asm::{AsmOp, AsmOperand},
         token::IntegerBase,
@@ -629,11 +629,15 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 base,
                 size,
                 signed,
+                explicit_sign,
             } => match base {
                 IntegerBase::Decimal => {
                     let size = lir::Size::bytes(size / 8);
                     lir::Value::new(if *signed {
-                        let c = value.parse::<i64>()?;
+                        let mut c = value.parse::<i64>()?;
+                        if let Some(PrefixOp::Negative) = explicit_sign {
+                            c *= -1;
+                        }
                         lir::Atom::IntConst(c, size)
                     } else {
                         let c = value.parse::<u64>()?;
@@ -644,7 +648,18 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 IntegerBase::Octal => todo!(),
                 IntegerBase::Hex => todo!(),
             },
-            Literal::Float { .. } => todo!(),
+            Literal::Float {
+                value,
+                size,
+                explicit_sign,
+            } => {
+                let size = lir::Size::bytes(size / 8);
+                let mut c = value.parse::<f64>()?;
+                if let Some(PrefixOp::Negative) = explicit_sign {
+                    c *= -1.0;
+                }
+                lir::Value::new(lir::Atom::FloatConst(c, size))
+            }
             Literal::String(s) => {
                 // convert the string to bytes and add a `Data` to the program
                 let bytes = s.as_bytes().to_vec();
@@ -1580,6 +1595,11 @@ impl LirGen<GenResult> for Node<Decl> {
                 let decl = ext.decl();
                 let src = ext.src();
                 let has_intrinsic = ctx.srcmap.has_intrinsic(self);
+                log::debug!(
+                    "[Decl::lir_gen] has_intrinsic={}: {:?}",
+                    has_intrinsic,
+                    self
+                );
                 let intrinsic_kind = if has_intrinsic {
                     lir::IntrinsicKind::from_path(match decl {
                         Decl::FnSig(sig) => &sig.path.value,

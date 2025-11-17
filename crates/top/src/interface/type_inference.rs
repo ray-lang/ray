@@ -48,6 +48,22 @@ where
         matches!(self.var_kind_of(var), Some(VarKind::Rigid))
     }
 
+    fn has_rigid_var<'a, Iter>(&self, iter: Iter) -> bool
+    where
+        Iter: IntoIterator<Item = &'a V>,
+        V: 'a,
+    {
+        iter.into_iter().any(|var| self.is_rigid(var))
+    }
+
+    fn has_flexible_var<'a, Iter>(&self, iter: Iter) -> bool
+    where
+        Iter: IntoIterator<Item = &'a V>,
+        V: 'a,
+    {
+        iter.into_iter().any(|var| !self.is_rigid(var))
+    }
+
     fn mark_var_range(&mut self, start: u32, end: u32, kind: VarKind) {
         for id in start..end {
             self.set_var_kind(V::from_u32(id), kind);
@@ -89,7 +105,7 @@ where
         let unique = self.get_unique();
         let (new_unique, ty) = forall.instantiate(unique);
         let skolem = (
-            (unique..(new_unique - 1)).map(|u| V::from_u32(u)).collect(),
+            (unique..new_unique).map(|u| V::from_u32(u)).collect(),
             info,
             mono_tys,
         );
@@ -110,9 +126,11 @@ where
     fn check_skolems(&mut self)
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
-        I: Clone + TypeConstraintInfo<I, T, V>,
+        I: Clone + TypeConstraintInfo<I, T, V> + std::fmt::Debug,
         V: Ord,
     {
+        log::debug!("[check_skolems] BEFORE: {:?}", self.skolems());
+
         // remove all the skolems from the state
         let skolems = self.skolems_mut().drain(..).collect::<Vec<_>>();
 
@@ -249,6 +267,8 @@ where
         for info in escaping_skolems {
             self.add_labeled_err("escaping skolem", info);
         }
+
+        log::debug!("[check_skolems] AFTER: {:?}", self.skolems());
     }
 
     fn resolve_scheme_var(

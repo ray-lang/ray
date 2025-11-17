@@ -378,7 +378,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         diag.into()
     }
 
-    fn inject_import<I, P>(&mut self, module_path: &ast::Path, path: I, imports: &mut Vec<Scope>)
+    fn inject_import<I, P>(&mut self, path: I, imports: &mut Vec<Scope>)
     where
         I: IntoIterator<Item = P>,
         P: AsRef<str>,
@@ -390,7 +390,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         );
 
         if !self.module_paths.contains(&core_path) {
-            self.add_import(module_path, &core_path);
             let core_fp = &self.paths.get_lib_path() / core_path.to_filepath();
             let input_path = core_fp.canonicalize().unwrap_or(core_fp.clone());
             let input = BuildInput::new(input_path, core_path);
@@ -398,20 +397,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 Ok(Some(scope)) => imports.push(scope),
                 Ok(None) => { /* do nothing */ }
                 Err(err) => self.errors.extend(err),
-            }
-        }
-    }
-
-    fn add_import(&mut self, path: &ast::Path, import: &ast::Path) {
-        match self.ncx.imports_mut().get_mut(path) {
-            Some(imports) => {
-                if !imports.contains(import) {
-                    imports.push(import.clone());
-                }
-            }
-            None => {
-                let imports = vec![import.clone()];
-                self.ncx.imports_mut().insert(path.clone(), imports);
             }
         }
     }
@@ -427,8 +412,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
         if !self.no_core {
             // first add the core if it hasn't been added already
-            self.inject_import(&module_path, &["core"], &mut imports);
-            self.inject_import(&module_path, &["core", "io"], &mut imports);
+            self.inject_import(&["core"], &mut imports);
+            self.inject_import(&["core", "io"], &mut imports);
         }
 
         // then build all of the imports from the root file
@@ -453,7 +438,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                         &filepath,
                         import_module_path,
                         named_path,
-                        module_path,
                         &mut imports,
                     ),
                     ast::ImportKind::CImport(..) => unreachable!(),
@@ -539,10 +523,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         filepath: &FilePath,
         import_module_path: ast::Path,
         named_path: Option<ast::Path>,
-        module_path: &ast::Path,
         imports: &mut Vec<Scope>,
     ) {
-        self.add_import(&module_path, &import_module_path);
         let input = BuildInput::new(filepath.clone(), import_module_path);
         match self.build_from_path(input) {
             Ok(Some(mut scope)) => {
@@ -556,7 +538,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                             if path != scope.path {
                                 // add the NAME to the scope
                                 scope
-                                    .names
+                                    .whitelist
                                     .get_or_insert_with(|| HashSet::new())
                                     .insert(path.to_string());
                             }
@@ -564,7 +546,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     }
                     ast::ImportKind::Names(_, names) => {
                         scope
-                            .names
+                            .whitelist
                             .get_or_insert_with(|| HashSet::new())
                             .extend(names.iter().map(|n| n.to_string()));
                     }
@@ -1045,6 +1027,12 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
     }
 
     fn resolve_module_path(&self, filepath: &FilePath) -> ast::Path {
+        // Single-file module: if this is a file and its *directory* is not a dir-module,
+        // treat the file itself as the root module and use its stem.
+        if !filepath.is_dir() && !root::is_dir_module(&filepath.dir()) {
+            return ast::Path::from(filepath.file_stem());
+        }
+
         // Start from the directory that contains this module: `dir()` clones if already a dir,
         // or returns the parent directory if `filepath` is a file.
         let module_dir = filepath.dir();

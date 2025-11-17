@@ -178,9 +178,11 @@ where
 
         self.make_consistent();
         self.check_skolems();
+        self.improve();
         self.defaults();
         self.fields();
         self.ambiguities();
+        self.unsolved_predicates();
 
         let state = self.state;
 
@@ -217,6 +219,9 @@ where
             .into_iter()
             .flat_map(|(vars, _, _)| vars)
             .collect();
+
+        let var_kinds = state.infer_state.var_kinds;
+        log::debug!("[solve (POST)] variable kinds: {:?}", var_kinds);
 
         SolveResult {
             unique: state.infer_state.unique,

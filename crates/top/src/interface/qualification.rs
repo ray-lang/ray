@@ -7,14 +7,11 @@ use crate::{
     Predicates, Subst, TyVar,
     constraint::TypeConstraintInfo,
     directives::TypeClassDirective,
+    state::{HasState, OverloadingState},
     types::{ClassEnv, Predicate, Qualification, Scheme, Substitutable, Ty},
 };
 
-use super::{
-    basic::HasBasic,
-    subst::HasSubst,
-    type_inference::{HasTypeInference, VarKind},
-};
+use super::{basic::HasBasic, subst::HasSubst, type_inference::HasTypeInference};
 
 pub trait HasQual<I, T, V>
 where
@@ -41,13 +38,29 @@ where
 
     fn all_qualifiers(&self) -> Vec<&Predicate<T, V>>;
 
+    fn qualifiers(&self) -> Vec<&Predicate<T, V>>;
+
+    fn generalized_qualifiers(&self) -> Vec<&Predicate<T, V>>;
+
+    fn assumptions(&self) -> Vec<&Predicate<T, V>>;
+
     fn apply_subst_to_qualifiers(&mut self)
     where
         Self: Sized + HasSubst<I, T, V>,
     {
+        log::debug!("[apply_subst_to_qualifiers] --- START");
         self.change_qualifiers(|state, qualifier: &mut Predicate<T, V>| {
-            qualifier.apply_subst_from(state)
+            log::debug!(
+                "[apply_subst_to_qualifiers] qualifier (BEFORE) = {:?}",
+                qualifier
+            );
+            qualifier.apply_subst_from(state);
+            log::debug!(
+                "[apply_subst_to_qualifiers] qualifier (AFTER) = {:?}",
+                qualifier
+            );
         });
+        log::debug!("[apply_subst_to_qualifiers] --- END");
     }
 
     fn generalize_with_qualifiers(
@@ -63,6 +76,14 @@ where
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
         I: Debug + Clone + TypeConstraintInfo<I, T, V>;
+    fn improve_qualifiers_by_instance(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Clone + Display + TypeConstraintInfo<I, T, V>;
+    fn improve_qualifiers_by_receiver(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Debug + Clone + Display + TypeConstraintInfo<I, T, V>;
     fn default_qualifiers(&mut self)
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
@@ -91,6 +112,17 @@ where
         self.make_subst_consistent();
         self.apply_subst_to_qualifiers();
         self.simplify_qualifiers();
+    }
+
+    fn improve(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        T: Display,
+        I: Clone + Debug + Display + TypeConstraintInfo<I, T, V>,
+    {
+        self.context_reduction();
+        self.improve_qualifiers_by_instance();
+        self.improve_qualifiers_by_receiver();
     }
 
     fn defaults(&mut self)
@@ -125,10 +157,55 @@ where
         self.ambiguous_qualifiers();
     }
 
+    fn unsolved_predicates(&mut self)
+    where
+        Self: Sized
+            + HasSubst<I, T, V>
+            + HasTypeInference<I, T, V>
+            + HasState<OverloadingState<I, T, V>>
+            + HasBasic<I, T, V>,
+        I: Clone + TypeConstraintInfo<I, T, V> + std::fmt::Debug,
+        <V as FromStr>::Err: Debug,
+    {
+        for index in 0..self.state().qualifiers().len() {
+            let (predicate, info) = self.state().qualifier(index);
+
+            log::debug!(
+                "[unsolved_predicates] incoming predicate: {} @ {:?}",
+                predicate,
+                info
+            );
+
+            let synonyms = self.type_synonyms();
+            let class_env = self.class_env();
+            match class_env.by_instance(&predicate.freeze_vars(), synonyms) {
+                Some(_) => { /* ignore, we're only interested in unsolved predicates */ }
+                None => {
+                    log::debug!(
+                        "[unsolved_predicates] found unsolved predicate: {:?}",
+                        predicate
+                    );
+                    let mut new_info = info.clone();
+                    match self.find_never_directive(&predicate) {
+                        Some((q, i)) => {
+                            new_info.never_directive(q, i);
+                        }
+                        None => match self.find_close_directive_info(&predicate) {
+                            Some((name, info)) => new_info.close_directive(name, info),
+                            _ => new_info.unsolved_predicate(&predicate, &info),
+                        },
+                    }
+
+                    self.add_labeled_err("unresolved predicate", new_info);
+                }
+            }
+        }
+    }
+
     fn simplify(&mut self, predicates: Vec<(Predicate<T, V>, I)>) -> Vec<(Predicate<T, V>, I)>
     where
         Self: Sized + HasSubst<I, T, V> + HasTypeInference<I, T, V> + HasBasic<I, T, V>,
-        I: Clone + TypeConstraintInfo<I, T, V>,
+        I: Clone + TypeConstraintInfo<I, T, V> + std::fmt::Debug,
         V: Display + Eq,
         <V as FromStr>::Err: Debug,
     {
@@ -213,25 +290,31 @@ where
         new_predicates: &mut Vec<(Predicate<T, V>, I)>,
     ) where
         Self: Sized + HasSubst<I, T, V> + HasTypeInference<I, T, V> + HasBasic<I, T, V>,
-        I: Clone + TypeConstraintInfo<I, T, V>,
+        I: Clone + TypeConstraintInfo<I, T, V> + std::fmt::Debug,
         V: Display,
         <V as FromStr>::Err: Debug,
     {
         for (predicate, info) in predicates {
+            log::debug!(
+                "[simplify_preds_into] incoming predicate: {} @ {:?}",
+                predicate,
+                info
+            );
+
             if predicate.in_head_normal_form() {
+                log::debug!(
+                    "[simplify_preds_into] predicate is in HNF: {} @ {:?}",
+                    predicate,
+                    info
+                );
                 new_predicates.push((predicate, info));
                 continue;
             }
 
             let synonyms = self.type_synonyms();
             let class_env = self.class_env();
-            match class_env.by_instance(&predicate, synonyms) {
-                Some((subst, predicates)) => {
-                    let flexible_subst = subst
-                        .into_iter()
-                        .filter(|(var, _)| !self.is_rigid(var))
-                        .collect::<Subst<V, T>>();
-                    self.get_subst_mut().union(flexible_subst);
+            match class_env.by_instance(&predicate.freeze_vars(), synonyms) {
+                Some((_subst, predicates)) => {
                     let predicates = predicates
                         .into_iter()
                         .map(|p| {
@@ -244,18 +327,8 @@ where
                     new_predicates.extend(self.simplify(predicates));
                 }
                 None => {
-                    let mut new_info = info.clone();
-                    match self.find_never_directive(&predicate) {
-                        Some((q, i)) => {
-                            new_info.never_directive(q, i);
-                        }
-                        None => match self.find_close_directive_info(&predicate) {
-                            Some((name, info)) => new_info.close_directive(name, info),
-                            _ => new_info.unsolved_predicate(&predicate, &info),
-                        },
-                    }
-
-                    self.add_labeled_err("unresolved predicate", new_info);
+                    // an unsolved predicate, so we put it back
+                    new_predicates.push((predicate, info));
                 }
             }
         }

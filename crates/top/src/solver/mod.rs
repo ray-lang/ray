@@ -134,6 +134,16 @@ where
             write!(f, "  ],\n")?;
         }
 
+        if self.skolems.is_empty() {
+            write!(f, "  skolems: [],\n")?;
+        } else {
+            write!(f, "  skolems: [\n")?;
+            for v in &self.skolems {
+                write!(f, "    {}\n", v)?;
+            }
+            write!(f, "  ],\n")?;
+        }
+
         if self.solved_constraints.is_empty() {
             write!(f, "  solved_constraints: [],\n")?;
         } else {

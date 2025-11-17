@@ -346,6 +346,7 @@ impl<'src> Parser<'src> {
         parser = parser.with_newline_mode(NewlineMode::Emit);
         let ctx = parser.ctx_clone();
         let span = parser.parse_items(Pos::empty(), None, &ctx, |this, kind, doc, decs| {
+            log::debug!("[parse_item] decs={:?}", decs);
             let doc = doc.or_else(|| pending_doc.take());
             match kind {
                 TokenKind::Import => {
@@ -440,22 +441,24 @@ impl<'src> Parser<'src> {
         let stop = stop_token.as_ref();
 
         'items: while !self.is_eof() {
+            while matches!(self.peek_kind(), TokenKind::NewLine) {
+                self.expect(TokenKind::NewLine, ctx)?;
+                continue 'items;
+            }
+
             let DocComments {
                 module: _,
                 item: doc,
             } = self.parse_doc_comments();
             let decs = match self.parse_decorators(end, ctx) {
-                Ok((dec, span)) => {
-                    end = span.end;
+                Ok((dec, _)) => {
+                    if dec.is_some() {
+                        end = self.expect_end(TokenKind::NewLine, ctx)?;
+                    }
                     dec
                 }
                 Err(e) => return Err(e),
             };
-
-            while matches!(self.peek_kind(), TokenKind::NewLine) {
-                self.expect(TokenKind::NewLine, ctx)?;
-                continue 'items;
-            }
 
             let kind = match (self.peek_kind(), stop_token.as_ref()) {
                 (k, Some(stop)) if &k == stop => break,

@@ -42,30 +42,42 @@ where
         lhs.apply_subst_from(self);
         let mut rhs = rhs.clone();
         rhs.apply_subst_from(self);
+
+        log::debug!("[unify_terms] lhs={:?}, rhs={:?}", lhs, rhs);
         match mgu_with_synonyms(&lhs, &rhs, &Subst::new(), synonyms) {
             Ok((_, subst)) => {
                 let mut filtered = Subst::new();
+
                 for (var, ty) in subst.into_iter() {
-                    // If the key is rigid but the value is a flexible var, flip the binding:
+                    // If the key is rigid but the value is a flexible var, flip the binding
+                    // and *propagate rigidity* to the flexible var.
                     if self.is_rigid(&var) {
                         if let Some(other_var) = ty.maybe_var() {
-                            // Same rigid var: no-op, nothing to record.
+                            // Same rigid var: no-op.
                             if &var == other_var {
                                 continue;
                             }
 
                             // rigid := flexible_meta  → flip to flexible_meta := rigid
+                            // and mark the flexible meta var as rigid so defaulting
+                            // and later passes treat it as non-defaultable.
                             if !self.is_rigid(other_var) {
+                                log::debug!(
+                                    "[unify_terms]: setting other var {:?} to RIGID based on var {:?}",
+                                    other_var,
+                                    var
+                                );
+                                self.set_var_kind(other_var.clone(), VarKind::Rigid);
                                 filtered.insert(other_var.clone(), T::var(var.clone()));
                                 continue;
                             }
 
-                            // At this point we have rigid1 := rigid2 (different skolems).
-                            // For now, treat this as a no-op rather than an error,
-                            // since it's usually just equating two skolemized signatures.
+                            // rigid1 := rigid2 (different skolems / rigids).
+                            // For now, treat as a no-op rather than an error.
                             continue;
                         }
 
+                        // rigid := concrete type (not a var) is still an error.
                         let mut info = info.clone();
                         info.add_detail(&format!(
                             "cannot bind rigid type variable {} during unification",
@@ -74,14 +86,21 @@ where
                         self.add_labeled_err("rigid type variable", info);
                         return;
                     }
+
+                    // Normal case: flexible := ty
                     filtered.insert(var, ty);
                 }
+
+                log::debug!(
+                    "[unify_terms] union with global substitution: {:?}",
+                    filtered
+                );
                 self.state_mut().union(filtered);
             }
             Err(err) => {
                 let mut info = info.clone();
                 info.add_detail(&err.to_string());
-                self.add_labeled_err("unification", info)
+                self.add_labeled_err("unification", info);
             }
         }
     }

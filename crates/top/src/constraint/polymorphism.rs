@@ -179,7 +179,28 @@ where
     fn solve(&mut self, state: &mut State) {
         match &self.kind {
             PolyConstraintKind::Generalize(var, mono_tys, ty) => {
+                log::debug!("[solve::generalize] ---- START");
+                log::debug!("[solve::generalize] qualifers BEFORE context reduction");
+                log::debug!("[solve::generalize]   qualifiers: {:?}", state.qualifiers());
+                log::debug!(
+                    "[solve::generalize]   generalized_qualifiers: {:?}",
+                    state.generalized_qualifiers(),
+                );
+                log::debug!(
+                    "[solve::generalize]   assumptions: {:?}",
+                    state.assumptions(),
+                );
                 state.context_reduction();
+                log::debug!("[solve::generalize] qualifers AFTER context reduction");
+                log::debug!("[solve::generalize]   qualifiers: {:?}", state.qualifiers());
+                log::debug!(
+                    "[solve::generalize]   generalized_qualifiers: {:?}",
+                    state.generalized_qualifiers(),
+                );
+                log::debug!(
+                    "[solve::generalize]   assumptions: {:?}",
+                    state.assumptions(),
+                );
                 let mut mono_tys = mono_tys.clone();
                 let mut ty = ty.clone();
                 mono_tys.apply_subst_from(state);
@@ -189,6 +210,7 @@ where
                 let type_scheme = state.generalize_with_qualifiers(&mono_tys, &ty);
                 log::debug!("generalized: {} --> {}", ty, type_scheme);
                 state.store_type_scheme(var.clone(), type_scheme);
+                log::debug!("[solve::generalize] ---- END");
             }
             PolyConstraintKind::Instantiate(ty, sigma) => {
                 let scheme = state.find_scheme(sigma).unwrap();
