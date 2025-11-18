@@ -329,7 +329,7 @@ jobs:
           to_delete_count=$((count - 7))
           echo "Will delete $to_delete_count oldest nightlies"
 
-          tags=$(echo "$nightlies" | jq -r ".[0:${to_delete_count}]")
+          tags=$(echo "$nightlies" | jq -r ".[0:${to_delete_count}][]")
           echo "Tags to delete:"
           printf '  - %s\n' $tags
 
