@@ -298,16 +298,47 @@ jobs:
 
       - name: Prune old nightly releases
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Guaranteed workflow token + repo
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -eo pipefail
-          nightlies=$(gh release list --limit 100 --json tagName --jq 'map(.tagName) | map(select(startswith("nightly-"))) | sort')
+
+          # Optional: debug what gh sees
+          echo "Auth status:"
+          gh auth status || true
+
+          echo "Listing nightly releases for $GITHUB_REPOSITORY"
+          nightlies=$(
+            gh release list \
+              --repo "$GITHUB_REPOSITORY" \
+              --limit 100 \
+              --json tagName \
+              --jq 'map(.tagName) | map(select(startswith("nightly-"))) | sort'
+          )
+          echo "Nightlies JSON: $nightlies"
+
           count=$(echo "$nightlies" | jq 'length')
+          echo "Found $count nightly releases"
+
           if [ "$count" -le 7 ]; then
+            echo "Nothing to prune"
             exit 0
           fi
+
           to_delete_count=$((count - 7))
-          tags=$(echo "$nightlies" | jq -r '.[0:'"$to_delete_count"']')
+          echo "Will delete $to_delete_count oldest nightlies"
+
+          tags=$(echo "$nightlies" | jq -r ".[0:${to_delete_count}]")
+          echo "Tags to delete:"
+          printf '  - %s\n' $tags
+
           for tag in $tags; do
-            gh release delete "$tag" --cleanup-tag -y || true
+            echo "Deleting release $tag"
+            # You can temporarily try 'gh release view' first if you want:
+            # gh release view "$tag" --repo "$GITHUB_REPOSITORY" || echo "view failed"
+            gh release delete "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag \
+              -y || true
           done
