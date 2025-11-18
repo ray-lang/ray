@@ -236,7 +236,6 @@ impl Lexer {
             "in" => TokenKind::In,
             "is" => TokenKind::Is,
             "where" => TokenKind::Where,
-            "asm" => TokenKind::Asm,
             "new" => TokenKind::New,
             "box" => TokenKind::Bx,
             "pub" => TokenKind::Modifier(Modifier::Pub),

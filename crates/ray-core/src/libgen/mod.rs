@@ -605,8 +605,7 @@ fn register_in_expr(
         }
 
         // ignore
-        Expr::Asm(_)
-        | Expr::DefaultValue(_)
+        Expr::DefaultValue(_)
         | Expr::Literal(_)
         | Expr::Missing(_)
         | Expr::Name(_)

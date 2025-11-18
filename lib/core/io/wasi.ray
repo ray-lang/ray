@@ -9,8 +9,8 @@ fn writev_stdout(chunks: *string, n: uint) -> uint {
     iovecs = new(IOVec, n)
     mut i = 0
     while i < n {
-        chunk = *ptr_add(chunks, i * sizeof(string))
-        ptr = ptr_add(iovecs, i * sizeof(IOVec))
+        chunk = *(chunks + i)
+        ptr = iovecs + i
         *ptr = IOVec { base: chunk.raw_ptr, len: chunk.len }
         i += 1
     }

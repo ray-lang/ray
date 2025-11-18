@@ -23,7 +23,6 @@ use crate::{
 use super::{
     BinOp, Block, Boxed, Call, Cast, Curly, CurlyElement, Decl, Dot, Expr, For, If, List, Literal,
     Name, New, Node, Path, Pattern, Range, Ref, Tuple, UnaryOp, While,
-    asm::{Asm, AsmOperand},
 };
 
 impl CollectPatterns for Node<Pattern> {
@@ -478,7 +477,6 @@ impl CollectConstraints for Node<Expr> {
 
         let (ty, aset, ct) = match &self.value {
             Expr::Assign(_) => unreachable!(),
-            Expr::Asm(ex) => (ex, src).collect_constraints(ctx),
             Expr::BinOp(ex) => (ex, src).collect_constraints(ctx),
             Expr::Block(ex) => (ex, src).collect_constraints(ctx),
             Expr::Boxed(ex) => (ex, src).collect_constraints(ctx),
@@ -530,58 +528,6 @@ impl CollectConstraints for Node<Expr> {
 
         ctx.tcx.set_ty(self.id, ty.clone());
         (ty, aset, ct)
-    }
-}
-
-impl CollectConstraints for (&Asm, &Source) {
-    type Output = Ty;
-
-    fn collect_constraints(
-        &self,
-        ctx: &mut CollectCtx,
-    ) -> (Self::Output, AssumptionSet, ConstraintTree) {
-        let &(asm, src) = self;
-        let mut aset = AssumptionSet::new();
-        let mut cts = vec![];
-        for (_, rands) in asm.inst.iter() {
-            for v in rands.iter() {
-                let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                match v {
-                    AsmOperand::Var(v) => {
-                        let label = t.to_string();
-                        aset.add(Path::from(v.as_str()), t.clone());
-                        cts.push(ReceiverTree::new(label));
-                    }
-                    AsmOperand::Int(_) => continue,
-                }
-            }
-        }
-
-        let last_ty = asm
-            .inst
-            .last()
-            .map(|(op, _)| op.ret_ty(&src.path))
-            .unwrap_or_default();
-        let v = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-        let mut cs = vec![];
-        if let Some(ty) = asm.ret_ty.as_deref() {
-            let mut c = EqConstraint::new(ty.clone(), v.clone());
-            c.info_mut().with_src(src.clone());
-            cs.push(c);
-        }
-
-        let mut c = EqConstraint::new(last_ty, v.clone());
-        c.info_mut().with_src(src.clone());
-        cs.push(c);
-        cts.push(ConstraintTree::list(cs));
-
-        let mut ct = ConstraintTree::empty();
-        for t in cts.into_iter().rev() {
-            let nodes = if ct.is_empty() { vec![t] } else { vec![t, ct] };
-            ct = NodeTree::new(nodes);
-        }
-
-        (v, aset, ct)
     }
 }
 

@@ -1,11 +1,9 @@
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     fmt::{Debug, Display},
     marker::PhantomData,
     str::FromStr,
 };
-
-use itertools::Itertools;
 
 use crate::{
     InfoJoin, TyVar,

@@ -1756,3 +1756,45 @@ fn main() {
         "expected missing RHS"
     );
 }
+
+#[test]
+fn decorator_newline_optional_for_fn() {
+    let src = r#"
+@inline fn add(a: int, b: int) -> int {
+    a + b
+}
+"#;
+    let mut srcmap = SourceMap::new();
+    let (file, errors) = parse_source_with_srcmap(src, &mut srcmap);
+    assert!(
+        errors.is_empty(),
+        "expected parsing decorated inline fn without newline to succeed, got {:?}",
+        errors
+    );
+    let decl = file.decls.first().expect("expected function declaration");
+    let decorators = srcmap
+        .get_decorators(decl)
+        .expect("expected decorator metadata on fn");
+    assert_eq!(decorators.len(), 1);
+    assert_eq!(decorators[0].path.value, Path::from("inline"));
+}
+
+#[test]
+fn decorator_newline_optional_for_extern_fn() {
+    let src = r#"
+@intrinsic extern fn add(a: int, b: int) -> int
+"#;
+    let mut srcmap = SourceMap::new();
+    let (file, errors) = parse_source_with_srcmap(src, &mut srcmap);
+    assert!(
+        errors.is_empty(),
+        "expected parsing inline-decorated extern fn without newline to succeed, got {:?}",
+        errors
+    );
+    let decl = file.decls.first().expect("expected extern function declaration");
+    let decorators = srcmap
+        .get_decorators(decl)
+        .expect("expected decorator metadata on extern fn");
+    assert_eq!(decorators.len(), 1);
+    assert_eq!(decorators[0].path.value, Path::from("intrinsic"));
+}

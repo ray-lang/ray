@@ -1,5 +1,4 @@
 import super::ToStr
-import super::ptr_add
 import super::sizeof
 
 fn print(v: 'a) -> () where ToStr['a] {
@@ -9,7 +8,7 @@ fn print(v: 'a) -> () where ToStr['a] {
     chunks = new(string, 2)
     mut ptr = chunks
     *ptr = s
-    ptr = ptr_add(ptr, sizeof(string))
+    ptr = ptr + 1
     *ptr = nl
 
     _ = writev_stdout(chunks, 2)

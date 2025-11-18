@@ -8,7 +8,6 @@ mod node;
 mod path;
 mod walk;
 
-pub mod asm;
 pub mod token;
 
 pub use expr::*;

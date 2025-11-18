@@ -167,6 +167,7 @@ enum LoweredCall<'ctx> {
         ret_slot: Option<PointerValue<'ctx>>,
     },
     Value(BasicValueEnum<'ctx>),
+    Inst(InstructionValue<'ctx>),
 }
 
 struct LLVMCodegenCtx<'a, 'ctx> {
@@ -1468,6 +1469,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                     LoweredCall::Call { call, .. } => call
                         .try_as_basic_value()
                         .either(|val| val.as_instruction_value().unwrap(), |inst| inst),
+                    LoweredCall::Inst(inst) => inst,
                 }
             }
             lir::Inst::CExternCall(_) => todo!("codegen lir::Inst: {}", self),
@@ -1526,6 +1528,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
                 LoweredCall::Call { call, ret_slot } => ret_slot
                     .map(|p| p.as_basic_value_enum())
                     .unwrap_or_else(|| call.try_as_basic_value().left_or_else(|_| ctx.unit())),
+                LoweredCall::Inst(_) => {
+                    unreachable!("instruction should not be used in place of a value")
+                }
             }),
             lir::Value::CExternCall(_) => todo!("codegen lir::CExternCall: {}", self),
             lir::Value::Select(_) => todo!("codegen lir::Select: {}", self),
@@ -1951,6 +1956,237 @@ impl<'a, 'ctx> lir::Call {
             lir::IntrinsicKind::PtrAdd => self.codegen_ptr_offset(ctx, tcx, srcmap, true),
             lir::IntrinsicKind::PtrSub => self.codegen_ptr_offset(ctx, tcx, srcmap, false),
             lir::IntrinsicKind::SizeOf => self.codegen_sizeof(ctx),
+            lir::IntrinsicKind::Memcopy => {
+                let dst = self.args.get(0).expect("memcopy expects dest argument");
+                let src = self.args.get(1).expect("memcopy expects src argument");
+                let size_atom =
+                    lir::Atom::Variable(self.args.get(2).expect("memcopy expects size").clone());
+                let inst = ctx.build_memcpy(dst, src, &size_atom, tcx, srcmap)?;
+                Ok(LoweredCall::Inst(inst))
+            }
+            lir::IntrinsicKind::IntEq
+            | lir::IntrinsicKind::I8Eq
+            | lir::IntrinsicKind::I16Eq
+            | lir::IntrinsicKind::I32Eq
+            | lir::IntrinsicKind::I64Eq
+            | lir::IntrinsicKind::UintEq
+            | lir::IntrinsicKind::U8Eq
+            | lir::IntrinsicKind::U16Eq
+            | lir::IntrinsicKind::U32Eq
+            | lir::IntrinsicKind::U64Eq => {
+                self.codegen_basic_op(lir::Op::Eq, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntNeq
+            | lir::IntrinsicKind::I8Neq
+            | lir::IntrinsicKind::I16Neq
+            | lir::IntrinsicKind::I32Neq
+            | lir::IntrinsicKind::I64Neq
+            | lir::IntrinsicKind::UintNeq
+            | lir::IntrinsicKind::U8Neq
+            | lir::IntrinsicKind::U16Neq
+            | lir::IntrinsicKind::U32Neq
+            | lir::IntrinsicKind::U64Neq => {
+                self.codegen_basic_op(lir::Op::Neq, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntAdd
+            | lir::IntrinsicKind::I8Add
+            | lir::IntrinsicKind::I16Add
+            | lir::IntrinsicKind::I32Add
+            | lir::IntrinsicKind::I64Add
+            | lir::IntrinsicKind::UintAdd
+            | lir::IntrinsicKind::U8Add
+            | lir::IntrinsicKind::U16Add
+            | lir::IntrinsicKind::U32Add
+            | lir::IntrinsicKind::U64Add => {
+                self.codegen_basic_op(lir::Op::Add, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntSub
+            | lir::IntrinsicKind::I8Sub
+            | lir::IntrinsicKind::I16Sub
+            | lir::IntrinsicKind::I32Sub
+            | lir::IntrinsicKind::I64Sub
+            | lir::IntrinsicKind::UintSub
+            | lir::IntrinsicKind::U8Sub
+            | lir::IntrinsicKind::U16Sub
+            | lir::IntrinsicKind::U32Sub
+            | lir::IntrinsicKind::U64Sub => {
+                self.codegen_basic_op(lir::Op::Sub, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntMul
+            | lir::IntrinsicKind::I8Mul
+            | lir::IntrinsicKind::I16Mul
+            | lir::IntrinsicKind::I32Mul
+            | lir::IntrinsicKind::I64Mul
+            | lir::IntrinsicKind::UintMul
+            | lir::IntrinsicKind::U8Mul
+            | lir::IntrinsicKind::U16Mul
+            | lir::IntrinsicKind::U32Mul
+            | lir::IntrinsicKind::U64Mul => {
+                self.codegen_basic_op(lir::Op::Mul, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntDiv
+            | lir::IntrinsicKind::I8Div
+            | lir::IntrinsicKind::I16Div
+            | lir::IntrinsicKind::I32Div
+            | lir::IntrinsicKind::I64Div
+            | lir::IntrinsicKind::UintDiv
+            | lir::IntrinsicKind::U8Div
+            | lir::IntrinsicKind::U16Div
+            | lir::IntrinsicKind::U32Div
+            | lir::IntrinsicKind::U64Div => {
+                self.codegen_basic_op(lir::Op::Div, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntMod
+            | lir::IntrinsicKind::I8Mod
+            | lir::IntrinsicKind::I16Mod
+            | lir::IntrinsicKind::I32Mod
+            | lir::IntrinsicKind::I64Mod
+            | lir::IntrinsicKind::UintMod
+            | lir::IntrinsicKind::U8Mod
+            | lir::IntrinsicKind::U16Mod
+            | lir::IntrinsicKind::U32Mod
+            | lir::IntrinsicKind::U64Mod => {
+                self.codegen_basic_op(lir::Op::Mod, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntNeg
+            | lir::IntrinsicKind::I8Neg
+            | lir::IntrinsicKind::I16Neg
+            | lir::IntrinsicKind::I32Neg
+            | lir::IntrinsicKind::I64Neg => {
+                self.codegen_basic_op(lir::Op::Neg, true, ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntAnd
+            | lir::IntrinsicKind::I8And
+            | lir::IntrinsicKind::I16And
+            | lir::IntrinsicKind::I32And
+            | lir::IntrinsicKind::I64And
+            | lir::IntrinsicKind::UintAnd
+            | lir::IntrinsicKind::U8And
+            | lir::IntrinsicKind::U16And
+            | lir::IntrinsicKind::U32And
+            | lir::IntrinsicKind::U64And => {
+                self.codegen_basic_op(lir::Op::BitAnd, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntOr
+            | lir::IntrinsicKind::I8Or
+            | lir::IntrinsicKind::I16Or
+            | lir::IntrinsicKind::I32Or
+            | lir::IntrinsicKind::I64Or
+            | lir::IntrinsicKind::UintOr
+            | lir::IntrinsicKind::U8Or
+            | lir::IntrinsicKind::U16Or
+            | lir::IntrinsicKind::U32Or
+            | lir::IntrinsicKind::U64Or => {
+                self.codegen_basic_op(lir::Op::BitOr, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntXor
+            | lir::IntrinsicKind::I8Xor
+            | lir::IntrinsicKind::I16Xor
+            | lir::IntrinsicKind::I32Xor
+            | lir::IntrinsicKind::I64Xor
+            | lir::IntrinsicKind::UintXor
+            | lir::IntrinsicKind::U8Xor
+            | lir::IntrinsicKind::U16Xor
+            | lir::IntrinsicKind::U32Xor
+            | lir::IntrinsicKind::U64Xor => {
+                self.codegen_basic_op(lir::Op::BitXor, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntLt
+            | lir::IntrinsicKind::I8Lt
+            | lir::IntrinsicKind::I16Lt
+            | lir::IntrinsicKind::I32Lt
+            | lir::IntrinsicKind::I64Lt
+            | lir::IntrinsicKind::UintLt
+            | lir::IntrinsicKind::U8Lt
+            | lir::IntrinsicKind::U16Lt
+            | lir::IntrinsicKind::U32Lt
+            | lir::IntrinsicKind::U64Lt => {
+                self.codegen_basic_op(lir::Op::Lt, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntGt
+            | lir::IntrinsicKind::I8Gt
+            | lir::IntrinsicKind::I16Gt
+            | lir::IntrinsicKind::I32Gt
+            | lir::IntrinsicKind::I64Gt
+            | lir::IntrinsicKind::UintGt
+            | lir::IntrinsicKind::U8Gt
+            | lir::IntrinsicKind::U16Gt
+            | lir::IntrinsicKind::U32Gt
+            | lir::IntrinsicKind::U64Gt => {
+                self.codegen_basic_op(lir::Op::Gt, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntLteq
+            | lir::IntrinsicKind::I8Lteq
+            | lir::IntrinsicKind::I16Lteq
+            | lir::IntrinsicKind::I32Lteq
+            | lir::IntrinsicKind::I64Lteq
+            | lir::IntrinsicKind::UintLteq
+            | lir::IntrinsicKind::U8Lteq
+            | lir::IntrinsicKind::U16Lteq
+            | lir::IntrinsicKind::U32Lteq
+            | lir::IntrinsicKind::U64Lteq => {
+                self.codegen_basic_op(lir::Op::LtEq, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntGteq
+            | lir::IntrinsicKind::I8Gteq
+            | lir::IntrinsicKind::I16Gteq
+            | lir::IntrinsicKind::I32Gteq
+            | lir::IntrinsicKind::I64Gteq
+            | lir::IntrinsicKind::UintGteq
+            | lir::IntrinsicKind::U8Gteq
+            | lir::IntrinsicKind::U16Gteq
+            | lir::IntrinsicKind::U32Gteq
+            | lir::IntrinsicKind::U64Gteq => {
+                self.codegen_basic_op(lir::Op::GtEq, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntShl
+            | lir::IntrinsicKind::I8Shl
+            | lir::IntrinsicKind::I16Shl
+            | lir::IntrinsicKind::I32Shl
+            | lir::IntrinsicKind::I64Shl
+            | lir::IntrinsicKind::UintShl
+            | lir::IntrinsicKind::U8Shl
+            | lir::IntrinsicKind::U16Shl
+            | lir::IntrinsicKind::U32Shl
+            | lir::IntrinsicKind::U64Shl => {
+                self.codegen_basic_op(lir::Op::ArithShiftLeft, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntShr
+            | lir::IntrinsicKind::I8Shr
+            | lir::IntrinsicKind::I16Shr
+            | lir::IntrinsicKind::I32Shr
+            | lir::IntrinsicKind::I64Shr
+            | lir::IntrinsicKind::UintShr
+            | lir::IntrinsicKind::U8Shr
+            | lir::IntrinsicKind::U16Shr
+            | lir::IntrinsicKind::U32Shr
+            | lir::IntrinsicKind::U64Shr => {
+                self.codegen_basic_op(lir::Op::ArithShiftRight, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntRotl
+            | lir::IntrinsicKind::I8Rotl
+            | lir::IntrinsicKind::I16Rotl
+            | lir::IntrinsicKind::I32Rotl
+            | lir::IntrinsicKind::I64Rotl
+            | lir::IntrinsicKind::UintRotl
+            | lir::IntrinsicKind::U8Rotl
+            | lir::IntrinsicKind::U16Rotl
+            | lir::IntrinsicKind::U32Rotl
+            | lir::IntrinsicKind::U64Rotl => {
+                self.codegen_basic_op(lir::Op::RotateLeft, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::IntRotr
+            | lir::IntrinsicKind::I8Rotr
+            | lir::IntrinsicKind::I16Rotr
+            | lir::IntrinsicKind::I32Rotr
+            | lir::IntrinsicKind::I64Rotr
+            | lir::IntrinsicKind::UintRotr
+            | lir::IntrinsicKind::U8Rotr
+            | lir::IntrinsicKind::U16Rotr
+            | lir::IntrinsicKind::U32Rotr
+            | lir::IntrinsicKind::U64Rotr => {
+                self.codegen_basic_op(lir::Op::RotateRight, kind.is_signed(), ctx, tcx, srcmap)
+            }
         }
     }
 
@@ -1968,9 +2204,9 @@ impl<'a, 'ctx> lir::Call {
             .to_llvm_type(&pointee_ty)
             .size_of()
             .expect("element size must be computable");
-        let elem_size =
-            ctx.builder
-                .build_int_cast(elem_size_raw, ctx.ptr_type(), "elem_size")?;
+        let elem_size = ctx
+            .builder
+            .build_int_cast(elem_size_raw, ctx.ptr_type(), "elem_size")?;
 
         let ptr_int = ctx
             .builder
@@ -2008,6 +2244,130 @@ impl<'a, 'ctx> lir::Call {
         let raw = ll.size_of().expect("could not compute sizeof for type");
         let cast = ctx.builder.build_int_cast(raw, ctx.ptr_type(), "")?;
         Ok(LoweredCall::Value(cast.as_basic_value_enum()))
+    }
+
+    fn codegen_basic_op(
+        &self,
+        op: lir::Op,
+        signed: bool,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<LoweredCall<'ctx>, BuilderError> {
+        // convert the lir op and size into a wasm op
+        let operands = self
+            .args
+            .codegen(ctx, tcx, srcmap)
+            .into_iter()
+            .map(|result| {
+                // unwrap any pointers
+                let op = result?;
+                ctx.maybe_load_pointer(op)
+            })
+            .collect::<Result<Vec<_>, BuilderError>>()?;
+
+        let value = match (op, signed) {
+            (lir::Op::Eq, _) => ctx.builder.build_int_compare(
+                IntPredicate::EQ,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Neq, _) => ctx.builder.build_int_compare(
+                IntPredicate::NE,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Add, _) => ctx.builder.build_int_add(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Sub, _) => ctx.builder.build_int_sub(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Mul, _) => ctx.builder.build_int_mul(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Div, true) => ctx.builder.build_int_signed_div(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Div, false) => ctx.builder.build_int_unsigned_div(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Mod, true) => ctx.builder.build_int_signed_rem(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Mod, false) => ctx.builder.build_int_unsigned_rem(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Neg, true) => ctx.builder.build_int_neg(operands[0].into_int_value(), ""),
+            (lir::Op::Lt, true) => ctx.builder.build_int_compare(
+                IntPredicate::SLT,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Lt, false) => ctx.builder.build_int_compare(
+                IntPredicate::ULT,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Gt, true) => ctx.builder.build_int_compare(
+                IntPredicate::SGT,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Gt, false) => ctx.builder.build_int_compare(
+                IntPredicate::UGT,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::LtEq, true) => ctx.builder.build_int_compare(
+                IntPredicate::SLE,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::LtEq, false) => ctx.builder.build_int_compare(
+                IntPredicate::ULE,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::GtEq, true) => ctx.builder.build_int_compare(
+                IntPredicate::SGE,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::GtEq, false) => ctx.builder.build_int_compare(
+                IntPredicate::UGE,
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            _ => todo!("binop: (op={}, signed={})", op, signed),
+        }?
+        .as_basic_value_enum();
+
+        Ok(LoweredCall::Value(value))
     }
 
     fn eval_intrinsic_ptr(

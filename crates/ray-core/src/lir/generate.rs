@@ -5,9 +5,7 @@ use top::{Subst, Substitutable, mgu};
 use crate::{
     ast::{
         self, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node, Path, Pattern, PrefixOp,
-        RangeLimits, UnaryOp,
-        asm::{AsmOp, AsmOperand},
-        token::IntegerBase,
+        RangeLimits, UnaryOp, token::IntegerBase,
     },
     errors::RayResult,
     lir, sema,
@@ -1050,67 +1048,6 @@ impl LirGen<GenResult> for Node<Expr> {
                 ));
 
                 lir::Variable::Local(list_loc).into()
-            }
-            Expr::Asm(asm) => {
-                fn convert_var(
-                    operand: &AsmOperand,
-                    ty: Ty,
-                    ctx: &mut GenCtx<'_>,
-                ) -> lir::Variable {
-                    match operand {
-                        AsmOperand::Var(name) => {
-                            let loc = ctx.get_var(name).copied().unwrap_or_else(|| {
-                                // variable is not defined in the current block, so create a ref
-                                let idx = ctx.local(ty.into());
-                                ctx.set_var(name.clone(), idx);
-                                idx
-                            });
-                            lir::Variable::Local(loc)
-                        }
-                        AsmOperand::Int(_) => panic!("not a variable: {:?}", operand),
-                    }
-                }
-
-                fn convert_operand(
-                    operand: &AsmOperand,
-                    ty: Ty,
-                    ctx: &mut GenCtx<'_>,
-                ) -> lir::Atom {
-                    match operand {
-                        AsmOperand::Var(_) => convert_var(operand, ty, ctx).into(),
-                        AsmOperand::Int(i) => lir::Atom::uptr(*i),
-                    }
-                }
-
-                // TODO: This is a terrible way to hanlde this
-                let mut binops = asm
-                    .inst
-                    .iter()
-                    .flat_map(|(op, rands)| match op {
-                        AsmOp::MemCopy => {
-                            let dst = convert_var(&rands[0], Ty::uint(), ctx);
-                            let src = convert_var(&rands[1], Ty::uint(), ctx);
-                            let size = convert_operand(&rands[2], Ty::uint(), ctx);
-                            ctx.push(lir::Inst::MemCopy(dst, src, size));
-                            None
-                        }
-
-                        _ => {
-                            let mut binop = lir::BasicOp::from(*op);
-                            binop.operands.extend(rands.iter().map(|operand| {
-                                convert_operand(operand, ty.clone().into_mono(), ctx)
-                            }));
-                            Some(lir::Value::BasicOp(binop))
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-                if let Some(value) = binops.pop() {
-                    let idx = ctx.get_or_set_local(value, ty.clone()).unwrap();
-                    lir::Value::new(lir::Variable::Local(idx))
-                } else {
-                    lir::Value::Empty
-                }
             }
             Expr::Curly(curly) => {
                 let loc = ctx.local(ty.clone());

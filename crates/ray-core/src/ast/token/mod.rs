@@ -93,8 +93,6 @@ pub enum TokenKind {
     Is,
     /// where
     Where,
-    /// asm
-    Asm,
     /// new
     New,
     /// box
@@ -254,7 +252,6 @@ impl TokenKind {
             TokenKind::In => "`in`",
             TokenKind::Is => "`is`",
             TokenKind::Where => "`where`",
-            TokenKind::Asm => "`asm`",
             TokenKind::New => "`new`",
             TokenKind::Bx => "`box`",
             TokenKind::Equals => "`=`",
@@ -372,7 +369,6 @@ impl fmt::Display for TokenKind {
             TokenKind::In => "in".to_string(),
             TokenKind::Is => "is".to_string(),
             TokenKind::Where => "where".to_string(),
-            TokenKind::Asm => "asm".to_string(),
             TokenKind::New => "new".to_string(),
             TokenKind::Bx => "box".to_string(),
             TokenKind::Equals => "=".to_string(),

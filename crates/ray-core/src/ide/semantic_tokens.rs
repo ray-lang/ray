@@ -341,7 +341,6 @@ impl<'a> SemanticTokenCollector<'a> {
     fn visit_expr(&mut self, expr: &Node<Expr>) {
         match &expr.value {
             Expr::Assign(assign) => self.visit_assign(assign),
-            Expr::Asm(_) => {}
             Expr::BinOp(binop) => {
                 self.visit_expr(&binop.lhs);
                 self.visit_expr(&binop.rhs);

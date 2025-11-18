@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use crate::{
-    ast::{Boxed, Node, Path, Ref, asm::Asm, expr::deref::Deref},
+    ast::{Boxed, Node, Path, Ref, expr::deref::Deref},
     span::parsed::Parsed,
     typing::ty::TyScheme,
 };
@@ -14,7 +14,6 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Assign(Assign),
-    Asm(Asm),
     BinOp(BinOp),
     Block(Block),
     Boxed(Boxed),
@@ -73,7 +72,6 @@ impl std::fmt::Display for Expr {
             match self {
                 Expr::List(ex) => ex.to_string(),
                 Expr::Assign(ex) => ex.to_string(),
-                Expr::Asm(ex) => ex.to_string(),
                 Expr::BinOp(ex) => ex.to_string(),
                 Expr::Block(ex) => ex.to_string(),
                 Expr::Boxed(ex) => ex.to_string(),
@@ -126,7 +124,6 @@ impl Expr {
             Expr::Pattern(p) => p.path().cloned(),
             Expr::Path(p) => Some(p.clone()),
             Expr::Assign(_)
-            | Expr::Asm(_)
             | Expr::BinOp(_)
             | Expr::Block(_)
             | Expr::Boxed(_)
@@ -168,7 +165,6 @@ impl Expr {
             Expr::Pattern(p) => p.get_name(),
             Expr::Path(p) => Some(p.to_string()),
             Expr::Assign(_)
-            | Expr::Asm(_)
             | Expr::BinOp(_)
             | Expr::Block(_)
             | Expr::Boxed(_)
@@ -207,7 +203,6 @@ impl Expr {
         match self {
             Expr::List(..) => "array",
             Expr::Assign(..) => "assign",
-            Expr::Asm(..) => "asm",
             Expr::BinOp(..) => "binary operation",
             Expr::Block(..) => "block",
             Expr::Boxed(..) => "box",

@@ -8,7 +8,7 @@ use ray_core::{
     errors::RayError,
     libgen::DefinitionRecord,
     parse::{ParseOptions, Parser},
-    sema::{NameContext, SymbolMap, root},
+    sema::{NameContext, SymbolMap},
     span::{Source, SourceMap},
 };
 use ray_core::{

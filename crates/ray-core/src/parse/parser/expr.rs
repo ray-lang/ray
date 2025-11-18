@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use super::{
     ExprResult, ParsedExpr, Parser, RecoveryCtx, Restrictions,
     context::{ParseContext, SeqSpec},
@@ -10,7 +8,6 @@ use crate::{
     ast::{
         Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
         TrailingPolicy, ValueKind,
-        asm::{Asm, AsmOp, AsmOperand},
         token::{Token, TokenKind},
     },
     span::{Span, parsed::Parsed},
@@ -36,7 +33,6 @@ impl Parser<'_> {
             TokenKind::While => self.parse_while(ctx),
             TokenKind::Loop => self.parse_loop(ctx),
             TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
-            TokenKind::Asm => self.parse_asm(ctx),
             TokenKind::New => self.parse_new_expr(ctx),
             TokenKind::Bx => self.parse_box_expr(ctx),
             TokenKind::Break => {
@@ -279,9 +275,7 @@ impl Parser<'_> {
 
         let mut end = paren_span.end;
 
-        if !ctx
-            .restrictions
-            .contains(Restrictions::NO_CURLY_EXPR)
+        if !ctx.restrictions.contains(Restrictions::NO_CURLY_EXPR)
             && peek!(self, TokenKind::LeftCurly)
         {
             let closure = self.parse_closure_expr(ctx)?;
@@ -501,67 +495,5 @@ impl Parser<'_> {
             span,
             ctx.path.clone(),
         ))
-    }
-
-    pub(crate) fn parse_asm(&mut self, ctx: &ParseContext) -> ExprResult {
-        let parser = &mut self
-            .with_scope(ctx)
-            .with_description("parse asm expression");
-        let ctx = &parser.ctx_clone();
-
-        let mut span = parser.expect_keyword(TokenKind::Asm, ctx)?;
-
-        let mut inst = vec![];
-        let ret_ty = if peek!(parser, TokenKind::LeftParen) {
-            parser.expect(TokenKind::LeftParen, ctx)?;
-            let t = parser
-                .parse_type_annotation(Some(&TokenKind::RightParen), ctx)
-                .map(|t| t.into_mono());
-            parser.expect(TokenKind::RightParen, ctx)?;
-            Some(t)
-        } else {
-            None
-        };
-
-        parser.expect(TokenKind::LeftCurly, ctx)?;
-        while !peek!(parser, TokenKind::RightCurly) {
-            parser.expect_operator(TokenKind::Dollar, ctx)?;
-            let (op, span) = parser.expect_id(ctx)?;
-            let op = match AsmOp::try_from(op.as_str()) {
-                Ok(op) => op,
-                Err(s) => {
-                    return Err(parser.parse_error(
-                        format!("invalid asm operator `${}`", s),
-                        span,
-                        ctx,
-                    ));
-                }
-            };
-
-            let mut operands = vec![];
-            loop {
-                let kind = parser.peek_kind();
-                operands.push(match kind {
-                    TokenKind::Identifier(_) => {
-                        let (id, _) = parser.expect_id(ctx)?;
-                        AsmOperand::Var(id)
-                    }
-                    TokenKind::Integer { .. } => {
-                        let tok = parser.token()?;
-                        let i = match tok.kind {
-                            TokenKind::Integer { value, .. } => value.parse::<u64>()?,
-                            _ => unreachable!(),
-                        };
-                        AsmOperand::Int(i)
-                    }
-                    _ => break,
-                });
-            }
-
-            inst.push((op, operands));
-        }
-
-        span.end = parser.expect_end(TokenKind::RightCurly, ctx)?;
-        Ok(parser.mk_expr(Expr::Asm(Asm { ret_ty, inst }), span, ctx.path.clone()))
     }
 }

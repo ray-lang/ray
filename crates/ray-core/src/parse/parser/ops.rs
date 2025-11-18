@@ -6,8 +6,8 @@ use super::{
 
 use crate::{
     ast::{
-        Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Literal, Node, Pattern, PrefixOp,
-        Range, RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
+        Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
+        RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
     },
     span::Span,
 };

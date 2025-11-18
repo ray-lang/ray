@@ -43,8 +43,35 @@
             "type": "string",
             "description": "Path to the Ray toolchain",
             "default": ""
+          },
+          "ray.cliPath": {
+            "type": "string",
+            "description": "Path to the Ray CLI used by the extension",
+            "default": ""
+          },
+          "ray.serverArgs": {
+            "type": "array",
+            "description": "Additional arguments appended when launching the Ray LSP",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "ray.extraEnv": {
+            "type": "object",
+            "description": "Extra environment variables injected when the server starts",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {}
           }
         }
+      }
+    ],
+    "commands": [
+      {
+        "command": "ray-lsp.restartServer",
+        "title": "Ray LSP: Restart Server"
       }
     ]
   },

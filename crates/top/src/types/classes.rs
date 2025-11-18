@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{TyVar, mgu_ref_slices};
 
-use super::{OrderedTypeSynonyms, ShowQualifiers, Subst, Substitutable, Ty, mgu_with_synonyms};
+use super::{OrderedTypeSynonyms, ShowQualifiers, Subst, Substitutable, Ty};
 
 pub trait Entailment<Other, T, V>
 where

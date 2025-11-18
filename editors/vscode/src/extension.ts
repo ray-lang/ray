@@ -10,9 +10,36 @@ import {
 
 let client: LanguageClient | undefined;
 const TOOLCHAIN_CONFIG_KEY = "toolchainPath";
+let pendingToolchainPath: string | undefined;
+let configListener: vscode.Disposable | undefined;
+let stateListener: vscode.Disposable | undefined;
 
 const resolveToolchainPath = (): string =>
   vscode.workspace.getConfiguration("ray").get<string>(TOOLCHAIN_CONFIG_KEY, "");
+
+const flushPendingToolchainPath = () => {
+  if (!client || pendingToolchainPath === undefined || !client.isRunning()) {
+    return;
+  }
+
+  client.sendNotification("workspace/didChangeConfiguration", {
+    toolchainPath: pendingToolchainPath
+  });
+  pendingToolchainPath = undefined;
+};
+
+const queueToolchainPathNotification = (nextPath: string) => {
+  pendingToolchainPath = nextPath;
+  flushPendingToolchainPath();
+};
+
+const disposeListeners = () => {
+  configListener?.dispose();
+  configListener = undefined;
+  stateListener?.dispose();
+  stateListener = undefined;
+  pendingToolchainPath = undefined;
+};
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("Ray LSP");
@@ -21,11 +48,38 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(`[${timestamp}] ${message}`);
   };
 
+  startLanguageClient(context, outputChannel, log);
+
+  const restartCommand = vscode.commands.registerCommand("ray-lsp.restartServer", async () => {
+    log("Restarting Ray LSP...");
+    await restartLanguageClient(context, outputChannel, log);
+  });
+  context.subscriptions.push(restartCommand);
+}
+
+async function restartLanguageClient(
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.OutputChannel,
+  log: (message: string) => void
+) {
+  if (client) {
+    await client.stop();
+    client = undefined;
+  }
+  disposeListeners();
+  startLanguageClient(context, outputChannel, log);
+}
+
+function startLanguageClient(
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.OutputChannel,
+  log: (message: string) => void
+) {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionUri.fsPath;
 
   const serverCommand =
     process.env.RAY_LSP_COMMAND ||
-    vscode.workspace.getConfiguration("ray").get<string>("rayPath") ||
+    vscode.workspace.getConfiguration("ray").get<string>("cliPath") ||
     "ray";
 
   const extraArgs = vscode.workspace.getConfiguration("ray").get<string[]>("serverArgs") ?? [];
@@ -106,24 +160,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   client = languageClient;
 
-  let pendingToolchainPath: string | undefined;
-
-  const flushPendingToolchainPath = () => {
-    if (!client || pendingToolchainPath === undefined || !client.isRunning()) {
-      return;
-    }
-    client.sendNotification("workspace/didChangeConfiguration", {
-      toolchainPath: pendingToolchainPath
-    });
-    pendingToolchainPath = undefined;
-  };
-
-  const queueToolchainPathNotification = (nextPath: string) => {
-    pendingToolchainPath = nextPath;
-    flushPendingToolchainPath();
-  };
-
-  const configListener = vscode.workspace.onDidChangeConfiguration(event => {
+  configListener = vscode.workspace.onDidChangeConfiguration(event => {
     if (!event.affectsConfiguration(`ray.${TOOLCHAIN_CONFIG_KEY}`)) {
       return;
     }
@@ -132,7 +169,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(configListener);
 
-  const stateListener = languageClient.onDidChangeState(({ newState }) => {
+  stateListener = languageClient.onDidChangeState(({ newState }) => {
     if (newState === State.Running) {
       flushPendingToolchainPath();
     }

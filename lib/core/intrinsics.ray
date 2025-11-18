@@ -1,0 +1,212 @@
+@intrinsic extern fn sizeof(t: type['a]) -> uint
+@intrinsic extern fn memcopy(dst: *u8, src: *u8, len: uint) -> ()
+
+// Arithmetic comparisons
+@intrinsic extern fn int_eq(a: int, b: int) -> bool
+@intrinsic extern fn i8_eq(a: i8, b: i8) -> bool
+@intrinsic extern fn i16_eq(a: i16, b: i16) -> bool
+@intrinsic extern fn i32_eq(a: i32, b: i32) -> bool
+@intrinsic extern fn i64_eq(a: i64, b: i64) -> bool
+@intrinsic extern fn uint_eq(a: uint, b: uint) -> bool
+@intrinsic extern fn u8_eq(a: u8, b: u8) -> bool
+@intrinsic extern fn u16_eq(a: u16, b: u16) -> bool
+@intrinsic extern fn u32_eq(a: u32, b: u32) -> bool
+@intrinsic extern fn u64_eq(a: u64, b: u64) -> bool
+
+@intrinsic extern fn int_neq(a: int, b: int) -> bool
+@intrinsic extern fn i8_neq(a: i8, b: i8) -> bool
+@intrinsic extern fn i16_neq(a: i16, b: i16) -> bool
+@intrinsic extern fn i32_neq(a: i32, b: i32) -> bool
+@intrinsic extern fn i64_neq(a: i64, b: i64) -> bool
+@intrinsic extern fn uint_neq(a: uint, b: uint) -> bool
+@intrinsic extern fn u8_neq(a: u8, b: u8) -> bool
+@intrinsic extern fn u16_neq(a: u16, b: u16) -> bool
+@intrinsic extern fn u32_neq(a: u32, b: u32) -> bool
+@intrinsic extern fn u64_neq(a: u64, b: u64) -> bool
+
+// Add / Subtract / Multiply / Divide / Modulus
+@intrinsic extern fn int_add(a: int, b: int) -> int
+@intrinsic extern fn i8_add(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_add(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_add(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_add(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_add(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_add(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_add(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_add(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_add(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_sub(a: int, b: int) -> int
+@intrinsic extern fn i8_sub(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_sub(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_sub(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_sub(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_sub(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_sub(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_sub(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_sub(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_sub(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_mul(a: int, b: int) -> int
+@intrinsic extern fn i8_mul(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_mul(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_mul(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_mul(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_mul(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_mul(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_mul(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_mul(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_mul(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_div(a: int, b: int) -> int
+@intrinsic extern fn i8_div(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_div(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_div(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_div(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_div(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_div(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_div(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_div(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_div(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_mod(a: int, b: int) -> int
+@intrinsic extern fn i8_mod(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_mod(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_mod(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_mod(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_mod(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_mod(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_mod(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_mod(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_mod(a: u64, b: u64) -> u64
+
+// Negation
+@intrinsic extern fn int_neg(a: int) -> int
+@intrinsic extern fn i8_neg(a: i8) -> i8
+@intrinsic extern fn i16_neg(a: i16) -> i16
+@intrinsic extern fn i32_neg(a: i32) -> i32
+@intrinsic extern fn i64_neg(a: i64) -> i64
+
+// Bitwise logic
+@intrinsic extern fn int_and(a: int, b: int) -> int
+@intrinsic extern fn i8_and(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_and(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_and(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_and(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_and(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_and(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_and(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_and(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_and(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_or(a: int, b: int) -> int
+@intrinsic extern fn i8_or(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_or(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_or(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_or(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_or(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_or(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_or(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_or(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_or(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_xor(a: int, b: int) -> int
+@intrinsic extern fn i8_xor(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_xor(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_xor(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_xor(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_xor(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_xor(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_xor(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_xor(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_xor(a: u64, b: u64) -> u64
+
+// Comparison operators
+@intrinsic extern fn int_lt(a: int, b: int) -> bool
+@intrinsic extern fn i8_lt(a: i8, b: i8) -> bool
+@intrinsic extern fn i16_lt(a: i16, b: i16) -> bool
+@intrinsic extern fn i32_lt(a: i32, b: i32) -> bool
+@intrinsic extern fn i64_lt(a: i64, b: i64) -> bool
+@intrinsic extern fn uint_lt(a: uint, b: uint) -> bool
+@intrinsic extern fn u8_lt(a: u8, b: u8) -> bool
+@intrinsic extern fn u16_lt(a: u16, b: u16) -> bool
+@intrinsic extern fn u32_lt(a: u32, b: u32) -> bool
+@intrinsic extern fn u64_lt(a: u64, b: u64) -> bool
+
+@intrinsic extern fn int_gt(a: int, b: int) -> bool
+@intrinsic extern fn i8_gt(a: i8, b: i8) -> bool
+@intrinsic extern fn i16_gt(a: i16, b: i16) -> bool
+@intrinsic extern fn i32_gt(a: i32, b: i32) -> bool
+@intrinsic extern fn i64_gt(a: i64, b: i64) -> bool
+@intrinsic extern fn uint_gt(a: uint, b: uint) -> bool
+@intrinsic extern fn u8_gt(a: u8, b: u8) -> bool
+@intrinsic extern fn u16_gt(a: u16, b: u16) -> bool
+@intrinsic extern fn u32_gt(a: u32, b: u32) -> bool
+@intrinsic extern fn u64_gt(a: u64, b: u64) -> bool
+
+@intrinsic extern fn int_lteq(a: int, b: int) -> bool
+@intrinsic extern fn i8_lteq(a: i8, b: i8) -> bool
+@intrinsic extern fn i16_lteq(a: i16, b: i16) -> bool
+@intrinsic extern fn i32_lteq(a: i32, b: i32) -> bool
+@intrinsic extern fn i64_lteq(a: i64, b: i64) -> bool
+@intrinsic extern fn uint_lteq(a: uint, b: uint) -> bool
+@intrinsic extern fn u8_lteq(a: u8, b: u8) -> bool
+@intrinsic extern fn u16_lteq(a: u16, b: u16) -> bool
+@intrinsic extern fn u32_lteq(a: u32, b: u32) -> bool
+@intrinsic extern fn u64_lteq(a: u64, b: u64) -> bool
+
+@intrinsic extern fn int_gteq(a: int, b: int) -> bool
+@intrinsic extern fn i8_gteq(a: i8, b: i8) -> bool
+@intrinsic extern fn i16_gteq(a: i16, b: i16) -> bool
+@intrinsic extern fn i32_gteq(a: i32, b: i32) -> bool
+@intrinsic extern fn i64_gteq(a: i64, b: i64) -> bool
+@intrinsic extern fn uint_gteq(a: uint, b: uint) -> bool
+@intrinsic extern fn u8_gteq(a: u8, b: u8) -> bool
+@intrinsic extern fn u16_gteq(a: u16, b: u16) -> bool
+@intrinsic extern fn u32_gteq(a: u32, b: u32) -> bool
+@intrinsic extern fn u64_gteq(a: u64, b: u64) -> bool
+
+// Shift and rotate
+@intrinsic extern fn int_shl(a: int, b: int) -> int
+@intrinsic extern fn i8_shl(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_shl(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_shl(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_shl(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_shl(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_shl(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_shl(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_shl(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_shl(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_shr(a: int, b: int) -> int
+@intrinsic extern fn i8_shr(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_shr(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_shr(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_shr(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_shr(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_shr(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_shr(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_shr(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_shr(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_rotl(a: int, b: int) -> int
+@intrinsic extern fn i8_rotl(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_rotl(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_rotl(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_rotl(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_rotl(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_rotl(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_rotl(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_rotl(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_rotl(a: u64, b: u64) -> u64
+
+@intrinsic extern fn int_rotr(a: int, b: int) -> int
+@intrinsic extern fn i8_rotr(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_rotr(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_rotr(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_rotr(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_rotr(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_rotr(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_rotr(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_rotr(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_rotr(a: u64, b: u64) -> u64

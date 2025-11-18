@@ -7,7 +7,6 @@ use crate::{
         Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dot,
         Expr, Extern, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module,
         Name, New, Node, Path, Pattern, Range, Ref, Sequence, Struct, Trait, Tuple, UnaryOp, While,
-        asm::{Asm, AsmOperand},
     },
     collections::nametree::{NameTree, Scope},
     errors::{RayError, RayErrorKind, RayResult},
@@ -351,7 +350,6 @@ impl NameResolve for Sourced<'_, Expr> {
         let (expr, src) = self.unpack_mut();
         match expr {
             Expr::Assign(a) => Sourced(a, src).resolve_names(ctx),
-            Expr::Asm(asm) => Sourced(asm, src).resolve_names(ctx),
             Expr::BinOp(bin_op) => Sourced(bin_op, src).resolve_names(ctx),
             Expr::Block(block) => Sourced(block, src).resolve_names(ctx),
             Expr::Boxed(boxed) => Sourced(boxed, src).resolve_names(ctx),
@@ -407,30 +405,6 @@ impl NameResolve for Sourced<'_, Assign> {
         }
 
         assign.rhs.resolve_names(ctx)
-    }
-}
-
-impl NameResolve for Sourced<'_, Asm> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
-        let mut scopes = ctx
-            .scope_map
-            .get(self.src_module())
-            .cloned()
-            .unwrap_or_default();
-
-        let (asm, src) = self.unpack_mut();
-        scopes.push(Scope::from(src.path.clone()));
-
-        for (_op, operands) in asm.inst.iter_mut() {
-            for operand in operands.iter_mut() {
-                if let AsmOperand::Var(name) = operand {
-                    if let Some(fqn) = ctx.ncx.resolve_name(&scopes, name) {
-                        *name = fqn.to_string();
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 

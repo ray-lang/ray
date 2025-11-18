@@ -43,7 +43,6 @@ Files default to module scope. Entry points are plain `fn main` definitions; the
 - `new(Type)` allocates using the active runtime allocator (forwarded to `malloc` in `lib/core/core.ray`). A second argument requests an array-sized allocation (`examples/ptrs.ray`).
 - Pointer casts use `as`; pointer arithmetic helpers such as `ptr_add` are provided in the core library.
 - External functions attach via `extern fn`, optionally tagged with a module (`extern wasi fn fd_write` in `lib/core/io/wasi.ray`).
-- Inline assembly is supported through `asm { ... }` blocks for low-level intrinsics (`lib/core/string.ray`).
 
 ## Error Handling And Diagnostics
 - The core library uses conventional `result`/`option`-like constructs (e.g. optional tuples in iterators).

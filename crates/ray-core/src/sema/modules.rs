@@ -1067,13 +1067,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
     fn is_submodule(&self, parent_filepath: &FilePath, filepath: &FilePath) -> bool {
         filepath.is_dir() && &filepath.dir() == parent_filepath
     }
-
-    fn is_overlay(&self, path: &FilePath) -> bool {
-        self.overlays
-            .as_ref()
-            .map(|o| o.contains_key(path))
-            .unwrap_or_default()
-    }
 }
 
 impl ModBuilderResult {

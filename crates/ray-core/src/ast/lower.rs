@@ -14,7 +14,6 @@ use crate::{
     pathlib::FilePath,
     sema::NameContext,
     span::{Source, SourceMap, Sourced, parsed::Parsed},
-    subst,
     typing::{
         TyCtx,
         info::TypeSystemInfo,
@@ -733,7 +732,6 @@ impl LowerAST for Node<Expr> {
         let src = ctx.srcmap.get(self);
         match &mut self.value {
             Expr::Assign(assign) => assign.lower(ctx),
-            Expr::Asm(asm) => Sourced(asm, &src).lower(ctx),
             Expr::BinOp(b) => Sourced(b, &src).lower(ctx),
             Expr::Block(b) => b.lower(ctx),
             Expr::Boxed(b) => b.inner.lower(ctx),
@@ -859,19 +857,6 @@ impl LowerAST for ast::Assign {
             self.op = ast::InfixOp::Assign;
         }
 
-        Ok(())
-    }
-}
-
-impl LowerAST for Sourced<'_, ast::asm::Asm> {
-    type Output = ();
-
-    fn lower(&mut self, ctx: &mut LowerCtx) -> RayResult<()> {
-        let (asm, src) = self.unpack_mut();
-        let scopes = ctx.get_scopes(src);
-        asm.ret_ty
-            .as_deref_mut()
-            .map(|t| t.resolve_fqns(scopes, ctx.ncx));
         Ok(())
     }
 }

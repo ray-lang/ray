@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use top::{
-    Class, Instance, Predicate, Predicates, Subst, Substitutable, TypeConstraintInfo,
+    Class, Instance, Predicate, Predicates, Subst, Substitutable,
     solver::{SolveOptions, SolveResult, Solver, greedy::GreedySolver},
 };
 

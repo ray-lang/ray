@@ -452,7 +452,7 @@ impl<'src> Parser<'src> {
             } = self.parse_doc_comments();
             let decs = match self.parse_decorators(end, ctx) {
                 Ok((dec, _)) => {
-                    if dec.is_some() {
+                    if dec.is_some() && matches!(self.peek_kind(), TokenKind::NewLine) {
                         end = self.expect_end(TokenKind::NewLine, ctx)?;
                     }
                     dec
@@ -1458,16 +1458,6 @@ impl<'src> Parser<'src> {
         }
 
         Ok(None)
-    }
-
-    fn expect_operator(&mut self, kind: TokenKind, ctx: &ParseContext) -> ParseResult<Token> {
-        let tok = self.token()?;
-        if tok.kind.similar_to(&kind) {
-            self.record_trivia(TriviaKind::Operator, tok.span, Some(tok.kind.clone()));
-            Ok(tok)
-        } else {
-            Err(self.unexpected_token(&tok, kind.desc(), ctx))
-        }
     }
 
     fn expect_if_operator(&mut self, kind: TokenKind) -> ParseResult<Option<Token>> {

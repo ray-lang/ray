@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    InfoJoin, Predicates, Subst, TyVar,
+    InfoJoin, Predicates, TyVar,
     constraint::TypeConstraintInfo,
     directives::TypeClassDirective,
     interface::basic::ErrorLabel,

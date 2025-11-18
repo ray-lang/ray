@@ -4,7 +4,6 @@ use std::{
     fs,
 };
 
-use itertools::Itertools;
 use ray_core::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Path, Pattern},
     codegen::{CodegenOptions, llvm},
@@ -634,7 +633,6 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
             collect_pattern_refs(&assign.lhs.value, refs);
             collect_expr_name_refs(&assign.rhs, refs);
         }
-        Expr::Asm(_) => {}
         Expr::BinOp(bin) => {
             collect_expr_name_refs(&bin.lhs, refs);
             collect_expr_name_refs(&bin.rhs, refs);

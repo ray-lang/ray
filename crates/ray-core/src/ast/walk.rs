@@ -95,8 +95,7 @@ impl<'a> Iterator for ModuleWalk<'a> {
                 | Expr::Unsafe(node) => self.stack.push(WalkItem::Expr(&node)),
 
                 // ignore "atoms"
-                Expr::Asm(_)
-                | Expr::Literal(_)
+                Expr::Literal(_)
                 | Expr::Missing(_)
                 | Expr::Name(_)
                 | Expr::Path(_)

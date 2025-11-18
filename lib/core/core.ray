@@ -1,6 +1,5 @@
 //! This is the core library for Ray
-@intrinsic
-extern fn sizeof(t: type['a]) -> uint
+
 extern fn malloc(size: uint) -> *u8
 
 @inline
