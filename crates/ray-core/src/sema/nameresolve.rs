@@ -104,7 +104,7 @@ impl<'a> ResolveContext<'a> {
     pub fn resolve_func_body(&mut self, func: &mut Func) -> RayResult<()> {
         if let Some(body) = &mut func.body {
             for param in &mut func.sig.params {
-                *param.name_mut() = func.sig.path.append_path(param.name());
+                *param.name_mut() = func.sig.path.with_names_only().append_path(param.name());
                 log::debug!("add name: {}", param.name());
                 self.add_path(param.name());
             }
@@ -127,7 +127,6 @@ impl NameResolve for Sourced<'_, Name> {
         let scope = self.src().path.clone();
         let mut scopes = ctx.scope_map.get(self.src_module()).unwrap().clone();
         scopes.push(Scope::from(scope));
-        // let scopes = vec![scope];
         log::debug!(
             "[Name::resolve_names] looking for name `{}` in scopes: {:?}",
             name,

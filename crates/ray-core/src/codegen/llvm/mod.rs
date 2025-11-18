@@ -1964,10 +1964,13 @@ impl<'a, 'ctx> lir::Call {
         let ptr_val = self.eval_intrinsic_ptr(ctx, tcx, srcmap, 0)?;
         let offset_val = self.eval_intrinsic_int(ctx, tcx, srcmap, 1)?;
         let pointee_ty = ctx.get_pointee_ty(ptr_val).clone();
-        let elem_size = ctx
+        let elem_size_raw = ctx
             .to_llvm_type(&pointee_ty)
             .size_of()
             .expect("element size must be computable");
+        let elem_size =
+            ctx.builder
+                .build_int_cast(elem_size_raw, ctx.ptr_type(), "elem_size")?;
 
         let ptr_int = ctx
             .builder

@@ -1392,6 +1392,7 @@ impl Block {
 
     #[inline(always)]
     pub fn define_var(&mut self, var: String, idx: usize) {
+        log::debug!("define var: {} -> {}", var, idx);
         self.defined_vars.insert(var, idx);
     }
 

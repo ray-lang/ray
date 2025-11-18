@@ -32,6 +32,7 @@ pub struct Monomorphizer<'p> {
     extern_set: HashSet<Path>,
     name_set: HashSet<Path>,
     poly_fn_map: HashMap<Path, Node<lir::Func>>, // polymorphic functions
+    poly_groups: HashMap<Path, Vec<Path>>,       // names-only -> candidate poly function names
     poly_mono_fn_idx: HashMap<Path, Vec<(Path, Ty)>>, // a mapping of polymorphic functions to monomorphizations
     mono_poly_fn_idx: HashMap<Path, Path>, // a mapping of monomorphic functions to their polymorphic counterpart
     mono_fn_ty_map: HashMap<Path, Ty>,     // map of all monomorphic function types
@@ -40,24 +41,30 @@ pub struct Monomorphizer<'p> {
 impl<'p> Monomorphizer<'p> {
     pub fn new(program: &'p mut lir::Program) -> Monomorphizer<'p> {
         // TODO: don't clone these into the Monomorphizer (reference them outside)
-        let poly_fn_map = program
+        let poly_fn_map: HashMap<Path, Node<lir::Func>> = program
             .poly_fn_map
             .iter()
             .map(|(n, &i)| (n.clone(), program.funcs[i].clone()))
             .collect();
 
+        let mut poly_groups: HashMap<Path, Vec<Path>> = HashMap::new();
+        for name in poly_fn_map.keys() {
+            let key = name.with_names_only();
+            poly_groups.entry(key).or_default().push(name.clone());
+        }
+
         let name_set = program.funcs.iter().map(|f| f.name.clone()).collect();
         log::debug!("[monomorphize] name set: {:#?}", name_set);
-        let mut extern_set = program
+        let extern_set = program
             .extern_map
             .keys()
             .map(|p| p.with_names_only())
             .to_set();
-        extern_set.extend(program.trait_member_set.iter().map(|p| p.with_names_only()));
         log::debug!("[monomorphize] extern set: {:#?}", extern_set);
         Monomorphizer {
             program: Rc::new(RefCell::new(program)),
             poly_fn_map,
+            poly_groups,
             name_set,
             extern_set,
             poly_mono_fn_idx: HashMap::new(),
@@ -232,17 +239,17 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] call.ty        = {}", call.callee_ty);
         log::debug!("[monomorphize] call.args      = {:?}", call.args);
 
-        // Fast path: trait members / externs are not monomorphized here.
+        // Fast path: externs are not monomorphized here.
         // We already have the concrete resolved name in the call; just return it.
-        let is_trait_like = self.is_trait_or_extern(&poly_fqn)
+        let is_extern_like = self.is_trait_or_extern(&poly_fqn)
             || self.is_trait_or_extern(&call.fn_name)
             || self.is_trait_or_extern(&call.orig_name());
-        if is_trait_like {
+        if is_extern_like {
             // Keep the polymorphic side as the logical (names-only) key, but use the concrete name for mono.
             let poly_name = sema::fn_name(&poly_fqn.with_names_only(), poly_ty);
             let mono_name = call.fn_name.clone();
             log::debug!(
-                "[monomorphize] fast-path trait/extern: poly_name={} mono_name={}",
+                "[monomorphize] fast-path extern: poly_name={} mono_name={}",
                 poly_name,
                 mono_name
             );
@@ -291,18 +298,54 @@ impl<'p> Monomorphizer<'p> {
             );
         }
 
-        // get the polymorphic name
+        // get the polymorphic name (logical key) and resolve the concrete impl by types
         let poly_base_name = poly_fqn.clone();
         let poly_name = sema::fn_name(&poly_base_name, poly_ty);
 
-        // get the monomorphized name using a substitution
-        let (_, subst) = mgu(poly_ty.mono(), callee_ty.mono())
-            .ok()
-            .unwrap_or_default();
+        // pick a concrete polymorphic implementation matching the callee type
+        use top::Subst;
+        let mut subst: Subst<_, _> = Subst::new();
+        let mut poly_impl_key: Option<Path> = None;
+        if let Some(cands) = self.poly_groups.get(&poly_fqn) {
+            for cand_key in cands {
+                if let Some(cand_fn) = self.poly_fn_map.get(cand_key) {
+                    if let Ok((_, s)) = mgu(cand_fn.ty.mono(), callee_ty.mono()) {
+                        log::debug!(
+                            "[monomorphize] selected impl {} for {}",
+                            cand_key,
+                            poly_fqn
+                        );
+                        subst = s;
+                        poly_impl_key = Some(cand_key.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if poly_impl_key.is_none() {
+            let (_, s) = mgu(poly_ty.mono(), callee_ty.mono())
+                .ok()
+                .unwrap_or_default();
+            log::debug!(
+                "[monomorphize] fallback impl for {} using subst = {:#?}",
+                poly_fqn,
+                s
+            );
+            subst = s;
+            poly_impl_key = Some(poly_fqn.clone());
+        }
+
+        let poly_impl_key = poly_impl_key.unwrap();
+        log::debug!(
+            "[monomorphize] using poly impl {} for {}",
+            poly_impl_key,
+            poly_fqn
+        );
+
+        // get the monomorphized name using the callee type
         log::debug!("[monomorphize] subst = {:#?}", subst);
-        let mut mono_fqn = poly_fqn.clone();
-        mono_fqn.apply_subst(&subst);
-        let mono_base_name = mono_fqn.clone();
+        let mono_base_name = poly_fqn.clone();
         let mono_name = sema::fn_name(&mono_base_name, callee_ty);
         let mono_ty = callee_ty.clone();
 
@@ -310,23 +353,20 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] mono_name = {}", mono_name);
 
         // make sure that the functions are not externs
-        let (poly_name, mono_name) = if self.extern_set.contains(&poly_name)
-            || self.extern_set.contains(&mono_name)
-            || self.name_set.contains(&mono_name)
+        let (poly_name, mono_name) = if self.name_set.contains(&mono_name)
+            || self.mono_fn_ty_map.contains_key(&mono_name)
         {
-            (poly_name, mono_name)
-        } else if self.extern_set.contains(&mono_base_name) {
-            (poly_name, mono_base_name)
-        } else if self.extern_set.contains(&poly_base_name) {
-            (poly_base_name, mono_name)
-        } else if self.mono_fn_ty_map.contains_key(&mono_name) {
             // make sure that there isn't already a monomorphized version
             (poly_base_name, mono_name)
         } else {
             // get the polymorphic function from the index and add a mapping from poly to mono
-            let mut mono_fn = self.poly_fn_map.get(&poly_fqn).cloned().expect(&format!(
+            let mut mono_fn = self
+                .poly_fn_map
+                .get(&poly_impl_key)
+                .cloned()
+                .expect(&format!(
                 "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
-                poly_fqn,
+                poly_impl_key,
                 self.poly_fn_map
                     .keys()
                     .map(|a| format!("  {}", a))

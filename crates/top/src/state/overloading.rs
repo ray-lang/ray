@@ -471,6 +471,7 @@ where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
         I: Display + Clone + TypeConstraintInfo<I, T, V>,
     {
+        log::debug!("[default_qualifiers] ---- START");
         for i in 0..self.state().qualifiers().len() {
             log::debug!("--- default_qualifiers iteration {} ---", i);
             let (predicate, _) = &self.state().qualifier(i);
@@ -513,39 +514,6 @@ where
                     var
                 );
                 // ignore this predicate since it contains a skolem variable
-                continue;
-            }
-
-            let head_vars = ty.free_vars().into_iter().collect::<HashSet<_>>();
-
-            // Does head_vars appear anywhere else?
-            let shared = self
-                .state()
-                .qualifiers()
-                .iter()
-                .enumerate()
-                .any(|(j, (q, _))| {
-                    if j == i {
-                        return false;
-                    }
-
-                    let q_vars = q.free_vars();
-                    let found = q_vars.iter().any(|v| head_vars.contains(v));
-                    log::debug!(
-                        "[default_qualifiers] checked if other predicate {:?} has vars in head vars {:?} => found={}",
-                        q,
-                        head_vars,
-                        found
-                    );
-                    found
-                });
-
-            if shared {
-                // This Int[...] is *not* ambiguous, so do not default it.
-                log::debug!(
-                    "skipping default for predicate {} because it is not ambiguous",
-                    predicate,
-                );
                 continue;
             }
 
@@ -601,6 +569,8 @@ where
                 }
             }
         }
+
+        log::debug!("[default_qualifiers] ---- END");
     }
 
     fn field_qualifiers(&mut self)

@@ -1,17 +1,14 @@
-trait Int['a] {}
-
-trait Lt['a, 'b] {
-    fn <(a: 'a, b: 'b) -> bool
+struct A {
+    x: int
 }
 
-trait Neg['a, 'b] {
-    fn -(a: 'a) -> 'b
-}
-
-fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
-    if a < 0 {
-        -a
-    } else {
-        a
-    }
+fn main() {
+    p = new(A, 2)
+    *p = A { x: 1 }
+    a = *p
+    print(a.x)
+    p += 1
+    *p  = A { x: 2 }
+    a = *p
+    print(a.x)
 }

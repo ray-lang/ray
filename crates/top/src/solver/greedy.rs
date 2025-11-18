@@ -182,6 +182,7 @@ where
         self.improve();
         self.defaults();
         self.fields();
+        self.improve(); // we need to ANOTHER improve step after we defualt
         self.ambiguities();
         self.unsolved_predicates();
 
