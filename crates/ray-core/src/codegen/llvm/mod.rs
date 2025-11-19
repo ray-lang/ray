@@ -2239,7 +2239,7 @@ impl<'a, 'ctx> lir::Call {
     ) -> Result<LoweredCall<'ctx>, BuilderError> {
         // One meta-type argument; compute size as ptr-width uint (matches Ray `uint`).
         let meta_ty = ctx.type_of(&self.args[0]).clone();
-        let underlying_ty = meta_ty.get_ty_param_at(0);
+        let underlying_ty = meta_ty.get_ty_param_at(0).unwrap_or(&Ty::Never);
         let ll = ctx.to_llvm_type(underlying_ty);
         let raw = ll.size_of().expect("could not compute sizeof for type");
         let cast = ctx.builder.build_int_cast(raw, ctx.ptr_type(), "")?;

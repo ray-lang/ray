@@ -145,7 +145,7 @@ impl CollectDeclarations for Node<Decl> {
                 let self_ty = if imp.is_object {
                     imp.ty.deref()
                 } else {
-                    imp.ty.get_ty_param_at(0)
+                    imp.ty.get_ty_param_at(0).unwrap_or(&Ty::Never)
                 };
                 if let Some(funcs) = &imp.funcs {
                     for func_node in funcs {
@@ -1004,7 +1004,11 @@ impl CollectConstraints for (&Literal, &Source) {
             Literal::Byte(_) => Ty::u8(),
             Literal::Char(_) => Ty::char(),
             Literal::Bool(_) => Ty::bool(),
-            Literal::Nil => Ty::nil(),
+            Literal::Nil => {
+                // Give `nil` a polymorphic nilable type: β | nil for a fresh β.
+                let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                Ty::nilable(t)
+            }
             Literal::Unit => Ty::unit(),
             Literal::UnicodeEscSeq(_) => unimplemented!("unicode escape sequence"),
         };

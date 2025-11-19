@@ -12,7 +12,7 @@ use crate::{
     span::SourceMap,
     typing::{
         TyCtx,
-        ty::{NominalKind, StructTy, Ty, TyScheme, TyVar},
+        ty::{NominalKind, ReceiverMode, StructTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -990,7 +990,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 let capacity = (item_count * 3) as u64;
 
                 // allocate memory for the values
-                let el_ty = ty.mono().get_ty_param_at(0);
+                let el_ty = ty.mono().get_ty_param_at(0).unwrap();
                 let el_size = el_ty.size_of();
                 let values_loc = ctx.local(el_ty.clone().into());
                 let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));

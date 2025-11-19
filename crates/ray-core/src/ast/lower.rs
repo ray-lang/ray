@@ -17,7 +17,7 @@ use crate::{
     typing::{
         TyCtx,
         info::TypeSystemInfo,
-        ty::{ImplTy, StructTy, TraitTy, Ty, TyScheme, TyVar},
+        ty::{ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -384,7 +384,7 @@ impl LowerAST for Sourced<'_, Trait> {
         let base_ty = tp.clone();
         let trait_ty = Ty::with_tys(&fqn, ty_params.clone());
 
-        let mut fields = vec![];
+        let mut fields: Vec<TraitField> = vec![];
         for func in tr.fields.iter_mut() {
             let sig = variant!(func.deref_mut(), if Decl::FnSig(sig));
             let func_name = match sig.path.name() {
@@ -438,7 +438,30 @@ impl LowerAST for Sourced<'_, Trait> {
                     .add_name_in_scope(&scope, func_name.clone())
             }
 
-            fields.push((func_name.clone(), scheme.clone()));
+            let is_static = sig
+                .modifiers
+                .iter()
+                .any(|m| matches!(m, ast::Modifier::Static));
+
+            // Phase 1 (docs/receiver_auto_address_plan.md):
+            // normalize the receiver parameter type in the TyScheme so that it
+            // always uses `Self` (the trait's base type) rather than `*Self`.
+            let receiver_mode = ReceiverMode::from_signature(&base_ty, &param_tys, is_static);
+
+            if !is_static && !param_tys.is_empty() {
+                if let Ty::Func(params, _) = scheme.unquantified_mut().ty_mut() {
+                    // Rewrite the first parameter type to the trait's `Self` type.
+                    // Pointer-ness is tracked separately in `receiver_mode`.
+                    params[0] = base_ty.clone();
+                }
+            }
+
+            fields.push(TraitField {
+                name: func_name.clone(),
+                ty: scheme.clone(),
+                receiver_mode,
+                is_static,
+            });
 
             sig.path.value = func_fqn;
         }
@@ -626,7 +649,8 @@ impl LowerAST for Sourced<'_, Impl> {
         }
 
         // make sure that everything has been implemented
-        for (n, _) in trait_ty.fields.iter() {
+        for field in trait_ty.fields.iter() {
+            let n = &field.name;
             if !impl_set.contains(n) {
                 return Err(RayError {
                     msg: format!("trait implementation is missing for field `{}`", n),

@@ -55,6 +55,10 @@ where
 
     fn maybe_tuple(&self) -> Option<&Vec<Self>>;
 
+    fn maybe_union(&self) -> Option<&Vec<Self>>;
+
+    fn maybe_ptr(&self) -> Option<&Self>;
+
     fn is_tyvar(&self) -> bool;
 
     fn in_head_normal_form(&self) -> bool;

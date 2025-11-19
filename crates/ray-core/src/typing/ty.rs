@@ -567,18 +567,52 @@ impl StructTy {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReceiverMode {
+    None,
+    Value,
+    Ptr,
+}
+
+impl ReceiverMode {
+    pub fn from_signature(base_ty: &Ty, param_tys: &[Ty], is_static: bool) -> Self {
+        if is_static || param_tys.is_empty() {
+            return ReceiverMode::None;
+        }
+
+        let self_ty = base_ty.clone();
+        let self_ptr_ty = Ty::Ptr(Box::new(self_ty.clone()));
+
+        if param_tys[0] == self_ty {
+            ReceiverMode::Value
+        } else if param_tys[0] == self_ptr_ty {
+            ReceiverMode::Ptr
+        } else {
+            ReceiverMode::None
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraitField {
+    pub name: String,
+    pub ty: TyScheme,
+    pub receiver_mode: ReceiverMode,
+    pub is_static: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitTy {
     pub path: ast::Path,
     pub ty: Ty,
     pub super_traits: Vec<Ty>,
-    pub fields: Vec<(String, TyScheme)>,
+    pub fields: Vec<TraitField>,
     pub directives: Vec<TypeClassDirective<TypeSystemInfo, Ty, TyVar>>,
 }
 
 impl TraitTy {
     pub fn field_tys(&self) -> Vec<TyScheme> {
-        self.fields.iter().map(|(_, t)| t.clone()).collect()
+        self.fields.iter().map(|f| f.ty.clone()).collect()
     }
 }
 
@@ -826,6 +860,20 @@ impl top::Ty<TyVar> for Ty {
     fn maybe_tuple(&self) -> Option<&Vec<Self>> {
         match self {
             Ty::Tuple(tys) => Some(tys),
+            _ => None,
+        }
+    }
+
+    fn maybe_union(&self) -> Option<&Vec<Self>> {
+        match self {
+            Ty::Union(tys) => Some(tys),
+            _ => None,
+        }
+    }
+
+    fn maybe_ptr(&self) -> Option<&Self> {
+        match self {
+            Ty::Ptr(ptee) => Some(&ptee),
             _ => None,
         }
     }
@@ -1537,31 +1585,29 @@ impl Ty {
         }
     }
 
-    pub fn get_ty_param_at(&self, idx: usize) -> &Ty {
+    pub fn get_ty_param_at(&self, idx: usize) -> Option<&Ty> {
         match self {
             Ty::Array(t, _) => {
                 if idx != 0 {
                     panic!("array only has one type parameter: idx={}", idx)
                 }
 
-                t.as_ref()
+                Some(t.as_ref())
             }
             Ty::Ptr(t) => {
                 if idx != 0 {
                     panic!("pointer only has one type parameter: idx={}", idx)
                 }
 
-                t.as_ref()
+                Some(t.as_ref())
             }
-            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => t.iter().nth(idx).unwrap(),
+            Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => Some(t.iter().nth(idx).unwrap()),
             Ty::Never
             | Ty::Any
             | Ty::Const(_)
             | Ty::Var(_)
             | Ty::Func(_, _)
-            | Ty::Accessor(_, _) => {
-                panic!("no type parameters: {}", self)
-            }
+            | Ty::Accessor(_, _) => None,
         }
     }
 
@@ -1597,7 +1643,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn first_ty_param(&self) -> &Ty {
-        self.get_ty_param_at(0)
+        self.get_ty_param_at(0).unwrap()
     }
 
     pub fn union(&mut self, ty: Ty) {

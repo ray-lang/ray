@@ -462,10 +462,13 @@ impl TyCtx {
 
     pub fn get_trait_fn(&self, trait_fqn: &Path, fn_name: &String) -> Option<&TyScheme> {
         self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
-            trait_ty
-                .fields
-                .iter()
-                .find_map(|(field, ty)| if field == fn_name { Some(ty) } else { None })
+            trait_ty.fields.iter().find_map(|field| {
+                if &field.name == fn_name {
+                    Some(&field.ty)
+                } else {
+                    None
+                }
+            })
         })
     }
 
@@ -487,14 +490,13 @@ impl TyCtx {
     }
 
     pub fn has_member(&self, fqn: &Path, member: &String) -> bool {
-        self.get_struct_ty(&fqn)
-            .and_then(|struct_ty| Some(&struct_ty.fields))
-            .or_else(|| {
-                self.get_trait_ty(&fqn)
-                    .and_then(|trait_ty| Some(&trait_ty.fields))
-            })
-            .map(|fields| fields.iter().find(|(f, _)| f == member).is_some())
-            .unwrap_or_default()
+        if let Some(struct_ty) = self.get_struct_ty(&fqn) {
+            struct_ty.fields.iter().any(|(f, _)| f == member)
+        } else if let Some(trait_ty) = self.get_trait_ty(&fqn) {
+            trait_ty.fields.iter().any(|field| &field.name == member)
+        } else {
+            false
+        }
     }
 
     pub fn tf(&mut self) -> RefMut<'_, TyVarFactory> {
@@ -511,7 +513,7 @@ impl TyCtx {
             trait_ty
                 .fields
                 .iter()
-                .find(|(field_name, _)| field_name == method_name)
+                .find(|field| field.name == method_name)
                 .map(|_| {
                     let mut method_path = trait_path.clone();
                     let type_params = trait_ty.ty.get_ty_params();

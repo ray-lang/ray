@@ -1,2 +1,3 @@
-nil
-1
+fn foo(a: 'a) -> 'a? {
+    nil
+}

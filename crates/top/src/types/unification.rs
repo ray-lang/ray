@@ -118,6 +118,13 @@ where
         _ => {}
     }
 
+    match (lhs.maybe_union(), rhs.maybe_union()) {
+        (Some(lhs_tys), Some(rhs_tys)) => {
+            return mgu_slices(&lhs_tys, &rhs_tys, subst, synonyms);
+        }
+        _ => {}
+    }
+
     Err(UnificationError::TypeMismatch(lhs.clone(), rhs.clone()))
 }
 

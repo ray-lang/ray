@@ -4,8 +4,12 @@ struct list['a] {
     capacity: uint
 }
 
-// impl Seq[list['a]] {
-//     fn get(self: list['a], index: uint) -> 'a? {
-//         self.values
-//     }
-// }
+impl Index[list['a], 'el, uint] {
+    fn get(self: 'a, idx: uint) -> 'el? {
+        nil
+    }
+
+    fn set(self: 'a, idx: uint, el: 'el) -> 'el? {
+        nil
+    }
+}

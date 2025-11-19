@@ -310,11 +310,7 @@ impl<'p> Monomorphizer<'p> {
             for cand_key in cands {
                 if let Some(cand_fn) = self.poly_fn_map.get(cand_key) {
                     if let Ok((_, s)) = mgu(cand_fn.ty.mono(), callee_ty.mono()) {
-                        log::debug!(
-                            "[monomorphize] selected impl {} for {}",
-                            cand_key,
-                            poly_fqn
-                        );
+                        log::debug!("[monomorphize] selected impl {} for {}", cand_key, poly_fqn);
                         subst = s;
                         poly_impl_key = Some(cand_key.clone());
                         break;
@@ -353,14 +349,13 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] mono_name = {}", mono_name);
 
         // make sure that the functions are not externs
-        let (poly_name, mono_name) = if self.name_set.contains(&mono_name)
-            || self.mono_fn_ty_map.contains_key(&mono_name)
-        {
-            // make sure that there isn't already a monomorphized version
-            (poly_base_name, mono_name)
-        } else {
-            // get the polymorphic function from the index and add a mapping from poly to mono
-            let mut mono_fn = self
+        let (poly_name, mono_name) =
+            if self.name_set.contains(&mono_name) || self.mono_fn_ty_map.contains_key(&mono_name) {
+                // make sure that there isn't already a monomorphized version
+                (poly_base_name, mono_name)
+            } else {
+                // get the polymorphic function from the index and add a mapping from poly to mono
+                let mut mono_fn = self
                 .poly_fn_map
                 .get(&poly_impl_key)
                 .cloned()
@@ -372,72 +367,72 @@ impl<'p> Monomorphizer<'p> {
                     .map(|a| format!("  {}", a))
                     .join("\n")
             ));
-            mono_fn.name = mono_name.clone();
-            mono_fn.ty = mono_ty.clone();
+                mono_fn.name = mono_name.clone();
+                mono_fn.ty = mono_ty.clone();
 
-            log::debug!(
-                "[monomorphize] before apply_subst: mono_name={} mono_ty={} symbols={:?}",
-                mono_name,
-                mono_ty,
-                mono_fn.symbols
-            );
+                log::debug!(
+                    "[monomorphize] before apply_subst: mono_name={} mono_ty={} symbols={:?}",
+                    mono_name,
+                    mono_ty,
+                    mono_fn.symbols
+                );
 
-            // BEFORE substitution
-            let tvs_before = scan_tyvars_in_paths(&mono_fn.symbols);
-            log::debug!(
-                "[monomorphize] tvs in symbols before subst for `{}`: {:?}",
-                mono_name,
-                tvs_before
-            );
-            log::debug!(
-                "[monomorphize] subst bindings for `{}`: {:?}",
-                mono_name,
-                subst
-            );
+                // BEFORE substitution
+                let tvs_before = scan_tyvars_in_paths(&mono_fn.symbols);
+                log::debug!(
+                    "[monomorphize] tvs in symbols before subst for `{}`: {:?}",
+                    mono_name,
+                    tvs_before
+                );
+                log::debug!(
+                    "[monomorphize] subst bindings for `{}`: {:?}",
+                    mono_name,
+                    subst
+                );
 
-            // apply the substitution to the function
-            mono_fn.apply_subst(&subst);
-            log::debug!(
-                "[monomorphize] symbols for `{}` after subst: {:?}",
-                mono_name,
-                mono_fn.symbols
-            );
+                // apply the substitution to the function
+                mono_fn.apply_subst(&subst);
+                log::debug!(
+                    "[monomorphize] symbols for `{}` after subst: {:?}",
+                    mono_name,
+                    mono_fn.symbols
+                );
 
-            // summary
-            let tvs_after = scan_tyvars_in_paths(&mono_fn.symbols);
-            log::debug!(
-                "[monomorphize] tvs in symbols after subst for `{}`: {:?}",
-                mono_name,
-                tvs_after
-            );
+                // summary
+                let tvs_after = scan_tyvars_in_paths(&mono_fn.symbols);
+                log::debug!(
+                    "[monomorphize] tvs in symbols after subst for `{}`: {:?}",
+                    mono_name,
+                    tvs_after
+                );
 
-            // per symbol details
-            for p in &mono_fn.symbols {
-                let s = p.to_string();
-                if s.contains("?t") {
-                    log::warn!(
-                        "[monomorphize] unresolved tyvar in `{}` of `{}`",
-                        s,
-                        mono_name
-                    );
+                // per symbol details
+                for p in &mono_fn.symbols {
+                    let s = p.to_string();
+                    if s.contains("?t") {
+                        log::warn!(
+                            "[monomorphize] unresolved tyvar in `{}` of `{}`",
+                            s,
+                            mono_name
+                        );
+                    }
                 }
-            }
 
-            // collect further polymorphic functions from the new monomorphized function
-            self.monomorphize_func(&mut mono_fn, funcs, globals);
-            log::debug!(
-                "[monomorphize] params for `{}`: {:?}",
-                mono_name,
-                mono_fn.params
-            );
-            log::debug!(
-                "[monomorphize] locals for `{}`: {:?}",
-                mono_name,
-                mono_fn.locals
-            );
-            funcs.push(mono_fn);
-            (poly_name, mono_name)
-        };
+                // collect further polymorphic functions from the new monomorphized function
+                self.monomorphize_func(&mut mono_fn, funcs, globals);
+                log::debug!(
+                    "[monomorphize] params for `{}`: {:?}",
+                    mono_name,
+                    mono_fn.params
+                );
+                log::debug!(
+                    "[monomorphize] locals for `{}`: {:?}",
+                    mono_name,
+                    mono_fn.locals
+                );
+                funcs.push(mono_fn);
+                (poly_name, mono_name)
+            };
 
         // set the name
         call.set_name(mono_name.clone());

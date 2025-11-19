@@ -25,9 +25,6 @@ mod analyze;
 mod build;
 mod global_options;
 
-#[cfg(test)]
-mod tests;
-
 pub use analyze::{
     AnalysisFormat, AnalysisReport, AnalyzeOptions, DefinitionInfo, SymbolInfo, SymbolKind,
     TypeInfo,

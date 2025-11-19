@@ -1791,7 +1791,10 @@ fn decorator_newline_optional_for_extern_fn() {
         "expected parsing inline-decorated extern fn without newline to succeed, got {:?}",
         errors
     );
-    let decl = file.decls.first().expect("expected extern function declaration");
+    let decl = file
+        .decls
+        .first()
+        .expect("expected extern function declaration");
     let decorators = srcmap
         .get_decorators(decl)
         .expect("expected decorator metadata on extern fn");

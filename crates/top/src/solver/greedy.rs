@@ -378,6 +378,14 @@ mod tests {
             None
         }
 
+        fn maybe_union(&self) -> Option<&Vec<Self>> {
+            None
+        }
+
+        fn maybe_ptr(&self) -> Option<&Self> {
+            None
+        }
+
         fn is_tyvar(&self) -> bool {
             todo!()
         }

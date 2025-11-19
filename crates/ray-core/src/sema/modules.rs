@@ -111,6 +111,12 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         builder.finish(&scope.path)
     }
 
+    fn is_overlay(&self, path: &FilePath) -> bool {
+        self.overlays
+            .as_ref()
+            .map_or(false, |overlays| overlays.contains_key(path))
+    }
+
     pub fn take_errors(self) -> Vec<RayError> {
         self.errors
     }
@@ -212,8 +218,15 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let mut stmts = root_file.stmts.drain(..).collect::<Vec<_>>();
         let mut decls = root_file.decls.drain(..).collect::<Vec<_>>();
 
-        let module_dir = root_fp.dir();
-        let has_dir_root = root::is_dir_module(&module_dir);
+        // When building from an in-memory source (e.g. tests via `from_src`), the
+        // "filepath" may be empty. In that case, there is no directory root and we
+        // must not try to inspect the filesystem for submodules.
+        let module_dir = if root_fp.is_empty() {
+            root_fp.clone()
+        } else {
+            root_fp.dir()
+        };
+        let has_dir_root = !root_fp.is_empty() && root::is_dir_module(&module_dir);
         if has_dir_root {
             self.register_top_level_root(&module_path, &module_dir);
         }
@@ -589,6 +602,12 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
         if path.exists() {
             return Ok(Some(root::module_entry_path(path)));
+        }
+
+        // If this path is provided via an in-memory overlay (e.g. tests) but does
+        // not exist on disk, treat it as a valid module input.
+        if self.is_overlay(path) {
+            return Ok(Some(path.clone()));
         }
 
         // If the provided path does not exist, attempt to resolve by cached artifact with the module path.
