@@ -17,7 +17,10 @@ use crate::{
     typing::{
         TyCtx,
         info::TypeSystemInfo,
-        ty::{ImplField, ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty, TyScheme, TyVar},
+        ty::{
+            FieldKind, ImplField, ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty,
+            TyScheme, TyVar,
+        },
     },
 };
 
@@ -391,7 +394,7 @@ impl LowerAST for Sourced<'_, Trait> {
                 Some(n) => n,
                 _ => {
                     return Err(RayError {
-                        msg: format!("trait function on `{}` does not have a name", tr.ty),
+                        msg: format!("trait method on `{}` does not have a name", tr.ty),
                         src: vec![src.respan(sig.span)],
                         kind: RayErrorKind::Type,
                         context: Some("lower trait func".to_string()),
@@ -452,6 +455,7 @@ impl LowerAST for Sourced<'_, Trait> {
             let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
 
             fields.push(TraitField {
+                kind: FieldKind::Method,
                 name: func_name.clone(),
                 ty: scheme.clone(),
                 recv_mode,
@@ -590,6 +594,7 @@ impl LowerAST for Sourced<'_, Impl> {
         log::debug!("impl fqn: {}", impl_scope);
         let mut impl_ctx = ctx.tcx.clone();
         let mut impl_set = HashMap::new();
+        let mut impl_srcs = HashMap::new();
 
         // consts have to be first in case they're used inside of functions
         if let Some(consts) = &mut imp.consts {
@@ -632,6 +637,9 @@ impl LowerAST for Sourced<'_, Impl> {
                 let src = ctx.srcmap.get(&func);
                 Sourced(&mut func.value, &src).lower(ctx)?;
 
+                let func_src = ctx.srcmap.get(func);
+                let sig_src = func_src.respan(func.sig.span);
+                impl_srcs.insert(func_name.clone(), sig_src);
                 impl_set.insert(
                     func_name,
                     Some((func.sig.path.value.clone(), func.sig.ty.clone())),
@@ -642,6 +650,8 @@ impl LowerAST for Sourced<'_, Impl> {
         if let Some(ext) = &mut imp.externs {
             for e in ext {
                 let name = e.get_name().unwrap();
+                let src = ctx.srcmap.get(e);
+                impl_srcs.insert(name.clone(), src);
                 impl_set.insert(name, None);
                 e.lower(ctx)?;
             }
@@ -662,9 +672,12 @@ impl LowerAST for Sourced<'_, Impl> {
 
             if let Some((path, scheme)) = def {
                 log::debug!("[Impl::lower] field path={}, scheme={:?}", path, scheme);
+                let src = impl_srcs.get(n).cloned().unwrap_or_else(|| src.clone());
                 fields.push(ImplField {
+                    kind: field.kind,
                     path: path.clone(),
                     scheme: scheme.clone(),
+                    src,
                 });
             }
         }

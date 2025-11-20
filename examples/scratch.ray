@@ -8,6 +8,16 @@ impl Value[int] {
     }
 }
 
+trait Foo['a] {
+    fn foo(self: 'a, a: bool) -> bool
+}
+
+impl Foo[int] {
+    fn foo(self: int, a: bool) -> bool {
+        true
+    }
+}
+
 fn call_on_value(x: int) -> int {
     x.get_value()
 }

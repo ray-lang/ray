@@ -10,7 +10,8 @@ use crate::{
     sema::NameContext,
     span::SourceMap,
     typing::{
-        bound_names::BoundNames, constraints::tree::BottomUpWalk, state::Env, traits::QualifyTypes,
+        TypeErrorKind, bound_names::BoundNames, constraints::tree::BottomUpWalk, state::Env,
+        traits::QualifyTypes,
     },
 };
 
@@ -225,7 +226,6 @@ impl<'a> InferSystem<'a> {
         for (trait_path, trait_ty) in self.tcx.traits() {
             if let Some(impls) = self.tcx.impls().get(trait_path) {
                 for impl_ty in impls {
-                    let self_ty = impl_ty.base_ty.clone();
                     for field in impl_ty.fields.iter() {
                         // Build trait method path string
                         let trait_method_path = trait_ty
@@ -267,6 +267,15 @@ impl<'a> InferSystem<'a> {
                                     user_impl_scheme.mono(),
                                     err
                                 );
+                                errors.push(TypeError {
+                                    kind: TypeErrorKind::MismatchImpl(
+                                        field.kind.to_string(),
+                                        field.path.to_short_name(),
+                                        user_trait_scheme.ty().clone(),
+                                        user_impl_scheme.mono().clone(),
+                                    ),
+                                    src: vec![field.src.clone()],
+                                })
                             }
                         }
                     }

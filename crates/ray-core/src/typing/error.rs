@@ -3,6 +3,7 @@ use top::{Predicate, interface::basic::ErrorLabel};
 use crate::{
     errors::{RayError, RayErrorKind},
     span::Source,
+    typing::ty::TyScheme,
 };
 
 use super::{
@@ -15,6 +16,7 @@ pub enum TypeErrorKind {
     Message(String),
     Assertion(String, Ty),
     Mismatch(Ty, Ty),
+    MismatchImpl(String, String, Ty, Ty),
     Equality(Ty, Ty),
     InstanceOf(Ty, Ty),
     UnsolvableTyVar(TyVar),
@@ -126,6 +128,15 @@ impl TypeError {
             }
             TypeErrorKind::Mismatch(a, b) => {
                 format!("type mismatch: `{}` and `{}`", a, b)
+            }
+            TypeErrorKind::MismatchImpl(kind, name, trait_ty, impl_ty) => {
+                // method `add_check` has an incompatible type for trait
+                // expected signature `fn(&mut _, &_, bool)`
+                //    found signature `fn(&mut _, &_, u32)`
+                format!(
+                    "{} `{}` has an incompatible type for trait\nexpected signature `{}`\n   found signature `{}`",
+                    kind, name, trait_ty, impl_ty
+                )
             }
             TypeErrorKind::Equality(a, b) => format!("types `{}` and `{}` are not equal", a, b),
             TypeErrorKind::InstanceOf(a, b) => {

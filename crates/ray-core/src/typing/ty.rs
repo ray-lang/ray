@@ -594,8 +594,22 @@ impl ReceiverMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FieldKind {
+    Method,
+}
+
+impl std::fmt::Display for FieldKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FieldKind::Method => write!(f, "method"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitField {
+    pub kind: FieldKind,
     pub name: String,
     pub ty: TyScheme,
     pub is_static: bool,
@@ -647,8 +661,10 @@ impl TraitTy {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImplField {
+    pub kind: FieldKind,
     pub path: Path,
     pub scheme: Option<TyScheme>,
+    pub src: Source,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
