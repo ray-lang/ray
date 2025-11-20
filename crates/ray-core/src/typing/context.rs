@@ -516,25 +516,14 @@ impl TyCtx {
         self.tf.borrow_mut()
     }
 
-    pub fn resolve_trait_method(
-        &self,
-        receiver_ty: &Ty,
-        method_name: &str,
-    ) -> Option<(Path, &TraitField)> {
-        log::debug!(
-            "[resolve_trait_method] method={} receiver_ty={}",
-            method_name,
-            receiver_ty
-        );
+    pub fn resolve_trait_method(&self, method_name: &str) -> Option<(&TraitTy, &TraitField)> {
+        log::debug!("[resolve_trait_method] method={}", method_name);
         self.traits.iter().find_map(|(_, trait_ty)| {
             trait_ty
                 .fields
                 .iter()
                 .find(|field| field.name == method_name)
-                .map(|field| {
-                    let method_path = trait_ty.create_method_path(method_name, Some(receiver_ty));
-                    (method_path, field)
-                })
+                .map(|field| (trait_ty, field))
         })
     }
 }

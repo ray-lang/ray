@@ -1127,6 +1127,7 @@ dependencies = [
  "fern",
  "fnv",
  "home",
+ "indexmap 2.12.0",
  "inkwell",
  "itertools",
  "lang-c",

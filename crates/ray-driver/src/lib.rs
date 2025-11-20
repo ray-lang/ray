@@ -163,7 +163,11 @@ impl Driver {
         let definitions =
             libgen::collect_definition_records(&result.module, &result.srcmap, &result.tcx);
 
-        let symbol_map = build_symbol_map(SymbolBuildContext::new(&result.module, &result.srcmap));
+        let symbol_map = build_symbol_map(SymbolBuildContext::new(
+            &result.module,
+            &result.tcx,
+            &result.srcmap,
+        ));
 
         log::debug!("[build_frontend] Frontend Summary");
         log::debug!("[build_frontend] ----------------");

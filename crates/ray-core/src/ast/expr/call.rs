@@ -30,4 +30,15 @@ impl Call {
             paren_span: Span::new(),
         }
     }
+
+    pub fn call_resolution_id(&self) -> u64 {
+        // call_resolution expects id of either:
+        //  - the name node of the callee in dot (`f` in `e.f`)
+        //  - or the callee node itself
+        if let Expr::Dot(dot) = &self.callee.value {
+            dot.rhs.id
+        } else {
+            self.callee.id
+        }
+    }
 }

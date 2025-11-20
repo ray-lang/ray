@@ -10,6 +10,7 @@ colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
 fnv = "1.0"
 home = "0.5"
+indexmap = "2.12"
 inkwell = { version = "0.6", features = ["llvm17-0"] }
 itertools = "0.14"
 lang-c = "0.9"

@@ -224,7 +224,7 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
         //   1) (D-FB) Collect constraints for the function binding itself, the LHS (parameter patterns) and RHS (body)
         //   2) (D-TYPE) Collect constraints for the function's type signature, if it exists
 
-        let (func_node, src, maybe_self_ty) = self;
+        let (func_node, src, _) = self;
         let func = func_node.value;
         let src = (*src).clone();
         let name = &func.sig.path;
@@ -707,21 +707,13 @@ impl CollectConstraints for (&Call, &Source) {
             let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&lhs_src.path));
             log::debug!("rhs: {}", dot.rhs.path);
             let method_name = dot.rhs.path.name().unwrap().to_string();
-            if let Some((fqn, resolved_method)) =
-                ctx.tcx.resolve_trait_method(&recv_ty, &method_name)
-            {
-                log::debug!("fqn: {}", fqn);
-
-                // Add the normalized key to the assumption set so Σ lookup can find the scheme.
-                let norm_fqn = fqn.with_names_only();
-                log::debug!("Call::Dot adding normalized fqn: {}", norm_fqn);
-                aset.add(norm_fqn.clone(), field_ty.clone());
-
+            let recv_param_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+            if let Some((trait_ty, resolved_method)) = ctx.tcx.resolve_trait_method(&method_name) {
                 // For non-static receiver methods, introduce a fresh receiver-parameter type and
                 // a Recv predicate tying the receiver expression type to that parameter type.
                 let recv_mode = resolved_method.recv_mode;
-                if !matches!(recv_mode, ReceiverMode::None) {
-                    let recv_param_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                let fqn = if !matches!(recv_mode, ReceiverMode::None) {
+                    let fqn = trait_ty.create_method_path(&method_name, Some(&recv_param_ty));
                     let recv_kind = match recv_mode {
                         ReceiverMode::Value => RecvKind::Value,
                         ReceiverMode::Ptr => RecvKind::Ref,
@@ -738,12 +730,23 @@ impl CollectConstraints for (&Call, &Source) {
 
                     // Receiver parameter is the first argument to the method.
                     arg_tys.push(recv_param_ty);
-                }
+                    fqn
+                } else {
+                    trait_ty.create_method_path(&method_name, Some(&recv_ty))
+                };
+
+                log::debug!("[Call::collect_constraints] fqn: {}", fqn);
+
+                // Add the normalized key to the assumption set so Σ lookup can find the scheme.
+                let norm_fqn = fqn.with_names_only();
+                log::debug!("Call::Dot adding normalized fqn: {}", norm_fqn);
+                aset.add(norm_fqn.clone(), field_ty.clone());
 
                 // Record the type of the callee expression as the method's function type.
                 ct1 = NodeTree::new(vec![ReceiverTree::new(field_ty.to_string()), ct1]);
                 ctx.tcx.set_ty(call.callee.id, field_ty.clone());
-                ctx.tcx.set_call_resolution(call.callee.id, fqn.clone());
+                ctx.tcx
+                    .set_call_resolution(call.call_resolution_id(), fqn.clone());
                 (field_ty, ct1)
             } else {
                 // we failed to lookup the method, so we have to return something here

@@ -259,6 +259,9 @@ impl AnalysisReport {
 
         if !definitions.is_empty() {
             println!("definitions ({} entries)", definitions.len());
+            for def in &definitions {
+                emit_text_definition(def);
+            }
         }
     }
 
@@ -394,6 +397,23 @@ fn emit_text_symbol(symbol: &SymbolInfo) {
     if let Some(doc) = &symbol.doc {
         for line in doc.lines() {
             println!("    {}", line);
+        }
+    }
+}
+
+fn emit_text_definition(def: &DefinitionInfo) {
+    let usage_src = def
+        .usage_span
+        .as_ref()
+        .map(|s| format!(" ({}:{})", def.usage_filepath, s))
+        .unwrap_or_else(|| format!(" ({})", def.usage_filepath));
+
+    match &def.definition_path {
+        Some(def_path) if def_path != &def.usage_path => {
+            println!("  {}{} -> {}", def.usage_path, usage_src, def_path);
+        }
+        _ => {
+            println!("  {}{}", def.usage_path, usage_src);
         }
     }
 }

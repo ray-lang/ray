@@ -1245,7 +1245,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 let (fn_name, recv_mode) = base
                     .map(|mut func_fqn| {
-                        if let Some(resolved) = tcx.call_resolution(call.callee.id) {
+                        if let Some(resolved) = tcx.call_resolution(call.call_resolution_id()) {
                             log::debug!("resolved call: {} -> {}", func_fqn, resolved);
                             func_fqn = resolved;
                         }

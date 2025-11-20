@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+
 use crate::{
     ast::{
-        Assign, Curly, CurlyElement, Decl, Expr, Func, FuncSig, Module, Path, WalkItem, walk_module,
+        Assign, Call, Curly, CurlyElement, Decl, Expr, Func, FuncSig, Module, Path, WalkItem,
+        walk_module,
     },
     pathlib::FilePath,
     span::{Source, SourceMap, Span},
-    typing::ty::Ty,
+    typing::{TyCtx, ty::Ty},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,22 +60,28 @@ impl SymbolMap {
 
 pub struct SymbolBuildContext<'a> {
     module: &'a Module<(), Decl>,
+    tcx: &'a TyCtx,
     srcmap: &'a SourceMap,
     symbol_map: SymbolMap,
     definitions: HashMap<Path, SymbolTarget>,
     struct_fields: HashMap<(String, String), Path>,
-    references: Vec<(u64, Path)>,
+    references: IndexMap<u64, Path>,
 }
 
 impl<'a> SymbolBuildContext<'a> {
-    pub fn new(module: &'a Module<(), Decl>, srcmap: &'a SourceMap) -> SymbolBuildContext<'a> {
+    pub fn new(
+        module: &'a Module<(), Decl>,
+        tcx: &'a TyCtx,
+        srcmap: &'a SourceMap,
+    ) -> SymbolBuildContext<'a> {
         SymbolBuildContext {
             module,
+            tcx,
             srcmap,
             symbol_map: SymbolMap::new(),
             definitions: HashMap::new(),
             struct_fields: HashMap::new(),
-            references: Vec::new(),
+            references: IndexMap::new(),
         }
     }
 
@@ -98,7 +107,10 @@ impl<'a> SymbolBuildContext<'a> {
 
     fn record_reference(&mut self, node_id: u64, path: &Path) {
         log::debug!("[record reference] node_id={}, path={}", node_id, path);
-        self.references.push((node_id, path.clone()));
+        if self.references.contains_key(&node_id) {
+            return;
+        }
+        self.references.insert(node_id, path.clone());
     }
 
     fn record_assign(&mut self, assign: &Assign) {
@@ -156,6 +168,13 @@ impl<'a> SymbolBuildContext<'a> {
         }
     }
 
+    fn record_call(&mut self, call: &Call) {
+        let callee_id = call.call_resolution_id();
+        if let Some(path) = self.tcx.call_resolution(callee_id) {
+            self.record_reference(callee_id, &path);
+        }
+    }
+
     fn collect_from_module(&mut self) {
         for item in walk_module(self.module) {
             log::debug!("[build_symbol_map] item = {:?}", item);
@@ -209,6 +228,7 @@ impl<'a> SymbolBuildContext<'a> {
                     Expr::Assign(assign) => self.record_assign(assign),
                     Expr::Func(func) => self.record_func_sig(&func.sig),
                     Expr::Curly(curly) => self.record_struct_literal(curly),
+                    Expr::Call(call) => self.record_call(call),
                     _ => continue,
                 },
                 WalkItem::Func(func) => {

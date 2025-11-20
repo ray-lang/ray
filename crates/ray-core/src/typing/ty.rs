@@ -616,6 +616,20 @@ pub struct TraitField {
     pub recv_mode: ReceiverMode,
 }
 
+impl TraitField {
+    pub fn receiver_ty(&self) -> Option<&Ty> {
+        let Some((_, _, param_tys, _)) = self.ty.try_borrow_fn() else {
+            return None;
+        };
+
+        if param_tys.is_empty() {
+            return None;
+        }
+
+        Some(&param_tys[0])
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitTy {
     pub path: ast::Path,
