@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    InfoJoin, TyVar,
+    InfoJoin, RecvKind, TyVar,
     constraint::{EqualityConstraint, Solvable, TypeConstraintInfo},
     directives::TypeClassDirective,
     interface::{
@@ -267,6 +267,7 @@ where
                 Predicate::HasField(record_ty, _, field_ty, _) => {
                     is_concrete(record_ty) || is_concrete(field_ty)
                 }
+                Predicate::Recv(..) => false,
             }
         }
 
@@ -298,6 +299,15 @@ where
                 }
 
                 log::debug!("[improve_qualifiers_by_instance] trying predicate {}", pred);
+
+                // Recv predicates are handled in a separate improvement pass.
+                if let Predicate::Recv(..) = pred {
+                    log::debug!(
+                        "[improve_qualifiers_by_instance] skipping Recv predicate {}",
+                        pred
+                    );
+                    continue;
+                }
 
                 let synonyms = self.type_synonyms();
                 let class_env = self.class_env();
@@ -338,6 +348,63 @@ where
         }
 
         log::debug!("[improve_qualifiers_by_instance] ---- END");
+    }
+
+    fn improve_qualifiers_by_recv(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Debug + Clone + Display + TypeConstraintInfo<I, T, V>,
+    {
+        log::debug!("[improve_qualifiers_by_recv] ---- START");
+
+        loop {
+            let mut changed = false;
+
+            for index in 0..self.state().qualifiers().len() {
+                let (pred_ref, info_ref) = self.state().qualifier(index);
+                if let Predicate::Recv(kind, expr_ty_ref, param_ty_ref, _) = pred_ref {
+                    let info = info_ref.clone();
+                    let expr_ty = expr_ty_ref.clone();
+                    let param_ty = param_ty_ref.clone();
+
+                    // Compute the "base" type of the receiver expression (strip at most one pointer).
+                    let base_ty = match expr_ty.maybe_ptr() {
+                        Some(inner) => (*inner).clone(),
+                        None => expr_ty.clone(),
+                    };
+
+                    // Depending on the receiver kind, determine what the parameter type should be.
+                    let target_ty = match kind {
+                        RecvKind::Value => base_ty,
+                        RecvKind::Ref => Ty::ptr(base_ty),
+                    };
+
+                    if param_ty != target_ty {
+                        let before_subst = self.get_subst().clone();
+                        log::debug!(
+                            "[improve_qualifiers_by_recv] Recv improvement unify {} == {}",
+                            param_ty,
+                            target_ty
+                        );
+                        self.unify_terms(&info, &param_ty, &target_ty);
+                        let after_subst = self.get_subst().clone();
+                        if before_subst != after_subst {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            if !changed {
+                log::debug!("[improve_qualifiers_by_recv] no more changes");
+                break;
+            }
+
+            self.make_subst_consistent();
+            self.apply_subst_to_qualifiers();
+        }
+
+        log::debug!("[improve_qualifiers_by_recv] ---- END");
     }
 
     fn improve_qualifiers_by_receiver(&mut self)
@@ -500,12 +567,7 @@ where
                 continue;
             }
 
-            if self
-                .skolems()
-                .iter()
-                .find(|skolem| skolem.contains(var))
-                .is_some()
-            {
+            if self.has_skolem_var(var) {
                 log::debug!(
                     "skipping default for predicate {} because it contains a skolem variable {:?}",
                     predicate,
@@ -588,12 +650,7 @@ where
                 _ => continue,
             };
 
-            if self
-                .skolems()
-                .iter()
-                .find(|skolem| skolem.contains(var))
-                .is_some()
-            {
+            if self.has_skolem_var(var) {
                 // ignore this predicate since it contains a skolem variable
                 continue;
             }
@@ -631,11 +688,25 @@ where
         for i in 0..self.state().qualifiers().len() {
             let (predicate, info) = &self.state().qualifier(i);
             log::debug!("checking predicate: {}", predicate);
+
+            if let Predicate::Recv(..) = predicate {
+                log::debug!(
+                    "[ambiguous_qualifiers] skipping Recv predicate {}",
+                    predicate
+                );
+                continue;
+            }
+
             let tys = match predicate {
                 Predicate::Class(_, ty, params, _) => {
                     std::iter::once(ty).chain(params.iter()).collect()
                 }
                 Predicate::HasField(record_ty, _, field_ty, _) => vec![record_ty, field_ty],
+                Predicate::Recv(..) => {
+                    // Recv predicates are internal to method-call resolution and
+                    // should not produce ambiguous/missing predicate errors.
+                    continue;
+                }
             };
 
             for ty in tys {

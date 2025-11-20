@@ -217,7 +217,7 @@ where
     }
 
     pub fn normalize_subst(&mut self) {
-        // Step 1: reorient var→var bindings so skolem is never on LHS
+        // First, reorient var→var bindings so skolem is never on LHS.
         let mut flipped = Vec::new();
         for (k, v) in self.subst.iter() {
             if let Some(v2) = v.maybe_var() {
@@ -236,7 +236,7 @@ where
             self.subst.insert(rhs, T::var(lhs));
         }
 
-        // Step 2: saturate (make idempotent) so var→var chains collapse
+        // Then saturate (make idempotent) so var→var chains collapse.
         loop {
             let mut changed = false;
             let snapshot = self.subst.clone();

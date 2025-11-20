@@ -1,20 +1,22 @@
 use std::collections::HashSet;
 
 use top::{
-    Class, Instance, Predicate, Predicates, Subst, Substitutable,
+    Class, Instance, Predicate, Predicates, Subst, Substitutable, mgu, mgu_with_synonyms,
     solver::{SolveOptions, SolveResult, Solver, greedy::GreedySolver},
 };
 
 use crate::{
+    errors::RayError,
     sema::NameContext,
     span::SourceMap,
-    typing::{bound_names::BoundNames, state::Env, traits::QualifyTypes},
+    typing::{
+        bound_names::BoundNames, constraints::tree::BottomUpWalk, state::Env, traits::QualifyTypes,
+    },
 };
 
 use super::{
     TypeError,
     collect::{CollectConstraints, CollectCtx},
-    constraints::tree::BottomUpWalk,
     context::TyCtx,
     info::TypeSystemInfo,
     state::SchemeEnv,
@@ -64,9 +66,10 @@ impl<'a> InferSystem<'a> {
             defs: defs.clone(),
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
-        let constraints = c.spread().phase().flatten(BottomUpWalk);
+        log::debug!("constraint tree: {:?}", c);
+
+        let constraints = c.spread().phase().flatten_bottom_up();
         log::debug!("{}", v);
-        // log::debug!("constraints: {:#?}", constraints);
         let mut s = String::new();
         s.push_str("[\n");
         for constraint in constraints.iter() {
@@ -197,9 +200,83 @@ impl<'a> InferSystem<'a> {
 
             defs.apply_subst_all(&solution.subst);
             defs.qualify_tys(&solution.qualifiers);
+            self.post_infer_checks(&defs, &solution, &srcmap)?;
 
             log::debug!("defs: {}", defs);
             Ok((solution, defs))
+        }
+    }
+
+    fn post_infer_checks(
+        &self,
+        defs: &SchemeEnv,
+        solution: &SolveResult<TypeSystemInfo, Ty, TyVar>,
+        _srcmap: &SourceMap,
+    ) -> Result<(), Vec<TypeError>> {
+        let mut errors: Vec<TypeError> = Vec::new();
+        debug_assert!(solution.errors.is_empty());
+        let var_subst: Subst<_, _> = self
+            .tcx
+            .inverted_var_map()
+            .borrow()
+            .iter()
+            .map(|(u, v)| (u.clone(), Ty::Var(v.clone())))
+            .collect();
+        for (trait_path, trait_ty) in self.tcx.traits() {
+            if let Some(impls) = self.tcx.impls().get(trait_path) {
+                for impl_ty in impls {
+                    let self_ty = impl_ty.base_ty.clone();
+                    for field in impl_ty.fields.iter() {
+                        // Build trait method path string
+                        let trait_method_path = trait_ty
+                            .create_method_path(&field.path.to_short_name(), None)
+                            .with_names_only();
+                        let Some(trait_scheme) = defs.get(&trait_method_path) else {
+                            continue;
+                        };
+
+                        let Some(impl_scheme) = &field.scheme else {
+                            continue;
+                        };
+
+                        let mut orig_trait_scheme = trait_scheme.clone();
+                        orig_trait_scheme.apply_subst(&var_subst);
+
+                        let mut args = Vec::new();
+                        args.push(impl_ty.base_ty.clone());
+                        args.extend(impl_ty.ty_args.clone());
+                        let user_trait_scheme = orig_trait_scheme.instantiate_with_types(&args);
+
+                        let mut user_impl_scheme = impl_scheme.clone();
+                        user_impl_scheme.apply_subst(&var_subst);
+
+                        match mgu(&user_trait_scheme.ty, user_impl_scheme.mono()) {
+                            Ok((_, subst)) => {
+                                // successful unification
+                                log::debug!(
+                                    "[post_infer_checks] unified {} and {}: subst={}",
+                                    &user_trait_scheme.ty,
+                                    user_impl_scheme.mono(),
+                                    subst
+                                );
+                            }
+                            Err(err) => {
+                                log::debug!(
+                                    "[post_infer_checks] failed to unify {} and {}: error={}",
+                                    &user_trait_scheme.ty,
+                                    user_impl_scheme.mono(),
+                                    err
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 }

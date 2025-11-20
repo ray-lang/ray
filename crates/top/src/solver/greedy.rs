@@ -346,6 +346,10 @@ mod tests {
             BasicTy::Tuple(tys)
         }
 
+        fn ptr(_: Self) -> Self {
+            panic!("no pointer")
+        }
+
         fn maybe_var(&self) -> Option<&u32> {
             if let BasicTy::Var(v) = self {
                 Some(v)

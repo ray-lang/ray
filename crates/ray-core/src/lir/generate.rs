@@ -747,6 +747,7 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
         };
 
         ctx.with_exit_block(|ctx| {
+            log::debug!("[Func::lir_gen] function type = {:?}", fn_ty);
             let (_, _, _, ret_ty) = fn_ty
                 .try_borrow_fn()
                 .expect(&format!("function type, but found {:?}", fn_ty));
@@ -1196,6 +1197,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 );
 
                 let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
+                let is_method_call = matches!(&call.callee.value, Expr::Dot(_));
                 let base = if let Expr::Dot(dot) = &call.callee.value {
                     let self_ty = ctx.instantiate_scheme(tcx, tcx.ty_of(dot.lhs.id));
                     arg_exprs.push((dot.lhs.as_ref(), self_ty));
@@ -1235,7 +1237,13 @@ impl LirGen<GenResult> for Node<Expr> {
                     *ty = arg_tys[idx].clone();
                 }
 
-                let fn_name = base
+                // Snapshot instantiated parameter types of the callee after substitution.
+                let param_monos = match fn_ty.mono().clone() {
+                    Ty::Func(params, _) => params,
+                    _ => Vec::new(),
+                };
+
+                let (fn_name, recv_mode) = base
                     .map(|mut func_fqn| {
                         if let Some(resolved) = tcx.call_resolution(call.callee.id) {
                             log::debug!("resolved call: {} -> {}", func_fqn, resolved);
@@ -1245,30 +1253,35 @@ impl LirGen<GenResult> for Node<Expr> {
                         if !subst.is_empty() {
                             func_fqn.apply_subst(&subst);
                         }
-                        let trait_fqn = tcx.resolve_trait_from_path(&func_fqn);
-                        if let Some((poly_ty, trait_fn_ty)) =
-                            instantiated_poly_ty.as_ref().and_then(|poly_ty| {
-                                trait_fqn
-                                    .and_then(|trait_fqn| {
-                                        tcx.get_trait_fn(&trait_fqn, &func_fqn.name().unwrap())
-                                    })
-                                    .map(|fn_ty| (poly_ty, fn_ty))
-                            })
-                        {
-                            log::debug!("poly_ty: {}", poly_ty);
-                            log::debug!("fn_ty: {}", trait_fn_ty);
-                            let (_, trait_subst) = mgu(trait_fn_ty.mono(), poly_ty.mono())
-                                .ok()
-                                .unwrap_or_default();
-                            log::debug!("subst: {}", trait_subst);
-                            func_fqn.apply_subst(&trait_subst);
-                        }
 
-                        func_fqn
+                        log::debug!("traits: {:?}", tcx.traits().keys());
+                        let norm_func_fqn = func_fqn.with_names_only();
+                        let trait_fqn = tcx.resolve_trait_from_path(&norm_func_fqn);
+                        let field = trait_fqn.and_then(|trait_fqn| {
+                            tcx.get_trait_field(&trait_fqn, &func_fqn.name().unwrap())
+                        });
+
+                        log::debug!("[Call::lir_gen] field={:?}", field);
+
+                        match (instantiated_poly_ty.as_ref(), field) {
+                            (Some(inst_ty), Some(field)) => {
+                                let trait_fn_ty = &field.ty;
+                                log::debug!("inst_ty: {}", inst_ty);
+                                log::debug!("fn_ty: {}", trait_fn_ty);
+                                let (_, trait_subst) = mgu(trait_fn_ty.mono(), inst_ty.mono())
+                                    .ok()
+                                    .unwrap_or_default();
+                                log::debug!("subst: {}", trait_subst);
+                                func_fqn.apply_subst(&trait_subst);
+                                (func_fqn, field.recv_mode)
+                            }
+                            (None, Some(field)) => (func_fqn, field.recv_mode),
+                            _ => (func_fqn, ReceiverMode::None),
+                        }
                     })
-                    .map(|base| {
+                    .map(|(base, recv_mode)| {
                         log::debug!("base_name: {}", base);
-                        if ctx.is_extern(&base) {
+                        let fqn = if ctx.is_extern(&base) {
                             ctx.extern_link_name(&base).unwrap_or(base)
                         } else {
                             match &instantiated_poly_ty {
@@ -1277,20 +1290,108 @@ impl LirGen<GenResult> for Node<Expr> {
                                 }
                                 _ => sema::fn_name(&base, &fn_ty),
                             }
-                        }
-                    });
+                        };
+                        (fqn, recv_mode)
+                    })
+                    .unzip();
 
                 let mut call_args: Vec<lir::Variable> = Vec::new();
-                for (idx, (expr, ty)) in arg_exprs.into_iter().enumerate() {
+                let recv_mode = recv_mode.unwrap_or_default();
+                for (idx, (expr, expr_ty_scheme)) in arg_exprs.into_iter().enumerate() {
                     log::debug!(
                         "call arg[{}] id={:#x} ty = {} expr = {:?}",
                         idx,
                         expr.id,
-                        ty,
+                        ctx.ty_of(tcx, expr.id),
                         expr
                     );
+
                     let value = expr.lir_gen(ctx, tcx)?;
-                    if let Some(loc) = ctx.get_or_set_local(value, ty.clone()) {
+
+                    // Auto address-of for receiver arguments:
+                    // If this is a method call (e.m(...)) and the first
+                    // parameter type is *T while the receiver expression has
+                    // type T, take the address of the receiver value and pass
+                    // a pointer.
+                    if is_method_call && idx == 0 {
+                        if let Some(param_mono) = param_monos.get(0) {
+                            let expr_mono = expr_ty_scheme.mono().clone();
+                            log::debug!(
+                                "[Call::lir_gen] expr_mono={}, param_mono={}, recv_mode={:?}",
+                                expr_mono,
+                                param_mono,
+                                recv_mode
+                            );
+
+                            match recv_mode {
+                                ReceiverMode::Ptr => {
+                                    // auto-&: param is *T, expr is T
+                                    if let Ty::Ptr(inner) = param_mono {
+                                        if **inner == expr_mono {
+                                            // Ensure the receiver value lives in a local with its
+                                            // original (by-value) type.
+                                            let val_loc = ctx
+                                                .get_or_set_local(value, expr_ty_scheme.clone())
+                                                .unwrap();
+
+                                            // Take the address of that local (no field offset).
+                                            let lea = lir::Lea::new(
+                                                lir::Variable::Local(val_loc),
+                                                lir::LeaOffset::zero(),
+                                            );
+
+                                            // Store the resulting pointer in a local of the
+                                            // parameter's pointer type.
+                                            let ptr_scheme =
+                                                TyScheme::from_mono(param_mono.clone());
+                                            if let Some(ptr_loc) =
+                                                ctx.get_or_set_local(lea.into(), ptr_scheme)
+                                            {
+                                                call_args.push(lir::Variable::Local(ptr_loc));
+                                            } else {
+                                                call_args.push(lir::Variable::Unit);
+                                            }
+
+                                            continue;
+                                        }
+                                    }
+                                }
+                                ReceiverMode::Value => {
+                                    // auto-*: param is T, expr is *T
+                                    if !matches!(param_mono, Ty::Ptr(_))
+                                        && matches!(expr_mono, Ty::Ptr(inner) if *inner == *param_mono)
+                                    {
+                                        let val_loc = ctx
+                                            .get_or_set_local(value, expr_ty_scheme.clone())
+                                            .unwrap();
+                                        let load = lir::Load::new(
+                                            lir::Variable::Local(val_loc),
+                                            lir::Size::zero(),
+                                        );
+                                        let val_scheme = TyScheme::from_mono(param_mono.clone());
+                                        let loaded_loc =
+                                            ctx.get_or_set_local(load.into(), val_scheme).unwrap();
+                                        call_args.push(lir::Variable::Local(loaded_loc));
+                                        continue;
+                                    }
+                                }
+                                ReceiverMode::None => {
+                                    // static method: no special receiver handling
+                                }
+                            }
+                        }
+                    }
+
+                    // Default case: treat the argument as having the callee's
+                    // parameter type when available; otherwise, fall back to
+                    // the expression's own type.
+                    let ty_for_local = if let Some(param_mono) = param_monos.get(idx) {
+                        TyScheme::from_mono(param_mono.clone())
+                    } else {
+                        ctx.ty_of(tcx, expr.id)
+                    };
+
+                    if let Some(loc) = ctx.get_or_set_local(value, ty_for_local) {
                         call_args.push(lir::Variable::Local(loc));
                     } else {
                         call_args.push(lir::Variable::Unit);
@@ -1488,7 +1589,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
 impl LirGen<GenResult> for Node<Decl> {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
-        log::debug!("getting type of: {:#x}", self.id);
+        log::debug!("getting type of {:#x}: {:?}", self.id, self);
         match &self.value {
             Decl::Func(func) => {
                 let node = Node::with_id(self.id, func);

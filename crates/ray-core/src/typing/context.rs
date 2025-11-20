@@ -16,6 +16,7 @@ use crate::{
     pathlib::FilePath,
     sema::NameContext,
     span::SourceMap,
+    typing::ty::TraitField,
 };
 
 use super::{
@@ -460,6 +461,18 @@ impl TyCtx {
         }
     }
 
+    pub fn get_trait_field(&self, trait_fqn: &Path, field_name: &str) -> Option<&TraitField> {
+        self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
+            trait_ty.fields.iter().find_map(|field| {
+                if &field.name == field_name {
+                    Some(field)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     pub fn get_trait_fn(&self, trait_fqn: &Path, fn_name: &String) -> Option<&TyScheme> {
         self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
             trait_ty.fields.iter().find_map(|field| {
@@ -503,41 +516,24 @@ impl TyCtx {
         self.tf.borrow_mut()
     }
 
-    pub fn resolve_trait_method(&self, receiver_ty: &Ty, method_name: &str) -> Option<Path> {
+    pub fn resolve_trait_method(
+        &self,
+        receiver_ty: &Ty,
+        method_name: &str,
+    ) -> Option<(Path, &TraitField)> {
         log::debug!(
             "[resolve_trait_method] method={} receiver_ty={}",
             method_name,
             receiver_ty
         );
-        self.traits.iter().find_map(|(trait_path, trait_ty)| {
+        self.traits.iter().find_map(|(_, trait_ty)| {
             trait_ty
                 .fields
                 .iter()
                 .find(|field| field.name == method_name)
-                .map(|_| {
-                    let mut method_path = trait_path.clone();
-                    let type_params = trait_ty.ty.get_ty_params();
-                    if !type_params.is_empty() {
-                        let mut type_args = type_params
-                            .iter()
-                            .map(|ty| ty.to_string())
-                            .collect::<Vec<_>>();
-                        if !type_args.is_empty() {
-                            type_args[0] = receiver_ty.to_string();
-                        }
-                        method_path = method_path.append_type_args(type_args.iter());
-                    }
-
-                    log::debug!(
-                        "[resolve_trait_method] trait_path={} type_params={:?} produced={}",
-                        trait_path,
-                        type_params
-                            .iter()
-                            .map(|t| t.to_string())
-                            .collect::<Vec<_>>(),
-                        method_path.append(method_name.to_string())
-                    );
-                    method_path.append(method_name.to_string())
+                .map(|field| {
+                    let method_path = trait_ty.create_method_path(method_name, Some(receiver_ty));
+                    (method_path, field)
                 })
         })
     }

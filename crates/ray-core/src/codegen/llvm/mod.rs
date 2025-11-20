@@ -707,6 +707,79 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
     }
 
+    /// Marshal a single argument value to match the callee's LLVM parameter type.
+    ///
+    /// This uses the Ray parameter type to distinguish between:
+    /// - pointer parameters: the logical argument is a pointer *value* (Ty::Ptr),
+    /// - by-value parameters lowered as addresses: the logical argument is a value,
+    ///   but we pass an address to it when LLVM expects a pointer.
+    fn marshal_arg_value(
+        &mut self,
+        ray_param_ty: &Ty,
+        expected: &BasicMetadataTypeEnum<'ctx>,
+        mut val: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+        let expected_is_ptr = expected.is_pointer_type();
+
+        if expected_is_ptr {
+            // Callee expects an address in LLVM IR.
+            if let BasicValueEnum::PointerValue(p) = val {
+                match ray_param_ty {
+                    // Pointer parameter: the logical argument is a pointer value (*T).
+                    // If that pointer is stored in a local slot (slot-of-pointer),
+                    // load once so we pass the pointer value instead of the slot address.
+                    Ty::Ptr(_) => {
+                        if self.is_local_slot(&p) && matches!(self.get_pointee_ty(p), Ty::Ptr(_)) {
+                            val = self.load_pointer(p)?;
+                        }
+                        return Ok(val);
+                    }
+
+                    // Non-pointer parameter: the logical argument is a value of type `ray_param_ty`.
+                    // When LLVM expects a pointer, we pass the address of that value. For locals,
+                    // the pointee type of the slot should match `ray_param_ty`.
+                    _ => {
+                        if self.is_local_slot(&p) {
+                            let slot_ty = self.get_pointee_ty(p);
+                            if slot_ty != ray_param_ty {
+                                panic!(
+                                    "COMPILER BUG: pointer parameter slot type mismatch; slot_ty={} ray_param_ty={} llvm_param_ty={}",
+                                    slot_ty,
+                                    ray_param_ty,
+                                    expected.print_to_string().to_string()
+                                );
+                            }
+                        }
+                        return Ok(val);
+                    }
+                }
+            }
+
+            // Non-pointer value for a pointer-typed LLVM parameter should not occur
+            // under correct LIR invariants; surface a clear compiler bug if it does.
+            panic!(
+                "COMPILER BUG: non-pointer argument for pointer parameter; ray_param_ty={} llvm_param_ty={}",
+                ray_param_ty,
+                expected.print_to_string().to_string()
+            );
+        }
+
+        // Non-pointer LLVM parameter: unwrap any address into a value.
+        //
+        // If the Ray parameter type is Ty::Ptr(_), then to_llvm_type(ray_param_ty)
+        // should have produced a pointer-typed LLVM parameter; reaching this branch
+        // would indicate an inconsistency between Ray and LLVM signatures.
+        if matches!(ray_param_ty, Ty::Ptr(_)) {
+            panic!(
+                "COMPILER BUG: Ray pointer parameter lowered to non-pointer LLVM parameter; ray_param_ty={} llvm_param_ty={}",
+                ray_param_ty,
+                expected.print_to_string().to_string()
+            );
+        }
+
+        self.maybe_load_pointer(val)
+    }
+
     fn store(
         &mut self,
         ptr: PointerValue<'ctx>,
@@ -959,29 +1032,24 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         function: FunctionValue<'ctx>,
         args: &Vec<lir::Variable>,
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
+        ray_param_tys: &Vec<Ty>,
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<CallSiteValue<'ctx>, BuilderError> {
         let arg_vals = args.codegen(self, tcx, srcmap);
+        assert_eq!(
+            expected_params.len(),
+            ray_param_tys.len(),
+            "callee LLVM param count and Ray param count must match for non-sret calls"
+        );
         let args = expected_params
-            .into_iter()
+            .iter()
+            .zip(ray_param_tys.iter())
             .zip(arg_vals.into_iter())
-            .map(|(expected, result)| {
-                let mut v = result?;
-                if expected.is_pointer_type() {
-                    // Callee expects an address. If our value is a pointer whose pointee is itself a
-                    // pointer (i.e., the local slot holding a pointer), load once so we pass the
-                    // pointer VALUE sitting in that slot instead of the address of the slot.
-                    if let BasicValueEnum::PointerValue(p) = v {
-                        if matches!(self.get_pointee_ty(p), Ty::Ptr(_)) {
-                            v = self.load_pointer(p)?;
-                        }
-                    }
-                    Ok(v.into())
-                } else {
-                    // Non-pointer parameter: unwrap any address into a value.
-                    Ok(self.maybe_load_pointer(v)?.into())
-                }
+            .map(|((expected, ray_param_ty), result)| {
+                let v = result?;
+                let marshalled = self.marshal_arg_value(ray_param_ty, expected, v)?;
+                Ok(marshalled.into())
             })
             .collect::<Result<Vec<_>, BuilderError>>()?;
         self.builder.build_call(function, args.as_slice(), "")
@@ -993,6 +1061,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         function: FunctionValue<'ctx>,
         args: &Vec<lir::Variable>,
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
+        ray_param_tys: &Vec<Ty>,
         ret_ty: &Ty,
         tcx: &TyCtx,
         srcmap: &SourceMap,
@@ -1008,24 +1077,34 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         // First expected param must be a pointer (retptr)
         marshalled.push(ret_slot.as_basic_value_enum());
 
-        // Zip remaining expected params with arg values
-        for (expected, result) in expected_params
-            .into_iter()
+        assert_eq!(
+            expected_params.len(),
+            ray_param_tys.len() + 1,
+            "sret calls expect one extra LLVM parameter (retptr) compared to Ray params"
+        );
+
+        // Zip remaining expected params with Ray param types and arg values.
+        for ((expected, ray_param_ty), result) in expected_params
+            .iter()
             .skip(1)
+            .zip(ray_param_tys.iter())
             .zip(arg_vals.into_iter())
         {
             let v = result?;
-            if expected.is_pointer_type() {
-                marshalled.push(v);
-            } else {
-                marshalled.push(self.maybe_load_pointer(v)?);
-            }
+            let arg = self.marshal_arg_value(ray_param_ty, expected, v)?;
+            marshalled.push(arg);
         }
+
+        // Collect all marshalled arguments (retptr + params) as metadata values.
+        let marshalled_vals = marshalled
+            .iter()
+            .map(|v| (*v).into())
+            .collect::<Vec<_>>();
 
         // Emit the call (returns void in sret case)
         let call = self.builder.build_call(
             function,
-            &marshalled.iter().map(|v| (*v).into()).collect::<Vec<_>>(),
+            marshalled_vals.as_slice(),
             "",
         )?;
 
@@ -1919,16 +1998,27 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
         let fn_ty = function.get_type();
         let expected_params = fn_ty.get_param_types();
 
-        // Look up callee to inspect its Ray type for sret decision.
-        let ret_ty = self.callee_ty.mono().get_fn_ret_ty().unwrap_or_else(|| {
+        // Look up callee to inspect its Ray function type for parameter and
+        // return information (used for sret decisions and, later, for
+        // argument marshaling).
+        let callee_mono = self.callee_ty.mono();
+        let (ray_param_tys, ret_ty) = callee_mono.try_borrow_fn().unwrap_or_else(|_| {
             panic!(
                 "type for callee is not a function: {} ({})",
                 self.fn_name, self.callee_ty
             )
         });
+
         if ret_ty.is_aggregate() {
-            let (call, ret_slot) =
-                ctx.build_sret_call(function, &self.args, &expected_params, ret_ty, tcx, srcmap)?;
+            let (call, ret_slot) = ctx.build_sret_call(
+                function,
+                &self.args,
+                &expected_params,
+                ray_param_tys,
+                ret_ty,
+                tcx,
+                srcmap,
+            )?;
             return Ok(LoweredCall::Call {
                 call,
                 ret_slot: Some(ret_slot),
@@ -1936,7 +2026,14 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
         }
 
         // Non-aggregate: regular call and unwrap pointer args as needed.
-        let call = ctx.build_call(function, &self.args, &expected_params, tcx, srcmap)?;
+        let call = ctx.build_call(
+            function,
+            &self.args,
+            &expected_params,
+            ray_param_tys,
+            tcx,
+            srcmap,
+        )?;
         Ok(LoweredCall::Call {
             call,
             ret_slot: None,

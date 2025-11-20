@@ -1,7 +1,7 @@
 use std::{collections::HashSet, ops::Deref};
 
 use ast::Module;
-use top::{Predicate, Substitutable};
+use top::{Predicate, RecvKind, Substitutable};
 
 use crate::{
     ast,
@@ -16,7 +16,7 @@ use crate::{
             tree::{AttachTree, ConstraintTree, NodeTree, ParentAttachTree, ReceiverTree},
         },
         state::{Env, SchemeEnv, SigmaEnv, TyEnv},
-        ty::{SigmaTy, Ty, TyScheme, TyVar},
+        ty::{ReceiverMode, SigmaTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -277,14 +277,14 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
                     param_ty = anno_param_ty.clone();
                 }
 
-                if let Some(self_ty) = maybe_self_ty {
-                    if param_name.is_self() {
-                        let param_src = ctx.srcmap.get(param);
-                        let mut c = EqConstraint::new(param_ty.clone(), (*self_ty).clone());
-                        c.info_mut().with_src(param_src);
-                        param_ct = AttachTree::new(c, param_ct);
-                    }
-                }
+                // if let Some(self_ty) = maybe_self_ty {
+                //     if param_name.is_self() {
+                //         let param_src = ctx.srcmap.get(param);
+                //         let mut c = EqConstraint::new(param_ty.clone(), (*self_ty).clone());
+                //         c.info_mut().with_src(param_src);
+                //         param_ct = AttachTree::new(c, param_ct);
+                //     }
+                // }
 
                 ctx.bound_names.insert(param_name.clone(), param_ty.clone());
                 param_tys.push(param_ty.clone());
@@ -698,36 +698,57 @@ impl CollectConstraints for (&Call, &Source) {
         let mut arg_cts = vec![];
 
         let (lhs_ty, ct1) = if let Expr::Dot(dot) = &call.callee.value {
-            let (self_ty, self_aset, mut ct1) = dot.lhs.collect_constraints(ctx);
-            arg_tys.push(self_ty.clone());
-            aset.extend(self_aset);
+            // Collect constraints for the receiver expression.
+            let (recv_ty, recv_aset, mut ct1) = dot.lhs.collect_constraints(ctx);
+            aset.extend(recv_aset);
 
-            let src = ctx.srcmap.get(&dot.lhs);
-            let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+            // Fresh type for the method value.
+            let lhs_src = ctx.srcmap.get(&dot.lhs);
+            let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&lhs_src.path));
             log::debug!("rhs: {}", dot.rhs.path);
             let method_name = dot.rhs.path.name().unwrap().to_string();
-            let fallback = Path::from(format!("{}::{}", self_ty.clone().get_path(), dot.rhs.path));
+            if let Some((fqn, resolved_method)) =
+                ctx.tcx.resolve_trait_method(&recv_ty, &method_name)
+            {
+                log::debug!("fqn: {}", fqn);
 
-            log::debug!("Call::Dot fallback: {}", fallback);
+                // Add the normalized key to the assumption set so Σ lookup can find the scheme.
+                let norm_fqn = fqn.with_names_only();
+                log::debug!("Call::Dot adding normalized fqn: {}", norm_fqn);
+                aset.add(norm_fqn.clone(), field_ty.clone());
 
-            let resolved_method = ctx.tcx.resolve_trait_method(&self_ty, &method_name);
-            if let Some(ref path) = resolved_method {
-                log::debug!("Call::Dot resolved method path: {}", path);
+                // For non-static receiver methods, introduce a fresh receiver-parameter type and
+                // a Recv predicate tying the receiver expression type to that parameter type.
+                let recv_mode = resolved_method.recv_mode;
+                if !matches!(recv_mode, ReceiverMode::None) {
+                    let recv_param_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                    let recv_kind = match recv_mode {
+                        ReceiverMode::Value => RecvKind::Value,
+                        ReceiverMode::Ptr => RecvKind::Ref,
+                        ReceiverMode::None => unreachable!(),
+                    };
+
+                    let mut prove = ProveConstraint::new(Predicate::recv(
+                        recv_kind,
+                        recv_ty.clone(),
+                        recv_param_ty.clone(),
+                    ));
+                    prove.info_mut().with_src(lhs_src.clone());
+                    ct1 = AttachTree::new(prove, ct1);
+
+                    // Receiver parameter is the first argument to the method.
+                    arg_tys.push(recv_param_ty);
+                }
+
+                // Record the type of the callee expression as the method's function type.
+                ct1 = NodeTree::new(vec![ReceiverTree::new(field_ty.to_string()), ct1]);
+                ctx.tcx.set_ty(call.callee.id, field_ty.clone());
+                ctx.tcx.set_call_resolution(call.callee.id, fqn.clone());
+                (field_ty, ct1)
+            } else {
+                // we failed to lookup the method, so we have to return something here
+                (Ty::Never, ConstraintTree::empty())
             }
-
-            let fqn = resolved_method.unwrap_or(fallback);
-
-            ctx.tcx.set_call_resolution(call.callee.id, fqn.clone());
-            log::debug!("fqn: {}", fqn);
-
-            // add the normalized key to the assumption set
-            let norm_fqn = fqn.with_names_only();
-            log::debug!("Call::Dot adding normalized fqn: {}", norm_fqn);
-            aset.add(norm_fqn, field_ty.clone());
-
-            ct1 = NodeTree::new(vec![ReceiverTree::new(field_ty.to_string()), ct1]);
-            ctx.tcx.set_ty(call.callee.id, field_ty.clone());
-            (field_ty, ct1)
         } else {
             let (lhs_ty, fun_aset, ct1) = call.callee.collect_constraints(ctx);
             log::debug!("type of {}: {}", call.callee, lhs_ty);
@@ -1380,20 +1401,6 @@ mod tests {
         for c in constraints {
             println!("{}", c);
         }
-        // let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
-        // let (solution, defs) = match inf.infer_ty(&result.module, &mut result.srcmap, result.defs) {
-        //     Ok(result) => result,
-        //     Err(errs) => {
-        //         return Err(errs
-        //             .into_iter()
-        //             .map(|err| RayError {
-        //                 msg: err.message(),
-        //                 src: err.src,
-        //                 kind: RayErrorKind::Type,
-        //             })
-        //             .collect());
-        //     }
-        // };
 
         Ok(())
     }

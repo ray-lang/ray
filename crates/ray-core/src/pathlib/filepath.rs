@@ -53,6 +53,10 @@ impl FilePath {
         })
     }
 
+    pub fn has_file_name(&self) -> bool {
+        self.buf.file_name().is_some()
+    }
+
     /// Returns the final component of the `FilePath`, if there is one.
     ///
     /// If the path is a normal file, this is the file name. If it's the path of a directory, this

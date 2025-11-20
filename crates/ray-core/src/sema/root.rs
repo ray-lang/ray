@@ -6,6 +6,10 @@ pub fn is_dir_module(dir: &FilePath) -> bool {
         return false;
     }
 
+    if !dir.has_file_name() {
+        return false;
+    }
+
     let entries = match dir.read_dir() {
         Ok(entries) => entries,
         Err(_) => return false,

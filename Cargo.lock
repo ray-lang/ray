@@ -1147,6 +1147,7 @@ name = "ray-driver"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fern",
  "inkwell",
  "itertools",
  "log",
@@ -1160,6 +1161,7 @@ name = "ray-lsp"
 version = "0.1.0"
 dependencies = [
  "env_logger",
+ "fern",
  "log",
  "pretty_assertions",
  "ray-core",

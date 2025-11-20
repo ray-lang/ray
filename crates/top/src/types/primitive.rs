@@ -29,6 +29,8 @@ where
 
     fn app(lhs: Self, rhs: Self) -> Self;
 
+    fn ptr(ty: Self) -> Self;
+
     fn tuple(tys: Vec<Self>) -> Self;
 
     fn arrow(lhs: Self, rhs: Self) -> Self {

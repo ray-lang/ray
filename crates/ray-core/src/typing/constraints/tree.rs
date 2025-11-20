@@ -345,7 +345,256 @@ impl ConstraintTree {
             .rfold(self, |t, (l, c)| StrictSpreadTree::new(l, c, t))
     }
 
+    /// Specialized non-recursive flatten for BottomUpWalk. This mirrors the
+    /// semantics of `flatten(BottomUpWalk)` but avoids deep recursion on the
+    /// call stack by using an explicit stack of frames and accumulating the
+    /// (cset, up) pairs that BottomUpWalk expects.
+    pub fn flatten_bottom_up(self) -> Vec<Constraint> {
+        #[derive(Debug)]
+        enum FlattenFrame {
+            RecEval(ConstraintTree, Vec<Constraint>),
+            NodeDone(usize, Vec<Constraint>),
+            ParentAttachDone(Constraint),
+            StrictDone(Vec<Constraint>),
+        }
+
+        let mut stack: Vec<FlattenFrame> = Vec::new();
+        let mut results: Vec<(Vec<Constraint>, Vec<Constraint>)> = Vec::new();
+
+        stack.push(FlattenFrame::RecEval(self, Vec::new()));
+
+        fn bottom_up(
+            down: Vec<Constraint>,
+            pairs: Vec<(Vec<Constraint>, Vec<Constraint>)>,
+        ) -> Vec<Constraint> {
+            let mut c = vec![];
+            let (csets, ups): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+            c.extend(csets.into_iter().flatten());
+            c.extend(ups.into_iter().flatten());
+            c.extend(down);
+            c
+        }
+
+        while let Some(frame) = stack.pop() {
+            match frame {
+                FlattenFrame::RecEval(tree, down) => match tree {
+                    ConstraintTree::Node(NodeTree(trees)) => {
+                        let n = trees.len();
+                        stack.push(FlattenFrame::NodeDone(n, down));
+                        for child in trees.into_iter().rev() {
+                            stack.push(FlattenFrame::RecEval(child, Vec::new()));
+                        }
+                    }
+                    ConstraintTree::Attach(AttachTree(c, t)) => {
+                        let mut new_down = down;
+                        new_down.push(c);
+                        stack.push(FlattenFrame::RecEval(*t, new_down));
+                    }
+                    ConstraintTree::ParentAttach(ParentAttachTree(c, t)) => {
+                        stack.push(FlattenFrame::ParentAttachDone(c));
+                        stack.push(FlattenFrame::RecEval(*t, down));
+                    }
+                    ConstraintTree::Strict(StrictTree(t1, t2)) => {
+                        stack.push(FlattenFrame::StrictDone(down));
+                        stack.push(FlattenFrame::RecEval(*t2, Vec::new()));
+                        stack.push(FlattenFrame::RecEval(*t1, Vec::new()));
+                    }
+                    ConstraintTree::Spread(SpreadTree(_, c, t)) => {
+                        // Spread rewrites to an Attach with the same effect for BottomUpWalk.
+                        let mut new_down = down;
+                        new_down.push(c);
+                        stack.push(FlattenFrame::RecEval(*t, new_down));
+                    }
+                    ConstraintTree::StrictSpread(StrictSpreadTree(_, c, t)) => {
+                        // StrictSpread(l, c, t) rewrites to Strict(Attach(c, empty), t).
+                        // Evaluate Attach(c, empty) and t1, then combine as in Strict.
+                        stack.push(FlattenFrame::StrictDone(down));
+                        stack.push(FlattenFrame::RecEval(*t, Vec::new()));
+                        // Attach(c, empty)
+                        let attach_tree = ConstraintTree::Attach(AttachTree(
+                            c,
+                            Box::new(ConstraintTree::empty()),
+                        ));
+                        stack.push(FlattenFrame::RecEval(attach_tree, Vec::new()));
+                    }
+                    ConstraintTree::Receiver(ReceiverTree(_)) => {
+                        // ReceiverTree behaves like an empty tree under flatten: it
+                        // forwards to flatten(empty, down).
+                        let empty = ConstraintTree::empty();
+                        stack.push(FlattenFrame::RecEval(empty, down));
+                    }
+                    ConstraintTree::Phase(PhaseTree(_, t)) => {
+                        // Phase nodes are transparent to flatten; forward to child.
+                        stack.push(FlattenFrame::RecEval(*t, down));
+                    }
+                },
+                FlattenFrame::NodeDone(n, down) => {
+                    let mut pairs = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        pairs.push(results.pop().expect("missing child pair for NodeDone"));
+                    }
+                    pairs.reverse();
+
+                    let cset = bottom_up(down, pairs);
+                    results.push((cset, Vec::new()));
+                }
+                FlattenFrame::ParentAttachDone(c) => {
+                    let (cset, mut up) = results
+                        .pop()
+                        .expect("missing child pair for ParentAttachDone");
+                    up.push(c);
+                    results.push((cset, up));
+                }
+                FlattenFrame::StrictDone(down) => {
+                    let (cset2, up2) = results.pop().expect("missing right pair for StrictDone");
+                    let (cset1, up1) = results.pop().expect("missing left pair for StrictDone");
+
+                    // For Strict, we first compute cs1 = cset1 + up1 and cs2 = cset2 + up2,
+                    // then treat their concatenation as a single "child" for BottomUpWalk,
+                    // with no additional up-constraints.
+                    let mut cset = Vec::new();
+                    cset.extend(cset1);
+                    cset.extend(up1);
+                    cset.extend(cset2);
+                    cset.extend(up2);
+                    cset.extend(down);
+                    results.push((cset, Vec::new()));
+                }
+            }
+        }
+
+        // Use the same semantics as the original recursive flatten(BottomUpWalk):
+        // we expect a single (cset, up) pair at the top and return cset ++ up.
+        let (mut cset, up) = results
+            .pop()
+            .expect("flatten_bottom_up: no result produced");
+        cset.extend(up);
+        cset
+    }
+
     pub fn spread(self) -> ConstraintTree {
+        let mut list: Vec<(String, Constraint)> = Vec::new();
+
+        // Non-recursive version of `spread_with`: walk the tree explicitly with a
+        // stack, mutating `list` in the same order as the original recursive
+        // implementation, and rebuild an equivalent ConstraintTree.
+        #[derive(Debug)]
+        enum SpreadFrame {
+            Eval(ConstraintTree),
+            NodeDone(usize),
+            AttachDone(Constraint),
+            ParentAttachDone(Constraint),
+            StrictDone,
+            PhaseDone(u64),
+        }
+
+        let mut stack: Vec<SpreadFrame> = Vec::new();
+        let mut results: Vec<ConstraintTree> = Vec::new();
+
+        stack.push(SpreadFrame::Eval(self));
+
+        while let Some(frame) = stack.pop() {
+            match frame {
+                SpreadFrame::Eval(tree) => match tree {
+                    ConstraintTree::Node(NodeTree(trees)) => {
+                        let n = trees.len();
+                        stack.push(SpreadFrame::NodeDone(n));
+                        // Process children left-to-right: push in reverse so the
+                        // leftmost child is evaluated first.
+                        for child in trees.into_iter().rev() {
+                            stack.push(SpreadFrame::Eval(child));
+                        }
+                    }
+                    ConstraintTree::Attach(AttachTree(c, t)) => {
+                        stack.push(SpreadFrame::AttachDone(c));
+                        stack.push(SpreadFrame::Eval(*t));
+                    }
+                    ConstraintTree::ParentAttach(ParentAttachTree(c, t)) => {
+                        stack.push(SpreadFrame::ParentAttachDone(c));
+                        stack.push(SpreadFrame::Eval(*t));
+                    }
+                    ConstraintTree::Strict(StrictTree(t1, t2)) => {
+                        // Evaluate left then right on the same `list`, as in the
+                        // recursive version.
+                        stack.push(SpreadFrame::StrictDone);
+                        stack.push(SpreadFrame::Eval(*t2));
+                        stack.push(SpreadFrame::Eval(*t1));
+                    }
+                    ConstraintTree::Spread(SpreadTree(l, c, t))
+                    | ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => {
+                        log::debug!("spread tree: ({}, {:?})", l, c);
+                        list.insert(0, (l, c));
+                        stack.push(SpreadFrame::Eval(*t));
+                    }
+                    ConstraintTree::Receiver(ReceiverTree(l)) => {
+                        let mut i = 0;
+                        let mut cs = vec![];
+                        while i != list.len() {
+                            if matches!(&list[i], (l_prime, _) if &l == l_prime) {
+                                let (_, c) = list.remove(i);
+                                cs.push(c);
+                            } else {
+                                i += 1;
+                            }
+                        }
+
+                        if !cs.is_empty() {
+                            results.push(ConstraintTree::list(cs));
+                        } else {
+                            results.push(ConstraintTree::Receiver(ReceiverTree(l)));
+                        }
+                    }
+                    ConstraintTree::Phase(PhaseTree(i, t)) => {
+                        stack.push(SpreadFrame::PhaseDone(i));
+                        stack.push(SpreadFrame::Eval(*t));
+                    }
+                },
+                SpreadFrame::NodeDone(n) => {
+                    let mut children = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        children.push(results.pop().expect("missing child for NodeDone"));
+                    }
+                    children.reverse();
+                    results.push(ConstraintTree::Node(NodeTree(children)));
+                }
+                SpreadFrame::AttachDone(c) => {
+                    let child = results.pop().expect("missing child for AttachDone");
+                    results.push(ConstraintTree::Attach(AttachTree(c, Box::new(child))));
+                }
+                SpreadFrame::ParentAttachDone(c) => {
+                    let child = results.pop().expect("missing child for ParentAttachDone");
+                    results.push(ConstraintTree::ParentAttach(ParentAttachTree(
+                        c,
+                        Box::new(child),
+                    )));
+                }
+                SpreadFrame::StrictDone => {
+                    let right = results.pop().expect("missing right child for StrictDone");
+                    let left = results.pop().expect("missing left child for StrictDone");
+                    results.push(ConstraintTree::Strict(StrictTree(
+                        Box::new(left),
+                        Box::new(right),
+                    )));
+                }
+                SpreadFrame::PhaseDone(i) => {
+                    let child = results.pop().expect("missing child for PhaseDone");
+                    results.push(ConstraintTree::Phase(PhaseTree(i, Box::new(child))));
+                }
+            }
+        }
+
+        let ct = results.pop().expect("spread: no result tree produced");
+
+        if !list.is_empty() {
+            panic!(
+                "COMPILER ERROR!!!\nnon-empty spread list (missing ReceiveTrees for the following type variables): {:#?}",
+                list
+            );
+        }
+        ct
+    }
+
+    pub fn spread_rec(self) -> ConstraintTree {
         let mut list = vec![];
         let ct = self.spread_with(&mut list);
         if list.len() != 0 {
@@ -403,26 +652,153 @@ impl ConstraintTree {
     }
 
     pub fn phase(self) -> ConstraintTree {
-        let (t, pm) = self.phase_rec();
+        // Iterative version of the phase pass: produce (t, pm) where t is the
+        // transformed tree and pm is the accumulated PhaseMap, then wrap as
+        // before into a PhaseMap with the root at phase index 5.
+        #[derive(Debug)]
+        enum PhaseFrame {
+            Eval(ConstraintTree),
+            NodeDone(usize),
+            AttachDone(Constraint),
+            ParentAttachDone(Constraint),
+            StrictDone,
+            SpreadDone(String, Constraint),
+            StrictSpreadDone(String, Constraint),
+            PhaseBubble(u64),
+        }
+
+        let mut stack: Vec<PhaseFrame> = Vec::new();
+        let mut results: Vec<(ConstraintTree, PhaseMap)> = Vec::new();
+
+        stack.push(PhaseFrame::Eval(self));
+
+        while let Some(frame) = stack.pop() {
+            match frame {
+                PhaseFrame::Eval(tree) => match tree {
+                    ConstraintTree::Node(NodeTree(trees)) => {
+                        let n = trees.len();
+                        stack.push(PhaseFrame::NodeDone(n));
+                        for child in trees.into_iter().rev() {
+                            stack.push(PhaseFrame::Eval(child));
+                        }
+                    }
+                    ConstraintTree::Attach(AttachTree(c, t)) => {
+                        stack.push(PhaseFrame::AttachDone(c));
+                        stack.push(PhaseFrame::Eval(*t));
+                    }
+                    ConstraintTree::ParentAttach(ParentAttachTree(c, t)) => {
+                        stack.push(PhaseFrame::ParentAttachDone(c));
+                        stack.push(PhaseFrame::Eval(*t));
+                    }
+                    ConstraintTree::Strict(StrictTree(t1, t2)) => {
+                        stack.push(PhaseFrame::StrictDone);
+                        stack.push(PhaseFrame::Eval(*t2));
+                        stack.push(PhaseFrame::Eval(*t1));
+                    }
+                    ConstraintTree::Spread(SpreadTree(l, c, t)) => {
+                        stack.push(PhaseFrame::SpreadDone(l, c));
+                        stack.push(PhaseFrame::Eval(*t));
+                    }
+                    ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => {
+                        stack.push(PhaseFrame::StrictSpreadDone(l, c));
+                        stack.push(PhaseFrame::Eval(*t));
+                    }
+                    ConstraintTree::Receiver(ReceiverTree(l)) => {
+                        results.push((ConstraintTree::Receiver(ReceiverTree(l)), PhaseMap(vec![])));
+                    }
+                    ConstraintTree::Phase(PhaseTree(i, t)) => {
+                        stack.push(PhaseFrame::PhaseBubble(i));
+                        stack.push(PhaseFrame::Eval(*t));
+                    }
+                },
+                PhaseFrame::NodeDone(n) => {
+                    let mut trees = Vec::with_capacity(n);
+                    let mut pm_acc = PhaseMap(vec![]);
+                    for _ in 0..n {
+                        let (tree, pm) = results.pop().expect("missing child result for NodeDone");
+                        trees.push(tree);
+                        pm_acc = pm_acc + pm;
+                    }
+                    trees.reverse();
+                    results.push((NodeTree(trees).into(), pm_acc));
+                }
+                PhaseFrame::AttachDone(c) => {
+                    let (child, pm) = results.pop().expect("missing child result for AttachDone");
+                    results.push((AttachTree(c, Box::new(child)).into(), pm));
+                }
+                PhaseFrame::ParentAttachDone(c) => {
+                    let (child, pm) = results
+                        .pop()
+                        .expect("missing child result for ParentAttachDone");
+                    results.push((ParentAttachTree(c, Box::new(child)).into(), pm));
+                }
+                PhaseFrame::StrictDone => {
+                    let (t2, pm2) = results
+                        .pop()
+                        .expect("missing right child result for StrictDone");
+                    let (t1, pm1) = results
+                        .pop()
+                        .expect("missing left child result for StrictDone");
+
+                    // Original behavior calls `phase` on each child subtree, which is
+                    // equivalent to wrapping them via `ConstraintTree::from` with a
+                    // PhaseMap carrying their own root at index 5 plus any accumulated
+                    // phase entries.
+                    let left = ConstraintTree::from(PhaseMap(vec![(5, t1)]) + pm1);
+                    let right = ConstraintTree::from(PhaseMap(vec![(5, t2)]) + pm2);
+                    results.push((
+                        StrictTree(Box::new(left), Box::new(right)).into(),
+                        PhaseMap(vec![]),
+                    ));
+                }
+                PhaseFrame::SpreadDone(l, c) => {
+                    let (t_prime, pm) = results.pop().expect("missing child result for SpreadDone");
+                    results.push((SpreadTree(l, c, Box::new(t_prime)).into(), pm));
+                }
+                PhaseFrame::StrictSpreadDone(l, c) => {
+                    let (t_prime, pm) = results
+                        .pop()
+                        .expect("missing child result for StrictSpreadDone");
+                    let inner = ConstraintTree::from(PhaseMap(vec![(5, t_prime)]) + pm);
+                    results.push((
+                        StrictSpreadTree(l, c, Box::new(inner)).into(),
+                        PhaseMap(vec![]),
+                    ));
+                }
+                PhaseFrame::PhaseBubble(i) => {
+                    let (t_prime, pm) =
+                        results.pop().expect("missing child result for PhaseBubble");
+                    let pm_new = PhaseMap(vec![(i, t_prime)]) + pm;
+                    results.push((ConstraintTree::empty(), pm_new));
+                }
+            }
+        }
+
+        let (t, pm) = results.pop().expect("phase: no result produced");
         ConstraintTree::from(PhaseMap(vec![(5, t)]) + pm)
     }
 
-    fn phase_rec(self) -> (ConstraintTree, PhaseMap) {
+    pub fn phase_rec(self) -> ConstraintTree {
+        let (t, pm) = self.phase_rec0();
+        ConstraintTree::from(PhaseMap(vec![(5, t)]) + pm)
+    }
+
+    fn phase_rec0(self) -> (ConstraintTree, PhaseMap) {
         match self {
             ConstraintTree::Node(NodeTree(trees)) => {
                 let (trees, pms): (Vec<_>, Vec<_>) =
-                    trees.into_iter().map(|t| t.phase_rec()).unzip();
+                    trees.into_iter().map(|t| t.phase_rec0()).unzip();
                 (
                     NodeTree(trees).into(),
                     pms.into_iter().rfold(PhaseMap(vec![]), |pm, p0| pm + p0),
                 )
             }
             ConstraintTree::Attach(AttachTree(c, t)) => {
-                let (t_prime, pm) = t.phase_rec();
+                let (t_prime, pm) = t.phase_rec0();
                 (AttachTree(c, Box::new(t_prime)).into(), pm)
             }
             ConstraintTree::ParentAttach(ParentAttachTree(c, t)) => {
-                let (t_prime, pm) = t.phase_rec();
+                let (t_prime, pm) = t.phase_rec0();
                 (ParentAttachTree(c, Box::new(t_prime)).into(), pm)
             }
             ConstraintTree::Strict(StrictTree(t1, t2)) => (
@@ -430,7 +806,7 @@ impl ConstraintTree {
                 PhaseMap(vec![]),
             ),
             ConstraintTree::Spread(SpreadTree(l, c, t)) => {
-                let (t_prime, pm) = t.phase_rec();
+                let (t_prime, pm) = t.phase_rec0();
                 (SpreadTree(l, c, Box::new(t_prime)).into(), pm)
             }
             ConstraintTree::StrictSpread(StrictSpreadTree(l, c, t)) => (
@@ -439,7 +815,7 @@ impl ConstraintTree {
             ),
             ConstraintTree::Receiver(ReceiverTree(l)) => (ReceiverTree(l).into(), PhaseMap(vec![])),
             ConstraintTree::Phase(PhaseTree(i, t)) => {
-                let (t_prime, pm) = t.phase_rec();
+                let (t_prime, pm) = t.phase_rec0();
                 (ConstraintTree::empty(), PhaseMap(vec![(i, t_prime)]) + pm)
             }
         }
@@ -464,69 +840,65 @@ impl TreeWalk for BottomUpWalk {
     }
 }
 
-// #[cfg(test)]
-// mod tree_tests {
-//     use crate::typing::{
-//         constraints::{EqConstraint, ImplicitConstraint},
-//         solvers::GreedySolver,
-//         traits::HasSubst,
-//         ty::Ty,
-//         TyCtx, TypeError,
-//     };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::typing::{
+        constraints::{Constraint, EqConstraint},
+        ty::Ty,
+    };
 
-//     use super::{BottomUpWalk, ConstraintTree};
+    fn dummy_constraint(id: u32) -> Constraint {
+        EqConstraint::new(Ty::con(id.to_string()), Ty::con(id.to_string()))
+    }
 
-//     #[test]
-//     fn test_constraints1() -> Result<(), TypeError> {
-//         let mul = Ty::Func(vec![Ty::int(), Ty::int()], Box::new(Ty::int()));
+    #[test]
+    fn flatten_bottom_up_simple_attach() {
+        let c1 = dummy_constraint(1);
+        let tree =
+            ConstraintTree::Attach(AttachTree(c1.clone(), Box::new(ConstraintTree::empty())));
+        let cs = tree.spread().phase().flatten_bottom_up();
+        assert_eq!(cs, vec![c1]);
+    }
 
-//         // let sq = λx.(x * x) in sq(1)
-//         let x0 = tvar!(x0); // type of the first x in the body
-//         let x1 = tvar!(x1); // type of the second x in the body
-//         let app0 = tvar!(app0); // type of the app
+    #[test]
+    fn flatten_bottom_up_parent_attach() {
+        let c1 = dummy_constraint(1);
+        let c2 = dummy_constraint(2);
+        // ParentAttach(c1, Attach(c2, empty)) should flatten to [c2, c1].
+        let child =
+            ConstraintTree::Attach(AttachTree(c2.clone(), Box::new(ConstraintTree::empty())));
+        let tree = ConstraintTree::ParentAttach(ParentAttachTree(c1.clone(), Box::new(child)));
+        let cs = tree.spread().phase().flatten_bottom_up();
+        assert_eq!(cs, vec![c2, c1]);
+    }
 
-//         // constraint: (x0 -> x1 -> r) == mul
-//         let c1 = EqConstraint::new(
-//             Ty::Func(
-//                 vec![Ty::Var(x0), Ty::Var(x1)],
-//                 Box::new(Ty::Var(app0.clone())),
-//             ),
-//             mul,
-//         );
+    #[test]
+    fn flatten_bottom_up_strict_of_attaches() {
+        let c1 = dummy_constraint(1);
+        let c2 = dummy_constraint(2);
+        let t1 = ConstraintTree::Attach(AttachTree(c1.clone(), Box::new(ConstraintTree::empty())));
+        let t2 = ConstraintTree::Attach(AttachTree(c2.clone(), Box::new(ConstraintTree::empty())));
+        let tree = ConstraintTree::Strict(StrictTree(Box::new(t1), Box::new(t2)));
+        let cs = tree.spread().phase().flatten_bottom_up();
+        assert_eq!(cs, vec![c1, c2]);
+    }
 
-//         // λx.(x * x)
-//         let lam0 = tvar!(lam0); // type of the lambda
-//         let p0 = tvar!(p0); // type of parameter `x`
-//         let r0 = tvar!(r0); // type of the body
-//                             // constraint: lam0 == (p0 -> r0)
-//         let c2 = EqConstraint::new(
-//             Ty::Var(lam0),
-//             Ty::Func(vec![Ty::Var(p0.clone())], Box::new(Ty::Var(r0))),
-//         );
-
-//         // constraint: p0 == p1
-//         let p1 = tvar!(p1);
-//         let c3 = EqConstraint::new(Ty::Var(p0.clone()), Ty::Var(p1));
-
-//         let sq = tvar!(sq); // type of ident `sq`
-//         let b0 = tvar!(b0); // type of let body
-//         let l0 = tvar!(l0); // type of let
-//         let l1 = tvar!(sq0); // type of the let rhs
-
-//         // constraint: b0 == l0
-//         let c4 = EqConstraint::new(Ty::Var(b0), Ty::Var(l0));
-
-//         // constraint: sq ≤m l1
-//         let c5 = ImplicitConstraint::new(vec![p0], Ty::Var(sq), Ty::Var(l1));
-
-//         let t = ConstraintTree::list(vec![c1, c2, c3, c4, c5]);
-
-//         let walker = BottomUpWalk {};
-//         let cs = t.flatten(walker);
-//         let mut ctx = TyCtx::new();
-//         let solver = GreedySolver::new(cs, &mut ctx);
-//         // solver.solve()?;
-//         println!("{:#?}", solver.get_subst());
-//         Ok(())
-//     }
-// }
+    #[test]
+    fn flatten_bottom_up_spread_behaves_like_attach() {
+        let c1 = dummy_constraint(1);
+        // A labeled Spread without a matching Receiver will cause `spread()` to
+        // panic (by design). Model the intended pipeline by pairing the Spread
+        // with a Receiver of the same label so that `spread()` turns the label
+        // into an Attach list before flattening.
+        let spread = ConstraintTree::Spread(SpreadTree(
+            "?x".to_string(),
+            c1.clone(),
+            Box::new(ConstraintTree::empty()),
+        ));
+        let recv = ConstraintTree::Receiver(ReceiverTree("?x".to_string()));
+        let tree = ConstraintTree::Node(NodeTree(vec![spread, recv]));
+        let cs = tree.spread().phase().flatten_bottom_up();
+        assert_eq!(cs, vec![c1]);
+    }
+}

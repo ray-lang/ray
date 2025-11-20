@@ -1,14 +1,27 @@
-struct A {
-    x: int
+trait Value['a] {
+    fn get_value(self: 'a) -> int
+}
+
+impl Value[int] {
+    fn get_value(self: int) -> int {
+        self
+    }
+}
+
+fn call_on_value(x: int) -> int {
+    x.get_value()
+}
+
+fn call_on_ptr(p: *int) -> int {
+    p.get_value()
 }
 
 fn main() {
-    p = new(A, 2)
-    *p = A { x: 1 }
-    a = *p
-    print(a.x)
-    p += 1
-    *p  = A { x: 2 }
-    a = *p
-    print(a.x)
+    a = call_on_value(1)
+    print(a)
+
+    p = new(int, 1)
+    *p = 3
+    b = call_on_ptr(p)
+    print(b)
 }

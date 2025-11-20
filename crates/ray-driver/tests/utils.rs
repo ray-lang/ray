@@ -10,6 +10,15 @@ use ray_core::{
 };
 use ray_driver::*;
 
+#[allow(dead_code)]
+pub fn enable_debug_logs() {
+    fern::Dispatch::new()
+        .level(log::LevelFilter::Debug)
+        .chain(std::io::stderr())
+        .apply()
+        .unwrap();
+}
+
 pub fn test_build(src: &str) -> Result<FrontendResult, Vec<RayError>> {
     let filepath = FilePath::from("test.ray");
     let driver = Driver::new(RayPaths::default());
@@ -40,6 +49,7 @@ impl Int[uint] {}
     format!("{}\n{}", core, src)
 }
 
+#[allow(dead_code)]
 pub fn find_func<'a>(module: &'a Module<(), Decl>, path: &'a Path) -> &'a Func {
     module
         .decls
@@ -51,6 +61,7 @@ pub fn find_func<'a>(module: &'a Module<(), Decl>, path: &'a Path) -> &'a Func {
         .expect(&format!("could not find function: {}", path))
 }
 
+#[allow(dead_code)]
 pub fn find_func_in<'a>(funcs: &'a Vec<Node<Func>>, path: &'a Path) -> &'a Func {
     funcs
         .iter()
@@ -64,6 +75,7 @@ pub fn find_func_in<'a>(funcs: &'a Vec<Node<Func>>, path: &'a Path) -> &'a Func 
         .expect(&format!("could not find function: {}", path))
 }
 
+#[allow(dead_code)]
 pub fn find_impl<'a>(module: &'a Module<(), Decl>, path: &'a Path, ty: &Ty) -> &'a Impl {
     module
         .decls

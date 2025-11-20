@@ -36,37 +36,6 @@ where
     }
 }
 
-// pub trait QuantifyTypes {
-//     fn quantify_tys(&mut self);
-// }
-
-// impl<'a> QuantifyTypes for std::vec::IntoIter<&'a mut Ty> {
-//     fn quantify_tys(&mut self) {
-//         for t in self {
-//             t.quantify_in_place();
-//         }
-//     }
-// }
-
-// impl<'a, K> QuantifyTypes for std::collections::hash_map::ValuesMut<'a, K, Ty> {
-//     fn quantify_tys(&mut self) {
-//         for t in self {
-//             t.quantify_in_place();
-//         }
-//     }
-// }
-
-// impl<'a, T> QuantifyTypes for Vec<T>
-// where
-//     T: QuantifyTypes,
-// {
-//     fn quantify_tys(&mut self) {
-//         for t in self.iter_mut() {
-//             t.quantify_tys();
-//         }
-//     }
-// }
-
 pub trait TreeWalk: Copy {
     fn walk(
         self,

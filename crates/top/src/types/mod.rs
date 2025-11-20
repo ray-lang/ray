@@ -1,4 +1,4 @@
-mod classes;
+mod predicates;
 mod primitive;
 mod qualification;
 mod quantification;
@@ -7,7 +7,7 @@ mod subst;
 mod synonym;
 mod unification;
 
-pub use classes::*;
+pub use predicates::*;
 pub use primitive::*;
 pub use qualification::*;
 pub use quantification::*;

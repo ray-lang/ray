@@ -51,7 +51,7 @@ impl<T: Hash + Eq + Clone> TopologicalSort<T> {
     /// Creates new empty `TopologicalSort`.
     ///
     /// ```rust
-    /// # use ray::sort::topological::TopologicalSort;
+    /// # use ray_core::sort::topological::TopologicalSort;
     /// # fn main() {
     /// let mut ts = TopologicalSort::<&str>::new();
     /// ts.add_dependency("hello_world.o", "hello_world");

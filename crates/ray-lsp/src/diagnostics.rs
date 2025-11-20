@@ -284,6 +284,11 @@ mod tests {
 
     #[test]
     fn returns_no_diagnostics_for_valid_source() {
+        fern::Dispatch::new()
+            .level(log::LevelFilter::Debug)
+            .chain(std::io::stderr())
+            .apply()
+            .unwrap();
         let uri = test_uri();
         let root = workspace_root();
         let diagnostics = expect_diagnostics(collect(

@@ -85,6 +85,10 @@ where
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
         I: Debug + Clone + Display + TypeConstraintInfo<I, T, V>;
+    fn improve_qualifiers_by_recv(&mut self)
+    where
+        Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
+        I: Debug + Clone + Display + TypeConstraintInfo<I, T, V>;
     fn default_qualifiers(&mut self)
     where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
@@ -124,6 +128,7 @@ where
         self.context_reduction();
         self.improve_qualifiers_by_instance();
         self.improve_qualifiers_by_receiver();
+        self.improve_qualifiers_by_recv();
     }
 
     fn defaults(&mut self)
@@ -177,6 +182,13 @@ where
                 predicate,
                 info
             );
+
+            // Recv predicates are used only for improvement (they add
+            // equalities between types) and are not treated as evidence
+            // obligations, so we do not report them as unsolved here.
+            if let Predicate::Recv(..) = predicate {
+                continue;
+            }
 
             let synonyms = self.type_synonyms();
             let class_env = self.class_env();

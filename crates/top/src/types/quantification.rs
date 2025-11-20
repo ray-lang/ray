@@ -430,6 +430,25 @@ where
         forall.introduce_tyvars_with_map(n)
     }
 
+    pub fn instantiate_with_types(&self, args: &[T]) -> Q {
+        assert!(
+            args.len() <= self.vars.len(),
+            "not enough quantifiers to instantiate with {} args",
+            args.len()
+        );
+
+        let subst = self
+            .vars
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect::<Subst<V, T>>();
+
+        let mut ty = self.ty.clone();
+        ty.apply_subst(&subst);
+        ty
+    }
+
     pub fn skolemize(self, i: u32) -> (u32, Q)
     where
         V: Display,

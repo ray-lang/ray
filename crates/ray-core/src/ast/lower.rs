@@ -5,7 +5,7 @@ use std::{
 };
 
 use ast::Impl;
-use top::{Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective};
+use top::{Predicate, Predicates, RecvKind, Subst, Substitutable, directives::TypeClassDirective};
 
 use crate::{
     ast::{self, TraitDirectiveKind},
@@ -17,7 +17,7 @@ use crate::{
     typing::{
         TyCtx,
         info::TypeSystemInfo,
-        ty::{ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty, TyScheme, TyVar},
+        ty::{ImplField, ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty, TyScheme, TyVar},
     },
 };
 
@@ -418,7 +418,10 @@ impl LowerAST for Sourced<'_, Trait> {
 
             log::debug!("trait func scheme = {:?}", scheme);
 
+            // Borrow the function type to inspect its parameters, but immediately
+            // clone the parameter list so we can later mutate the scheme safely.
             let (param_tys, _) = scheme.unquantified().ty().try_borrow_fn()?;
+            let param_tys = param_tys.clone();
             let func_fqn = trait_fqn
                 .append_type_args(ty_params.iter())
                 .append(&func_name);
@@ -438,28 +441,20 @@ impl LowerAST for Sourced<'_, Trait> {
                     .add_name_in_scope(&scope, func_name.clone())
             }
 
+            // Determine whether this method is static. Non-static methods are
+            // considered receiver methods at the call site, but we no longer
+            // bake any Recv predicates into their type schemes here.
             let is_static = sig
                 .modifiers
                 .iter()
                 .any(|m| matches!(m, ast::Modifier::Static));
 
-            // Phase 1 (docs/receiver_auto_address_plan.md):
-            // normalize the receiver parameter type in the TyScheme so that it
-            // always uses `Self` (the trait's base type) rather than `*Self`.
-            let receiver_mode = ReceiverMode::from_signature(&base_ty, &param_tys, is_static);
-
-            if !is_static && !param_tys.is_empty() {
-                if let Ty::Func(params, _) = scheme.unquantified_mut().ty_mut() {
-                    // Rewrite the first parameter type to the trait's `Self` type.
-                    // Pointer-ness is tracked separately in `receiver_mode`.
-                    params[0] = base_ty.clone();
-                }
-            }
+            let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
 
             fields.push(TraitField {
                 name: func_name.clone(),
                 ty: scheme.clone(),
-                receiver_mode,
+                recv_mode,
                 is_static,
             });
 
@@ -594,7 +589,7 @@ impl LowerAST for Sourced<'_, Impl> {
         let impl_scope = base_ty.get_path();
         log::debug!("impl fqn: {}", impl_scope);
         let mut impl_ctx = ctx.tcx.clone();
-        let mut impl_set = HashSet::new();
+        let mut impl_set = HashMap::new();
 
         // consts have to be first in case they're used inside of functions
         if let Some(consts) = &mut imp.consts {
@@ -634,29 +629,42 @@ impl LowerAST for Sourced<'_, Impl> {
                     .nametree_mut()
                     .add_full_name(&func.sig.path.to_name_vec());
 
-                impl_set.insert(func_name);
                 let src = ctx.srcmap.get(&func);
                 Sourced(&mut func.value, &src).lower(ctx)?;
+
+                impl_set.insert(
+                    func_name,
+                    Some((func.sig.path.value.clone(), func.sig.ty.clone())),
+                );
             }
         }
 
         if let Some(ext) = &mut imp.externs {
             for e in ext {
                 let name = e.get_name().unwrap();
-                impl_set.insert(name);
+                impl_set.insert(name, None);
                 e.lower(ctx)?;
             }
         }
 
         // make sure that everything has been implemented
+        let mut fields = Vec::with_capacity(trait_ty.fields.len());
         for field in trait_ty.fields.iter() {
             let n = &field.name;
-            if !impl_set.contains(n) {
+            let Some(def) = impl_set.get(n) else {
                 return Err(RayError {
                     msg: format!("trait implementation is missing for field `{}`", n),
                     src: vec![src.respan(*imp.ty.span().unwrap())],
                     kind: RayErrorKind::Type,
                     context: Some("lower trait impl".to_string()),
+                });
+            };
+
+            if let Some((path, scheme)) = def {
+                log::debug!("[Impl::lower] field path={}, scheme={:?}", path, scheme);
+                fields.push(ImplField {
+                    path: path.clone(),
+                    scheme: scheme.clone(),
                 });
             }
         }
@@ -698,6 +706,7 @@ impl LowerAST for Sourced<'_, Impl> {
             base_ty,
             ty_args: ty_args[1..].to_vec(),
             predicates,
+            fields,
         };
         ctx.tcx.add_impl(trait_fqn, impl_ty);
         Ok(())

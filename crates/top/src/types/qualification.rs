@@ -166,30 +166,3 @@ impl<P, T> Qualification<P, T> {
         (self.qualifiers, self.ty)
     }
 }
-
-// impl<P, Q, T> Qualification<P, T>
-// where
-//     P: Substitutable + IntoIterator<Item = Q>,
-//     Q: Substitutable,
-//     T: Substitutable,
-// {
-//     pub fn qualify<Ctx>(ctx: Ctx, qualifiers: P, ty: T) -> Qualification<Vec<Q>, T>
-//     where
-//         Ctx: Substitutable,
-//     {
-//         let ctx_freevars = ctx.free_vars();
-//         let freevars = ty.free_vars();
-//         let vars = freevars
-//             .iter()
-//             .filter(|var| !ctx_freevars.contains(var))
-//             .collect::<Vec<_>>();
-//         let qualifiers = qualifiers
-//             .into_iter()
-//             .filter(|q| {
-//                 let q_freevars = q.free_vars();
-//                 vars.iter().all(|var| !q_freevars.contains(var))
-//             })
-//             .collect::<Vec<_>>();
-//         Qualification { qualifiers, ty }
-//     }
-// }

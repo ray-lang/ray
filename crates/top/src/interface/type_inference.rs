@@ -54,6 +54,8 @@ where
 
     fn skolems_mut(&mut self) -> &mut Vec<Skolem<I, T, V>>;
 
+    fn has_skolem_var(&self, var: &V) -> bool;
+
     fn all_type_schemes(&self) -> &HashMap<V, Scheme<Predicates<T, V>, T, V>>;
 
     fn get_type_scheme(&self, var: &V) -> Option<&Scheme<Predicates<T, V>, T, V>>;
@@ -349,6 +351,10 @@ where
 
     fn skolems_mut(&mut self) -> &mut Vec<Skolem<I, T, V>> {
         &mut self.state_mut().skolems
+    }
+
+    fn has_skolem_var(&self, var: &V) -> bool {
+        self.skolems().iter().any(|skolem| skolem.contains(var))
     }
 
     fn all_type_schemes(&self) -> &HashMap<V, Scheme<Predicates<T, V>, T, V>> {

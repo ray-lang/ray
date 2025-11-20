@@ -36,41 +36,6 @@ where
     record_classes: HashMap<String, Vec<Predicate<T, V>>>,
 }
 
-// impl<T, V> Deref for ClassEnv<T, V>
-// where
-//     T: Ty<V>,
-//     V: TyVar,
-// {
-//     type Target = HashMap<String, Class<T, V>>;
-
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
-
-// impl<T, V> DerefMut for ClassEnv<T, V>
-// where
-//     T: Ty<V>,
-//     V: TyVar,
-// {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.0
-//     }
-// }
-
-// impl<T, V> IntoIterator for ClassEnv<T, V>
-// where
-//     T: Ty<V>,
-//     V: TyVar,
-// {
-//     type Item = (String, Class<T, V>);
-//     type IntoIter = <HashMap<String, Class<T, V>> as IntoIterator>::IntoIter;
-
-//     fn into_iter(self) -> Self::IntoIter {
-//         self.0.into_iter()
-//     }
-// }
-
 impl<T, V> Debug for ClassEnv<T, V>
 where
     T: Ty<V>,
@@ -224,6 +189,7 @@ where
                     Some(vec![])
                 })
                 .map(|preds| (Subst::new(), preds.into())),
+            Predicate::Recv(..) => None,
         }
     }
 
@@ -288,6 +254,12 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum RecvKind {
+    Value,
+    Ref,
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Predicate<T, V>
 where
@@ -296,6 +268,7 @@ where
 {
     Class(String, T, Vec<T>, PhantomData<V>),
     HasField(T, String, T, PhantomData<V>),
+    Recv(RecvKind, T, T, PhantomData<V>),
 }
 
 impl<T, V> Debug for Predicate<T, V>
@@ -305,17 +278,23 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Class(name, ty, params, _) => f
+            Predicate::Class(name, ty, params, _) => f
                 .debug_struct("Class")
                 .field("name", name)
                 .field("ty", ty)
                 .field("params", params)
                 .finish(),
-            Self::HasField(ty, field, field_ty, _) => f
+            Predicate::HasField(ty, field, field_ty, _) => f
                 .debug_struct("HasField")
                 .field("ty", ty)
                 .field("field", field)
                 .field("field_ty", field_ty)
+                .finish(),
+            Predicate::Recv(recv_kind, recv_ty, self_ty, _) => f
+                .debug_struct("Recv")
+                .field("kind", recv_kind)
+                .field("recv_ty", recv_ty)
+                .field("self_ty", self_ty)
                 .finish(),
         }
     }
@@ -339,6 +318,9 @@ where
             }
             Predicate::HasField(ty, name, field, _) => {
                 write!(f, "{}::{} : {}", ty, name, field)
+            }
+            Predicate::Recv(recv_kind, recv_ty, self_ty, _) => {
+                write!(f, "recv({:?}, {}, {})", recv_kind, recv_ty, self_ty)
             }
         }
     }
@@ -369,6 +351,10 @@ where
                 ty.apply_subst(subst);
                 field.apply_subst(subst);
             }
+            Predicate::Recv(_, recv_ty, self_ty, _) => {
+                recv_ty.apply_subst(subst);
+                self_ty.apply_subst(subst);
+            }
         }
     }
 
@@ -381,6 +367,10 @@ where
             Predicate::HasField(ty, _, field, _) => {
                 ty.apply_subst_all(subst);
                 field.apply_subst_all(subst);
+            }
+            Predicate::Recv(_, recv_ty, self_ty, _) => {
+                recv_ty.apply_subst_all(subst);
+                self_ty.apply_subst_all(subst);
             }
         }
     }
@@ -396,6 +386,11 @@ where
                 .free_vars()
                 .into_iter()
                 .chain(field.free_vars())
+                .collect(),
+            Predicate::Recv(_, recv_ty, self_ty, _) => recv_ty
+                .free_vars()
+                .into_iter()
+                .chain(self_ty.free_vars())
                 .collect(),
         }
     }
@@ -452,6 +447,10 @@ where
         Predicate::HasField(ty, name, field, PhantomData)
     }
 
+    pub fn recv(kind: RecvKind, recv_ty: T, self_ty: T) -> Self {
+        Predicate::Recv(kind, recv_ty, self_ty, PhantomData)
+    }
+
     pub fn is_record_qualifier(&self) -> bool {
         matches!(self, Predicate::HasField(..))
     }
@@ -462,6 +461,7 @@ where
             Predicate::HasField(ty, _, field_ty, _) => {
                 ty.in_head_normal_form() || field_ty.in_head_normal_form()
             }
+            Predicate::Recv(_, _, _, _) => false,
         }
     }
 
@@ -474,9 +474,15 @@ where
                 ph.clone(),
             ),
             Predicate::HasField(ty, field_name, field_ty, ph) => Predicate::HasField(
-                ty.freeze_vars().clone(),
+                ty.freeze_vars(),
                 field_name.clone(),
                 field_ty.freeze_vars(),
+                ph.clone(),
+            ),
+            Predicate::Recv(recv_kind, recv_ty, self_ty, ph) => Predicate::Recv(
+                recv_kind.clone(),
+                recv_ty.freeze_vars(),
+                self_ty.freeze_vars(),
                 ph.clone(),
             ),
         }
@@ -495,9 +501,15 @@ where
                 ph.clone(),
             ),
             Predicate::HasField(ty, field_name, field_ty, ph) => Predicate::HasField(
-                ty.unfreeze_vars().clone(),
+                ty.unfreeze_vars(),
                 field_name.clone(),
                 field_ty.unfreeze_vars(),
+                ph.clone(),
+            ),
+            Predicate::Recv(recv_kind, recv_ty, self_ty, ph) => Predicate::Recv(
+                recv_kind.clone(),
+                recv_ty.unfreeze_vars(),
+                self_ty.unfreeze_vars(),
                 ph.clone(),
             ),
         }
@@ -541,6 +553,20 @@ where
                 match mgu_ref_slices(
                     &[lhs_ty, lhs_field_ty],
                     &[rhs_ty, rhs_field_ty],
+                    &Subst::new(),
+                    synonyms,
+                ) {
+                    Ok((_, subst)) => Some(subst),
+                    Err(_) => None,
+                }
+            }
+            (
+                Predicate::Recv(kind1, lhs_recv, lhs_self, _),
+                Predicate::Recv(kind2, rhs_recv, rhs_self, _),
+            ) if kind1 == kind2 => {
+                match mgu_ref_slices(
+                    &[lhs_recv, lhs_self],
+                    &[rhs_recv, rhs_self],
                     &Subst::new(),
                     synonyms,
                 ) {

@@ -208,8 +208,11 @@ impl TyScheme {
                     });
                 }
 
-                // TODO: CHECK that ty_args > 0
-                let ty_arg = ty_args.remove(0);
+                let ty_arg = if ty_args.len() > 0 {
+                    ty_args.remove(0)
+                } else {
+                    Ty::Never
+                };
                 preds.push(Predicate::class(
                     fqn.without_type_args().to_string(),
                     ty_arg,
@@ -567,28 +570,26 @@ impl StructTy {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiverMode {
+    #[default]
     None,
     Value,
     Ptr,
 }
 
 impl ReceiverMode {
-    pub fn from_signature(base_ty: &Ty, param_tys: &[Ty], is_static: bool) -> Self {
+    pub fn from_signature(param_tys: &[Ty], is_static: bool) -> Self {
         if is_static || param_tys.is_empty() {
             return ReceiverMode::None;
         }
 
-        let self_ty = base_ty.clone();
-        let self_ptr_ty = Ty::Ptr(Box::new(self_ty.clone()));
-
-        if param_tys[0] == self_ty {
-            ReceiverMode::Value
-        } else if param_tys[0] == self_ptr_ty {
-            ReceiverMode::Ptr
-        } else {
-            ReceiverMode::None
+        // First parameter is always considered the receiver for non-static methods.
+        // If it is a pointer type, we treat the method as a pointer receiver,
+        // otherwise as a value receiver.
+        match &param_tys[0] {
+            Ty::Ptr(_) => ReceiverMode::Ptr,
+            _ => ReceiverMode::Value,
         }
     }
 }
@@ -597,8 +598,8 @@ impl ReceiverMode {
 pub struct TraitField {
     pub name: String,
     pub ty: TyScheme,
-    pub receiver_mode: ReceiverMode,
     pub is_static: bool,
+    pub recv_mode: ReceiverMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -614,14 +615,49 @@ impl TraitTy {
     pub fn field_tys(&self) -> Vec<TyScheme> {
         self.fields.iter().map(|f| f.ty.clone()).collect()
     }
+
+    pub fn create_method_path(&self, method_name: &str, receiver_ty: Option<&Ty>) -> Path {
+        let mut method_path = self.path.clone();
+        let type_params = self.ty.get_ty_params();
+        if !type_params.is_empty() {
+            let mut type_args = type_params
+                .iter()
+                .map(|ty| ty.to_string())
+                .collect::<Vec<_>>();
+            if let Some(receiver_ty) = receiver_ty {
+                if !type_args.is_empty() {
+                    type_args[0] = receiver_ty.to_string();
+                }
+            }
+            method_path = method_path.append_type_args(type_args.iter());
+        }
+
+        log::debug!(
+            "[resolve_trait_method] trait_path={} type_params={:?} produced={}",
+            self.path,
+            type_params
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>(),
+            method_path.append(method_name.to_string())
+        );
+        method_path.append(method_name.to_string())
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImplField {
+    pub path: Path,
+    pub scheme: Option<TyScheme>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImplTy {
     pub base_ty: Ty,
     pub trait_ty: Ty,
     pub ty_args: Vec<Ty>,
     pub predicates: Vec<Predicate<Ty, TyVar>>,
+    pub fields: Vec<ImplField>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -821,6 +857,10 @@ impl top::Ty<TyVar> for Ty {
 
     fn tuple(tys: Vec<Self>) -> Self {
         Ty::Tuple(tys)
+    }
+
+    fn ptr(ty: Self) -> Self {
+        Ty::Ptr(Box::new(ty))
     }
 
     fn maybe_var(&self) -> Option<&TyVar> {
