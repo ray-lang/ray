@@ -1154,7 +1154,8 @@ impl Ty {
             "string" => Ty::string(),
             "char" => Ty::char(),
             "bool" => Ty::bool(),
-            "list" => Ty::list(Ty::nil()),
+            "list" => Ty::list(Ty::Never),
+            "rawptr" => Ty::raw_ptr(Ty::Never),
             _ => return None,
         })
     }
@@ -1318,6 +1319,11 @@ impl Ty {
     #[inline(always)]
     pub fn list(el: Ty) -> Ty {
         Ty::Projection(Box::new(Ty::Const(str!("list"))), vec![el])
+    }
+
+    #[inline(always)]
+    pub fn raw_ptr(el: Ty) -> Ty {
+        Ty::RawPtr(Box::new(el))
     }
 
     #[inline(always)]

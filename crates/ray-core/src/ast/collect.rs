@@ -26,18 +26,18 @@ use super::{
 };
 
 impl CollectPatterns for Node<Pattern> {
-    fn collect_patterns(&self, srcmap: &SourceMap, tcx: &mut TyCtx) -> (Ty, TyEnv, ConstraintTree) {
+    fn collect_patterns(&self, ctx: &mut CollectCtx) -> (Ty, TyEnv, ConstraintTree) {
         match &self.value {
-            Pattern::Name(n) => n.path.collect_patterns(srcmap, tcx),
+            Pattern::Name(n) => n.path.collect_patterns(ctx),
             Pattern::Sequence(_) => todo!("collect patterns: {}", self),
             Pattern::Tuple(_) => todo!("collect patterns: {}", self),
             Pattern::Dot(lhs_pat, field_name) => {
-                let src = srcmap.get(self);
+                let src = ctx.srcmap.get(self);
                 // Collect constraints for the left pattern to obtain its type and env
-                let (lhs_ty, env, ctree) = lhs_pat.collect_patterns(srcmap, tcx);
+                let (lhs_ty, env, ctree) = lhs_pat.collect_patterns(ctx);
 
                 // Fresh type variable for the field
-                let field_ty = Ty::Var(tcx.tf().next());
+                let field_ty = Ty::Var(ctx.tcx.tf().next());
 
                 // Prove that the LHS type has the named field with the given type
                 let mut prove = ProveConstraint::new(Predicate::has_field(
@@ -48,30 +48,38 @@ impl CollectPatterns for Node<Pattern> {
                 prove.info_mut().with_src(src);
 
                 // Set this pattern's type to the field type
-                tcx.set_ty(self.id, field_ty.clone());
+                ctx.tcx.set_ty(self.id, field_ty.clone());
 
                 (field_ty, env, AttachTree::new(prove, ctree))
             }
             Pattern::Missing(_) => {
-                let ty = Ty::Var(tcx.tf().next());
-                tcx.set_ty(self.id, ty.clone());
+                let ty = Ty::Var(ctx.tcx.tf().next());
+                ctx.tcx.set_ty(self.id, ty.clone());
                 (ty, TyEnv::new(), ConstraintTree::empty())
             }
             Pattern::Deref(n) => {
-                let src = srcmap.get(self);
-                let (ptr_ty, env, ctree) = n.path.collect_patterns(srcmap, tcx);
-                let ty = Ty::Var(tcx.tf().next());
+                let src = ctx.srcmap.get(self);
+                let (ptr_ty, env, ctree) = n.path.collect_patterns(ctx);
+                let ty = Ty::Var(ctx.tcx.tf().next());
+
+                log::debug!(
+                    "[collect_patterns] Deref({}): ptr_ty={}, ty={}",
+                    n,
+                    ptr_ty,
+                    ty
+                );
 
                 // require core::Deref[ptr_ty, ty]
+                let deref_trait_fqn = ctx.ncx.builtin_trait("Deref");
                 let mut c = ProveConstraint::new(Predicate::class(
-                    str!("core::Deref"),
+                    deref_trait_fqn.to_string(),
                     ptr_ty.clone(),
                     vec![ty.clone()],
                 ));
-                log::debug!("[collect_patterns] deref predicate = {}", c);
                 c.info_mut().with_src(src);
+                log::debug!("[collect_patterns] deref predicate = {}", c);
 
-                tcx.set_ty(self.id, ty.clone());
+                ctx.tcx.set_ty(self.id, ty.clone());
                 (ty, env, AttachTree::new(c, ctree))
             }
         }
@@ -272,8 +280,7 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
             let mut lhs_env = Env::new();
             for (i, param) in func.sig.params.iter().enumerate() {
                 let param_name = param.name();
-                let (mut param_ty, param_env, mut param_ct) =
-                    param_name.collect_patterns(ctx.srcmap, ctx.tcx);
+                let (mut param_ty, param_env, mut param_ct) = param_name.collect_patterns(ctx);
 
                 if let Some(anno_param_ty) = anno_params.get(i) {
                     let param_src = ctx.srcmap.get(param);
@@ -284,15 +291,6 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
                     // Now *canonicalize* this param to the annotated type
                     param_ty = anno_param_ty.clone();
                 }
-
-                // if let Some(self_ty) = maybe_self_ty {
-                //     if param_name.is_self() {
-                //         let param_src = ctx.srcmap.get(param);
-                //         let mut c = EqConstraint::new(param_ty.clone(), (*self_ty).clone());
-                //         c.info_mut().with_src(param_src);
-                //         param_ct = AttachTree::new(c, param_ct);
-                //     }
-                // }
 
                 ctx.bound_names.insert(param_name.clone(), param_ty.clone());
                 param_tys.push(param_ty.clone());
@@ -378,8 +376,12 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
         // D-TYPE
         //
         // Now that we have the constraints for the function binding
-        // we can collect the constraints for the function's type signature
-        let bg = BindingGroup::new(fb_env, fb_aset, ctree).with_src(src.clone());
+        // we can collect the constraints for the function's type signature.
+        // Anchor binding-group level diagnostics (e.g., skolemization errors)
+        // to the function *signature* span rather than the full function body,
+        // so errors related to the declared type highlight the signature.
+        let src = src.respan(func.sig.span);
+        let bg = BindingGroup::new(fb_env, fb_aset, ctree).with_src(src);
         let mut sigma = Env::new();
         if let Some(anno_ty) = &func.sig.ty {
             sigma.insert(name.value.clone(), anno_ty.clone());
@@ -570,6 +572,7 @@ impl CollectConstraints for (&BinOp, &Source) {
 
         // Resolve operator symbol to FQN and its backing trait
         let name = binop.op.to_string();
+
         let fqn = match ctx.tcx.lookup_infix_op(&name).cloned() {
             Some((fqn, _)) => fqn,
             _ => panic!("no infix op for {}", name),
@@ -614,40 +617,52 @@ impl CollectConstraints for (&Block, &Source) {
             for stmt in block.stmts.iter() {
                 let src = ctx.srcmap.get(stmt);
                 let bg = if let Expr::Assign(assign) = &stmt.value {
-                    // Special case: field assignment (`a.x = rhs`).
-                    let (lhs_ty, bg) = if let Pattern::Dot(_, _) = &assign.lhs.value {
-                        // Collect constraints for LHS place and RHS value, then equate their types.
-                        let (lhs_ty, lhs_aset, lhs_ct) =
-                            (&assign.lhs.value, &src).collect_constraints(ctx);
-                        let (rhs_ty, rhs_aset, rhs_ct) =
-                            assign.rhs.as_ref().collect_constraints(ctx);
+                    // Special case: place assignments (field or deref), which do not introduce
+                    // new bindings and should reuse existing types.
+                    let (lhs_ty, bg) =
+                        if matches!(assign.lhs.value, Pattern::Dot(..) | Pattern::Deref(..)) {
+                            // Collect constraints for LHS place and RHS value, then equate their types.
+                            let (lhs_ty, lhs_aset, lhs_ct) =
+                                (&assign.lhs.value, &src).collect_constraints(ctx);
+                            let (rhs_ty, rhs_aset, rhs_ct) =
+                                assign.rhs.as_ref().collect_constraints(ctx);
 
-                        let mut eq = EqConstraint::new(lhs_ty.clone(), rhs_ty);
-                        eq.info_mut().with_src(src.clone());
+                            let mut eq = EqConstraint::new(lhs_ty.clone(), rhs_ty);
+                            eq.info_mut().with_src(src.clone());
 
-                        let mut aset = lhs_aset;
-                        aset.extend(rhs_aset);
-                        let ctree = AttachTree::new(eq, NodeTree::new(vec![lhs_ct, rhs_ct]));
+                            let mut aset = lhs_aset;
+                            aset.extend(rhs_aset);
+                            let ctree = AttachTree::new(eq, NodeTree::new(vec![lhs_ct, rhs_ct]));
 
-                        if let Ty::Var(tv) = &lhs_ty {
-                            mono_tys.insert(tv.clone());
-                        }
+                            if let Ty::Var(tv) = &lhs_ty {
+                                mono_tys.insert(tv.clone());
+                            }
 
-                        // No new names are introduced by a field assignment; env is empty.
-                        (
-                            lhs_ty,
-                            BindingGroup::new(TyEnv::new(), aset, ctree).with_src(src),
-                        )
-                    } else {
-                        // Default: use declaration collection (patterns may bind names).
-                        let (lhs_ty, bg, _) =
-                            (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
-                        if let Ty::Var(tv) = &lhs_ty {
-                            mono_tys.insert(tv.clone());
-                        }
+                            // No new names are introduced by a place assignment; env is empty.
+                            (
+                                lhs_ty,
+                                BindingGroup::new(TyEnv::new(), aset, ctree).with_src(src),
+                            )
+                        } else {
+                            // Default: use declaration collection (patterns may bind names).
+                            let (lhs_ty, bg, _) =
+                                (&assign.lhs, assign.rhs.as_ref(), &src).collect_decls(ctx);
 
-                        (lhs_ty, bg)
-                    };
+                            // Seed `bound_names` with any new bindings introduced by this
+                            // assignment. This ensures that subsequent uses of these names
+                            // in place contexts (e.g., `*x`, `x.f`) see the same type
+                            // variable, and also implements the "rebind with new type"
+                            // semantics by overwriting any previous entry.
+                            for (path, ty) in bg.env.iter() {
+                                ctx.bound_names.insert(path.clone(), ty.clone());
+                            }
+
+                            if let Ty::Var(tv) = &lhs_ty {
+                                mono_tys.insert(tv.clone());
+                            }
+
+                            (lhs_ty, bg)
+                        };
 
                     ctx.tcx.set_ty(stmt.id, Ty::unit());
                     ctx.tcx.set_ty(assign.lhs.id, lhs_ty);
@@ -885,8 +900,9 @@ impl CollectConstraints for (&ast::Deref, &Source) {
         eq.info_mut().with_src(src.clone());
 
         // require Deref[ptr_ty, ty]
+        let deref_trait_fqn = ctx.ncx.builtin_trait("Deref");
         let mut prove = ProveConstraint::new(Predicate::class(
-            str!("core::Deref"),
+            deref_trait_fqn.to_string(),
             ptr_ty.clone(),
             vec![ty.clone()],
         ));
@@ -1032,7 +1048,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("{}{}", sign, size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    let int_trait_fqn = ctx.ncx.int_trait();
+                    let int_trait_fqn = ctx.ncx.builtin_trait("Int");
                     log::debug!("int_trait_fqn = {}", int_trait_fqn);
                     let mut prove = ProveConstraint::new(Predicate::class(
                         int_trait_fqn.to_string(),
@@ -1049,8 +1065,9 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("f{}", size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+                    let float_trait_fqn = ctx.ncx.builtin_trait("Float");
                     let mut prove = ProveConstraint::new(Predicate::class(
-                        str!("core::Float"),
+                        float_trait_fqn.to_string(),
                         t.clone(),
                         vec![],
                     ));
@@ -1105,6 +1122,7 @@ impl CollectConstraints for (&Name, &Source) {
             );
             Ty::Var(ctx.tcx.tf().with_scope(&src.path))
         };
+
         let label = ty.to_string();
         let mut aset = AssumptionSet::new();
         aset.add(name.path.clone(), ty.clone());
@@ -1147,6 +1165,95 @@ impl CollectConstraints for (&New, &Source) {
     }
 }
 
+/// Helpers for typing lvalue "places" (names, derefs, field accesses) in
+/// assignment and pattern contexts. These do not introduce new bindings in
+/// `bound_names`; they only reuse existing bindings and emit constraints
+/// describing how the place relates to its base expression.
+fn collect_pattern_name(
+    name: &Name,
+    src: &Source,
+    ctx: &mut CollectCtx,
+) -> (Ty, AssumptionSet, ConstraintTree) {
+    let ty = if let Some(existing) = ctx.bound_names.get(&name.path) {
+        existing.clone()
+    } else {
+        debug_assert!(
+            false,
+            "collect_pattern_name: unbound place name {} at {}",
+            name.path, src.path
+        );
+        Ty::Var(ctx.tcx.tf().with_scope(&src.path))
+    };
+
+    let label = ty.to_string();
+    let mut aset = AssumptionSet::new();
+    aset.add(name.path.clone(), ty.clone());
+    let ctree = ReceiverTree::new(label);
+    (ty, aset, ctree)
+}
+
+fn collect_pattern_deref(
+    name: &Name,
+    src: &Source,
+    ctx: &mut CollectCtx,
+) -> (Ty, Ty, AssumptionSet, ConstraintTree) {
+    // `*name`: `name` has pointer-ish type `ptr_ty`, constrained by core::Deref,
+    // and the place type is the pointee `inner_ty`.
+    let ptr_ty = if let Some(existing) = ctx.bound_names.get(&name.path) {
+        existing.clone()
+    } else {
+        debug_assert!(
+            false,
+            "collect_pattern_deref: unbound place name {} at {}",
+            name.path, src.path
+        );
+        Ty::Var(ctx.tcx.tf().with_scope(&src.path))
+    };
+    let inner_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+    let deref_trait_fqn = ctx.ncx.builtin_trait("Deref");
+    let mut aset = AssumptionSet::new();
+    aset.add(name.path.clone(), ptr_ty.clone());
+
+    let mut prove = ProveConstraint::new(Predicate::class(
+        deref_trait_fqn.to_string(),
+        ptr_ty.clone(),
+        vec![inner_ty.clone()],
+    ));
+    prove.info_mut().with_src(src.clone());
+
+    let ctree = AttachTree::new(prove, ReceiverTree::new(ptr_ty.to_string()));
+    (ptr_ty, inner_ty, aset, ctree)
+}
+
+fn collect_pattern_dot(
+    lhs_pat: &Node<Pattern>,
+    field_name: &Name,
+    src: &Source,
+    ctx: &mut CollectCtx,
+) -> (Ty, AssumptionSet, ConstraintTree) {
+    // `lhs.field`: the place type is the field type, and we prove a has_field
+    // predicate relating the base record type to the field type.
+    let lhs_src = ctx.srcmap.get(lhs_pat);
+    let (lhs_ty, aset, ctree) = (&lhs_pat.value, &lhs_src).collect_constraints(ctx);
+
+    // Record the type of the base pattern node so later passes (LIR gen) can query it by id.
+    ctx.tcx.set_ty(lhs_pat.id, lhs_ty.clone());
+
+    // Fresh type variable for the field
+    let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
+    // Prove the has_field predicate tying the base type to the field type
+    let mut prove = ProveConstraint::new(Predicate::has_field(
+        lhs_ty,
+        field_name.path.name().unwrap().to_string(),
+        field_ty.clone(),
+    ));
+    prove.info_mut().with_src(src.clone());
+
+    (field_ty, aset, AttachTree::new(prove, ctree))
+}
+
 impl CollectConstraints for (&Pattern, &Source) {
     type Output = Ty;
 
@@ -1156,43 +1263,12 @@ impl CollectConstraints for (&Pattern, &Source) {
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(pattern, src) = self;
         match pattern {
-            Pattern::Name(name) | Pattern::Deref(Node { id: _, value: name }) => {
-                // Reuse existing binding for assignments/uses; only create a fresh
-                // variable if this name is not yet bound in the current scope.
-                let ty = if let Some(existing_ty) = ctx.bound_names.get(&name.path) {
-                    existing_ty.clone()
-                } else {
-                    let fresh = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    ctx.bound_names.insert(name.path.clone(), fresh.clone());
-                    fresh
-                };
-                let label = ty.to_string();
-                let mut aset = AssumptionSet::new();
-                aset.add(name.path.clone(), ty.clone());
-                let ctree = ReceiverTree::new(label);
-                (ty, aset, ctree)
+            Pattern::Name(name) => collect_pattern_name(name, src, ctx),
+            Pattern::Deref(Node { id: _, value: name }) => {
+                let (_ptr_ty, inner_ty, aset, ctree) = collect_pattern_deref(name, src, ctx);
+                (inner_ty, aset, ctree)
             }
-            Pattern::Dot(lhs_pat, field_name) => {
-                // Evaluate constraints for the base pattern to get its type
-                let lhs_src = ctx.srcmap.get(lhs_pat);
-                let (lhs_ty, aset, ctree) = (&lhs_pat.value, &lhs_src).collect_constraints(ctx);
-
-                // Record the type of the base pattern node so later passes (LIR gen) can query it by id.
-                ctx.tcx.set_ty(lhs_pat.id, lhs_ty.clone());
-
-                // Fresh type variable for the field
-                let field_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-
-                // Prove the has_field predicate tying the base type to the field type
-                let mut prove = ProveConstraint::new(Predicate::has_field(
-                    lhs_ty,
-                    field_name.path.name().unwrap().to_string(),
-                    field_ty.clone(),
-                ));
-                prove.info_mut().with_src(src.clone());
-
-                (field_ty, aset, AttachTree::new(prove, ctree))
-            }
+            Pattern::Dot(lhs_pat, field_name) => collect_pattern_dot(lhs_pat, field_name, src, ctx),
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
             Pattern::Missing(_) => todo!(),

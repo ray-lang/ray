@@ -45,6 +45,7 @@ pub struct FrontendResult {
     pub libs: Vec<lir::Program>,
     pub paths: HashSet<Path>,
     pub definitions: HashMap<Path, libgen::DefinitionRecord>,
+    pub errors: Vec<RayError>,
 }
 
 #[derive(Debug)]
@@ -140,21 +141,18 @@ impl Driver {
         log::debug!("{}", result.module);
         log::info!("type checking module...");
 
+        let mut errors: Vec<RayError> = Vec::new();
+
         let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
-        let (solution, defs) = match inf.infer_ty(&result.module, &result.srcmap, &result.defs) {
-            Ok(result) => result,
-            Err(errs) => {
-                return Err(errs
-                    .into_iter()
-                    .map(|err| RayError {
-                        msg: err.message(),
-                        src: err.src,
-                        kind: RayErrorKind::Type,
-                        context: Some(format!("while type checking {module_path}")),
-                    })
-                    .collect());
-            }
-        };
+        let infer_result = inf.infer_ty(&result.module, &result.srcmap, &result.defs);
+        let solution = infer_result.solution;
+        let defs = infer_result.defs;
+        errors.extend(infer_result.errors.into_iter().map(|err| RayError {
+            msg: err.message(),
+            src: err.src,
+            kind: RayErrorKind::Type,
+            context: Some(format!("while type checking {module_path}")),
+        }));
 
         log::debug!("solution: {}", solution);
 
@@ -195,6 +193,7 @@ impl Driver {
             libs: result.libs,
             paths: result.paths,
             definitions,
+            errors,
         })
     }
 
@@ -233,6 +232,9 @@ impl Driver {
 
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
         let frontend = self.build_frontend(&options, None)?;
+        if !frontend.errors.is_empty() {
+            return Err(frontend.errors);
+        }
 
         if options.no_compile {
             return Ok(());
@@ -249,6 +251,7 @@ impl Driver {
             libs,
             paths: module_paths,
             definitions: _,
+            errors: _,
         } = frontend;
 
         let mut program = lir::Program::generate(&module, &tcx, &srcmap, libs)?;
@@ -845,9 +848,12 @@ fn assign_pretty_name_for_var(var: &TyVar, subst: &mut Subst<TyVar, Ty>, counter
         return;
     }
 
-    let new_var = fresh_pretty_tyvar(*counter);
-    *counter += 1;
-    subst.insert(var.clone(), Ty::Var(new_var));
+    // For pretty-printing in analysis/hover contexts, render unknown type
+    // variables as `_` rather than introducing synthetic type-variable names.
+    // This keeps fully unknown types as `_` and partially-known ones as
+    // e.g. `list[_]` while leaving named generics unchanged.
+    let placeholder = Ty::Const("_".into());
+    subst.insert(var.clone(), placeholder);
 }
 
 fn fresh_pretty_tyvar(index: usize) -> TyVar {

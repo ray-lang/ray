@@ -710,7 +710,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     /// Marshal a single argument value to match the callee's LLVM parameter type.
     ///
     /// This uses the Ray parameter type to distinguish between:
-    /// - pointer parameters: the logical argument is a pointer *value* (Ty::Ref),
+    /// - pointer parameters: the logical argument is a pointer *value* (Ty::Ref | Ty::RawPtr),
     /// - by-value parameters lowered as addresses: the logical argument is a value,
     ///   but we pass an address to it when LLVM expects a pointer.
     fn marshal_arg_value(
@@ -725,11 +725,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             // Callee expects an address in LLVM IR.
             if let BasicValueEnum::PointerValue(p) = val {
                 match ray_param_ty {
-                    // Pointer parameter: the logical argument is a pointer value (*T).
+                    // Pointer parameter: the logical argument is a pointer value (*T | rawptr[T]).
                     // If that pointer is stored in a local slot (slot-of-pointer),
                     // load once so we pass the pointer value instead of the slot address.
-                    Ty::Ref(_) => {
-                        if self.is_local_slot(&p) && matches!(self.get_pointee_ty(p), Ty::Ref(_)) {
+                    Ty::Ref(_) | Ty::RawPtr(_) => {
+                        if self.is_local_slot(&p) && self.get_pointee_ty(p).is_any_pointer() {
                             val = self.load_pointer(p)?;
                         }
                         return Ok(val);
@@ -2290,6 +2290,12 @@ impl<'a, 'ctx> lir::Call {
     ) -> Result<LoweredCall<'ctx>, BuilderError> {
         let ptr_val = self.eval_intrinsic_ptr(ctx, tcx, srcmap, 0)?;
         let offset_val = self.eval_intrinsic_int(ctx, tcx, srcmap, 1)?;
+        log::debug!(
+            "[codegen_ptr_offset] ptr_val={:?} offset_val={:?} pointee_ty={}",
+            ptr_val,
+            offset_val,
+            ctx.get_pointee_ty(ptr_val)
+        );
         let pointee_ty = ctx.get_pointee_ty(ptr_val).clone();
         let elem_size_raw = ctx
             .to_llvm_type(&pointee_ty)
@@ -2481,7 +2487,14 @@ impl<'a, 'ctx> lir::Call {
     ) -> Result<PointerValue<'ctx>, BuilderError> {
         let mut val = self.args[idx].codegen(ctx, tcx, srcmap)?;
         if let BasicValueEnum::PointerValue(ptr) = val {
-            if ctx.is_local_slot(&ptr) {
+            let is_slot = ctx.is_local_slot(&ptr);
+            log::debug!(
+                "[eval_intrinsic_ptr] arg_idx={} raw_ptr={:?} is_local_slot={}",
+                idx,
+                ptr,
+                is_slot
+            );
+            if is_slot {
                 val = ctx.load_pointer(ptr)?;
             }
         }

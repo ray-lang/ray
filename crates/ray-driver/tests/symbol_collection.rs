@@ -152,8 +152,6 @@ string { raw_ptr, len }
 
     assert!(make_string_body.stmts.len() == 3, "expected 3 statements");
 
-    println!("body = {:#?}", make_string_body);
-
     let raw_ptr_assign = match &make_string_body.stmts[1].value {
         Expr::Assign(assign) => assign,
         _ => panic!("expected assign"),
@@ -184,12 +182,17 @@ string { raw_ptr, len }
         _ => panic!("expected labeled element"),
     };
 
-    println!("symbol_map = {:#?}", result.symbol_map);
+    // println!("symbol_map = {:#?}", result.symbol_map);
 
     let targets = result.symbol_map.get(&raw_ptr_ref_node.id).expect(&format!(
         "could not find symbol for {}",
         raw_ptr_ref_node.id
     ));
+
+    println!(
+        "targets for ({}) {:?}: {:?}",
+        raw_ptr_ref_node.id, raw_ptr_ref_node, targets
+    );
 
     assert!(
         targets
@@ -223,14 +226,15 @@ fn foo(x: int, y: int) -> int {
         Path::from("core::Add"),
     );
 
-    let _ = InferSystem::infer(
+    let infer_result = InferSystem::infer(
         &mut result.tcx,
         &mut result.ncx,
         &result.srcmap,
         &result.module,
         &result.defs,
-    )
-    .expect("Type inference failed");
+    );
+
+    assert!(infer_result.errors.is_empty(), "Type inference failed");
 
     // verify types
 

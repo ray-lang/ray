@@ -130,8 +130,8 @@ fn collect_semantic_errors(
         ..Default::default()
     };
     let driver = Driver::new(ray_paths);
-    let result = match driver.build_frontend(&build_options, Some(overlays)) {
-        Ok(result) => result,
+    let frontend = match driver.build_frontend(&build_options, Some(overlays)) {
+        Ok(frontend) => frontend,
         Err(errors) => return Ok((errors, None)),
     };
 
@@ -146,7 +146,8 @@ fn collect_semantic_errors(
         libs: _,
         paths,
         definitions,
-    } = result;
+        errors,
+    } = frontend;
 
     let snapshot = AnalysisSnapshotData {
         module_path,
@@ -159,7 +160,7 @@ fn collect_semantic_errors(
         module_paths: paths,
     };
 
-    Ok((vec![], Some(snapshot)))
+    Ok((errors, Some(snapshot)))
 }
 
 fn dedup_diagnostics(mut diags: Vec<Diagnostic>) -> Vec<Diagnostic> {

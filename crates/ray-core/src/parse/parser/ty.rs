@@ -266,6 +266,29 @@ impl Parser<'_> {
                         .map(|t| t.take_value())
                         .collect();
                 }
+                Ty::RawPtr(ty) => {
+                    let count = if let Some(mut ty_params) = ty_params {
+                        if ty_params.tys.len() == 0 {
+                            0
+                        } else {
+                            let count = ty_params.tys.len();
+                            let parsed_ty = ty_params.tys.remove(0);
+                            *(ty.as_mut()) = parsed_ty.take_value();
+                            count
+                        }
+                    } else {
+                        0
+                    };
+
+                    if count != 1 {
+                        let err = self.parse_error(
+                            format!("rawptr expected one type parameter, but found {}", count),
+                            span,
+                            ctx,
+                        );
+                        self.record_parse_error(err);
+                    }
+                }
                 _ => {}
             }
             ty

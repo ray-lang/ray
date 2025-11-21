@@ -30,7 +30,11 @@ pub struct InferSystem<'a> {
     ncx: &'a mut NameContext,
 }
 
-pub type InferResult = Result<(SolveResult<TypeSystemInfo, Ty, TyVar>, SchemeEnv), Vec<TypeError>>;
+pub struct InferResult {
+    pub solution: SolveResult<TypeSystemInfo, Ty, TyVar>,
+    pub defs: SchemeEnv,
+    pub errors: Vec<TypeError>,
+}
 
 impl<'a> InferSystem<'a> {
     pub fn new(tcx: &'a mut TyCtx, ncx: &'a mut NameContext) -> InferSystem<'a> {
@@ -69,7 +73,7 @@ impl<'a> InferSystem<'a> {
         let (_, _, c) = v.collect_constraints(&mut ctx);
         log::debug!("constraint tree: {:?}", c);
 
-        let constraints = c.spread().phase().flatten_bottom_up();
+        let constraints = c.clone().spread().phase().flatten_bottom_up();
         log::debug!("{}", v);
         let mut s = String::new();
         s.push_str("[\n");
@@ -155,14 +159,25 @@ impl<'a> InferSystem<'a> {
 
         log::debug!("class env: {:?}", options.class_env);
 
-        // let (mut solution, constraints) = solver.solve(options, constraints);
         let mut solution = solver.solve(options, constraints);
         // normalize the skolems
         solution.normalize_subst();
 
         log::debug!("solution: {}", solution);
 
-        if solution.errors.len() != 0 {
+        log::debug!("defs: {:?}", defs);
+
+        // Always apply the solution's substitution and qualifiers to defs so
+        // callers (e.g., IDE/LSP) can see as much inferred type information as
+        // possible, even when there are type errors.
+        defs.apply_subst_all(&solution.subst);
+        defs.qualify_tys(&solution.qualifiers);
+
+        // Build a list of TypeError values from solver errors and
+        // post-inference checks, but do not abort; callers can decide whether
+        // to treat these as fatal.
+        let mut errors: Vec<TypeError> = Vec::new();
+        if !solution.errors.is_empty() {
             let mut rename_subst = self
                 .tcx
                 .inverted_var_map()
@@ -185,26 +200,23 @@ impl<'a> InferSystem<'a> {
 
             log::debug!("[infer_ty] rename_subst = {:?}", rename_subst);
 
-            let errs = solution
-                .errors
-                .into_iter()
-                .map(|(label, mut info)| {
-                    info.apply_subst(&solution.subst);
-                    info.apply_subst(&rename_subst);
-                    info.simplify();
-                    TypeError::from_info(label, info)
-                })
-                .collect();
-            Err(errs)
-        } else {
-            log::debug!("defs: {:?}", defs);
+            errors.extend(solution.errors.drain(..).map(|(label, mut info)| {
+                info.apply_subst(&solution.subst);
+                info.apply_subst(&rename_subst);
+                info.simplify();
+                TypeError::from_info(label, info)
+            }));
+        }
 
-            defs.apply_subst_all(&solution.subst);
-            defs.qualify_tys(&solution.qualifiers);
-            self.post_infer_checks(&defs, &solution, &srcmap)?;
+        if let Err(mut post_errs) = self.post_infer_checks(&defs, &solution, &srcmap) {
+            errors.append(&mut post_errs);
+        }
 
-            log::debug!("defs: {}", defs);
-            Ok((solution, defs))
+        log::debug!("defs: {}", defs);
+        InferResult {
+            solution,
+            defs,
+            errors,
         }
     }
 

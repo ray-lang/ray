@@ -61,20 +61,20 @@ impl CollectCtx<'_> {
 }
 
 pub trait CollectPatterns {
-    fn collect_patterns(&self, srcmap: &SourceMap, tcx: &mut TyCtx) -> (Ty, TyEnv, ConstraintTree);
+    fn collect_patterns(&self, ctx: &mut CollectCtx) -> (Ty, TyEnv, ConstraintTree);
 }
 
 impl CollectPatterns for String {
-    fn collect_patterns(&self, srcmap: &SourceMap, tcx: &mut TyCtx) -> (Ty, TyEnv, ConstraintTree) {
+    fn collect_patterns(&self, ctx: &mut CollectCtx) -> (Ty, TyEnv, ConstraintTree) {
         let path = Path::from(self.clone());
-        path.collect_patterns(srcmap, tcx)
+        path.collect_patterns(ctx)
     }
 }
 
 impl CollectPatterns for Path {
-    fn collect_patterns(&self, _: &SourceMap, tcx: &mut TyCtx) -> (Ty, TyEnv, ConstraintTree) {
+    fn collect_patterns(&self, ctx: &mut CollectCtx) -> (Ty, TyEnv, ConstraintTree) {
         let mut env = Env::new();
-        let tv = tcx.tf().next();
+        let tv = ctx.tcx.tf().next();
         env.insert(self.clone(), Ty::Var(tv.clone()));
         let ct = ReceiverTree::new(tv.to_string());
         (Ty::Var(tv), env, ct)
@@ -102,7 +102,7 @@ where
         let &(var, rhs, src) = self;
 
         // E,Tc1 ⊢p p : τ1
-        let (lhs_ty, env, ct1) = var.collect_patterns(ctx.srcmap, ctx.tcx);
+        let (lhs_ty, env, ct1) = var.collect_patterns(ctx);
 
         let lhs_names = env.keys().map(|path| path.to_string()).collect::<Vec<_>>();
         log::debug!(

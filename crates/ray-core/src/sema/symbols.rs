@@ -65,7 +65,7 @@ pub struct SymbolBuildContext<'a> {
     symbol_map: SymbolMap,
     definitions: HashMap<Path, SymbolTarget>,
     struct_fields: HashMap<(String, String), Path>,
-    references: IndexMap<u64, Path>,
+    references: Vec<(u64, Path)>,
 }
 
 impl<'a> SymbolBuildContext<'a> {
@@ -81,7 +81,7 @@ impl<'a> SymbolBuildContext<'a> {
             symbol_map: SymbolMap::new(),
             definitions: HashMap::new(),
             struct_fields: HashMap::new(),
-            references: IndexMap::new(),
+            references: Vec::new(),
         }
     }
 
@@ -107,10 +107,7 @@ impl<'a> SymbolBuildContext<'a> {
 
     fn record_reference(&mut self, node_id: u64, path: &Path) {
         log::debug!("[record reference] node_id={}, path={}", node_id, path);
-        if self.references.contains_key(&node_id) {
-            return;
-        }
-        self.references.insert(node_id, path.clone());
+        self.references.push((node_id, path.clone()));
     }
 
     fn record_assign(&mut self, assign: &Assign) {

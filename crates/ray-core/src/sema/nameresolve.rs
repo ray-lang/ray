@@ -67,10 +67,10 @@ impl NameContext {
             })
     }
 
-    pub fn int_trait(&self) -> Path {
-        match &self.nametree().find_names("Int", &[]).as_slice() {
+    pub fn builtin_trait(&self, name: &str) -> Path {
+        match &self.nametree().find_names(name, &[]).as_slice() {
             &[parts] => Path::from(parts),
-            _ => Path::from("core::Int"),
+            _ => Path::from(format!("core::{}", name)),
         }
     }
 }
