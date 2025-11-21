@@ -117,7 +117,7 @@ fn make_ptr_ty(mut ty: Ty, ptr: usize, ty_params: &mut Vec<Ty>) -> Ty {
             _ => (),
         }
 
-        ty = Ty::ptr(ty);
+        ty = Ty::refty(ty);
     }
 
     ty

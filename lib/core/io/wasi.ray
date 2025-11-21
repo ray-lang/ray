@@ -1,16 +1,19 @@
 extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) -> uint
 
 struct IOVec {
-    base: *u8  // Starting address
+    base: rawptr[u8]  // Starting address
     len: uint  // Number of bytes to transfer
 }
 
 fn writev_stdout(chunks: *string, n: uint) -> uint {
     iovecs = new(IOVec, n)
+    raw_chunks = chunks as rawptr[string]
+    raw_iovecs = iovecs as rawptr[IOVec]
     mut i = 0
     while i < n {
-        chunk = *(chunks + i)
-        ptr = iovecs + i
+        raw_chunk = *(raw_chunks + i)
+        chunk = raw_chunk as string
+        ptr = raw_iovecs + i
         *ptr = IOVec { base: chunk.raw_ptr, len: chunk.len }
         i += 1
     }

@@ -6,7 +6,7 @@ fn print(v: 'a) -> () where ToStr['a] {
     nl = "\n"
 
     chunks = new(string, 2)
-    mut ptr = chunks
+    mut ptr = chunks as rawptr[string]
     *ptr = s
     ptr = ptr + 1
     *ptr = nl

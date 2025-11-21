@@ -1,13 +1,13 @@
 @intrinsic
-extern fn __ptr_add(ptr: *'a, offset: uint) -> *'a
+extern fn __ptr_add(ptr: rawptr['a], offset: uint) -> rawptr['a]
 
 @intrinsic
-extern fn __ptr_sub(ptr: *'a, offset: uint) -> *'a
+extern fn __ptr_sub(ptr: rawptr['a], offset: uint) -> rawptr['a]
 
-impl Add[*'a, uint, *'a] {
-    fn +(lhs: *'a, rhs: uint) -> *'a => __ptr_add(lhs, rhs)
+impl Add[rawptr['a], uint, rawptr['a]] {
+    fn +(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_add(lhs, rhs)
 }
 
-impl Sub[*'a, uint, *'a] {
-    fn -(lhs: *'a, rhs: uint) -> *'a => __ptr_sub(lhs, rhs)
+impl Sub[rawptr['a], uint, rawptr['a]] {
+    fn -(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_sub(lhs, rhs)
 }

@@ -162,7 +162,7 @@ impl Parser<'_> {
         let ptee_ty = self.parse_type_annotation(None, ctx);
         let end = ptee_ty.span().unwrap().end;
         Ok(Parsed::new(
-            TyScheme::from_mono(Ty::ptr(ptee_ty.take_value().into_mono())),
+            TyScheme::from_mono(Ty::refty(ptee_ty.take_value().into_mono())),
             self.mk_src(Span { start, end }),
         ))
     }

@@ -809,7 +809,12 @@ impl LowerAST for Node<Expr> {
             Expr::Paren(ex) => ex.lower(ctx),
             Expr::Range(r) => r.lower(ctx),
             Expr::Ref(r) => r.lower(ctx),
-            Expr::Return(_) => todo!("lower: Expr::Return: {:?}", self),
+            Expr::Return(r) => {
+                if let Some(expr) = r {
+                    expr.lower(ctx)?;
+                }
+                Ok(())
+            }
             Expr::Sequence(seq) => seq.lower(ctx),
             Expr::Tuple(t) => t.lower(ctx),
             Expr::Type(ty) => Sourced(ty, &src).lower(ctx),
@@ -1303,7 +1308,7 @@ mod tests {
             fields: vec![
                 (
                     "raw_ptr".to_string(),
-                    TyScheme::from_mono(Ty::ptr(Ty::u8())),
+                    TyScheme::from_mono(Ty::refty(Ty::u8())),
                 ),
                 ("len".to_string(), TyScheme::from_mono(Ty::uint())),
             ],

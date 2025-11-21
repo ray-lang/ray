@@ -1,5 +1,5 @@
 trait Index['a, 'el, 'idx] {
-    fn get(self: 'a, idx: 'idx) -> 'el?
+    fn get(self: *'a, idx: 'idx) -> 'el?
 
-    fn set(self: 'a, idx: 'idx, el: 'el) -> 'el?
+    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
 }

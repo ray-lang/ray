@@ -61,8 +61,16 @@ impl CollectPatterns for Node<Pattern> {
                 let src = srcmap.get(self);
                 let (ptr_ty, env, ctree) = n.path.collect_patterns(srcmap, tcx);
                 let ty = Ty::Var(tcx.tf().next());
-                let mut c = EqConstraint::new(ptr_ty, Ty::ptr(ty.clone()));
+
+                // require core::Deref[ptr_ty, ty]
+                let mut c = ProveConstraint::new(Predicate::class(
+                    str!("core::Deref"),
+                    ptr_ty.clone(),
+                    vec![ty.clone()],
+                ));
+                log::debug!("[collect_patterns] deref predicate = {}", c);
                 c.info_mut().with_src(src);
+
                 tcx.set_ty(self.id, ty.clone());
                 (ty, env, AttachTree::new(c, ctree))
             }
@@ -513,7 +521,18 @@ impl CollectConstraints for Node<Expr> {
             Expr::Paren(ex) => (ex, src).collect_constraints(ctx),
             Expr::Range(ex) => (ex, src).collect_constraints(ctx),
             Expr::Ref(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Return(_) => todo!(),
+            Expr::Return(ret) => {
+                if let Some(ex) = ret {
+                    let ex_src = &ctx.srcmap.get(ex);
+                    let (_, aset, ct) = (ex, ex_src).collect_constraints(ctx);
+                    // `return` does not produce a value at this expression position;
+                    // its own type is the bottom type `never`. We still collect and
+                    // propagate constraints for the returned expression.
+                    (Ty::Never, aset, ct)
+                } else {
+                    (Ty::Never, AssumptionSet::new(), ConstraintTree::empty())
+                }
+            }
             Expr::Sequence(_) => todo!(),
             Expr::Tuple(ex) => (ex, src).collect_constraints(ctx),
             Expr::Type(ty) => (ty, src).collect_constraints(ctx),
@@ -678,7 +697,7 @@ impl CollectConstraints for (&Boxed, &Source) {
         let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
 
         let (inner_ty, aset, ct) = boxed.inner.collect_constraints(ctx);
-        let mut c = EqConstraint::new(ty.clone(), Ty::ptr(inner_ty));
+        let mut c = EqConstraint::new(ty.clone(), Ty::refty(inner_ty));
         c.info_mut().with_src(src.clone());
 
         (ty, aset, AttachTree::new(c, ct))
@@ -852,12 +871,29 @@ impl CollectConstraints for (&ast::Deref, &Source) {
         ctx: &mut CollectCtx,
     ) -> (Self::Output, AssumptionSet, ConstraintTree) {
         let &(deref, src) = self;
+
+        // result ty of *expr
         let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
 
+        // receiver type for Deref
+        let ptr_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
+
         let (expr_ty, aset, ct) = deref.expr.collect_constraints(ctx);
-        let mut eq = EqConstraint::new(expr_ty, Ty::ptr(ty.clone()));
+
+        // expr_ty == ptr_ty
+        let mut eq = EqConstraint::new(expr_ty, ptr_ty.clone());
         eq.info_mut().with_src(src.clone());
-        (ty, aset, AttachTree::new(eq, ct))
+
+        // require Deref[ptr_ty, ty]
+        let mut prove = ProveConstraint::new(Predicate::class(
+            str!("core::Deref"),
+            ptr_ty.clone(),
+            vec![ty.clone()],
+        ));
+        prove.info_mut().with_src(src.clone());
+
+        let ct = AttachTree::new(eq, AttachTree::new(prove, ct));
+        (ty, aset, ct)
     }
 }
 
@@ -1104,7 +1140,7 @@ impl CollectConstraints for (&New, &Source) {
 
         cs.push(EqConstraint::new(
             result_ty.clone(),
-            Ty::Ptr(Box::new(pointee_ty)),
+            Ty::Ref(Box::new(pointee_ty)),
         ));
 
         (result_ty, aset, AttachTree::list(cs, NodeTree::new(cts)))
@@ -1261,7 +1297,7 @@ impl CollectConstraints for (&Ref, &Source) {
         let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
 
         let (el_ty, aset, ct) = rf.expr.collect_constraints(ctx);
-        let mut eq = EqConstraint::new(ty.clone(), Ty::ptr(el_ty.clone()));
+        let mut eq = EqConstraint::new(ty.clone(), Ty::refty(el_ty.clone()));
         eq.info_mut().with_src(src.clone());
 
         (ty, aset, AttachTree::new(eq, ct))

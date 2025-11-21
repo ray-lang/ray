@@ -104,7 +104,7 @@ fn supertraits_can_derive_complex_arguments() {
     let elem_param = ty_var("test::PtrIter::Elem");
 
     let super_template = vec![Ty::Tuple(vec![
-        Ty::ptr(elem_param.clone()),
+        Ty::refty(elem_param.clone()),
         Ty::con("usize"),
     ])];
     let class = Class::new(
@@ -124,7 +124,7 @@ fn supertraits_can_derive_complex_arguments() {
 
     let expected = Predicate::class(
         "test::Iterable".to_string(),
-        Ty::Tuple(vec![Ty::ptr(elem_ty), Ty::con("usize")]),
+        Ty::Tuple(vec![Ty::refty(elem_ty), Ty::con("usize")]),
         vec![],
     );
 
@@ -141,7 +141,7 @@ fn supertraits_chain_through_multiple_levels() {
     let iterable_self = ty_var("test::Iterable::Self");
     let iterable_super = vec![(
         "test::Sized".to_string(),
-        vec![Ty::ptr(iterable_self.clone())],
+        vec![Ty::refty(iterable_self.clone())],
     )];
     let iterable_class = Class::new(vec![iterable_self.clone()], iterable_super, vec![]);
 
@@ -183,7 +183,7 @@ fn supertraits_chain_through_multiple_levels() {
     );
     let sized_expected = Predicate::class(
         "test::Sized".to_string(),
-        Ty::ptr(Ty::Tuple(vec![key_ty, val_ty])),
+        Ty::refty(Ty::Tuple(vec![key_ty, val_ty])),
         vec![],
     );
 

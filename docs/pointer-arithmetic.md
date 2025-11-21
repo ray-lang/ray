@@ -1,9 +1,9 @@
 # Pointer Arithmetic
 
-Ray’s pointer arithmetic story focuses on explicit, unsafe operations that allow `*'a` pointers to move by integer offsets without round-tripping through integers. This document captures the current requirements, unsafe semantics, trait-model changes, and the implementation roadmap.
+Ray’s pointer arithmetic story focuses on explicit, unsafe operations that allow `rawptr['a]` pointers to move by integer offsets without round-tripping through integers. This document captures the current requirements, unsafe semantics, trait-model changes, and the implementation roadmap.
 
 ## Scope & Requirements
-- **Operators**: Only `+` and `-` are in scope. They accept a `*'a` pointer on the left and a `uint` offset on the right, producing another `*'a`. The offset counts elements, not raw bytes, so the implementation multiplies it by `sizeof(pointee)` before adjusting the pointer.
+- **Operators**: Only `+` and `-` are in scope. They accept a `rawptr['a]` pointer on the left and a `uint` offset on the right, producing another `rawptr['a]`. The offset counts elements, not raw bytes, so the implementation multiplies it by `sizeof(pointee)` before adjusting the pointer.
 - **Operand validation**: LHS must be a raw pointer type; RHS must be an integer compatible with `uint`. Pointer subtraction is only defined when both operands share the same pointee type; mismatches raise a type error.
 - **Allocation provenance**: Arithmetic must stay within the allocation that produced the pointer. The compiler cannot currently prove this, so we document that violating it is undefined behavior.
 - **Overflow/underflow**: Crossing the machine address space traps or is undefined behavior (decision pending). Diagnostics should note the risk.
@@ -29,8 +29,8 @@ Ray’s pointer arithmetic story focuses on explicit, unsafe operations that all
 ## Pointer Arithmetic Implementations
 - Add intrinsic-style impls in `lib/core/ops.ray`:
   ```ray
-  impl Add[*'a, uint, *'a] {
-      fn add(lhs: *'a, rhs: uint) -> *'a {
+  impl Add[rawptr['a], uint, rawptr['a]] {
+      fn add(lhs: rawptr['a], rhs: uint) -> rawptr['a] {
           unsafe { __ptr_add(lhs, rhs) }
       }
   }
@@ -49,7 +49,7 @@ Ray’s pointer arithmetic story focuses on explicit, unsafe operations that all
 - Add semantic tests (or TODOs) covering:
   - Successful `unsafe (ptr + n)` and `unsafe (ptr - n)`.
   - Errors for missing `unsafe`.
-  - Type mismatches (`*'a + float`, pointer subtraction between different pointee types).
+  - Type mismatches (`rawptr['a] + float`, pointer subtraction between different pointee types).
 - Update docs (standard library overview, language reference) to mention that pointer arithmetic is limited to `+/-` with `uint` and always requires `unsafe`.
 
 ## Future Extensions

@@ -1,0 +1,14 @@
+@intrinsic extern fn __deref_ref(p: *'a) -> 'a
+@intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
+
+trait Deref['a, 'b] {
+    fn deref(self: 'a) -> 'b
+}
+
+impl Deref[*'a, 'a] {
+    fn deref(self: *'a) -> 'a => __deref_ref(self)
+}
+
+impl Deref[rawptr['a], 'a] {
+    fn deref(self: rawptr['a]) -> 'a => __deref_raw(self)
+}

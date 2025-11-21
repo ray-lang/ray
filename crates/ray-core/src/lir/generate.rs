@@ -666,7 +666,7 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 let idx = ctx.data(bytes);
 
                 // allocate a pointer to store the string bytes
-                let data_loc = ctx.local(Ty::ptr(Ty::u8()).into());
+                let data_loc = ctx.local(Ty::refty(Ty::u8()).into());
                 let ptr = lir::Malloc::new(Ty::u8().into(), lir::Atom::uptr(len as u64));
                 ctx.push(lir::Inst::SetLocal(data_loc.into(), ptr.into()));
 
@@ -689,7 +689,7 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                         path: "string".into(),
                         ty: Ty::string().into(),
                         fields: vec![
-                            (str!("raw_ptr"), Ty::ptr(Ty::u8()).into()),
+                            (str!("raw_ptr"), Ty::refty(Ty::u8()).into()),
                             (str!("len"), Ty::uint().into()),
                         ],
                     },
@@ -913,7 +913,7 @@ impl LirGen<GenResult> for Node<Expr> {
             }
             Expr::Ref(rf) => {
                 // &expr has type *T, recover T
-                let pointee_ty = variant!(ty.mono(), if Ty::Ptr(ty));
+                let pointee_ty = variant!(ty.mono(), if Ty::Ref(ty));
 
                 // generate the value for the expression
                 let (value, offset) = match &rf.expr.as_ref().value {
@@ -947,9 +947,9 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Lea::new(var, offset)
             }
             Expr::Deref(deref) => {
-                // `*E` — the inner expression E has type *T, the whole deref has type T.
-                // Allocate the temp for E using its OWN type (*T), not the outer T.
-                let ptr_ty = ctx.ty_of(tcx, deref.expr.id); // *T
+                // `*E` — the inner expression E has type *T (or rawptr[T]), the whole deref has type T.
+                // Allocate the temp for E using its OWN type (*T/rawptr[T]), not the outer T.
+                let ptr_ty = ctx.ty_of(tcx, deref.expr.id); // *T/rawptr[T]
                 let value = deref.expr.lir_gen(ctx, tcx)?;
                 let loc = ctx.get_or_set_local(value, ptr_ty).unwrap();
                 let src = lir::Variable::Local(loc);
@@ -1020,7 +1020,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         path: "list".into(),
                         ty: Ty::list(el_ty.clone()).into(),
                         fields: vec![
-                            ("values".to_string(), Ty::ptr(el_ty.clone()).into()),
+                            ("values".to_string(), Ty::refty(el_ty.clone()).into()),
                             ("length".to_string(), Ty::uint().into()),
                             ("capacity".to_string(), Ty::uint().into()),
                         ],
@@ -1107,7 +1107,7 @@ impl LirGen<GenResult> for Node<Expr> {
             }
             Expr::Boxed(boxed) => {
                 let ptr_loc = ctx.local(ty.clone());
-                let pointee_ty = variant!(ty.mono(), if Ty::Ptr(p));
+                let pointee_ty = variant!(ty.mono(), if Ty::Ref(p));
                 let ptr_malloc =
                     lir::Malloc::new(pointee_ty.as_ref().clone().into(), lir::Atom::uptr(1));
 
@@ -1326,7 +1326,7 @@ impl LirGen<GenResult> for Node<Expr> {
                             match recv_mode {
                                 ReceiverMode::Ptr => {
                                     // auto-&: param is *T, expr is T
-                                    if let Ty::Ptr(inner) = param_mono {
+                                    if let Ty::Ref(inner) = param_mono {
                                         if **inner == expr_mono {
                                             // Ensure the receiver value lives in a local with its
                                             // original (by-value) type.
@@ -1358,8 +1358,8 @@ impl LirGen<GenResult> for Node<Expr> {
                                 }
                                 ReceiverMode::Value => {
                                     // auto-*: param is T, expr is *T
-                                    if !matches!(param_mono, Ty::Ptr(_))
-                                        && matches!(expr_mono, Ty::Ptr(inner) if *inner == *param_mono)
+                                    if !matches!(param_mono, Ty::Ref(_))
+                                        && matches!(expr_mono, Ty::Ref(inner) if *inner == *param_mono)
                                     {
                                         let val_loc = ctx
                                             .get_or_set_local(value, expr_ty_scheme.clone())
@@ -1541,7 +1541,16 @@ impl LirGen<GenResult> for Node<Expr> {
             Expr::Index(_) => todo!("lir_gen: Expr::Index: {}", self.value),
             Expr::Labeled(_, _) => todo!("lir_gen: Expr::Labeled: {}", self.value),
             Expr::Loop(_) => todo!("lir_gen: Expr::Loop: {}", self.value),
-            Expr::Return(_) => todo!("lir_gen: Expr::Return: {}", self.value),
+            Expr::Return(ret) => {
+                if let Some(ex) = ret {
+                    let val = ex.lir_gen(ctx, tcx)?;
+                    ctx.ret(val);
+                } else {
+                    // Bare `return` in a function whose Ray return type is `unit`.
+                    ctx.ret(lir::Value::Empty);
+                }
+                lir::Value::Empty
+            }
             Expr::Sequence(_) => todo!("lir_gen: Expr::Sequence: {}", self.value),
             Expr::Type(ty) => lir::Value::Type(ty.clone_value()),
             Expr::UnaryOp(unop) => unop.lir_gen(ctx, tcx)?,

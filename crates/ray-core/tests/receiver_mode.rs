@@ -12,7 +12,7 @@ fn ty_var(name: &str) -> Ty {
 #[test]
 fn receiver_mode_static_is_none() {
     let base = ty_var("test::Trait::Self");
-    let param_tys = vec![base.clone(), Ty::ptr(base.clone())];
+    let param_tys = vec![base.clone(), Ty::refty(base.clone())];
 
     let mode = ReceiverMode::from_signature(&param_tys, true);
     assert_eq!(mode, ReceiverMode::None);
@@ -30,7 +30,7 @@ fn receiver_mode_value_for_self_param() {
 #[test]
 fn receiver_mode_ptr_for_ptr_self_param() {
     let base = ty_var("test::Trait::Self");
-    let param_tys = vec![Ty::ptr(base.clone())];
+    let param_tys = vec![Ty::refty(base.clone())];
 
     let mode = ReceiverMode::from_signature(&param_tys, false);
     assert_eq!(mode, ReceiverMode::Ptr);

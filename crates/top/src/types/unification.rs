@@ -53,6 +53,26 @@ where
     T: Ty<V>,
     V: TyVar,
 {
+    // Treat the distinguished constant `never` as a bottom type:
+    // it unifies with any other type without constraining that type.
+    // This relies on `Ty::maybe_const` returning `Some("never")` for the
+    // language-level bottom type.
+    if lhs.maybe_const() == Some("never") && rhs.maybe_const() != Some("never") {
+        log::debug!(
+            "[mgu_with_synonyms] treating lhs=never as bottom w.r.t rhs={:?}",
+            rhs
+        );
+        return Ok((false, subst.clone()));
+    }
+
+    if rhs.maybe_const() == Some("never") && lhs.maybe_const() != Some("never") {
+        log::debug!(
+            "[mgu_with_synonyms] treating rhs=never as bottom w.r.t lhs={:?}",
+            lhs
+        );
+        return Ok((false, subst.clone()));
+    }
+
     let (lhs_lsp, lhs_tys) = lhs.left_spine();
     let (rhs_lsp, rhs_tys) = rhs.left_spine();
 
@@ -170,6 +190,15 @@ where
         _ => {
             let mut ty = ty.clone();
             ty.apply_subst(&subst);
+
+            // Special-case bottom type: do not constrain variables to `never`.
+            if ty.maybe_const() == Some("never") {
+                log::debug!(
+                    "[mgu_type_var] treating {:?} = never as bottom, no substitution",
+                    tyvar
+                );
+                return Ok((false, subst.clone()));
+            }
 
             if let Some(other_tyvar) = ty.maybe_var() {
                 if tyvar == other_tyvar {

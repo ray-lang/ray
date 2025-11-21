@@ -1,15 +1,19 @@
 struct list['a] {
-    values: *'a
+    values: rawptr['a]
     len: uint
     capacity: uint
 }
 
 impl Index[list['a], 'el, uint] {
-    fn get(self: 'a, idx: uint) -> 'el? {
+    fn get(self: *list['a], idx: uint) -> 'el? {
+        if idx < self.len {
+            return nil
+        }
+
         nil
     }
 
-    fn set(self: 'a, idx: uint, el: 'el) -> 'el? {
+    fn set(self: *'a, idx: uint, el: 'el) -> 'el? {
         nil
     }
 }

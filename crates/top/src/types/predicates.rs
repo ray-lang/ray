@@ -181,14 +181,34 @@ where
                     Some((subst, predicates))
                 })
                 .map(|(subst, preds)| (subst, preds.into())),
-            Predicate::HasField(_, field_name, _, _) => self
-                .record_types(field_name)?
-                .into_iter()
-                .find_map(|field_predicate| {
+            Predicate::HasField(base_ty, field_name, field_ty, _) => {
+                let record_preds = self.record_types(field_name)?;
+
+                // Try to match the predicate as-is first.
+                if let Some(_) = record_preds.iter().find_map(|field_predicate| {
                     predicate.match_with(field_predicate, synonyms)?;
-                    Some(vec![])
-                })
-                .map(|preds| (Subst::new(), preds.into())),
+                    Some(())
+                }) {
+                    return Some((Subst::new(), Vec::new()));
+                }
+
+                // If the base type is a (safe) pointer `*T`, attempt a single
+                // level of auto-deref for record fields: treat `HasField(*T, f, U)`
+                // as `HasField(T, f, U)`. This relies on `Ty::maybe_ptr` only
+                // recognizing safe references (not raw pointers).
+                if let Some(inner) = base_ty.maybe_ptr() {
+                    let deref_pred =
+                        Predicate::has_field(inner.clone(), field_name.clone(), field_ty.clone());
+                    if let Some(_) = record_preds.iter().find_map(|field_predicate| {
+                        deref_pred.match_with(field_predicate, synonyms)?;
+                        Some(())
+                    }) {
+                        return Some((Subst::new(), Vec::new()));
+                    }
+                }
+
+                None
+            }
             Predicate::Recv(..) => None,
         }
     }

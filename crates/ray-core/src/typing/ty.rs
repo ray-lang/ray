@@ -588,7 +588,7 @@ impl ReceiverMode {
         // If it is a pointer type, we treat the method as a pointer receiver,
         // otherwise as a value receiver.
         match &param_tys[0] {
-            Ty::Ptr(_) => ReceiverMode::Ptr,
+            Ty::Ref(_) => ReceiverMode::Ptr,
             _ => ReceiverMode::Value,
         }
     }
@@ -711,7 +711,8 @@ pub enum Ty {
     Any,
     Var(TyVar),
     Tuple(Vec<Ty>),
-    Ptr(Box<Ty>),
+    Ref(Box<Ty>),
+    RawPtr(Box<Ty>),
     Union(Vec<Ty>),
     Array(Box<Ty>, usize),
     Func(Vec<Ty>, Box<Ty>),
@@ -735,8 +736,11 @@ impl std::fmt::Display for Ty {
             Ty::Tuple(tys) => {
                 write!(f, "({})", join(tys, ", "))
             }
-            Ty::Ptr(ty) => {
+            Ty::Ref(ty) => {
                 write!(f, "*{}", ty)
+            }
+            Ty::RawPtr(ty) => {
+                write!(f, "rawptr[{}]", ty)
             }
             Ty::Union(tys) => {
                 write!(f, "{}", join(tys, " | "))
@@ -808,7 +812,7 @@ impl Substitutable<TyVar, Ty> for Ty {
                 tys.apply_subst(subst);
             }
             Ty::Tuple(tys) | Ty::Union(tys) => tys.apply_subst(subst),
-            Ty::Ptr(ty) | Ty::Array(ty, _) => {
+            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => {
                 ty.apply_subst(subst);
             }
             Ty::Accessor(lhs_ty, rhs_ty) => {
@@ -833,7 +837,7 @@ impl Substitutable<TyVar, Ty> for Ty {
                 tys.apply_subst_all(subst);
             }
             Ty::Tuple(tys) | Ty::Union(tys) => tys.apply_subst_all(subst),
-            Ty::Ptr(ty) | Ty::Array(ty, _) => {
+            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => {
                 ty.apply_subst_all(subst);
             }
             Ty::Accessor(lhs_ty, rhs_ty) => {
@@ -857,7 +861,7 @@ impl Substitutable<TyVar, Ty> for Ty {
                 vars
             }
             Ty::Tuple(tys) | Ty::Union(tys) => tys.free_vars(),
-            Ty::Ptr(ty) | Ty::Array(ty, _) => ty.free_vars(),
+            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => ty.free_vars(),
             Ty::Accessor(lhs_ty, rhs_ty) => {
                 let mut vars = lhs_ty.free_vars();
                 vars.extend(rhs_ty.free_vars());
@@ -890,7 +894,7 @@ impl top::Ty<TyVar> for Ty {
     }
 
     fn ptr(ty: Self) -> Self {
-        Ty::Ptr(Box::new(ty))
+        Ty::Ref(Box::new(ty))
     }
 
     fn maybe_var(&self) -> Option<&TyVar> {
@@ -902,6 +906,8 @@ impl top::Ty<TyVar> for Ty {
 
     fn maybe_const(&self) -> Option<&str> {
         match self {
+            Ty::Any => Some("any"),
+            Ty::Never => Some("never"),
             Ty::Const(n) => Some(n),
             _ => None,
         }
@@ -909,13 +915,12 @@ impl top::Ty<TyVar> for Ty {
 
     fn maybe_app(&self) -> Option<(Self, Vec<Self>)> {
         match self {
-            Ty::Any => Some((Ty::Const(str!("any")), vec![])),
-            Ty::Never => Some((Ty::Const(str!("never")), vec![])),
             Ty::Array(ty, size) => {
                 Some((Ty::Const(format!("[{}]", size)), vec![ty.as_ref().clone()]))
             }
             Ty::Projection(n, tys) => Some((n.as_ref().clone(), tys.clone())),
-            Ty::Ptr(ty) => Some((Ty::Const(str!("*")), vec![ty.as_ref().clone()])),
+            Ty::Ref(ty) => Some((Ty::Const(str!("*")), vec![ty.as_ref().clone()])),
+            Ty::RawPtr(ty) => Some((Ty::Const(str!("rawptr")), vec![ty.as_ref().clone()])),
             _ => None,
         }
     }
@@ -943,7 +948,7 @@ impl top::Ty<TyVar> for Ty {
 
     fn maybe_ptr(&self) -> Option<&Self> {
         match self {
-            Ty::Ptr(ptee) => Some(&ptee),
+            Ty::Ref(ptee) => Some(&ptee),
             _ => None,
         }
     }
@@ -957,7 +962,9 @@ impl top::Ty<TyVar> for Ty {
             Ty::Var(_) => true,
             Ty::Any | Ty::Never | Ty::Const(_) | Ty::Func(_, _) | Ty::Accessor(_, _) => false,
             Ty::Tuple(tys) | Ty::Union(tys) => tys.iter().all(|ty| ty.in_head_normal_form()),
-            Ty::Array(ty, _) | Ty::Ptr(ty) | Ty::Projection(ty, _) => ty.in_head_normal_form(),
+            Ty::Array(ty, _) | Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Projection(ty, _) => {
+                ty.in_head_normal_form()
+            }
         }
     }
 
@@ -967,7 +974,8 @@ impl top::Ty<TyVar> for Ty {
             Ty::Any => "any",
             Ty::Var(_) => todo!(),
             Ty::Tuple(_) => todo!(),
-            Ty::Ptr(_) => todo!(),
+            Ty::Ref(_) => todo!(),
+            Ty::RawPtr(_) => todo!(),
             Ty::Union(_) => todo!(),
             Ty::Array(_, _) => todo!(),
             Ty::Func(_, _) => todo!(),
@@ -989,7 +997,7 @@ impl top::Ty<TyVar> for Ty {
                 vars.extend(tys.iter().flat_map(|ty| ty.variables()));
                 vars
             }
-            Ty::Ptr(ty) | Ty::Array(ty, _) => ty.variables(),
+            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => ty.variables(),
             Ty::Accessor(lhs_ty, rhs_ty) => {
                 let mut vars = lhs_ty.variables();
                 vars.extend(rhs_ty.variables());
@@ -1020,7 +1028,7 @@ impl top::Ty<TyVar> for Ty {
                 vars.extend(tys.iter().flat_map(|ty| ty.constants()));
                 vars
             }
-            Ty::Ptr(ty) | Ty::Array(ty, _) => ty.constants(),
+            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => ty.constants(),
             Ty::Accessor(lhs_ty, rhs_ty) => {
                 let mut vars = lhs_ty.constants();
                 vars.extend(rhs_ty.constants());
@@ -1053,7 +1061,8 @@ impl top::Ty<TyVar> for Ty {
             Ty::Any | Ty::Never | Ty::Const(_) => self.clone(),
             Ty::Var(v) => Ty::Const(format!("//{}", v)),
             Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|ty| ty.freeze_vars()).collect()),
-            Ty::Ptr(ty) => Ty::Ptr(Box::new(ty.freeze_vars())),
+            Ty::Ref(ty) => Ty::Ref(Box::new(ty.freeze_vars())),
+            Ty::RawPtr(ty) => Ty::RawPtr(Box::new(ty.freeze_vars())),
             Ty::Union(tys) => Ty::Union(tys.iter().map(|ty| ty.freeze_vars()).collect()),
             Ty::Array(ty, n) => Ty::Array(Box::new(ty.freeze_vars()), *n),
             Ty::Accessor(lhs_ty, rhs_ty) => Ty::Accessor(
@@ -1090,7 +1099,8 @@ impl top::Ty<TyVar> for Ty {
                 Ty::Const(n.clone())
             }
             Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|ty| ty.unfreeze_vars()).collect()),
-            Ty::Ptr(ty) => Ty::Ptr(Box::new(ty.unfreeze_vars())),
+            Ty::Ref(ty) => Ty::Ref(Box::new(ty.unfreeze_vars())),
+            Ty::RawPtr(ty) => Ty::RawPtr(Box::new(ty.unfreeze_vars())),
             Ty::Union(tys) => Ty::Union(tys.iter().map(|ty| ty.unfreeze_vars()).collect()),
             Ty::Array(ty, n) => Ty::Array(Box::new(ty.unfreeze_vars()), *n),
             Ty::Accessor(lhs_ty, rhs_ty) => Ty::Accessor(
@@ -1155,7 +1165,8 @@ impl Ty {
             Ty::Any => str!("any"),
             Ty::Var(_) => str!("variable"),
             Ty::Tuple(_) => str!("tuple"),
-            Ty::Ptr(ty) => format!("pointer of {}", ty.desc()),
+            Ty::Ref(ty) => format!("reference to {}", ty.desc()),
+            Ty::RawPtr(ty) => format!("raw pointer to {}", ty.desc()),
             Ty::Union(_) => str!("union"),
             Ty::Array(ty, _) => format!("array of {}", ty.desc()),
             Ty::Accessor(lhs_ty, rhs_ty) => {
@@ -1189,7 +1200,7 @@ impl Ty {
             Ty::Tuple(tys) | Ty::Union(tys) => {
                 tys.iter_mut().for_each(|t| t.resolve_fqns(scopes, ncx));
             }
-            Ty::Ptr(t) | Ty::Array(t, _) => t.resolve_fqns(scopes, ncx),
+            Ty::Ref(t) | Ty::RawPtr(t) | Ty::Array(t, _) => t.resolve_fqns(scopes, ncx),
             Ty::Accessor(a, b) => {
                 a.resolve_fqns(scopes, ncx);
                 b.resolve_fqns(scopes, ncx);
@@ -1222,7 +1233,9 @@ impl Ty {
             Ty::Tuple(tys) | Ty::Union(tys) => {
                 tys.iter_mut().for_each(|t| t.map_vars(tcx));
             }
-            Ty::Array(ty, _) | Ty::Projection(ty, _) | Ty::Ptr(ty) => ty.map_vars(tcx),
+            Ty::Array(ty, _) | Ty::Projection(ty, _) | Ty::Ref(ty) | Ty::RawPtr(ty) => {
+                ty.map_vars(tcx)
+            }
             Ty::Accessor(lhs_ty, rhs_ty) => {
                 lhs_ty.map_vars(tcx);
                 rhs_ty.map_vars(tcx);
@@ -1263,8 +1276,8 @@ impl Ty {
     }
 
     #[inline(always)]
-    pub fn ptr(ty: Ty) -> Ty {
-        Ty::Ptr(Box::new(ty))
+    pub fn refty(ty: Ty) -> Ty {
+        Ty::Ref(Box::new(ty))
     }
 
     #[inline(always)]
@@ -1456,8 +1469,12 @@ impl Ty {
                 let args = &[ty.to_string(), size.to_string()];
                 base_path.append_type_args(args.iter())
             }
-            Ty::Ptr(ty) => {
-                let base_path = Path::from("pointer");
+            Ty::Ref(ty) => {
+                let base_path = Path::from("ref");
+                base_path.append_type_args(std::iter::once(ty))
+            }
+            Ty::RawPtr(ty) => {
+                let base_path = Path::from("rawptr");
                 base_path.append_type_args(std::iter::once(ty))
             }
             Ty::Tuple(tys) => {
@@ -1478,7 +1495,12 @@ impl Ty {
             Ty::Var(v) => v.path().name().unwrap(),
             Ty::Const(s) => s.clone(),
             Ty::Projection(ty, _) => ty.name(),
-            Ty::Array(..) | Ty::Ptr(_) | Ty::Union(_) | Ty::Func(_, _) | Ty::Accessor(_, _) => {
+            Ty::Array(..)
+            | Ty::Ref(_)
+            | Ty::RawPtr(_)
+            | Ty::Union(_)
+            | Ty::Func(_, _)
+            | Ty::Accessor(_, _) => {
                 str!("")
             }
         }
@@ -1494,7 +1516,7 @@ impl Ty {
                 let max_size = v.iter().map(Ty::size_of).max().unwrap_or_default();
                 Size::bytes(tag_size) + max_size
             }
-            Ty::Func(_, _) | Ty::Ptr(_) => Size::ptr(),
+            Ty::Func(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => Size::ptr(),
             Ty::Accessor(_, ty) | Ty::Projection(ty, _) => ty.size_of(),
             Ty::Const(n) => match n.as_str() {
                 "int" | "uint" => Size::ptr(),
@@ -1519,7 +1541,7 @@ impl Ty {
             (Ty::Tuple(a), Ty::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.is_subtype(y))
             }
-            (Ty::Ptr(a), Ty::Ptr(b)) => a.is_subtype(b),
+            (Ty::Ref(a), Ty::Ref(b)) => a.is_subtype(b),
             (Ty::Projection(a, s), Ty::Projection(b, t)) => {
                 a == b && s.len() == t.len() && s.iter().zip(t.iter()).all(|(x, y)| x.is_subtype(y))
             }
@@ -1542,7 +1564,9 @@ impl Ty {
         match self {
             Ty::Never | Ty::Any | Ty::Const(_) | Ty::Union(_) | Ty::Var(_) => true,
             Ty::Projection(_, tys) | Ty::Tuple(tys) => tys.len() == 0,
-            Ty::Accessor(_, _) | Ty::Func(_, _) | Ty::Array(_, _) | Ty::Ptr(_) => false,
+            Ty::Accessor(_, _) | Ty::Func(_, _) | Ty::Array(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => {
+                false
+            }
         }
     }
 
@@ -1593,7 +1617,8 @@ impl Ty {
             Ty::Never
             | Ty::Any
             | Ty::Var(_)
-            | Ty::Ptr(_)
+            | Ty::Ref(_)
+            | Ty::RawPtr(_)
             | Ty::Func(_, _)
             | Ty::Accessor(_, _)
             | Ty::Union(_) => false,
@@ -1607,14 +1632,6 @@ impl Ty {
 
     pub fn is_struct(&self, tcx: &TyCtx) -> bool {
         self.nominal_kind(tcx) == Some(NominalKind::Struct)
-    }
-
-    pub fn innermost(&self) -> &Ty {
-        let mut inner = self;
-        while let Ty::Ptr(ty) = inner {
-            inner = ty.as_ref();
-        }
-        inner
     }
 
     pub fn as_tyvar(self) -> TyVar {
@@ -1631,7 +1648,8 @@ impl Ty {
             | Ty::Var(_)
             | Ty::Const(_)
             | Ty::Tuple(_)
-            | Ty::Ptr(_)
+            | Ty::Ref(_)
+            | Ty::RawPtr(_)
             | Ty::Union(_)
             | Ty::Array(_, _)
             | Ty::Projection(_, _)
@@ -1644,7 +1662,7 @@ impl Ty {
 
     pub fn get_ty_params(&self) -> Vec<&Ty> {
         match self {
-            Ty::Array(t, _) | Ty::Ptr(t) => vec![t.as_ref()],
+            Ty::Array(t, _) | Ty::Ref(t) | Ty::RawPtr(t) => vec![t.as_ref()],
             Ty::Tuple(t) | Ty::Union(t) | Ty::Projection(_, t) => t.iter().collect(),
             Ty::Never
             | Ty::Any
@@ -1664,9 +1682,16 @@ impl Ty {
 
                 Some(t.as_ref())
             }
-            Ty::Ptr(t) => {
+            Ty::Ref(t) => {
                 if idx != 0 {
-                    panic!("pointer only has one type parameter: idx={}", idx)
+                    panic!("reference only has one type parameter: idx={}", idx)
+                }
+
+                Some(t.as_ref())
+            }
+            Ty::RawPtr(t) => {
+                if idx != 0 {
+                    panic!("rawptr only has one type parameter: idx={}", idx)
                 }
 
                 Some(t.as_ref())
@@ -1690,9 +1715,16 @@ impl Ty {
 
                 *t = Box::new(tp);
             }
-            Ty::Ptr(t) => {
+            Ty::Ref(t) => {
                 if idx != 0 {
-                    panic!("pointer only has one type parameter: idx={}", idx)
+                    panic!("reference only has one type parameter: idx={}", idx)
+                }
+
+                *t = Box::new(tp);
+            }
+            Ty::RawPtr(t) => {
+                if idx != 0 {
+                    panic!("rawptr only has one type parameter: idx={}", idx)
                 }
 
                 *t = Box::new(tp);
@@ -1719,30 +1751,6 @@ impl Ty {
     pub fn union(&mut self, ty: Ty) {
         log::debug!("union: {} | {}", self, ty);
         match (self, ty) {
-            // (Ty::All(xs, t), Ty::All(ys, u)) => {
-            //     for y in ys {
-            //         if !xs.contains(&y) {
-            //             xs.push(y);
-            //         }
-            //     }
-            //     t.union(*u);
-            // }
-            // (Ty::All(_, t), u) => t.union(u),
-            // (t, Ty::All(xs, u)) => replace(t, |mut t| {
-            //     t.union(*u);
-            //     Ty::All(xs, Box::new(t))
-            // }),
-            // (Ty::Qualified(p, t), Ty::Qualified(q, u)) => {
-            //     p.extend(q);
-            //     t.union(*u);
-            // }
-            // (Ty::Qualified(_, t), u) => {
-            //     t.union(u);
-            // }
-            // (t, Ty::Qualified(p, u)) => replace(t, |mut t| {
-            //     t.union(*u);
-            //     Ty::Qualified(p, Box::new(t))
-            // }),
             (Ty::Union(tys), ty) => {
                 if !tys.contains(&ty) {
                     tys.push(ty);
@@ -1797,5 +1805,17 @@ impl Ty {
             },
             _ => None,
         }
+    }
+
+    pub fn unwrap_pointer(&self) -> Option<&Ty> {
+        match self {
+            Ty::Ref(inner) | Ty::RawPtr(inner) => Some(&inner),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn is_any_pointer(&self) -> bool {
+        matches!(self, Ty::Ref(_) | Ty::RawPtr(_))
     }
 }

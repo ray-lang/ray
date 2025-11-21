@@ -1,5 +1,5 @@
 @intrinsic extern fn sizeof(t: type['a]) -> uint
-@intrinsic extern fn memcopy(dst: *u8, src: *u8, len: uint) -> ()
+@intrinsic extern fn memcopy(dst: rawptr[u8], src: rawptr[u8], len: uint) -> ()
 
 // Arithmetic comparisons
 @intrinsic extern fn int_eq(a: int, b: int) -> bool

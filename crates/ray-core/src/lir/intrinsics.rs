@@ -6,6 +6,8 @@ use crate::ast::Path;
 pub enum IntrinsicKind {
     PtrAdd,
     PtrSub,
+    DerefRef,
+    DerefRaw,
     SizeOf,
     Memcopy,
     IntEq,
@@ -200,6 +202,8 @@ impl IntrinsicKind {
         match path.to_short_name().as_str() {
             "__ptr_add" => Some(Self::PtrAdd),
             "__ptr_sub" => Some(Self::PtrSub),
+            "__deref_ref" => Some(Self::DerefRef),
+            "__deref_raw" => Some(Self::DerefRaw),
             "sizeof" => Some(Self::SizeOf),
             "memcopy" => Some(Self::Memcopy),
             "int_eq" => Some(Self::IntEq),

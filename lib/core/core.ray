@@ -1,6 +1,6 @@
 //! This is the core library for Ray
 
-extern fn malloc(size: uint) -> *u8
+extern fn malloc(size: uint) -> rawptr[u8]
 
 @inline
 fn ptr_add(ptr: *'a, n: uint) -> *'a =>
