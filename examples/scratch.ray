@@ -1,37 +1,18 @@
-trait Value['a] {
-    fn get_value(self: 'a) -> int
+//![no-core]
+
+struct list['a] {
+    values: rawptr['a]
+    len: uint
+    capacity: uint
 }
 
-impl Value[int] {
-    fn get_value(self: int) -> int {
-        self
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+}
+
+impl Index[list['a], 'el, uint] {
+    fn get(self: *list['a], idx: uint) -> 'el? {
+        ptr = self.values
+        nil
     }
-}
-
-trait Foo['a] {
-    fn foo(self: 'a, a: bool) -> bool
-}
-
-impl Foo[int] {
-    fn foo(self: int, a: bool) -> bool {
-        true
-    }
-}
-
-fn call_on_value(x: int) -> int {
-    x.get_value()
-}
-
-fn call_on_ptr(p: *int) -> int {
-    p.get_value()
-}
-
-fn main() {
-    a = call_on_value(1)
-    print(a)
-
-    p = new(int, 1)
-    *p = 3
-    b = call_on_ptr(p)
-    print(b)
 }

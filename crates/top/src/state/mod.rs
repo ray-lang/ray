@@ -49,6 +49,13 @@ where
                 let mut filtered = Subst::new();
 
                 for (var, ty) in subst.into_iter() {
+                    if !var.is_meta() {
+                        panic!(
+                            "BUG: found a non-meta-variable inside the substitution: {} -> {}",
+                            var, ty
+                        );
+                    }
+
                     // If the key is rigid but the value is a flexible var, flip the binding
                     // and *propagate rigidity* to the flexible var.
                     if self.is_rigid(&var) {
@@ -56,6 +63,13 @@ where
                             // Same rigid var: no-op.
                             if &var == other_var {
                                 continue;
+                            }
+
+                            if !other_var.is_meta() {
+                                panic!(
+                                    "BUG: found a non-meta-variable inside the substitution: {} -> {}",
+                                    other_var, var
+                                );
                             }
 
                             // rigid := flexible_meta  → flip to flexible_meta := rigid

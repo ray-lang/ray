@@ -624,13 +624,14 @@ fn register_in_pattern(
 ) {
     match &pattern.value {
         Pattern::Name(name) => {
-            let resolved_ty = Some(tcx.get_ty(pattern.id).cloned().unwrap_or_else(|| {
-                panic!(
-                    "type not found for pattern name: {} ({}) in {:#?}",
-                    name.path, pattern.id, tcx
-                );
-            }));
-            // .or_else(|| name.ty.as_ref().map(|t| t.mono().clone()));
+            let resolved_ty = Some(
+                tcx.pretty_ty(&tcx.get_ty(pattern.id).cloned().unwrap_or_else(|| {
+                    panic!(
+                        "type not found for pattern name: {} ({}) in {:#?}",
+                        name.path, pattern.id, tcx
+                    );
+                })),
+            );
             insert_definition_record(
                 records,
                 &name.path,

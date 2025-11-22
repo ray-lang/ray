@@ -122,7 +122,7 @@ where
                     actual_args.extend(params.iter().cloned());
 
                     for (superclass, super_params) in &class.superclasses {
-                        if let Some(instantiated_params) = Self::instantiate_super_params(
+                        if let Some(instantiated_params) = ClassEnv::instantiate_super_params(
                             &class.param_vars,
                             &actual_args,
                             super_params.clone(),
@@ -181,33 +181,20 @@ where
                     Some((subst, predicates))
                 })
                 .map(|(subst, preds)| (subst, preds.into())),
-            Predicate::HasField(base_ty, field_name, field_ty, _) => {
+            Predicate::HasField(_, field_name, _, _) => {
+                // HasField predicates are discharged via record_classes.
+                // If any record predicate for this field name matches (using
+                // match_with, which handles auto-deref for *T), we consider
+                // the predicate solvable with no additional obligations.
                 let record_preds = self.record_types(field_name)?;
-
-                // Try to match the predicate as-is first.
-                if let Some(_) = record_preds.iter().find_map(|field_predicate| {
-                    predicate.match_with(field_predicate, synonyms)?;
-                    Some(())
-                }) {
-                    return Some((Subst::new(), Vec::new()));
+                if record_preds
+                    .iter()
+                    .any(|rp| predicate.match_with(rp, synonyms).is_some())
+                {
+                    Some((Subst::new(), Vec::new()))
+                } else {
+                    None
                 }
-
-                // If the base type is a (safe) pointer `*T`, attempt a single
-                // level of auto-deref for record fields: treat `HasField(*T, f, U)`
-                // as `HasField(T, f, U)`. This relies on `Ty::maybe_ptr` only
-                // recognizing safe references (not raw pointers).
-                if let Some(inner) = base_ty.maybe_ptr() {
-                    let deref_pred =
-                        Predicate::has_field(inner.clone(), field_name.clone(), field_ty.clone());
-                    if let Some(_) = record_preds.iter().find_map(|field_predicate| {
-                        deref_pred.match_with(field_predicate, synonyms)?;
-                        Some(())
-                    }) {
-                        return Some((Subst::new(), Vec::new()));
-                    }
-                }
-
-                None
             }
             Predicate::Recv(..) => None,
         }
@@ -459,6 +446,117 @@ where
     T: Ty<V>,
     V: TyVar,
 {
+    fn match_has_field(
+        lhs_record: &T,
+        lhs_field: &str,
+        lhs_field_ty: &T,
+        rhs_record: &T,
+        rhs_field: &str,
+        rhs_field_ty: &T,
+        synonyms: &OrderedTypeSynonyms<T, V>,
+    ) -> Option<Subst<V, T>> {
+        // Field names must match exactly.
+        if lhs_field != rhs_field {
+            return None;
+        }
+
+        log::debug!(
+            "[match_has_field] lhs=({}, {}), rhs=({}, {}), field={}",
+            lhs_record,
+            lhs_field_ty,
+            rhs_record,
+            rhs_field_ty,
+            lhs_field
+        );
+
+        // Try direct match first: HasField(R, f, U) =~ HasField(R', f, U')
+        if let Ok((_, subst)) = mgu_ref_slices(
+            &[lhs_record, lhs_field_ty],
+            &[rhs_record, rhs_field_ty],
+            &Subst::new(),
+            synonyms,
+        ) {
+            return Some(Predicate::normalize_field_subst(subst));
+        }
+
+        // Then try a single level of auto-deref on safe pointers:
+        // HasField(*R, f, U) =~ HasField(R, f, U')
+        if let Some(inner) = lhs_record.maybe_ptr() {
+            if let Ok((_, subst)) = mgu_ref_slices(
+                &[inner, lhs_field_ty],
+                &[rhs_record, rhs_field_ty],
+                &Subst::new(),
+                synonyms,
+            ) {
+                return Some(Predicate::normalize_field_subst(subst));
+            }
+        }
+
+        None
+    }
+
+    /// Normalize a substitution produced while matching a HasField predicate
+    /// against an instance head such as:
+    ///
+    ///   HasField(Foo['a], values, rawptr['a])
+    ///
+    /// We may get bindings like:
+    ///
+    ///   ?t_rec   ↦ 'a
+    ///   ?t_field ↦ rawptr['a]
+    ///
+    /// We don't want schema variables like `'a` to appear in solver-space
+    /// types. Instead we rewrite every `'a` in the RHS type to the corresponding
+    /// meta variable (e.g., `?t_rec`) and then drop the meta→schema binding,
+    /// yielding:
+    ///
+    ///   ?t_field ↦ rawptr[?t_rec]
+    fn normalize_field_subst(subst: Subst<V, T>) -> Subst<V, T> {
+        // Collect mapping from schematic vars to the metas they were unified with.
+        let mut schema_to_meta = HashMap::new();
+        for (var, ty) in subst.iter() {
+            // We only care about bindings from meta variables.
+            if !var.is_meta() {
+                continue;
+            }
+
+            if let Some(schema_var) = ty.maybe_var() {
+                // schema_var is a schematic type variable (not a meta).
+                if !schema_var.is_meta() {
+                    schema_to_meta
+                        .entry(schema_var.clone())
+                        .or_insert_with(|| var.clone());
+                }
+            }
+        }
+
+        if schema_to_meta.is_empty() {
+            return subst;
+        }
+
+        // Build a substitution that replaces each schema var with its meta var.
+        let mut schema_subst = Subst::new();
+        for (schema, meta) in schema_to_meta.iter() {
+            schema_subst.insert(schema.clone(), T::var(meta.clone()));
+        }
+
+        // Rewrite RHS types and drop trivial self-bindings (v ↦ v).
+        let mut result = Subst::new();
+        for (var, mut ty) in subst.into_iter() {
+            ty.apply_subst(&schema_subst);
+
+            if let Some(v) = ty.maybe_var() {
+                if *v == var {
+                    continue;
+                }
+            }
+
+            result.insert(var, ty);
+        }
+
+        result
+    }
+
     pub fn class(name: String, ty: T, params: Vec<T>) -> Self {
         Predicate::Class(name, ty, params, PhantomData)
     }
@@ -569,17 +667,15 @@ where
             (
                 Predicate::HasField(lhs_ty, lhs_field, lhs_field_ty, _),
                 Predicate::HasField(rhs_ty, rhs_field, rhs_field_ty, _),
-            ) if lhs_field == rhs_field => {
-                match mgu_ref_slices(
-                    &[lhs_ty, lhs_field_ty],
-                    &[rhs_ty, rhs_field_ty],
-                    &Subst::new(),
-                    synonyms,
-                ) {
-                    Ok((_, subst)) => Some(subst),
-                    Err(_) => None,
-                }
-            }
+            ) => Predicate::match_has_field(
+                lhs_ty,
+                lhs_field,
+                lhs_field_ty,
+                rhs_ty,
+                rhs_field,
+                rhs_field_ty,
+                synonyms,
+            ),
             (
                 Predicate::Recv(kind1, lhs_recv, lhs_self, _),
                 Predicate::Recv(kind2, rhs_recv, rhs_self, _),

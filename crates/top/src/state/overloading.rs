@@ -638,6 +638,7 @@ where
         Self: Sized + HasSubst<I, T, V> + HasBasic<I, T, V>,
         I: Clone + Display + TypeConstraintInfo<I, T, V>,
     {
+        log::debug!("[field_qualifiers] ---- START");
         for i in 0..self.state().qualifiers().len() {
             let (predicate, info) = &self.state().qualifier(i);
             let (record_ty, field, field_ty) = match predicate {
@@ -675,6 +676,7 @@ where
                 }
             }
         }
+        log::debug!("[field_qualifiers] ---- END");
     }
 
     fn ambiguous_qualifiers(&mut self)

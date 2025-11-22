@@ -10,6 +10,7 @@ impl Index[list['a], 'el, uint] {
             return nil
         }
 
+        ptr = self.values
         nil
     }
 

@@ -189,10 +189,6 @@ impl TyScheme {
                     }
                 };
 
-                for arg in ty_args.iter_mut() {
-                    arg.map_vars(fn_tcx);
-                }
-
                 let fqn = Path::from(s.as_str());
                 log::debug!("converting from ast type: {}", fqn);
                 if fn_tcx.get_trait_ty(&fqn).is_none() {
@@ -465,6 +461,14 @@ impl top::TyVar for TyVar {
             .collect::<String>()
             .parse::<u32>()
             .ok()
+    }
+
+    fn is_meta(&self) -> bool {
+        if let Some(name) = self.path().name().as_ref() {
+            return name.starts_with("?t");
+        }
+
+        false
     }
 }
 
@@ -1234,9 +1238,11 @@ impl Ty {
             Ty::Tuple(tys) | Ty::Union(tys) => {
                 tys.iter_mut().for_each(|t| t.map_vars(tcx));
             }
-            Ty::Array(ty, _) | Ty::Projection(ty, _) | Ty::Ref(ty) | Ty::RawPtr(ty) => {
-                ty.map_vars(tcx)
+            Ty::Projection(ty, param_tys) => {
+                ty.map_vars(tcx);
+                param_tys.iter_mut().for_each(|t| t.map_vars(tcx));
             }
+            Ty::Array(ty, _) | Ty::Ref(ty) | Ty::RawPtr(ty) => ty.map_vars(tcx),
             Ty::Accessor(lhs_ty, rhs_ty) => {
                 lhs_ty.map_vars(tcx);
                 rhs_ty.map_vars(tcx);

@@ -3,14 +3,6 @@
 extern fn malloc(size: uint) -> rawptr[u8]
 
 @inline
-fn ptr_add(ptr: *'a, n: uint) -> *'a =>
-    ((ptr as uint) + n) as *'a
-
-@inline
-fn ptr_sub(ptr: *'a, n: uint) -> *'a =>
-    ((ptr as uint) - n) as *'a
-
-@inline
 fn print(v: 'a) -> () where ToStr['a] {
     io::print(v)
 }

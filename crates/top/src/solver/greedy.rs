@@ -445,6 +445,10 @@ mod tests {
         fn get_u32(&self) -> Option<u32> {
             Some(*self)
         }
+
+        fn is_meta(&self) -> bool {
+            false
+        }
     }
 
     #[test]

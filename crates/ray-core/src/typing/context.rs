@@ -407,6 +407,25 @@ impl TyCtx {
         &self.inverted_var_map
     }
 
+    /// Produce a "pretty" version of a type for display (e.g., in diagnostics
+    /// or IDE hovers) by rewriting internal solver type variables back to the
+    /// original user-declared type variables, using `inverted_var_map`.
+    pub fn pretty_ty(&self, ty: &Ty) -> Ty {
+        let mut result = ty.clone();
+
+        // Build a substitution that maps each solver TyVar back to its original
+        // user TyVar (e.g., ?t1431 -> 'a), then apply it to the type.
+        let rename_subst: Subst<TyVar, Ty> = self
+            .inverted_var_map
+            .borrow()
+            .iter()
+            .map(|(solver, original)| (solver.clone(), Ty::Var(original.clone())))
+            .collect();
+
+        result.apply_subst(&rename_subst);
+        result
+    }
+
     pub fn resolve_signature(
         &mut self,
         sig: &mut FuncSig,

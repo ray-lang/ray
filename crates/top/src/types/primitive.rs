@@ -10,6 +10,8 @@ pub trait TyVar: Display + Debug + Clone + Hash + Eq + Ord + FromStr {
     fn from_u32(u: u32) -> Self;
 
     fn get_u32(&self) -> Option<u32>;
+
+    fn is_meta(&self) -> bool;
 }
 
 pub trait Ty<V>: Display + Debug + Clone + Eq + Ord + Hash + Substitutable<V, Self>

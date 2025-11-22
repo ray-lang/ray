@@ -1094,7 +1094,19 @@ impl ModBuilderResult {
         solution: SolveResult<TypeSystemInfo, Ty, TyVar>,
         defs: &SchemeEnv,
     ) {
+        let skolem_subst = solution
+            .skolems
+            .iter()
+            .flat_map(|skolem| {
+                skolem
+                    .vars
+                    .iter()
+                    .map(|(skolem_var, original)| (skolem_var.clone(), Ty::Var(original.clone())))
+            })
+            .collect::<Subst<_, _>>();
+
         self.tcx.apply_subst(&solution.subst);
+        self.tcx.apply_subst_all(&skolem_subst);
         let inst_scheme_map = solution
             .inst_type_schemes
             .iter()

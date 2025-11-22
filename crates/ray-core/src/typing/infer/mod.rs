@@ -167,6 +167,37 @@ impl<'a> InferSystem<'a> {
 
         log::debug!("defs: {:?}", defs);
 
+        for skolem in solution.skolems.iter() {
+            for (u, v) in skolem.vars.iter() {
+                // skolem vars map: v -> u, so look to see if we have
+                // v in the inverted var map, and if we do, also add u
+                let mapped_var = {
+                    let map = self.tcx.inverted_var_map().borrow();
+                    match map.get(v).cloned() {
+                        Some(m) => m,
+                        _ => continue,
+                    }
+                };
+
+                log::debug!(
+                    "found {} -> {}, adding {} -> {}",
+                    v,
+                    mapped_var,
+                    u,
+                    mapped_var
+                );
+                self.tcx
+                    .inverted_var_map()
+                    .borrow_mut()
+                    .insert(u.clone(), mapped_var);
+            }
+        }
+
+        log::debug!(
+            "inverted var map: {:?}",
+            self.tcx.inverted_var_map().borrow()
+        );
+
         // Always apply the solution's substitution and qualifiers to defs so
         // callers (e.g., IDE/LSP) can see as much inferred type information as
         // possible, even when there are type errors.

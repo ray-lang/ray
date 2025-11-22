@@ -64,7 +64,7 @@ pub fn collect(
     let filepath = to_filepath(uri);
     // When editing core sources, instruct the analyzer to run with "no core" (don't load prebuilt core),
     // so diagnostics reflect the live core files in the workspace.
-    let no_core: bool = is_core_library_uri(uri);
+    let mut no_core: bool = is_core_library_uri(uri);
     let mut options = ParseOptions::default();
     options.module_path = Path::new();
     options.use_stdin = false;
@@ -85,6 +85,15 @@ pub fn collect(
             diagnostics: dedup_diagnostics(diagnostics),
             snapshot: None,
         };
+    }
+
+    if let Some(file) = parsed.value
+        && !no_core
+    {
+        // check the document comment for `[no-core]`
+        if let Some(doc_comment) = &file.doc_comment {
+            no_core = doc_comment.contains("[no-core]");
+        }
     }
 
     match collect_semantic_errors(text, &filepath, workspace_root, toolchain_root, no_core) {
@@ -122,9 +131,7 @@ fn collect_semantic_errors(
     let mut overlays = HashMap::new();
     overlays.insert(filepath.clone(), text.to_string());
 
-    // let entry_path = root::module_entry_path(filepath);
     let build_options = BuildOptions {
-        // input_path: entry_path.clone(),
         input_path: filepath.clone(),
         no_core,
         ..Default::default()

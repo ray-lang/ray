@@ -1,4 +1,7 @@
-use top::{EqualityConstraint, PolymorphismConstraint, Predicate, QualifierConstraint};
+use top::{
+    EqualityConstraint, PolymorphismConstraint, Predicate, QualifierConstraint, Substitutable,
+    TyVar as TopTyVar,
+};
 
 use std::collections::HashSet;
 
@@ -87,7 +90,7 @@ impl InstConstraint {
                     cl.push((lhs_ty.to_string(), inst));
                 }
             } else {
-                log::debug!("InstConstraint::lift: {} is not in the sigs, {:?}", x, sigs);
+                log::debug!("InstConstraint::lift: {} is not in the sigs", x);
             }
         }
 
@@ -121,7 +124,7 @@ impl SkolConstraint {
                     SkolConstraint::new(mono_tys.iter().cloned(), lhs_ty.clone(), rhs_ty.clone()),
                 ));
             } else {
-                log::debug!("SkolConstraint::lift: {} is not in the sigs, {:?}", x, sigs);
+                log::debug!("SkolConstraint::lift: {} is not in the sigs", x);
             }
         }
 

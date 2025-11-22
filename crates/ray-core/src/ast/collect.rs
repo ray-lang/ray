@@ -1,7 +1,7 @@
 use std::{collections::HashSet, ops::Deref};
 
 use ast::Module;
-use top::{Predicate, RecvKind, Substitutable};
+use top::{Predicate, RecvKind, Subst, Substitutable};
 
 use crate::{
     ast,
@@ -247,14 +247,35 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
         let fn_tv = ctx.tcx.tf().next();
         ctx.tcx.set_ty(func_node.id, Ty::Var(fn_tv.clone()));
 
-        // If annotated and is a function type, expand the param and return types
+        // If annotated and is a function type, expand the param and return types.
+        // IMPORTANT: we *instantiate* the function's type scheme here so that any
+        // schematic type variables (e.g., `'a`) are replaced by fresh meta
+        // variables before we generate equalities. This keeps schema variables
+        // out of the global constraint set.
         let (anno_params, anno_ret) = func
             .sig
             .ty
             .as_ref()
-            .map(|sig_ty| {
-                if let Ty::Func(params, ret) = sig_ty.mono() {
-                    (params.clone(), Some(ret.deref().clone()))
+            .map(|sig_scheme| {
+                if let Ty::Func(params, ret) = sig_scheme.mono() {
+                    // Start from the monomorphic view of the function type.
+                    let mut func_ty = Ty::Func(params.clone(), Box::new(ret.deref().clone()));
+
+                    // If the scheme is polymorphic, instantiate its quantifiers
+                    // to fresh meta variables in the current type context.
+                    if !sig_scheme.quantifiers().is_empty() {
+                        let mut subst: Subst<TyVar, Ty> = Subst::new();
+                        for q in sig_scheme.quantifiers().iter() {
+                            let fresh_tv = ctx.tcx.tf().next();
+                            subst.insert(q.clone(), Ty::Var(fresh_tv));
+                        }
+                        func_ty.apply_subst(&subst);
+                    }
+
+                    match func_ty {
+                        Ty::Func(params, ret) => (params, Some(*ret)),
+                        _ => (vec![], None),
+                    }
                 } else {
                     (vec![], None)
                 }
@@ -437,7 +458,6 @@ impl<'a> CollectConstraints for Module<(), Decl> {
         let mut bga = BindingGroupAnalysis::new(bgroups, &sigs, &mut tf, &mono_tys);
         let (_, aset, ct) = bga.analyze();
         log::debug!("module aset: {:?}", aset);
-        log::debug!("sigs: {:?}", ctx.defs);
         let cl = InstConstraint::lift(&aset, &sigs);
         log::debug!("inst constraints: {:?}", cl);
         let ct = ct.strict_spread_list(cl);
