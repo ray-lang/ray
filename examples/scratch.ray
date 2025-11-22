@@ -13,6 +13,7 @@ trait Index['a, 'el, 'idx] {
 impl Index[list['a], 'el, uint] {
     fn get(self: *list['a], idx: uint) -> 'el? {
         ptr = self.values
+        l = self.len
         nil
     }
 }

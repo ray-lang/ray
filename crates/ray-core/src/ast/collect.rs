@@ -179,13 +179,14 @@ impl CollectDeclarations for Node<Decl> {
                         log::debug!("fn_bg = {:?}", fn_bg);
                         log::debug!("fn_env = {:?}", fn_env);
 
-                        if imp.is_object {
-                            // Inherent impl: method is part of the type's API, include its scheme in Σ
-                            decl_pairs.push((fn_bg, fn_env));
-                        } else {
-                            // Trait impl: body provides evidence, do not extend Σ
-                            decl_pairs.push((fn_bg, Env::new()));
-                        }
+                        // For both inherent and trait impls, we want the
+                        // method's declared type scheme available in the
+                        // per-module Σ so that binding-group analysis can
+                        // Skolemize the method binding just like a free
+                        // function. Impl methods are keyed by their fully
+                        // qualified impl path, so they do not collide with
+                        // the trait's own method declaration.
+                        decl_pairs.push((fn_bg, fn_env));
                     }
                 }
 

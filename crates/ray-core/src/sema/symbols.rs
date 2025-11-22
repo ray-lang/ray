@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 
 use crate::{
     ast::{
-        Assign, Call, Curly, CurlyElement, Decl, Expr, Func, FuncSig, Module, Path, WalkItem,
+        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, Path, WalkItem,
         walk_module,
     },
     pathlib::FilePath,
@@ -66,6 +66,7 @@ pub struct SymbolBuildContext<'a> {
     definitions: HashMap<Path, SymbolTarget>,
     struct_fields: HashMap<(String, String), Path>,
     references: Vec<(u64, Path)>,
+    ignore: HashSet<u64>,
 }
 
 impl<'a> SymbolBuildContext<'a> {
@@ -82,6 +83,7 @@ impl<'a> SymbolBuildContext<'a> {
             definitions: HashMap::new(),
             struct_fields: HashMap::new(),
             references: Vec::new(),
+            ignore: HashSet::new(),
         }
     }
 
@@ -106,6 +108,15 @@ impl<'a> SymbolBuildContext<'a> {
     }
 
     fn record_reference(&mut self, node_id: u64, path: &Path) {
+        if self.ignore.contains(&node_id) {
+            log::debug!(
+                "[record reference] IGNORE node_id={}, path={}",
+                node_id,
+                path
+            );
+            return;
+        }
+
         log::debug!("[record reference] node_id={}, path={}", node_id, path);
         self.references.push((node_id, path.clone()));
     }
@@ -172,6 +183,18 @@ impl<'a> SymbolBuildContext<'a> {
         }
     }
 
+    fn record_dot(&mut self, dot: &Dot) {
+        let lhs_ty = self.tcx.ty_of(dot.lhs.id);
+        let mut fqn = match lhs_ty.mono() {
+            Ty::Ref(ty) => ty.get_path(),
+            ty => ty.get_path(),
+        };
+
+        fqn.append_mut(dot.rhs.path.to_short_name());
+        self.record_reference(dot.rhs.id, &fqn.with_names_only());
+        self.ignore.insert(dot.rhs.id);
+    }
+
     fn collect_from_module(&mut self) {
         for item in walk_module(self.module) {
             log::debug!("[build_symbol_map] item = {:?}", item);
@@ -226,6 +249,7 @@ impl<'a> SymbolBuildContext<'a> {
                     Expr::Func(func) => self.record_func_sig(&func.sig),
                     Expr::Curly(curly) => self.record_struct_literal(curly),
                     Expr::Call(call) => self.record_call(call),
+                    Expr::Dot(dot) => self.record_dot(dot),
                     _ => continue,
                 },
                 WalkItem::Func(func) => {
