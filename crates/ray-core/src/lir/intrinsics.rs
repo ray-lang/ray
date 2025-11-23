@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ast::Path;
+use ray_shared::pathlib::Path;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum IntrinsicKind {

@@ -11,6 +11,7 @@ log = "0.4"
 env_logger = "0.10"
 ray-core = { path = "../ray-core" }
 ray-driver = { path = "../ray-driver" }
+ray-shared = { path = "../ray-shared" }
 serde_json = "1"
 
 [dev-dependencies]

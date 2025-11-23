@@ -4,14 +4,14 @@ use std::{
 };
 
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
-use top::{Subst, Substitutable};
-
-use crate::{
-    ast::Path,
+use ray_shared::{
+    pathlib::Path,
     span::{Source, Span},
-    typing::ty::{Ty, TyVar},
 };
+use ray_typing::top::{Subst, Substitutable};
+use serde::{Deserialize, Serialize};
+
+use ray_typing::ty::{Ty, TyVar};
 
 pub trait HasSource {
     fn src(&self) -> Source;

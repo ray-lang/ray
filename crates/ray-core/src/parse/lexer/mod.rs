@@ -1,10 +1,8 @@
-use crate::{
-    ast::{
-        Modifier,
-        token::{CommentKind, IntegerBase, Token, TokenKind},
-    },
-    span::{Pos, Span},
+use crate::ast::{
+    Modifier,
+    token::{CommentKind, IntegerBase, Token, TokenKind},
 };
+use ray_shared::span::{Pos, Span};
 
 use std::collections::VecDeque;
 

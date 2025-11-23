@@ -1,12 +1,12 @@
 use std::fmt::Debug;
 
-use crate::{
-    ast::{Node, Path},
+use ray_shared::{
     collections::nametree::Scope,
-    pathlib::FilePath,
-    strutils,
-    typing::state::TyEnv,
+    pathlib::{FilePath, Path},
 };
+
+use crate::{ast::Node, strutils};
+use ray_typing::state::TyEnv;
 
 use super::{Decl, Expr, Import};
 

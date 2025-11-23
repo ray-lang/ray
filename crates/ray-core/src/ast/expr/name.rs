@@ -1,8 +1,10 @@
 use std::hash::Hash;
 
+use ray_shared::pathlib::Path;
 use serde::{Deserialize, Serialize};
 
-use crate::{ast::Path, span::parsed::Parsed, typing::ty::TyScheme};
+use ray_shared::span::parsed::Parsed;
+use ray_typing::ty::TyScheme;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Name {

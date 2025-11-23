@@ -1,5 +1,5 @@
 use clap::Args;
-use ray_core::pathlib::FilePath;
+use ray_shared::pathlib::FilePath;
 
 #[derive(Debug, Args)]
 pub struct GlobalOptions {

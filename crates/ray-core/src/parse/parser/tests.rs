@@ -1,13 +1,15 @@
 #![cfg(test)]
 
-use super::{ParseDiagnostics, ParseOptions, Parser};
+use ray_typing::ty::{NominalKind, Ty};
+use ray_shared::pathlib::{FilePath, Path};
+
 use crate::{
-    ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, Path, Pattern},
+    ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, Pattern},
     errors::{RayError, RayErrorKind},
-    pathlib::FilePath,
-    span::SourceMap,
-    typing::ty::{NominalKind, Ty},
+    sourcemap::SourceMap,
 };
+
+use super::{ParseDiagnostics, ParseOptions, Parser};
 
 #[allow(dead_code)]
 fn enable_debug_logs() {

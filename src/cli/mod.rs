@@ -1,9 +1,9 @@
 use std::process;
 
 use clap::{Parser, Subcommand, builder::styling};
-use ray_core::pathlib::RayPaths;
 use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions};
 use ray_shared::logger;
+use ray_shared::pathlib::RayPaths;
 
 mod analyze;
 mod bootstrap;

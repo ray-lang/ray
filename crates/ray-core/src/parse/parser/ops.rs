@@ -4,13 +4,11 @@ use super::{
     ExprResult, ParseContext, ParseResult, ParsedExpr, Parser, Recover, RecoveryCtx, Restrictions,
 };
 
-use crate::{
-    ast::{
-        Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
-        RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
-    },
-    span::Span,
+use crate::ast::{
+    Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
+    RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
 };
+use ray_shared::span::Span;
 
 impl Parser<'_> {
     pub(crate) fn parse_infix_expr(

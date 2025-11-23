@@ -2,17 +2,20 @@ use petgraph::{
     graph::NodeIndex,
     visit::{Dfs, DfsEvent, EdgeRef, depth_first_search},
 };
+use ray_shared::{
+    pathlib::Path,
+    span::Source,
+    utils::{join, map_join},
+};
+use ray_typing::top::{Subst, Substitutable};
+use ray_typing::ty::{StructTy, Ty, TyScheme, TyVar};
 use serde::{Deserialize, Serialize};
-use top::{Subst, Substitutable};
 
 use crate::{
-    ast::{self, Modifier, Node, Path},
+    ast::{Modifier, Node},
     convert::ToSet,
     lir::IntrinsicKind,
-    span::Source,
     strutils::indent_lines,
-    typing::ty::{StructTy, Ty, TyScheme, TyVar},
-    utils::{join, map_join},
 };
 
 use std::{
@@ -191,7 +194,32 @@ impl LCA<usize> for ControlFlowGraph {
     }
 }
 
-pub type SymbolSet = HashSet<Path>;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SymbolSet(HashSet<Path>);
+
+impl std::ops::Deref for SymbolSet {
+    type Target = HashSet<Path>;
+
+    fn deref(&self) -> &Self::Target {
+        todo!()
+    }
+}
+
+impl std::ops::DerefMut for SymbolSet {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        todo!()
+    }
+}
+
+impl IntoIterator for SymbolSet {
+    type Item = Path;
+
+    type IntoIter = std::collections::hash_set::IntoIter<Path>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
 
 impl Substitutable<TyVar, Ty> for SymbolSet {
     fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
@@ -208,6 +236,12 @@ impl Substitutable<TyVar, Ty> for SymbolSet {
             path.apply_subst_all(subst);
             self.insert(path);
         }
+    }
+}
+
+impl SymbolSet {
+    pub fn new() -> SymbolSet {
+        SymbolSet(HashSet::new())
     }
 }
 
@@ -865,6 +899,36 @@ impl Display for BreakOp {
     }
 }
 
+pub trait SizeOf {
+    fn size_of(&self) -> Size;
+}
+
+impl SizeOf for Ty {
+    fn size_of(&self) -> Size {
+        match self {
+            Ty::Never | Ty::Any | Ty::Var(_) => Size::zero(),
+            Ty::Array(t, size) => t.size_of() * *size,
+            Ty::Tuple(t) => t.iter().map(Ty::size_of).sum(),
+            Ty::Union(v) => {
+                let tag_size = (v.len() + 7) / 8;
+                let max_size = v.iter().map(Ty::size_of).max().unwrap_or_default();
+                Size::bytes(tag_size) + max_size
+            }
+            Ty::Func(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => Size::ptr(),
+            Ty::Projection(ty, _) => ty.size_of(),
+            Ty::Const(n) => match n.as_str() {
+                "int" | "uint" => Size::ptr(),
+                "i8" | "u8" | "bool" => Size::bytes(1),
+                "i16" | "u16" => Size::bytes(2),
+                "i32" | "u32" | "f32" => Size::bytes(4),
+                "i64" | "u64" | "f64" => Size::bytes(8),
+                "i128" | "u128" | "f128" => Size::bytes(16),
+                _ => Size::ptr(),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Size {
     pub ptrs: usize,
@@ -992,7 +1056,7 @@ impl Display for Extern {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Program {
-    pub module_path: ast::Path,
+    pub module_path: ray_shared::pathlib::Path,
     pub globals: Vec<Global>,
     pub data: Vec<Data>,
     pub funcs: Vec<Node<Func>>,
@@ -1048,7 +1112,7 @@ impl Substitutable<TyVar, Ty> for Program {
 }
 
 impl Program {
-    pub fn new(m: ast::Path) -> Program {
+    pub fn new(m: ray_shared::pathlib::Path) -> Program {
         Program {
             module_path: m,
             globals: vec![],
@@ -1526,7 +1590,7 @@ impl Substitutable<TyVar, Ty> for Func {
         self.params.apply_subst(subst);
         self.locals.apply_subst(subst);
         self.blocks.apply_subst(subst);
-        self.symbols.apply_subst(subst);
+        // self.symbols.apply_subst(subst);
     }
 
     fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
@@ -1534,7 +1598,7 @@ impl Substitutable<TyVar, Ty> for Func {
         self.params.apply_subst_all(subst);
         self.locals.apply_subst_all(subst);
         self.blocks.apply_subst_all(subst);
-        self.symbols.apply_subst_all(subst);
+        // self.symbols.apply_subst_all(subst);
     }
 }
 

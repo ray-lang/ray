@@ -1,10 +1,9 @@
 use std::fmt::Debug;
 
-use crate::{
-    ast::{Boxed, Node, Path, Ref, expr::deref::Deref},
-    span::parsed::Parsed,
-    typing::ty::TyScheme,
-};
+use ray_shared::{pathlib::Path, span::parsed::Parsed};
+
+use crate::ast::{Boxed, Node, Ref, expr::deref::Deref};
+use ray_typing::ty::TyScheme;
 
 use super::{
     Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, For, Func, If, Index, List, Literal,

@@ -1,7 +1,6 @@
-use crate::{
-    ast::{Expr, Node, Pattern},
-    typing::ty::Ty,
-};
+use ray_typing::ty::Ty;
+
+use crate::ast::{Expr, Node, Pattern};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local {

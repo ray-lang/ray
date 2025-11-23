@@ -2,7 +2,7 @@ use std::{process, str::FromStr};
 
 use clap::Args;
 use log::error;
-use ray_core::pathlib::FilePath;
+use ray_shared::pathlib::FilePath;
 
 #[derive(Debug, Clone, Copy)]
 pub enum LspTransport {

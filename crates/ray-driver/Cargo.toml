@@ -11,4 +11,4 @@ log = "0.4"
 inkwell = { version = "0.6", features = ["llvm17-0"] }
 ray-core = { path = "../ray-core" }
 ray-shared = { path = "../ray-shared" }
-top = { path = "../top" }
+ray-typing = { path = "../ray-typing" }

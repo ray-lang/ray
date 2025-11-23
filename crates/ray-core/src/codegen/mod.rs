@@ -2,14 +2,11 @@ use std::collections::HashMap;
 
 use lir::SymbolSet;
 
-use ray_shared::optlevel::OptLevel;
+use ray_typing::TyCtx;
+use ray_shared::{optlevel::OptLevel, pathlib::Path};
 
-use crate::{
-    ast::{Node, Path},
-    lir,
-    span::SourceMap,
-    typing::TyCtx,
-};
+use crate::sourcemap::SourceMap;
+use crate::{ast::Node, lir};
 
 pub mod llvm;
 

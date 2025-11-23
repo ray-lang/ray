@@ -1,8 +1,9 @@
-use crate::{
-    ast::{Decl, Expr, Import, Node, Path},
-    pathlib::FilePath,
+use ray_shared::{
+    pathlib::{FilePath, Path},
     span::Span,
 };
+
+use crate::ast::{Decl, Expr, Import, Node};
 
 pub struct File {
     pub path: Path,

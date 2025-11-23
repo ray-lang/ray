@@ -1137,9 +1137,9 @@ dependencies = [
  "petgraph",
  "rand",
  "ray-shared",
+ "ray-typing",
  "serde",
  "serde_derive",
- "top",
  "xxhash-rust",
 ]
 
@@ -1154,7 +1154,7 @@ dependencies = [
  "log",
  "ray-core",
  "ray-shared",
- "top",
+ "ray-typing",
 ]
 
 [[package]]
@@ -1167,6 +1167,7 @@ dependencies = [
  "pretty_assertions",
  "ray-core",
  "ray-driver",
+ "ray-shared",
  "serde_json",
  "tokio",
  "tower-lsp",
@@ -1178,7 +1179,21 @@ version = "0.1.0"
 dependencies = [
  "colored 2.0.0",
  "fern",
+ "fnv",
+ "home",
+ "itertools",
  "log",
+ "serde",
+]
+
+[[package]]
+name = "ray-typing"
+version = "0.1.0"
+dependencies = [
+ "itertools",
+ "log",
+ "ray-shared",
+ "serde",
 ]
 
 [[package]]
@@ -1652,15 +1667,6 @@ name = "toml_writer"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df8b2b54733674ad286d16267dcfc7a71ed5c776e4ac7aa3c3e2561f7c637bf2"
-
-[[package]]
-name = "top"
-version = "0.1.0"
-dependencies = [
- "itertools",
- "log",
- "serde",
-]
 
 [[package]]
 name = "tower"

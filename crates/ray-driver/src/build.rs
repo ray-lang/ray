@@ -1,8 +1,8 @@
 use std::{ffi::OsString, str::FromStr};
 
 use clap::{Args, ValueEnum};
-use ray_core::{pathlib::FilePath, target::Target};
-use ray_shared::optlevel::OptLevel;
+use ray_core::target::Target;
+use ray_shared::{optlevel::OptLevel, pathlib::FilePath};
 
 use crate::GlobalOptions;
 

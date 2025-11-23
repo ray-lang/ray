@@ -1,11 +1,9 @@
-use crate::{
-    ast::{Decl, Node},
-    pathlib::FilePath,
-    span::Span,
-    typing::ty::Ty,
-};
-
 use std::fmt;
+
+use ray_shared::{pathlib::FilePath, span::Span};
+
+use crate::ast::{Decl, Node};
+use ray_typing::ty::Ty;
 
 #[derive(Debug)]
 pub struct CType {

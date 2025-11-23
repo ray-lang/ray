@@ -5,13 +5,14 @@ mod utils;
 use std::collections::HashMap;
 
 use ray_core::{
-    ast::{CurlyElement, Expr, Path},
+    ast::{CurlyElement, Expr},
+    infer::InferSystem,
     libgen::collect_definition_records,
-    pathlib::RayPaths,
     sema::{ModuleBuilder, SymbolRole},
-    typing::{InferSystem, ty::Ty},
 };
 use ray_driver::{BuildOptions, Driver};
+use ray_shared::pathlib::{Path, RayPaths};
+use ray_typing::ty::Ty;
 
 use utils::{find_func, find_func_in, find_impl, test_build};
 

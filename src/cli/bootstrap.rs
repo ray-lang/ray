@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::Args;
 use flate2::read::GzDecoder;
-use ray_core::pathlib::RayPaths;
+use ray_shared::pathlib::RayPaths;
 use serde::Deserialize;
 use tempfile::Builder as TempDirBuilder;
 

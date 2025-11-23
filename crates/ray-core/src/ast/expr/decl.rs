@@ -4,13 +4,12 @@ use std::{
 };
 
 use itertools::Itertools;
+use ray_shared::{pathlib::Path, span::parsed::Parsed, utils::join};
 
+use ray_typing::ty::{NominalKind, Ty, TyScheme};
 use crate::{
-    ast::{Assign, Func, FuncSig, Name, Node, Path, TypeParams},
-    span::parsed::Parsed,
+    ast::{Assign, Func, FuncSig, Name, Node, TypeParams},
     strutils,
-    typing::ty::{NominalKind, Ty, TyScheme},
-    utils::join,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

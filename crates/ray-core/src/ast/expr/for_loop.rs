@@ -1,7 +1,5 @@
-use crate::{
-    ast::{Expr, Node, Pattern},
-    span::Span,
-};
+use crate::ast::{Expr, Node, Pattern};
+use ray_shared::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct For {

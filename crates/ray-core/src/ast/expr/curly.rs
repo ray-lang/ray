@@ -1,10 +1,11 @@
+use ray_shared::{pathlib::Path, utils::join};
+
+use ray_typing::ty::TyScheme;
 use crate::{
-    ast::{Expr, Name, Node, Path},
-    span::{Span, parsed::Parsed},
+    ast::{Expr, Name, Node},
     strutils::indent_lines,
-    typing::ty::TyScheme,
-    utils::join,
 };
+use ray_shared::span::{Span, parsed::Parsed};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CurlyElement {

@@ -1,11 +1,12 @@
+use ray_shared::pathlib::{FilePath, Path};
+
+use ray_shared::span::Source;
 use crate::{
     ast::{
-        Path, PrefixOp,
+        PrefixOp,
         token::{IntegerBase, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind, RayResult},
-    pathlib::FilePath,
-    span::Source,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -2,7 +2,7 @@
 
 mod utils;
 
-use utils::{enable_debug_logs, test_build};
+use utils::test_build;
 
 #[test]
 fn value_receiver_methods_typecheck_for_value_and_pointer() {

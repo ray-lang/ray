@@ -1,11 +1,9 @@
-mod collect;
 mod expr;
 mod file;
 mod lower;
 mod modifier;
 mod module;
 mod node;
-mod path;
 mod walk;
 
 pub mod token;
@@ -17,5 +15,4 @@ pub use modifier::*;
 pub use module::*;
 pub use node::*;
 
-pub use path::*;
 pub use walk::*;

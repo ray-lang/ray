@@ -1,8 +1,10 @@
+use ray_shared::pathlib::Path;
+
 use crate::{
-    ast::{Path, TrailingPolicy, ValueKind, token::TokenKind},
+    ast::{TrailingPolicy, ValueKind, token::TokenKind},
     parse::{Parser, lexer::NewlineMode, parser::Restrictions},
-    span::Pos,
 };
+use ray_shared::span::Pos;
 
 pub(crate) struct ParseScope<'a, 'src> {
     pub(crate) p: &'a mut Parser<'src>,

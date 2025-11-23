@@ -3,18 +3,18 @@ use std::{
     fmt::Display,
 };
 
+use ray_typing::{TyCtx, state::SchemeEnv, ty::Ty};
+use ray_shared::{
+    collections::namecontext::NameContext,
+    pathlib::{FilePath, Path, PathPart},
+    span::Span,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ast::{
-        CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Modifier, Module, Node, Path, PathPart,
-        Pattern,
-    },
+    ast::{CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Modifier, Module, Node, Pattern},
     lir,
-    pathlib::FilePath,
-    sema::NameContext,
-    span::{SourceMap, Span},
-    typing::{TyCtx, state::SchemeEnv, ty::Ty},
+    sourcemap::SourceMap,
 };
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -4,14 +4,15 @@ use std::{
     rc::Rc,
 };
 
-use top::{Substitutable, mgu, util::Join};
+use ray_shared::pathlib::Path;
+use ray_typing::top::{Substitutable, mgu, util::Join};
+use ray_typing::ty::{Ty, TyScheme};
 
 use crate::{
-    ast::{Node, Path},
+    ast::Node,
     convert::ToSet,
     lir::{self, NamedInst},
     sema,
-    typing::ty::{Ty, TyScheme},
 };
 
 #[derive(Debug)]
@@ -303,7 +304,7 @@ impl<'p> Monomorphizer<'p> {
         let poly_name = sema::fn_name(&poly_base_name, poly_ty);
 
         // pick a concrete polymorphic implementation matching the callee type
-        use top::Subst;
+        use ray_typing::top::Subst;
         let mut subst: Subst<_, _> = Subst::new();
         let mut poly_impl_key: Option<Path> = None;
         if let Some(cands) = self.poly_groups.get(&poly_fqn) {
@@ -407,7 +408,7 @@ impl<'p> Monomorphizer<'p> {
                 );
 
                 // per symbol details
-                for p in &mono_fn.symbols {
+                for p in mono_fn.symbols.iter() {
                     let s = p.to_string();
                     if s.contains("?t") {
                         log::warn!(

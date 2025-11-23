@@ -1,13 +1,17 @@
 use std::collections::{HashMap, HashSet};
 
+use ray_typing::TyCtx;
+use ray_shared::span::{Source, Span};
+use ray_shared::{
+    collections::{namecontext::NameContext, nametree::Scope},
+    pathlib::{FilePath, Path},
+};
+
 use crate::{
-    ast::{self, Decl, Expr, Literal, LowerAST, LowerCtx, Module, Node, Path},
-    collections::nametree::Scope,
+    ast::{self, Decl, Expr, Literal, LowerAST, LowerCtx, Module, Node},
     errors::RayError,
-    pathlib::FilePath,
-    sema::{NameContext, NameResolve, ResolveContext},
-    span::{Source, SourceMap, Span},
-    typing::TyCtx,
+    sema::{NameResolve, ResolveContext},
+    sourcemap::SourceMap,
 };
 
 type SourceModule = Module<Expr, Decl>;

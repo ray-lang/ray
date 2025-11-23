@@ -1,10 +1,8 @@
+use ray_shared::{pathlib::Path, utils::join};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    ast::{Node, Path},
-    span::Span,
-    utils::join,
-};
+use crate::ast::Node;
+use ray_shared::span::Span;
 
 use super::Name;
 

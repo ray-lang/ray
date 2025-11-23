@@ -1,7 +1,5 @@
-use crate::{
-    ast::{Expr, Node},
-    span::Span,
-};
+use crate::ast::{Expr, Node};
+use ray_shared::span::Span;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RangeLimits {

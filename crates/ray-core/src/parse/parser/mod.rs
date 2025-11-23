@@ -21,11 +21,14 @@ pub use recover::{Recover, RecoveryCtx};
 
 use std::{fs, io, mem};
 
+use ray_typing::ty::{Ty, TyScheme};
 use rand::RngCore;
+use ray_shared::pathlib::{FilePath, Path};
+use ray_shared::span::{Pos, Source, Span, parsed::Parsed};
 
 use crate::{
     ast::{
-        Decl, Decorator, Expr, File, Import, InfixOp, Missing, Node, Path, Pattern, TrailingPolicy,
+        Decl, Decorator, Expr, File, Import, InfixOp, Missing, Node, Pattern, TrailingPolicy,
         token::{CommentKind, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
@@ -33,9 +36,7 @@ use crate::{
         lexer::{Lexer, NewlineMode, Preceding},
         parser::context::{ParseScope, SeqSpec},
     },
-    pathlib::FilePath,
-    span::{Pos, Source, SourceMap, Span, TriviaKind, parsed::Parsed},
-    typing::ty::{Ty, TyScheme},
+    sourcemap::{SourceMap, TriviaKind},
 };
 
 const DEPTH_IDX_PAREN: usize = 0;

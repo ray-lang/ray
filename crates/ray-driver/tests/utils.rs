@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 
+use ray_typing::ty::Ty;
 use ray_core::{
-    ast::{Decl, Func, Impl, Module, Node, Path},
+    ast::{Decl, Func, Impl, Module, Node},
     errors::RayError,
-    pathlib::{FilePath, RayPaths},
-    typing::ty::Ty,
 };
 use ray_driver::*;
+use ray_shared::pathlib::{FilePath, Path, RayPaths};
 
 #[allow(dead_code)]
 pub fn enable_debug_logs() {

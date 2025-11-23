@@ -1,5 +1,7 @@
 use std::convert::TryFrom;
 
+use ray_shared::pathlib::Path;
+
 use super::{
     DocComments, ExprResult, ParseResult, Parser, Recover, RecoveryCtx, Restrictions,
     context::ParseContext,
@@ -7,12 +9,12 @@ use super::{
 
 use crate::{
     ast::{
-        Block, Closure, Expr, Literal, Missing, Name, Node, Path, Pattern, Sequence,
-        TrailingPolicy, Tuple, ValueKind, token::TokenKind,
+        Block, Closure, Expr, Literal, Missing, Name, Node, Pattern, Sequence, TrailingPolicy,
+        Tuple, ValueKind, token::TokenKind,
     },
     parse::{lexer::NewlineMode, parser::context::SeqSpec},
-    span::Span,
 };
+use ray_shared::span::Span;
 
 impl Parser<'_> {
     pub(crate) fn parse_atom(&mut self, ctx: &ParseContext) -> ExprResult {

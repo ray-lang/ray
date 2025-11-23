@@ -1,4 +1,4 @@
-use crate::pathlib::FilePath;
+use ray_shared::pathlib::FilePath;
 
 /// Returns true if the directory contains a module entry file (`mod.ray` or `<basename>.ray`).
 pub fn is_dir_module(dir: &FilePath) -> bool {

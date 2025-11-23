@@ -1,11 +1,10 @@
 use std::{fmt::Display, ops::Deref};
 
 use itertools::Itertools;
+use ray_shared::pathlib::Path;
 
-use crate::{
-    ast::{Node, Path},
-    span::Span,
-};
+use crate::ast::Node;
+use ray_shared::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportKind {

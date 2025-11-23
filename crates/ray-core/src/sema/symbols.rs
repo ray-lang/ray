@@ -1,18 +1,21 @@
 use std::collections::{HashMap, HashSet};
 
-use top::Ty as _;
+use ray_typing::{
+    TyCtx,
+    ty::{Ty, TyScheme},
+};
+use ray_shared::{
+    pathlib::{FilePath, Path},
+    span::{Source, Span, parsed::Parsed},
+};
+use ray_typing::top::Ty as _;
 
 use crate::{
     ast::{
-        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, Path, WalkItem,
+        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, WalkItem,
         walk_module,
     },
-    pathlib::FilePath,
-    span::{Source, SourceMap, Span, parsed::Parsed},
-    typing::{
-        TyCtx,
-        ty::{Ty, TyScheme},
-    },
+    sourcemap::SourceMap,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

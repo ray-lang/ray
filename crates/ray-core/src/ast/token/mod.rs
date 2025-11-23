@@ -5,7 +5,7 @@ use std::string::String;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::modifier::Modifier;
-use crate::span::Span;
+use ray_shared::span::Span;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IntegerBase {

@@ -1,10 +1,11 @@
 use std::{convert::TryFrom, ops::Deref};
 
+use ray_shared::{pathlib::Path, utils::join};
+
+use ray_shared::span::Span;
 use crate::{
-    ast::{self, Missing, Node, Path, PrefixOp, Tuple},
+    ast::{self, Missing, Node, PrefixOp, Tuple},
     errors::{RayError, RayErrorKind},
-    span::Span,
-    utils::join,
 };
 
 use super::{Expr, Name, Sequence};

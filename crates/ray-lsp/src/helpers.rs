@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use tower_lsp::lsp_types::{Position, Range, Url};
 
-use ray_core::{pathlib::FilePath, span::Span};
+use ray_shared::span::Span;
+use ray_shared::pathlib::FilePath;
 use serde_json::Value;
 
 pub(crate) fn parse_toolchain_path(value: &Value) -> Option<FilePath> {

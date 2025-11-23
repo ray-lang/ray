@@ -1,11 +1,8 @@
 use std::ops::Deref;
 
+use ray_typing::ty::{NominalKind, Ty};
 use itertools::Itertools;
-
-use super::{
-    DeclResult, ExprResult, ParseResult, ParsedDecl, Parser, Recover, RecoveryCtx, Restrictions,
-    context::{ParseContext, SeqSpec},
-};
+use ray_shared::span::{Pos, Span, parsed::Parsed};
 
 use crate::{
     ast::{
@@ -14,8 +11,12 @@ use crate::{
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::NewlineMode,
-    span::{Pos, Span, TriviaKind, parsed::Parsed},
-    typing::ty::{NominalKind, Ty},
+    sourcemap::TriviaKind,
+};
+
+use super::{
+    DeclResult, ExprResult, ParseResult, ParsedDecl, Parser, Recover, RecoveryCtx, Restrictions,
+    context::{ParseContext, SeqSpec},
 };
 
 impl Parser<'_> {

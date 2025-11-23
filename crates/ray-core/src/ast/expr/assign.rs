@@ -1,7 +1,6 @@
-use crate::{
-    ast::{Expr, InfixOp, Node, Pattern},
-    span::Span,
-};
+use ray_shared::span::Span;
+
+use crate::ast::{Expr, InfixOp, Node, Pattern};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assign {

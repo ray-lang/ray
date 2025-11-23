@@ -5,21 +5,26 @@ use std::{
 };
 
 use ray_core::{
-    ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Path, Pattern},
+    ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Pattern},
     codegen::{CodegenOptions, llvm},
     errors::{RayError, RayErrorKind},
+    infer::InferSystem,
     libgen, lir,
-    pathlib::{FilePath, RayPaths},
     sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
-    span::{Source, SourceMap, Span},
-    typing::{
-        InferSystem, TyCtx,
-        state::SchemeEnv,
-        ty::{Ty, TyScheme, TyVar},
-    },
+    sourcemap::SourceMap,
 };
-use ray_shared::optlevel::OptLevel;
-use top::{Subst, Substitutable};
+use ray_shared::{
+    collections::namecontext::NameContext,
+    optlevel::OptLevel,
+    pathlib::{FilePath, Path, RayPaths},
+    span::{Source, Span},
+};
+use ray_typing::{
+    TyCtx,
+    state::SchemeEnv,
+    ty::{Ty, TyScheme, TyVar},
+};
+use ray_typing::top::{Subst, Substitutable};
 
 mod analyze;
 mod build;
@@ -38,7 +43,7 @@ pub struct FrontendResult {
     pub module_path: Path,
     pub module: Module<(), Decl>,
     pub tcx: TyCtx,
-    pub ncx: sema::NameContext,
+    pub ncx: NameContext,
     pub srcmap: SourceMap,
     pub symbol_map: SymbolMap,
     pub defs: SchemeEnv,

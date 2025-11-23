@@ -1,10 +1,8 @@
 #![cfg(test)]
 
-use ray_core::{
-    ast::Path,
-    typing::ty::{Ty, TyVar},
-};
-use top::types::{Class, ClassEnv, Predicate};
+use ray_typing::ty::{Ty, TyVar};
+use ray_shared::pathlib::Path;
+use ray_typing::top::types::{Class, ClassEnv, Predicate};
 
 fn ty_var(name: &str) -> Ty {
     Ty::var(Path::from(name))

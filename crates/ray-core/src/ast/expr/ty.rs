@@ -1,7 +1,5 @@
-use crate::{
-    span::{Span, parsed::Parsed},
-    typing::ty::Ty,
-};
+use ray_shared::span::{Span, parsed::Parsed};
+use ray_typing::ty::Ty;
 
 use std::fmt;
 

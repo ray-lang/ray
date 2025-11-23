@@ -1,13 +1,15 @@
+use ray_shared::pathlib::Path;
+
 use super::{
     ParseResult, Parser, Recover, RecoveryCtx, Restrictions,
     context::{ParseContext, SeqSpec},
 };
 
 use crate::{
-    ast::{self, FnParam, FuncSig, Missing, Name, Node, Path, TrailingPolicy, token::TokenKind},
+    ast::{self, FnParam, FuncSig, Missing, Name, Node, TrailingPolicy, token::TokenKind},
     parse::lexer::NewlineMode,
-    span::Span,
 };
+use ray_shared::span::Span;
 
 impl Parser<'_> {
     pub(crate) fn parse_fn(

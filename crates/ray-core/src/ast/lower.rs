@@ -4,41 +4,45 @@ use std::{
     vec,
 };
 
-use ast::Impl;
-use top::{Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective};
-
-use crate::{
-    ast::{self, TraitDirectiveKind},
-    collections::nametree::Scope,
-    errors::{RayError, RayErrorKind, RayResult},
-    pathlib::FilePath,
-    sema::NameContext,
-    span::{Source, SourceMap, Sourced, parsed::Parsed},
-    typing::{
-        TyCtx,
-        info::TypeSystemInfo,
-        ty::{
-            FieldKind, ImplField, ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty,
-            TyScheme, TyVar,
-        },
+use ray_shared::{
+    collections::{namecontext::NameContext, nametree::Scope},
+    pathlib::{FilePath, Path},
+    span::{Source, Sourced, parsed::Parsed},
+};
+use ray_typing::top::{
+    Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective,
+};
+use ray_typing::{
+    TyCtx,
+    info::TypeSystemInfo,
+    ty::{
+        FieldKind, ImplField, ImplTy, ReceiverMode, StructTy, TraitField, TraitTy, Ty, TyScheme,
+        TyVar,
     },
 };
 
-use super::{Decl, Expr, Extern, Func, Modifier, Node, Path, Struct, Trait, TypeParams};
+use crate::sourcemap::SourceMap;
+use crate::{
+    ast::{self, Impl, TraitDirectiveKind},
+    errors::{RayError, RayErrorKind, RayResult},
+};
 
-fn get_ty_vars(
-    ty_params: Option<&TypeParams>,
+use super::{Decl, Expr, Extern, Func, Modifier, Node, Struct, Trait, TypeParams};
+
+fn map_ty_vars(
+    ty_params: Option<&mut TypeParams>,
     scopes: &Vec<Scope>,
     filepath: &FilePath,
     src_module: &Path,
     ncx: &NameContext,
+    tcx: &mut TyCtx,
 ) -> Result<Vec<TyVar>, RayError> {
     let mut ty_vars = vec![];
     if let Some(ty_params) = ty_params {
-        for tp in ty_params.tys.iter() {
-            let mut ty = tp.clone_value();
-            ty.resolve_fqns(scopes, ncx);
-            if let Ty::Var(v) = ty {
+        for tp in ty_params.tys.iter_mut() {
+            tp.resolve_fqns(scopes, ncx);
+            tp.map_vars(tcx);
+            if let Ty::Var(v) = tp.value() {
                 ty_vars.push(v.clone());
             } else {
                 return Err(RayError {
@@ -260,13 +264,13 @@ impl LowerAST for Sourced<'_, Extern> {
                 // make sure that the signature is fully typed
                 let mut fn_tcx = ctx.tcx.clone();
                 let scopes = ctx.get_scopes(src);
-                fn_tcx.resolve_signature(
-                    sig,
+                sig.resolve_signature(
                     &src.path,
                     scopes,
                     &src.filepath,
                     ctx.srcmap,
                     ctx.ncx,
+                    &mut fn_tcx,
                 )?;
 
                 if sig.modifiers.contains(&Modifier::Wasi) {
@@ -292,38 +296,42 @@ impl LowerAST for Sourced<'_, Struct> {
             st.path.value.clone()
         };
 
+        let mut struct_tcx = ctx.tcx.clone();
         let scopes = ctx.get_scopes(src);
-        let ty_vars = get_ty_vars(
-            st.ty_params.as_ref(),
-            scopes, //&struct_path,
+        let ty_vars = map_ty_vars(
+            st.ty_params.as_mut(),
+            scopes,
             &src.filepath,
             &src.src_module,
             ctx.ncx,
+            &mut struct_tcx,
         )?;
 
-        let mut fields = vec![];
-        let mut field_tys = vec![];
-        if let Some(struct_fields) = &st.fields {
-            for field in struct_fields.iter() {
-                let ty = if let Some(ty) = &field.ty {
-                    let mut ty = ty.clone_value();
-                    ty.resolve_fqns(scopes, ctx.ncx);
-                    // ty.resolve_fqns(&struct_path, ctx.ncx);
-                    ty
-                } else {
-                    let src = ctx.srcmap.get(field);
-                    return Err(RayError {
-                        msg: format!("struct field on `{}` does not have a type", st.path),
-                        src: vec![src],
-                        kind: RayErrorKind::Type,
-                        context: Some("lower struct field".to_string()),
-                    });
-                };
+        let fields = ctx.with_tcx(struct_tcx, |ctx| {
+            let mut fields = vec![];
+            if let Some(struct_fields) = &mut st.fields {
+                for field in struct_fields.iter_mut() {
+                    let ty = if let Some(ty) = &mut field.ty {
+                        let scopes = ctx.get_scopes(src);
+                        ty.resolve_fqns(scopes, ctx.ncx);
+                        ty.mono_mut().map_vars(ctx.tcx);
+                        ty.clone_value()
+                    } else {
+                        let src = ctx.srcmap.get(field);
+                        return Err(RayError {
+                            msg: format!("struct field on `{}` does not have a type", st.path),
+                            src: vec![src],
+                            kind: RayErrorKind::Type,
+                            context: Some("lower struct field".to_string()),
+                        });
+                    };
 
-                fields.push((field.path.to_string(), ty.clone()));
-                field_tys.push(ty);
+                    fields.push((field.path.to_string(), ty));
+                }
             }
-        }
+
+            Ok(fields)
+        })?;
 
         let ty = Ty::with_vars(&struct_path, &ty_vars);
         let struct_ty = TyScheme::new(ty_vars, Predicates::new(), ty);
@@ -404,7 +412,14 @@ impl LowerAST for Sourced<'_, Trait> {
 
             let mut fn_tcx = trait_tcx.clone();
             let scopes = ctx.get_scopes(src);
-            fn_tcx.resolve_signature(sig, trait_fqn, scopes, &src.filepath, ctx.srcmap, ctx.ncx)?;
+            sig.resolve_signature(
+                trait_fqn,
+                scopes,
+                &src.filepath,
+                ctx.srcmap,
+                ctx.ncx,
+                &mut fn_tcx,
+            )?;
 
             // add the trait type to the qualifiers
             let scheme = sig.ty.as_mut().unwrap();
@@ -524,7 +539,7 @@ impl LowerAST for Sourced<'_, Impl> {
         let scopes = ctx.get_scopes(src);
         imp.ty.resolve_fqns(scopes, ctx.ncx);
 
-        let (trait_name, ty_args) = match imp.ty.deref() {
+        let (trait_name, orig_ty_args) = match imp.ty.deref() {
             Ty::Projection(ty, ty_params) => (ty.name(), ty_params.clone()),
             t => {
                 return Err(RayError {
@@ -585,16 +600,18 @@ impl LowerAST for Sourced<'_, Impl> {
             trait_ty_params.push(v.clone());
         }
 
-        let base_ty = if imp.is_object {
-            imp.ty.deref().clone()
+        let impl_scope = if imp.is_object {
+            imp.ty.get_path()
         } else {
-            ty_args[0].clone()
+            orig_ty_args[0].get_path()
         };
-        let impl_scope = base_ty.get_path();
         log::debug!("impl fqn: {}", impl_scope);
         let mut impl_ctx = ctx.tcx.clone();
         let mut impl_set = HashMap::new();
         let mut impl_srcs = HashMap::new();
+
+        let mut ty_args = orig_ty_args.clone();
+        ty_args.iter_mut().for_each(|t| t.map_vars(&mut impl_ctx));
 
         // consts have to be first in case they're used inside of functions
         if let Some(consts) = &mut imp.consts {
@@ -697,9 +714,8 @@ impl LowerAST for Sourced<'_, Impl> {
 
         // create a subst mapping the type parameter to the argument
         let mut sub = Subst::new();
-        sub.insert(trait_ty_params[0].clone(), base_ty.clone());
-        for (i, ty_param) in trait_ty_params[1..].iter().enumerate() {
-            sub.insert(ty_param.clone(), ty_args[i + 1].clone());
+        for (ty_param, ty_arg) in trait_ty_params.iter().zip(&ty_args) {
+            sub.insert(ty_param.clone(), ty_arg.clone());
         }
 
         let mut trait_ty = trait_ty.ty.clone();
@@ -713,6 +729,12 @@ impl LowerAST for Sourced<'_, Impl> {
                 &mut impl_ctx,
             )?);
         }
+
+        let base_ty = if imp.is_object {
+            imp.ty.deref().clone()
+        } else {
+            ty_args[0].clone()
+        };
 
         let impl_ty = ImplTy {
             trait_ty,
@@ -761,13 +783,13 @@ impl LowerAST for Sourced<'_, Func> {
         if num_typed != 0 && num_typed == func.sig.params.len() {
             let fn_scope = func.sig.path.clone();
             let scopes = ctx.get_scopes(src);
-            fn_tcx.resolve_signature(
-                &mut func.sig,
+            func.sig.resolve_signature(
                 &fn_scope,
                 scopes,
                 &src.filepath,
                 ctx.srcmap,
                 &ctx.ncx,
+                &mut fn_tcx,
             )?;
         }
 
@@ -1099,7 +1121,7 @@ impl LowerAST for Sourced<'_, ast::New> {
     }
 }
 
-impl LowerAST for Sourced<'_, ast::Path> {
+impl LowerAST for Sourced<'_, ray_shared::pathlib::Path> {
     type Output = ();
 
     fn lower(&mut self, _: &mut LowerCtx) -> RayResult<Self::Output> {
@@ -1196,7 +1218,7 @@ impl LowerAST for Sourced<'_, ast::While> {
 
 pub fn predicate_from_ast_ty(
     q: &Parsed<Ty>,
-    scope: &ast::Path,
+    scope: &ray_shared::pathlib::Path,
     filepath: &FilePath,
     tcx: &mut TyCtx,
 ) -> Result<Predicate<Ty, TyVar>, RayError> {
@@ -1266,15 +1288,17 @@ pub fn predicate_from_ast_ty(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{
-        ast::{Curly, CurlyElement, LowerAST, LowerCtx, Name, Node, Path},
-        pathlib::FilePath,
-        sema::NameContext,
-        span::{Pos, Source, SourceMap, Sourced, Span, parsed::Parsed},
-        typing::{
-            TyCtx,
-            ty::{NominalKind, StructTy, Ty, TyScheme},
-        },
+    use ray_shared::{
+        collections::namecontext::NameContext,
+        pathlib::{FilePath, Path},
+        span::{Pos, Source, Sourced, Span, parsed::Parsed},
+    };
+
+    use crate::ast::{Curly, CurlyElement, LowerAST, LowerCtx, Name, Node};
+    use crate::sourcemap::SourceMap;
+    use ray_typing::{
+        TyCtx,
+        ty::{NominalKind, StructTy, Ty, TyScheme},
     };
 
     fn mkspan(sline: usize, scol: usize, eline: usize, ecol: usize) -> Span {

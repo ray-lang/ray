@@ -1,4 +1,8 @@
-use top::Ty as _;
+use ray_shared::pathlib::FilePath;
+use ray_typing::top::Ty as _;
+
+use ray_typing::ty::{Ty, TyScheme};
+use ray_shared::span::{Pos, Span, parsed::Parsed};
 
 use crate::{
     ast::{
@@ -6,9 +10,7 @@ use crate::{
         Name, Node, Pattern, Struct, Trait,
     },
     parse::{ParseDiagnostics, ParseOptions, Parser},
-    pathlib::FilePath,
-    span::{Pos, SourceMap, Span, TriviaKind, parsed::Parsed},
-    typing::ty::{Ty, TyScheme},
+    sourcemap::{SourceMap, TriviaKind},
 };
 
 /// A coarse-grained set of semantic token kinds. These intentionally mirror the
@@ -77,7 +79,7 @@ pub fn collect_from_source(source: &str) -> Vec<SemanticToken> {
     let filepath = FilePath::from("memory:semantic_tokens.ray");
     options.filepath = filepath.clone();
     options.original_filepath = filepath;
-    options.module_path = ast::Path::from("semantic_tokens");
+    options.module_path = ray_shared::pathlib::Path::from("semantic_tokens");
 
     let ParseDiagnostics { value, .. } =
         Parser::parse_from_src_with_diagnostics(source, options, &mut srcmap);
@@ -568,7 +570,7 @@ impl<'a> SemanticTokenCollector<'a> {
 
     fn emit_path_node(
         &mut self,
-        path: &Node<ast::Path>,
+        path: &Node<ray_shared::pathlib::Path>,
         kind: SemanticTokenKind,
         modifiers: &[SemanticTokenModifier],
     ) {
@@ -638,7 +640,11 @@ impl<'a> SemanticTokenCollector<'a> {
         }
     }
 
-    fn emit_parsed_path(&mut self, path: &Parsed<ast::Path>, kind: SemanticTokenKind) {
+    fn emit_parsed_path(
+        &mut self,
+        path: &Parsed<ray_shared::pathlib::Path>,
+        kind: SemanticTokenKind,
+    ) {
         if let Some(span) = path.span().copied() {
             self.emit_span(span, kind, &[]);
         }

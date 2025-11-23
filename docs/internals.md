@@ -24,7 +24,7 @@ Diagnostics raised at any stage bubble up through `Driver::emit_errors`, which g
 
 ## Type System
 - Constraint collection lives in `src/typing/collect`. Every expression contributes predicates and equality constraints to a tree structure (`typing::constraints`).
-- `InferSystem` (`src/typing/infer/mod.rs`) flattens those constraints and hands them to the greedy solver from the `top` crate. Trait declarations become `Class` entries, and `impl` blocks become `Instance`s.
+- `InferSystem` (`src/infer/mod.rs`) flattens those constraints and hands them to the greedy solver from the `top` crate. Trait declarations become `Class` entries, and `impl` blocks become `Instance`s.
 - Solutions propagate through `TyCtx`, updating stored type schemes (`TyScheme`) and qualifying definitions with any remaining predicates.
 - Errors produced by the solver are wrapped as `RayErrorKind::Type` and include precise spans via the shared `SourceMap`.
 

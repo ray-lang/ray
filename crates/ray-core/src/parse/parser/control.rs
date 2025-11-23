@@ -2,10 +2,8 @@ use super::{
     ExprResult, ParsedExpr, Parser, Recover, RecoveryCtx, Restrictions, context::ParseContext,
 };
 
-use crate::{
-    ast::{Expr, For, If, Loop, While, token::TokenKind},
-    span::Span,
-};
+use crate::ast::{Expr, For, If, Loop, While, token::TokenKind};
+use ray_shared::span::Span;
 
 impl Parser<'_> {
     pub(crate) fn parse_pre_block_expr(&mut self, ctx: &ParseContext) -> ExprResult {

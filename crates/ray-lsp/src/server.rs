@@ -22,11 +22,9 @@ use tower_lsp::{
     },
 };
 
-use ray_core::{
-    libgen,
-    pathlib::FilePath,
-    span::{Source, Span},
-};
+use ray_core::libgen;
+use ray_shared::span::{Source, Span};
+use ray_shared::pathlib::FilePath;
 use serde_json::Value;
 
 use crate::{

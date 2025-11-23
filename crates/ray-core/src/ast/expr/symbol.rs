@@ -1,4 +1,4 @@
-use crate::span::Span;
+use ray_shared::span::Span;
 
 #[derive(Debug)]
 pub struct Symbol {

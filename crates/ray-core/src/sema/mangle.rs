@@ -1,4 +1,6 @@
-use crate::{ast::Path, typing::ty::TyScheme, utils::map_join};
+use ray_shared::{pathlib::Path, utils::map_join};
+
+use ray_typing::ty::TyScheme;
 
 pub fn fn_name(base: &Path, ty: &TyScheme) -> Path {
     let (_, _, param_tys, ret_ty) = ty.try_borrow_fn().unwrap();

@@ -1,5 +1,6 @@
-use super::{Recover, RecoveryCtx};
-use top::Predicates;
+use ray_typing::ty::{Ty, TyScheme};
+use ray_shared::span::{Span, parsed::Parsed};
+use ray_typing::top::Predicates;
 
 use crate::{
     ast::{TrailingPolicy, TypeParams, token::TokenKind},
@@ -8,9 +9,9 @@ use crate::{
         lexer::NewlineMode,
         parser::{Restrictions, context::SeqSpec},
     },
-    span::{Span, parsed::Parsed},
-    typing::ty::{Ty, TyScheme},
 };
+
+use super::{Recover, RecoveryCtx};
 
 impl Parser<'_> {
     pub(crate) fn parse_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
@@ -439,13 +440,14 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
+    use ray_typing::ty::TyScheme;
+    use ray_shared::pathlib::{FilePath, Path};
+    use ray_shared::span::parsed::Parsed;
+
     use crate::{
-        ast::Path,
         errors::RayError,
         parse::{ParseContext, ParseOptions, Parser},
-        pathlib::FilePath,
-        span::{SourceMap, parsed::Parsed},
-        typing::ty::TyScheme,
+        sourcemap::SourceMap,
     };
 
     fn test_options() -> ParseOptions {

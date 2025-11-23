@@ -10,10 +10,30 @@ trait Index['a, 'el, 'idx] {
     fn get(self: *'a, idx: 'idx) -> 'el?
 }
 
-impl Index[list['a], 'el, uint] {
-    fn get(self: *list['a], idx: uint) -> 'el? {
-        ptr = self.values
-        l = self.len
-        nil
+trait Add['a, 'b, 'c] {
+    fn +(a: 'a, b: 'b) -> 'c
+}
+
+@intrinsic
+extern fn __ptr_add(ptr: rawptr['a], offset: uint) -> rawptr['a]
+
+impl Add[rawptr['a], uint, rawptr['a]] {
+    fn +(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_add(lhs, rhs)
+}
+
+trait Deref['a, 'b] {
+    fn deref(self: 'a) -> 'b
+}
+
+@intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
+
+impl Deref[rawptr['a], 'a] {
+    fn deref(self: rawptr['a]) -> 'a => __deref_raw(self)
+}
+
+impl Index[list['a], 'a, uint] {
+    fn get(self: *list['a], idx: uint) -> 'a? {
+        ptr = self.values + idx
+        *ptr
     }
 }

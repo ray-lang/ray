@@ -1,17 +1,16 @@
-use super::{
-    ExprResult, ParsedExpr, Parser, RecoveryCtx, Restrictions,
-    context::{ParseContext, SeqSpec},
+use ray_typing::ty::TyScheme;
+use ray_shared::span::{Span, parsed::Parsed};
+
+use crate::ast::{
+    Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
+    TrailingPolicy, ValueKind,
+    token::{Token, TokenKind},
 };
 use crate::parse::{lexer::NewlineMode, parser::Recover};
 
-use crate::{
-    ast::{
-        Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
-        TrailingPolicy, ValueKind,
-        token::{Token, TokenKind},
-    },
-    span::{Span, parsed::Parsed},
-    typing::ty::TyScheme,
+use super::{
+    ExprResult, ParsedExpr, Parser, RecoveryCtx, Restrictions,
+    context::{ParseContext, SeqSpec},
 };
 
 impl Parser<'_> {

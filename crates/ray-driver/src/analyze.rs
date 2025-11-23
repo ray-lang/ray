@@ -1,12 +1,9 @@
 use std::{ffi::OsString, str::FromStr};
 
 use clap::Args;
-use ray_core::{
-    ast::{self, Path},
-    errors::RayError,
-    pathlib::FilePath,
-    span::{Pos, Source, Span},
-};
+use ray_core::errors::RayError;
+use ray_shared::pathlib::{FilePath, Path};
+use ray_shared::span::{Pos, Source, Span};
 
 use crate::GlobalOptions;
 
@@ -172,7 +169,7 @@ pub struct DefinitionInfo {
 pub struct AnalysisReport {
     pub format: AnalysisFormat,
     pub input_path: FilePath,
-    pub module_path: ast::Path,
+    pub module_path: ray_shared::pathlib::Path,
     pub diagnostics: Vec<RayError>,
     pub symbols: Vec<SymbolInfo>,
     pub types: Vec<TypeInfo>,
@@ -183,7 +180,7 @@ impl AnalysisReport {
     pub fn new(
         format: AnalysisFormat,
         input_path: FilePath,
-        module_path: ast::Path,
+        module_path: ray_shared::pathlib::Path,
         diagnostics: Vec<RayError>,
         symbols: Vec<SymbolInfo>,
         types: Vec<TypeInfo>,

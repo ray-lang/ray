@@ -3,27 +3,30 @@ use std::{
     fs,
 };
 
-use top::{Subst, Substitutable, TyVar as TopTyVar, solver::SolveResult};
+use ray_shared::{
+    collections::{namecontext::NameContext, nametree::Scope},
+    pathlib::{FilePath, Path, RayPaths},
+    span::{Source, Span},
+};
+use ray_typing::top::{Subst, Substitutable, TyVar as TopTyVar, solver::SolveResult};
+use ray_typing::{
+    TyCtx,
+    info::TypeSystemInfo,
+    state::{Env, SchemeEnv},
+    ty::{Ty, TyScheme, TyVar},
+};
 
 use crate::{
-    ast::{self, Decl, Expr, Import, Module, Path},
-    collections::nametree::Scope,
+    ast::{self, Decl, Expr, Import, Module},
     errors::{RayError, RayErrorKind, RayResult},
     libgen::RayLib,
     lir::Program,
     parse::{self, ParseDiagnostics, ParseOptions, Parser},
-    pathlib::{FilePath, RayPaths},
-    span::{Source, SourceMap, Span},
+    sourcemap::SourceMap,
     strutils, transform,
-    typing::{
-        TyCtx,
-        info::TypeSystemInfo,
-        state::{Env, SchemeEnv},
-        ty::{Ty, TyScheme, TyVar},
-    },
 };
 
-use super::{NameContext, root};
+use super::root;
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 
@@ -34,24 +37,24 @@ pub struct ModBuilderResult {
     pub srcmap: SourceMap,
     pub defs: SchemeEnv,
     pub libs: Vec<Program>,
-    pub paths: HashSet<ast::Path>,
+    pub paths: HashSet<Path>,
 }
 
 #[derive(Debug, Default)]
 struct ResolvedImport {
     filepath: Option<FilePath>,
-    module_path: Option<ast::Path>,
-    named_path: Option<ast::Path>,
+    module_path: Option<Path>,
+    named_path: Option<Path>,
 }
 
 pub struct BuildInput {
     filepath: FilePath,
-    module_path: ast::Path,
+    module_path: Path,
     is_entry: bool,
 }
 
 impl BuildInput {
-    pub fn new(filepath: FilePath, module_path: ast::Path) -> BuildInput {
+    pub fn new(filepath: FilePath, module_path: Path) -> BuildInput {
         BuildInput {
             filepath,
             module_path,
@@ -59,7 +62,7 @@ impl BuildInput {
         }
     }
 
-    pub fn entry(filepath: FilePath, module_path: ast::Path) -> BuildInput {
+    pub fn entry(filepath: FilePath, module_path: Path) -> BuildInput {
         BuildInput {
             filepath,
             module_path,
@@ -74,13 +77,13 @@ where
     A: std::fmt::Debug + Clone + PartialEq + Eq,
     B: std::fmt::Debug + Clone + PartialEq + Eq,
 {
-    pub modules: HashMap<ast::Path, Module<A, B>>,
-    pub srcmaps: HashMap<ast::Path, SourceMap>,
-    pub libs: HashMap<ast::Path, RayLib>,
+    pub modules: HashMap<Path, Module<A, B>>,
+    pub srcmaps: HashMap<Path, SourceMap>,
+    pub libs: HashMap<Path, RayLib>,
     pub ncx: NameContext,
     no_core: bool,
-    module_paths: HashSet<ast::Path>,
-    top_level_roots: HashMap<ast::Path, FilePath>,
+    module_paths: HashSet<Path>,
+    top_level_roots: HashMap<Path, FilePath>,
     c_include_paths: Vec<FilePath>,
     paths: &'a RayPaths,
     errors: Vec<RayError>,
@@ -104,7 +107,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         }
     }
 
-    pub fn from_src(src: &str, module_path: ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
+    pub fn from_src(src: &str, module_path: Path) -> Result<ModBuilderResult, Vec<RayError>> {
         let paths = RayPaths::default();
         let mut builder = ModuleBuilder::new(&paths, vec![], true);
         let scope = builder.build_from_src(src.to_string(), module_path)?;
@@ -121,7 +124,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         self.errors
     }
 
-    pub fn finish(self, module_path: &ast::Path) -> Result<ModBuilderResult, Vec<RayError>> {
+    pub fn finish(self, module_path: &Path) -> Result<ModBuilderResult, Vec<RayError>> {
         if !self.errors.is_empty() {
             return Err(self.errors);
         }
@@ -136,7 +139,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             // create a substitution to map the library's variables
             let subst = (0..lib.tcx.tf().curr())
                 .flat_map(|u| {
-                    let old_var = TyVar::from_u32(u as u32);
+                    let old_var = TyVar::from_u32(u);
                     if u == tcx.tf().curr() {
                         // generate and ignore the new variable
                         let _ = tcx.tf().next();
@@ -211,7 +214,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         mut root_file: ast::File,
         mut srcmap: SourceMap,
         root_fp: &FilePath,
-        module_path: ast::Path,
+        module_path: Path,
     ) -> Result<Scope, Vec<RayError>> {
         let mut filepaths = vec![root_fp.clone()];
         let mut submodules = vec![];
@@ -279,7 +282,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
     pub fn build_from_src(
         &mut self,
         src: String,
-        module_path: ast::Path,
+        module_path: Path,
     ) -> Result<Scope, Vec<RayError>> {
         // check if module has already been built
         if self.module_paths.contains(&module_path) {
@@ -361,7 +364,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &self,
         srcmap: &mut SourceMap,
         input_path: &FilePath,
-        module_path: &ast::Path,
+        module_path: &Path,
     ) -> Result<ast::File, Vec<RayError>> {
         let diag = if let Some(src) = self.overlays.as_ref().and_then(|o| o.get(input_path)) {
             log::info!("parsing {} (overlay)", input_path);
@@ -396,7 +399,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         I: IntoIterator<Item = P>,
         P: AsRef<str>,
     {
-        let core_path = ast::Path::from(
+        let core_path = Path::from(
             path.into_iter()
                 .map(|p| p.as_ref().to_string())
                 .collect::<Vec<_>>(),
@@ -417,7 +420,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
     fn build_imports(
         &mut self,
         root_file: &ast::File,
-        module_path: &ast::Path,
+        module_path: &Path,
         decls: &mut Vec<ast::Node<ast::Decl>>,
         module_root: Option<&FilePath>,
     ) -> Vec<Scope> {
@@ -463,7 +466,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         imports
     }
 
-    fn register_top_level_root(&mut self, module_path: &ast::Path, module_dir: &FilePath) {
+    fn register_top_level_root(&mut self, module_path: &Path, module_dir: &FilePath) {
         let root_path = match module_path.root() {
             Some(root) => root,
             None => return,
@@ -487,7 +490,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         self.top_level_roots.insert(root_path, canonical);
     }
 
-    fn lookup_top_level_root(&self, module_path: &ast::Path) -> Option<FilePath> {
+    fn lookup_top_level_root(&self, module_path: &Path) -> Option<FilePath> {
         let key = module_path.root()?;
         self.top_level_roots.get(&key).cloned()
     }
@@ -496,9 +499,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &mut self,
         root_fp: &FilePath,
         input_path: &FilePath,
-        module_path: &ast::Path,
+        module_path: &Path,
         filepaths: &mut Vec<FilePath>,
-        submodules: &mut Vec<ast::Path>,
+        submodules: &mut Vec<Path>,
         stmts: &mut Vec<ast::Node<ast::Expr>>,
         decls: &mut Vec<ast::Node<ast::Decl>>,
         srcmap: &mut SourceMap,
@@ -534,8 +537,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &mut self,
         import: &Import,
         filepath: &FilePath,
-        import_module_path: ast::Path,
-        named_path: Option<ast::Path>,
+        import_module_path: Path,
+        named_path: Option<Path>,
         imports: &mut Vec<Scope>,
     ) {
         let input = BuildInput::new(filepath.clone(), import_module_path);
@@ -672,7 +675,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         Ok(None)
     }
 
-    fn resolve_library(&self, module_path: &ast::Path) -> Option<FilePath> {
+    fn resolve_library(&self, module_path: &Path) -> Option<FilePath> {
         let roots = [self.paths.get_lib_path()];
         for root in roots {
             let lib_path = (root / module_path.join("#")).with_extension("raylib");
@@ -686,7 +689,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         None
     }
 
-    fn load_library(&mut self, lib_path: FilePath, module_path: &ast::Path) -> RayResult<()> {
+    fn load_library(&mut self, lib_path: FilePath, module_path: &Path) -> RayResult<()> {
         if self.libs.contains_key(module_path) {
             // already loaded
             log::debug!("library already loaded: {}", module_path);
@@ -720,7 +723,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
     fn resolve_import(
         &mut self,
         parent_filepath: &FilePath,
-        parent_module_path: &ast::Path,
+        parent_module_path: &Path,
         import: &Import,
         module_root: Option<&FilePath>,
     ) -> Result<ResolvedImport, RayError> {
@@ -799,9 +802,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
     fn resolve_path_import(
         &mut self,
-        path: &ast::Path,
+        path: &Path,
         parent_filepath: &FilePath,
-        parent_module_path: &ast::Path,
+        parent_module_path: &Path,
         span: &Span,
         module_root: Option<&FilePath>,
     ) -> Result<ResolvedImport, RayError> {
@@ -863,7 +866,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
     fn resolve_module_import(
         &self,
-        path: &ast::Path,
+        path: &Path,
         parent_filepath: &FilePath,
         span: &Span,
         module_root: Option<&FilePath>,
@@ -995,7 +998,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &self,
         candidate: &FilePath,
         module_root: Option<&FilePath>,
-        path: &ast::Path,
+        path: &Path,
         parent_filepath: &FilePath,
         span: &Span,
     ) -> Result<(), RayError> {
@@ -1024,8 +1027,8 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         &mut self,
         root_fp: &FilePath,
         module_dir: &FilePath,
-        mod_path: &ast::Path,
-    ) -> Result<(Vec<FilePath>, Vec<(FilePath, ast::Path)>), RayError> {
+        mod_path: &Path,
+    ) -> Result<(Vec<FilePath>, Vec<(FilePath, Path)>), RayError> {
         let mut submods = vec![];
         let mut subfiles = vec![];
         let dir = module_dir.read_dir()?;
@@ -1045,11 +1048,11 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         Ok((subfiles, submods))
     }
 
-    fn resolve_module_path(&self, filepath: &FilePath) -> ast::Path {
+    fn resolve_module_path(&self, filepath: &FilePath) -> Path {
         // Single-file module: if this is a file and its *directory* is not a dir-module,
         // treat the file itself as the root module and use its stem.
         if !filepath.is_dir() && !root::is_dir_module(&filepath.dir()) {
-            return ast::Path::from(filepath.file_stem());
+            return Path::from(filepath.file_stem());
         }
 
         // Start from the directory that contains this module: `dir()` clones if already a dir,
@@ -1075,12 +1078,12 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
         // If we didn't find any entry dirs, fall back to a single segment: the immediate directory name.
         if chain.is_empty() {
-            return ast::Path::from(module_dir.file_name());
+            return Path::from(module_dir.file_name());
         }
 
         // Build the path from the TOPMOST contiguous entry dir down to `module_dir`.
         let parts: Vec<String> = chain.iter().rev().map(|d| d.file_name()).collect();
-        ast::Path::from(parts)
+        Path::from(parts)
     }
 
     fn is_submodule(&self, parent_filepath: &FilePath, filepath: &FilePath) -> bool {
@@ -1210,7 +1213,7 @@ impl ModBuilderResult {
             .collect();
         self.tcx.extend_scheme_subst(filtered_scheme_subst);
         self.tcx.extend_predicates(solution.qualifiers.clone());
-        self.tcx.tf().skip_to(solution.unique as u64);
+        self.tcx.tf().skip_to(solution.unique);
 
         log::debug!("{}", self.module);
         log::debug!("{}", self.tcx);

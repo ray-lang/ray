@@ -1,4 +1,6 @@
-use crate::span::Source;
+pub mod type_error;
+
+use ray_shared::span::Source;
 
 use colored::*;
 use std::fs::File;

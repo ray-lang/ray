@@ -1,7 +1,5 @@
-use crate::{
-    ast::{Expr, Node},
-    span::Span,
-};
+use crate::ast::{Expr, Node};
+use ray_shared::span::Span;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Deref {

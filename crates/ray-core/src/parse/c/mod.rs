@@ -1,18 +1,20 @@
+use std::collections::HashSet;
+
+use ray_typing::ty::Ty;
 use lang_c::ast::{
     DeclarationSpecifier, Declarator, DeclaratorKind, DerivedDeclarator, ExternalDeclaration,
     SpecifierQualifier, StructDeclaration, StructKind, TranslationUnit, TypeSpecifier,
 };
 use lang_c::driver::{Config, parse as cparse};
 use lang_c::span::Node;
-
-use std::collections::HashSet;
+use ray_shared::{
+    pathlib::FilePath,
+    span::{Pos, Source, Span},
+};
 
 use crate::{
     ast,
     errors::{RayError, RayErrorKind},
-    pathlib::FilePath,
-    span::{Pos, Source, Span},
-    typing::ty::Ty,
 };
 
 macro_rules! c_ty_match {

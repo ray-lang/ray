@@ -1,7 +1,5 @@
-use crate::{
-    ast::{Expr, Node, Sequence},
-    span::Span,
-};
+use crate::ast::{Expr, Node, Sequence};
+use ray_shared::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {

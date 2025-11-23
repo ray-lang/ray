@@ -1,7 +1,6 @@
-use crate::{
-    ast::{Expr, Node},
-    span::Span,
-};
+use ray_shared::span::Span;
+
+use crate::ast::{Expr, Node};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Boxed {

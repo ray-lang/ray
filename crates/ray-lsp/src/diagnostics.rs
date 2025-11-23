@@ -3,19 +3,20 @@ use std::{
     path::PathBuf,
 };
 
+use ray_shared::span::{Pos, Source, Span};
 use ray_core::{
-    ast::{Decl, Module, Path},
+    ast::{Decl, Module},
     errors::RayError,
     libgen::DefinitionRecord,
     parse::{ParseOptions, Parser},
-    sema::{NameContext, SymbolMap},
-    span::{Source, SourceMap},
-};
-use ray_core::{
-    pathlib::{FilePath, RayPaths},
-    span,
+    sema::SymbolMap,
+    sourcemap::SourceMap,
 };
 use ray_driver::{BuildOptions, Driver, FrontendResult};
+use ray_shared::{
+    collections::namecontext::NameContext,
+    pathlib::{FilePath, Path, RayPaths},
+};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
 #[derive(Debug, Clone)]
@@ -238,7 +239,7 @@ fn make_diagnostic(message: &str, source: &Source) -> Diagnostic {
     }
 }
 
-fn span_to_range(span: span::Span) -> Range {
+fn span_to_range(span: Span) -> Range {
     let mut start = pos_to_position(span.start);
     let mut end = pos_to_position(span.end);
     if (end.line, end.character) < (start.line, start.character) {
@@ -247,7 +248,7 @@ fn span_to_range(span: span::Span) -> Range {
     Range::new(start, end)
 }
 
-fn pos_to_position(pos: span::Pos) -> Position {
+fn pos_to_position(pos: Pos) -> Position {
     Position::new(pos.lineno as u32, pos.col as u32)
 }
 

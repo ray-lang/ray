@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::typing::ty::{Ty, TyScheme};
+use ray_typing::ty::{Ty, TyScheme};
 
 use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 

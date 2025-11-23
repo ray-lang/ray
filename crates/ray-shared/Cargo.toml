@@ -6,4 +6,8 @@ edition = "2024"
 [dependencies]
 colored = "2.0"
 fern = { version = "0.6", features = ["colored"] }
+fnv = "1.0"
+home = "0.5"
+itertools = "0.14"
 log = { version = "0.4" }
+serde = { version = "1.0", features = ["derive"] }

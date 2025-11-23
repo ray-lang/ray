@@ -26,17 +26,19 @@ use llvm::{
     },
 };
 use rand::RngCore;
-use ray_shared::optlevel::OptLevel;
+use ray_shared::{
+    optlevel::OptLevel,
+    pathlib::{FilePath, Path},
+};
+use ray_typing::{TyCtx, ty::Ty};
 
 use crate::{
-    ast::{Modifier, Node, Path},
+    ast::{Modifier, Node},
     codegen::{CodegenOptions, collect_symbols},
     errors::RayError,
-    lir,
-    pathlib::FilePath,
-    span::SourceMap,
+    lir::{self, SymbolSet},
+    sourcemap::SourceMap,
     target::Target,
-    typing::{TyCtx, ty::Ty},
 };
 
 use super::Codegen;
@@ -1238,7 +1240,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
         }
         log::debug!("fn_map: {:#?}", fn_map.keys());
 
-        let mut symbols = HashSet::new();
+        let mut symbols = SymbolSet::new();
         let start_fn = &self.funcs[self.start_idx as usize];
         symbols.insert(start_fn.name.clone());
         collect_symbols(start_fn, &mut symbols, &fn_map);

@@ -1,19 +1,21 @@
 use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
 
-use top::{Subst, Substitutable, mgu};
+use ray_shared::pathlib::Path;
+use ray_typing::top::{Subst, Substitutable, mgu};
+use ray_typing::{
+    TyCtx,
+    ty::{NominalKind, ReceiverMode, StructTy, Ty, TyScheme, TyVar},
+};
 
 use crate::{
     ast::{
-        self, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node, Path, Pattern, PrefixOp,
+        self, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node, Pattern, PrefixOp,
         RangeLimits, UnaryOp, token::IntegerBase,
     },
     errors::RayResult,
-    lir, sema,
-    span::SourceMap,
-    typing::{
-        TyCtx,
-        ty::{NominalKind, ReceiverMode, StructTy, Ty, TyScheme, TyVar},
-    },
+    lir::{self, types::SizeOf},
+    sema,
+    sourcemap::SourceMap,
 };
 
 use super::START_FUNCTION;
@@ -500,7 +502,7 @@ impl<'a> GenCtx<'a> {
         tcx: &TyCtx,
     ) -> RayResult<GenResult> {
         let mut fn_ty = self.instantiate_scheme(tcx, fn_ty.clone());
-        let original_poly_ty = tcx.get_poly_ty(op).cloned();
+        let original_poly_ty = tcx.get_poly_ty(op.id).cloned();
         let mut poly_ty = original_poly_ty
             .clone()
             .map(|ty| self.instantiate_scheme(tcx, ty));
@@ -725,7 +727,7 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
 impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
         let &(func, fn_ty) = self;
-        let poly_ty = tcx.get_poly_ty(func);
+        let poly_ty = tcx.get_poly_ty(func.id);
 
         ctx.with_builder(lir::Builder::new());
 
@@ -1214,7 +1216,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     .iter()
                     .map(|(_, ty)| ty.clone())
                     .collect::<Vec<_>>();
-                let original_poly_ty = tcx.get_poly_ty(&call.callee).cloned();
+                let original_poly_ty = tcx.get_poly_ty(call.callee.id).cloned();
                 let mut instantiated_poly_ty = original_poly_ty
                     .clone()
                     .map(|ty| ctx.instantiate_scheme(tcx, ty));
@@ -1603,7 +1605,7 @@ impl LirGen<GenResult> for Node<Decl> {
             Decl::Func(func) => {
                 let node = Node::with_id(self.id, func);
                 let ty = tcx
-                    .get_poly_ty(&node)
+                    .get_poly_ty(node.id)
                     .cloned()
                     .unwrap_or_else(|| ctx.ty_of(tcx, self.id));
                 return (&node, &ty).lir_gen(ctx, tcx);
@@ -1631,7 +1633,7 @@ impl LirGen<GenResult> for Node<Decl> {
                     for func in funcs {
                         let node = func.as_ref();
                         let ty = tcx
-                            .get_poly_ty(&node)
+                            .get_poly_ty(node.id)
                             .cloned()
                             .unwrap_or_else(|| ctx.ty_of(tcx, func.id));
                         (&node, &ty).lir_gen(ctx, tcx)?;
