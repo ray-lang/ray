@@ -413,6 +413,10 @@ mod tests {
             todo!()
         }
 
+        fn flatten(&self) -> Vec<&Self> {
+            vec![]
+        }
+
         fn eq_with_synonyms(
             &self,
             _: &Self,

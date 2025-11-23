@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use indexmap::IndexMap;
+use top::Ty as _;
 
 use crate::{
     ast::{
@@ -8,8 +8,11 @@ use crate::{
         walk_module,
     },
     pathlib::FilePath,
-    span::{Source, SourceMap, Span},
-    typing::{TyCtx, ty::Ty},
+    span::{Source, SourceMap, Span, parsed::Parsed},
+    typing::{
+        TyCtx,
+        ty::{Ty, TyScheme},
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +145,14 @@ impl<'a> SymbolBuildContext<'a> {
             if let Some(param_source) = self.srcmap.get_by_id(param.id) {
                 self.record_definition(param.id, param.name(), &param_source);
             }
+
+            if let Some(parsed_ty) = param.parsed_ty() {
+                log::debug!(
+                    "[record_func_sig] recording parsed type for param: {:?}",
+                    param
+                );
+                self.record_parsed_scheme(parsed_ty);
+            }
         }
     }
 
@@ -195,6 +206,41 @@ impl<'a> SymbolBuildContext<'a> {
         self.ignore.insert(dot.rhs.id);
     }
 
+    fn record_parsed_ty(&mut self, parsed_ty: &Parsed<Ty>) {
+        let ids = parsed_ty.synthetic_ids();
+        let tys = parsed_ty.flatten();
+        if ids.len() != tys.len() {
+            log::debug!(
+                "[record_parsed_ty] mismatched number of ids vs types: {:?} and {:?}",
+                ids,
+                tys
+            );
+        }
+
+        for (id, ty) in ids.iter().zip(tys.iter()) {
+            let path = ty.get_path().with_names_only();
+            self.record_reference(*id, &path);
+        }
+    }
+
+    fn record_parsed_scheme(&mut self, parsed_ty: &Parsed<TyScheme>) {
+        let ids = parsed_ty.synthetic_ids();
+        let tys = parsed_ty.mono().flatten();
+        if ids.len() != tys.len() {
+            log::debug!(
+                "[record_parsed_scheme] mismatched number of ids vs types from scheme {:?}: {:?} and {:?}",
+                parsed_ty,
+                ids,
+                tys
+            );
+        }
+
+        for (id, ty) in ids.iter().zip(tys.iter()) {
+            let path = ty.get_path().with_names_only();
+            self.record_reference(*id, &path);
+        }
+    }
+
     fn collect_from_module(&mut self) {
         for item in walk_module(self.module) {
             log::debug!("[build_symbol_map] item = {:?}", item);
@@ -236,7 +282,10 @@ impl<'a> SymbolBuildContext<'a> {
                         self.record_func_sig(sig);
                     }
                     Decl::Declare(assign) => self.record_assign(assign),
-                    Decl::Extern(_) | Decl::Impl(_) | Decl::TypeAlias(_, _) => continue,
+                    Decl::Impl(imp) => {
+                        self.record_parsed_ty(&imp.ty);
+                    }
+                    Decl::Extern(_) | Decl::TypeAlias(_, _) => continue,
                 },
                 WalkItem::Expr(expr) => match &expr.value {
                     Expr::Name(name) => {

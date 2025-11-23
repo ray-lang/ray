@@ -435,7 +435,31 @@ impl TyCtx {
         srcmap: &SourceMap,
         ncx: &NameContext,
     ) -> Result<(), RayError> {
-        let ty = TyScheme::from_sig(sig, fn_scope, scopes, filepath, self, ncx, srcmap)?;
+        log::debug!("[resolve_signature] {}", sig);
+
+        // first, resolve all FQNs in the signature: type params, params, return type, qualifiers
+        if let Some(ty_params) = sig.ty_params.as_mut() {
+            for ty_param in ty_params.tys.iter_mut() {
+                ty_param.resolve_fqns(scopes, ncx);
+            }
+        }
+
+        for param in sig.params.iter_mut() {
+            if let Some(ty) = param.ty_mut() {
+                ty.resolve_fqns(scopes, ncx);
+            }
+        }
+
+        if let Some(ret_ty) = sig.ret_ty.as_mut() {
+            ret_ty.resolve_fqns(scopes, ncx);
+        }
+
+        for qual in sig.qualifiers.iter_mut() {
+            qual.resolve_fqns(scopes, ncx);
+        }
+
+        // then create a "fresh" scheme, replacing each schema variable with a meta variable
+        let ty = TyScheme::from_sig(sig, fn_scope, filepath, self, srcmap)?;
         if let Some(ty_params) = &mut sig.ty_params {
             for ty_param in ty_params.tys.iter_mut() {
                 let ty = ty_param.deref_mut();

@@ -166,7 +166,7 @@ impl SourceMap {
             .unwrap()
     }
 
-    fn set_src_id(&mut self, id: u64, src: Source) {
+    pub(crate) fn set_src_id(&mut self, id: u64, src: Source) {
         if let Some(existing) = self.map.insert(id, src.clone()) {
             if !existing.filepath.is_empty() {
                 if let Some(ids) = self.file_index.get_mut(&existing.filepath) {

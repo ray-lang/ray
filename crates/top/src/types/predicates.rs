@@ -147,17 +147,16 @@ where
         &self,
         predicate: &Predicate<T, V>,
         synonyms: &OrderedTypeSynonyms<T, V>,
-    ) -> Option<(Subst<V, T>, Vec<Predicate<T, V>>)>
+    ) -> Option<Vec<(Subst<V, T>, Vec<Predicate<T, V>>)>>
     where
         V: Display,
         <V as FromStr>::Err: Debug,
     {
         log::debug!("by_instance: predicate = {}", predicate);
         match predicate {
-            Predicate::Class(class_name, _, _, _) => self
-                .instances(class_name)?
-                .into_iter()
-                .find_map(|instance| {
+            Predicate::Class(class_name, _, _, _) => {
+                let mut candidates = vec![];
+                for instance in self.instances(class_name)?.iter() {
                     log::debug!("by_instance: instance = {:?}", instance);
                     let Some(subst) = predicate.match_with(&instance.head, synonyms) else {
                         log::debug!(
@@ -165,7 +164,7 @@ where
                             predicate,
                             instance.head
                         );
-                        return None;
+                        continue;
                     };
                     log::debug!("by_instance: subst = {:?}", subst);
                     let mut predicates = instance.predicates.clone();
@@ -178,9 +177,17 @@ where
                         "by_instance: instance predicates (after apply_subst) = {:?}",
                         predicates
                     );
-                    Some((subst, predicates))
-                })
-                .map(|(subst, preds)| (subst, preds.into())),
+
+                    candidates.push((subst, predicates.into()));
+                }
+
+                if candidates.is_empty() {
+                    return None;
+                }
+
+                Some(candidates)
+            }
+
             Predicate::HasField(_, field_name, _, _) => {
                 // HasField predicates are discharged via record_classes.
                 // If any record predicate for this field name matches (using
@@ -191,7 +198,7 @@ where
                     .iter()
                     .any(|rp| predicate.match_with(rp, synonyms).is_some())
                 {
-                    Some((Subst::new(), Vec::new()))
+                    Some(vec![])
                 } else {
                     None
                 }
@@ -417,7 +424,9 @@ where
     ) -> bool {
         class_env.superclass_entails(self, predicate)
             || match class_env.by_instance(&predicate.freeze_vars(), synonyms) {
-                Some((_, qs)) => qs.iter().all(|q| self.entails(q, synonyms, class_env)),
+                Some(candidates) => candidates
+                    .iter()
+                    .any(|(_, qs)| qs.iter().all(|q| self.entails(q, synonyms, class_env))),
                 None => false,
             }
     }
@@ -476,7 +485,7 @@ where
             &Subst::new(),
             synonyms,
         ) {
-            return Some(Predicate::normalize_field_subst(subst));
+            return Some(Predicate::normalize_instance_subst(subst));
         }
 
         // Then try a single level of auto-deref on safe pointers:
@@ -488,30 +497,26 @@ where
                 &Subst::new(),
                 synonyms,
             ) {
-                return Some(Predicate::normalize_field_subst(subst));
+                return Some(Predicate::normalize_instance_subst(subst));
             }
         }
 
         None
     }
 
-    /// Normalize a substitution produced while matching a HasField predicate
-    /// against an instance head such as:
+    /// Normalize a substitution produced while matching a predicate against an
+    /// instance head. We may get bindings like:
     ///
-    ///   HasField(Foo['a], values, rawptr['a])
-    ///
-    /// We may get bindings like:
-    ///
-    ///   ?t_rec   ↦ 'a
+    ///   ?t_meta ↦ 'a
     ///   ?t_field ↦ rawptr['a]
     ///
     /// We don't want schema variables like `'a` to appear in solver-space
-    /// types. Instead we rewrite every `'a` in the RHS type to the corresponding
-    /// meta variable (e.g., `?t_rec`) and then drop the meta→schema binding,
+    /// types. Instead we rewrite every `'a` in RHS types to the corresponding
+    /// meta variable (e.g. `?t_meta`) and drop the meta→schema binding,
     /// yielding:
     ///
-    ///   ?t_field ↦ rawptr[?t_rec]
-    fn normalize_field_subst(subst: Subst<V, T>) -> Subst<V, T> {
+    ///   ?t_field ↦ rawptr[?t_meta]
+    fn normalize_instance_subst(subst: Subst<V, T>) -> Subst<V, T> {
         // Collect mapping from schematic vars to the metas they were unified with.
         let mut schema_to_meta = HashMap::new();
         for (var, ty) in subst.iter() {
@@ -633,6 +638,10 @@ where
         }
     }
 
+    pub fn flatten(&self) -> Vec<&T> {
+        todo!()
+    }
+
     pub fn match_with(
         &self,
         other: &Predicate<T, V>,
@@ -655,11 +664,10 @@ where
                     .collect::<Vec<_>>();
                 match mgu_ref_slices(&lhs_all, &rhs_all, &Subst::new(), synonyms) {
                     Ok((_, mut subst)) => {
-                        // unfreeze any variables inside subst
                         for (_, ty) in subst.iter_mut() {
                             *ty = ty.unfreeze_vars();
                         }
-                        Some(subst)
+                        Some(Self::normalize_instance_subst(subst))
                     }
                     Err(_) => None,
                 }

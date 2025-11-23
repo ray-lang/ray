@@ -75,6 +75,8 @@ where
 
     fn constants(&self) -> Vec<String>;
 
+    fn flatten(&self) -> Vec<&Self>;
+
     fn left_spine(&self) -> (Self, Vec<Self>) {
         if let Some((lhs, rhs)) = self.maybe_app() {
             (lhs, rhs)

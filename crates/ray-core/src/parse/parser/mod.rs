@@ -21,6 +21,8 @@ pub use recover::{Recover, RecoveryCtx};
 
 use std::{fs, io, mem};
 
+use rand::RngCore;
+
 use crate::{
     ast::{
         Decl, Decorator, Expr, File, Import, InfixOp, Missing, Node, Path, Pattern, TrailingPolicy,
@@ -236,6 +238,16 @@ pub struct Parser<'src> {
 }
 
 impl<'src> Parser<'src> {
+    pub fn new(src: &str, options: ParseOptions, srcmap: &'src mut SourceMap) -> Self {
+        let lex = Lexer::new(src);
+        Self {
+            lex,
+            options,
+            srcmap,
+            errors: Vec::new(),
+        }
+    }
+
     pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseDiagnostics<File> {
         let src = match Self::get_src(&options) {
             Ok(src) => src,
@@ -278,14 +290,7 @@ impl<'src> Parser<'src> {
         options: ParseOptions,
         srcmap: &'src mut SourceMap,
     ) -> ParseDiagnostics<File> {
-        let lex = Lexer::new(src);
-        let mut parser = Self {
-            lex,
-            options,
-            srcmap,
-            errors: Vec::new(),
-        };
-
+        let mut parser = Parser::new(src, options, srcmap);
         match parser.parse_into_file() {
             Ok(file) => {
                 let errors = mem::take(&mut parser.errors);
@@ -1101,7 +1106,10 @@ impl<'src> Parser<'src> {
             end = start;
         }
         let span = Span { start, end };
-        Parsed::new(TyScheme::from_mono(Ty::Never), self.mk_src(span))
+        let mut parsed = Parsed::new(TyScheme::from_mono(Ty::Never), self.mk_src(span));
+        let id = self.mk_synthetic(span);
+        parsed.set_synthetic_ids(vec![id]);
+        parsed
     }
 
     fn parse_type_annotation(
@@ -1345,6 +1353,19 @@ impl<'src> Parser<'src> {
         };
         self.srcmap.set_src(&node, src);
         node
+    }
+
+    pub(crate) fn mk_synthetic(&mut self, span: Span) -> u64 {
+        let mut rng = rand::thread_rng();
+        let id = rng.next_u64();
+        let src = Source {
+            span: Some(span),
+            filepath: self.options.filepath.clone(),
+            src_module: self.options.module_path.clone(),
+            ..Default::default()
+        };
+        self.srcmap.set_src_id(id, src);
+        id
     }
 
     pub(crate) fn mk_src(&self, span: Span) -> Source {

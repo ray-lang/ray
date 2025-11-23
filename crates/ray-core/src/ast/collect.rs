@@ -596,7 +596,7 @@ impl CollectConstraints for (&BinOp, &Source) {
 
         let fqn = match ctx.tcx.lookup_infix_op(&name).cloned() {
             Some((fqn, _)) => fqn,
-            _ => panic!("no infix op for {}", name),
+            _ => Path::from(name), // fallback to `name`
         };
 
         log::debug!("binop fqn: {}", fqn);

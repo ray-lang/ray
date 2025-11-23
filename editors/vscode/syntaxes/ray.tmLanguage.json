@@ -77,7 +77,7 @@
         },
         {
           "name": "keyword.other.ray",
-          "match": "\\b(import|wasi)\\b"
+          "match": "\\b(import|wasi|@intrinsic)\\b"
         },
         {
           "name": "keyword.operator.arrow.ray",
@@ -129,7 +129,7 @@
       "patterns": [
         {
           "name": "storage.type.ray",
-          "match": "\\b(bool|char|string|int|float|unit)\\b"
+          "match": "\\b(bool|char|string|int|float|unit|rawptr|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|f128)\\b"
         }
       ]
     },

@@ -38,6 +38,14 @@ impl FnParam {
         }
     }
 
+    pub fn parsed_ty(&self) -> Option<&Parsed<TyScheme>> {
+        match self {
+            FnParam::DefaultValue(p, _) => p.parsed_ty(),
+            FnParam::Name(n) => n.ty.as_ref(),
+            FnParam::Missing { placeholder, .. } => placeholder.ty.as_ref(),
+        }
+    }
+
     pub fn ty(&self) -> Option<&Ty> {
         match self {
             FnParam::DefaultValue(p, _) => p.ty(),
@@ -52,18 +60,6 @@ impl FnParam {
             FnParam::Name(n) => n.ty.as_deref_mut().map(|t| t.mono_mut()),
             FnParam::Missing { placeholder, .. } => {
                 placeholder.ty.as_deref_mut().map(|t| t.mono_mut())
-            }
-        }
-    }
-
-    pub fn set_ty(&mut self, ty: Ty) {
-        match self {
-            FnParam::DefaultValue(p, _) => p.set_ty(ty),
-            FnParam::Name(n) => {
-                n.ty = Some(Parsed::new(TyScheme::from_mono(ty), Source::default()));
-            }
-            FnParam::Missing { placeholder, .. } => {
-                placeholder.ty = Some(Parsed::new(TyScheme::from_mono(ty), Source::default()));
             }
         }
     }

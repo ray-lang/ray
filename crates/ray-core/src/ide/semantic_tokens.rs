@@ -1,3 +1,5 @@
+use top::Ty as _;
+
 use crate::{
     ast::{
         self, Assign, Curly, CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Import, ImportKind,
@@ -590,6 +592,29 @@ impl<'a> SemanticTokenCollector<'a> {
     }
 
     fn emit_parsed_ty(&mut self, ty: &Parsed<Ty>, kind: SemanticTokenKind) {
+        // first try emitting as individual types
+        let synth_ids = ty.synthetic_ids();
+        let tys = ty.flatten();
+        if synth_ids.len() == tys.len() {
+            let mut emitted = false;
+            for (id, ty) in synth_ids.iter().zip(tys.into_iter()) {
+                if let Some(span) = self.srcmap.get_by_id(*id).and_then(|src| src.span) {
+                    let kind = if ty.is_builtin() {
+                        SemanticTokenKind::Keyword
+                    } else {
+                        kind
+                    };
+
+                    self.emit_span(span, kind, &[]);
+                    emitted = true;
+                }
+            }
+            if emitted {
+                return;
+            }
+        }
+
+        // fallback if we couldn't
         if let Some(span) = ty.span().copied() {
             if matches!(ty.value(), Ty::Never) {
                 return;

@@ -585,7 +585,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             Ty::Never => todo!("to_llvm_ty: {}", ty),
             Ty::Any => todo!("to_llvm_ty: {}", ty),
             Ty::Func(_, _) => todo!("to_llvm_ty: {}", ty),
-            Ty::Accessor(_, _) => todo!("to_llvm_ty: {}", ty),
             Ty::Var(_) => todo!("to_llvm_ty: {}", ty),
             Ty::Union(_) => todo!("to_llvm_ty: {}", ty),
             Ty::Array(elem_ty, size) => self

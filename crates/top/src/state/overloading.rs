@@ -312,7 +312,25 @@ where
                 let synonyms = self.type_synonyms();
                 let class_env = self.class_env();
 
-                if let Some((subst, _instance_preds)) = class_env.by_instance(&pred, synonyms) {
+                if let Some(mut candidates) = class_env.by_instance(&pred, synonyms) {
+                    if candidates.len() > 1 {
+                        // found multiple candidates
+                        log::debug!(
+                            "[improve_qualifiers_by_instance] multiple candidates for predicate {}: {:?}",
+                            pred,
+                            candidates
+                        );
+                        continue;
+                    }
+
+                    if candidates.is_empty() || candidates.len() > 1 {
+                        continue;
+                    }
+
+                    let Some((subst, _)) = candidates.pop() else {
+                        continue;
+                    };
+
                     // Only keep mappings for flexible (non-rigid) type variables.
                     let orig_subst = subst.clone();
                     let flexible_subst = subst

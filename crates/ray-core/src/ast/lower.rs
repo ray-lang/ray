@@ -1,11 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::{Deref, DerefMut},
     vec,
 };
 
 use ast::Impl;
-use top::{Predicate, Predicates, RecvKind, Subst, Substitutable, directives::TypeClassDirective};
+use top::{Predicate, Predicates, Subst, Substitutable, directives::TypeClassDirective};
 
 use crate::{
     ast::{self, TraitDirectiveKind},
@@ -467,7 +467,7 @@ impl LowerAST for Sourced<'_, Trait> {
 
         let scopes = ctx.get_scopes(src);
         let super_trait = if let Some(ty) = &tr.super_trait {
-            let (mut ty, src) = ty.clone().take();
+            let (mut ty, src, _) = ty.clone().take();
             if !matches!(ty, Ty::Projection(_, _)) {
                 return Err(RayError {
                     msg: format!("expected super trait of form T[..], but found {}", ty),
@@ -750,8 +750,12 @@ impl LowerAST for Sourced<'_, Func> {
         let mut fn_tcx = ctx.tcx.clone();
         let num_typed = func.sig.params.iter().filter(|p| p.ty().is_some()).count();
         if num_typed != 0 && num_typed != func.sig.params.len() {
-            // TODO: this should be an error
-            panic!("cannot infer type of only some parameters");
+            return Err(RayError {
+                msg: format!("cannot infer type of only some parameters"),
+                src: vec![src.clone()],
+                kind: RayErrorKind::Type,
+                context: Some("lower func".to_string()),
+            });
         }
 
         if num_typed != 0 && num_typed == func.sig.params.len() {
@@ -961,7 +965,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
         }
 
         let (curly, src) = self.unpack();
-        let (lhs, lhs_src) = curly.lhs.as_ref().unwrap().clone().take();
+        let (lhs, lhs_src, _) = curly.lhs.as_ref().unwrap().clone().take();
         let lhs_span = lhs_src.span.unwrap();
         let scopes = ctx.scope_map.get(self.src_module()).unwrap();
         let name = lhs.name().unwrap();

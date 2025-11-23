@@ -328,7 +328,8 @@ where
             let synonyms = self.type_synonyms();
             let class_env = self.class_env();
             match class_env.by_instance(&predicate.freeze_vars(), synonyms) {
-                Some((_subst, predicates)) => {
+                Some(mut candidates) if candidates.len() == 1 => {
+                    let (_subst, predicates) = candidates.pop().unwrap();
                     let predicates = predicates
                         .into_iter()
                         .map(|p| {
@@ -340,7 +341,7 @@ where
 
                     new_predicates.extend(self.simplify(predicates));
                 }
-                None => {
+                _ => {
                     // an unsolved predicate, so we put it back
                     new_predicates.push((predicate, info));
                 }

@@ -8,6 +8,7 @@ use super::{Source, Span};
 pub struct Parsed<T> {
     value: T,
     src: Source,
+    synthetic_ids: Vec<u64>,
 }
 
 impl<T> std::fmt::Debug for Parsed<T>
@@ -36,6 +37,7 @@ where
         Self {
             value: self.value.clone(),
             src: self.src.clone(),
+            synthetic_ids: self.synthetic_ids.clone(),
         }
     }
 }
@@ -95,7 +97,11 @@ where
 
 impl<T> Parsed<T> {
     pub fn new(value: T, src: Source) -> Parsed<T> {
-        Parsed { value, src }
+        Parsed {
+            value,
+            src,
+            synthetic_ids: vec![],
+        }
     }
 
     pub fn value(&self) -> &T {
@@ -110,8 +116,16 @@ impl<T> Parsed<T> {
         self.src.span.as_ref()
     }
 
-    pub fn take(self) -> (T, Source) {
-        (self.value, self.src)
+    pub fn synthetic_ids(&self) -> &[u64] {
+        &self.synthetic_ids
+    }
+
+    pub fn set_synthetic_ids(&mut self, ids: Vec<u64>) {
+        self.synthetic_ids = ids;
+    }
+
+    pub fn take(self) -> (T, Source, Vec<u64>) {
+        (self.value, self.src, self.synthetic_ids)
     }
 
     pub fn take_value(self) -> T {
@@ -122,6 +136,7 @@ impl<T> Parsed<T> {
         Parsed {
             value: f(self.value),
             src: self.src,
+            synthetic_ids: self.synthetic_ids,
         }
     }
 }

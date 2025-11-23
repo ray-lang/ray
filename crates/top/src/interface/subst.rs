@@ -1,4 +1,4 @@
-use crate::{TyVar, types::Subst};
+use crate::{Ty, TyVar, types::Subst};
 
 pub trait HasSubst<I, T, V>
 where
@@ -13,4 +13,6 @@ where
     fn get_subst_mut(&mut self) -> &mut Subst<V, T>;
 
     fn find_subst_for_var(&self, var: &V) -> T;
+
+    fn merge_unifier_subst(&mut self, info: &I, subst: Subst<V, T>);
 }

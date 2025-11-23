@@ -36,80 +36,85 @@ where
         // do nothing
     }
 
+    fn merge_unifier_subst(&mut self, info: &I, subst: Subst<V, T>) {
+        let mut filtered = Subst::new();
+
+        for (var, ty) in subst.into_iter() {
+            if !var.is_meta() {
+                panic!(
+                    "BUG: found a non-meta-variable inside the substitution: {} -> {}",
+                    var, ty
+                );
+            }
+
+            // If the key is rigid but the value is a flexible var, flip the binding
+            // and *propagate rigidity* to the flexible var.
+            if self.is_rigid(&var) {
+                if let Some(other_var) = ty.maybe_var() {
+                    // Same rigid var: no-op.
+                    if &var == other_var {
+                        continue;
+                    }
+
+                    if !other_var.is_meta() {
+                        panic!(
+                            "BUG: found a non-meta-variable inside the substitution: {} -> {}",
+                            other_var, var
+                        );
+                    }
+
+                    // rigid := flexible_meta  → flip to flexible_meta := rigid
+                    // and mark the flexible meta var as rigid so defaulting
+                    // and later passes treat it as non-defaultable.
+                    if !self.is_rigid(other_var) {
+                        log::debug!(
+                            "[unify_terms]: setting other var {:?} to RIGID based on var {:?}",
+                            other_var,
+                            var
+                        );
+                        self.set_var_kind(other_var.clone(), VarKind::Rigid);
+                        filtered.insert(other_var.clone(), T::var(var.clone()));
+                        continue;
+                    }
+
+                    // rigid1 := rigid2 (different skolems / rigids).
+                    // For now, treat as a no-op rather than an error.
+                    continue;
+                }
+
+                // rigid := concrete type (not a var) is still an error.
+                let mut info = info.clone();
+                info.add_detail(&format!(
+                    "cannot bind rigid type variable {} during unification",
+                    var
+                ));
+                self.add_labeled_err(ErrorLabel::RigidTypeVariable, info);
+                return;
+            }
+
+            // Normal case: flexible := ty
+            filtered.insert(var, ty);
+        }
+
+        log::debug!(
+            "[unify_terms] union with global substitution: {:?}",
+            filtered
+        );
+        self.state_mut().union(filtered);
+    }
+
     fn unify_terms(&mut self, info: &I, lhs: &T, rhs: &T) {
-        let synonyms = self.type_synonyms();
         let mut lhs = lhs.clone();
         lhs.apply_subst_from(self);
         let mut rhs = rhs.clone();
         rhs.apply_subst_from(self);
 
         log::debug!("[unify_terms] lhs={:?}, rhs={:?}", lhs, rhs);
+
+        let synonyms = self.type_synonyms();
         match mgu_with_synonyms(&lhs, &rhs, &Subst::new(), synonyms) {
             Ok((_, subst)) => {
-                let mut filtered = Subst::new();
-
-                for (var, ty) in subst.into_iter() {
-                    if !var.is_meta() {
-                        panic!(
-                            "BUG: found a non-meta-variable inside the substitution: {} -> {}",
-                            var, ty
-                        );
-                    }
-
-                    // If the key is rigid but the value is a flexible var, flip the binding
-                    // and *propagate rigidity* to the flexible var.
-                    if self.is_rigid(&var) {
-                        if let Some(other_var) = ty.maybe_var() {
-                            // Same rigid var: no-op.
-                            if &var == other_var {
-                                continue;
-                            }
-
-                            if !other_var.is_meta() {
-                                panic!(
-                                    "BUG: found a non-meta-variable inside the substitution: {} -> {}",
-                                    other_var, var
-                                );
-                            }
-
-                            // rigid := flexible_meta  → flip to flexible_meta := rigid
-                            // and mark the flexible meta var as rigid so defaulting
-                            // and later passes treat it as non-defaultable.
-                            if !self.is_rigid(other_var) {
-                                log::debug!(
-                                    "[unify_terms]: setting other var {:?} to RIGID based on var {:?}",
-                                    other_var,
-                                    var
-                                );
-                                self.set_var_kind(other_var.clone(), VarKind::Rigid);
-                                filtered.insert(other_var.clone(), T::var(var.clone()));
-                                continue;
-                            }
-
-                            // rigid1 := rigid2 (different skolems / rigids).
-                            // For now, treat as a no-op rather than an error.
-                            continue;
-                        }
-
-                        // rigid := concrete type (not a var) is still an error.
-                        let mut info = info.clone();
-                        info.add_detail(&format!(
-                            "cannot bind rigid type variable {} during unification",
-                            var
-                        ));
-                        self.add_labeled_err(ErrorLabel::RigidTypeVariable, info);
-                        return;
-                    }
-
-                    // Normal case: flexible := ty
-                    filtered.insert(var, ty);
-                }
-
-                log::debug!(
-                    "[unify_terms] union with global substitution: {:?}",
-                    filtered
-                );
-                self.state_mut().union(filtered);
+                self.merge_unifier_subst(info, subst);
             }
             Err(err) => {
                 let mut info = info.clone();

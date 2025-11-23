@@ -38,12 +38,15 @@ impl Parser<'_> {
         ctx: &ParseContext,
     ) -> ParseResult<Parsed<TyScheme>> {
         Ok(if peek!(self, TokenKind::Question) {
-            let start = ty.span().unwrap().start;
+            let (ty, src, ids) = ty.take();
+            let start = src.span.unwrap().start;
             let end = self.expect_end(TokenKind::Question, ctx)?;
-            Parsed::new(
-                TyScheme::from_mono(Ty::nilable(ty.take_value().into_mono())),
+            let mut parsed = Parsed::new(
+                TyScheme::from_mono(Ty::nilable(ty.into_mono())),
                 self.mk_src(Span { start, end }),
-            )
+            );
+            parsed.set_synthetic_ids(ids);
+            parsed
         } else {
             ty
         })
@@ -58,10 +61,12 @@ impl Parser<'_> {
             return Ok(ty);
         }
 
-        let span = ty.span().copied();
+        let (ty, src, synth_ids) = ty.take();
+        let span = src.span;
         let start = span.map(|s| s.start).unwrap_or_else(|| self.lex.position());
         let mut end = span.map(|s| s.end).unwrap_or(start);
-        let mut items = match ty.take_value().into_mono() {
+        let mut all_synth_ids = vec![synth_ids];
+        let mut items = match ty.into_mono() {
             Ty::Union(tys) => tys,
             other => vec![other],
         };
@@ -71,7 +76,10 @@ impl Parser<'_> {
             if let Some(span) = next_ty.span() {
                 end = span.end;
             }
-            match next_ty.take_value().into_mono() {
+
+            let (next_ty, _, synth_ids) = next_ty.take();
+            all_synth_ids.push(synth_ids);
+            match next_ty.into_mono() {
                 Ty::Union(mut tys) => items.append(&mut tys),
                 other => items.push(other),
             }
@@ -81,10 +89,12 @@ impl Parser<'_> {
             }
         }
 
-        Ok(Parsed::new(
+        let mut parsed_ty = Parsed::new(
             TyScheme::from_mono(Ty::Union(items)),
             self.mk_src(Span { start, end }),
-        ))
+        );
+        parsed_ty.set_synthetic_ids(all_synth_ids.into_iter().flatten().collect());
+        Ok(parsed_ty)
     }
 
     pub(crate) fn parse_ty_params(
@@ -160,11 +170,14 @@ impl Parser<'_> {
     fn parse_ptr_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
         let start = self.expect_start(TokenKind::Asterisk, ctx)?;
         let ptee_ty = self.parse_type_annotation(None, ctx);
-        let end = ptee_ty.span().unwrap().end;
-        Ok(Parsed::new(
-            TyScheme::from_mono(Ty::refty(ptee_ty.take_value().into_mono())),
+        let (ptee_ty, ptee_src, ids) = ptee_ty.take();
+        let end = ptee_src.span.unwrap().end;
+        let mut parsed = Parsed::new(
+            TyScheme::from_mono(Ty::refty(ptee_ty.into_mono())),
             self.mk_src(Span { start, end }),
-        ))
+        );
+        parsed.set_synthetic_ids(ids);
+        Ok(parsed)
     }
 
     fn parse_arr_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
@@ -179,10 +192,9 @@ impl Parser<'_> {
             // stop is always Some(RightBracket)
             let start = parser.lex.position();
             let el_ty = parser.parse_type_annotation(Some(&TokenKind::Semi), ctx);
-            let elem_ty = el_ty.clone_value().into_mono();
             parser.expect(TokenKind::Semi, ctx)?;
             Ok(match parser.parse_arr_ty_size(ctx) {
-                Ok(size) => Ok((elem_ty, size)),
+                Ok(size) => Ok((el_ty, size)),
                 Err(err) => {
                     let placeholder = Err(err).recover_with_ctx(
                         parser,
@@ -198,10 +210,15 @@ impl Parser<'_> {
 
         let (lb_span, rb_span) = spans.expect("array type should provide spans");
         match result {
-            Ok((elem_ty, size)) => Ok(Parsed::new(
-                TyScheme::from_mono(Ty::Array(Box::new(elem_ty), size)),
-                self.mk_src(lb_span.extend_to(&rb_span)),
-            )),
+            Ok((elem_ty, size)) => {
+                let (elem_ty, _, ids) = elem_ty.take();
+                let mut parsed = Parsed::new(
+                    TyScheme::from_mono(Ty::Array(Box::new(elem_ty.into_mono()), size)),
+                    self.mk_src(lb_span.extend_to(&rb_span)),
+                );
+                parsed.set_synthetic_ids(ids);
+                Ok(parsed)
+            }
             Err(placeholder) => Ok(placeholder),
         }
     }
@@ -238,10 +255,10 @@ impl Parser<'_> {
 
     fn parse_generic_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
         let (name, span) = self.expect_ty_var_ident(ctx)?;
-        Ok(Parsed::new(
-            TyScheme::from_mono(Ty::var(name)),
-            self.mk_src(span),
-        ))
+        let id = self.mk_synthetic(span);
+        let mut ty = Parsed::new(TyScheme::from_mono(Ty::var(name)), self.mk_src(span));
+        ty.set_synthetic_ids(vec![id]);
+        Ok(ty)
     }
 
     pub(crate) fn parse_ty_with_name(
@@ -250,6 +267,8 @@ impl Parser<'_> {
         span: Span,
         ctx: &ParseContext,
     ) -> ParseResult<Parsed<TyScheme>> {
+        let mut synth_ids = vec![];
+
         let Span { start, mut end } = span;
         let ty_params = self.parse_ty_params(ctx)?;
         if let Some(ref p) = ty_params {
@@ -259,12 +278,19 @@ impl Parser<'_> {
         let ty = if let Some(mut ty) = Ty::from_str(&name) {
             match &mut ty {
                 Ty::Projection(_, el_tys) => {
-                    *el_tys = ty_params
-                        .unwrap()
-                        .tys
-                        .into_iter()
-                        .map(|t| t.take_value())
-                        .collect();
+                    if let Some(ty_params) = ty_params {
+                        let (tys, ids): (Vec<_>, Vec<_>) = ty_params
+                            .tys
+                            .into_iter()
+                            .map(|p| {
+                                let (ty, _, ids) = p.take();
+                                (ty, ids)
+                            })
+                            .unzip();
+
+                        synth_ids.extend(ids.into_iter().flatten());
+                        *el_tys = tys;
+                    }
                 }
                 Ty::RawPtr(ty) => {
                     let count = if let Some(mut ty_params) = ty_params {
@@ -273,7 +299,9 @@ impl Parser<'_> {
                         } else {
                             let count = ty_params.tys.len();
                             let parsed_ty = ty_params.tys.remove(0);
-                            *(ty.as_mut()) = parsed_ty.take_value();
+                            let (ty_param, _, ids) = parsed_ty.take();
+                            synth_ids.extend(ids);
+                            *(ty.as_mut()) = ty_param;
                             count
                         }
                     } else {
@@ -293,18 +321,32 @@ impl Parser<'_> {
             }
             ty
         } else {
-            Ty::with_tys(
-                &name,
-                ty_params
-                    .map(|p| p.tys.into_iter().map(|t| t.take_value()).collect())
-                    .unwrap_or_default(),
-            )
+            let tys = if let Some(ty_params) = ty_params {
+                let (tys, ids): (Vec<_>, Vec<_>) = ty_params
+                    .tys
+                    .into_iter()
+                    .map(|p| {
+                        let (ty, _, ids) = p.take();
+                        (ty, ids)
+                    })
+                    .unzip();
+                synth_ids.extend(ids.into_iter().flatten());
+                tys
+            } else {
+                vec![]
+            };
+
+            Ty::with_tys(&name, tys)
         };
 
-        Ok(Parsed::new(
-            TyScheme::from_mono(ty),
-            self.mk_src(Span { start, end }),
-        ))
+        if !matches!(ty, Ty::RawPtr(_)) {
+            let base_synth_id = self.mk_synthetic(span);
+            synth_ids.insert(0, base_synth_id);
+        }
+
+        let mut parsed_ty = Parsed::new(TyScheme::from_mono(ty), self.mk_src(Span { start, end }));
+        parsed_ty.set_synthetic_ids(synth_ids);
+        Ok(parsed_ty)
     }
 
     fn parse_fn_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
@@ -314,24 +356,28 @@ impl Parser<'_> {
         let fn_span = parser.expect_keyword(TokenKind::UpperFn, ctx)?;
         let start = fn_span.start;
         let ty_params = parser.parse_ty_params(ctx)?;
-        let params = parser.parse_tuple_ty(ctx)?.map(|t| t.into_mono());
-        let mut end = params.span().unwrap().end;
+        let (params_ty, params_src, param_ids) =
+            parser.parse_tuple_ty(ctx)?.map(|t| t.into_mono()).take();
+        let mut end = params_src.span.unwrap().end;
+        let mut synth_ids = param_ids;
         let ret_ty = Box::new(if peek!(parser, TokenKind::Arrow) {
             parser.expect_end(TokenKind::Arrow, ctx)?;
             let ty = parser.parse_type_annotation(None, ctx);
-            end = ty.span().unwrap().end;
-            ty.take_value().into_mono()
+            let (ty, src, ret_ids) = ty.take();
+            end = src.span.unwrap().end;
+            synth_ids.extend(ret_ids);
+            ty.into_mono()
         } else {
             Ty::unit()
         });
 
-        let param_tys = match params.take_value() {
+        let param_tys = match params_ty {
             Ty::Tuple(tys) => tys,
             ty => vec![ty],
         };
         let fn_ty = Ty::Func(param_tys, ret_ty);
 
-        Ok(Parsed::new(
+        let mut parsed = Parsed::new(
             if let Some(ty_params) = ty_params {
                 TyScheme::new(
                     ty_params
@@ -346,7 +392,9 @@ impl Parser<'_> {
                 TyScheme::from_mono(fn_ty)
             },
             parser.mk_src(Span { start, end }),
-        ))
+        );
+        parsed.set_synthetic_ids(synth_ids);
+        Ok(parsed)
     }
 
     fn parse_tuple_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
@@ -372,14 +420,287 @@ impl Parser<'_> {
         if tys.len() == 1 && !trailing {
             Ok(tys.into_iter().next().unwrap())
         } else {
-            Ok(Parsed::new(
-                TyScheme::from_mono(Ty::Tuple(
-                    tys.into_iter()
-                        .map(|t| t.take_value().into_mono())
-                        .collect(),
-                )),
+            let (tys, ids): (Vec<_>, Vec<_>) = tys
+                .into_iter()
+                .map(|t| {
+                    let (ty, _, ids) = t.take();
+                    (ty.into_mono(), ids)
+                })
+                .unzip();
+            let mut parsed = Parsed::new(
+                TyScheme::from_mono(Ty::Tuple(tys)),
                 self.mk_src(l_span.extend_to(&r_span)),
-            ))
+            );
+            parsed.set_synthetic_ids(ids.into_iter().flatten().collect());
+            Ok(parsed)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        ast::Path,
+        errors::RayError,
+        parse::{ParseContext, ParseOptions, Parser},
+        pathlib::FilePath,
+        span::{SourceMap, parsed::Parsed},
+        typing::ty::TyScheme,
+    };
+
+    fn test_options() -> ParseOptions {
+        let mut options = ParseOptions::default();
+        let filepath = FilePath::from("test.ray");
+        options.filepath = filepath.clone();
+        options.original_filepath = filepath;
+        options.module_path = Path::from("test");
+        options
+    }
+
+    fn parse<F>(src: &str, mut f: F) -> (Result<Parsed<TyScheme>, RayError>, SourceMap)
+    where
+        F: FnMut(&mut Parser<'_>) -> Result<Parsed<TyScheme>, RayError>,
+    {
+        let options = test_options();
+        let mut srcmap = SourceMap::new();
+        let mut parser = Parser::new(src, options, &mut srcmap);
+        let result = f(&mut parser);
+        (result, srcmap)
+    }
+
+    fn parse_ty(src: &str) -> (Parsed<TyScheme>, SourceMap) {
+        let (result, srcmap) = parse(src, |p| {
+            let ctx = ParseContext::new(Path::from("test"));
+            p.parse_ty(&ctx)
+        });
+        let ty = result.expect("failed to parse");
+        (ty, srcmap)
+    }
+
+    fn span_of(id: u64, srcmap: &SourceMap) -> (usize, usize) {
+        let span = srcmap
+            .get_by_id(id)
+            .and_then(|s| s.span)
+            .expect("could not find span");
+        (span.start.offset, span.end.offset)
+    }
+
+    #[test]
+    fn parses_and_collects_base_ty_synthetic_ids() {
+        let (t, srcmap) = parse_ty("A");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 1);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+    }
+
+    #[test]
+    fn parses_and_collects_ty_with_vars_synthetic_ids() {
+        let (t, srcmap) = parse_ty("A['a, 'b]");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 3);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+
+        // 'a
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 2);
+        assert_eq!(end, 4);
+
+        // 'b
+        let (start, end) = span_of(ids[2], &srcmap);
+        assert_eq!(start, 6);
+        assert_eq!(end, 8);
+    }
+
+    #[test]
+    fn parses_and_collects_proj_ty_synthetic_ids() {
+        let (t, srcmap) = parse_ty("A[B]");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 2);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+
+        // B
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 2);
+        assert_eq!(end, 3);
+    }
+
+    #[test]
+    fn parses_and_collects_rawptr_ty_synthetic_ids() {
+        // rawptr is ignored
+        let (t, srcmap) = parse_ty("(rawptr[A], rawptr[B])");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 2);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 8);
+        assert_eq!(end, 9);
+
+        // B
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 19);
+        assert_eq!(end, 20);
+    }
+
+    #[test]
+    fn parses_and_collects_array_ty_synthetic_ids() {
+        let (t, srcmap) = parse_ty("[A; 1]");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 1);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 1);
+        assert_eq!(end, 2);
+    }
+
+    #[test]
+    fn parses_and_collects_tuple_ty_synthetic_ids() {
+        let (t, srcmap) = parse_ty("(A, (B, C), ((D, E), F))");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 6);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 1);
+        assert_eq!(end, 2);
+
+        // B
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 5);
+        assert_eq!(end, 6);
+
+        // C
+        let (start, end) = span_of(ids[2], &srcmap);
+        assert_eq!(start, 8);
+        assert_eq!(end, 9);
+
+        // D
+        let (start, end) = span_of(ids[3], &srcmap);
+        assert_eq!(start, 14);
+        assert_eq!(end, 15);
+
+        // E
+        let (start, end) = span_of(ids[4], &srcmap);
+        assert_eq!(start, 17);
+        assert_eq!(end, 18);
+
+        // F
+        let (start, end) = span_of(ids[5], &srcmap);
+        assert_eq!(start, 21);
+        assert_eq!(end, 22);
+    }
+
+    #[test]
+    fn parses_and_collects_proj_ty_multi_param_synthetic_ids() {
+        let (t, srcmap) = parse_ty("A[B, C]");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 3);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+
+        // B
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 2);
+        assert_eq!(end, 3);
+
+        // C
+        let (start, end) = span_of(ids[2], &srcmap);
+        assert_eq!(start, 5);
+        assert_eq!(end, 6);
+    }
+
+    #[test]
+    fn parses_and_collects_nested_ty_synthetic_ids() {
+        let (t, srcmap) = parse_ty("A[B, C[T, U]]");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 5);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+
+        // B
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 2);
+        assert_eq!(end, 3);
+
+        // C
+        let (start, end) = span_of(ids[2], &srcmap);
+        assert_eq!(start, 5);
+        assert_eq!(end, 6);
+
+        // T
+        let (start, end) = span_of(ids[3], &srcmap);
+        assert_eq!(start, 7);
+        assert_eq!(end, 8);
+
+        // U
+        let (start, end) = span_of(ids[4], &srcmap);
+        assert_eq!(start, 10);
+        assert_eq!(end, 11);
+    }
+
+    #[test]
+    fn parses_and_collects_nested_ty_with_tuples_synthetic_ids() {
+        let (t, srcmap) = parse_ty("A[B, (C[(T, U), V], D[W])]");
+        let ids = t.synthetic_ids();
+        assert_eq!(ids.len(), 8);
+
+        // A
+        let (start, end) = span_of(ids[0], &srcmap);
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+
+        // B
+        let (start, end) = span_of(ids[1], &srcmap);
+        assert_eq!(start, 2);
+        assert_eq!(end, 3);
+
+        // C
+        let (start, end) = span_of(ids[2], &srcmap);
+        assert_eq!(start, 6);
+        assert_eq!(end, 7);
+
+        // T
+        let (start, end) = span_of(ids[3], &srcmap);
+        assert_eq!(start, 9);
+        assert_eq!(end, 10);
+
+        // U
+        let (start, end) = span_of(ids[4], &srcmap);
+        assert_eq!(start, 12);
+        assert_eq!(end, 13);
+
+        // V
+        let (start, end) = span_of(ids[5], &srcmap);
+        assert_eq!(start, 16);
+        assert_eq!(end, 17);
+
+        // D
+        let (start, end) = span_of(ids[6], &srcmap);
+        assert_eq!(start, 20);
+        assert_eq!(end, 21);
+
+        // W
+        let (start, end) = span_of(ids[7], &srcmap);
+        assert_eq!(start, 22);
+        assert_eq!(end, 23);
     }
 }
