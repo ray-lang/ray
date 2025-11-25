@@ -494,6 +494,7 @@ impl CollectConstraints for Node<Expr> {
         }
 
         let (ty, aset, ct) = match &self.value {
+            // Arms in alphabetical order by Expr variant
             Expr::Assign(_) => unreachable!(),
             Expr::BinOp(ex) => (ex, src).collect_constraints(ctx),
             Expr::Block(ex) => (ex, src).collect_constraints(ctx),
@@ -513,8 +514,8 @@ impl CollectConstraints for Node<Expr> {
             Expr::DefaultValue(_) => todo!(),
             Expr::Deref(ex) => (ex, src).collect_constraints(ctx),
             Expr::Dot(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Func(_) => todo!(),
             Expr::For(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Func(_) => todo!(),
             Expr::If(ex) => (ex, src).collect_constraints(ctx),
             Expr::Index(_) => {
                 todo!()
@@ -524,11 +525,12 @@ impl CollectConstraints for Node<Expr> {
             Expr::List(ex) => (ex, src).collect_constraints(ctx),
             Expr::Literal(ex) => (ex, src).collect_constraints(ctx),
             Expr::Loop(_) => todo!(),
+            Expr::Missing(_) => todo!(),
             Expr::Name(ex) => (ex, src).collect_constraints(ctx),
             Expr::New(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Pattern(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Path(ex) => (ex, src).collect_constraints(ctx),
             Expr::Paren(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Path(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Pattern(ex) => (ex, src).collect_constraints(ctx),
             Expr::Range(ex) => (ex, src).collect_constraints(ctx),
             Expr::Ref(ex) => (ex, src).collect_constraints(ctx),
             Expr::Return(ret) => {
@@ -544,15 +546,18 @@ impl CollectConstraints for Node<Expr> {
                 }
             }
             Expr::Sequence(_) => todo!(),
+            Expr::Some(inner) => {
+                let (inner_ty, aset, ct) = inner.collect_constraints(ctx);
+                (Ty::nilable(inner_ty), aset, ct)
+            }
             Expr::Tuple(ex) => (ex, src).collect_constraints(ctx),
             Expr::Type(ty) => (ty, src).collect_constraints(ctx),
-            Expr::UnaryOp(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Unsafe(_) => todo!(),
-            Expr::While(ex) => (ex, src).collect_constraints(ctx),
-            Expr::Missing(_) => todo!(),
             Expr::TypeAnnotated(_, _) => {
                 unreachable!("handled above")
             }
+            Expr::UnaryOp(ex) => (ex, src).collect_constraints(ctx),
+            Expr::Unsafe(_) => todo!(),
+            Expr::While(ex) => (ex, src).collect_constraints(ctx),
         };
 
         ctx.tcx.set_ty(self.id, ty.clone());
@@ -1090,7 +1095,7 @@ impl CollectConstraints for (&Literal, &Source) {
             Literal::Char(_) => Ty::char(),
             Literal::Bool(_) => Ty::bool(),
             Literal::Nil => {
-                // Give `nil` a polymorphic nilable type: β | nil for a fresh β.
+                // Give `nil` a polymorphic nilable type: nilable[β] for a fresh β.
                 let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
                 Ty::nilable(t)
             }
@@ -1480,12 +1485,12 @@ impl CollectConstraints for (&While, &Source) {
 mod tests {
     use std::collections::HashSet;
 
+    use ray_shared::pathlib::Path;
     use ray_typing::{
         bound_names::BoundNames,
         constraints::tree::BottomUpWalk,
         state::{Env, SchemeEnv},
     };
-    use ray_shared::pathlib::Path;
 
     use crate::{
         collect::{CollectConstraints, CollectCtx},

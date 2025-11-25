@@ -17,8 +17,15 @@ trait Add['a, 'b, 'c] {
 @intrinsic
 extern fn __ptr_add(ptr: rawptr['a], offset: uint) -> rawptr['a]
 
+@intrinsic
+extern fn uint_add(lhs: uint, rhs: uint) -> uint
+
 impl Add[rawptr['a], uint, rawptr['a]] {
     fn +(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_add(lhs, rhs)
+}
+
+impl Add[uint, uint, uint] {
+    fn +(lhs: uint, rhs: uint) -> uint => uint_add(lhs, rhs)
 }
 
 trait Deref['a, 'b] {
@@ -34,6 +41,6 @@ impl Deref[rawptr['a], 'a] {
 impl Index[list['a], 'a, uint] {
     fn get(self: *list['a], idx: uint) -> 'a? {
         ptr = self.values + idx
-        *ptr
+        some(*ptr)
     }
 }

@@ -851,6 +851,7 @@ impl LowerAST for Node<Expr> {
             Expr::Unsafe(_) => todo!("lower: Expr::Unsafe: {:?}", self),
             Expr::While(w) => Sourced(w, &src).lower(ctx),
             Expr::Missing(_) => todo!("lower: Expr::Missing: {:?}", self),
+            Expr::Some(expr) => expr.lower(ctx),
         }
     }
 }

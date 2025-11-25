@@ -482,6 +482,7 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.visit_expr(item);
                 }
             }
+            Expr::Some(inner) => self.visit_expr(inner),
             Expr::Type(scheme) => self.emit_parsed_tyscheme(scheme, SemanticTokenKind::Type),
             Expr::TypeAnnotated(value, ty) => {
                 self.visit_expr(value);

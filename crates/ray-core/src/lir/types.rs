@@ -201,13 +201,13 @@ impl std::ops::Deref for SymbolSet {
     type Target = HashSet<Path>;
 
     fn deref(&self) -> &Self::Target {
-        todo!()
+        &self.0
     }
 }
 
 impl std::ops::DerefMut for SymbolSet {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        todo!()
+        &mut self.0
     }
 }
 

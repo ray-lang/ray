@@ -1593,6 +1593,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 lir::Value::Empty
             }
+            Expr::Some(inner) => inner.lir_gen(ctx, tcx)?,
             Expr::Missing(_) => todo!("lir_gen: Expr::Missing: {}", self.value),
         })
     }

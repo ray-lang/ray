@@ -11,7 +11,7 @@ impl Index[list['a], 'a, uint] {
         }
 
         ptr = self.values + idx
-        *ptr
+        some(*ptr)
     }
 
     fn set(self: *list['a], idx: uint, el: 'a) -> 'a? {

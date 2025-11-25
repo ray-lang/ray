@@ -1,11 +1,11 @@
 use std::{collections::HashMap, ops::DerefMut};
 
-use ray_typing::ty::{Ty, TyScheme};
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::Path,
     span::{Sourced, parsed::Parsed},
 };
+use ray_typing::ty::{Ty, TyScheme};
 
 use crate::{
     ast::{
@@ -320,6 +320,7 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::Ref(rf) => Sourced(rf, src).resolve_names(ctx),
             Expr::Return(return_) => Sourced(return_, src).resolve_names(ctx),
             Expr::Sequence(sequence) => Sourced(sequence, src).resolve_names(ctx),
+            Expr::Some(inner) => Sourced(inner, src).resolve_names(ctx),
             Expr::Tuple(tuple) => Sourced(tuple, src).resolve_names(ctx),
             Expr::Type(type_) => type_.resolve_names(ctx),
             Expr::TypeAnnotated(type_annotated, _) => {
@@ -338,7 +339,7 @@ impl NameResolve for Sourced<'_, Assign> {
         let (assign, src) = self.unpack_mut();
         for node in assign.lhs.paths_mut() {
             let (path, is_lvalue) = node.value;
-            let full_path = src.path.clone().append_path(path.clone());
+            let full_path = src.path.with_names_only().append_path(path.clone());
             *path = full_path.clone();
 
             if !is_lvalue {

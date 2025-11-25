@@ -92,7 +92,8 @@ impl<'a> Iterator for ModuleWalk<'a> {
                 | Expr::Labeled(_, node)
                 | Expr::Paren(node)
                 | Expr::TypeAnnotated(node, _)
-                | Expr::Unsafe(node) => self.stack.push(WalkItem::Expr(&node)),
+                | Expr::Unsafe(node)
+                | Expr::Some(node) => self.stack.push(WalkItem::Expr(&node)),
 
                 // ignore "atoms"
                 Expr::Literal(_)

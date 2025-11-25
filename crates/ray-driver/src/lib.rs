@@ -19,12 +19,12 @@ use ray_shared::{
     pathlib::{FilePath, Path, RayPaths},
     span::{Source, Span},
 };
+use ray_typing::top::{Subst, Substitutable};
 use ray_typing::{
     TyCtx,
     state::SchemeEnv,
     ty::{Ty, TyScheme, TyVar},
 };
-use ray_typing::top::{Subst, Substitutable};
 
 mod analyze;
 mod build;
@@ -421,9 +421,9 @@ fn collect_symbols(frontend: &FrontendResult) -> Vec<SymbolInfo> {
 
 fn type_info_for_node(tcx: &TyCtx, node_id: u64) -> Option<(String, bool)> {
     if let Some(scheme) = tcx.maybe_ty_scheme_of(node_id) {
-        Some((pretty_print_scheme(&scheme), true))
+        Some((pretty_print_tys(tcx, &scheme), true))
     } else if let Some(ty) = tcx.get_ty(node_id) {
-        Some((pretty_print_ty(&ty), false))
+        Some((pretty_print_tys(tcx, ty), false))
     } else {
         None
     }
@@ -636,8 +636,7 @@ fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(u64, Path)>) {
 
 fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
     match &expr.value {
-        Expr::Name(name) => refs.push((expr.id, name.path.clone())),
-        Expr::Path(path) => refs.push((expr.id, path.clone())),
+        // Arms in alphabetical order by Expr variant for readability
         Expr::Assign(assign) => {
             collect_pattern_refs(&assign.lhs.value, refs);
             collect_expr_name_refs(&assign.rhs, refs);
@@ -677,18 +676,18 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
                 collect_curly_element_refs(element, refs);
             }
         }
-        Expr::Deref(deref) => collect_expr_name_refs(&deref.expr, refs),
         Expr::DefaultValue(value) => collect_expr_name_refs(value, refs),
+        Expr::Deref(deref) => collect_expr_name_refs(&deref.expr, refs),
         Expr::Dot(dot) => {
             collect_expr_name_refs(&dot.lhs, refs);
             refs.push((dot.rhs.id, dot.rhs.value.path.clone()));
         }
-        Expr::Func(func) => collect_func_refs(func, refs),
         Expr::For(for_expr) => {
             collect_pattern_refs(&for_expr.pat.value, refs);
             collect_expr_name_refs(&for_expr.expr, refs);
             collect_expr_name_refs(&for_expr.body, refs);
         }
+        Expr::Func(func) => collect_func_refs(func, refs),
         Expr::If(ifexpr) => {
             collect_expr_name_refs(&ifexpr.cond, refs);
             collect_expr_name_refs(&ifexpr.then, refs);
@@ -711,13 +710,16 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
         }
         Expr::Literal(_) => {}
         Expr::Loop(loop_expr) => collect_expr_name_refs(&loop_expr.body, refs),
+        Expr::Missing(_) => {}
+        Expr::Name(name) => refs.push((expr.id, name.path.clone())),
         Expr::New(new_expr) => {
             if let Some(count) = &new_expr.count {
                 collect_expr_name_refs(count, refs);
             }
         }
-        Expr::Pattern(_) => {}
         Expr::Paren(value) => collect_expr_name_refs(value, refs),
+        Expr::Path(path) => refs.push((expr.id, path.clone())),
+        Expr::Pattern(_) => {}
         Expr::Range(range) => {
             collect_expr_name_refs(&range.start, refs);
             collect_expr_name_refs(&range.end, refs);
@@ -735,6 +737,7 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
                 collect_expr_name_refs(item, refs);
             }
         }
+        Expr::Some(inner) => collect_expr_name_refs(inner, refs),
         Expr::Tuple(tuple) => {
             for item in &tuple.seq.items {
                 collect_expr_name_refs(item, refs);
@@ -748,7 +751,6 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
             collect_expr_name_refs(&while_expr.cond, refs);
             collect_expr_name_refs(&while_expr.body, refs);
         }
-        Expr::Missing(_) => {}
     }
 }
 
@@ -794,83 +796,9 @@ fn maybe_push_node_type<T>(
     }
 }
 
-fn pretty_print_scheme(scheme: &TyScheme) -> String {
-    let mut scheme = scheme.clone();
-    normalize_scheme_tyvars(&mut scheme);
-    scheme.to_string()
-}
-
-fn pretty_print_ty(ty: &Ty) -> String {
-    let mut ty = ty.clone();
-    normalize_tyvars(&mut ty);
-    ty.to_string()
-}
-
-fn normalize_scheme_tyvars(scheme: &mut TyScheme) {
-    let mut subst = Subst::<TyVar, Ty>::new();
-    let mut counter = 0usize;
-
-    {
-        let quantifiers = scheme.quantifiers().clone();
-        collect_unknown_vars(&quantifiers, &mut subst, &mut counter);
-    }
-
-    let mono_free_vars = scheme.mono().free_vars();
-    collect_unknown_vars(mono_free_vars, &mut subst, &mut counter);
-    let qualifier_free_vars = scheme.qualifiers().free_vars();
-    collect_unknown_vars(qualifier_free_vars, &mut subst, &mut counter);
-
-    if !subst.is_empty() {
-        scheme.apply_subst_all(&subst);
-    }
-}
-
-fn normalize_tyvars(ty: &mut Ty) {
-    let mut subst = Subst::<TyVar, Ty>::new();
-    let mut counter = 0usize;
-    let free_vars = ty.free_vars();
-    collect_unknown_vars(free_vars, &mut subst, &mut counter);
-    if !subst.is_empty() {
-        ty.apply_subst_all(&subst);
-    }
-}
-
-fn collect_unknown_vars<'a, I>(vars: I, subst: &mut Subst<TyVar, Ty>, counter: &mut usize)
+fn pretty_print_tys<T>(tcx: &TyCtx, ty: &T) -> String
 where
-    I: IntoIterator<Item = &'a TyVar>,
+    T: Clone + Substitutable<TyVar, Ty> + ToString,
 {
-    for var in vars {
-        assign_pretty_name_for_var(var, subst, counter);
-    }
-}
-
-fn assign_pretty_name_for_var(var: &TyVar, subst: &mut Subst<TyVar, Ty>, counter: &mut usize) {
-    if !var.is_unknown() {
-        return;
-    }
-
-    if subst.contains_key(var) {
-        return;
-    }
-
-    // For pretty-printing in analysis/hover contexts, render unknown type
-    // variables as `_` rather than introducing synthetic type-variable names.
-    // This keeps fully unknown types as `_` and partially-known ones as
-    // e.g. `list[_]` while leaving named generics unchanged.
-    let placeholder = Ty::Const("_".into());
-    subst.insert(var.clone(), placeholder);
-}
-
-fn fresh_pretty_tyvar(index: usize) -> TyVar {
-    TyVar::from(pretty_tyvar_name(index))
-}
-
-fn pretty_tyvar_name(index: usize) -> String {
-    let letter = (b'a' + (index % 26) as u8) as char;
-    let suffix = index / 26;
-    if suffix == 0 {
-        format!("'{}", letter)
-    } else {
-        format!("'{}{}", letter, suffix)
-    }
+    tcx.pretty_tys(ty).to_string()
 }

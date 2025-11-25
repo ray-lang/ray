@@ -71,6 +71,16 @@ impl QualifyTypes for TyScheme {
     }
 }
 
+impl Substitutable<TyVar, Ty> for TyScheme {
+    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.0.apply_subst(subst);
+    }
+
+    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
+        self.0.apply_subst_all(subst);
+    }
+}
+
 impl TyScheme {
     pub fn new(vars: Vec<TyVar>, preds: Predicates<Ty, TyVar>, ty: Ty) -> Self {
         Self(crate::top::SchemePredicates::new(
@@ -1376,7 +1386,8 @@ impl Ty {
     }
 
     pub fn nilable(t: Ty) -> Ty {
-        Ty::Union(vec![t, Ty::con("nil")])
+        // Represent nilable['a] as the projection nilable['a].
+        Ty::Projection(Box::new(Ty::con("nilable")), vec![t])
     }
 
     /// S <: T => S is a subtype of T

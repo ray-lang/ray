@@ -291,17 +291,17 @@ impl<'a> SymbolBuildContext<'a> {
                     Decl::Extern(_) | Decl::TypeAlias(_, _) => continue,
                 },
                 WalkItem::Expr(expr) => match &expr.value {
+                    Expr::Assign(assign) => self.record_assign(assign),
+                    Expr::Call(call) => self.record_call(call),
+                    Expr::Curly(curly) => self.record_struct_literal(curly),
+                    Expr::Dot(dot) => self.record_dot(dot),
+                    Expr::Func(func) => self.record_func_sig(&func.sig),
                     Expr::Name(name) => {
                         self.record_reference(expr.id, &name.path);
                     }
                     Expr::Path(path) => {
                         self.record_reference(expr.id, path);
                     }
-                    Expr::Assign(assign) => self.record_assign(assign),
-                    Expr::Func(func) => self.record_func_sig(&func.sig),
-                    Expr::Curly(curly) => self.record_struct_literal(curly),
-                    Expr::Call(call) => self.record_call(call),
-                    Expr::Dot(dot) => self.record_dot(dot),
                     _ => continue,
                 },
                 WalkItem::Func(func) => {

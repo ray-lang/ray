@@ -3,12 +3,12 @@ use std::{
     fmt::Display,
 };
 
-use ray_typing::{TyCtx, state::SchemeEnv, ty::Ty};
 use ray_shared::{
     collections::namecontext::NameContext,
     pathlib::{FilePath, Path, PathPart},
     span::Span,
 };
+use ray_typing::{TyCtx, state::SchemeEnv, ty::Ty};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -325,7 +325,7 @@ fn register_decl_paths(
         }
         Decl::Trait(tr) => {
             let kind = DefinitionKind::Trait {
-                ty: tr.ty.clone_value(),
+                ty: tcx.pretty_tys(tr.ty.value()),
             };
 
             for field in &tr.fields {
@@ -336,8 +336,12 @@ fn register_decl_paths(
         }
         Decl::Impl(im) => {
             let kind = DefinitionKind::Impl {
-                ty: im.ty.clone_value(),
-                qualifiers: im.qualifiers.iter().map(|t| t.clone_value()).collect(),
+                ty: tcx.pretty_tys(im.ty.value()),
+                qualifiers: im
+                    .qualifiers
+                    .iter()
+                    .map(|t| tcx.pretty_tys(t.value()))
+                    .collect(),
             };
 
             if let Some(funcs) = &im.funcs {
@@ -357,10 +361,12 @@ fn register_decl_paths(
         Decl::Struct(st) => {
             let kind = DefinitionKind::Struct {
                 path: st.path.value.clone(),
-                type_params: st
-                    .ty_params
-                    .as_ref()
-                    .map(|tps| tps.tys.iter().map(|tp| tp.clone_value()).collect()),
+                type_params: st.ty_params.as_ref().map(|tps| {
+                    tps.tys
+                        .iter()
+                        .map(|tp| tcx.pretty_tys(tp.value()))
+                        .collect()
+                }),
             };
 
             if let Some(fields) = &st.fields {
@@ -372,7 +378,7 @@ fn register_decl_paths(
                         field.id,
                         srcmap,
                         DefinitionKind::Name {
-                            ty: field.ty.as_ref().map(|t| t.mono().clone()),
+                            ty: field.ty.as_ref().map(|t| tcx.pretty_tys(t.mono())),
                             parent: Some(Box::new(kind.clone())),
                         },
                     );
@@ -421,7 +427,7 @@ fn register_fn_param(
                 param.id,
                 srcmap,
                 DefinitionKind::Name {
-                    ty: name.ty.as_ref().map(|t| t.mono().clone()),
+                    ty: name.ty.as_ref().map(|t| tcx.pretty_tys(t.mono())),
                     parent: None,
                 },
             );
@@ -590,6 +596,9 @@ fn register_in_expr(
                 register_in_expr(elem, srcmap, tcx, records, parent);
             }
         }
+        Expr::Some(inner) => {
+            register_in_expr(&inner, srcmap, tcx, records, parent);
+        }
         Expr::TypeAnnotated(node, _) => {
             register_in_expr(&node, srcmap, tcx, records, parent);
         }
@@ -624,14 +633,14 @@ fn register_in_pattern(
 ) {
     match &pattern.value {
         Pattern::Name(name) => {
-            let resolved_ty = Some(
-                tcx.pretty_ty(&tcx.get_ty(pattern.id).cloned().unwrap_or_else(|| {
+            let resolved_ty = Some(tcx.pretty_tys(
+                &tcx.get_ty(pattern.id).cloned().unwrap_or_else(|| {
                     panic!(
                         "type not found for pattern name: {} ({}) in {:#?}",
                         name.path, pattern.id, tcx
                     );
-                })),
-            );
+                }),
+            ));
             insert_definition_record(
                 records,
                 &name.path,

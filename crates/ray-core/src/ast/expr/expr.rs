@@ -42,6 +42,7 @@ pub enum Expr {
     Ref(Ref),
     Return(Option<Box<Node<Expr>>>),
     Sequence(Sequence),
+    Some(Box<Node<Expr>>),
     Tuple(Tuple),
     Type(Parsed<TyScheme>),
     TypeAnnotated(Box<Node<Expr>>, Node<Parsed<TyScheme>>),
@@ -69,7 +70,6 @@ impl std::fmt::Display for Expr {
             f,
             "{}",
             match self {
-                Expr::List(ex) => ex.to_string(),
                 Expr::Assign(ex) => ex.to_string(),
                 Expr::BinOp(ex) => ex.to_string(),
                 Expr::Block(ex) => ex.to_string(),
@@ -90,6 +90,7 @@ impl std::fmt::Display for Expr {
                 Expr::If(ex) => ex.to_string(),
                 Expr::Index(ex) => ex.to_string(),
                 Expr::Labeled(label, ex) => format!("({}: {})", label, ex),
+                Expr::List(ex) => ex.to_string(),
                 Expr::Literal(ex) => ex.to_string(),
                 Expr::Loop(ex) => ex.to_string(),
                 Expr::Missing(ex) => ex.to_string(),
@@ -104,6 +105,7 @@ impl std::fmt::Display for Expr {
                     .as_ref()
                     .map_or_else(|| "(return)".to_string(), |ex| format!("(return {})", ex)),
                 Expr::Sequence(ex) => ex.to_string(),
+                Expr::Some(ex) => format!("(some {})", ex),
                 Expr::Tuple(ex) => ex.to_string(),
                 Expr::Type(ex) => ex.to_string(),
                 Expr::TypeAnnotated(value, ty) => format!("({} :: {})", value, ty),
@@ -148,6 +150,7 @@ impl Expr {
             | Expr::Ref(_)
             | Expr::Return(_)
             | Expr::Sequence(_)
+            | Expr::Some(_)
             | Expr::Tuple(_)
             | Expr::Type(_)
             | Expr::TypeAnnotated(..)
@@ -189,6 +192,7 @@ impl Expr {
             | Expr::Ref(_)
             | Expr::Return(_)
             | Expr::Sequence(_)
+            | Expr::Some(_)
             | Expr::Tuple(_)
             | Expr::Type(_)
             | Expr::TypeAnnotated(..)
@@ -230,6 +234,7 @@ impl Expr {
             Expr::Ref(..) => "ref",
             Expr::Return(..) => "return",
             Expr::Sequence(..) => "sequence",
+            Expr::Some(..) => "some",
             Expr::Tuple(..) => "tuple",
             Expr::Type(..) => "type",
             Expr::TypeAnnotated(..) => "type-annotated expression",

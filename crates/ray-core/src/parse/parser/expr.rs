@@ -1,5 +1,5 @@
-use ray_typing::ty::TyScheme;
 use ray_shared::span::{Span, parsed::Parsed};
+use ray_typing::ty::TyScheme;
 
 use crate::ast::{
     Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,
@@ -216,13 +216,14 @@ impl Parser<'_> {
     pub(crate) fn parse_fn_call_expr(&mut self, lhs: ParsedExpr, ctx: &ParseContext) -> ExprResult {
         let start = self.srcmap.span_of(&lhs).start;
 
-        let expects_type = if let Expr::Name(n) = &lhs.value {
+        let (expects_type, is_some_ctor) = if let Expr::Name(n) = &lhs.value {
             match n.to_string().as_str() {
-                "sizeof" => true,
-                _ => false,
+                "sizeof" => (true, false),
+                "some" => (false, true),
+                _ => (false, false),
             }
         } else {
-            false
+            (false, false)
         };
 
         let paren_spec = SeqSpec {
@@ -280,6 +281,19 @@ impl Parser<'_> {
             let closure = self.parse_closure_expr(ctx)?;
             end = self.srcmap.span_of(&closure).end;
             args.items.push(closure);
+        }
+
+        if is_some_ctor {
+            // `some(expr)` is special syntax; require exactly one argument.
+            if args.items.len() == 1 {
+                let inner = args.items.pop().unwrap();
+                return Ok(self.mk_expr(
+                    Expr::Some(Box::new(inner)),
+                    Span { start, end },
+                    ctx.path.clone(),
+                ));
+            }
+            // Arity mismatch: fall back to a normal call and let typechecking complain.
         }
 
         Ok(self.mk_expr(

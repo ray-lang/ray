@@ -191,14 +191,6 @@ where
                 continue;
             };
             log::debug!("by_instance: subst = {:?}", subst);
-            if Predicate::<T, V>::subst_contains_schema(&subst) {
-                log::debug!(
-                    "by_instance: skipping schema-tainted substitution for predicate={} candidate={}",
-                    predicate,
-                    candidate
-                );
-                continue;
-            }
             let predicates = if let Some(additional_preds) = additional_preds {
                 let mut predicates = additional_preds.clone();
                 log::debug!(
@@ -473,12 +465,6 @@ where
     T: Ty<V>,
     V: TyVar,
 {
-    fn subst_contains_schema(subst: &Subst<V, T>) -> bool {
-        subst
-            .values()
-            .any(|ty| ty.free_vars().into_iter().any(|var| var.is_schema()))
-    }
-
     fn match_has_field(
         lhs_record: &T,
         lhs_field: &str,
