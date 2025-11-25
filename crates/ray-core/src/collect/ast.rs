@@ -67,7 +67,7 @@ impl CollectPatterns for Node<Pattern> {
                 );
 
                 // require core::Deref[ptr_ty, ty]
-                let deref_trait_fqn = ctx.ncx.builtin_trait("Deref");
+                let deref_trait_fqn = ctx.ncx.builtin_ty("Deref");
                 let mut c = ProveConstraint::new(Predicate::class(
                     deref_trait_fqn.to_string(),
                     ptr_ty.clone(),
@@ -913,7 +913,7 @@ impl CollectConstraints for (&ast::Deref, &Source) {
         eq.info_mut().with_src(src.clone());
 
         // require Deref[ptr_ty, ty]
-        let deref_trait_fqn = ctx.ncx.builtin_trait("Deref");
+        let deref_trait_fqn = ctx.ncx.builtin_ty("Deref");
         let mut prove = ProveConstraint::new(Predicate::class(
             deref_trait_fqn.to_string(),
             ptr_ty.clone(),
@@ -1056,12 +1056,17 @@ impl CollectConstraints for (&Literal, &Source) {
         let mut ctree = ConstraintTree::empty();
         let literal_ty = match &lit {
             Literal::Integer { size, signed, .. } => {
-                if *size != 0 {
+                if let Some(size) = size {
                     let sign = if !signed { "u" } else { "i" };
-                    Ty::con(format!("{}{}", sign, size))
+                    let ty = if *size != 0 {
+                        format!("{}{}", sign, size)
+                    } else {
+                        format!("{}int", sign)
+                    };
+                    Ty::con(ty)
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    let int_trait_fqn = ctx.ncx.builtin_trait("Int");
+                    let int_trait_fqn = ctx.ncx.builtin_ty("Int");
                     log::debug!("int_trait_fqn = {}", int_trait_fqn);
                     let mut prove = ProveConstraint::new(Predicate::class(
                         int_trait_fqn.to_string(),
@@ -1078,7 +1083,7 @@ impl CollectConstraints for (&Literal, &Source) {
                     Ty::con(format!("f{}", size))
                 } else {
                     let t = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
-                    let float_trait_fqn = ctx.ncx.builtin_trait("Float");
+                    let float_trait_fqn = ctx.ncx.builtin_ty("Float");
                     let mut prove = ProveConstraint::new(Predicate::class(
                         float_trait_fqn.to_string(),
                         t.clone(),
@@ -1224,7 +1229,7 @@ fn collect_pattern_deref(
     };
     let inner_ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
 
-    let deref_trait_fqn = ctx.ncx.builtin_trait("Deref");
+    let deref_trait_fqn = ctx.ncx.builtin_ty("Deref");
     let mut aset = AssumptionSet::new();
     aset.add(name.path.clone(), ptr_ty.clone());
 

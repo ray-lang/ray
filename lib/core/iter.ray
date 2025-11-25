@@ -1,6 +1,6 @@
-trait Seq['a] {
-    fn get(self: 'a, index: uint) -> 'b? // end of line
-}
+// trait Seq['a] {
+//     fn get(self: 'a, index: uint) -> 'b? // end of line
+// }
 
 // trait Iterable['a] {
 //     fn iter(self: 'a) -> Iterator['b]

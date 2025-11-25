@@ -1,6 +1,5 @@
 use ray_shared::pathlib::{FilePath, Path};
 
-use ray_shared::span::Source;
 use crate::{
     ast::{
         PrefixOp,
@@ -8,13 +7,14 @@ use crate::{
     },
     errors::{RayError, RayErrorKind, RayResult},
 };
+use ray_shared::span::Source;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal {
     Integer {
         value: String,
         base: IntegerBase,
-        size: usize,
+        size: Option<usize>,
         signed: bool,
         explicit_sign: Option<PrefixOp>,
     },
@@ -34,26 +34,6 @@ pub enum Literal {
 }
 
 impl Literal {
-    pub fn new_int(value: i64) -> Literal {
-        Literal::Integer {
-            value: value.to_string(),
-            base: IntegerBase::Decimal,
-            size: 0,
-            signed: true,
-            explicit_sign: None,
-        }
-    }
-
-    pub fn new_uint(value: u64) -> Literal {
-        Literal::Integer {
-            value: value.to_string(),
-            base: IntegerBase::Decimal,
-            size: 0,
-            signed: false,
-            explicit_sign: None,
-        }
-    }
-
     pub fn from_token(token: Token, fp: FilePath, src_module: &Path) -> RayResult<Literal> {
         Ok(match token.kind {
             TokenKind::Integer {
@@ -76,9 +56,9 @@ impl Literal {
                     } else {
                         0
                     };
-                    (size, suffix.starts_with("i"))
+                    (Some(size), suffix.starts_with("i"))
                 } else {
-                    (0, true)
+                    (None, true)
                 };
                 Literal::Integer {
                     value,
@@ -176,7 +156,7 @@ impl std::fmt::Display for Literal {
                     _ => "",
                 };
                 let sign = if !signed { "u" } else { "" };
-                let suffix = if *size != 0 {
+                let suffix = if let Some(size) = size {
                     format!("_{}{}", sign, size)
                 } else if sign != "" {
                     format!("_{}", sign)

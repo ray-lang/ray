@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::top::{
-    Predicate, Predicates, Subst, Substitutable, Ty as TopTy, directives::TypeClassDirective,
+    Predicate, Predicates, Subst, Substitutable, Ty as TopTy, directives::TypeClassDirective, mgu,
 };
 
 use ray_shared::{
@@ -172,6 +172,58 @@ impl TyScheme {
             .flat_map(Predicate::flatten)
             .chain(self.ty.ty().flatten().into_iter())
             .collect()
+    }
+
+    pub fn instantiate_fn_with_args(
+        &mut self,
+        poly_ty: Option<&mut TyScheme>,
+        arg_tys: &mut [TyScheme],
+    ) -> Subst<TyVar, Ty> {
+        let mut subst = Subst::new();
+        let poly_desc = poly_ty
+            .as_ref()
+            .map(|ty| ty.to_string())
+            .unwrap_or_else(|| "None".into());
+        log::debug!(
+            "instantiate_fn_with_args start fn_ty={} poly_ty={}",
+            self,
+            poly_desc
+        );
+
+        if let Ty::Func(param_tys, _) = self.mono().clone() {
+            for (param_ty, arg_ty) in param_tys.into_iter().zip(arg_tys.iter()) {
+                log::debug!("  param_ty={} arg_ty(before)={}", param_ty, arg_ty);
+                let param_ty_clone = param_ty.clone();
+                let arg_ty_mono = arg_ty.mono().clone();
+                if let Ok((_, s)) = mgu(&param_ty_clone, &arg_ty_mono) {
+                    subst.union(s);
+                }
+            }
+        }
+
+        let poly_mono = poly_ty.as_ref().map(|ty| ty.mono().clone());
+        if let Some(poly_mono) = poly_mono {
+            let fn_mono = self.mono().clone();
+            if let Ok((_, s)) = mgu(&poly_mono, &fn_mono) {
+                subst.union(s);
+            }
+        }
+
+        if subst.is_empty() {
+            return subst;
+        }
+
+        self.apply_subst_all(&subst);
+        if let Some(poly_ty) = poly_ty {
+            poly_ty.apply_subst_all(&subst);
+        }
+        for arg_ty in arg_tys.iter_mut() {
+            arg_ty.apply_subst_all(&subst);
+            log::debug!("  arg_ty(after)={}", arg_ty);
+        }
+
+        log::debug!("instantiate_fn_with_args result subst={}", subst);
+        subst
     }
 }
 
@@ -1191,12 +1243,12 @@ impl Ty {
 
     #[inline(always)]
     pub fn range(el: Ty) -> Ty {
-        Ty::Projection(Box::new(Ty::Const(str!("range"))), vec![el.clone()])
+        Ty::Projection(Box::new(Ty::Const(str!("core::range"))), vec![el.clone()])
     }
 
     #[inline(always)]
     pub fn list(el: Ty) -> Ty {
-        Ty::Projection(Box::new(Ty::Const(str!("list"))), vec![el])
+        Ty::Projection(Box::new(Ty::Const(str!("core::list"))), vec![el])
     }
 
     #[inline(always)]

@@ -235,75 +235,8 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    fn instantiate_scheme(&self, tcx: &TyCtx, mut scheme: TyScheme) -> TyScheme {
-        let inst_map = tcx.inst_ty_map();
-        if inst_map.is_empty() {
-            return scheme;
-        }
-
-        let mut subst = Subst::new();
-        for (tv, inst) in inst_map.iter() {
-            subst.insert(tv.clone(), inst.clone().into_mono());
-        }
-        scheme.apply_subst_all(&subst);
-        scheme
-    }
-
     fn ty_of(&self, tcx: &TyCtx, id: u64) -> TyScheme {
-        self.instantiate_scheme(tcx, tcx.ty_of(id))
-    }
-
-    fn instantiate_fn_with_args(
-        &self,
-        fn_ty: &mut TyScheme,
-        poly_ty: Option<&mut TyScheme>,
-        arg_tys: &mut [TyScheme],
-    ) -> Subst<TyVar, Ty> {
-        let mut subst = Subst::new();
-        let poly_desc = poly_ty
-            .as_ref()
-            .map(|ty| ty.to_string())
-            .unwrap_or_else(|| "None".into());
-        log::debug!(
-            "instantiate_fn_with_args start fn_ty={} poly_ty={}",
-            fn_ty,
-            poly_desc
-        );
-
-        if let Ty::Func(param_tys, _) = fn_ty.mono().clone() {
-            for (param_ty, arg_ty) in param_tys.into_iter().zip(arg_tys.iter()) {
-                log::debug!("  param_ty={} arg_ty(before)={}", param_ty, arg_ty);
-                let param_ty_clone = param_ty.clone();
-                let arg_ty_mono = arg_ty.mono().clone();
-                if let Ok((_, s)) = mgu(&param_ty_clone, &arg_ty_mono) {
-                    subst.union(s);
-                }
-            }
-        }
-
-        let poly_mono = poly_ty.as_ref().map(|ty| ty.mono().clone());
-        if let Some(poly_mono) = poly_mono {
-            let fn_mono = fn_ty.mono().clone();
-            if let Ok((_, s)) = mgu(&poly_mono, &fn_mono) {
-                subst.union(s);
-            }
-        }
-
-        if subst.is_empty() {
-            return subst;
-        }
-
-        fn_ty.apply_subst_all(&subst);
-        if let Some(poly_ty) = poly_ty {
-            poly_ty.apply_subst_all(&subst);
-        }
-        for arg_ty in arg_tys.iter_mut() {
-            arg_ty.apply_subst_all(&subst);
-            log::debug!("  arg_ty(after)={}", arg_ty);
-        }
-
-        log::debug!("instantiate_fn_with_args result subst={}", subst);
-        subst
+        tcx.instantiate_scheme(tcx.ty_of(id))
     }
 
     fn with_builder(&mut self, builder: lir::Builder) {
@@ -501,14 +434,14 @@ impl<'a> GenCtx<'a> {
         fn_ty: &TyScheme,
         tcx: &TyCtx,
     ) -> RayResult<GenResult> {
-        let mut fn_ty = self.instantiate_scheme(tcx, fn_ty.clone());
+        let mut fn_ty = tcx.instantiate_scheme(fn_ty.clone());
         let original_poly_ty = tcx.get_poly_ty(op.id).cloned();
         let mut poly_ty = original_poly_ty
             .clone()
-            .map(|ty| self.instantiate_scheme(tcx, ty));
+            .map(|ty| tcx.instantiate_scheme(ty));
         let mut arg_tys = args
             .iter()
-            .map(|arg| self.instantiate_scheme(tcx, tcx.ty_of(arg.id)))
+            .map(|arg| tcx.instantiate_scheme(tcx.ty_of(arg.id)))
             .collect::<Vec<_>>();
         log::debug!(
             "call_from_op before subst: fn_ty={} args={}",
@@ -519,7 +452,7 @@ impl<'a> GenCtx<'a> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        let mut subst = self.instantiate_fn_with_args(&mut fn_ty, poly_ty.as_mut(), &mut arg_tys);
+        let mut subst = fn_ty.instantiate_fn_with_args(poly_ty.as_mut(), &mut arg_tys);
         log::debug!("subst: {}", subst);
         if !subst.is_empty() {
             func_fqn.apply_subst(&subst);
@@ -632,7 +565,7 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 explicit_sign,
             } => match base {
                 IntegerBase::Decimal => {
-                    let size = lir::Size::bytes(size / 8);
+                    let size = lir::Size::bytes(size.unwrap_or_default() / 8);
                     lir::Value::new(if *signed {
                         let mut c = value.parse::<i64>()?;
                         if let Some(PrefixOp::Negative) = explicit_sign {
@@ -1191,7 +1124,7 @@ impl LirGen<GenResult> for Node<Expr> {
             }
             Expr::Call(call) => {
                 let callee_scheme = tcx.ty_of(call.callee.id);
-                let mut fn_ty = ctx.instantiate_scheme(tcx, callee_scheme.clone());
+                let mut fn_ty = tcx.instantiate_scheme(callee_scheme.clone());
                 log::debug!(
                     "call: callee id={:#x} function type = {}",
                     call.callee.id,
@@ -1201,7 +1134,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
                 let is_method_call = matches!(&call.callee.value, Expr::Dot(_));
                 let base = if let Expr::Dot(dot) = &call.callee.value {
-                    let self_ty = ctx.instantiate_scheme(tcx, tcx.ty_of(dot.lhs.id));
+                    let self_ty = tcx.instantiate_scheme(tcx.ty_of(dot.lhs.id));
                     arg_exprs.push((dot.lhs.as_ref(), self_ty));
                     Some(dot.rhs.path.clone())
                 } else {
@@ -1217,14 +1150,24 @@ impl LirGen<GenResult> for Node<Expr> {
                     .map(|(_, ty)| ty.clone())
                     .collect::<Vec<_>>();
                 let original_poly_ty = tcx.get_poly_ty(call.callee.id).cloned();
+                if let Some(original_poly_ty) = &original_poly_ty {
+                    log::debug!("[Call::lir_gen] original_poly_ty = {}", original_poly_ty);
+                } else {
+                    log::debug!("[Call::lir_gen] original_poly_ty is None");
+                }
                 let mut instantiated_poly_ty = original_poly_ty
                     .clone()
-                    .map(|ty| ctx.instantiate_scheme(tcx, ty));
-                let subst = ctx.instantiate_fn_with_args(
-                    &mut fn_ty,
-                    instantiated_poly_ty.as_mut(),
-                    &mut arg_tys,
-                );
+                    .map(|ty| tcx.instantiate_scheme(ty));
+                if let Some(instantiated_poly_ty) = &instantiated_poly_ty {
+                    log::debug!(
+                        "[Call::lir_gen] instantiated_poly_ty = {}",
+                        instantiated_poly_ty
+                    );
+                } else {
+                    log::debug!("[Call::lir_gen] instantiated_poly_ty is None");
+                }
+                let subst =
+                    fn_ty.instantiate_fn_with_args(instantiated_poly_ty.as_mut(), &mut arg_tys);
                 log::debug!(
                     "call: subst = {}, fn_ty after = {}, args={}",
                     subst,

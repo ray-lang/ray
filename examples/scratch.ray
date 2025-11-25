@@ -1,46 +1,30 @@
-//![no-core]
+// trait Int['a] {
+//     default(int)
+// }
 
-struct list['a] {
-    values: rawptr['a]
-    len: uint
-    capacity: uint
-}
+// impl Int[int] {}
+// impl Int[uint] {}
 
-trait Index['a, 'el, 'idx] {
-    fn get(self: *'a, idx: 'idx) -> 'el?
-}
+// struct A { b: B }
+// struct B {}
 
-trait Add['a, 'b, 'c] {
-    fn +(a: 'a, b: 'b) -> 'c
-}
+// trait Index['a, 'b, 'c] {
+//     fn get(self: 'a, idx: 'c) -> 'b?
+// }
 
-@intrinsic
-extern fn __ptr_add(ptr: rawptr['a], offset: uint) -> rawptr['a]
+// impl Index[A, B, uint] {
+//     fn get(self: A, idx: uint) -> B? => some(self.b)
+// }
 
-@intrinsic
-extern fn uint_add(lhs: uint, rhs: uint) -> uint
+// fn main() {
+//     a = A { b: B {} }
+//     b = a.get(0)
+// }
 
-impl Add[rawptr['a], uint, rawptr['a]] {
-    fn +(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_add(lhs, rhs)
-}
-
-impl Add[uint, uint, uint] {
-    fn +(lhs: uint, rhs: uint) -> uint => uint_add(lhs, rhs)
-}
-
-trait Deref['a, 'b] {
-    fn deref(self: 'a) -> 'b
-}
-
-@intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
-
-impl Deref[rawptr['a], 'a] {
-    fn deref(self: rawptr['a]) -> 'a => __deref_raw(self)
-}
-
-impl Index[list['a], 'a, uint] {
-    fn get(self: *list['a], idx: uint) -> 'a? {
-        ptr = self.values + idx
-        some(*ptr)
+fn main() {
+    a = [1, 2]
+    b = a.get(0)
+    if some(b) = b {
+        print(b)
     }
 }

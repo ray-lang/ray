@@ -58,7 +58,7 @@ impl NameContext {
             })
     }
 
-    pub fn builtin_trait(&self, name: &str) -> Path {
+    pub fn builtin_ty(&self, name: &str) -> Path {
         match &self.nametree().find_names(name, &[]).as_slice() {
             &[parts] => Path::from(parts),
             _ => Path::from(format!("core::{}", name)),

@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use ray_typing::{
-    TyCtx,
-    ty::{Ty, TyScheme},
-};
 use ray_shared::{
     pathlib::{FilePath, Path},
     span::{Source, Span, parsed::Parsed},
 };
 use ray_typing::top::Ty as _;
+use ray_typing::{
+    TyCtx,
+    ty::{Ty, TyScheme},
+};
 
 use crate::{
     ast::{
@@ -109,6 +109,7 @@ impl<'a> SymbolBuildContext<'a> {
             role: SymbolRole::Definition,
         };
 
+        log::debug!("[record definition] node_id={}, path={}", node_id, path);
         self.symbol_map.insert(node_id, target.clone());
         self.definitions.insert(path.clone(), target);
     }
@@ -191,9 +192,23 @@ impl<'a> SymbolBuildContext<'a> {
     }
 
     fn record_call(&mut self, call: &Call) {
-        let callee_id = call.call_resolution_id();
-        if let Some(path) = self.tcx.call_resolution(callee_id) {
-            self.record_reference(callee_id, &path);
+        let call_id = call.call_resolution_id();
+        if let Some(trait_path) = self.tcx.call_resolution(call_id) {
+            // Always record a reference to the (possibly polymorphic) trait method.
+            self.record_reference(call_id, &trait_path);
+
+            // Also record a reference to the fully-instantiated impl FQN by
+            // mirroring the method resolution logic used in LIR generation.
+            let callee_expr_id = call.callee.id;
+            let arg_ids: Vec<u64> = call.args.items.iter().map(|arg| arg.id).collect();
+            let impl_path = self.tcx.resolve_method_impl_fqn(
+                trait_path.clone(),
+                call_id,
+                callee_expr_id,
+                &arg_ids,
+            );
+
+            self.record_reference(call_id, &impl_path);
         }
     }
 

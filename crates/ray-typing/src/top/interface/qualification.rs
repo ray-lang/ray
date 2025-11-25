@@ -126,9 +126,9 @@ where
         I: Clone + Debug + Display + TypeConstraintInfo<I, T, V>,
     {
         self.context_reduction();
+        self.improve_qualifiers_by_recv();
         self.improve_qualifiers_by_instance();
         self.improve_qualifiers_by_receiver();
-        self.improve_qualifiers_by_recv();
     }
 
     fn defaults(&mut self)
