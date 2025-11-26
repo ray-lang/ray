@@ -1081,8 +1081,6 @@ impl Ty {
             "string" => Ty::string(),
             "char" => Ty::char(),
             "bool" => Ty::bool(),
-            "list" => Ty::list(Ty::Never),
-            "range" => Ty::range(Ty::Never),
             "rawptr" => Ty::raw_ptr(Ty::Never),
             _ => return None,
         })
@@ -1442,6 +1440,22 @@ impl Ty {
         Ty::Projection(Box::new(Ty::con("nilable")), vec![t])
     }
 
+    /// If this type is `nilable['a]`, return the payload type `'a`.
+    pub fn nilable_payload(&self) -> Option<&Ty> {
+        match self {
+            Ty::Projection(head, params) => {
+                if let Ty::Const(name) = head.as_ref()
+                    && name == "nilable"
+                {
+                    params.get(0)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// S <: T => S is a subtype of T
     pub fn is_subtype(&self, t: &Ty) -> bool {
         match (self, t) {
@@ -1531,7 +1545,7 @@ impl Ty {
     }
 
     pub fn nominal_kind(&self, tcx: &TyCtx) -> Option<NominalKind> {
-        let fqn = self.get_path();
+        let fqn = self.get_path().with_names_only();
         tcx.get_struct_ty(&fqn).map(|s| s.kind)
     }
 

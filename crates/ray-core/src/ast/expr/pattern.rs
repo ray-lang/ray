@@ -2,22 +2,23 @@ use std::{convert::TryFrom, ops::Deref};
 
 use ray_shared::{pathlib::Path, utils::join};
 
-use ray_shared::span::Span;
 use crate::{
     ast::{self, Missing, Node, PrefixOp, Tuple},
     errors::{RayError, RayErrorKind},
 };
+use ray_shared::span::Span;
 
 use super::{Expr, Name, Sequence};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pattern {
-    Name(Name),
-    Sequence(Vec<Node<Pattern>>),
-    Tuple(Vec<Node<Pattern>>),
     Deref(Node<Name>),
     Dot(Box<Node<Pattern>>, Node<Name>),
     Missing(Missing),
+    Name(Name),
+    Sequence(Vec<Node<Pattern>>),
+    Some(Box<Node<Pattern>>),
+    Tuple(Vec<Node<Pattern>>),
 }
 
 impl Into<Expr> for Pattern {
@@ -53,6 +54,10 @@ impl Into<Expr> for Pattern {
                 },
             }),
             Pattern::Missing(missing) => Expr::Missing(missing),
+            Pattern::Some(inner) => {
+                let expr = inner.take_map(Pattern::into);
+                Expr::Some(Box::new(expr))
+            }
         }
     }
 }
@@ -79,6 +84,10 @@ impl TryFrom<Expr> for Pattern {
             Expr::Dot(dot) => {
                 let lhs = dot.lhs.try_take_map(|lhs| Pattern::try_from(lhs))?;
                 Ok(Pattern::Dot(Box::new(lhs), dot.rhs))
+            }
+            Expr::Some(inner) => {
+                let pat = Pattern::try_from(inner.value)?;
+                Ok(Pattern::Some(Box::new(Node::with_id(inner.id, pat))))
             }
             _ => Err(RayError {
                 kind: RayErrorKind::Parse,
@@ -119,6 +128,7 @@ impl std::fmt::Display for Pattern {
                 Pattern::Tuple(seq) => format!("(tuple ({}))", join(seq, ", ")),
                 Pattern::Deref(n) => format!("(deref {})", n),
                 Pattern::Dot(lhs, name) => format!("(dot {}.{})", lhs, name),
+                Pattern::Some(pat) => format!("(some {})", pat),
                 Pattern::Missing(m) => format!("(missing {})", m),
             }
         )
@@ -138,6 +148,7 @@ impl Pattern {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&n.path),
+            Pattern::Some(inner) => inner.value.path(),
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -147,6 +158,7 @@ impl Pattern {
     pub fn path_mut(&mut self) -> Option<&mut Path> {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&mut n.path),
+            Pattern::Some(inner) => inner.value.path_mut(),
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -156,6 +168,7 @@ impl Pattern {
     pub fn get_name(&self) -> Option<String> {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(n.path.to_string()),
+            Pattern::Some(inner) => inner.value.get_name(),
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -173,6 +186,7 @@ impl Node<Pattern> {
                 .into_iter()
                 .chain(std::iter::once(Node::with_id(n.id, (&n.path, true))))
                 .collect(),
+            Pattern::Some(inner) => inner.paths(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
                 ps.iter().map(|p| p.paths()).flatten().collect()
             }
@@ -189,6 +203,7 @@ impl Node<Pattern> {
                 .into_iter()
                 .chain(std::iter::once(Node::with_id(n.id, (&mut n.path, true))))
                 .collect(),
+            Pattern::Some(inner) => inner.paths_mut(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
                 ps.iter_mut().map(|p| p.paths_mut()).flatten().collect()
             }

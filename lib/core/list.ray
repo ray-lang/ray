@@ -6,7 +6,7 @@ struct list['a] {
 
 impl Index[list['a], 'a, uint] {
     fn get(self: *list['a], idx: uint) -> 'a? {
-        if idx < self.len {
+        if idx >= self.len {
             return nil
         }
 

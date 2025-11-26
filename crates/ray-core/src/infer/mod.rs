@@ -60,9 +60,10 @@ impl<'a> InferSystem<'a> {
             srcmap: &srcmap,
             tcx: self.tcx,
             ncx: self.ncx,
+            defs: defs.clone(),
             new_defs: &mut new_defs,
             bound_names: &mut BoundNames::new(),
-            defs: defs.clone(),
+            current_ret: None,
         };
         let (_, _, c) = v.collect_constraints(&mut ctx);
         log::debug!("constraint tree: {:?}", c);
@@ -284,20 +285,40 @@ impl<'a> InferSystem<'a> {
                         let mut orig_trait_scheme = trait_scheme.clone();
                         orig_trait_scheme.apply_subst(&var_subst);
 
-                        let mut args = Vec::new();
-                        args.push(impl_ty.base_ty.clone());
-                        args.extend(impl_ty.ty_args.clone());
-                        let user_trait_scheme = orig_trait_scheme.instantiate_with_types(&args);
+                        // Instantiate the trait method scheme by mapping the trait
+                        // head type parameters to the impl's base type and type
+                        // arguments *by name*, not by the (sorted) quantifier order.
+                        //
+                        // This avoids relying on `ForAll::vars` ordering, which is
+                        // canonicalized by `generalize_in_place` and may not match
+                        // the trait head's parameter order.
+                        let mut head_trait_ty = trait_ty.ty.clone();
+                        head_trait_ty.apply_subst(&var_subst);
+                        let head_params = head_trait_ty.get_ty_params();
+
+                        let mut arg_iter =
+                            std::iter::once(&impl_ty.base_ty).chain(impl_ty.ty_args.iter());
+                        let mut head_subst: Subst<_, _> = Subst::new();
+                        for param_ty in head_params {
+                            if let Ty::Var(tv) = param_ty {
+                                if let Some(arg_ty) = arg_iter.next() {
+                                    head_subst.insert(tv.clone(), arg_ty.clone());
+                                }
+                            }
+                        }
+
+                        let mut user_trait_scheme = orig_trait_scheme.clone();
+                        user_trait_scheme.apply_subst_all(&head_subst);
 
                         let mut user_impl_scheme = impl_scheme.clone();
                         user_impl_scheme.apply_subst(&var_subst);
 
-                        match mgu(&user_trait_scheme.ty, user_impl_scheme.mono()) {
+                        match mgu(user_trait_scheme.mono(), user_impl_scheme.mono()) {
                             Ok((_, subst)) => {
                                 // successful unification
                                 log::debug!(
                                     "[post_infer_checks] unified {} and {}: subst={}",
-                                    &user_trait_scheme.ty,
+                                    user_trait_scheme.mono(),
                                     user_impl_scheme.mono(),
                                     subst
                                 );
@@ -305,7 +326,7 @@ impl<'a> InferSystem<'a> {
                             Err(err) => {
                                 log::debug!(
                                     "[post_infer_checks] failed to unify {} and {}: error={}",
-                                    &user_trait_scheme.ty,
+                                    user_trait_scheme.mono(),
                                     user_impl_scheme.mono(),
                                     err
                                 );
@@ -313,7 +334,7 @@ impl<'a> InferSystem<'a> {
                                     kind: TypeErrorKind::MismatchImpl(
                                         field.kind.to_string(),
                                         field.path.to_short_name(),
-                                        user_trait_scheme.ty().clone(),
+                                        user_trait_scheme.mono().clone(),
                                         user_impl_scheme.mono().clone(),
                                     ),
                                     src: vec![field.src.clone()],

@@ -25,6 +25,8 @@ pub struct CollectCtx<'a> {
     pub defs: SchemeEnv,
     pub new_defs: &'a mut SchemeEnv,
     pub bound_names: &'a mut BoundNames,
+    // Optional canonical return type for the current function being collected.
+    pub current_ret: Option<Ty>,
 }
 
 impl CollectCtx<'_> {
@@ -40,6 +42,7 @@ impl CollectCtx<'_> {
             defs: self.defs.clone(),
             new_defs: self.new_defs,
             bound_names: self.bound_names,
+            current_ret: self.current_ret.clone(),
         };
 
         f(&mut ctx)

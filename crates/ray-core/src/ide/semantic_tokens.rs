@@ -1,8 +1,8 @@
 use ray_shared::pathlib::FilePath;
 use ray_typing::top::Ty as _;
 
-use ray_typing::ty::{Ty, TyScheme};
 use ray_shared::span::{Pos, Span, parsed::Parsed};
+use ray_typing::ty::{Ty, TyScheme};
 
 use crate::{
     ast::{
@@ -338,6 +338,7 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.visit_pattern(pat);
                 }
             }
+            Pattern::Some(pattern) => self.visit_pattern(pattern),
             Pattern::Missing(_) => {}
         }
     }

@@ -1,30 +1,10 @@
-// trait Int['a] {
-//     default(int)
-// }
-
-// impl Int[int] {}
-// impl Int[uint] {}
-
-// struct A { b: B }
-// struct B {}
-
-// trait Index['a, 'b, 'c] {
-//     fn get(self: 'a, idx: 'c) -> 'b?
-// }
-
-// impl Index[A, B, uint] {
-//     fn get(self: A, idx: uint) -> B? => some(self.b)
-// }
-
-// fn main() {
-//     a = A { b: B {} }
-//     b = a.get(0)
-// }
-
 fn main() {
     a = [1, 2]
-    b = a.get(0)
-    if some(b) = b {
-        print(b)
+    b = a.get(2)
+    if some(x) = b {
+        print(x)
+    } else {
+        print("none")
     }
+    ()
 }

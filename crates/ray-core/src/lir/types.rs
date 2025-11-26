@@ -915,7 +915,23 @@ impl SizeOf for Ty {
                 Size::bytes(tag_size) + max_size
             }
             Ty::Func(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => Size::ptr(),
-            Ty::Projection(ty, _) => ty.size_of(),
+            Ty::Projection(ty, params) => {
+                // Special-case `nilable['a]` to have an explicit Option-like
+                // layout: a 1-byte discriminant plus the payload `'a`.
+                if let Ty::Const(name) = ty.as_ref() {
+                    if name == "nilable" {
+                        let payload_size = params
+                            .get(0)
+                            .map(|t| t.size_of())
+                            .unwrap_or_else(Size::zero);
+                        return Size::bytes(1) + payload_size;
+                    }
+                }
+
+                // For all other projections, fall back to the underlying type's
+                // size (this matches the previous behavior).
+                ty.size_of()
+            }
             Ty::Const(n) => match n.as_str() {
                 "int" | "uint" => Size::ptr(),
                 "i8" | "u8" | "bool" => Size::bytes(1),
@@ -1149,7 +1165,7 @@ impl Program {
     }
 
     pub fn user_main_path(&self) -> Path {
-        self.module_path.append("main").append_func_type("<():()>")
+        self.module_path.append("main")
     }
 }
 

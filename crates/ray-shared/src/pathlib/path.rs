@@ -97,6 +97,25 @@ impl Path {
         self.name().unwrap().as_str() == "self"
     }
 
+    pub fn starts_with(&self, other: &Path) -> bool {
+        if other.len() > self.len() {
+            return false;
+        }
+
+        if other.len() == 0 {
+            return true;
+        }
+
+        let mut i = 0;
+        while i < self.len() && i < other.len() {
+            if &self.parts[i] != &other.parts[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
     pub fn join<S: AsRef<str>>(&self, sep: S) -> String {
         self.parts
             .iter()
@@ -478,6 +497,12 @@ impl PathParser {
     }
 
     fn parse(mut self, s: String) -> Path {
+        if s.is_empty() {
+            return Path {
+                parts: VecDeque::new(),
+            };
+        }
+
         let mut chars = s.chars();
         loop {
             match chars.next() {
@@ -554,12 +579,39 @@ macro_rules! path {
 }
 
 #[cfg(test)]
-mod test_path {
+mod tests {
     use super::Path;
 
     #[test]
     fn test_canonicalize() {
         let path = path!("a", "b", "super", "c");
         assert_eq!(path.canonicalize(), path!("a", "c"));
+    }
+
+    #[test]
+    fn test_starts_with() {
+        let p1 = Path::from("a::b::c");
+        let p2 = Path::from("a::b");
+        assert!(p1.starts_with(&p2), "{} and {}", p1, p2);
+
+        let p1 = Path::from("a");
+        let p2 = Path::from("a");
+        assert!(p1.starts_with(&p2), "{} and {}", p1, p2);
+
+        let p1 = Path::from("a::b");
+        let p2 = Path::from("a::b");
+        assert!(p1.starts_with(&p2), "{} and {}", p1, p2);
+
+        let p1 = Path::from("a");
+        let p2 = Path::from("a::b");
+        assert!(!p1.starts_with(&p2), "{} and {}", p1, p2);
+
+        let p1 = Path::from("a::b");
+        let p2 = Path::from("");
+        assert!(p1.starts_with(&p2), "{} and {}", p1, p2);
+
+        let p1 = Path::from("");
+        let p2 = Path::from("a::b");
+        assert!(!p1.starts_with(&p2), "{} and {}", p1, p2);
     }
 }

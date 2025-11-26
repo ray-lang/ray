@@ -893,6 +893,7 @@ impl LowerAST for ast::Assign {
                 ast::Pattern::Sequence(_)
                 | ast::Pattern::Tuple(_)
                 | ast::Pattern::Deref(_)
+                | ast::Pattern::Some(_)
                 | ast::Pattern::Missing(_) => Err(RayError {
                     msg: str!("cannot use expression as l-value for re-assignment"),
                     src: vec![lhs_src],
@@ -1144,6 +1145,10 @@ impl LowerAST for Sourced<'_, ast::Pattern> {
                 Sourced(&mut lhs.as_mut().value, &lhs_src).lower(ctx)?;
                 let rhs_src = ctx.srcmap.get(rhs);
                 Sourced(&mut rhs.value, &rhs_src).lower(ctx)?;
+            }
+            ast::Pattern::Some(inner) => {
+                let inner_src = ctx.srcmap.get(inner.as_ref());
+                Sourced(&mut inner.as_mut().value, &inner_src).lower(ctx)?;
             }
             ast::Pattern::Missing(_) => todo!(),
             ast::Pattern::Sequence(_) => todo!(),

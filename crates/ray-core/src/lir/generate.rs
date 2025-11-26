@@ -20,6 +20,14 @@ use crate::{
 
 use super::START_FUNCTION;
 
+fn extract_some_binding_name<'a>(pat: &'a Pattern) -> Option<&'a ast::Name> {
+    match pat {
+        Pattern::Name(n) => Some(n),
+        Pattern::Deref(Node { value: n, .. }) => Some(n),
+        _ => None,
+    }
+}
+
 impl lir::Program {
     pub fn generate(
         module: &Module<(), Decl>,
@@ -62,15 +70,22 @@ impl lir::Program {
                 ctx.new_func(module_main_fn);
             }
 
-            let has_user_main = {
+            let user_main_resolved_path = {
                 let prog_ref = prog.borrow();
-                prog_ref.funcs.iter().any(|f| f.name == user_main_path)
+                prog_ref
+                    .funcs
+                    .iter()
+                    .find_map(|f| f.name.starts_with(&user_main_path).then(|| f.name.clone()))
             };
 
             if !module.is_lib {
                 let mut main_symbols = lir::SymbolSet::new();
                 log::debug!("module main path: {}", module_main_path);
-                log::debug!("user main path: {}", user_main_path);
+                if let Some(user_main_resolved_path) = &user_main_resolved_path {
+                    log::debug!("user main path (resolved): {}", user_main_resolved_path);
+                } else {
+                    log::debug!("user main path (resolved): None");
+                }
 
                 ctx.with_builder(lir::Builder::new());
                 ctx.with_new_block(|ctx| {
@@ -96,7 +111,7 @@ impl lir::Program {
                         );
                     }
 
-                    if has_user_main {
+                    if let Some(user_main_path) = user_main_resolved_path {
                         log::debug!("calling user main function: {}", user_main_path);
                         main_symbols.insert(user_main_path.clone());
                         ctx.push(
@@ -167,7 +182,7 @@ impl lir::Program {
             let f = &self.funcs[i];
             if f.name == START_FUNCTION {
                 self.start_idx = i as i64;
-            } else if f.name == user_main_path {
+            } else if f.name.starts_with(&user_main_path) {
                 self.user_main_idx = i as i64;
             } else if f.name == module_main_path {
                 self.module_main_idx = i as i64;
@@ -529,6 +544,7 @@ impl LirGen<GenResult> for (&Pattern, &TyScheme) {
             }
             Pattern::Missing(_) => todo!(),
             Pattern::Sequence(_) => todo!(),
+            Pattern::Some(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
         }
     }
@@ -555,7 +571,7 @@ impl LirGen<GenResult> for (&Path, &TyScheme) {
 
 impl LirGen<GenResult> for (&Literal, &TyScheme) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>, _: &TyCtx) -> RayResult<GenResult> {
-        let &(lit, _) = self;
+        let &(lit, ty_scheme) = self;
         Ok(match lit {
             Literal::Integer {
                 value,
@@ -652,7 +668,47 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
             Literal::Bool(b) => lir::Atom::BoolConst(*b).into(),
             Literal::UnicodeEscSeq(_) => todo!(),
             Literal::Unit => lir::Value::Empty,
-            Literal::Nil => lir::Atom::uptr(0).into(),
+            Literal::Nil => {
+                // If this `nil` is used in a `nilable['a]` context, construct
+                // an Option-like aggregate `{ is_some = false, payload: 'a }`.
+                let ty = ty_scheme.mono();
+                if let Some(payload_ty) = ty.nilable_payload() {
+                    let loc = ctx.local(ty_scheme.clone());
+
+                    ctx.push(lir::Inst::StructInit(
+                        lir::Variable::Local(loc),
+                        StructTy {
+                            kind: NominalKind::Struct,
+                            path: "nilable".into(),
+                            ty: ty_scheme.clone(),
+                            fields: vec![
+                                ("is_some".to_string(), Ty::bool().into()),
+                                (
+                                    "payload".to_string(),
+                                    TyScheme::from_mono(payload_ty.clone()),
+                                ),
+                            ],
+                        },
+                    ));
+
+                    // is_some = false
+                    let is_some_loc = ctx.local(Ty::bool().into());
+                    ctx.push(lir::Inst::SetLocal(
+                        is_some_loc.into(),
+                        lir::Atom::BoolConst(false).into(),
+                    ));
+                    ctx.push(lir::SetField::new(
+                        lir::Variable::Local(loc),
+                        str!("is_some"),
+                        lir::Variable::Local(is_some_loc).into(),
+                    ));
+
+                    lir::Variable::Local(loc).into()
+                } else {
+                    // Fallback: treat as a raw null pointer.
+                    lir::Atom::uptr(0).into()
+                }
+            }
         })
     }
 }
@@ -928,7 +984,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 // allocate memory for the values
                 let el_ty = ty.mono().get_ty_param_at(0).unwrap();
                 let el_size = el_ty.size_of();
-                let values_loc = ctx.local(el_ty.clone().into());
+                let values_loc = ctx.local(Ty::refty(el_ty.clone()).into());
                 let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));
                 ctx.push(lir::Inst::SetLocal(values_loc.into(), values_ptr.into()));
 
@@ -956,7 +1012,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         ty: Ty::list(el_ty.clone()).into(),
                         fields: vec![
                             ("values".to_string(), Ty::refty(el_ty.clone()).into()),
-                            ("length".to_string(), Ty::uint().into()),
+                            ("len".to_string(), Ty::uint().into()),
                             ("capacity".to_string(), Ty::uint().into()),
                         ],
                     },
@@ -972,7 +1028,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 // store the length
                 ctx.push(lir::SetField::new(
                     lir::Variable::Local(list_loc),
-                    str!("length"),
+                    str!("len"),
                     lir::Atom::uptr(item_count as u64).into(),
                 ));
 
@@ -1414,9 +1470,56 @@ impl LirGen<GenResult> for Node<Expr> {
             Expr::If(if_ex) => {
                 log::debug!("type of: {}", ty);
 
+                // Optional binding for `if some(name) = expr { ... }`:
+                // we record the payload local here so we can bind the inner
+                // name in the then-branch.
+                let mut some_binding: Option<(String, usize)> = None;
+
                 let (cond_label, cond_loc) = ctx.with_new_block(|ctx| {
                     ctx.block().markers_mut().push(lir::ControlMarker::If);
-                    let cond_val = if_ex.cond.lir_gen(ctx, tcx)?;
+                    // Special-case `if some(pat) = expr { ... }` by lowering
+                    // the condition to a check of the `is_some` field on the
+                    // `nilable['a]` value produced by `expr`, and, for the
+                    // simple `some(name)` case, binding `name` to the payload.
+                    let cond_val = match &if_ex.cond.value {
+                        Expr::Assign(assign) if matches!(assign.lhs.value, Pattern::Some(_)) => {
+                            let rhs_ty = ctx.ty_of(tcx, assign.rhs.id);
+                            let rhs_val = assign.rhs.lir_gen(ctx, tcx)?;
+                            let rhs_loc = ctx.get_or_set_local(rhs_val, rhs_ty.clone()).unwrap();
+
+                            if let Pattern::Some(inner_pat) = &assign.lhs.value {
+                                if let Some(name) = extract_some_binding_name(&inner_pat.value) {
+                                    // The RHS has type `nilable['a]`; extract
+                                    // the payload type from it directly.
+                                    let payload_mono = rhs_ty
+                                        .mono()
+                                        .nilable_payload()
+                                        .cloned()
+                                        .unwrap_or(Ty::Never);
+                                    let payload_scheme = TyScheme::from_mono(payload_mono);
+
+                                    let payload_val = lir::GetField {
+                                        src: lir::Variable::Local(rhs_loc),
+                                        field: str!("payload"),
+                                    }
+                                    .into();
+
+                                    if let Some(payload_loc) =
+                                        ctx.get_or_set_local(payload_val, payload_scheme)
+                                    {
+                                        some_binding = Some((name.to_string(), payload_loc));
+                                    }
+                                }
+                            }
+
+                            lir::GetField {
+                                src: lir::Variable::Local(rhs_loc),
+                                field: str!("is_some"),
+                            }
+                            .into()
+                        }
+                        _ => if_ex.cond.lir_gen(ctx, tcx)?,
+                    };
                     RayResult::Ok(ctx.get_or_set_local(cond_val, Ty::bool().into()).unwrap())
                 });
 
@@ -1424,10 +1527,17 @@ impl LirGen<GenResult> for Node<Expr> {
                 ctx.goto(cond_label);
 
                 let then_ty = ctx.ty_of(tcx, if_ex.then.id);
-                let (then_label, then_val) =
-                    ctx.with_new_block(|ctx| RayResult::Ok(if_ex.then.lir_gen(ctx, tcx)?));
+                let (then_label, then_val) = ctx.with_new_block(|ctx| {
+                    // Install the binding for `some(name)` in the then-branch
+                    // so that references to `name` see the payload local.
+                    if let Some((ref name, payload_loc)) = some_binding {
+                        ctx.set_var(name.clone(), payload_loc);
+                    }
+                    RayResult::Ok(if_ex.then.lir_gen(ctx, tcx)?)
+                });
 
                 let then_val = then_val?;
+                let then_has_value = !matches!(then_val, lir::Value::Empty);
                 let (else_label, else_val) = ctx.with_new_block(|ctx| {
                     RayResult::Ok(if let Some(else_ex) = if_ex.els.as_deref() {
                         // let else_ty = tcx.ty_of(else_ex.id);
@@ -1440,7 +1550,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 });
 
                 // create a local for the result of the if expression
-                let if_loc = if !then_ty.is_unit() {
+                let if_loc = if !then_ty.is_unit() && then_has_value {
                     let if_loc = ctx.local(ty.clone());
                     ctx.with_block(then_label, |ctx| {
                         ctx.push(lir::Inst::SetLocal(if_loc.into(), then_val));
@@ -1454,11 +1564,20 @@ impl LirGen<GenResult> for Node<Expr> {
 
                     Some(if_loc)
                 } else {
+                    // Statement `if`: emit side-effecting instructions from both
+                    // branches, but do not produce a value.
                     ctx.with_block(then_label, |ctx| {
                         if let Some(i) = then_val.to_inst() {
                             ctx.push(i);
                         }
                     });
+                    if let Some(ev) = else_val? {
+                        ctx.with_block(else_label, |ctx| {
+                            if let Some(i) = ev.to_inst() {
+                                ctx.push(i);
+                            }
+                        });
+                    }
                     None
                 };
 
@@ -1536,7 +1655,49 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 lir::Value::Empty
             }
-            Expr::Some(inner) => inner.lir_gen(ctx, tcx)?,
+            Expr::Some(inner) => {
+                // Construct a `nilable['a]` value as an Option-like aggregate:
+                // `{ is_some: bool, payload: 'a }`
+                let inner_ty = ctx.ty_of(tcx, inner.id);
+                let loc = ctx.local(ty.clone());
+
+                ctx.push(lir::Inst::StructInit(
+                    lir::Variable::Local(loc),
+                    StructTy {
+                        kind: NominalKind::Struct,
+                        path: "nilable".into(),
+                        ty: ty.clone(),
+                        fields: vec![
+                            ("is_some".to_string(), Ty::bool().into()),
+                            ("payload".to_string(), inner_ty.clone()),
+                        ],
+                    },
+                ));
+
+                // store is_some = true
+                let is_some_loc = ctx.local(Ty::bool().into());
+                ctx.push(lir::Inst::SetLocal(
+                    is_some_loc.into(),
+                    lir::Atom::BoolConst(true).into(),
+                ));
+                ctx.push(lir::SetField::new(
+                    lir::Variable::Local(loc),
+                    str!("is_some"),
+                    lir::Variable::Local(is_some_loc).into(),
+                ));
+
+                // store the payload
+                let inner_val = inner.lir_gen(ctx, tcx)?;
+                if let Some(inner_loc) = ctx.get_or_set_local(inner_val, inner_ty) {
+                    ctx.push(lir::SetField::new(
+                        lir::Variable::Local(loc),
+                        str!("payload"),
+                        lir::Variable::Local(inner_loc).into(),
+                    ));
+                }
+
+                lir::Variable::Local(loc).into()
+            }
             Expr::Missing(_) => todo!("lir_gen: Expr::Missing: {}", self.value),
         })
     }

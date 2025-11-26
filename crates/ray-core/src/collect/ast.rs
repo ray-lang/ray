@@ -26,6 +26,11 @@ impl CollectPatterns for Node<Pattern> {
     fn collect_patterns(&self, ctx: &mut CollectCtx) -> (Ty, TyEnv, ConstraintTree) {
         match &self.value {
             Pattern::Name(n) => n.path.collect_patterns(ctx),
+            Pattern::Some(inner) => {
+                let (ty, env, ctree) = inner.collect_patterns(ctx);
+                ctx.tcx.set_ty(self.id, ty.clone());
+                (ty, env, ctree)
+            }
             Pattern::Sequence(_) => todo!("collect patterns: {}", self),
             Pattern::Tuple(_) => todo!("collect patterns: {}", self),
             Pattern::Dot(lhs_pat, field_name) => {
@@ -322,6 +327,10 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
             let lhs_ct = NodeTree::new(param_cts);
 
             // RHS:⟨M + ftv(Cl)⟩,A,TC2 ⊢rhs rhs : τ
+            // Canonical return type for this function
+            let ret_tv = ctx.tcx.tf().next();
+            let ret_ty = Ty::Var(ret_tv.clone());
+
             let mut rhs_ctx = CollectCtx {
                 mono_tys: ctx.mono_tys,
                 srcmap: ctx.srcmap,
@@ -330,6 +339,7 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
                 defs: ctx.defs.clone(),
                 new_defs: ctx.new_defs,
                 bound_names: ctx.bound_names,
+                current_ret: Some(ret_ty.clone()),
             };
 
             let (body_ty, aset, body_ct) = rhs_ctx
@@ -365,16 +375,11 @@ impl CollectDeclarations for (Node<&ast::Func>, &Source, Option<&Ty>) {
             let fb_aset = aset - lhs_env.keys();
             let fb_ct = NodeTree::new(vec![lhs_ct, rhs_ct]).spread_list(cl);
 
-            let mut mk_eq_cs = |ty: Ty| {
-                let tv = ctx.tcx.tf().next();
-                let c = EqConstraint::new(ty, Ty::Var(tv.clone()));
-                (tv, c)
-            };
-            // let (param_tvs, param_cs): (Vec<_>, Vec<_>) =
-            //     param_tys.into_iter().map(&mut mk_eq_cs).unzip();
-            let (ret_tv, ret_cs) = mk_eq_cs(body_ty.clone());
+            // Constrain the canonical return type to the analyzed body type.
+            let mut ret_cs = EqConstraint::new(body_ty.clone(), ret_ty.clone());
+            ret_cs.info_mut().with_src(src.clone());
 
-            let fn_ty = Ty::Func(param_tys, Box::new(Ty::Var(ret_tv)));
+            let fn_ty = Ty::Func(param_tys, Box::new(ret_ty.clone()));
             let mut eq = EqConstraint::new(Ty::Var(fn_tv.clone()), fn_ty);
             eq.info_mut().with_src(src.clone());
 
@@ -536,13 +541,19 @@ impl CollectConstraints for Node<Expr> {
             Expr::Return(ret) => {
                 if let Some(ex) = ret {
                     let ex_src = &ctx.srcmap.get(ex);
-                    let (_, aset, ct) = (ex, ex_src).collect_constraints(ctx);
-                    // `return` does not produce a value at this expression position;
-                    // its own type is the bottom type `never`. We still collect and
-                    // propagate constraints for the returned expression.
-                    (Ty::Never, aset, ct)
+                    let (ex_ty, aset, ct) = (ex, ex_src).collect_constraints(ctx);
+                    // If we are inside a function, constrain the returned
+                    // expression type to the function's canonical return type.
+                    if let Some(ret_ty) = ctx.current_ret.clone() {
+                        let mut c = EqConstraint::new(ex_ty.clone(), ret_ty.clone());
+                        c.info_mut().with_src(ex_src.clone());
+                        let ct = AttachTree::new(c, ct);
+                        (ex_ty, aset, ct)
+                    } else {
+                        (ex_ty, aset, ct)
+                    }
                 } else {
-                    (Ty::Never, AssumptionSet::new(), ConstraintTree::empty())
+                    (Ty::unit(), AssumptionSet::new(), ConstraintTree::empty())
                 }
             }
             Expr::Sequence(_) => todo!(),
@@ -981,15 +992,56 @@ impl CollectConstraints for (&If, &Source) {
         let ty = Ty::Var(ctx.tcx.tf().with_scope(&src.path));
         log::debug!("if ty = {}", ty);
 
-        let (cond_ty, cond_aset, cond_ct) = if_ex.cond.collect_constraints(ctx);
+        // Special handling for `if some(pat) = expr { ... }`:
+        // treat the condition as a pattern match on a `nilable` value, binding
+        // the inner pattern only in the then-branch.
+        let (cond_ty, cond_aset, cond_ct, then_env) =
+            if let Expr::Assign(assign) = &if_ex.cond.value {
+                if let Pattern::Some(_) = assign.lhs.value {
+                    let cond_src = ctx.srcmap.get(&if_ex.cond);
+
+                    // Collect pattern bindings and constraints for the LHS pattern.
+                    let (inner_ty, env, pat_ct) = assign.lhs.collect_patterns(ctx);
+
+                    // Collect constraints for the RHS expression.
+                    let (rhs_ty, rhs_aset, rhs_ct) = assign.rhs.as_ref().collect_constraints(ctx);
+
+                    // Constrain the RHS to be `nilable[inner_ty]`.
+                    let mut eq_nil = EqConstraint::new(rhs_ty, Ty::nilable(inner_ty.clone()));
+                    eq_nil.info_mut().with_src(cond_src.clone());
+
+                    let cond_ct = AttachTree::new(eq_nil, NodeTree::new(vec![pat_ct, rhs_ct]));
+
+                    // The overall condition has boolean type.
+                    let cond_ty = Ty::bool();
+                    ctx.tcx.set_ty(if_ex.cond.id, cond_ty.clone());
+
+                    (cond_ty, rhs_aset, cond_ct, Some(env))
+                } else {
+                    // Fallback to the regular boolean condition logic.
+                    let (cond_ty, cond_aset, cond_ct) = if_ex.cond.collect_constraints(ctx);
+                    (cond_ty, cond_aset, cond_ct, None)
+                }
+            } else {
+                let (cond_ty, cond_aset, cond_ct) = if_ex.cond.collect_constraints(ctx);
+                (cond_ty, cond_aset, cond_ct, None)
+            };
+
         aset.extend(cond_aset);
 
         let cond_src = ctx.srcmap.get(&if_ex.cond);
         let mut eq = EqConstraint::new(cond_ty, Ty::bool());
         eq.info_mut().with_src(cond_src);
         cts.push(ParentAttachTree::new(eq, cond_ct));
-        let (then_ty, then_aset, then_ct) =
-            ctx.with_frame(|ctx| if_ex.then.collect_constraints(ctx));
+
+        let (then_ty, then_aset, then_ct) = ctx.with_frame(|ctx| {
+            if let Some(env) = then_env.as_ref() {
+                for (path, ty) in env.iter() {
+                    ctx.bound_names.insert(path.clone(), ty.clone());
+                }
+            }
+            if_ex.then.collect_constraints(ctx)
+        });
         aset.extend(then_aset);
         log::debug!("then_ty = {}", then_ty);
 
@@ -1008,7 +1060,9 @@ impl CollectConstraints for (&If, &Source) {
             else_eq.info_mut().with_src(else_src);
             cts.push(ParentAttachTree::new(else_eq, else_ct));
         } else {
-            let mut then_eq = EqConstraint::new(Ty::nilable(then_ty), ty.clone());
+            // Without an else-branch, treat the `if` expression as having the
+            // same type as its then-branch (statement-like `if`).
+            let mut then_eq = EqConstraint::new(then_ty, ty.clone());
             then_eq.info_mut().with_src(then_src);
             cts.push(ParentAttachTree::new(then_eq, then_ct));
         }
@@ -1038,7 +1092,10 @@ impl CollectConstraints for (&List, &Source) {
             aset.extend(item_aset);
         }
 
-        let mut c = EqConstraint::new(ty.clone(), Ty::list(el_ty));
+        let norm_list_fqn = ctx.ncx.builtin_ty("list").with_names_only();
+        log::debug!("[collect_contraints] norm_list_fqn = {}", norm_list_fqn);
+        let list_ty = Ty::proj(Ty::con(norm_list_fqn), vec![el_ty]);
+        let mut c = EqConstraint::new(ty.clone(), list_ty);
         c.info_mut().with_src(src.clone());
         let ct = AttachTree::new(c, NodeTree::new(cts));
         (ty, aset, ct)
@@ -1287,6 +1344,14 @@ impl CollectConstraints for (&Pattern, &Source) {
                 (inner_ty, aset, ctree)
             }
             Pattern::Dot(lhs_pat, field_name) => collect_pattern_dot(lhs_pat, field_name, src, ctx),
+            Pattern::Some(inner) => {
+                // `some(pat)` as a pattern doesn’t itself introduce a new
+                // type; we treat it as having the same type as its inner
+                // pattern, and rely on the surrounding context (e.g., an
+                // assignment or if-condition) to constrain the matched
+                // expression to `nilable[inner_ty]`.
+                (&inner.value, src).collect_constraints(ctx)
+            }
             Pattern::Sequence(_) => todo!(),
             Pattern::Tuple(_) => todo!(),
             Pattern::Missing(_) => todo!(),
@@ -1524,9 +1589,10 @@ mod tests {
             srcmap: &result.srcmap,
             tcx: &mut result.tcx,
             ncx: &mut result.ncx,
-            new_defs: &mut new_defs,
             defs: SchemeEnv::new(),
+            new_defs: &mut new_defs,
             bound_names: &mut BoundNames::new(),
+            current_ret: None,
         };
         let (_, _, c) = result.module.collect_constraints(&mut ctx);
         let constraints = c.spread().phase().flatten(BottomUpWalk);

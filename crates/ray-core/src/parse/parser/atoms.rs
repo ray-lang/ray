@@ -98,7 +98,9 @@ impl Parser<'_> {
         } else {
             let start = parser.lex.position();
             let seq = parser.parse_expr_seq(
-                ValueKind::LValue,
+                // Use general expression parsing here and rely on
+                // `Pattern::try_from` to reject invalid shapes.
+                ValueKind::RValue,
                 TrailingPolicy::Warn,
                 stop.cloned(),
                 ctx,
@@ -171,10 +173,11 @@ impl Parser<'_> {
         let span = l_span.extend_to(&r_span);
         let pattern = if seq.items.len() == 1 && !seq.trailing {
             let item = seq.items.pop().unwrap();
-            match item.value {
-                Expr::Name(n) => Pattern::Name(n),
-                _ => unreachable!(),
-            }
+            Pattern::try_from(item.value).map_err(|mut e| {
+                let src = parser.mk_src(span);
+                e.src.push(src);
+                e
+            })?
         } else {
             Pattern::tuple(seq).map_err(|mut e| {
                 let src = parser.mk_src(span);

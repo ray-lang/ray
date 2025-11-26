@@ -631,6 +631,7 @@ fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(u64, Path)>) {
                 collect_pattern_refs(&pat.value, refs);
             }
         }
+        Pattern::Some(_) => todo!(),
     }
 }
 

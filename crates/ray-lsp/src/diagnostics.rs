@@ -3,7 +3,6 @@ use std::{
     path::PathBuf,
 };
 
-use ray_shared::span::{Pos, Source, Span};
 use ray_core::{
     ast::{Decl, Module},
     errors::RayError,
@@ -13,6 +12,7 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_driver::{BuildOptions, Driver, FrontendResult};
+use ray_shared::span::{Pos, Source, Span};
 use ray_shared::{
     collections::namecontext::NameContext,
     pathlib::{FilePath, Path, RayPaths},
@@ -63,6 +63,8 @@ pub fn collect(
     toolchain_root: Option<&FilePath>,
 ) -> CollectResult {
     let filepath = to_filepath(uri);
+    log::info!("collecting filepath: {}", filepath);
+
     // When editing core sources, instruct the analyzer to run with "no core" (don't load prebuilt core),
     // so diagnostics reflect the live core files in the workspace.
     let mut no_core: bool = is_core_library_uri(uri);
@@ -94,6 +96,9 @@ pub fn collect(
         // check the document comment for `[no-core]`
         if let Some(doc_comment) = &file.doc_comment {
             no_core = doc_comment.contains("[no-core]");
+            log::info!("no_core={}, doc_comment={}", no_core, doc_comment);
+        } else {
+            log::info!("doc comment is missing");
         }
     }
 
@@ -132,6 +137,11 @@ fn collect_semantic_errors(
     let mut overlays = HashMap::new();
     overlays.insert(filepath.clone(), text.to_string());
 
+    log::info!(
+        "[collect_semantic_errors] filepath={}, no_core = {}",
+        filepath,
+        no_core
+    );
     let build_options = BuildOptions {
         input_path: filepath.clone(),
         no_core,

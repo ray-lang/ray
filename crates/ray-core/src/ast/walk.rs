@@ -191,6 +191,9 @@ fn push_pattern<'a>(walk: &mut ModuleWalk<'a>, pattern: &'a Pattern) {
             walk.stack.push(WalkItem::Name(rhs));
             walk.stack.push(WalkItem::Pattern(lhs));
         }
+        Pattern::Some(pattern) => {
+            walk.stack.push(WalkItem::Pattern(pattern));
+        }
         Pattern::Name(_) | Pattern::Missing(_) => {}
     }
 }

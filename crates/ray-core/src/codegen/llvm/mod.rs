@@ -322,7 +322,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
         match container_ty {
             ty if ty.is_struct(self.tcx) => {
-                let fqn = ty.get_path();
+                let fqn = ty.get_path().with_names_only();
                 let struct_ty = self
                     .tcx
                     .get_struct_ty(&fqn)
@@ -440,68 +440,83 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             container_ty,
             self.is_local_slot(&base_ptr)
         );
-        // Compute the element (field) Ray type after resolving the actual container type.
-        let field_ray_ty = self.get_element_ty(&container_ty, index);
-        log::debug!("[get_element_ptr] field_ray_ty={:?}", field_ray_ty);
-
-        let field_storage_llty = self.to_llvm_type(&field_ray_ty);
-        log::debug!(
-            "[get_element_ptr] field_storage_llvm_ty={}",
-            field_storage_llty.print_to_string().to_string()
-        );
 
         let offset = self.ptr_type().const_int(index as u64, false);
 
         // Build the GEP and determine the correct pointee mapping for the resulting pointer.
-        let (gep, gep_pointee_ty) = match &container_ty {
-            ty if ty.is_struct(self.tcx) => {
-                let fqn = ty.get_path();
-                let llvm_struct = self.get_struct_type(&fqn);
-                log::debug!(
-                    "[get_element_ptr] struct GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
-                    fqn,
-                    base_ptr.to_string(),
-                    index,
-                    llvm_struct.print_to_string().to_string()
-                );
+        let (gep, gep_pointee_ty) = if container_ty.is_struct(self.tcx) {
+            // Struct field access: compute the field Ray type and GEP into the aggregate.
+            let field_ray_ty = self.get_element_ty(&container_ty, index);
+            log::debug!("[get_element_ptr] field_ray_ty={:?}", field_ray_ty);
 
-                // For struct fields, the *storage* type may be a pointer (e.g., when the Ray field
-                // type is itself a struct and we lower structs-as-references). If the storage is a
-                // pointer, the GEP points at a pointer slot, so the pointee type we track should be
-                // `Ptr(field_ty)`; otherwise it is just `field_ty`.
-                let gep = unsafe {
-                    self.builder
-                        .build_gep(llvm_struct, base_ptr, &[self.zero(), offset], "")?
-                };
-                let pointee = field_ray_ty.clone();
-                (gep, pointee)
-            }
-            Ty::Array(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => {
-                log::debug!(
-                    "[get_element_ptr] array/ptr GEP: base_ptr={} index={} element_ray_ty={} element_llvm_ty={}",
-                    base_ptr.to_string(),
-                    index,
-                    field_ray_ty,
-                    self.to_llvm_type(&field_ray_ty)
-                        .print_to_string()
-                        .to_string()
-                );
-                // For arrays/pointers, the element storage type is exactly `field_ray_ty`.
-                let gep = unsafe {
-                    self.builder.build_gep(
-                        self.to_llvm_type(&field_ray_ty),
-                        base_ptr,
-                        &[offset],
-                        "",
-                    )?
-                };
-                log::debug!(
-                    "[get_element_ptr] array/ptr pointee mapping: tracked_pointee={}",
-                    field_ray_ty
-                );
-                (gep, field_ray_ty.clone())
-            }
-            ty => panic!("container is not indexable: {:?}", ty),
+            let field_storage_llty = self.to_llvm_type(&field_ray_ty);
+            log::debug!(
+                "[get_element_ptr] field_storage_llvm_ty={}",
+                field_storage_llty.print_to_string().to_string()
+            );
+
+            let fqn = container_ty.get_path();
+            let llvm_struct = self.get_struct_type(&fqn);
+            log::debug!(
+                "[get_element_ptr] struct GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
+                fqn,
+                base_ptr.to_string(),
+                index,
+                llvm_struct.print_to_string().to_string()
+            );
+
+            let gep = unsafe {
+                self.builder
+                    .build_gep(llvm_struct, base_ptr, &[self.zero(), offset], "")?
+            };
+            (gep, field_ray_ty)
+        } else if matches!(container_ty, Ty::Array(_, _) | Ty::Ref(_) | Ty::RawPtr(_)) {
+            // Array / pointer stepping: use the element type derived from the container.
+            let field_ray_ty = self.get_element_ty(&container_ty, index);
+            log::debug!("[get_element_ptr] field_ray_ty={:?}", field_ray_ty);
+
+            let field_storage_llty = self.to_llvm_type(&field_ray_ty);
+            log::debug!(
+                "[get_element_ptr] field_storage_llvm_ty={}",
+                field_storage_llty.print_to_string().to_string()
+            );
+
+            log::debug!(
+                "[get_element_ptr] array/ptr GEP: base_ptr={} index={} element_ray_ty={} element_llvm_ty={}",
+                base_ptr.to_string(),
+                index,
+                field_ray_ty,
+                field_storage_llty.print_to_string().to_string()
+            );
+
+            let gep = unsafe {
+                self.builder
+                    .build_gep(field_storage_llty, base_ptr, &[offset], "")?
+            };
+            log::debug!(
+                "[get_element_ptr] array/ptr pointee mapping: tracked_pointee={}",
+                field_ray_ty
+            );
+            (gep, field_ray_ty)
+        } else {
+            // Fallback: treat the pointee type as the element type directly. This covers
+            // heap pointers from `malloc(T, n)` where we only track the element type `T`
+            // (e.g., `int`, `nilable[int]`) rather than an explicit array container.
+            let element_ty = container_ty.clone();
+            let element_llty = self.to_llvm_type(&element_ty);
+            log::debug!(
+                "[get_element_ptr] flat-element GEP: base_ptr={} index={} element_ray_ty={} element_llvm_ty={}",
+                base_ptr.to_string(),
+                index,
+                element_ty,
+                element_llty.print_to_string().to_string()
+            );
+
+            let gep = unsafe {
+                self.builder
+                    .build_gep(element_llty, base_ptr, &[offset], "")?
+            };
+            (gep, element_ty)
         };
 
         log::debug!(
@@ -549,14 +564,61 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         field: &String,
         tcx: &TyCtx,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
-        // get the field offset and size
-        let mut lhs_ty = self.type_of(var);
+        // Determine the logical LHS type, unwrapping one pointer layer for
+        // cases like `*Struct` so we can inspect the underlying aggregate.
+        let mut lhs_ty = self.type_of(var).clone();
         if let Some(inner) = lhs_ty.unwrap_pointer() {
-            lhs_ty = inner;
+            lhs_ty = inner.clone();
         }
 
-        let lhs_fqn = lhs_ty.get_path();
-        let lhs_ty = tcx.get_struct_ty(&lhs_fqn).unwrap();
+        // Special-case `nilable['a]`, which is not a nominal struct in `tcx`
+        // but is lowered to an Option-like aggregate:
+        //   { is_some: bool, payload: 'a }
+        //
+        // We compute field indices and types directly from this layout rather
+        // than going through `tcx.get_struct_ty`.
+        if let Some(payload_ty) = lhs_ty.nilable_payload() {
+            let (field_index, field_ty) = match field.as_str() {
+                "is_some" => (0, Ty::bool()),
+                "payload" => (1, payload_ty.clone()),
+                _ => panic!("cannot find field {} on nilable", field),
+            };
+
+            let base_ptr = match var {
+                lir::Variable::Local(idx) => self.get_local(*idx),
+                lir::Variable::Data(..) | lir::Variable::Global(..) | lir::Variable::Unit => {
+                    todo!("GetField for nilable from non-local variable: {:?}", var)
+                }
+            };
+
+            // The local for `nilable['a]` is allocated with `to_llvm_type(lhs_ty)`,
+            // which we know lowers to a literal struct `{ i1, T }`. With opaque
+            // pointers we cannot query the element type from `base_ptr`, so we
+            // reconstruct the struct type from the Ray type instead.
+            let llvm_ty = self.to_llvm_type(&lhs_ty);
+            let llvm_struct = match llvm_ty {
+                BasicTypeEnum::StructType(st) => st,
+                other => panic!(
+                    "expected struct type for nilable, got {:?} for lhs_ty={}",
+                    other, lhs_ty
+                ),
+            };
+
+            let zero = self.zero();
+            let field_idx = self.ptr_type().const_int(field_index as u64, false);
+            let gep = unsafe {
+                self.builder
+                    .build_gep(llvm_struct, base_ptr, &[zero, field_idx], "")?
+            };
+            self.register_pointee_ty(gep, field_ty);
+            return Ok(gep);
+        }
+
+        // Nominal struct case: use `tcx` metadata to find the field index.
+        let lhs_fqn = lhs_ty.get_path().with_names_only();
+        let lhs_ty = tcx
+            .get_struct_ty(&lhs_fqn)
+            .expect(&format!("could not find struct type: {}", lhs_fqn));
         let mut offset = 0;
         let mut found = false;
         for (name, _) in lhs_ty.fields.iter() {
@@ -607,7 +669,28 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 .lcx
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
-            Ty::Projection(ty, ..) => self.to_llvm_type(ty),
+            Ty::Projection(head, args) => {
+                // `nilable['a]` is represented as an Option-like aggregate:
+                // `{ i1 is_some, T payload }`, where `T` is the LLVM type for `'a`.
+                if let Ty::Const(name) = head.as_ref() {
+                    if name == "nilable" {
+                        let payload_ty = args
+                            .get(0)
+                            .map(|t| self.to_llvm_type(t))
+                            // Fallback to `i8` payload for ill-formed cases; this
+                            // should not happen for well-typed programs.
+                            .unwrap_or_else(|| self.lcx.i8_type().into());
+
+                        return self
+                            .lcx
+                            .struct_type(&[self.lcx.bool_type().into(), payload_ty], false)
+                            .into();
+                    }
+                }
+
+                // For all other projections, lower to the underlying type.
+                self.to_llvm_type(head)
+            }
             Ty::Const(fqn) => match fqn.as_str() {
                 "bool" => self.lcx.bool_type().into(),
                 "i8" | "u8" => self.lcx.i8_type().into(),
@@ -1178,7 +1261,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 
     fn get_struct_type(&mut self, path: &Path) -> StructType<'ctx> {
-        let key = path.to_string();
+        let key = path.with_names_only().to_string();
 
         if let Some(st) = self.struct_types.get(&key) {
             return st.clone();
@@ -1523,6 +1606,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
+        log::debug!("[codegen] {}", self);
         Ok(Some(match self {
             lir::Inst::StructInit(_, _) => {
                 // Struct locals are value-typed now, so StructInit has no codegen work.

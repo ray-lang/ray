@@ -283,12 +283,6 @@ impl TyCtx {
         self.ty_map.insert(id, ty);
     }
 
-    pub fn ty_scheme_of(&self, id: u64) -> TyScheme {
-        let mut scheme = self.ty_scheme_map.get(&id).unwrap().clone();
-        scheme.generalize_in_place();
-        scheme
-    }
-
     pub fn maybe_ty_scheme_of(&self, id: u64) -> Option<TyScheme> {
         self.ty_scheme_map.get(&id).cloned().map(|mut scheme| {
             scheme.generalize_in_place();
@@ -500,10 +494,7 @@ impl TyCtx {
         let callee_scheme = self.ty_of(callee_id);
         let mut fn_ty = self.instantiate_scheme(callee_scheme.clone());
 
-        let mut arg_tys: Vec<TyScheme> = arg_ids
-            .iter()
-            .map(|id| self.ty_of(*id))
-            .collect();
+        let mut arg_tys: Vec<TyScheme> = arg_ids.iter().map(|id| self.ty_of(*id)).collect();
 
         let original_poly_ty = self.get_poly_ty(callee_id).cloned();
         let mut instantiated_poly_ty = original_poly_ty
@@ -532,9 +523,9 @@ impl TyCtx {
         //    apply that to the method FQN.
         let norm_func_fqn = func_fqn.with_names_only();
         let trait_fqn = self.resolve_trait_from_path(&norm_func_fqn);
-        let field = trait_fqn.as_ref().and_then(|trait_fqn| {
-            self.get_trait_field(trait_fqn, &func_fqn.name().unwrap())
-        });
+        let field = trait_fqn
+            .as_ref()
+            .and_then(|trait_fqn| self.get_trait_field(trait_fqn, &func_fqn.name().unwrap()));
 
         log::debug!(
             "[TyCtx::resolve_method_impl_fqn] trait_fqn={:?} field={:?}",

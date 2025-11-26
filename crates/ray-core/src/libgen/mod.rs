@@ -633,14 +633,7 @@ fn register_in_pattern(
 ) {
     match &pattern.value {
         Pattern::Name(name) => {
-            let resolved_ty = Some(tcx.pretty_tys(
-                &tcx.get_ty(pattern.id).cloned().unwrap_or_else(|| {
-                    panic!(
-                        "type not found for pattern name: {} ({}) in {:#?}",
-                        name.path, pattern.id, tcx
-                    );
-                }),
-            ));
+            let resolved_ty = tcx.pretty_tys(&tcx.get_ty(pattern.id).cloned());
             insert_definition_record(
                 records,
                 &name.path,
@@ -662,6 +655,7 @@ fn register_in_pattern(
                 register_in_pattern(node, srcmap, tcx, records);
             }
         }
+        Pattern::Some(pattern) => register_in_pattern(pattern, srcmap, tcx, records),
         Pattern::Deref(_) | Pattern::Dot(_, _) | Pattern::Missing(_) => {
             // ignore
         }
