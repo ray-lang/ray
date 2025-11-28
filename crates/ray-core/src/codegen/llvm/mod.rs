@@ -1,7 +1,7 @@
 mod attr;
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, hash_map::Entry},
     env::{self, temp_dir},
     fs,
     io::Write,
@@ -11,7 +11,7 @@ use std::{
 
 use inkwell::{
     self as llvm, attributes::Attribute, builder::BuilderError, passes::PassBuilderOptions,
-    types::BasicMetadataTypeEnum,
+    types::BasicMetadataTypeEnum, values::BasicMetadataValueEnum,
 };
 use llvm::{
     AddressSpace, IntPredicate,
@@ -29,8 +29,12 @@ use rand::RngCore;
 use ray_shared::{
     optlevel::OptLevel,
     pathlib::{FilePath, Path},
+    utils::map_join,
 };
-use ray_typing::{TyCtx, ty::Ty};
+use ray_typing::{
+    tyctx::TyCtx,
+    types::{StructTy, Ty},
+};
 
 use crate::{
     ast::{Modifier, Node},
@@ -64,7 +68,14 @@ where
     let name = program.module_path.to_string();
     let module = lcx.create_module(&name);
     let builder = lcx.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(target, lcx, &module, &builder, tcx);
+    let mut ctx = LLVMCodegenCtx::new(
+        target,
+        lcx,
+        &module,
+        &builder,
+        tcx,
+        &program.synthetic_structs,
+    );
     if let Some(err) = program.codegen(&mut ctx, tcx, srcmap).err() {
         // TODO: convert to ray error
         panic!("error during codegen: {}", err);
@@ -162,6 +173,67 @@ where
     Ok(())
 }
 
+pub fn emit_module_ir(
+    program: &lir::Program,
+    tcx: &TyCtx,
+    srcmap: &SourceMap,
+    target: &Target,
+    opt_level: OptLevel,
+) -> String {
+    let context = llvm::context::Context::create();
+    let module = context.create_module(&program.module_path.to_string());
+    let builder = context.create_builder();
+    let mut ctx = LLVMCodegenCtx::new(
+        target,
+        &context,
+        &module,
+        &builder,
+        tcx,
+        &program.synthetic_structs,
+    );
+    if let Err(err) = program.codegen(&mut ctx, tcx, srcmap) {
+        panic!("error during codegen: {}", err);
+    }
+    ctx.ensure_wasi_globals();
+
+    if let Err(err) = module.verify() {
+        panic!(
+            "COMPILER BUG: {}\n{}",
+            err.to_string(),
+            module.print_to_string().to_string()
+        );
+    }
+
+    let pass_options = PassBuilderOptions::create();
+    let passes = match opt_level {
+        OptLevel::O0 => "",
+        OptLevel::O1 => "default<O1>",
+        OptLevel::O2 => "default<O2>",
+        OptLevel::O3 => "default<O3>",
+        OptLevel::Os => "default<Os>",
+        OptLevel::Oz => "default<Oz>",
+    };
+
+    if !passes.is_empty() {
+        if let Some(err) = module
+            .run_passes(passes, &ctx.target_machine, pass_options)
+            .err()
+        {
+            panic!("error during passes: {}", err);
+        }
+    }
+
+    if let Err(err) = module.verify() {
+        panic!(
+            "COMPILER BUG: {}\n{}",
+            err.to_string(),
+            module.print_to_string().to_string()
+        );
+    }
+
+    module.print_to_string().to_string()
+}
+
 // Represents the result of lowering a call in codegen: either a normal callsite (with optional ret slot), or a folded value.
 enum LoweredCall<'ctx> {
     Call {
@@ -190,6 +262,7 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     pointee_tys: HashMap<PointerValue<'ctx>, Ty>,
     sret_param: Option<PointerValue<'ctx>>,
     intrinsics: HashMap<Path, lir::IntrinsicKind>,
+    synthetic_structs: &'a HashMap<Path, StructTy>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -199,6 +272,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         module: &'a llvm::module::Module<'ctx>,
         builder: &'a llvm::builder::Builder<'ctx>,
         tcx: &'a TyCtx,
+        synthetic_structs: &'a HashMap<Path, StructTy>,
     ) -> Self {
         LLVMTarget::initialize_webassembly(&InitializationConfig::default());
 
@@ -242,6 +316,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             pointee_tys: HashMap::new(),
             sret_param: None,
             intrinsics: HashMap::new(),
+            synthetic_structs,
         }
     }
 
@@ -319,20 +394,35 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         self.pointee_tys.insert(ptr, ty);
     }
 
+    fn lookup_struct_ty(&self, path: &Path) -> &StructTy {
+        let path = path.with_names_only();
+        if let Some(ty) = self.tcx.get_struct_ty(&path) {
+            return ty;
+        }
+        self.synthetic_structs
+            .get(&path)
+            .expect(&format!("could not find struct type: {}", path))
+    }
+
+    fn is_struct(&self, ty: &Ty) -> bool {
+        if ty.is_struct(self.tcx) {
+            return true;
+        }
+
+        let path = ty.get_path();
+        self.synthetic_structs.get(&path).is_some()
+    }
+
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
         match container_ty {
-            ty if ty.is_struct(self.tcx) => {
-                let fqn = ty.get_path().with_names_only();
-                let struct_ty = self
-                    .tcx
-                    .get_struct_ty(&fqn)
-                    .expect("could not find struct type");
-                struct_ty.field_tys()[index].mono().clone()
-            }
             Ty::Array(elem_ty, _) => elem_ty.as_ref().clone(),
             Ty::Ref(inner_ty) => inner_ty.as_ref().clone(),
             Ty::RawPtr(inner_ty) => inner_ty.as_ref().clone(),
-            ty => panic!("container is not indexable: {:?}", ty),
+            ty => {
+                let fqn = ty.get_path();
+                let struct_ty = self.lookup_struct_ty(&fqn);
+                struct_ty.field_tys()[index].mono().clone()
+            }
         }
     }
 
@@ -351,7 +441,10 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 
     fn get_local(&self, idx: usize) -> PointerValue<'ctx> {
-        *self.locals.get(&idx).expect("could not find variable")
+        *self
+            .locals
+            .get(&idx)
+            .expect(&format!("could not find variable: {}", idx))
     }
 
     fn load_local(&mut self, idx: usize) -> Result<BasicValueEnum<'ctx>, BuilderError> {
@@ -413,7 +506,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             index
         );
         while let Some(inner_ty) = container_ty.unwrap_pointer() {
-            if !inner_ty.is_struct(self.tcx) {
+            if !self.is_struct(inner_ty) {
                 log::debug!(
                     "[get_element_ptr] breaking before load: inner_ty is not struct (inner_ty={})",
                     inner_ty
@@ -444,7 +537,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         let offset = self.ptr_type().const_int(index as u64, false);
 
         // Build the GEP and determine the correct pointee mapping for the resulting pointer.
-        let (gep, gep_pointee_ty) = if container_ty.is_struct(self.tcx) {
+        let (gep, gep_pointee_ty) = if self.is_struct(&container_ty) {
             // Struct field access: compute the field Ray type and GEP into the aggregate.
             let field_ray_ty = self.get_element_ty(&container_ty, index);
             log::debug!("[get_element_ptr] field_ray_ty={:?}", field_ray_ty);
@@ -562,7 +655,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         &mut self,
         var: &lir::Variable,
         field: &String,
-        tcx: &TyCtx,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
         // Determine the logical LHS type, unwrapping one pointer layer for
         // cases like `*Struct` so we can inspect the underlying aggregate.
@@ -616,9 +708,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         // Nominal struct case: use `tcx` metadata to find the field index.
         let lhs_fqn = lhs_ty.get_path().with_names_only();
-        let lhs_ty = tcx
-            .get_struct_ty(&lhs_fqn)
-            .expect(&format!("could not find struct type: {}", lhs_fqn));
+        let lhs_ty = self.lookup_struct_ty(&lhs_fqn);
         let mut offset = 0;
         let mut found = false;
         for (name, _) in lhs_ty.fields.iter() {
@@ -648,9 +738,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         match ty {
             Ty::Never => todo!("to_llvm_ty: {}", ty),
             Ty::Any => todo!("to_llvm_ty: {}", ty),
-            Ty::Func(_, _) => todo!("to_llvm_ty: {}", ty),
             Ty::Var(_) => todo!("to_llvm_ty: {}", ty),
-            Ty::Union(_) => todo!("to_llvm_ty: {}", ty),
             Ty::Array(elem_ty, size) => self
                 .to_llvm_type(elem_ty)
                 .array_type(*size as u32)
@@ -665,14 +753,14 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                     false,
                 )
                 .into(),
-            Ty::Ref(_) | Ty::RawPtr(_) => self
+            Ty::Func(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => self
                 .lcx
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
-            Ty::Projection(head, args) => {
+            Ty::Proj(fqn, args) => {
                 // `nilable['a]` is represented as an Option-like aggregate:
                 // `{ i1 is_some, T payload }`, where `T` is the LLVM type for `'a`.
-                if let Ty::Const(name) = head.as_ref() {
+                if let Some(name) = fqn.name() {
                     if name == "nilable" {
                         let payload_ty = args
                             .get(0)
@@ -689,9 +777,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 }
 
                 // For all other projections, lower to the underlying type.
-                self.to_llvm_type(head)
+                self.get_struct_type(&fqn).as_basic_type_enum()
             }
-            Ty::Const(fqn) => match fqn.as_str() {
+            Ty::Const(fqn) => match fqn.name().unwrap().as_str() {
                 "bool" => self.lcx.bool_type().into(),
                 "i8" | "u8" => self.lcx.i8_type().into(),
                 "i16" | "u16" => self.lcx.i16_type().into(),
@@ -1106,6 +1194,33 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .unwrap())
     }
 
+    fn build_call_args(
+        &mut self,
+        args: &Vec<lir::Variable>,
+        expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
+        ray_param_tys: &Vec<Ty>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<Vec<BasicMetadataValueEnum<'ctx>>, BuilderError> {
+        assert_eq!(
+            expected_params.len(),
+            ray_param_tys.len(),
+            "callee LLVM param count and Ray param count must match for non-sret calls"
+        );
+
+        let arg_vals = args.codegen(self, tcx, srcmap);
+        expected_params
+            .iter()
+            .zip(ray_param_tys.iter())
+            .zip(arg_vals.into_iter())
+            .map(|((expected, ray_param_ty), result)| {
+                let v = result?;
+                let marshalled = self.marshal_arg_value(ray_param_ty, expected, v)?;
+                Ok(marshalled.into())
+            })
+            .collect()
+    }
+
     /// Build a function call
     fn build_call(
         &mut self,
@@ -1116,36 +1231,19 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<CallSiteValue<'ctx>, BuilderError> {
-        let arg_vals = args.codegen(self, tcx, srcmap);
-        assert_eq!(
-            expected_params.len(),
-            ray_param_tys.len(),
-            "callee LLVM param count and Ray param count must match for non-sret calls"
-        );
-        let args = expected_params
-            .iter()
-            .zip(ray_param_tys.iter())
-            .zip(arg_vals.into_iter())
-            .map(|((expected, ray_param_ty), result)| {
-                let v = result?;
-                let marshalled = self.marshal_arg_value(ray_param_ty, expected, v)?;
-                Ok(marshalled.into())
-            })
-            .collect::<Result<Vec<_>, BuilderError>>()?;
+        let args = self.build_call_args(args, expected_params, ray_param_tys, tcx, srcmap)?;
         self.builder.build_call(function, args.as_slice(), "")
     }
 
-    /// Build a function call with aggregate return type
-    fn build_sret_call(
+    fn build_sret_call_args(
         &mut self,
-        function: FunctionValue<'ctx>,
         args: &Vec<lir::Variable>,
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
         ray_param_tys: &Vec<Ty>,
         ret_ty: &Ty,
         tcx: &TyCtx,
         srcmap: &SourceMap,
-    ) -> Result<(CallSiteValue<'ctx>, PointerValue<'ctx>), BuilderError> {
+    ) -> Result<(Vec<BasicMetadataValueEnum<'ctx>>, PointerValue<'ctx>), BuilderError> {
         let arg_vals = args.codegen(self, tcx, srcmap);
 
         // sret: allocate a local return slot, pass as first arg, and return the pointer as the value.
@@ -1177,6 +1275,22 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         // Collect all marshalled arguments (retptr + params) as metadata values.
         let marshalled_vals = marshalled.iter().map(|v| (*v).into()).collect::<Vec<_>>();
+        Ok((marshalled_vals, ret_slot))
+    }
+
+    /// Build a function call with aggregate return type
+    fn build_sret_call(
+        &mut self,
+        function: FunctionValue<'ctx>,
+        args: &Vec<lir::Variable>,
+        expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
+        ray_param_tys: &Vec<Ty>,
+        ret_ty: &Ty,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<(CallSiteValue<'ctx>, PointerValue<'ctx>), BuilderError> {
+        let (marshalled_vals, ret_slot) =
+            self.build_sret_call_args(args, expected_params, ray_param_tys, ret_ty, tcx, srcmap)?;
 
         // Emit the call (returns void in sret case)
         let call = self
@@ -1185,6 +1299,39 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         // Return the call value and the ret_slot pointer.
         Ok((call, ret_slot))
+    }
+
+    /// Build an indirect call
+    fn build_indirect_call(
+        &mut self,
+        func_ptr: PointerValue<'ctx>,
+        args: &Vec<lir::Variable>,
+        param_tys: &Vec<Ty>,
+        ret_ty: &Ty,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<(CallSiteValue<'ctx>, Option<PointerValue<'ctx>>), BuilderError> {
+        let llvm_fn_ty = self.to_llvm_fn_ty(param_tys, ret_ty);
+        let expected_params: Vec<BasicMetadataTypeEnum<'ctx>> = llvm_fn_ty
+            .get_param_types()
+            .iter()
+            .map(|t| (*t).into())
+            .collect();
+
+        if ret_ty.is_aggregate() {
+            let (args, ret_slot) =
+                self.build_sret_call_args(args, &expected_params, param_tys, ret_ty, tcx, srcmap)?;
+            let call = self
+                .builder
+                .build_indirect_call(llvm_fn_ty, func_ptr, &args, "")?;
+            return Ok((call, Some(ret_slot)));
+        }
+
+        let args = self.build_call_args(args, &expected_params, param_tys, tcx, srcmap)?;
+        let call = self
+            .builder
+            .build_indirect_call(llvm_fn_ty, func_ptr, &args, "")?;
+        Ok((call, None))
     }
 
     /// Build a return for the current function, using Ray's return type to
@@ -1261,7 +1408,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 
     fn get_struct_type(&mut self, path: &Path) -> StructType<'ctx> {
-        let key = path.with_names_only().to_string();
+        let path = path.with_names_only();
+        let key = path.to_string();
 
         if let Some(st) = self.struct_types.get(&key) {
             return st.clone();
@@ -1270,7 +1418,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         let opaque = self.lcx.opaque_struct_type(&key);
         self.struct_types.insert(key.clone(), opaque);
 
-        let Some(struct_ty) = self.tcx.get_struct_ty(path) else {
+        let struct_ty = if let Some(ty) = self.tcx.get_struct_ty(&path) {
+            ty.clone()
+        } else if let Some(extra) = self.synthetic_structs.get(&path) {
+            extra.clone()
+        } else {
             panic!("cannot find struct type definition: path={:?}", path);
         };
 
@@ -1524,6 +1676,14 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
         }
         for (param_val, param) in params_iter.zip(self.params.iter()) {
             param_val.set_name(&param.name);
+            if let Ty::Var(v) = &param.ty {
+                if v.is_unknown() {
+                    panic!(
+                        "cannot codegen function `{}`: param `${}` has unresolved type variable `{}` ({})",
+                        self.name, param.idx, v, param.ty
+                    );
+                }
+            }
             let alloca = ctx.alloca(&param.ty)?;
             ctx.builder.build_store(alloca, param_val)?;
             ctx.locals.insert(param.idx, alloca);
@@ -1538,6 +1698,38 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
             // Skip compile-time meta-type locals (e.g., type['a])
             if ty.is_meta_ty() {
                 continue;
+            }
+            if let Ty::Var(v) = ty {
+                if v.is_unknown() {
+                    let defining_inst = self
+                        .blocks
+                        .iter()
+                        .flat_map(|block| block.iter())
+                        .find_map(|inst| match inst {
+                            lir::Inst::SetLocal(idx, value) if *idx == loc.idx => {
+                                let mut msg =
+                                    format!("{}", lir::FuncDisplayCtx::new(inst, &self.locals));
+                                if let lir::Value::Call(call) = value {
+                                    if let Some(src) = &call.source {
+                                        msg.push_str(&format!(" @ {:?}", src));
+                                    }
+                                }
+                                Some(msg)
+                            }
+                            _ => None,
+                        });
+                    panic!(
+                        "cannot codegen function `{}`: local `${}` has unresolved type variable `{}` ({}){}",
+                        self.name,
+                        loc.idx,
+                        v,
+                        loc.ty,
+                        defining_inst
+                            .as_ref()
+                            .map(|s| format!("\nfirst defining inst: {}", s))
+                            .unwrap_or_default()
+                    );
+                }
             }
 
             let alloca = ctx.alloca(ty)?;
@@ -1697,6 +1889,36 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::Cast(c) => c.codegen(ctx, tcx, srcmap),
             lir::Value::IntConvert(_) => todo!("codegen lir::IntConvert: {}", self),
             lir::Value::Type(_) => todo!("codegen lir::Type: {}", self),
+            lir::Value::Closure(closure) => {
+                let handle_ty = closure.handle.ty.mono().clone();
+                let path = closure.handle.path.clone();
+                let llvm_struct = ctx.get_struct_type(&path);
+                let slot = ctx.alloca(&handle_ty)?;
+
+                let function = ctx.fn_index.get(&closure.fn_name).unwrap_or_else(|| {
+                    panic!(
+                        "cannot find function `{}` when lowering closure value",
+                        closure.fn_name
+                    )
+                });
+                let fn_ptr = function
+                    .as_global_value()
+                    .as_pointer_value()
+                    .as_basic_value_enum();
+                let fn_field = ctx
+                    .builder
+                    .build_struct_gep(llvm_struct, slot, 0, "closure.fn")?;
+                ctx.builder.build_store(fn_field, fn_ptr)?;
+
+                let env_raw = closure.env.codegen(ctx, tcx, srcmap)?;
+                let env_value = ctx.maybe_load_pointer(env_raw)?;
+                let env_field =
+                    ctx.builder
+                        .build_struct_gep(llvm_struct, slot, 1, "closure.env")?;
+                ctx.builder.build_store(env_field, env_value)?;
+
+                Ok(slot.as_basic_value_enum())
+            }
         }
     }
 }
@@ -1876,7 +2098,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Lea {
 
                 ptr
             }
-            lir::LeaOffset::Field(_, field) => ctx.get_field_ptr(&self.var, field, tcx)?,
+            lir::LeaOffset::Field(_, field) => ctx.get_field_ptr(&self.var, field)?,
         };
 
         Ok(ptr.as_basic_value_enum())
@@ -1965,10 +2187,10 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::GetField {
     fn codegen(
         &self,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
+        _: &TyCtx,
         _: &SourceMap,
     ) -> Self::Output {
-        let ptr = ctx.get_field_ptr(&self.src, &self.field, tcx)?;
+        let ptr = ctx.get_field_ptr(&self.src, &self.field)?;
 
         log::debug!(
             "[GetField] src={:?} field={} ptr={} pointee_ty={}",
@@ -1992,7 +2214,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::SetField {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
-        let ptr = ctx.get_field_ptr(&self.dst, &self.field, tcx)?;
+        let ptr = ctx.get_field_ptr(&self.dst, &self.field)?;
         let field_ty = ctx.get_pointee_ty(ptr).clone();
 
         log::debug!(
@@ -2063,17 +2285,6 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
             return self.codegen_intrinsic(kind, ctx, tcx, srcmap);
         }
 
-        // Marshal arguments using the same rule as Inst::Call.
-        let function = *ctx.fn_index.get(&self.fn_name).expect(
-            format!(
-                "cannot find function `{}` in index for value-call",
-                self.fn_name
-            )
-            .as_str(),
-        );
-        let fn_ty = function.get_type();
-        let expected_params = fn_ty.get_param_types();
-
         // Look up callee to inspect its Ray function type for parameter and
         // return information (used for sret decisions and, later, for
         // argument marshaling).
@@ -2084,6 +2295,27 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
                 self.fn_name, self.callee_ty
             )
         });
+
+        if let Some(fn_idx) = self.fn_ref {
+            let func_ptr = ctx.load_local(fn_idx)?.into_pointer_value();
+            let (call, ret_slot) =
+                ctx.build_indirect_call(func_ptr, &self.args, ray_param_tys, ret_ty, tcx, srcmap)?;
+            return Ok(LoweredCall::Call { call, ret_slot });
+        }
+
+        // Marshal arguments using the same rule as Inst::Call.
+        let Some(&function) = ctx.fn_index.get(&self.fn_name) else {
+            panic!(
+                "cannot find function `{}` in index for value-call\navailable functions are:\n{}",
+                self.fn_name,
+                map_join(&ctx.fn_index, "\n", |(path, func)| format!(
+                    "  {}: {}",
+                    path, func
+                ))
+            )
+        };
+        let fn_ty = function.get_type();
+        let expected_params = fn_ty.get_param_types();
 
         if ret_ty.is_aggregate() {
             let (call, ret_slot) = ctx.build_sret_call(
@@ -2741,7 +2973,16 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Atom {
     ) -> Self::Output {
         Ok(match self {
             lir::Atom::Variable(v) => v.codegen(ctx, tcx, srcmap)?,
-            lir::Atom::FuncRef(_) => todo!("codegen lir::Atom: {}", self),
+            lir::Atom::FuncRef(func_ref) => {
+                let fn_val = ctx
+                    .fn_index
+                    .get(&func_ref.path)
+                    .unwrap_or_else(|| panic!("missing function `{}` for FuncRef", func_ref.path));
+                fn_val
+                    .as_global_value()
+                    .as_pointer_value()
+                    .as_basic_value_enum()
+            }
             lir::Atom::Size(size) => ctx.size_to_int(size).as_basic_value_enum(),
             lir::Atom::CharConst(ch) => ctx
                 .lcx

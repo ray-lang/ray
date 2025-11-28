@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use ray_shared::{pathlib::Path, span::parsed::Parsed};
 
 use crate::ast::{Boxed, Node, Ref, expr::deref::Deref};
-use ray_typing::ty::TyScheme;
+use ray_typing::types::TyScheme;
 
 use super::{
     Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, For, Func, If, Index, List, Literal,
@@ -118,12 +118,54 @@ impl std::fmt::Display for Expr {
 }
 
 impl Expr {
-    pub fn path(&self) -> Option<Path> {
+    pub fn kind(&self) -> &'static str {
         match self {
-            Expr::Name(n) => Some(n.path.clone()),
-            Expr::Func(f) => Some(f.sig.path.value.clone()),
-            Expr::Pattern(p) => p.path().cloned(),
-            Expr::Path(p) => Some(p.clone()),
+            Expr::Assign(..) => "Assign",
+            Expr::BinOp(..) => "BinOp",
+            Expr::Block(..) => "Block",
+            Expr::Boxed(..) => "Boxed",
+            Expr::Break(..) => "Break",
+            Expr::Call(..) => "Call",
+            Expr::Cast(..) => "Cast",
+            Expr::Closure(..) => "Closure",
+            Expr::Curly(..) => "Curly",
+            Expr::DefaultValue(..) => "DefaultValue",
+            Expr::Deref(..) => "Deref",
+            Expr::Dot(..) => "Dot",
+            Expr::Func(..) => "Func",
+            Expr::For(..) => "For",
+            Expr::If(..) => "If",
+            Expr::Index(..) => "Index",
+            Expr::Labeled(..) => "Labeled",
+            Expr::List(..) => "List",
+            Expr::Literal(..) => "Literal",
+            Expr::Loop(..) => "Loop",
+            Expr::Missing(..) => "Missing",
+            Expr::Name(..) => "Name",
+            Expr::New(..) => "New",
+            Expr::Path(..) => "Path",
+            Expr::Pattern(..) => "Pattern",
+            Expr::Paren(..) => "Paren",
+            Expr::Range(..) => "Range",
+            Expr::Ref(..) => "Ref",
+            Expr::Return(..) => "Return",
+            Expr::Sequence(..) => "Sequence",
+            Expr::Some(..) => "Some",
+            Expr::Tuple(..) => "Tuple",
+            Expr::Type(..) => "Type",
+            Expr::TypeAnnotated(..) => "TypeAnnotated",
+            Expr::UnaryOp(..) => "UnaryOp",
+            Expr::Unsafe(..) => "Unsafe",
+            Expr::While(..) => "While",
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Expr::Name(n) => Some(&n.path),
+            Expr::Func(f) => Some(&f.sig.path.value),
+            Expr::Pattern(p) => p.path(),
+            Expr::Path(p) => Some(p),
             Expr::Assign(_)
             | Expr::BinOp(_)
             | Expr::Block(_)

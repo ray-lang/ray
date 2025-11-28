@@ -160,11 +160,10 @@ fn collect_semantic_errors(
         ncx,
         srcmap,
         symbol_map,
-        defs: _,
-        libs: _,
         paths,
         definitions,
         errors,
+        ..
     } = frontend;
 
     let snapshot = AnalysisSnapshotData {

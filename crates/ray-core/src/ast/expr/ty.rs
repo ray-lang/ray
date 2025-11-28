@@ -1,5 +1,5 @@
 use ray_shared::span::{Span, parsed::Parsed};
-use ray_typing::ty::Ty;
+use ray_typing::types::Ty;
 
 use std::fmt;
 

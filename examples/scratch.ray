@@ -1,10 +1,20 @@
-fn main() {
-    a = [1, 2]
-    b = a.get(2)
-    if some(x) = b {
-        print(x)
-    } else {
-        print("none")
+//![no-core]
+
+struct Str {}
+
+trait ToStr['a] {
+    fn to_str(self: 'a) -> Str
+}
+
+struct A{}
+
+impl ToStr[A] {
+    fn to_str(self: A) -> Str {
+        Str{}
     }
-    ()
+}
+
+fn main() {
+    a = A{}
+    s = a.to_str()
 }

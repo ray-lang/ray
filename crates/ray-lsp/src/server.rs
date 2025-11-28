@@ -24,7 +24,7 @@ use tower_lsp::{
 
 use ray_core::libgen;
 use ray_shared::span::{Source, Span};
-use ray_shared::pathlib::FilePath;
+use ray_shared::{node_id::NodeId, pathlib::FilePath};
 use serde_json::Value;
 
 use crate::{
@@ -740,7 +740,7 @@ impl RayLanguageServer {
         &self,
         uri: &Url,
         position: Position,
-    ) -> Option<(AnalysisSnapshot, u64, Source)> {
+    ) -> Option<(AnalysisSnapshot, NodeId, Source)> {
         // 1. snapshot
         let snapshot = {
             let cache = self.analysis_cache.read().await;

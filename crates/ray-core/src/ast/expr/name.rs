@@ -4,7 +4,7 @@ use ray_shared::pathlib::Path;
 use serde::{Deserialize, Serialize};
 
 use ray_shared::span::parsed::Parsed;
-use ray_typing::ty::TyScheme;
+use ray_typing::types::TyScheme;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Name {

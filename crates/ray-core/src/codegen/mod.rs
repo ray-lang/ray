@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use lir::SymbolSet;
 
-use ray_typing::TyCtx;
 use ray_shared::{optlevel::OptLevel, pathlib::Path};
+use ray_typing::tyctx::TyCtx;
 
 use crate::sourcemap::SourceMap;
 use crate::{ast::Node, lir};

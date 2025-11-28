@@ -1,5 +1,5 @@
 use crate::ast::{Expr, Node, Sequence};
-use ray_shared::span::Span;
+use ray_shared::{node_id::NodeId, span::Span};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
@@ -29,7 +29,7 @@ impl Call {
         }
     }
 
-    pub fn call_resolution_id(&self) -> u64 {
+    pub fn call_resolution_id(&self) -> NodeId {
         // call_resolution expects id of either:
         //  - the name node of the callee in dot (`f` in `e.f`)
         //  - or the callee node itself

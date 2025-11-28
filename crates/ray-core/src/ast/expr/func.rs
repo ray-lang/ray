@@ -5,13 +5,13 @@ use ray_shared::{
     pathlib::{FilePath, Path},
     span::{Source, Span, parsed::Parsed},
 };
-use ray_typing::top::{Predicate, Predicates, Substitutable as _};
+use ray_typing::{
+    constraints::Predicate,
+    tyctx::TyCtx,
+    types::{Ty, TyScheme},
+};
 
 use crate::sourcemap::SourceMap;
-use ray_typing::{
-    TyCtx,
-    ty::{Ty, TyScheme},
-};
 use crate::{
     ast::{Expr, Missing, Modifier, Name, Node, TypeParams},
     errors::{RayError, RayErrorKind},
@@ -171,12 +171,8 @@ impl std::fmt::Display for Func {
 impl FuncSig {
     pub fn resolve_signature(
         &mut self,
-        fn_scope: &Path,
         scopes: &Vec<Scope>,
-        filepath: &FilePath,
-        srcmap: &SourceMap,
         ncx: &NameContext,
-        tcx: &mut TyCtx,
     ) -> Result<(), RayError> {
         log::debug!("[resolve_signature] {}", self);
 
@@ -200,7 +196,16 @@ impl FuncSig {
         for qual in self.qualifiers.iter_mut() {
             qual.resolve_fqns(scopes, ncx);
         }
+        Ok(())
+    }
 
+    pub fn fresh_scheme(
+        &mut self,
+        fn_scope: &Path,
+        filepath: &FilePath,
+        tcx: &mut TyCtx,
+        srcmap: &SourceMap,
+    ) -> Result<(), RayError> {
         // then create a "fresh" scheme, replacing each schema variable with a meta variable
         let ty = self.to_scheme(fn_scope, filepath, tcx, srcmap)?;
         if let Some(ty_params) = &mut self.ty_params {
@@ -281,14 +286,14 @@ impl FuncSig {
         };
 
         let scheme = if self.qualifiers.len() != 0 {
-            let mut preds = Predicates::new();
+            let mut preds = vec![];
             for q in self.qualifiers.iter() {
                 let ty_span = *q.span().unwrap();
                 let mut q = q.clone_value();
                 q.map_vars(fn_tcx);
 
-                let (s, mut ty_args) = match q {
-                    Ty::Projection(s, v) => (s.name(), v),
+                let (fqn, ty_args) = match q {
+                    Ty::Proj(name, args) => (name, args),
                     Ty::Const(name) => (name, vec![]),
                     _ => {
                         return Err(RayError {
@@ -304,7 +309,6 @@ impl FuncSig {
                     }
                 };
 
-                let fqn = Path::from(s.as_str());
                 log::debug!("converting from ast type: {}", fqn);
                 if fn_tcx.get_trait_ty(&fqn).is_none() {
                     return Err(RayError {
@@ -319,20 +323,14 @@ impl FuncSig {
                     });
                 }
 
-                let ty_arg = if ty_args.len() > 0 {
-                    ty_args.remove(0)
-                } else {
-                    Ty::Never
-                };
                 preds.push(Predicate::class(
                     fqn.without_type_args().to_string(),
-                    ty_arg,
                     ty_args,
                 ));
             }
             TyScheme::new(vars, preds, ty)
         } else if vars.len() != 0 {
-            TyScheme::new(vars, Predicates::new(), ty)
+            TyScheme::new(vars, vec![], ty)
         } else {
             TyScheme::from_mono(ty)
         };

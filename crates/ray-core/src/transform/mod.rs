@@ -1,27 +1,26 @@
 use std::collections::{HashMap, HashSet};
 
-use ray_typing::TyCtx;
 use ray_shared::span::{Source, Span};
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::{FilePath, Path},
 };
+use ray_typing::tyctx::TyCtx;
 
 use crate::{
-    ast::{self, Decl, Expr, Literal, LowerAST, LowerCtx, Module, Node},
+    ast::{self, AstLowerCtx, Decl, Expr, Literal, LowerAST, Module, Node},
     errors::RayError,
     sema::{NameResolve, ResolveContext},
     sourcemap::SourceMap,
 };
 
 type SourceModule = Module<Expr, Decl>;
-type CombineResult = (
-    Module<(), Decl>,
-    SourceMap,
-    HashMap<Path, Vec<Scope>>,
-    TyCtx,
-    NameContext,
-);
+pub struct CombineResult {
+    pub module: Module<(), Decl>,
+    pub srcmap: SourceMap,
+    pub tcx: TyCtx,
+    pub ncx: NameContext,
+}
 
 struct ModuleCombiner {
     base_module_path: Path,
@@ -70,7 +69,12 @@ impl ModuleCombiner {
             decl.lower(&mut ctx)?;
         }
 
-        Ok((new_module, srcmap, self.scope_map, self.tcx, self.ncx))
+        Ok(CombineResult {
+            module: new_module,
+            srcmap,
+            tcx: self.tcx,
+            ncx: self.ncx,
+        })
     }
 
     fn collect(
@@ -181,8 +185,8 @@ impl ModuleCombiner {
         (module, srcmap)
     }
 
-    fn get_lower_ctx<'a>(&'a mut self, srcmap: &'a mut SourceMap) -> LowerCtx<'a> {
-        LowerCtx::new(
+    fn get_lower_ctx<'a>(&'a mut self, srcmap: &'a mut SourceMap) -> AstLowerCtx<'a> {
+        AstLowerCtx::new(
             srcmap,
             &mut self.scope_map,
             &mut self.tcx,

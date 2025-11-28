@@ -7,13 +7,12 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::{FilePath, Path, RayPaths},
     span::{Source, Span},
+    utils::map_join,
 };
-use ray_typing::top::{Subst, Substitutable, TyVar as TopTyVar, solver::SolveResult};
 use ray_typing::{
-    TyCtx,
-    info::TypeSystemInfo,
-    state::{Env, SchemeEnv},
-    ty::{Ty, TyScheme, TyVar},
+    env::GlobalEnv,
+    tyctx::TyCtx,
+    types::{Subst, Substitutable, Ty, TyVar},
 };
 
 use crate::{
@@ -23,7 +22,8 @@ use crate::{
     lir::Program,
     parse::{self, ParseDiagnostics, ParseOptions, Parser},
     sourcemap::SourceMap,
-    strutils, transform,
+    strutils,
+    transform::{self, CombineResult},
 };
 
 use super::root;
@@ -35,7 +35,6 @@ pub struct ModBuilderResult {
     pub tcx: TyCtx,
     pub ncx: NameContext,
     pub srcmap: SourceMap,
-    pub defs: SchemeEnv,
     pub libs: Vec<Program>,
     pub paths: HashSet<Path>,
 }
@@ -132,53 +131,72 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let mut ncx = self.ncx;
         let mut srcmaps = self.srcmaps;
         let mut lib_set = HashSet::new();
-        let mut defs = Env::new();
-        let mut tcx = TyCtx::new();
+        let global_env = GlobalEnv::new();
+        let mut tcx = TyCtx::new(global_env);
         let mut definitions = HashMap::new();
         for (lib_path, mut lib) in self.libs {
             // create a substitution to map the library's variables
-            let subst = (0..lib.tcx.tf().curr())
-                .flat_map(|u| {
-                    let old_var = TyVar::from_u32(u);
-                    if u == tcx.tf().curr() {
-                        // generate and ignore the new variable
-                        let _ = tcx.tf().next();
-                        return None;
-                    }
-                    let new_var = tcx.tf().next();
-                    Some((old_var, Ty::Var(new_var)))
+            let subst = {
+                let curr_schema_allocator = tcx.schema_allocator();
+                let curr_id = lib.tcx.schema_allocator().borrow().curr_id();
+                log::debug!(
+                    "serialized schema allocator curr_id from {}: {}",
+                    lib_path,
+                    curr_id
+                );
+                (0..curr_id)
+                    .flat_map(|u| {
+                        let old_var = TyVar::new(format!("?s{}", u));
+                        if u == curr_schema_allocator.borrow().curr_id() {
+                            // generate and ignore the new variable
+                            let _ = curr_schema_allocator.borrow_mut().alloc();
+                            return None;
+                        }
+
+                        let new_var = curr_schema_allocator.borrow_mut().alloc();
+                        Some((old_var, Ty::Var(new_var)))
+                    })
+                    .collect::<Subst>()
+            };
+            log::debug!("library ({}) subst: {}", lib_path, subst);
+            log::debug!(
+                "library schemes for {}:\n{}",
+                lib_path,
+                map_join(lib.tcx.schemes(), "\n", |(path, scheme)| {
+                    format!("  {}: {}", path, scheme)
                 })
-                .collect::<Subst<TyVar, Ty>>();
-            log::debug!("subst: {}", subst);
-            lib.tcx.apply_subst_all(&subst);
-            lib.program.apply_subst_all(&subst);
+            );
+            lib.tcx.apply_subst(&subst);
+            lib.program.apply_subst(&subst);
 
             lib_set.insert(lib_path.clone());
             tcx.extend(lib.tcx);
             ncx.extend(lib.ncx);
             srcmaps.insert(lib_path, lib.srcmap);
             libs.push(lib.program);
-            defs.extend(lib.defs);
             definitions.extend(lib.definitions.into_iter());
         }
 
         let modules = self.modules;
         let paths = modules.iter().map(|(p, _)| p.clone()).collect();
         log::debug!("paths: {:?}", paths);
-        let (module, srcmap, tcx, ncx) =
-            match transform::combine(module_path, modules, srcmaps, lib_set, tcx, ncx) {
-                Ok((module, srcmap, _, tcx, ncx)) => (module, srcmap, tcx, ncx),
-                Err(errs) => {
-                    return Err(errs);
-                }
-            };
+        let CombineResult {
+            module,
+            srcmap,
+            tcx,
+            ncx,
+        } = match transform::combine(module_path, modules, srcmaps, lib_set, tcx, ncx) {
+            Ok(result) => result,
+            Err(errs) => {
+                return Err(errs);
+            }
+        };
 
         Ok(ModBuilderResult {
             module,
             tcx,
             ncx,
             srcmap,
-            defs,
             libs,
             paths,
         })
@@ -269,7 +287,6 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 stmts,
                 decls,
                 filepaths,
-                defs: Env::new(),
                 path: module_path.clone(),
                 root_filepath: root_file.filepath,
                 doc_comment: root_file.doc_comment,
@@ -1092,130 +1109,130 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 }
 
 impl ModBuilderResult {
-    pub fn apply_solution(
-        &mut self,
-        solution: SolveResult<TypeSystemInfo, Ty, TyVar>,
-        defs: &SchemeEnv,
-    ) {
-        let skolem_subst = solution
-            .skolems
-            .iter()
-            .flat_map(|skolem| {
-                skolem
-                    .vars
-                    .iter()
-                    .map(|(skolem_var, original)| (skolem_var.clone(), Ty::Var(original.clone())))
-            })
-            .collect::<Subst<_, _>>();
+    // pub fn apply_solution(
+    //     &mut self,
+    //     solution: SolveResult<TypeSystemInfo, Ty, TyVar>,
+    //     defs: &SchemeEnv,
+    // ) {
+    //     let skolem_subst = solution
+    //         .skolems
+    //         .iter()
+    //         .flat_map(|skolem| {
+    //             skolem
+    //                 .vars
+    //                 .iter()
+    //                 .map(|(skolem_var, original)| (skolem_var.clone(), Ty::Var(original.clone())))
+    //         })
+    //         .collect::<Subst<_, _>>();
 
-        self.tcx.apply_subst(&solution.subst);
-        self.tcx.apply_subst_all(&skolem_subst);
-        let inst_scheme_map = solution
-            .inst_type_schemes
-            .iter()
-            .map(|(v, scheme)| {
-                let ty_scheme = TyScheme::scheme(scheme.clone());
-                log::debug!(
-                    "inst_type_schemes: inserting {} => {} (has_quantifiers={})",
-                    v,
-                    ty_scheme,
-                    ty_scheme.has_quantifiers()
-                );
-                (v.clone(), ty_scheme)
-            })
-            .collect();
-        self.tcx.extend_inst_ty_map(inst_scheme_map);
-        let inst_scheme_keys = solution
-            .inst_type_schemes
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
+    //     self.tcx.apply_subst(&solution.subst);
+    //     self.tcx.apply_subst_all(&skolem_subst);
+    //     let inst_scheme_map = solution
+    //         .inst_type_schemes
+    //         .iter()
+    //         .map(|(v, scheme)| {
+    //             let ty_scheme = TyScheme::scheme(scheme.clone());
+    //             log::debug!(
+    //                 "inst_type_schemes: inserting {} => {} (has_quantifiers={})",
+    //                 v,
+    //                 ty_scheme,
+    //                 ty_scheme.has_quantifiers()
+    //             );
+    //             (v.clone(), ty_scheme)
+    //         })
+    //         .collect();
+    //     self.tcx.extend_inst_ty_map(inst_scheme_map);
+    //     let inst_scheme_keys = solution
+    //         .inst_type_schemes
+    //         .keys()
+    //         .cloned()
+    //         .collect::<HashSet<_>>();
 
-        let mut poly_inst_seeds = Subst::<TyVar, TyScheme>::new();
-        {
-            let tcx = &self.tcx;
+    //     let mut poly_inst_seeds = Subst::<TyVar, TyScheme>::new();
+    //     {
+    //         let tcx = &self.tcx;
 
-            let mut seed_from_fn = |node_id: u64, path: &Path| {
-                if let Some(Ty::Var(original_tv)) = tcx.original_ty_of(node_id) {
-                    if tcx.inst_ty_of(original_tv).is_some() {
-                        log::debug!(
-                            "poly_inst_seed: {} already has instantiation; skipping path {}",
-                            original_tv,
-                            path
-                        );
-                        return;
-                    }
+    //         let mut seed_from_fn = |node_id: u64, path: &Path| {
+    //             if let Some(Ty::Var(original_tv)) = tcx.original_ty_of(node_id) {
+    //                 if tcx.inst_ty_of(original_tv).is_some() {
+    //                     log::debug!(
+    //                         "poly_inst_seed: {} already has instantiation; skipping path {}",
+    //                         original_tv,
+    //                         path
+    //                     );
+    //                     return;
+    //                 }
 
-                    if let Some(scheme) = defs.get(path) {
-                        if scheme.has_quantifiers() {
-                            log::debug!(
-                                "poly_inst_seed: seeding {} with polymorphic scheme {} from {}",
-                                original_tv,
-                                scheme,
-                                path
-                            );
-                            poly_inst_seeds.insert(original_tv.clone(), scheme.clone());
-                        } else {
-                            log::debug!(
-                                "poly_inst_seed: defs entry for {} is monomorphic {}; skipping",
-                                path,
-                                scheme
-                            );
-                        }
-                    } else {
-                        log::debug!("poly_inst_seed: no defs entry for {}; skipping", path);
-                    }
-                }
-            };
+    //                 if let Some(scheme) = defs.get(path) {
+    //                     if scheme.has_quantifiers() {
+    //                         log::debug!(
+    //                             "poly_inst_seed: seeding {} with polymorphic scheme {} from {}",
+    //                             original_tv,
+    //                             scheme,
+    //                             path
+    //                         );
+    //                         poly_inst_seeds.insert(original_tv.clone(), scheme.clone());
+    //                     } else {
+    //                         log::debug!(
+    //                             "poly_inst_seed: defs entry for {} is monomorphic {}; skipping",
+    //                             path,
+    //                             scheme
+    //                         );
+    //                     }
+    //                 } else {
+    //                     log::debug!("poly_inst_seed: no defs entry for {}; skipping", path);
+    //                 }
+    //             }
+    //         };
 
-            for decl in &self.module.decls {
-                match &decl.value {
-                    Decl::Func(func) => seed_from_fn(decl.id, &func.sig.path),
-                    Decl::Impl(imp) => {
-                        if let Some(funcs) = &imp.funcs {
-                            for func in funcs {
-                                seed_from_fn(func.id, &func.sig.path);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+    //         for decl in &self.module.decls {
+    //             match &decl.value {
+    //                 Decl::Func(func) => seed_from_fn(decl.id, &func.sig.path),
+    //                 Decl::Impl(imp) => {
+    //                     if let Some(funcs) = &imp.funcs {
+    //                         for func in funcs {
+    //                             seed_from_fn(func.id, &func.sig.path);
+    //                         }
+    //                     }
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
+    //     }
 
-        if !poly_inst_seeds.is_empty() {
-            self.tcx.extend_inst_ty_map(poly_inst_seeds);
-        }
+    //     if !poly_inst_seeds.is_empty() {
+    //         self.tcx.extend_inst_ty_map(poly_inst_seeds);
+    //     }
 
-        log::debug!("defs: {}", defs);
+    //     log::debug!("defs: {}", defs);
 
-        let filtered_scheme_subst = solution
-            .scheme_subst()
-            .into_iter()
-            .filter_map(|(v, s)| {
-                if inst_scheme_keys.contains(&v) {
-                    log::debug!("scheme_subst: skipping {} because instantiation exists", v);
-                    return None;
-                }
-                let scheme = TyScheme::scheme(s);
-                if scheme.has_quantifiers() {
-                    log::debug!(
-                        "scheme_subst: dropping {} => {} (has_quantifiers)",
-                        v,
-                        scheme
-                    );
-                    None
-                } else {
-                    log::debug!("scheme_subst: keeping {} => {}", v, scheme);
-                    Some((v, scheme))
-                }
-            })
-            .collect();
-        self.tcx.extend_scheme_subst(filtered_scheme_subst);
-        self.tcx.extend_predicates(solution.qualifiers.clone());
-        self.tcx.tf().skip_to(solution.unique);
+    //     let filtered_scheme_subst = solution
+    //         .scheme_subst()
+    //         .into_iter()
+    //         .filter_map(|(v, s)| {
+    //             if inst_scheme_keys.contains(&v) {
+    //                 log::debug!("scheme_subst: skipping {} because instantiation exists", v);
+    //                 return None;
+    //             }
+    //             let scheme = TyScheme::scheme(s);
+    //             if scheme.has_quantifiers() {
+    //                 log::debug!(
+    //                     "scheme_subst: dropping {} => {} (has_quantifiers)",
+    //                     v,
+    //                     scheme
+    //                 );
+    //                 None
+    //             } else {
+    //                 log::debug!("scheme_subst: keeping {} => {}", v, scheme);
+    //                 Some((v, scheme))
+    //             }
+    //         })
+    //         .collect();
+    //     self.tcx.extend_scheme_subst(filtered_scheme_subst);
+    //     self.tcx.extend_predicates(solution.qualifiers.clone());
+    //     self.tcx.tf().skip_to(solution.unique);
 
-        log::debug!("{}", self.module);
-        log::debug!("{}", self.tcx);
-    }
+    //     log::debug!("{}", self.module);
+    //     log::debug!("{}", self.tcx);
+    // }
 }

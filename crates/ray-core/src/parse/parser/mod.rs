@@ -17,14 +17,15 @@ mod ty;
 mod tests;
 
 pub use context::ParseContext;
+use ray_shared::node_id::NodeId;
 pub use recover::{Recover, RecoveryCtx};
 
 use std::{fs, io, mem};
 
-use ray_typing::ty::{Ty, TyScheme};
 use rand::RngCore;
 use ray_shared::pathlib::{FilePath, Path};
 use ray_shared::span::{Pos, Source, Span, parsed::Parsed};
+use ray_typing::types::{Ty, TyScheme};
 
 use crate::{
     ast::{
@@ -1356,9 +1357,9 @@ impl<'src> Parser<'src> {
         node
     }
 
-    pub(crate) fn mk_synthetic(&mut self, span: Span) -> u64 {
+    pub(crate) fn mk_synthetic(&mut self, span: Span) -> NodeId {
         let mut rng = rand::thread_rng();
-        let id = rng.next_u64();
+        let id = NodeId(rng.next_u64());
         let src = Source {
             span: Some(span),
             filepath: self.options.filepath.clone(),

@@ -6,11 +6,11 @@ use std::{
 use itertools::Itertools;
 use ray_shared::{pathlib::Path, span::parsed::Parsed, utils::join};
 
-use ray_typing::ty::{NominalKind, Ty, TyScheme};
 use crate::{
     ast::{Assign, Func, FuncSig, Name, Node, TypeParams},
     strutils,
 };
+use ray_typing::types::{NominalKind, Ty, TyScheme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extern {
@@ -103,6 +103,21 @@ impl Into<usize> for &Decl {
 }
 
 impl Decl {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Decl::Extern(_) => "Extern",
+            Decl::Mutable(_) => "Mutable",
+            Decl::Name(_) => "Name",
+            Decl::Declare(_) => "Declare",
+            Decl::Func(_) => "Func",
+            Decl::FnSig(_) => "FnSig",
+            Decl::Struct(_) => "Struct",
+            Decl::Trait(_) => "Trait",
+            Decl::TypeAlias(_, _) => "TypeAlias",
+            Decl::Impl(_) => "Impl",
+        }
+    }
+
     pub fn desc(&self) -> String {
         match self {
             Decl::Extern(e) => format!("extern {}", e.decl().desc()),

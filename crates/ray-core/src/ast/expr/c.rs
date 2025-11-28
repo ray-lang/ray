@@ -3,7 +3,7 @@ use std::fmt;
 use ray_shared::{pathlib::FilePath, span::Span};
 
 use crate::ast::{Decl, Node};
-use ray_typing::ty::Ty;
+use ray_typing::types::Ty;
 
 #[derive(Debug)]
 pub struct CType {

@@ -6,7 +6,6 @@ use ray_shared::{
 };
 
 use crate::{ast::Node, strutils};
-use ray_typing::state::TyEnv;
 
 use super::{Decl, Expr, Import};
 
@@ -22,7 +21,6 @@ where
     pub imports: Vec<Scope>,
     pub import_stmts: Vec<Import>,
     pub submodules: Vec<Path>,
-    pub defs: TyEnv,
     pub doc_comment: Option<String>,
     pub root_filepath: FilePath,
     pub filepaths: Vec<FilePath>,
@@ -100,7 +98,6 @@ where
             imports: other.imports.clone(),
             import_stmts: other.import_stmts.clone(),
             submodules: other.submodules.clone(),
-            defs: other.defs.clone(),
             doc_comment: other.doc_comment.clone(),
             root_filepath: other.root_filepath.clone(),
             filepaths: other.filepaths.clone(),

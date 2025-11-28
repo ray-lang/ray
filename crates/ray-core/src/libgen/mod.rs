@@ -5,10 +5,11 @@ use std::{
 
 use ray_shared::{
     collections::namecontext::NameContext,
+    node_id::NodeId,
     pathlib::{FilePath, Path, PathPart},
     span::Span,
 };
-use ray_typing::{TyCtx, state::SchemeEnv, ty::Ty};
+use ray_typing::{tyctx::TyCtx, types::Ty};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -23,7 +24,6 @@ pub struct RayLib {
     pub tcx: TyCtx,
     pub ncx: NameContext,
     pub srcmap: SourceMap,
-    pub defs: SchemeEnv,
     pub modules: Vec<Path>,
     pub definitions: HashMap<Path, DefinitionRecord>,
 }
@@ -63,7 +63,7 @@ pub enum DefinitionKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefinitionRecord {
-    pub id: u64,
+    pub id: NodeId,
     pub display_path: Path,
     pub file: Option<FilePath>,
     pub span: Option<Span>,
@@ -231,7 +231,6 @@ pub fn serialize(
     tcx: TyCtx,
     ncx: NameContext,
     srcmap: SourceMap,
-    defs: SchemeEnv,
     modules: Vec<Path>,
     definitions: HashMap<Path, DefinitionRecord>,
 ) -> Vec<u8> {
@@ -240,7 +239,6 @@ pub fn serialize(
         tcx,
         ncx,
         srcmap,
-        defs,
         modules,
         definitions,
     })
@@ -440,7 +438,7 @@ fn register_fn_param(
 }
 
 fn register_func(
-    id: u64,
+    id: NodeId,
     func: &Func,
     srcmap: &SourceMap,
     tcx: &TyCtx,
@@ -459,7 +457,7 @@ fn register_func(
 }
 
 fn register_func_sig(
-    id: u64,
+    id: NodeId,
     sig: &FuncSig,
     srcmap: &SourceMap,
     tcx: &TyCtx,
@@ -665,7 +663,7 @@ fn register_in_pattern(
 fn insert_definition_record(
     records: &mut HashMap<Path, DefinitionRecord>,
     path: &Path,
-    id: u64,
+    id: NodeId,
     srcmap: &SourceMap,
     kind: DefinitionKind,
 ) {

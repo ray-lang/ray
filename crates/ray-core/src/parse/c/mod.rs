@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use ray_typing::ty::Ty;
 use lang_c::ast::{
     DeclarationSpecifier, Declarator, DeclaratorKind, DerivedDeclarator, ExternalDeclaration,
     SpecifierQualifier, StructDeclaration, StructKind, TranslationUnit, TypeSpecifier,
@@ -11,6 +10,7 @@ use ray_shared::{
     pathlib::FilePath,
     span::{Pos, Source, Span},
 };
+use ray_typing::types::Ty;
 
 use crate::{
     ast,
@@ -119,7 +119,7 @@ fn make_ptr_ty(mut ty: Ty, ptr: usize, ty_params: &mut Vec<Ty>) -> Ty {
             _ => (),
         }
 
-        ty = Ty::refty(ty);
+        ty = Ty::ref_of(ty);
     }
 
     ty
@@ -276,7 +276,7 @@ fn make_type(ty_specs: Vec<&TypeSpecifier>) -> Ty {
                         .declarations
                         .as_ref()
                         .map(|struct_decls| get_struct_fields(struct_decls, &mut ty_params));
-                    Some(Ty::Projection(Box::new(Ty::Const(name)), ty_params))
+                    Some(Ty::proj(name, ty_params))
                 }
                 StructKind::Union => None,
             },

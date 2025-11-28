@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use ray_shared::{
+    node_id::NodeId,
     pathlib::{FilePath, Path},
     span::{Source, Span, parsed::Parsed},
 };
-use ray_typing::top::Ty as _;
 use ray_typing::{
-    TyCtx,
-    ty::{Ty, TyScheme},
+    tyctx::TyCtx,
+    types::{Ty, TyScheme},
 };
 
 use crate::{
@@ -34,7 +34,7 @@ pub struct SymbolTarget {
 
 #[derive(Debug, Default, Clone)]
 pub struct SymbolMap {
-    entries: HashMap<u64, Vec<SymbolTarget>>,
+    entries: HashMap<NodeId, Vec<SymbolTarget>>,
 }
 
 impl SymbolMap {
@@ -48,15 +48,15 @@ impl SymbolMap {
         self.entries.len()
     }
 
-    pub fn insert(&mut self, node_id: u64, target: SymbolTarget) {
+    pub fn insert(&mut self, node_id: NodeId, target: SymbolTarget) {
         self.entries.entry(node_id).or_default().push(target);
     }
 
-    pub fn get(&self, node_id: &u64) -> Option<&[SymbolTarget]> {
+    pub fn get(&self, node_id: &NodeId) -> Option<&[SymbolTarget]> {
         self.entries.get(node_id).map(|targets| targets.as_slice())
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u64, &SymbolTarget)> {
+    pub fn iter(&self) -> impl Iterator<Item = (NodeId, &SymbolTarget)> {
         self.entries.iter().flat_map(|(id, targets)| {
             let id = *id;
             targets.iter().map(move |target| (id, target))
@@ -71,8 +71,8 @@ pub struct SymbolBuildContext<'a> {
     symbol_map: SymbolMap,
     definitions: HashMap<Path, SymbolTarget>,
     struct_fields: HashMap<(String, String), Path>,
-    references: Vec<(u64, Path)>,
-    ignore: HashSet<u64>,
+    references: Vec<(NodeId, Path)>,
+    ignore: HashSet<NodeId>,
 }
 
 impl<'a> SymbolBuildContext<'a> {
@@ -93,7 +93,7 @@ impl<'a> SymbolBuildContext<'a> {
         }
     }
 
-    fn record_definition(&mut self, node_id: u64, path: &Path, source: &Source) {
+    fn record_definition(&mut self, node_id: NodeId, path: &Path, source: &Source) {
         if path.is_empty() {
             return;
         }
@@ -114,7 +114,7 @@ impl<'a> SymbolBuildContext<'a> {
         self.definitions.insert(path.clone(), target);
     }
 
-    fn record_reference(&mut self, node_id: u64, path: &Path) {
+    fn record_reference(&mut self, node_id: NodeId, path: &Path) {
         if self.ignore.contains(&node_id) {
             log::debug!(
                 "[record reference] IGNORE node_id={}, path={}",
@@ -193,14 +193,15 @@ impl<'a> SymbolBuildContext<'a> {
 
     fn record_call(&mut self, call: &Call) {
         let call_id = call.call_resolution_id();
-        if let Some(trait_path) = self.tcx.call_resolution(call_id) {
+        if let Some(resolved) = self.tcx.call_resolution(call_id) {
+            let trait_path = &resolved.base_fqn;
             // Always record a reference to the (possibly polymorphic) trait method.
-            self.record_reference(call_id, &trait_path);
+            self.record_reference(call_id, trait_path);
 
             // Also record a reference to the fully-instantiated impl FQN by
             // mirroring the method resolution logic used in LIR generation.
             let callee_expr_id = call.callee.id;
-            let arg_ids: Vec<u64> = call.args.items.iter().map(|arg| arg.id).collect();
+            let arg_ids: Vec<NodeId> = call.args.items.iter().map(|arg| arg.id).collect();
             let impl_path = self.tcx.resolve_method_impl_fqn(
                 trait_path.clone(),
                 call_id,

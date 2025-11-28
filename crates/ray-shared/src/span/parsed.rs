@@ -2,13 +2,15 @@ use std::ops::{Deref, DerefMut};
 
 use serde::{Deserialize, Serialize};
 
+use crate::node_id::NodeId;
+
 use super::{Source, Span};
 
 #[derive(Serialize, Deserialize)]
 pub struct Parsed<T> {
     value: T,
     src: Source,
-    synthetic_ids: Vec<u64>,
+    synthetic_ids: Vec<NodeId>,
 }
 
 impl<T> std::fmt::Debug for Parsed<T>
@@ -116,15 +118,15 @@ impl<T> Parsed<T> {
         self.src.span.as_ref()
     }
 
-    pub fn synthetic_ids(&self) -> &[u64] {
+    pub fn synthetic_ids(&self) -> &[NodeId] {
         &self.synthetic_ids
     }
 
-    pub fn set_synthetic_ids(&mut self, ids: Vec<u64>) {
+    pub fn set_synthetic_ids(&mut self, ids: Vec<NodeId>) {
         self.synthetic_ids = ids;
     }
 
-    pub fn take(self) -> (T, Source, Vec<u64>) {
+    pub fn take(self) -> (T, Source, Vec<NodeId>) {
         (self.value, self.src, self.synthetic_ids)
     }
 

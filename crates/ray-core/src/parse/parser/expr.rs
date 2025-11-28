@@ -1,5 +1,5 @@
 use ray_shared::span::{Span, parsed::Parsed};
-use ray_typing::ty::TyScheme;
+use ray_typing::types::TyScheme;
 
 use crate::ast::{
     Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, Sequence,

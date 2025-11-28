@@ -1,94 +1,58 @@
 use std::fmt::Display;
 
-use serde::{Deserialize, Serialize};
-use crate::top::{
-    InfoDetail, InfoJoin, PolyTypeConstraintInfo, Predicate, Predicates, Scheme, Subst,
-    Substitutable, TypeConstraintInfo, util::Join,
-};
-
+use crate::constraints::Predicate;
+use crate::types::{Subst, Substitutable, Ty, TyScheme, TyVar};
 use ray_shared::span::Source;
+use serde::{Deserialize, Serialize};
 
-use super::ty::{Ty, TyVar};
-
+/// Additional contextual information for type errors and diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Info {
     EqualityTypePair(Ty, Ty),
-    MissingPredicate(Predicate<Ty, TyVar>),
-    AmbiguousPredicate(Predicate<Ty, TyVar>),
-    UnsolvedPredicate(Predicate<Ty, TyVar>, Box<TypeSystemInfo>),
-    PredicateArisingFrom(Predicate<Ty, TyVar>),
-    ParentPredicate(Predicate<Ty, TyVar>),
+    MissingPredicate(Predicate),
+    AmbiguousPredicate(Predicate),
+    UnsolvedPredicate(Predicate, Box<TypeSystemInfo>),
+    PredicateArisingFrom(Predicate),
+    ParentPredicate(Predicate),
     EscapedSkolems(Vec<TyVar>),
-    NeverDirective(Predicate<Ty, TyVar>, Box<TypeSystemInfo>),
+    NeverDirective(Predicate, Box<TypeSystemInfo>),
     CloseDirective(String, Box<TypeSystemInfo>),
     DisjointDirective(String, Box<TypeSystemInfo>, String, Box<TypeSystemInfo>),
-    InstantiatedTypeScheme(Scheme<Predicates<Ty, TyVar>, Ty, TyVar>),
-    SkolemizedTypeScheme(Vec<Ty>, Scheme<Predicates<Ty, TyVar>, Ty, TyVar>),
+    InstantiatedTypeScheme(TyScheme),
+    SkolemizedTypeScheme(Vec<Ty>, TyScheme),
     Detail(String),
 }
 
-impl Substitutable<TyVar, Ty> for Info {
-    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+impl Substitutable for Info {
+    fn apply_subst(&mut self, subst: &Subst) {
         match self {
-            Info::EqualityTypePair(ty1, ty2) => {
-                ty1.apply_subst(subst);
-                ty2.apply_subst(subst);
+            Info::EqualityTypePair(t1, t2) => {
+                t1.apply_subst(subst);
+                t2.apply_subst(subst);
             }
-            Info::AmbiguousPredicate(predicate)
-            | Info::MissingPredicate(predicate)
-            | Info::PredicateArisingFrom(predicate)
-            | Info::ParentPredicate(predicate) => predicate.apply_subst(subst),
-            Info::UnsolvedPredicate(predicate, type_system_info)
-            | Info::NeverDirective(predicate, type_system_info) => {
-                predicate.apply_subst(subst);
-                type_system_info.apply_subst(subst);
+            Info::MissingPredicate(pred)
+            | Info::AmbiguousPredicate(pred)
+            | Info::PredicateArisingFrom(pred)
+            | Info::ParentPredicate(pred) => pred.apply_subst(subst),
+            Info::UnsolvedPredicate(pred, info) | Info::NeverDirective(pred, info) => {
+                pred.apply_subst(subst);
+                info.apply_subst(subst);
             }
-            Info::CloseDirective(_, type_system_info) => {
-                type_system_info.apply_subst(subst);
+            Info::CloseDirective(_, info) => {
+                info.apply_subst(subst);
             }
-            Info::DisjointDirective(_, ts1, _, ts2) => {
-                ts1.apply_subst(subst);
-                ts2.apply_subst(subst);
+            Info::DisjointDirective(_, lhs, _, rhs) => {
+                lhs.apply_subst(subst);
+                rhs.apply_subst(subst);
             }
-            Info::InstantiatedTypeScheme(for_all) => {
-                for_all.apply_subst(subst);
+            Info::InstantiatedTypeScheme(scheme) => {
+                scheme.apply_subst(subst);
             }
-            Info::SkolemizedTypeScheme(items, for_all) => {
-                items.apply_subst(subst);
-                for_all.apply_subst(subst);
-            }
-            Info::EscapedSkolems(_) | Info::Detail(_) => {}
-        }
-    }
-
-    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
-        match self {
-            Info::EqualityTypePair(ty1, ty2) => {
-                ty1.apply_subst_all(subst);
-                ty2.apply_subst_all(subst);
-            }
-            Info::AmbiguousPredicate(predicate)
-            | Info::MissingPredicate(predicate)
-            | Info::PredicateArisingFrom(predicate)
-            | Info::ParentPredicate(predicate) => predicate.apply_subst_all(subst),
-            Info::UnsolvedPredicate(predicate, type_system_info)
-            | Info::NeverDirective(predicate, type_system_info) => {
-                predicate.apply_subst_all(subst);
-                type_system_info.apply_subst_all(subst);
-            }
-            Info::CloseDirective(_, type_system_info) => {
-                type_system_info.apply_subst_all(subst);
-            }
-            Info::DisjointDirective(_, ts1, _, ts2) => {
-                ts1.apply_subst_all(subst);
-                ts2.apply_subst_all(subst);
-            }
-            Info::InstantiatedTypeScheme(for_all) => {
-                for_all.apply_subst_all(subst);
-            }
-            Info::SkolemizedTypeScheme(items, for_all) => {
-                items.apply_subst_all(subst);
-                for_all.apply_subst_all(subst);
+            Info::SkolemizedTypeScheme(tys, scheme) => {
+                for ty in tys {
+                    ty.apply_subst(subst);
+                }
+                scheme.apply_subst(subst);
             }
             Info::EscapedSkolems(_) | Info::Detail(_) => {}
         }
@@ -99,162 +63,38 @@ impl Display for Info {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Info::EqualityTypePair(a, b) => write!(f, "EqualityTypePair({}, {})", a, b),
-            Info::AmbiguousPredicate(p) => write!(f, "AmbiguousPredicate({})", p),
             Info::MissingPredicate(p) => write!(f, "MissingPredicate({})", p),
+            Info::AmbiguousPredicate(p) => write!(f, "AmbiguousPredicate({})", p),
             Info::UnsolvedPredicate(p, _) => write!(f, "UnsolvedPredicate({})", p),
             Info::PredicateArisingFrom(p) => write!(f, "PredicateArisingFrom({})", p),
             Info::ParentPredicate(p) => write!(f, "ParentPredicate({})", p),
             Info::EscapedSkolems(vars) => write!(f, "EscapedSkolems({:?})", vars),
             Info::NeverDirective(p, _) => write!(f, "NeverDirective({})", p),
             Info::CloseDirective(name, _) => write!(f, "CloseDirective({})", name),
-            Info::DisjointDirective(name1, _, name2, _) => {
-                write!(f, "DisjointDirective({}, {})", name1, name2)
+            Info::DisjointDirective(lhs, _, rhs, _) => {
+                write!(f, "DisjointDirective({}, {})", lhs, rhs)
             }
-            Info::InstantiatedTypeScheme(s) => {
-                write!(f, "InstantiatedTypeScheme({})", s)
-            }
+            Info::InstantiatedTypeScheme(s) => write!(f, "InstantiatedTypeScheme({})", s),
             Info::SkolemizedTypeScheme(vars, s) => {
                 write!(f, "SkolemizedTypeScheme({:?}, {})", vars, s)
             }
-            Info::Detail(s) => write!(f, "Detail({})", s),
+            Info::Detail(msg) => write!(f, "Detail({})", msg),
         }
     }
 }
 
+/// Aggregated type-system information for an error.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeSystemInfo {
     pub info: Vec<Info>,
     pub source: Vec<Source>,
 }
 
-impl Display for TypeSystemInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.info.is_empty() {
-            return write!(
-                f,
-                "TypeSystemInfo(source=[{}])",
-                self.source.iter().join(", ")
-            );
-        }
-
-        write!(f, "TypeSystemInfo(\n")?;
-        write!(f, "  source=[{}]\n", self.source.iter().join(", "))?;
-        write!(f, "  info=[\n")?;
-        for info in self.info.iter() {
-            write!(f, "  {}\n", info)?;
-        }
-        write!(f, "])")
-    }
-}
-
-impl InfoJoin for TypeSystemInfo {
-    fn join(mut self, other: Self) -> Self {
-        self.info.extend(other.info);
-        self.source.extend(other.source);
-        self
-    }
-}
-
-impl InfoDetail for TypeSystemInfo {
-    fn add_detail(&mut self, detail: &str) {
-        self.info.push(Info::Detail(detail.to_string()));
-    }
-}
-
-impl TypeConstraintInfo<TypeSystemInfo, Ty, TyVar> for TypeSystemInfo {
-    fn equality_type_pair(&mut self, lhs: &Ty, rhs: &Ty) {
-        self.info
-            .push(Info::EqualityTypePair(lhs.clone(), rhs.clone()));
-    }
-
-    fn missing_predicate(&mut self, predicate: &Predicate<Ty, TyVar>) {
-        self.info.push(Info::MissingPredicate(predicate.clone()));
-    }
-
-    fn ambiguous_predicate(&mut self, predicate: &Predicate<Ty, TyVar>) {
-        self.info.push(Info::AmbiguousPredicate(predicate.clone()));
-    }
-
-    fn unsolved_predicate(&mut self, predicate: &Predicate<Ty, TyVar>, info: &TypeSystemInfo) {
-        self.info.push(Info::UnsolvedPredicate(
-            predicate.clone(),
-            Box::new(info.clone()),
-        ));
-    }
-
-    fn predicate_arising_from(&mut self, predicate: &Predicate<Ty, TyVar>) {
-        self.info
-            .push(Info::PredicateArisingFrom(predicate.clone()));
-    }
-
-    fn parent_predicate(&mut self, predicate: &Predicate<Ty, TyVar>) {
-        self.info.push(Info::ParentPredicate(predicate.clone()));
-    }
-
-    fn escaped_skolems(&mut self, skolems: &[TyVar]) {
-        self.info.push(Info::EscapedSkolems(skolems.to_vec()));
-    }
-
-    fn never_directive(&mut self, predicate: &Predicate<Ty, TyVar>, info: &TypeSystemInfo) {
-        self.info.push(Info::NeverDirective(
-            predicate.clone(),
-            Box::new(info.clone()),
-        ));
-    }
-
-    fn close_directive(&mut self, directive: &String, info: &TypeSystemInfo) {
-        self.info.push(Info::CloseDirective(
-            directive.clone(),
-            Box::new(info.clone()),
-        ));
-    }
-
-    fn disjoint_directive(
-        &mut self,
-        lhs: &String,
-        lhs_info: &TypeSystemInfo,
-        rhs: &String,
-        rhs_info: &TypeSystemInfo,
-    ) {
-        self.info.push(Info::DisjointDirective(
-            lhs.clone(),
-            Box::new(lhs_info.clone()),
-            rhs.clone(),
-            Box::new(rhs_info.clone()),
-        ));
-    }
-}
-
-impl PolyTypeConstraintInfo<TypeSystemInfo, Ty, TyVar> for TypeSystemInfo {
-    fn instantiated_type_scheme(&mut self, scheme: &Scheme<Predicates<Ty, TyVar>, Ty, TyVar>) {
-        self.info.push(Info::InstantiatedTypeScheme(scheme.clone()));
-    }
-
-    fn skolemized_type_scheme(
-        &mut self,
-        tys: &Vec<Ty>,
-        scheme: &Scheme<Predicates<Ty, TyVar>, Ty, TyVar>,
-    ) {
-        self.info
-            .push(Info::SkolemizedTypeScheme(tys.clone(), scheme.clone()));
-    }
-}
-
-impl Substitutable<TyVar, Ty> for TypeSystemInfo {
-    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
-        for info in self.info.iter_mut() {
-            info.apply_subst(subst);
-        }
-    }
-
-    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
-        for info in self.info.iter_mut() {
-            info.apply_subst_all(subst);
-        }
-    }
-}
-
 impl TypeSystemInfo {
+    pub fn new() -> Self {
+        TypeSystemInfo::default()
+    }
+
     pub fn with_src(&mut self, src: Source) {
         self.source.push(src);
     }
@@ -269,5 +109,135 @@ impl TypeSystemInfo {
             Info::EqualityTypePair(t1, t2) => t1 != t2,
             _ => true,
         });
+    }
+
+    /// Record an equality-type-pair detail.
+    pub fn equality_type_pair(&mut self, lhs: &Ty, rhs: &Ty) {
+        self.info
+            .push(Info::EqualityTypePair(lhs.clone(), rhs.clone()));
+    }
+
+    /// Record a missing predicate detail.
+    pub fn missing_predicate(&mut self, predicate: &Predicate) {
+        self.info.push(Info::MissingPredicate(predicate.clone()));
+    }
+
+    /// Record an ambiguous predicate detail.
+    pub fn ambiguous_predicate(&mut self, predicate: &Predicate) {
+        self.info.push(Info::AmbiguousPredicate(predicate.clone()));
+    }
+
+    /// Record an unsolved predicate detail, preserving the contributing info.
+    pub fn unsolved_predicate(&mut self, predicate: &Predicate, info: &TypeSystemInfo) {
+        self.info.push(Info::UnsolvedPredicate(
+            predicate.clone(),
+            Box::new(info.clone()),
+        ));
+    }
+
+    /// Record where a predicate obligation originated.
+    pub fn predicate_arising_from(&mut self, predicate: &Predicate) {
+        self.info
+            .push(Info::PredicateArisingFrom(predicate.clone()));
+    }
+
+    /// Record the parent predicate (e.g. enclosing context) for diagnostics.
+    pub fn parent_predicate(&mut self, predicate: &Predicate) {
+        self.info.push(Info::ParentPredicate(predicate.clone()));
+    }
+
+    /// Record skolems that attempted to escape their scope.
+    pub fn escaped_skolems(&mut self, skolems: &[TyVar]) {
+        self.info.push(Info::EscapedSkolems(skolems.to_vec()));
+    }
+
+    /// Record that a predicate should never hold (a `never` directive).
+    pub fn never_directive(&mut self, predicate: &Predicate, info: &TypeSystemInfo) {
+        self.info.push(Info::NeverDirective(
+            predicate.clone(),
+            Box::new(info.clone()),
+        ));
+    }
+
+    /// Record a `close` directive along with supporting info.
+    pub fn close_directive(&mut self, directive: &String, info: &TypeSystemInfo) {
+        self.info.push(Info::CloseDirective(
+            directive.clone(),
+            Box::new(info.clone()),
+        ));
+    }
+
+    /// Record a `disjoint` directive between two trait/type combinations.
+    pub fn disjoint_directive(
+        &mut self,
+        lhs: &String,
+        lhs_info: &TypeSystemInfo,
+        rhs: &String,
+        rhs_info: &TypeSystemInfo,
+    ) {
+        self.info.push(Info::DisjointDirective(
+            lhs.clone(),
+            Box::new(lhs_info.clone()),
+            rhs.clone(),
+            Box::new(rhs_info.clone()),
+        ));
+    }
+
+    /// Record that a type scheme was instantiated during solving.
+    pub fn instantiated_type_scheme(&mut self, scheme: &TyScheme) {
+        self.info.push(Info::InstantiatedTypeScheme(scheme.clone()));
+    }
+
+    /// Record that a scheme was skolemized, along with the resulting skolems.
+    pub fn skolemized_type_scheme(&mut self, vars: &[TyVar], scheme: &TyScheme) {
+        self.info.push(Info::SkolemizedTypeScheme(
+            vars.iter().cloned().map(|v| Ty::Var(v)).collect(),
+            scheme.clone(),
+        ));
+    }
+
+    /// Record a free-form detail string.
+    pub fn detail(&mut self, msg: impl Into<String>) {
+        self.info.push(Info::Detail(msg.into()));
+    }
+}
+
+impl Substitutable for TypeSystemInfo {
+    fn apply_subst(&mut self, subst: &Subst) {
+        for info in &mut self.info {
+            info.apply_subst(subst);
+        }
+    }
+}
+
+impl Display for TypeSystemInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.info.is_empty() {
+            return write!(
+                f,
+                "TypeSystemInfo(source=[{}])",
+                self.source
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+
+        writeln!(f, "TypeSystemInfo(")?;
+        writeln!(
+            f,
+            "  source=[{}]",
+            self.source
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        writeln!(f, "  info=[")?;
+        for info in &self.info {
+            writeln!(f, "    {}", info)?;
+        }
+        write!(f, "  ]\n)")
     }
 }

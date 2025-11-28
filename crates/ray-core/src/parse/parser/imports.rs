@@ -1,4 +1,3 @@
-use ray_shared::span::Span;
 use crate::{
     ast::{Import, ImportKind, TrailingPolicy, token::TokenKind},
     parse::{
@@ -7,6 +6,7 @@ use crate::{
         parser::{Restrictions, context::SeqSpec},
     },
 };
+use ray_shared::span::Span;
 
 impl Parser<'_> {
     /// Parses an import statement

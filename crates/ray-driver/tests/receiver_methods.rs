@@ -2,7 +2,7 @@
 
 mod utils;
 
-use utils::test_build;
+use utils::{TestBuildOptions, test_build_with_options};
 
 #[test]
 fn value_receiver_methods_typecheck_for_value_and_pointer() {
@@ -26,7 +26,7 @@ fn call_on_ptr(p: *int) -> int {
 }
 "#;
 
-    test_build(src).unwrap_or_else(|errs| {
+    test_build_with_options(src, TestBuildOptions { minimal_core: true }).unwrap_or_else(|errs| {
         panic!(
             "expected type checking to succeed, but found errors: {:#?}",
             errs
@@ -54,7 +54,7 @@ fn call_on_ptr(p: *int) {
 }
 "#;
 
-    test_build(src).unwrap_or_else(|errs| {
+    test_build_with_options(src, TestBuildOptions { minimal_core: true }).unwrap_or_else(|errs| {
         panic!(
             "expected type checking to succeed, but found errors: {:#?}",
             errs

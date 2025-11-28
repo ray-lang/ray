@@ -1,12 +1,11 @@
 use std::collections::VecDeque;
 
-use crate::top::{Subst, Substitutable};
 use ray_shared::pathlib::{Path, PathPart};
 
-use super::ty::{Ty, TyVar};
+use crate::types::{Subst, Substitutable, TyVar};
 
-impl Substitutable<TyVar, Ty> for Path {
-    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+impl Substitutable for Path {
+    fn apply_subst(&mut self, subst: &Subst) {
         let mut parts = VecDeque::new();
         for part in self.drain(..).into_iter() {
             if let PathPart::FuncType(func_ty) = part {
@@ -96,12 +95,35 @@ impl Substitutable<TyVar, Ty> for Path {
 
         *self = Path::from(parts)
     }
+}
 
-    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
-        self.apply_subst(subst);
+#[cfg(test)]
+mod tests {
+    use ray_shared::pathlib::Path;
+
+    use crate::types::{Subst, Substitutable, Ty, TyVar};
+
+    #[test]
+    fn path_apply_subst_basic() {
+        let mut path = Path::from("T::[?t0,?t1]");
+        let mut subst = Subst::new();
+        subst.insert(TyVar::new("?t0"), Ty::uint());
+        subst.insert(TyVar::new("?t1"), Ty::string());
+        path.apply_subst(&subst);
+
+        assert_eq!(&path.to_string(), "T::[uint,string]");
     }
 
-    fn free_vars(&self) -> Vec<&TyVar> {
-        vec![]
+    #[test]
+    fn path_apply_subst_nested() {
+        let mut path = Path::from("T");
+        let args = vec!["list[?t0]", "set[?t1]"];
+        path = path.append_type_args(args.into_iter());
+        let mut subst = Subst::new();
+        subst.insert(TyVar::new("?t0"), Ty::uint());
+        subst.insert(TyVar::new("?t1"), Ty::string());
+        path.apply_subst(&subst);
+
+        assert_eq!(&path.to_string(), "T::[list[uint],set[string]]");
     }
 }

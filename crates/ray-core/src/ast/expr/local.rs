@@ -1,4 +1,4 @@
-use ray_typing::ty::Ty;
+use ray_typing::types::Ty;
 
 use crate::ast::{Expr, Node, Pattern};
 

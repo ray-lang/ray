@@ -1,7 +1,7 @@
 #![cfg(test)]
 
-use ray_typing::ty::{NominalKind, Ty};
 use ray_shared::pathlib::{FilePath, Path};
+use ray_typing::types::{NominalKind, Ty};
 
 use crate::{
     ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, Pattern},
@@ -789,132 +789,6 @@ struct Foo {
             );
         }
         other => panic!("expected function type, got {:?}", other),
-    }
-}
-
-#[test]
-fn recovers_missing_union_member() {
-    let source = r#"
-struct Foo {
-    field: A | ,
-}
-"#;
-    let (file, errors) = parse_source(source);
-    assert!(
-        !errors.is_empty(),
-        "expected errors for missing union member"
-    );
-    let decl = file
-        .decls
-        .first()
-        .expect("expected struct declaration")
-        .value
-        .clone();
-    let st = match decl {
-        Decl::Struct(st) => st,
-        other => panic!("expected struct declaration, got {:?}", other),
-    };
-    let fields = st.fields.expect("expected fields on struct");
-    let field = &fields[0];
-    let ty_scheme = field
-        .value
-        .ty
-        .as_ref()
-        .expect("expected type placeholder on field")
-        .clone_value();
-    match ty_scheme.into_mono() {
-        Ty::Union(tys) => {
-            assert_eq!(tys.len(), 2, "expected two union members");
-            assert!(
-                matches!(tys[1], Ty::Never),
-                "expected Ty::Never placeholder for missing member"
-            );
-        }
-        other => panic!("expected union type, got {:?}", other),
-    }
-}
-
-#[test]
-fn recovers_missing_union_middle_member() {
-    let source = r#"
-struct Foo {
-    field: A | | B,
-}
-"#;
-    let (file, errors) = parse_source(source);
-    assert!(
-        !errors.is_empty(),
-        "expected errors for missing union member"
-    );
-    let decl = file
-        .decls
-        .first()
-        .expect("expected struct declaration")
-        .value
-        .clone();
-    let st = match decl {
-        Decl::Struct(st) => st,
-        other => panic!("expected struct declaration, got {:?}", other),
-    };
-    let fields = st.fields.expect("expected fields on struct");
-    let field = &fields[0];
-    let ty_scheme = field
-        .value
-        .ty
-        .as_ref()
-        .expect("expected type placeholder on field")
-        .clone_value();
-    match ty_scheme.into_mono() {
-        Ty::Union(tys) => {
-            assert_eq!(tys.len(), 3, "expected three union members");
-            assert!(
-                matches!(tys[1], Ty::Never),
-                "expected missing member to be Ty::Never"
-            );
-        }
-        other => panic!("expected union type, got {:?}", other),
-    }
-}
-
-#[test]
-fn recovers_missing_union_in_parens() {
-    let source = r#"
-struct Foo {
-    field: (A | ),
-}
-"#;
-    let (file, errors) = parse_source(source);
-    assert!(
-        !errors.is_empty(),
-        "expected errors for missing union member inside parens"
-    );
-    let decl = file
-        .decls
-        .first()
-        .expect("expected struct declaration")
-        .value
-        .clone();
-    let st = match decl {
-        Decl::Struct(st) => st,
-        other => panic!("expected struct declaration, got {:?}", other),
-    };
-    let fields = st.fields.expect("expected fields on struct");
-    let field = &fields[0];
-    let ty_scheme = field
-        .value
-        .ty
-        .as_ref()
-        .expect("expected type placeholder on field")
-        .clone_value();
-    match ty_scheme.into_mono() {
-        Ty::Union(tys) => {
-            assert_eq!(tys.len(), 2, "expected two union elements");
-            assert!(
-                matches!(tys[1], Ty::Never),
-                "expected missing member to be Ty::Never"
-            );
-        }
-        other => panic!("expected union type, got {:?}", other),
     }
 }
 

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use ray_shared::node_id::NodeId;
 use ray_shared::pathlib::{FilePath, Path};
 use serde::{Deserialize, Serialize};
 
@@ -23,18 +24,18 @@ pub struct Trivia {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMap {
-    map: HashMap<u64, Source>,
-    docs: HashMap<u64, String>,
-    decorators: HashMap<u64, Vec<Decorator>>,
+    map: HashMap<NodeId, Source>,
+    docs: HashMap<NodeId, String>,
+    decorators: HashMap<NodeId, Vec<Decorator>>,
     trivia: HashMap<FilePath, Vec<Trivia>>,
     #[serde(default)]
-    file_index: HashMap<FilePath, Vec<u64>>,
+    file_index: HashMap<FilePath, Vec<NodeId>>,
     #[serde(default)]
-    synthetic_nodes: HashSet<u64>,
+    synthetic_nodes: HashSet<NodeId>,
 }
 
-impl Extend<(u64, Source)> for SourceMap {
-    fn extend<T: IntoIterator<Item = (u64, Source)>>(&mut self, iter: T) {
+impl Extend<(NodeId, Source)> for SourceMap {
+    fn extend<T: IntoIterator<Item = (NodeId, Source)>>(&mut self, iter: T) {
         for (id, src) in iter {
             self.set_src_id(id, src);
         }
@@ -42,8 +43,8 @@ impl Extend<(u64, Source)> for SourceMap {
 }
 
 impl IntoIterator for SourceMap {
-    type Item = (u64, Source);
-    type IntoIter = std::collections::hash_map::IntoIter<u64, Source>;
+    type Item = (NodeId, Source);
+    type IntoIter = std::collections::hash_map::IntoIter<NodeId, Source>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.into_iter()
@@ -62,11 +63,11 @@ impl SourceMap {
         }
     }
 
-    pub fn mark_synthetic(&mut self, node_id: u64) {
+    pub fn mark_synthetic(&mut self, node_id: NodeId) {
         self.synthetic_nodes.insert(node_id);
     }
 
-    pub fn is_synthetic(&self, node_id: u64) -> bool {
+    pub fn is_synthetic(&self, node_id: NodeId) -> bool {
         self.synthetic_nodes.contains(&node_id)
     }
 
@@ -74,7 +75,7 @@ impl SourceMap {
         self.map.get(&node.id).cloned().unwrap()
     }
 
-    pub fn get_by_id(&self, id: u64) -> Option<Source> {
+    pub fn get_by_id(&self, id: NodeId) -> Option<Source> {
         self.map.get(&id).cloned()
     }
 
@@ -94,7 +95,7 @@ impl SourceMap {
             .unwrap()
     }
 
-    pub(crate) fn set_src_id(&mut self, id: u64, src: Source) {
+    pub(crate) fn set_src_id(&mut self, id: NodeId, src: Source) {
         if let Some(existing) = self.map.insert(id, src.clone()) {
             if !existing.filepath.is_empty() {
                 if let Some(ids) = self.file_index.get_mut(&existing.filepath) {
@@ -125,7 +126,7 @@ impl SourceMap {
         self.docs.get(&node.id)
     }
 
-    pub fn doc_by_id(&self, id: u64) -> Option<&String> {
+    pub fn doc_by_id(&self, id: NodeId) -> Option<&String> {
         self.docs.get(&id)
     }
 
@@ -143,7 +144,7 @@ impl SourceMap {
         }
     }
 
-    pub fn decorators(&self) -> &HashMap<u64, Vec<Decorator>> {
+    pub fn decorators(&self) -> &HashMap<NodeId, Vec<Decorator>> {
         &self.decorators
     }
 
@@ -209,7 +210,7 @@ impl SourceMap {
             .map(|(filepath, entries)| (filepath, entries.as_slice()))
     }
 
-    pub fn node_ids_for_file(&self, filepath: &FilePath) -> Option<&[u64]> {
+    pub fn node_ids_for_file(&self, filepath: &FilePath) -> Option<&[NodeId]> {
         self.file_index.get(filepath).map(|ids| ids.as_slice())
     }
 
@@ -218,8 +219,8 @@ impl SourceMap {
         filepath: &FilePath,
         line: usize,
         col: usize,
-    ) -> Option<(u64, Source)> {
-        let mut best: Option<(u64, Source, usize)> = None;
+    ) -> Option<(NodeId, Source)> {
+        let mut best: Option<(NodeId, Source, usize)> = None;
 
         for id in self.file_index.get(filepath)?.iter() {
             if self.is_synthetic(*id) {

@@ -2,13 +2,18 @@
 
 use std::collections::HashMap;
 
-use ray_typing::ty::Ty;
 use ray_core::{
     ast::{Decl, Func, Impl, Module, Node},
     errors::RayError,
 };
 use ray_driver::*;
 use ray_shared::pathlib::{FilePath, Path, RayPaths};
+use ray_typing::types::Ty;
+
+#[derive(Debug, Default)]
+pub struct TestBuildOptions {
+    pub(crate) minimal_core: bool,
+}
 
 #[allow(dead_code)]
 pub fn enable_debug_logs() {
@@ -19,7 +24,16 @@ pub fn enable_debug_logs() {
         .unwrap();
 }
 
+#[allow(dead_code)]
 pub fn test_build(src: &str) -> Result<FrontendResult, Vec<RayError>> {
+    test_build_with_options(src, TestBuildOptions::default())
+}
+
+#[allow(dead_code)]
+pub fn test_build_with_options(
+    src: &str,
+    test_options: TestBuildOptions,
+) -> Result<FrontendResult, Vec<RayError>> {
     let filepath = FilePath::from("test.ray");
     let driver = Driver::new(RayPaths::default());
     let options = BuildOptions {
@@ -28,19 +42,23 @@ pub fn test_build(src: &str) -> Result<FrontendResult, Vec<RayError>> {
         ..Default::default()
     };
     let mut overlays = HashMap::new();
-    overlays.insert(filepath, include_minimal_core(src));
+    if test_options.minimal_core {
+        overlays.insert(filepath, include_minimal_core(src));
+    } else {
+        overlays.insert(filepath, src.to_string());
+    }
     driver.build_frontend(&options, Some(overlays))
 }
 
 pub fn include_minimal_core(src: &str) -> String {
     let core = r#"
 struct string {
-raw_ptr: *u8
-len: uint
+    raw_ptr: *u8
+    len: uint
 }
 
 trait Int['a] {
-default(int)
+    default(int)
 }
 
 impl Int[int] {}

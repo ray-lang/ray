@@ -5,7 +5,7 @@ use ray_shared::{
     pathlib::Path,
     span::{Sourced, parsed::Parsed},
 };
-use ray_typing::ty::{Ty, TyScheme};
+use ray_typing::types::{Ty, TyScheme};
 
 use crate::{
     ast::{
@@ -21,6 +21,7 @@ pub struct ResolveContext<'a> {
     ncx: &'a mut NameContext,
     srcmap: &'a mut SourceMap,
     scope_map: &'a HashMap<Path, Vec<Scope>>,
+    scope_stack: Vec<Path>,
 }
 
 impl<'a> ResolveContext<'a> {
@@ -33,6 +34,7 @@ impl<'a> ResolveContext<'a> {
             ncx,
             srcmap,
             scope_map,
+            scope_stack: Vec::new(),
         }
     }
 
@@ -42,15 +44,42 @@ impl<'a> ResolveContext<'a> {
         self.ncx.nametree_mut().add_full_name(&fqn);
     }
 
+    fn bind_local_name(&mut self, scope: &Path, name: &mut Path) {
+        let full_path = scope.with_names_only().append_path(name.clone());
+        log::debug!(
+            "bind_local_name: scope={:?} name={} full_path={}",
+            scope,
+            name,
+            full_path
+        );
+        *name = full_path.clone();
+        self.add_path(&full_path);
+    }
+
+    fn push_scope_path(&mut self, scope: Path) {
+        self.scope_stack.push(scope);
+    }
+
+    fn pop_scope_path(&mut self) {
+        self.scope_stack.pop();
+    }
+
+    fn current_scope_or(&self, fallback: &Path) -> Path {
+        self.scope_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| fallback.clone())
+    }
+
     pub fn resolve_func_body(&mut self, func: &mut Func) -> RayResult<()> {
         if let Some(body) = &mut func.body {
+            self.push_scope_path(func.sig.path.value.with_names_only());
             for param in &mut func.sig.params {
-                *param.name_mut() = func.sig.path.with_names_only().append_path(param.name());
-                log::debug!("add name: {}", param.name());
-                self.add_path(param.name());
+                self.bind_local_name(&func.sig.path, param.name_mut());
             }
 
             body.resolve_names(self)?;
+            self.pop_scope_path();
         }
         Ok(())
     }
@@ -63,16 +92,14 @@ pub trait NameResolve {
 impl NameResolve for Sourced<'_, Name> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         let src = self.src();
-        log::debug!("{:?}", src);
         let name = self.path.to_string();
-        let scope = self.src().path.clone();
         let mut scopes = ctx.scope_map.get(self.src_module()).unwrap().clone();
-        scopes.push(Scope::from(scope));
-        log::debug!(
-            "[Name::resolve_names] looking for name `{}` in scopes: {:?}",
-            name,
-            scopes
-        );
+        for scope_path in ctx.scope_stack.iter() {
+            scopes.push(Scope::from(scope_path.clone()));
+        }
+        if ctx.scope_stack.is_empty() {
+            scopes.push(Scope::from(src.path.clone()));
+        }
         match ctx.ncx.resolve_name(&scopes, &name) {
             Some(fqn) => {
                 log::debug!("fqn for `{}`: {}", name, fqn);
@@ -94,13 +121,19 @@ impl NameResolve for Sourced<'_, Name> {
 
 impl NameResolve for Sourced<'_, Path> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
-        let scopes = ctx.scope_map.get(self.src_module()).unwrap();
+        let mut scopes = ctx.scope_map.get(self.src_module()).unwrap().clone();
+        for scope_path in ctx.scope_stack.iter() {
+            scopes.push(Scope::from(scope_path.clone()));
+        }
+        if ctx.scope_stack.is_empty() {
+            scopes.push(Scope::from(self.src().path.clone()));
+        }
         log::debug!(
             "[Path::resolve_names] looking for name `{}` in scopes: {:?}",
             self,
             scopes
         );
-        match ctx.ncx.resolve_path(scopes, &self) {
+        match ctx.ncx.resolve_path(&scopes, &self) {
             Some(fqn) => {
                 log::debug!("fqn for `{}`: {}", self, fqn);
                 *self.deref_mut() = fqn.clone();
@@ -264,11 +297,12 @@ impl NameResolve for Sourced<'_, Struct> {
 
 impl NameResolve for Sourced<'_, Trait> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
-        let (_, src) = self.unpack_mut();
+        let (tr, src) = self.unpack_mut();
         let trait_fqn = &src.path;
         ctx.ncx
             .nametree_mut()
             .add_full_name(&trait_fqn.to_name_vec());
+        log::debug!("[Trait::resolve_names] {:?}", tr);
         Ok(())
     }
 }
@@ -339,7 +373,8 @@ impl NameResolve for Sourced<'_, Assign> {
         let (assign, src) = self.unpack_mut();
         for node in assign.lhs.paths_mut() {
             let (path, is_lvalue) = node.value;
-            let full_path = src.path.with_names_only().append_path(path.clone());
+            let base_scope = ctx.current_scope_or(&src.path.with_names_only());
+            let full_path = base_scope.append_path(path.clone());
             *path = full_path.clone();
 
             if !is_lvalue {
@@ -385,7 +420,37 @@ impl NameResolve for Sourced<'_, Cast> {
 
 impl NameResolve for Sourced<'_, Closure> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
-        self.body.resolve_names(ctx)
+        let (closure, src) = self.unpack_mut();
+        let scope_suffix = format!("__closure_{:x}", closure.body.id);
+        let closure_scope = src
+            .path
+            .with_names_only()
+            .append_path(Path::from(scope_suffix));
+        ctx.push_scope_path(closure_scope.clone());
+
+        for arg in closure.args.items.iter_mut() {
+            let arg_src = ctx.srcmap.get(arg);
+            match &mut arg.value {
+                Expr::Name(name) => {
+                    ctx.bind_local_name(&closure_scope, &mut name.path);
+                }
+                _ => {
+                    return Err(RayError {
+                        msg: format!(
+                            "unsupported closure parameter `{}`; only simple names are allowed",
+                            arg.value
+                        ),
+                        src: vec![arg_src],
+                        kind: RayErrorKind::Parse,
+                        context: Some("resolve closure parameters".to_string()),
+                    });
+                }
+            }
+        }
+
+        closure.body.resolve_names(ctx)?;
+        ctx.pop_scope_path();
+        Ok(())
     }
 }
 

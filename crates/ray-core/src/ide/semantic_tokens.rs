@@ -1,8 +1,6 @@
 use ray_shared::pathlib::FilePath;
-use ray_typing::top::Ty as _;
-
 use ray_shared::span::{Pos, Span, parsed::Parsed};
-use ray_typing::ty::{Ty, TyScheme};
+use ray_typing::types::{Ty, TyScheme};
 
 use crate::{
     ast::{

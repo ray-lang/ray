@@ -97,18 +97,29 @@ impl Path {
         self.name().unwrap().as_str() == "self"
     }
 
-    pub fn starts_with(&self, other: &Path) -> bool {
-        if other.len() > self.len() {
+    pub fn as_str(&self) -> &str {
+        self.parts
+            .back()
+            .and_then(|part| match part {
+                PathPart::Name(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    pub fn starts_with(&self, other: impl Into<Path>) -> bool {
+        let other_path = other.into();
+        if other_path.len() > self.len() {
             return false;
         }
 
-        if other.len() == 0 {
+        if other_path.len() == 0 {
             return true;
         }
 
         let mut i = 0;
-        while i < self.len() && i < other.len() {
-            if &self.parts[i] != &other.parts[i] {
+        while i < self.len() && i < other_path.len() {
+            if &self.parts[i] != &other_path.parts[i] {
                 return false;
             }
             i += 1;

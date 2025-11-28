@@ -1190,7 +1190,6 @@ dependencies = [
 name = "ray-typing"
 version = "0.1.0"
 dependencies = [
- "itertools",
  "log",
  "ray-shared",
  "serde",

@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
-use ray_typing::ty::{NominalKind, Ty};
 use itertools::Itertools;
 use ray_shared::span::{Pos, Span, parsed::Parsed};
+use ray_typing::types::{NominalKind, Ty};
 
 use crate::{
     ast::{

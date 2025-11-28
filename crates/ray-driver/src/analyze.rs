@@ -2,6 +2,7 @@ use std::{ffi::OsString, str::FromStr};
 
 use clap::Args;
 use ray_core::errors::RayError;
+use ray_shared::node_id::NodeId;
 use ray_shared::pathlib::{FilePath, Path};
 use ray_shared::span::{Pos, Source, Span};
 
@@ -133,19 +134,19 @@ impl SymbolKind {
 
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
-    pub id: u64,
+    pub id: NodeId,
     pub name: String,
     pub kind: SymbolKind,
     pub filepath: FilePath,
     pub span: Option<Span>,
     pub ty: Option<String>,
-    pub parent_id: Option<u64>,
+    pub parent_id: Option<NodeId>,
     pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
-    pub id: u64,
+    pub id: NodeId,
     pub filepath: FilePath,
     pub span: Option<Span>,
     pub ty: String,
@@ -154,11 +155,11 @@ pub struct TypeInfo {
 
 #[derive(Debug, Clone)]
 pub struct DefinitionInfo {
-    pub usage_id: u64,
+    pub usage_id: NodeId,
     pub usage_path: Path,
     pub usage_filepath: FilePath,
     pub usage_span: Option<Span>,
-    pub definition_id: Option<u64>,
+    pub definition_id: Option<NodeId>,
     pub definition_path: Option<Path>,
     pub definition_filepath: Option<FilePath>,
     pub definition_span: Option<Span>,

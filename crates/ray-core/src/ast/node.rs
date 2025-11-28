@@ -5,13 +5,12 @@ use std::{
 
 use rand::RngCore;
 use ray_shared::{
+    node_id::NodeId,
     pathlib::Path,
     span::{Source, Span},
 };
-use ray_typing::top::{Subst, Substitutable};
+use ray_typing::types::{Subst, Substitutable};
 use serde::{Deserialize, Serialize};
-
-use ray_typing::ty::{Ty, TyVar};
 
 pub trait HasSource {
     fn src(&self) -> Source;
@@ -61,15 +60,9 @@ impl HasSource for SourceInfo {
     }
 }
 
-// impl ApplySubst for SourceInfo {
-//     fn apply_subst(self, _: &Subst) -> Self {
-//         self
-//     }
-// }
-
 #[derive(Serialize, Deserialize)]
 pub struct Node<T> {
-    pub id: u64,
+    pub id: NodeId,
     pub value: T,
 }
 
@@ -149,27 +142,23 @@ where
     }
 }
 
-impl<T> Substitutable<TyVar, Ty> for Node<T>
+impl<T> Substitutable for Node<T>
 where
-    T: Substitutable<TyVar, Ty>,
+    T: Substitutable,
 {
-    fn apply_subst(&mut self, subst: &Subst<TyVar, Ty>) {
+    fn apply_subst(&mut self, subst: &Subst) {
         self.value.apply_subst(subst);
-    }
-
-    fn apply_subst_all(&mut self, subst: &Subst<TyVar, Ty>) {
-        self.value.apply_subst_all(subst);
     }
 }
 
 impl<T> Node<T> {
     pub fn new(value: T) -> Node<T> {
         let mut rng = rand::thread_rng();
-        let id = rng.next_u64();
+        let id = NodeId(rng.next_u64());
         Node { id, value }
     }
 
-    pub fn with_id(id: u64, value: T) -> Node<T> {
+    pub fn with_id(id: NodeId, value: T) -> Node<T> {
         Node { id, value }
     }
 
@@ -207,7 +196,7 @@ impl<T> Node<T> {
         Node { id, value }
     }
 
-    pub fn unpack(self) -> (u64, T) {
+    pub fn unpack(self) -> (NodeId, T) {
         (self.id, self.value)
     }
 }

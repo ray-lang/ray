@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ray_typing::ty::{Ty, TyScheme};
+use ray_typing::types::{Ty, TyScheme};
 
 use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
@@ -76,6 +76,10 @@ impl Builder {
         let loc = Local { idx, ty };
         self.locals.push(loc);
         idx
+    }
+
+    pub fn local_mut(&mut self, idx: usize) -> Option<&mut Local> {
+        self.locals.get_mut(idx)
     }
 
     #[inline(always)]

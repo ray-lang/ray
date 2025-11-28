@@ -1,6 +1,5 @@
-use ray_typing::ty::{Ty, TyScheme};
 use ray_shared::span::{Span, parsed::Parsed};
-use ray_typing::top::Predicates;
+use ray_typing::types::{Ty, TyScheme};
 
 use crate::{
     ast::{TrailingPolicy, TypeParams, token::TokenKind},
@@ -29,8 +28,7 @@ impl Parser<'_> {
             self.parse_ty_base(None, ctx)?
         };
 
-        let ty = self.parse_nilable_ty(ty, ctx)?;
-        self.parse_union_ty(ty, ctx)
+        self.parse_nilable_ty(ty, ctx)
     }
 
     fn parse_nilable_ty(
@@ -51,51 +49,6 @@ impl Parser<'_> {
         } else {
             ty
         })
-    }
-
-    fn parse_union_ty(
-        &mut self,
-        ty: Parsed<TyScheme>,
-        ctx: &ParseContext,
-    ) -> ParseResult<Parsed<TyScheme>> {
-        if !expect_if!(self, TokenKind::Pipe) {
-            return Ok(ty);
-        }
-
-        let (ty, src, synth_ids) = ty.take();
-        let span = src.span;
-        let start = span.map(|s| s.start).unwrap_or_else(|| self.lex.position());
-        let mut end = span.map(|s| s.end).unwrap_or(start);
-        let mut all_synth_ids = vec![synth_ids];
-        let mut items = match ty.into_mono() {
-            Ty::Union(tys) => tys,
-            other => vec![other],
-        };
-
-        loop {
-            let next_ty = self.parse_type_annotation(Some(&TokenKind::Pipe), ctx);
-            if let Some(span) = next_ty.span() {
-                end = span.end;
-            }
-
-            let (next_ty, _, synth_ids) = next_ty.take();
-            all_synth_ids.push(synth_ids);
-            match next_ty.into_mono() {
-                Ty::Union(mut tys) => items.append(&mut tys),
-                other => items.push(other),
-            }
-
-            if !expect_if!(self, TokenKind::Pipe) {
-                break;
-            }
-        }
-
-        let mut parsed_ty = Parsed::new(
-            TyScheme::from_mono(Ty::Union(items)),
-            self.mk_src(Span { start, end }),
-        );
-        parsed_ty.set_synthetic_ids(all_synth_ids.into_iter().flatten().collect());
-        Ok(parsed_ty)
     }
 
     pub(crate) fn parse_ty_params(
@@ -174,7 +127,7 @@ impl Parser<'_> {
         let (ptee_ty, ptee_src, ids) = ptee_ty.take();
         let end = ptee_src.span.unwrap().end;
         let mut parsed = Parsed::new(
-            TyScheme::from_mono(Ty::refty(ptee_ty.into_mono())),
+            TyScheme::from_mono(Ty::ref_of(ptee_ty.into_mono())),
             self.mk_src(Span { start, end }),
         );
         parsed.set_synthetic_ids(ids);
@@ -278,7 +231,7 @@ impl Parser<'_> {
 
         let ty = if let Some(mut ty) = Ty::from_str(&name) {
             match &mut ty {
-                Ty::Projection(_, el_tys) => {
+                Ty::Proj(_, el_tys) => {
                     if let Some(ty_params) = ty_params {
                         let (tys, ids): (Vec<_>, Vec<_>) = ty_params
                             .tys
@@ -386,7 +339,7 @@ impl Parser<'_> {
                         .into_iter()
                         .map(|t| variant!(t.take_value(), if Ty::Var(v)))
                         .collect(),
-                    Predicates::new(), // TODO: what about predicates?
+                    vec![], // TODO: what about predicates?
                     fn_ty,
                 )
             } else {
@@ -440,9 +393,10 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
-    use ray_typing::ty::TyScheme;
+    use ray_shared::node_id::NodeId;
     use ray_shared::pathlib::{FilePath, Path};
     use ray_shared::span::parsed::Parsed;
+    use ray_typing::types::TyScheme;
 
     use crate::{
         errors::RayError,
@@ -479,7 +433,7 @@ mod tests {
         (ty, srcmap)
     }
 
-    fn span_of(id: u64, srcmap: &SourceMap) -> (usize, usize) {
+    fn span_of(id: NodeId, srcmap: &SourceMap) -> (usize, usize) {
         let span = srcmap
             .get_by_id(id)
             .and_then(|s| s.span)

@@ -4,9 +4,12 @@ use std::{
     rc::Rc,
 };
 
+use itertools::Itertools as _;
 use ray_shared::pathlib::Path;
-use ray_typing::top::{Substitutable, mgu, util::Join};
-use ray_typing::ty::{Ty, TyScheme};
+use ray_typing::{
+    types::{Subst, Substitutable, Ty, TyScheme},
+    unify::mgu,
+};
 
 use crate::{
     ast::Node,
@@ -18,6 +21,7 @@ use crate::{
 #[derive(Debug)]
 enum PolyValue<'a> {
     Call(&'a mut lir::Call),
+    FuncRef(&'a mut lir::FuncRef),
 }
 
 #[derive(Debug)]
@@ -182,6 +186,13 @@ impl<'p> Monomorphizer<'p> {
                 funcs,
                 globals,
             )),
+            PolyValue::FuncRef(func_ref) => Some(self.monomorphize_func_ref(
+                func_ref,
+                &poly_ref.poly_ty,
+                &mut poly_ref.callee_ty,
+                funcs,
+                globals,
+            )),
         }
     }
 
@@ -240,26 +251,66 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] call.ty        = {}", call.callee_ty);
         log::debug!("[monomorphize] call.args      = {:?}", call.args);
 
+        let fn_name = call.fn_name.clone();
+        let original_name = call.orig_name().clone();
+        let (poly_name, mono_name, mono_ty, update_locals) = self.resolve_callee(
+            &poly_fqn,
+            &fn_name,
+            &original_name,
+            poly_ty,
+            callee_ty,
+            funcs,
+            globals,
+        );
+
+        call.set_name(mono_name.clone());
+        call.callee_ty = mono_ty.clone();
+
+        if update_locals {
+            for (idx, arg) in call.args.iter().enumerate() {
+                if let &lir::Variable::Local(loc) = arg {
+                    if let Some(ty) = mono_ty.mono().get_func_param(idx).cloned() {
+                        log::debug!("adding local with type {}: {}", loc, ty);
+                        // FIXME: what if the loc is already in the map with another type?
+                        locals.insert(loc, ty.into());
+                    }
+                }
+            }
+        }
+
+        (poly_name, mono_name)
+    }
+
+    fn resolve_callee(
+        &mut self,
+        poly_fqn: &Path,
+        current_name: &Path,
+        original_name: &Path,
+        poly_ty: &TyScheme,
+        callee_ty: &TyScheme,
+        funcs: &mut Vec<Node<lir::Func>>,
+        globals: &mut Vec<lir::Global>,
+    ) -> (Path, Path, TyScheme, bool) {
+        let poly_fqn = poly_fqn.with_names_only();
+
         // Fast path: externs are not monomorphized here.
         // We already have the concrete resolved name in the call; just return it.
         let is_extern_like = self.is_trait_or_extern(&poly_fqn)
-            || self.is_trait_or_extern(&call.fn_name)
-            || self.is_trait_or_extern(&call.orig_name());
+            || self.is_trait_or_extern(current_name)
+            || self.is_trait_or_extern(original_name);
         if is_extern_like {
             // Keep the polymorphic side as the logical (names-only) key, but use the concrete name for mono.
             let poly_name = sema::fn_name(&poly_fqn.with_names_only(), poly_ty);
-            let mono_name = call.fn_name.clone();
+            let mono_name = current_name.clone();
             log::debug!(
                 "[monomorphize] fast-path extern: poly_name={} mono_name={}",
                 poly_name,
                 mono_name
             );
-            // Ensure we do not try to treat this as a clonable poly function later.
-            call.set_name(mono_name.clone());
             self.mono_poly_fn_idx
                 .insert(poly_name.clone(), mono_name.clone());
             self.add_mono_fn_mapping(&poly_name, &mono_name, callee_ty.clone().into_mono());
-            return (poly_name, mono_name);
+            return (poly_name, mono_name, callee_ty.clone(), false);
         }
 
         // check that the callee function type is monomorphic
@@ -304,8 +355,7 @@ impl<'p> Monomorphizer<'p> {
         let poly_name = sema::fn_name(&poly_base_name, poly_ty);
 
         // pick a concrete polymorphic implementation matching the callee type
-        use ray_typing::top::Subst;
-        let mut subst: Subst<_, _> = Subst::new();
+        let mut subst = Subst::new();
         let mut poly_impl_key: Option<Path> = None;
         if let Some(cands) = self.poly_groups.get(&poly_fqn) {
             for cand_key in cands {
@@ -349,25 +399,22 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] poly_name = {}", poly_name);
         log::debug!("[monomorphize] mono_name = {}", mono_name);
 
-        // make sure that the functions are not externs
-        let (poly_name, mono_name) =
+        let (resolved_poly_name, resolved_mono_name) =
             if self.name_set.contains(&mono_name) || self.mono_fn_ty_map.contains_key(&mono_name) {
-                // make sure that there isn't already a monomorphized version
-                (poly_base_name, mono_name)
+                (poly_base_name, mono_name.clone())
             } else {
-                // get the polymorphic function from the index and add a mapping from poly to mono
                 let mut mono_fn = self
                 .poly_fn_map
                 .get(&poly_impl_key)
                 .cloned()
                 .expect(&format!(
-                "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
-                poly_impl_key,
-                self.poly_fn_map
-                    .keys()
-                    .map(|a| format!("  {}", a))
-                    .join("\n")
-            ));
+                    "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
+                    poly_impl_key,
+                    self.poly_fn_map
+                        .keys()
+                        .map(|a| format!("  {}", a))
+                        .join("\n")
+                ));
                 mono_fn.name = mono_name.clone();
                 mono_fn.ty = mono_ty.clone();
 
@@ -419,7 +466,6 @@ impl<'p> Monomorphizer<'p> {
                     }
                 }
 
-                // collect further polymorphic functions from the new monomorphized function
                 self.monomorphize_func(&mut mono_fn, funcs, globals);
                 log::debug!(
                     "[monomorphize] params for `{}`: {:?}",
@@ -432,26 +478,41 @@ impl<'p> Monomorphizer<'p> {
                     mono_fn.locals
                 );
                 funcs.push(mono_fn);
-                (poly_name, mono_name)
+                (poly_name, mono_name.clone())
             };
 
-        // set the name
-        call.set_name(mono_name.clone());
-
-        for (idx, arg) in call.args.iter().enumerate() {
-            if let &lir::Variable::Local(loc) = arg {
-                if let Some(ty) = mono_ty.mono().get_func_param(idx).cloned() {
-                    log::debug!("adding local with type {}: {}", loc, ty);
-                    // FIXME: what if the loc is already in the map with another type?
-                    locals.insert(loc, ty.into());
-                }
-            }
-        }
-
-        // add it to the map
         self.mono_poly_fn_idx
-            .insert(poly_name.clone(), mono_name.clone());
-        self.add_mono_fn_mapping(&poly_name, &mono_name, mono_ty.into_mono());
+            .insert(resolved_poly_name.clone(), resolved_mono_name.clone());
+        self.add_mono_fn_mapping(
+            &resolved_poly_name,
+            &resolved_mono_name,
+            mono_ty.clone().into_mono(),
+        );
+        (resolved_poly_name, resolved_mono_name, mono_ty, true)
+    }
+
+    fn monomorphize_func_ref(
+        &mut self,
+        func_ref: &mut lir::FuncRef,
+        poly_ty: &TyScheme,
+        callee_ty: &mut TyScheme,
+        funcs: &mut Vec<Node<lir::Func>>,
+        globals: &mut Vec<lir::Global>,
+    ) -> (Path, Path) {
+        let poly_fqn = func_ref.original_path.with_names_only();
+        let current_name = func_ref.path.clone();
+        let original_name = func_ref.original_path.clone();
+        let (poly_name, mono_name, mono_ty, _) = self.resolve_callee(
+            &poly_fqn,
+            &current_name,
+            &original_name,
+            poly_ty,
+            callee_ty,
+            funcs,
+            globals,
+        );
+        func_ref.path = mono_name.clone();
+        func_ref.ty = mono_ty;
         (poly_name, mono_name)
     }
 
@@ -460,7 +521,6 @@ impl<'p> Monomorphizer<'p> {
         T: Iterator<Item = &'a mut lir::Inst>,
     {
         for inst in insts {
-            log::debug!("[monomorphize] collect: {}", inst);
             match inst {
                 lir::Inst::SetGlobal(_, v)
                 | lir::Inst::SetLocal(_, v)
@@ -485,7 +545,16 @@ impl<'p> Monomorphizer<'p> {
     fn add_ref_from_value<'a>(&self, value: &'a mut lir::Value, poly_refs: &mut Vec<PolyRef<'a>>) {
         match value {
             lir::Value::Atom(a) => match a {
-                lir::Atom::FuncRef(_) => todo!(),
+                lir::Atom::FuncRef(func_ref) => {
+                    let callee_ty = func_ref.ty.clone();
+                    let poly_ty = unless!(&func_ref.poly_ty).clone();
+
+                    poly_refs.push(PolyRef {
+                        value: PolyValue::FuncRef(func_ref),
+                        poly_ty,
+                        callee_ty,
+                    });
+                }
                 _ => {}
             },
             lir::Value::Call(call) => self.add_call_ref(poly_refs, call),
@@ -495,11 +564,19 @@ impl<'p> Monomorphizer<'p> {
     }
 
     fn add_call_ref<'a>(&self, poly_refs: &mut Vec<PolyRef<'a>>, call: &'a mut lir::Call) {
+        log::debug!("[monomorphize] add_call_ref: {}", call);
         if call.fn_ref.is_some() {
+            log::debug!("[monomorphize] skipping for fn_ref in call: {}", call);
             return;
         }
         let callee_ty = call.callee_ty.clone();
-        let poly_ty = unless!(&call.poly_callee_ty).clone();
+        let Some(poly_ty) = call.poly_callee_ty.clone() else {
+            log::debug!(
+                "[monomorphize] skipping for call (not a polymorphic function): {}",
+                call
+            );
+            return;
+        };
         poly_refs.push(PolyRef {
             value: PolyValue::Call(call),
             poly_ty,

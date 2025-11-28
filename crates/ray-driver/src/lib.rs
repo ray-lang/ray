@@ -8,23 +8,18 @@ use ray_core::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Pattern},
     codegen::{CodegenOptions, llvm},
     errors::{RayError, RayErrorKind},
-    infer::InferSystem,
-    libgen, lir,
+    libgen, lir, passes,
     sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
     sourcemap::SourceMap,
 };
 use ray_shared::{
     collections::namecontext::NameContext,
+    node_id::NodeId,
     optlevel::OptLevel,
     pathlib::{FilePath, Path, RayPaths},
     span::{Source, Span},
 };
-use ray_typing::top::{Subst, Substitutable};
-use ray_typing::{
-    TyCtx,
-    state::SchemeEnv,
-    ty::{Ty, TyScheme, TyVar},
-};
+use ray_typing::{TypecheckOptions, tyctx::TyCtx, types::Substitutable};
 
 mod analyze;
 mod build;
@@ -46,11 +41,12 @@ pub struct FrontendResult {
     pub ncx: NameContext,
     pub srcmap: SourceMap,
     pub symbol_map: SymbolMap,
-    pub defs: SchemeEnv,
     pub libs: Vec<lir::Program>,
     pub paths: HashSet<Path>,
     pub definitions: HashMap<Path, libgen::DefinitionRecord>,
     pub errors: Vec<RayError>,
+    pub bindings: passes::binding::BindingPassOutput,
+    pub closure_analysis: passes::closure::ClosurePassOutput,
 }
 
 #[derive(Debug)]
@@ -146,23 +142,16 @@ impl Driver {
         log::debug!("{}", result.module);
         log::info!("type checking module...");
 
-        let mut errors: Vec<RayError> = Vec::new();
+        // Run the new typechecker on the lowered module and merge its
+        // schemes into the existing defs. The existing v1 pipeline remains
+        // available elsewhere for parity checks.
+        let tc_options = TypecheckOptions::default();
+        let pass_manager =
+            passes::FrontendPassManager::new(&result.module, &result.srcmap, &mut result.tcx);
+        let (binding_output, closure_output, check_result) =
+            pass_manager.run_passes(&result.ncx, tc_options);
 
-        let mut inf = InferSystem::new(&mut result.tcx, &mut result.ncx);
-        let infer_result = inf.infer_ty(&result.module, &result.srcmap, &result.defs);
-        let solution = infer_result.solution;
-        let defs = infer_result.defs;
-        errors.extend(infer_result.errors.into_iter().map(|err| RayError {
-            msg: err.message(),
-            src: err.src,
-            kind: RayErrorKind::Type,
-            context: Some(format!("while type checking {module_path}")),
-        }));
-
-        log::debug!("solution: {}", solution);
-
-        result.apply_solution(solution, &defs);
-
+        let errors: Vec<RayError> = check_result.errors.into_iter().map(Into::into).collect();
         let definitions =
             libgen::collect_definition_records(&result.module, &result.srcmap, &result.tcx);
 
@@ -194,11 +183,12 @@ impl Driver {
             ncx: result.ncx,
             srcmap: result.srcmap,
             symbol_map,
-            defs,
             libs: result.libs,
             paths: result.paths,
             definitions,
             errors,
+            bindings: binding_output,
+            closure_analysis: closure_output,
         })
     }
 
@@ -251,15 +241,15 @@ impl Driver {
             tcx,
             ncx,
             srcmap,
-            symbol_map: _,
-            defs,
             libs,
             paths: module_paths,
-            definitions: _,
-            errors: _,
+            bindings,
+            closure_analysis,
+            ..
         } = frontend;
 
-        let mut program = lir::Program::generate(&module, &tcx, &srcmap, libs)?;
+        let mut program =
+            lir::Program::generate(&module, &tcx, &srcmap, &bindings, &closure_analysis, libs)?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
             println!("{}", program);
             return Ok(());
@@ -288,7 +278,7 @@ impl Driver {
             log::debug!("modules: {:?}", modules);
 
             let definitions = libgen::collect_definition_records(&module, &srcmap, &tcx);
-            let lib = libgen::serialize(program, tcx, ncx, srcmap, defs, modules, definitions);
+            let lib = libgen::serialize(program, tcx, ncx, srcmap, modules, definitions);
             let path = output_path("raylib");
 
             log::info!("writing to {}", path);
@@ -419,7 +409,7 @@ fn collect_symbols(frontend: &FrontendResult) -> Vec<SymbolInfo> {
     symbols
 }
 
-fn type_info_for_node(tcx: &TyCtx, node_id: u64) -> Option<(String, bool)> {
+fn type_info_for_node(tcx: &TyCtx, node_id: NodeId) -> Option<(String, bool)> {
     if let Some(scheme) = tcx.maybe_ty_scheme_of(node_id) {
         Some((pretty_print_tys(tcx, &scheme), true))
     } else if let Some(ty) = tcx.get_ty(node_id) {
@@ -433,7 +423,18 @@ fn collect_types(frontend: &FrontendResult) -> Vec<TypeInfo> {
     let mut types = Vec::new();
 
     for decl in &frontend.module.decls {
-        maybe_push_node_type(&mut types, &frontend.tcx, &frontend.srcmap, decl);
+        // Top-level declarations: prefer schemes from defs, falling back to
+        // TyCtx where needed.
+        if let Some((ty_str, is_scheme)) = type_info_for_node(&frontend.tcx, decl.id) {
+            let source = frontend.srcmap.get(decl);
+            types.push(TypeInfo {
+                id: decl.id,
+                filepath: source.filepath.clone(),
+                span: source.span,
+                ty: ty_str,
+                is_scheme,
+            });
+        }
 
         if let Decl::Func(func) = &decl.value {
             for param in &func.sig.params {
@@ -463,13 +464,13 @@ fn collect_definitions(frontend: &FrontendResult) -> Vec<DefinitionInfo> {
     let mut seen_usage_ids = HashSet::new();
 
     // Prefer specialized call resolutions (e.g., trait method dispatch) before generic name matches.
-    for (usage_id, path) in frontend.tcx.call_resolutions() {
+    for (usage_id, resolution) in frontend.tcx.call_resolutions() {
         push_definition_entry(
             frontend,
             &mut definitions,
             &mut seen_usage_ids,
             *usage_id,
-            path,
+            &resolution.base_fqn,
         );
     }
 
@@ -503,8 +504,8 @@ fn collect_definitions(frontend: &FrontendResult) -> Vec<DefinitionInfo> {
 fn push_definition_entry(
     frontend: &FrontendResult,
     out: &mut Vec<DefinitionInfo>,
-    seen: &mut HashSet<u64>,
-    usage_id: u64,
+    seen: &mut HashSet<NodeId>,
+    usage_id: NodeId,
     path: &Path,
 ) {
     if !seen.insert(usage_id) {
@@ -565,7 +566,7 @@ fn push_definition_entry(
     });
 }
 
-fn collect_decl_name_refs(decl: &Node<Decl>, refs: &mut Vec<(u64, Path)>) {
+fn collect_decl_name_refs(decl: &Node<Decl>, refs: &mut Vec<(NodeId, Path)>) {
     match &decl.value {
         Decl::Func(func) => collect_func_refs(func, refs),
         Decl::Extern(ext) => collect_decl_name_refs(ext.decl_node(), refs),
@@ -599,12 +600,12 @@ fn collect_decl_name_refs(decl: &Node<Decl>, refs: &mut Vec<(u64, Path)>) {
     }
 }
 
-fn collect_assign_refs(assign: &Assign, refs: &mut Vec<(u64, Path)>) {
+fn collect_assign_refs(assign: &Assign, refs: &mut Vec<(NodeId, Path)>) {
     collect_pattern_refs(&assign.lhs.value, refs);
     collect_expr_name_refs(&assign.rhs, refs);
 }
 
-fn collect_func_refs(func: &Func, refs: &mut Vec<(u64, Path)>) {
+fn collect_func_refs(func: &Func, refs: &mut Vec<(NodeId, Path)>) {
     for param in &func.sig.params {
         collect_fn_param_refs(&param.value, refs);
     }
@@ -613,7 +614,7 @@ fn collect_func_refs(func: &Func, refs: &mut Vec<(u64, Path)>) {
     }
 }
 
-fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(u64, Path)>) {
+fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(NodeId, Path)>) {
     match param {
         FnParam::Name(_) | FnParam::Missing { .. } => {}
         FnParam::DefaultValue(default_param, value) => {
@@ -623,7 +624,7 @@ fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(u64, Path)>) {
     }
 }
 
-fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(u64, Path)>) {
+fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(NodeId, Path)>) {
     match pattern {
         Pattern::Missing(_) | Pattern::Name(_) | Pattern::Deref(_) | Pattern::Dot(_, _) => {}
         Pattern::Sequence(patterns) | Pattern::Tuple(patterns) => {
@@ -635,7 +636,7 @@ fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(u64, Path)>) {
     }
 }
 
-fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
+fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(NodeId, Path)>) {
     match &expr.value {
         // Arms in alphabetical order by Expr variant for readability
         Expr::Assign(assign) => {
@@ -755,7 +756,7 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(u64, Path)>) {
     }
 }
 
-fn collect_curly_element_refs(element: &Node<CurlyElement>, refs: &mut Vec<(u64, Path)>) {
+fn collect_curly_element_refs(element: &Node<CurlyElement>, refs: &mut Vec<(NodeId, Path)>) {
     match &element.value {
         CurlyElement::Name(name) => refs.push((element.id, name.path.clone())),
         CurlyElement::Labeled(name, expr) => {
@@ -799,7 +800,7 @@ fn maybe_push_node_type<T>(
 
 fn pretty_print_tys<T>(tcx: &TyCtx, ty: &T) -> String
 where
-    T: Clone + Substitutable<TyVar, Ty> + ToString,
+    T: Clone + Substitutable + ToString,
 {
     tcx.pretty_tys(ty).to_string()
 }
