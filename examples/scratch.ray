@@ -1,20 +1,9 @@
-//![no-core]
-
-struct Str {}
-
-trait ToStr['a] {
-    fn to_str(self: 'a) -> Str
-}
-
-struct A{}
-
-impl ToStr[A] {
-    fn to_str(self: A) -> Str {
-        Str{}
-    }
-}
-
 fn main() {
-    a = A{}
-    s = a.to_str()
+    l = [1, 2]
+    x = l.get(1)
+    if some(x) = x {
+        print(x)
+    } else {
+        print("none")
+    }
 }

@@ -12,11 +12,16 @@ pub fn run_call_resolution_pass(module: &ModuleInput, tcx: &mut TyCtx) {
             ExprKind::BinaryOp {
                 trait_fqn,
                 method_fqn,
-                lhs,
+                operator,
+                ..
+            }
+            | ExprKind::UnaryOp {
+                trait_fqn,
+                method_fqn,
                 operator,
                 ..
             } => {
-                resolve_binary_op(*operator, trait_fqn, method_fqn, *lhs, tcx);
+                resolve_op(*operator, trait_fqn, method_fqn, tcx);
             }
             ExprKind::Call { callee, .. } => {
                 resolve_call(*callee, module, tcx);
@@ -26,13 +31,7 @@ pub fn run_call_resolution_pass(module: &ModuleInput, tcx: &mut TyCtx) {
     }
 }
 
-fn resolve_binary_op(
-    operator_id: NodeId,
-    trait_fqn: &Path,
-    method_fqn: &Path,
-    _lhs_id: NodeId,
-    tcx: &mut TyCtx,
-) {
+fn resolve_op(operator_id: NodeId, trait_fqn: &Path, method_fqn: &Path, tcx: &mut TyCtx) {
     if tcx.call_resolution(operator_id).is_some() {
         return;
     }

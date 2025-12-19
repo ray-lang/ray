@@ -292,7 +292,7 @@ fn foo() {
         .build_frontend(&options, Some(overlays))
         .expect("Failed to build frontend");
 
-    let records = result.definitions;
+    let records = result.definitions_by_path;
 
     let deref_path = Path::from("test::foo::ptr");
 
@@ -324,7 +324,7 @@ trait Addable['a] {
         .build_frontend(&options, Some(overlays))
         .expect("Failed to build frontend");
 
-    let records = result.definitions;
+    let records = result.definitions_by_path;
 
     let add_func_path = Path::from("test::Addable::['a]::add");
 
@@ -358,7 +358,7 @@ impl Foo[int] {
         .build_frontend(&options, Some(overlays))
         .expect("Failed to build frontend");
 
-    let records = result.definitions;
+    let records = result.definitions_by_path;
 
     println!("records: {:#?}", records);
     println!("symbol map: {:#?}", result.symbol_map);

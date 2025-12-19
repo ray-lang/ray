@@ -167,6 +167,16 @@ impl TyCtx {
         self.node_schemes.get(&id).cloned()
     }
 
+    pub fn pretty_type_info_for_node(&self, node_id: NodeId) -> Option<(String, bool)> {
+        if let Some(scheme) = self.maybe_ty_scheme_of(node_id) {
+            Some((self.pretty_tys(&scheme).to_string(), true))
+        } else if let Some(ty) = self.get_ty(node_id) {
+            Some((self.pretty_tys(ty).to_string(), false))
+        } else {
+            None
+        }
+    }
+
     /// Access the resolved call targets for this module.
     pub fn call_resolutions(&self) -> &HashMap<NodeId, CallResolution> {
         &self.call_resolutions
@@ -180,8 +190,10 @@ impl TyCtx {
     where
         T: Clone + Substitutable,
     {
-        // TODO: apply inverted-var renaming once v2 TyCtx tracks it.
-        ty.clone()
+        let subst = self.inverted_var_subst();
+        let mut out = ty.clone();
+        out.apply_subst(&subst);
+        out
     }
 
     pub fn extend_predicates(&mut self, _predicates: Vec<Predicate>) {
@@ -284,7 +296,11 @@ impl TyCtx {
     }
 
     pub fn inverted_var_subst(&self) -> Subst {
-        todo!("inverted_var_subst is not yet implemented for v2 TyCtx");
+        let mut subst = Subst::new();
+        for (schema_var, original_var) in self.inverted_var_map.borrow().iter() {
+            subst.insert(schema_var.clone(), Ty::Var(original_var.clone()));
+        }
+        subst
     }
 
     pub fn get_struct_ty(&self, fqn: &Path) -> Option<&StructTy> {

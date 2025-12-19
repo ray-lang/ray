@@ -878,7 +878,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         Expr::UnaryOp(unary) => {
             let expr = lower_expr(ctx, &unary.expr);
             let op_sym = unary.op.to_string();
-            if let Some(trait_fqn) = ctx.env.prefix_trait_for(&op_sym) {
+            if let Some((method_fqn, trait_fqn)) = ctx.env.lookup_prefix_op(&op_sym) {
                 let result_id = ctx.expr_id(node);
                 let operator_id = ctx.record_expr(
                     &unary.op,
@@ -891,7 +891,8 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 ctx.record_expr(
                     node,
                     ExprKind::UnaryOp {
-                        trait_name: trait_fqn.to_string(),
+                        trait_fqn: trait_fqn.clone(),
+                        method_fqn: method_fqn.clone(),
                         operator: operator_id,
                         expr,
                     },

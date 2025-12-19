@@ -83,6 +83,13 @@ impl GlobalEnv {
             .map(|(method_fqn, trait_fqn)| (method_fqn, trait_fqn))
     }
 
+    /// Look up the method and trait FQNs for a unary operator symbol, if any.
+    pub fn lookup_prefix_op(&self, symbol: &str) -> Option<(&Path, &Path)> {
+        self.prefix_ops
+            .get(symbol)
+            .map(|(method_fqn, trait_fqn)| (method_fqn, trait_fqn))
+    }
+
     /// Look up the trait name for a unary operator symbol, if any.
     pub fn prefix_trait_for(&self, symbol: &str) -> Option<&Path> {
         self.prefix_ops.get(symbol).map(|(_, trait_fqn)| trait_fqn)

@@ -173,7 +173,8 @@ pub enum ExprKind {
     /// Unary operator application `op e`, typed via a unary operator
     /// trait `UnaryOpTrait[Arg, Result]` (e.g. "Neg").
     UnaryOp {
-        trait_name: String,
+        trait_fqn: Path,
+        method_fqn: Path,
         operator: NodeId,
         expr: NodeId,
     },

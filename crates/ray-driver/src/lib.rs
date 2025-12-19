@@ -43,7 +43,8 @@ pub struct FrontendResult {
     pub symbol_map: SymbolMap,
     pub libs: Vec<lir::Program>,
     pub paths: HashSet<Path>,
-    pub definitions: HashMap<Path, libgen::DefinitionRecord>,
+    pub definitions_by_path: HashMap<Path, libgen::DefinitionRecord>,
+    pub definitions_by_id: HashMap<NodeId, libgen::DefinitionRecord>,
     pub errors: Vec<RayError>,
     pub bindings: passes::binding::BindingPassOutput,
     pub closure_analysis: passes::closure::ClosurePassOutput,
@@ -152,8 +153,14 @@ impl Driver {
             pass_manager.run_passes(&result.ncx, tc_options);
 
         let errors: Vec<RayError> = check_result.errors.into_iter().map(Into::into).collect();
-        let definitions =
+        let definitions_by_path =
             libgen::collect_definition_records(&result.module, &result.srcmap, &result.tcx);
+        let mut definitions_by_id: HashMap<NodeId, libgen::DefinitionRecord> = HashMap::new();
+        for record in definitions_by_path.values() {
+            definitions_by_id
+                .entry(record.id)
+                .or_insert_with(|| record.clone());
+        }
 
         let symbol_map = build_symbol_map(SymbolBuildContext::new(
             &result.module,
@@ -185,7 +192,8 @@ impl Driver {
             symbol_map,
             libs: result.libs,
             paths: result.paths,
-            definitions,
+            definitions_by_path,
+            definitions_by_id,
             errors,
             bindings: binding_output,
             closure_analysis: closure_output,
@@ -410,13 +418,7 @@ fn collect_symbols(frontend: &FrontendResult) -> Vec<SymbolInfo> {
 }
 
 fn type_info_for_node(tcx: &TyCtx, node_id: NodeId) -> Option<(String, bool)> {
-    if let Some(scheme) = tcx.maybe_ty_scheme_of(node_id) {
-        Some((pretty_print_tys(tcx, &scheme), true))
-    } else if let Some(ty) = tcx.get_ty(node_id) {
-        Some((pretty_print_tys(tcx, ty), false))
-    } else {
-        None
-    }
+    tcx.pretty_type_info_for_node(node_id)
 }
 
 fn collect_types(frontend: &FrontendResult) -> Vec<TypeInfo> {
@@ -523,7 +525,7 @@ fn push_definition_entry(
     let usage_span = usage_source.span;
 
     let (definition_id, definition_path, definition_filepath, definition_span, definition_doc) =
-        if let Some(entry) = frontend.definitions.get(&usage_key) {
+        if let Some(entry) = frontend.definitions_by_path.get(&usage_key) {
             let mut def_filepath = entry.file.clone();
             let mut def_span = entry.span;
             let mut def_doc = entry.doc.clone();

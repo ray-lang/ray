@@ -23,6 +23,7 @@ use tower_lsp::{
 };
 
 use ray_core::libgen;
+use ray_core::libgen::DefinitionKind;
 use ray_shared::span::{Source, Span};
 use ray_shared::{node_id::NodeId, pathlib::FilePath};
 use serde_json::Value;
@@ -424,45 +425,19 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             return Ok(None);
         };
 
-        let mut seen_paths = HashSet::new();
+        let has_node_type = snapshot.data.node_type_info.contains_key(&node_id);
         let mut hover_entries: Vec<(String, Span)> = Vec::new();
-
-        for symbol_target in symbol_targets {
-            self.log(format!(
-                "[server] hover: found symbol symbol_path={:?} source_span={:?} target_span={:?}",
-                symbol_target.path, source.span, symbol_target.span,
-            ))
-            .await;
-
-            let path_key = libgen::canonical_path_key(&symbol_target.path);
-            if !seen_paths.insert(path_key.clone()) {
-                continue;
+        if let Some(span) = source.span {
+            if let Some(entry) = node_type_hover_entry(&snapshot, node_id, symbol_targets, span) {
+                hover_entries.push(entry);
             }
-
-            match snapshot.data.definitions.get(&path_key) {
-                Some(record) => {
-                    self.log(format!(
-                        "[server] hover: found definition record for path={} (key={}): {:#?}",
-                        symbol_target.path, path_key, record,
-                    ))
-                    .await;
-
-                    if let Some(span) = source.span {
-                        hover_entries.push((record.to_string(), span));
-                    }
-                }
-                None => {
-                    self.log(format!(
-                        "[server] hover: no definition record for path={} key={}",
-                        symbol_target.path, path_key,
-                    ))
-                    .await;
-
-                    if let Some(span) = source.span {
-                        hover_entries.push((symbol_target.path.to_string(), span));
-                    }
-                }
-            }
+            hover_entries.extend(definition_hover_entries(
+                &snapshot,
+                node_id,
+                symbol_targets,
+                span,
+                has_node_type,
+            ));
         }
 
         if hover_entries.is_empty() {
@@ -495,6 +470,74 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
 
         Ok(Some(hover))
     }
+}
+
+fn node_type_hover_entry(
+    snapshot: &AnalysisSnapshot,
+    node_id: NodeId,
+    symbol_targets: &[ray_core::sema::SymbolTarget],
+    span: Span,
+) -> Option<(String, Span)> {
+    let ty_info = snapshot.data.node_type_info.get(&node_id)?;
+    let label = symbol_targets
+        .first()
+        .map(|target| target.path.to_short_name())
+        .unwrap_or_default();
+    let line = if label.is_empty() {
+        ty_info.ty.clone()
+    } else {
+        format!("{}: {}", label, ty_info.ty)
+    };
+    Some((format!("```ray\n{}\n```", line), span))
+}
+
+fn definition_hover_entries(
+    snapshot: &AnalysisSnapshot,
+    node_id: NodeId,
+    symbol_targets: &[ray_core::sema::SymbolTarget],
+    span: Span,
+    has_node_type: bool,
+) -> Vec<(String, Span)> {
+    let mut out: Vec<(String, Span)> = Vec::new();
+
+    if let Some(record) = snapshot.data.definitions_by_id.get(&node_id) {
+        if !should_skip_definition_record(has_node_type, &record.kind) {
+            out.push((record.to_string(), span));
+        }
+    }
+
+    let mut seen_paths = HashSet::new();
+    for symbol_target in symbol_targets {
+        let path_key = libgen::canonical_path_key(&symbol_target.path);
+        if !seen_paths.insert(path_key.clone()) {
+            continue;
+        }
+
+        match snapshot.data.definitions.get(&path_key) {
+            Some(record) => {
+                if should_skip_definition_record(has_node_type, &record.kind) {
+                    continue;
+                }
+                out.push((record.to_string(), span));
+            }
+            None => {
+                if has_node_type {
+                    continue;
+                }
+                out.push((symbol_target.path.to_string(), span));
+            }
+        }
+    }
+
+    out
+}
+
+fn should_skip_definition_record(has_node_type: bool, kind: &DefinitionKind) -> bool {
+    has_node_type
+        && matches!(
+            kind,
+            DefinitionKind::Name { .. } | DefinitionKind::Variable { .. }
+        )
 }
 
 impl RayLanguageServer {

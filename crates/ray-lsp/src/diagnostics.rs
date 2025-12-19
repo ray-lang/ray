@@ -12,12 +12,22 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_driver::{BuildOptions, Driver, FrontendResult};
-use ray_shared::span::{Pos, Source, Span};
 use ray_shared::{
     collections::namecontext::NameContext,
     pathlib::{FilePath, Path, RayPaths},
 };
+use ray_shared::{
+    node_id::NodeId,
+    span::{Pos, Source, Span},
+};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
+
+#[derive(Debug, Clone)]
+pub struct TypeInfoSnapshot {
+    pub ty: String,
+    #[allow(dead_code)]
+    pub is_scheme: bool,
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -27,8 +37,10 @@ pub struct AnalysisSnapshotData {
     pub module: Module<(), Decl>,
     pub name_context: NameContext,
     pub srcmap: SourceMap,
+    pub node_type_info: HashMap<NodeId, TypeInfoSnapshot>,
     pub symbol_map: SymbolMap,
     pub definitions: HashMap<Path, DefinitionRecord>,
+    pub definitions_by_id: HashMap<NodeId, DefinitionRecord>,
     pub module_paths: HashSet<Path>,
 }
 
@@ -156,15 +168,32 @@ fn collect_semantic_errors(
     let FrontendResult {
         module_path,
         module,
-        tcx: _,
+        tcx,
         ncx,
         srcmap,
         symbol_map,
         paths,
-        definitions,
+        definitions_by_path,
+        definitions_by_id,
         errors,
         ..
     } = frontend;
+
+    let mut node_type_info: HashMap<NodeId, TypeInfoSnapshot> = HashMap::new();
+    for (node_id, scheme) in tcx.node_schemes.iter() {
+        let (ty, is_scheme) = tcx
+            .pretty_type_info_for_node(*node_id)
+            .unwrap_or_else(|| (tcx.pretty_tys(scheme).to_string(), true));
+        node_type_info.insert(*node_id, TypeInfoSnapshot { ty, is_scheme });
+    }
+    for (node_id, _) in tcx.node_tys.iter() {
+        node_type_info.entry(*node_id).or_insert_with(|| {
+            let (ty, is_scheme) = tcx
+                .pretty_type_info_for_node(*node_id)
+                .unwrap_or_else(|| ("<unknown>".to_string(), false));
+            TypeInfoSnapshot { ty, is_scheme }
+        });
+    }
 
     let snapshot = AnalysisSnapshotData {
         module_path,
@@ -172,8 +201,10 @@ fn collect_semantic_errors(
         module,
         name_context: ncx,
         srcmap,
+        node_type_info,
         symbol_map,
-        definitions,
+        definitions: definitions_by_path,
+        definitions_by_id,
         module_paths: paths,
     };
 
@@ -214,20 +245,6 @@ fn map_error(error: RayError, target: &FilePath) -> Vec<Diagnostic> {
             }
         })
         .collect();
-
-    // if diagnostics.is_empty() {
-    //     diagnostics.push(Diagnostic {
-    //         range: default_range(),
-    //         severity: Some(DiagnosticSeverity::ERROR),
-    //         code: None,
-    //         code_description: None,
-    //         source: Some("ray".to_string()),
-    //         message: msg,
-    //         related_information: None,
-    //         tags: None,
-    //         data: None,
-    //     });
-    // }
 
     diagnostics
 }
@@ -276,6 +293,7 @@ fn to_filepath(uri: &Url) -> FilePath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ray_shared::node_id::NodeId;
     use tower_lsp::lsp_types::Url;
 
     fn expect_diagnostics(result: CollectResult) -> Vec<Diagnostic> {
@@ -361,6 +379,75 @@ mod tests {
                 .iter()
                 .any(|diag| diag.message.contains("does_not_exist")),
             "expected an analyzer diagnostic about `does_not_exist`, got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_tracks_distinct_types_for_shadowed_locals() {
+        let uri = test_uri();
+        let root = workspace_root();
+
+        let result = collect(
+            &uri,
+            r#"fn main() {
+    l = [1, 2]
+    x = l.get(1)
+    if some(x) = x {
+        print(x)
+    } else {
+        print("none")
+    }
+}
+"#,
+            Some(&root),
+            Some(&root),
+        );
+
+        let CollectResult::Diagnostics {
+            diagnostics,
+            snapshot,
+        } = result
+        else {
+            panic!("expected diagnostics result")
+        };
+
+        assert!(
+            diagnostics.is_empty(),
+            "expected no diagnostics, got {diagnostics:?}"
+        );
+
+        let snapshot = snapshot.expect("expected semantic snapshot");
+
+        // Line/col are 0-based. On the `if some(x) = x {` line, there are two
+        // distinct `x` nodes that must have different types.
+        let filepath = snapshot.entry_path.clone();
+        let (pattern_node_id, _) = snapshot
+            .srcmap
+            .find_at_position(&filepath, 3, 12)
+            .expect("expected node at pattern x");
+        let (rhs_node_id, _) = snapshot
+            .srcmap
+            .find_at_position(&filepath, 3, 17)
+            .expect("expected node at rhs x");
+
+        let pattern_ty = snapshot
+            .node_type_info
+            .get(&pattern_node_id)
+            .map(|info| info.ty.as_str())
+            .expect("expected type for pattern x");
+        let rhs_ty = snapshot
+            .node_type_info
+            .get(&rhs_node_id)
+            .map(|info| info.ty.as_str())
+            .expect("expected type for rhs x");
+
+        assert!(
+            pattern_ty.contains("int") && !pattern_ty.contains("nilable"),
+            "expected pattern x to be int, got {pattern_ty}"
+        );
+        assert!(
+            rhs_ty.contains("nilable[int]"),
+            "expected rhs x to be nilable[int], got {rhs_ty}"
         );
     }
 }

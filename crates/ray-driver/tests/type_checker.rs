@@ -243,6 +243,28 @@ fn typechecks_unannotated_bool_literal_function() {
 }
 
 #[test]
+fn records_call_resolution_for_unary_ops() {
+    let src = r#"
+        fn main() {
+            a = -1
+        }
+    "#;
+
+    let (_, result, tcx) = typecheck_src("records_call_resolution_for_unary_ops", src);
+    assert_typechecks("records_call_resolution_for_unary_ops", &result);
+
+    let expected = Path::from("core::Neg::-");
+    assert!(
+        tcx.call_resolutions()
+            .values()
+            .any(|resolution| resolution.base_fqn == expected),
+        "expected a call resolution for unary - via {}, got: {:?}",
+        expected,
+        tcx.call_resolutions()
+    );
+}
+
+#[test]
 fn typechecks_generic_id_with_class_constraint() {
     let src = r#"
         trait Int['t] {}
@@ -504,6 +526,42 @@ fn typechecks_struct_literal_and_field_access() {
 
     let project_ty = Ty::func(vec![pair_ty], Ty::u32());
     assert_scheme_eq(&tcx, &module_path, "project_x", &[], project_ty, &[]);
+}
+
+#[test]
+fn typechecks_list_and_int_literals() {
+    enable_debug_logs();
+    let src = r#"
+        trait Int['a] {
+            default(int)
+        }
+
+        impl Int[int] {}
+        impl Int[uint] {}
+
+        struct list['a] {
+            values: rawptr['a]
+            len: uint
+            capacity: uint
+        }
+
+        fn main() {
+            l = [1,2]
+        }
+    "#;
+
+    let (module_path, result, tcx, bindings) = typecheck_src_with_bindings("test", src);
+    assert_typechecks("typechecks_list_and_int_literals", &result);
+
+    assert_local_scheme_eq(
+        &tcx,
+        &bindings,
+        &module_path,
+        "main::l",
+        &[],
+        Ty::list(Ty::int()),
+        &[],
+    );
 }
 
 #[test]

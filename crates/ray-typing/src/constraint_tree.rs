@@ -906,7 +906,7 @@ fn generate_constraints_for_expr(
                     .push(Constraint::eq(expr_ty.clone(), fn_ty, info.clone()));
             }
             ExprKind::UnaryOp {
-                trait_name, expr, ..
+                trait_fqn, expr, ..
             } => {
                 // Unary operators (docs/type-system.md "Operators"):
                 //
@@ -915,10 +915,10 @@ fn generate_constraints_for_expr(
                 // -------------------------------------------------
                 // Γ ⊢ uop e ⇝ (?r, C ∪ { UnaryOpTrait[T, ?r] })
                 //
-                // where `trait_name` is the unary operator's trait (e.g. "Neg").
+                // where `trait_fqn` is the unary operator's trait (e.g. "core::Neg").
                 let arg_ty = ctx.expr_ty_or_fresh(*expr);
                 node.wanteds.push(Constraint::class(
-                    trait_name.clone(),
+                    trait_fqn.clone(),
                     vec![arg_ty, expr_ty.clone()],
                     info.clone(),
                 ));

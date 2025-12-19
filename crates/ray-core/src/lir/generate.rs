@@ -6,13 +6,12 @@ use ray_typing::{
     binding_groups::BindingId,
     tyctx::{CallResolution, TyCtx},
     types::{NominalKind, ReceiverMode, StructTy, Ty, TyScheme},
-    unify::mgu,
 };
 
 use crate::{
     ast::{
-        self, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node, Pattern,
-        PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
+        self, BinOp, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Module, Node,
+        Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
     },
     errors::RayResult,
     lir::{self, types::SizeOf},
@@ -559,68 +558,38 @@ impl<'a> GenCtx<'a> {
         self.curr_block = prev_block;
     }
 
-    pub fn call_from_op<O>(
+    pub fn call_from_op(
         &mut self,
-        func_fqn: &Path,
-        trait_fqn: &Path,
-        op: &Node<O>,
+        operator_id: NodeId,
         args: &[&Node<Expr>],
-        fn_ty: &TyScheme,
         tcx: &TyCtx,
     ) -> RayResult<GenResult> {
-        let mut fn_ty = fn_ty.clone();
-        let original_poly_ty = tcx.get_poly_ty(op.id).cloned();
-        let mut poly_ty = original_poly_ty
-            .clone()
-            .map(|ty| tcx.instantiate_scheme(ty));
-        let mut arg_tys = args
-            .iter()
-            .map(|arg| tcx.instantiate_scheme(tcx.ty_of(arg.id)))
-            .collect::<Vec<_>>();
-        log::debug!(
-            "call_from_op before subst: fn_ty={} args={}",
-            fn_ty,
-            arg_tys
-                .iter()
-                .map(|ty| ty.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let mut subst = fn_ty.instantiate_fn_with_args(poly_ty.as_mut(), &mut arg_tys);
-        log::debug!("subst: {}", subst);
-        log::debug!("func_fqn: {}", func_fqn);
+        let resolved = tcx
+            .call_resolution(operator_id)
+            .unwrap_or_else(|| panic!("missing call resolution for operator {:#x}", operator_id));
 
-        let base = trait_fqn.merge(&func_fqn);
+        let mut call_args: Vec<lir::Variable> = Vec::with_capacity(args.len());
+        for arg in args {
+            let arg_ty = tcx.ty_of(arg.id);
+            let arg_val = arg.lir_gen(self, tcx)?;
+            call_args.push(self.value_to_local_or_unit(arg_val, arg_ty));
+        }
 
-        log::debug!("base_name: {}", base);
-        let fn_name = if !self.is_extern(&base) {
-            if fn_ty.is_polymorphic() {
-                poly_ty
-                    .as_ref()
-                    .map(|poly| sema::fn_name(&base, poly))
-                    .unwrap_or_else(|| sema::fn_name(&base, &fn_ty))
-            } else {
-                sema::fn_name(&base, &fn_ty)
-            }
+        let fn_name = if self.is_extern(&resolved.base_fqn) {
+            self.extern_link_name(&resolved.base_fqn)
+                .unwrap_or_else(|| resolved.base_fqn.clone())
         } else {
-            base
+            sema::fn_name(&resolved.base_fqn, &resolved.callee_ty)
         };
 
-        if let (Some(orig_poly), Some(inst_poly)) = (original_poly_ty.as_ref(), poly_ty.as_ref()) {
-            if let Ok((_, poly_subst)) = mgu(orig_poly.mono(), inst_poly.mono()) {
-                subst.union(poly_subst);
-            }
-        }
-
-        let mut call_args: Vec<lir::Variable> = vec![];
-        for (idx, (arg, arg_ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
-            log::debug!("call_from_op arg[{}] id={:#x} ty={}", idx, arg.id, arg_ty);
-            let arg_val = arg.lir_gen(self, tcx)?;
-            call_args.push(self.value_to_local_or_unit(arg_val, arg_ty.clone()));
-        }
-        log::debug!("add sym: {}", fn_name);
         self.add_sym(fn_name.clone());
-        Ok(lir::Call::new(fn_name, call_args, fn_ty.clone(), original_poly_ty).into())
+        Ok(lir::Call::new(
+            fn_name,
+            call_args,
+            resolved.callee_ty.clone(),
+            Some(resolved.poly_callee_ty.clone()),
+        )
+        .into())
     }
 
     #[allow(dead_code)]
@@ -1126,7 +1095,7 @@ impl<'a> GenCtx<'a> {
         callee_val: lir::Value,
         call_args: Vec<lir::Variable>,
         original_poly_ty: Option<TyScheme>,
-        src: Source,
+        src: &Source,
     ) -> RayResult<GenResult> {
         // callee_val has type FnHandle[A..,R]
         let handle_scheme = self.ty_of(tcx, callee_id);
@@ -1181,7 +1150,7 @@ impl<'a> GenCtx<'a> {
             fn_field_ty_scheme.clone(),
             original_poly_ty,
         );
-        direct.source = Some(src);
+        direct.source = Some(src.clone());
         Ok(direct.into())
     }
 
@@ -1189,7 +1158,7 @@ impl<'a> GenCtx<'a> {
         &mut self,
         resolved: &CallResolution,
         call_args: Vec<lir::Variable>,
-        src: Source,
+        src: &Source,
     ) -> RayResult<GenResult> {
         let fn_name = if self.is_extern(&resolved.base_fqn) {
             self.extern_link_name(&resolved.base_fqn)
@@ -1206,7 +1175,7 @@ impl<'a> GenCtx<'a> {
             resolved.callee_ty.clone(),
             Some(resolved.poly_callee_ty.clone()),
         );
-        call.source = Some(src);
+        call.source = Some(src.clone());
         Ok(call.into())
     }
 
@@ -1216,12 +1185,12 @@ impl<'a> GenCtx<'a> {
         call_args: Vec<lir::Variable>,
         fn_ty: TyScheme,
         original_poly_ty: Option<TyScheme>,
-        src: Source,
+        src: &Source,
     ) -> RayResult<GenResult> {
         log::debug!("add sym: {}", fn_name);
         self.add_sym(fn_name.clone());
         let mut call = lir::Call::new(fn_name, call_args, fn_ty, original_poly_ty);
-        call.source = Some(src);
+        call.source = Some(src.clone());
         Ok(call.into())
     }
 
@@ -1636,20 +1605,127 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
 
 impl LirGen<GenResult> for UnaryOp {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
-        let fn_ty = tcx.ty_of(self.op.id);
-        let name = self.op.to_string();
-        let (func_fqn, trait_fqn) = tcx.lookup_prefix_op(&name).cloned().unwrap();
-        log::debug!("trait_fqn: {}", trait_fqn);
-        log::debug!("func_fqn: {}", func_fqn);
+        ctx.call_from_op(self.op.id, &[self.expr.as_ref()], tcx)
+    }
+}
 
-        ctx.call_from_op(
-            &func_fqn,
-            &trait_fqn,
-            &self.op,
-            &[self.expr.as_ref()],
-            &fn_ty,
-            tcx,
-        )
+impl LirGen<GenResult> for BinOp {
+    fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
+        ctx.call_from_op(self.op.id, &[self.lhs.as_ref(), self.rhs.as_ref()], tcx)
+    }
+}
+
+impl LirGen<GenResult> for (&Call, &Source) {
+    fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
+        let &(call, src) = self;
+        let callee_is_direct_fn = call
+            .callee
+            .path()
+            .and_then(|path| ctx.maybe_direct_function(call.callee.id, path, tcx))
+            .is_some();
+
+        let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
+        let mut base = if let Expr::Dot(dot) = &call.callee.value {
+            let self_ty = tcx.ty_of(dot.lhs.id);
+            arg_exprs.push((dot.lhs.as_ref(), self_ty));
+            Some(dot.rhs.path.clone())
+        } else if callee_is_direct_fn {
+            call.callee.path().cloned()
+        } else {
+            None
+        };
+
+        let resolved = tcx.call_resolution(call.callee.id).cloned();
+        let fn_ty = if let Some(resolved) = &resolved {
+            base = Some(resolved.base_fqn.clone());
+            resolved.callee_ty.clone()
+        } else {
+            TyScheme::from_mono(
+                tcx.get_ty(call.callee.id)
+                    .unwrap_or_else(|| {
+                        panic!("missing mono type for call callee {:#x}", call.callee.id)
+                    })
+                    .clone(),
+            )
+        };
+
+        log::debug!("[lir_gen] scheme for call {}: {}", call, fn_ty);
+        log::debug!(
+            "call: callee id={:#x} function type = {}",
+            call.callee.id,
+            fn_ty
+        );
+
+        let mut evaluated_callee: Option<lir::Value> = None;
+        if base.is_none() {
+            let value = call.callee.lir_gen(ctx, tcx)?;
+            evaluated_callee = Some(value);
+        }
+
+        for arg in call.args.items.iter() {
+            arg_exprs.push((arg, ctx.ty_of(tcx, arg.id)));
+        }
+
+        let original_poly_ty = resolved
+            .as_ref()
+            .map(|resolved| resolved.poly_callee_ty.clone())
+            .or_else(|| tcx.get_poly_ty(call.callee.id).cloned());
+
+        // Snapshot instantiated parameter types of the callee after substitution.
+        let param_monos = match fn_ty.mono() {
+            Ty::Func(params, _) => params.clone(),
+            _ => Vec::new(),
+        };
+
+        let recv_mode = base
+            .as_ref()
+            .map(|base| ctx.recv_mode_for_base(tcx, base))
+            .unwrap_or_default();
+
+        let fn_name = if resolved.is_none() {
+            base.clone().map(|base| {
+                log::debug!("base_name: {}", base);
+                if ctx.is_extern(&base) {
+                    ctx.extern_link_name(&base).unwrap_or(base)
+                } else {
+                    sema::fn_name(&base, &fn_ty)
+                }
+            })
+        } else {
+            None
+        };
+
+        let is_method_call = matches!(&call.callee.value, Expr::Dot(_));
+        let call_args =
+            ctx.build_call_args(tcx, is_method_call, recv_mode, arg_exprs, &param_monos)?;
+
+        if let Some(resolved) = &resolved {
+            return ctx.emit_resolved_direct_call(resolved, call_args, src);
+        }
+
+        if let Some(fn_name) = fn_name {
+            log::debug!("poly_ty: {:?}", original_poly_ty);
+            ctx.emit_named_direct_call(
+                fn_name,
+                call_args,
+                fn_ty.clone(),
+                original_poly_ty.clone(),
+                src,
+            )
+        } else {
+            let callee_val = evaluated_callee
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| call.callee.lir_gen(ctx, tcx))?;
+            ctx.emit_fnhandle_call(
+                tcx,
+                call.callee.id,
+                callee_val,
+                call_args,
+                original_poly_ty,
+                src,
+            )
+        }
     }
 }
 
@@ -2034,144 +2110,10 @@ impl LirGen<GenResult> for Node<Expr> {
                 .into()
             }
             Expr::Call(call) => {
-                let callee_is_direct_fn = call
-                    .callee
-                    .path()
-                    .and_then(|path| ctx.maybe_direct_function(call.callee.id, path, tcx))
-                    .is_some();
-
-                let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
-                let mut base = if let Expr::Dot(dot) = &call.callee.value {
-                    let self_ty = tcx.ty_of(dot.lhs.id);
-                    arg_exprs.push((dot.lhs.as_ref(), self_ty));
-                    Some(dot.rhs.path.clone())
-                } else if callee_is_direct_fn {
-                    call.callee.path().cloned()
-                } else {
-                    None
-                };
-
-                let resolved = tcx.call_resolution(call.callee.id).cloned();
-                let fn_ty = if let Some(resolved) = &resolved {
-                    base = Some(resolved.base_fqn.clone());
-                    resolved.callee_ty.clone()
-                } else {
-                    TyScheme::from_mono(
-                        tcx.get_ty(call.callee.id)
-                            .unwrap_or_else(|| {
-                                panic!("missing mono type for call callee {:#x}", call.callee.id)
-                            })
-                            .clone(),
-                    )
-                };
-
-                log::debug!("[lir_gen] scheme for call {}: {}", call, fn_ty);
-                log::debug!(
-                    "call: callee id={:#x} function type = {}",
-                    call.callee.id,
-                    fn_ty
-                );
-
-                let mut evaluated_callee: Option<lir::Value> = None;
-                if base.is_none() {
-                    let value = call.callee.lir_gen(ctx, tcx)?;
-                    evaluated_callee = Some(value);
-                }
-
-                for arg in call.args.items.iter() {
-                    arg_exprs.push((arg, ctx.ty_of(tcx, arg.id)));
-                }
-
-                let original_poly_ty = resolved
-                    .as_ref()
-                    .map(|resolved| resolved.poly_callee_ty.clone())
-                    .or_else(|| tcx.get_poly_ty(call.callee.id).cloned());
-
-                // Snapshot instantiated parameter types of the callee after substitution.
-                let param_monos = match fn_ty.mono() {
-                    Ty::Func(params, _) => params.clone(),
-                    _ => Vec::new(),
-                };
-
-                let recv_mode = base
-                    .as_ref()
-                    .map(|base| ctx.recv_mode_for_base(tcx, base))
-                    .unwrap_or_default();
-
-                let fn_name = if resolved.is_none() {
-                    base.clone().map(|base| {
-                        log::debug!("base_name: {}", base);
-                        if ctx.is_extern(&base) {
-                            ctx.extern_link_name(&base).unwrap_or(base)
-                        } else {
-                            sema::fn_name(&base, &fn_ty)
-                        }
-                    })
-                } else {
-                    None
-                };
-
-                let is_method_call = matches!(&call.callee.value, Expr::Dot(_));
-                let call_args =
-                    ctx.build_call_args(tcx, is_method_call, recv_mode, arg_exprs, &param_monos)?;
-
                 let src = ctx.srcmap.get(self);
-                if let Some(resolved) = &resolved {
-                    return ctx.emit_resolved_direct_call(resolved, call_args, src);
-                }
-
-                if let Some(fn_name) = fn_name {
-                    log::debug!("poly_ty: {:?}", original_poly_ty);
-                    ctx.emit_named_direct_call(
-                        fn_name,
-                        call_args,
-                        fn_ty.clone(),
-                        original_poly_ty.clone(),
-                        src,
-                    )?
-                } else {
-                    let callee_val = evaluated_callee
-                        .take()
-                        .map(Ok)
-                        .unwrap_or_else(|| call.callee.lir_gen(ctx, tcx))?;
-                    ctx.emit_fnhandle_call(
-                        tcx,
-                        call.callee.id,
-                        callee_val,
-                        call_args,
-                        original_poly_ty,
-                        src,
-                    )?
-                }
+                (call, &src).lir_gen(ctx, tcx)?
             }
-            Expr::BinOp(binop) => {
-                let resolved = tcx.call_resolution(binop.op.id).unwrap_or_else(|| {
-                    panic!("missing call resolution for binary op {:#x}", binop.op.id)
-                });
-
-                let mut call_args: Vec<lir::Variable> = Vec::with_capacity(2);
-                for arg in [&binop.lhs, &binop.rhs] {
-                    let arg_ty = tcx.ty_of(arg.id);
-                    let arg_val = arg.lir_gen(ctx, tcx)?;
-                    call_args.push(ctx.value_to_local_or_unit(arg_val, arg_ty));
-                }
-
-                let fn_name = if ctx.is_extern(&resolved.base_fqn) {
-                    ctx.extern_link_name(&resolved.base_fqn)
-                        .unwrap_or_else(|| resolved.base_fqn.clone())
-                } else {
-                    sema::fn_name(&resolved.base_fqn, &resolved.callee_ty)
-                };
-
-                ctx.add_sym(fn_name.clone());
-                lir::Call::new(
-                    fn_name,
-                    call_args,
-                    resolved.callee_ty.clone(),
-                    Some(resolved.poly_callee_ty.clone()),
-                )
-                .into()
-            }
+            Expr::BinOp(binop) => binop.lir_gen(ctx, tcx)?,
             Expr::Break(ex) => {
                 if let Some(_) = ex {
                     todo!()

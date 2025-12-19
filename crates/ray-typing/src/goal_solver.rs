@@ -11,11 +11,11 @@
 // - Remaining wanteds are propagated upward toward the binding-group root and
 //   reported as residual/unsatisfied predicates.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use crate::{
     constraint_tree::ConstraintNode,
-    constraints::{ClassPredicate, Constraint, ConstraintKind, Predicate},
+    constraints::{ClassPredicate, Constraint, ConstraintKind, Predicate, RecvKind},
     context::SolverContext,
     env::GlobalEnv,
     info::TypeSystemInfo,
@@ -567,9 +567,9 @@ fn solve_has_field(wanted: &Constraint, global_env: &GlobalEnv, subst: &mut Subs
 
 /// Try to solve a Recv predicate using built-in auto-ref/deref rules.
 ///
-/// We conservatively explore a small space of receiver-adjustment steps from
-/// the expression type (T, *T, rawptr[T], dereferenced forms) and attempt to
-/// unify any of these candidate receiver types with the wanted receiver type.
+/// This uses a deterministic rule (matching the previous implementation):
+/// strip at most one `*` from the receiver expression type and then re-apply
+/// it when the receiver kind requires a pointer.
 fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
     let rp = match &wanted.kind {
         ConstraintKind::Recv(rp) => rp,
@@ -582,49 +582,23 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
     let mut expr_ty = rp.expr_ty.clone();
     expr_ty.apply_subst(subst);
 
-    // Breadth-first search over possible receiver adjustments, limited to a
-    // small number of steps to avoid runaway exploration.
-    let mut seen: HashSet<Ty> = HashSet::new();
-    let mut queue: VecDeque<Ty> = VecDeque::new();
+    let base_ty = match &expr_ty {
+        Ty::Ref(inner) => (**inner).clone(),
+        _ => expr_ty,
+    };
 
-    seen.insert(expr_ty.clone());
-    queue.push_back(expr_ty);
+    let target_ty = match rp.kind {
+        RecvKind::Value => base_ty,
+        RecvKind::Ref => Ty::Ref(Box::new(base_ty)),
+    };
 
-    let max_steps = 4usize;
-    let mut steps = 0usize;
-
-    while let Some(cur) = queue.pop_front() {
-        if steps >= max_steps {
-            break;
+    match unify(&recv_ty, &target_ty, subst, &wanted.info) {
+        Ok(new_subst) => {
+            subst.union(new_subst);
+            true
         }
-        steps += 1;
-
-        // Try to unify the current candidate receiver with the wanted receiver type
-        match unify(&recv_ty, &cur, &subst, &wanted.info) {
-            Ok(new_subst) => {
-                subst.union(new_subst);
-                return true;
-            }
-            Err(_) => {}
-        }
-
-        // Generate neighbors via simple auto-ref/deref rules.
-        let ref_ty = Ty::Ref(Box::new(cur.clone()));
-        if seen.insert(ref_ty.clone()) {
-            queue.push_back(ref_ty);
-        }
-
-        match cur {
-            Ty::Ref(inner) | Ty::RawPtr(inner) => {
-                if seen.insert((*inner).clone()) {
-                    queue.push_back(*inner);
-                }
-            }
-            _ => {}
-        }
+        Err(_) => false,
     }
-
-    false
 }
 
 #[cfg(test)]
@@ -634,14 +608,14 @@ mod tests {
     use ray_shared::collections::namecontext::NameContext;
 
     use crate::{
-        constraints::{ClassPredicate, Constraint, Predicate},
+        constraints::{ClassPredicate, Constraint, Predicate, RecvKind},
         context::SolverContext,
         env::GlobalEnv,
         info::TypeSystemInfo,
-        types::{ImplTy, Subst, Substitutable as _, Ty},
+        types::{ImplTy, Subst, Substitutable as _, Ty, TyVar},
     };
 
-    use super::solve_with_instances;
+    use super::{solve_recv, solve_with_instances};
 
     #[test]
     fn solve_with_instances_instantiates_schema_vars_and_does_not_leak_trial_metas() {
@@ -756,5 +730,33 @@ mod tests {
         // Ensure we did not commit any bindings on ambiguity.
         assert!(subst.get(&t0).is_none());
         assert!(subst.get(&t1).is_none());
+    }
+
+    #[test]
+    fn solve_recv_ref_autorefs_once() {
+        let mut subst = Subst::new();
+        let wanted = Constraint::recv(
+            RecvKind::Ref,
+            Ty::ref_of(Ty::list(Ty::var("?t0"))),
+            Ty::list(Ty::con("u32")),
+            TypeSystemInfo::default(),
+        );
+
+        assert!(solve_recv(&wanted, &mut subst));
+        assert_eq!(subst.get(&TyVar::new("?t0")), Some(&Ty::con("u32")));
+    }
+
+    #[test]
+    fn solve_recv_value_autoderefs_once() {
+        let mut subst = Subst::new();
+        let wanted = Constraint::recv(
+            RecvKind::Value,
+            Ty::list(Ty::var("?t0")),
+            Ty::ref_of(Ty::list(Ty::con("u32"))),
+            TypeSystemInfo::default(),
+        );
+
+        assert!(solve_recv(&wanted, &mut subst));
+        assert_eq!(subst.get(&TyVar::new("?t0")), Some(&Ty::con("u32")));
     }
 }

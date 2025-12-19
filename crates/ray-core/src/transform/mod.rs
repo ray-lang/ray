@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use ray_shared::span::{Source, Span};
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
+    node_id::NodeId,
     pathlib::{FilePath, Path},
 };
 use ray_typing::tyctx::TyCtx;
@@ -44,6 +45,8 @@ impl ModuleCombiner {
         }
 
         for module in modules {
+            let _node_id_namespace = NodeId::enter_namespace(&module.path);
+
             new_module.decls.extend(module.decls);
             let main_decl = self.create_main_func(
                 &module.path,
@@ -66,6 +69,8 @@ impl ModuleCombiner {
         // lower the declarations for the current module
         let mut ctx = self.get_lower_ctx(&mut srcmap);
         for decl in new_module.decls.iter_mut() {
+            let src = ctx.srcmap().get(decl);
+            let _node_id_namespace = NodeId::enter_namespace(&src.src_module);
             decl.lower(&mut ctx)?;
         }
 
@@ -137,6 +142,8 @@ impl ModuleCombiner {
         mut stmts: Vec<Node<Expr>>,
         srcmap: &mut SourceMap,
     ) -> Result<Node<Decl>, RayError> {
+        let _node_id_namespace = NodeId::enter_namespace(module_path);
+
         let mut span = Span::new();
         if let Some(first) = stmts.first() {
             span.start = srcmap.span_of(first).start;

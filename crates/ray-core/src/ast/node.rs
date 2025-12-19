@@ -3,7 +3,6 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use rand::RngCore;
 use ray_shared::{
     node_id::NodeId,
     pathlib::Path,
@@ -153,8 +152,7 @@ where
 
 impl<T> Node<T> {
     pub fn new(value: T) -> Node<T> {
-        let mut rng = rand::thread_rng();
-        let id = NodeId(rng.next_u64());
+        let id = NodeId::new();
         Node { id, value }
     }
 

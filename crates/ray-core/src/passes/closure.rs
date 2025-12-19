@@ -296,7 +296,8 @@ mod tests {
         srcmap: &SourceMap,
     ) -> (BindingPassOutput, ClosurePassOutput) {
         let env = GlobalEnv::default();
-        let binding_output = binding::run_binding_pass(module, srcmap, &env, BindingPassOutput::empty());
+        let binding_output =
+            binding::run_binding_pass(module, srcmap, &env, BindingPassOutput::empty());
         let closure_output = run_closure_pass(module, srcmap, &binding_output);
         (binding_output, closure_output)
     }

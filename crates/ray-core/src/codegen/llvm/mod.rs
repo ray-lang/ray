@@ -1701,11 +1701,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
             }
             if let Ty::Var(v) = ty {
                 if v.is_unknown() {
-                    let defining_inst = self
-                        .blocks
-                        .iter()
-                        .flat_map(|block| block.iter())
-                        .find_map(|inst| match inst {
+                    let defining_inst = self.blocks.iter().flat_map(|block| block.iter()).find_map(
+                        |inst| match inst {
                             lir::Inst::SetLocal(idx, value) if *idx == loc.idx => {
                                 let mut msg =
                                     format!("{}", lir::FuncDisplayCtx::new(inst, &self.locals));
@@ -1717,7 +1714,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
                                 Some(msg)
                             }
                             _ => None,
-                        });
+                        },
+                    );
                     panic!(
                         "cannot codegen function `{}`: local `${}` has unresolved type variable `{}` ({}){}",
                         self.name,

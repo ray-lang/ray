@@ -80,7 +80,8 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
             Decl::Func(func) => push_func(walk, func),
             Decl::Trait(tr) => {
                 for field in tr.fields.iter().rev() {
-                    walk.stack.push(StackEntry::EnterNode(WalkItem::Decl(field)));
+                    walk.stack
+                        .push(StackEntry::EnterNode(WalkItem::Decl(field)));
                 }
             }
             Decl::Impl(imp) => {
@@ -105,14 +106,14 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
         WalkItem::Expr(expr) => match &expr.value {
             Expr::Assign(assign) => push_assign(walk, assign),
             Expr::Block(block) => push_block(walk, block),
-            Expr::Boxed(boxed) => {
-                walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(&boxed.inner)))
-            }
+            Expr::Boxed(boxed) => walk
+                .stack
+                .push(StackEntry::EnterNode(WalkItem::Expr(&boxed.inner))),
             Expr::Call(call) => push_call(walk, call),
             Expr::Closure(closure) => push_closure(walk, closure),
-            Expr::Deref(deref) => {
-                walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(&deref.expr)))
-            }
+            Expr::Deref(deref) => walk
+                .stack
+                .push(StackEntry::EnterNode(WalkItem::Expr(&deref.expr))),
             Expr::Func(func) => push_func(walk, func),
             Expr::For(for_expr) => push_for(walk, for_expr),
             Expr::If(if_expr) => push_if(walk, if_expr),
@@ -128,14 +129,15 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
             Expr::List(list) => push_list(walk, list),
             Expr::New(new) => push_new(walk, new),
             Expr::Range(range) => push_range(walk, range),
-            Expr::Ref(rf) => {
-                walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(&rf.expr)))
-            }
+            Expr::Ref(rf) => walk
+                .stack
+                .push(StackEntry::EnterNode(WalkItem::Expr(&rf.expr))),
             Expr::Tuple(tuple) => push_tuple(walk, tuple),
             Expr::UnaryOp(unary) => push_unary_op(walk, unary),
             Expr::Return(maybe_node) | Expr::Break(maybe_node) => {
                 if let Some(node) = maybe_node {
-                    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(&node)));
+                    walk.stack
+                        .push(StackEntry::EnterNode(WalkItem::Expr(&node)));
                 }
             }
             Expr::DefaultValue(node)
@@ -143,14 +145,11 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
             | Expr::Paren(node)
             | Expr::TypeAnnotated(node, _)
             | Expr::Unsafe(node)
-            | Expr::Some(node) => {
-                walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(&node)))
+            | Expr::Some(node) => walk
+                .stack
+                .push(StackEntry::EnterNode(WalkItem::Expr(&node))),
+            Expr::Literal(_) | Expr::Missing(_) | Expr::Name(_) | Expr::Path(_) | Expr::Type(_) => {
             }
-            Expr::Literal(_)
-            | Expr::Missing(_)
-            | Expr::Name(_)
-            | Expr::Path(_)
-            | Expr::Type(_) => {}
         },
         WalkItem::Pattern(pattern) => push_pattern(walk, pattern),
         WalkItem::CurlyElement(element) => push_curly_element(walk, element),
@@ -189,24 +188,24 @@ fn push_closure<'a>(walk: &mut ModuleWalk<'a>, closure: &'a Closure) {
 
 fn push_func<'a>(walk: &mut ModuleWalk<'a>, func: &'a Func) {
     if let Some(body) = func.body.as_ref() {
-        walk.stack
-            .push(StackEntry::EnterNode(WalkItem::Expr(body)));
+        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(body)));
     }
 }
 
 fn push_for<'a>(walk: &mut ModuleWalk<'a>, for_expr: &'a For) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Pattern(&for_expr.pat)));
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Expr(for_expr.body.as_ref())));
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Expr(for_expr.expr.as_ref())));
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        for_expr.body.as_ref(),
+    )));
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        for_expr.expr.as_ref(),
+    )));
 }
 
 fn push_if<'a>(walk: &mut ModuleWalk<'a>, if_expr: &'a If) {
     if let Some(els) = if_expr.els.as_ref() {
-        walk.stack
-            .push(StackEntry::EnterNode(WalkItem::Expr(els)));
+        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(els)));
     }
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(if_expr.then.as_ref())));
@@ -215,8 +214,9 @@ fn push_if<'a>(walk: &mut ModuleWalk<'a>, if_expr: &'a If) {
 }
 
 fn push_loop<'a>(walk: &mut ModuleWalk<'a>, loop_expr: &'a Loop) {
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Expr(loop_expr.body.as_ref())));
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        loop_expr.body.as_ref(),
+    )));
 }
 
 fn push_sequence<'a>(walk: &mut ModuleWalk<'a>, sequence: &'a Sequence) {
@@ -226,17 +226,20 @@ fn push_sequence<'a>(walk: &mut ModuleWalk<'a>, sequence: &'a Sequence) {
 }
 
 fn push_while<'a>(walk: &mut ModuleWalk<'a>, while_expr: &'a While) {
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Expr(while_expr.body.as_ref())));
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Expr(while_expr.cond.as_ref())));
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        while_expr.body.as_ref(),
+    )));
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        while_expr.cond.as_ref(),
+    )));
 }
 
 fn push_pattern<'a>(walk: &mut ModuleWalk<'a>, pattern: &'a Pattern) {
     match pattern {
         Pattern::Sequence(seq) | Pattern::Tuple(seq) => {
             for pat in seq.iter().rev() {
-                walk.stack.push(StackEntry::EnterNode(WalkItem::Pattern(pat)));
+                walk.stack
+                    .push(StackEntry::EnterNode(WalkItem::Pattern(pat)));
             }
         }
         Pattern::Deref(name) => {

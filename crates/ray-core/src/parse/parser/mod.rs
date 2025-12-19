@@ -17,12 +17,11 @@ mod ty;
 mod tests;
 
 pub use context::ParseContext;
-use ray_shared::node_id::NodeId;
+use ray_shared::node_id::{NodeId, NodeIdNamespaceGuard};
 pub use recover::{Recover, RecoveryCtx};
 
 use std::{fs, io, mem};
 
-use rand::RngCore;
 use ray_shared::pathlib::{FilePath, Path};
 use ray_shared::span::{Pos, Source, Span, parsed::Parsed};
 use ray_typing::types::{Ty, TyScheme};
@@ -237,16 +236,19 @@ pub struct Parser<'src> {
     options: ParseOptions,
     srcmap: &'src mut SourceMap,
     errors: Vec<RayError>,
+    _node_id_namespace: NodeIdNamespaceGuard,
 }
 
 impl<'src> Parser<'src> {
     pub fn new(src: &str, options: ParseOptions, srcmap: &'src mut SourceMap) -> Self {
         let lex = Lexer::new(src);
+        let _node_id_namespace = NodeId::enter_namespace(&options.module_path);
         Self {
             lex,
             options,
             srcmap,
             errors: Vec::new(),
+            _node_id_namespace,
         }
     }
 
@@ -263,14 +265,7 @@ impl<'src> Parser<'src> {
         options: ParseOptions,
         srcmap: &'src mut SourceMap,
     ) -> ParseDiagnostics<File> {
-        let lex = Lexer::new(src);
-        let mut parser = Self {
-            lex,
-            options,
-            srcmap,
-            errors: Vec::new(),
-        };
-
+        let mut parser = Parser::new(src, options, srcmap);
         match parser.parse_into_file() {
             Ok(file) => {
                 let errors = mem::take(&mut parser.errors);
@@ -1358,8 +1353,7 @@ impl<'src> Parser<'src> {
     }
 
     pub(crate) fn mk_synthetic(&mut self, span: Span) -> NodeId {
-        let mut rng = rand::thread_rng();
-        let id = NodeId(rng.next_u64());
+        let id = NodeId::new();
         let src = Source {
             span: Some(span),
             filepath: self.options.filepath.clone(),

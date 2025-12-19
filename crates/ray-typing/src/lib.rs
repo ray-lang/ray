@@ -19,30 +19,25 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::mem;
 use std::rc::Rc;
 
-use crate::binding_groups::BindingId;
-use crate::constraint_tree::{
-    ConstraintNode, ConstraintTreeWalkItem, collect_binding_nodes_for_group, walk_tree,
-};
-use crate::constraints::{Constraint, ConstraintKind, Predicate};
-use crate::context::ExprKind;
-use crate::defaulting::DefaultingResult;
-use crate::info::Info;
-use crate::tyctx::TyCtx;
-use crate::types::{SchemaVarAllocator, Substitutable as _, Ty, TyScheme, TyVar};
-use binding_groups::{BindingGraph, BindingGroup};
-use constraint_tree::build_constraint_tree_for_group;
-use context::SolverContext;
-use defaulting::apply_defaulting;
-use env::GlobalEnv;
-use generalize::generalize_group;
-use goal_solver::GoalSolveResult;
-use info::TypeSystemInfo;
 use ray_shared::collections::namecontext::NameContext;
 use ray_shared::node_id::NodeId;
 use ray_shared::pathlib::Path;
 use ray_shared::span::Source;
-use term_solver::TermSolveResult;
-use types::Subst;
+
+use crate::{
+    binding_groups::{BindingGraph, BindingGroup, BindingId},
+    constraint_tree::{
+        ConstraintNode, ConstraintTreeWalkItem, build_constraint_tree_for_group, walk_tree,
+    },
+    constraints::{Constraint, ConstraintKind, Predicate},
+    context::{ExprKind, SolverContext},
+    defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
+    env::GlobalEnv,
+    generalize::generalize_group,
+    info::{Info, TypeSystemInfo},
+    tyctx::TyCtx,
+    types::{SchemaVarAllocator, Subst, Substitutable as _, Ty, TyScheme, TyVar},
+};
 
 /// Associates a frontend node with a binding, distinguishing between
 /// definition sites (binders) and use sites (references).
@@ -898,6 +893,88 @@ fn push_unsolved_meta_tyvar_errors(
     }
 }
 
+fn push_defaulting_outcome_errors(
+    errors: &mut Vec<TypeError>,
+    module: &ModuleInput,
+    expr_types: &HashMap<NodeId, Ty>,
+    generalized_metas: &HashSet<TyVar>,
+    log: &DefaultingLog,
+) {
+    const MAX_SOURCES_PER_META: usize = 8;
+
+    let mut vars_of_interest = HashSet::new();
+    for entry in &log.entries {
+        if matches!(entry.kind, DefaultingOutcomeKind::RejectedAmbiguous { .. }) {
+            vars_of_interest.insert(entry.var.clone());
+        }
+    }
+    if vars_of_interest.is_empty() {
+        return;
+    }
+
+    let mut info_by_var: HashMap<TyVar, TypeSystemInfo> = HashMap::new();
+    for (expr_id, ty) in expr_types.iter() {
+        let mut free_vars = HashSet::new();
+        ty.free_ty_vars(&mut free_vars);
+
+        if free_vars.is_empty() {
+            continue;
+        }
+
+        let src = module
+            .expr_records
+            .get(expr_id)
+            .and_then(|rec| rec.source.as_ref());
+
+        for var in free_vars {
+            if !var.is_unknown() || var.is_schema() {
+                continue;
+            }
+            if generalized_metas.contains(&var) {
+                continue;
+            }
+            if !vars_of_interest.contains(&var) {
+                continue;
+            }
+
+            let info = info_by_var
+                .entry(var.clone())
+                .or_insert_with(TypeSystemInfo::new);
+
+            if let Some(src) = src {
+                if info.source.len() < MAX_SOURCES_PER_META && !info.source.contains(src) {
+                    info.with_src(src.clone());
+                }
+            }
+        }
+    }
+
+    for entry in &log.entries {
+        let DefaultingOutcomeKind::RejectedAmbiguous { candidates } = &entry.kind else {
+            continue;
+        };
+
+        let info = info_by_var
+            .get(&entry.var)
+            .cloned()
+            .unwrap_or_else(TypeSystemInfo::new);
+
+        let candidates_str = candidates
+            .iter()
+            .map(|ty| ty.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        errors.push(TypeError::message(
+            format!(
+                "type defaulting is ambiguous for {}: multiple viable defaults ({})",
+                entry.var, candidates_str
+            ),
+            info,
+        ));
+    }
+}
+
 fn solve_groups(
     module: &ModuleInput,
     groups: Vec<BindingGroup>,
@@ -940,10 +1017,17 @@ fn solve_groups(
         let DefaultingResult {
             subst: defaulted_subst,
             residuals,
-            ..
+            log,
         } = apply_defaulting(module, ctx, group, global_env, residuals, &subst);
         subst = defaulted_subst;
         ctx.apply_subst(&subst);
+        push_defaulting_outcome_errors(
+            &mut errors,
+            module,
+            &ctx.expr_types,
+            &ctx.generalized_metas,
+            &log,
+        );
 
         // Defaulting can refine metas in residual predicates (e.g. `Int[?t]`
         // becomes `Int[int]`). Re-run goal solving after defaulting so that
@@ -1039,100 +1123,6 @@ fn solve_node(
     goal_result.unsolved
 }
 
-/// Entry point for typechecking a single binding group, given a shared context
-/// and instance environment.
-///
-/// This mirrors the per-group pipeline described in the type system spec.
-pub fn check_binding_group(
-    module: &ModuleInput,
-    ctx: &mut SolverContext,
-    group: &BindingGroup,
-    global_env: &GlobalEnv,
-    options: &TypecheckOptions,
-) -> BindingGroupResult {
-    // Build the constraint tree for this binding group based on the frontend
-    // AST and the current type context.
-    let mut root = build_constraint_tree_for_group(module, ctx, group);
-    solve_constraint_tree_for_group(module, ctx, &mut root, group, global_env, options)
-}
-
-fn solve_constraint_tree_for_group(
-    module: &ModuleInput,
-    ctx: &mut SolverContext,
-    root: &mut ConstraintNode,
-    group: &BindingGroup,
-    global_env: &GlobalEnv,
-    options: &TypecheckOptions,
-) -> BindingGroupResult {
-    let mut errors = Vec::new();
-
-    // Pull out the all the local binding groups and the run the solver on them first
-    let local_binding_groups = module.local_binding_groups_for_group(group);
-
-    for local_group in local_binding_groups {
-        let nodes = collect_binding_nodes_for_group(module, root, &local_group);
-        for node in nodes {
-            let BindingGroupResult {
-                errors: group_errors,
-            } = solve_constraint_tree_for_group(
-                module,
-                ctx,
-                &mut node.root,
-                &local_group,
-                global_env,
-                options,
-            );
-
-            errors.extend(group_errors);
-        }
-    }
-
-    // Shared substitution for this binding group, threaded through term and
-    // goal solving.
-    let mut subst = Subst::new();
-
-    // First convert all instantiation constraints to equalities
-    instantiate_into_equalities(root, ctx);
-
-    // Run the term solver phase (equalities/unification) over the constraint
-    // tree.
-    let term_result: TermSolveResult = term_solver::solve_equalities_for_node(root, &mut subst);
-
-    // Run the goal solver phase (traits, HasField, Recv) using the instance
-    // environment.
-    let goal_result: GoalSolveResult = goal_solver::solve_goals(root, global_env, &mut subst, ctx);
-
-    // Defaulting runs late in the pipeline to resolve otherwise ambiguous
-    // meta variables, but must not introduce new errors. We pass the residual
-    // class predicates and substitution so defaulting can use trait-level
-    // defaults where available.
-    let DefaultingResult {
-        subst: final_subst,
-        residuals,
-        ..
-    } = apply_defaulting(module, ctx, group, global_env, goal_result.residual, &subst);
-
-    // Apply the final substitution, after solving and defaulting, so that the
-    // typing context reflects all refinements.
-    ctx.apply_subst(&final_subst);
-
-    // Generalize each binding in the group over its remaining meta variables
-    // according to Section 3.4, and write the resulting schemes back into the
-    // typing context.
-    // TODO: add global_metas
-    let gen_result = generalize_group(module, ctx, &group.bindings, &[], residuals, &final_subst);
-    for (binding_id, scheme) in gen_result.schemes {
-        ctx.binding_schemes.insert(binding_id, scheme);
-        ctx.clear_skolems_for_binding(binding_id);
-    }
-
-    errors.extend(term_result.errors);
-
-    // For now, we just return the accumulated errors for this binding group.
-    let _ = options; // suppress unused warnings for now.
-    BindingGroupResult { errors }
-}
-
 fn instantiate_wanteds_into_equalities(
     wanteds: &mut [Constraint],
     ctx: &mut SolverContext,
@@ -1152,13 +1142,6 @@ fn instantiate_wanteds_into_equalities(
         *wanted = Constraint::eq(inst.ty.clone(), inst_ty, wanted.info.clone());
     }
     new_qualifiers
-}
-
-fn instantiate_into_equalities(root: &mut ConstraintNode, ctx: &mut SolverContext) {
-    root.walk_children_mut(&mut |node| {
-        let new_qualifiers = instantiate_wanteds_into_equalities(&mut node.wanteds, ctx);
-        node.wanteds.extend(new_qualifiers);
-    });
 }
 
 /// Instantiate a binding's scheme for a particular use site, as described in
@@ -1279,26 +1262,6 @@ mod tests {
             schema_allocator: Rc::new(RefCell::new(SchemaVarAllocator::new())),
             lowering_errors: Vec::new(),
         }
-    }
-
-    #[test]
-    fn check_binding_group_with_bool_literal_has_no_errors() {
-        let binding_id = BindingId(1);
-        let expr_id = NodeId(1);
-
-        let mut kinds = HashMap::new();
-        kinds.insert(expr_id, ExprKind::LiteralBool(true));
-
-        let module = make_single_binding_module(binding_id, expr_id, kinds);
-        let group = BindingGroup::new(vec![binding_id]);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
-        let instances = GlobalEnv::new();
-        let options = TypecheckOptions::default();
-
-        let result = check_binding_group(&module, &mut ctx, &group, &instances, &options);
-        assert!(result.errors.is_empty());
     }
 
     #[test]

@@ -7,7 +7,7 @@
 // does not change which programs type-check. Ambiguity reporting is a
 // separate concern handled in the error model (Section 9).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ray_shared::node_id::NodeId;
 
@@ -154,6 +154,22 @@ pub fn apply_defaulting(
             }
         }
 
+        // Multiple predicates can yield identical viable defaults (e.g. two
+        // separate `Int[α]` constraints). De-duplicate by default type and
+        // union their substitutions so we don't incorrectly treat identical
+        // candidates as ambiguous.
+        let mut deduped: BTreeMap<String, (Ty, Subst)> = BTreeMap::new();
+        for (default_ty, subst_for_ty) in viable {
+            let key = default_ty.to_string();
+            match deduped.get_mut(&key) {
+                Some((_, existing_subst)) => existing_subst.union(subst_for_ty),
+                None => {
+                    deduped.insert(key, (default_ty, subst_for_ty));
+                }
+            }
+        }
+        let viable: Vec<(Ty, Subst)> = deduped.into_values().collect();
+
         match viable.len() {
             0 => {
                 // No viable default; leave α undecided.
@@ -169,6 +185,10 @@ pub fn apply_defaulting(
                 });
             }
             _ => {
+                log::debug!("[apply_defaulting] multiple candidates:");
+                for (ty, subst) in &viable {
+                    log::debug!("[apply_defaulting]   ty = {}, subst = {}", ty, subst);
+                }
                 let candidates = viable.into_iter().map(|(ty, _)| ty).collect::<Vec<_>>();
                 log.entries.push(DefaultingOutcome {
                     var: alpha.clone(),

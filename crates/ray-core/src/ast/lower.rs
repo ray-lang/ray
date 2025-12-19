@@ -93,16 +93,10 @@ fn annotate_trait_self_param_if_missing(
     let param_src = src.respan(srcmap.span_of(first));
     match &mut first.value {
         FnParam::Name(name) => {
-            name.ty = Some(Parsed::new(
-                TyScheme::from_mono(self_ty.clone()),
-                param_src,
-            ));
+            name.ty = Some(Parsed::new(TyScheme::from_mono(self_ty.clone()), param_src));
         }
         FnParam::Missing { placeholder, .. } => {
-            placeholder.ty = Some(Parsed::new(
-                TyScheme::from_mono(self_ty.clone()),
-                param_src,
-            ));
+            placeholder.ty = Some(Parsed::new(TyScheme::from_mono(self_ty.clone()), param_src));
         }
         FnParam::DefaultValue(_, _) => {}
     }
@@ -233,6 +227,10 @@ impl<'a> AstLowerCtx<'a> {
             errors: self.errors,
         };
         f(&mut ctx)
+    }
+
+    pub fn srcmap(&self) -> &SourceMap {
+        &self.srcmap
     }
 
     #[inline(always)]
@@ -491,13 +489,7 @@ impl LowerAST for Sourced<'_, Trait> {
             // declarations, an unannotated `self` defaults to the trait's first
             // type parameter (the receiver).
             annotate_trait_self_param_if_missing(sig, tp, src, &ctx.srcmap);
-            enforce_method_annotation_policy(
-                sig,
-                &None,
-                src,
-                &ctx.srcmap,
-                "lower trait func",
-            )?;
+            enforce_method_annotation_policy(sig, &None, src, &ctx.srcmap, "lower trait func")?;
 
             sig.fresh_scheme(trait_fqn, &src.filepath, &mut fn_tcx, &ctx.srcmap)?;
 
