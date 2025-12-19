@@ -41,7 +41,6 @@ use ray_shared::collections::namecontext::NameContext;
 use ray_shared::node_id::NodeId;
 use ray_shared::pathlib::Path;
 use ray_shared::span::Source;
-use ray_shared::utils::join;
 use term_solver::TermSolveResult;
 use types::Subst;
 

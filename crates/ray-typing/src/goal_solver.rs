@@ -13,8 +13,6 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use ray_shared::utils::join;
-
 use crate::{
     constraint_tree::ConstraintNode,
     constraints::{ClassPredicate, Constraint, ConstraintKind, Predicate},

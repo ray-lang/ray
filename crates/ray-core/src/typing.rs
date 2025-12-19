@@ -2,25 +2,27 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ray_shared::collections::namecontext::NameContext;
-use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::Path;
-use ray_typing::binding_groups::{BindingGraph, BindingId};
-use ray_typing::context::{AssignLhs, ExprKind, LhsPattern, Pattern};
-use ray_typing::env::GlobalEnv;
-use ray_typing::info::TypeSystemInfo;
-use ray_typing::tyctx::TyCtx;
-use ray_typing::types::{SchemaVarAllocator, Ty, TyScheme};
+use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::Path};
 use ray_typing::{
     BindingKind, BindingRecord, ExprRecord, ModuleInput, NodeBinding, PatternKind, PatternRecord,
-    TypeCheckResult, TypeError, TypecheckOptions, check_module,
+    TypeCheckResult, TypeError, TypecheckOptions,
+    binding_groups::{BindingGraph, BindingId},
+    check_module,
+    context::{AssignLhs, ExprKind, LhsPattern, Pattern},
+    env::GlobalEnv,
+    info::TypeSystemInfo,
+    tyctx::TyCtx,
+    types::{SchemaVarAllocator, Ty},
 };
 
-use crate::ast::{
-    CurlyElement, Decl, Expr, FnParam, Literal, Module, Node, Pattern as AstPattern, RangeLimits,
+use crate::{
+    ast::{
+        CurlyElement, Decl, Expr, FnParam, Literal, Module, Node, Pattern as AstPattern,
+        RangeLimits,
+    },
+    passes::binding::BindingPassOutput,
+    sourcemap::SourceMap,
 };
-use crate::passes::binding::BindingPassOutput;
-use crate::sourcemap::SourceMap;
 
 /// Convert a parsed Ray module into the type system's `ModuleInput`
 /// and run the typechecker on it.

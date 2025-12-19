@@ -1,16 +1,12 @@
 use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
 
-use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::Path;
-use ray_shared::span::Source;
-use ray_typing::binding_groups::BindingId;
-use ray_typing::tyctx::CallResolution;
-use ray_typing::types::{Subst, Substitutable};
-use ray_typing::unify::mgu;
-use ray_typing::{BindingKind, BindingRecord, NodeBinding};
+use ray_shared::{node_id::NodeId, pathlib::Path, span::Source};
 use ray_typing::{
-    tyctx::TyCtx,
+    BindingKind, BindingRecord, NodeBinding,
+    binding_groups::BindingId,
+    tyctx::{CallResolution, TyCtx},
     types::{NominalKind, ReceiverMode, StructTy, Ty, TyScheme},
+    unify::mgu,
 };
 
 use crate::{

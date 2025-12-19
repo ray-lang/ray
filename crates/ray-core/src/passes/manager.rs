@@ -1,15 +1,17 @@
 use ray_shared::collections::namecontext::NameContext;
-use ray_typing::env::GlobalEnv;
-use ray_typing::tyctx::TyCtx;
-use ray_typing::{ModuleInput, TypeCheckResult, TypecheckOptions, check_module};
+use ray_typing::{ModuleInput, TypeCheckResult, TypecheckOptions, check_module, tyctx::TyCtx};
 
-use crate::ast::{Decl, Module};
-use crate::passes::binding::{self, BindingPassOutput};
-use crate::passes::call_resolution;
-use crate::passes::closure::{self, ClosurePassOutput};
-use crate::passes::extern_bindings;
-use crate::sourcemap::SourceMap;
-use crate::typing::lower_module;
+use crate::{
+    ast::{Decl, Module},
+    passes::{
+        binding::{self, BindingPassOutput},
+        call_resolution,
+        closure::{self, ClosurePassOutput},
+        extern_bindings,
+    },
+    sourcemap::SourceMap,
+    typing::lower_module,
+};
 
 /// Simple orchestration helper for frontend passes. It runs binding analysis,
 /// closure capture, and exposes their outputs to downstream consumers.
