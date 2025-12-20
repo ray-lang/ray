@@ -295,7 +295,13 @@ impl ModuleInput {
                 then_branch,
                 else_branch,
                 ..
-            }) => vec![*scrutinee, *then_branch, *else_branch],
+            }) => {
+                let mut out = vec![*scrutinee, *then_branch];
+                if let Some(e) = else_branch {
+                    out.push(*e);
+                }
+                out
+            }
             Some(ExprKind::While { cond, body }) => vec![*cond, *body],
             Some(ExprKind::WhilePattern {
                 scrutinee, body, ..
@@ -1341,7 +1347,7 @@ mod tests {
                 scrutinee,
                 pattern: Pattern::Some(binding_id),
                 then_branch: then_expr,
-                else_branch: else_expr,
+                else_branch: Some(else_expr),
             },
         );
 

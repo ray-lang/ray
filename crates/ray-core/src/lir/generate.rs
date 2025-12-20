@@ -1,6 +1,8 @@
 use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
 
-use ray_shared::{node_id::NodeId, pathlib::Path, span::Source};
+use ray_shared::{
+    collections::namecontext::NameContext, node_id::NodeId, pathlib::Path, span::Source,
+};
 use ray_typing::{
     BindingKind, BindingRecord, NodeBinding,
     binding_groups::BindingId,
@@ -57,6 +59,7 @@ impl lir::Program {
     pub fn generate(
         module: &Module<(), Decl>,
         tcx: &TyCtx,
+        ncx: &NameContext,
         srcmap: &SourceMap,
         bindings: &BindingPassOutput,
         closure_info: &ClosurePassOutput,
@@ -65,7 +68,7 @@ impl lir::Program {
         let path = module.path.clone();
         let user_main_info = resolve_user_main_info(module, tcx);
         let prog = Rc::new(RefCell::new(lir::Program::new(path)));
-        let mut ctx = GenCtx::new(Rc::clone(&prog), srcmap, bindings, closure_info);
+        let mut ctx = GenCtx::new(Rc::clone(&prog), srcmap, ncx, bindings, closure_info);
         module.decls.lir_gen(&mut ctx, tcx)?;
 
         let (module_main_path, user_main_base_path) = {
@@ -289,6 +292,7 @@ pub struct GenCtx<'a> {
     data_idx: HashMap<Vec<u8>, usize>,
     global_idx: HashMap<String, usize>,
     pub(crate) srcmap: &'a SourceMap,
+    ncx: &'a NameContext,
     bindings: &'a BindingPassOutput,
     closure_info: &'a ClosurePassOutput,
     closure_map: HashMap<NodeId, usize>,
@@ -320,6 +324,7 @@ impl<'a> GenCtx<'a> {
     fn new(
         prog: Rc<RefCell<lir::Program>>,
         srcmap: &'a SourceMap,
+        ncx: &'a NameContext,
         bindings: &'a BindingPassOutput,
         closure_info: &'a ClosurePassOutput,
     ) -> GenCtx<'a> {
@@ -341,6 +346,7 @@ impl<'a> GenCtx<'a> {
             data_idx: HashMap::new(),
             global_idx: HashMap::new(),
             srcmap,
+            ncx,
             bindings,
             closure_info,
             closure_map,
@@ -1935,12 +1941,13 @@ impl LirGen<GenResult> for Node<Expr> {
                 }
 
                 let list_loc = ctx.local(ty.clone());
+                let list_fqn = ctx.ncx.builtin_ty("list");
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(list_loc),
                     StructTy {
                         kind: NominalKind::Struct,
-                        path: "list".into(),
-                        ty: Ty::list(el_ty.clone()).into(),
+                        path: list_fqn.clone(),
+                        ty: Ty::proj(list_fqn, vec![el_ty.clone()]).into(),
                         fields: vec![
                             ("values".to_string(), Ty::ref_of(el_ty.clone()).into()),
                             ("len".to_string(), Ty::uint().into()),

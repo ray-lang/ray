@@ -123,7 +123,7 @@ pub fn solve_constraints(
             // Then try HasField / Recv using the global metadata and
             // auto-ref/deref.
             if let ConstraintKind::HasField(_) = &constraint.kind {
-                if solve_has_field(&constraint, global_env, subst) {
+                if solve_has_field(&constraint, global_env, subst, ctx) {
                     solved.push(constraint);
                     progress = true;
                     continue;
@@ -515,7 +515,12 @@ fn solve_with_instances(
 /// has the named field and unifies the wanted field type with the declared
 /// field type. For now this ignores type parameters on the struct; it simply
 /// uses the mono field type from the StructTy.
-fn solve_has_field(wanted: &Constraint, global_env: &GlobalEnv, subst: &mut Subst) -> bool {
+fn solve_has_field(
+    wanted: &Constraint,
+    global_env: &GlobalEnv,
+    subst: &mut Subst,
+    ctx: &mut SolverContext,
+) -> bool {
     let hp = match &wanted.kind {
         ConstraintKind::HasField(hp) => hp,
         _ => return false,
@@ -552,12 +557,51 @@ fn solve_has_field(wanted: &Constraint, global_env: &GlobalEnv, subst: &mut Subs
         None => return false,
     };
 
+    // Instantiate schema variables from the nominal struct metadata before
+    // unifying. This prevents schema vars (e.g. `?s6`) from leaking into the
+    // global substitution when solving a particular field access site.
+    let mut free_vars = HashSet::new();
+    struct_ty.ty.free_ty_vars(&mut free_vars);
+    field_scheme.free_ty_vars(&mut free_vars);
+    let schema_vars = free_vars
+        .into_iter()
+        .filter(|var| var.is_schema())
+        .collect::<Vec<_>>();
+
+    let mut schema_subst = Subst::new();
+    for var in schema_vars {
+        let meta = ctx.fresh_meta();
+        schema_subst.insert(var, meta);
+    }
+
+    // Unify the use-site record type with the (instantiated) nominal struct
+    // type so the struct type arguments flow into the field type.
+    let mut instantiated_struct_ty = struct_ty.ty.ty.clone();
+    instantiated_struct_ty.apply_subst(&schema_subst);
+    instantiated_struct_ty.apply_subst(subst);
+
+    match unify(&record_ty, &instantiated_struct_ty, subst, &wanted.info) {
+        Ok(new_subst) => subst.union(new_subst),
+        Err(_) => return false,
+    };
+
     // Unify the wanted field type with the declared field type.
     let mut field_ty = hp.field_ty.clone();
     field_ty.apply_subst(subst);
 
-    match unify(&field_ty, &field_scheme.ty, subst, &wanted.info) {
+    let mut instantiated_field_ty = field_scheme.ty.clone();
+    instantiated_field_ty.apply_subst(&schema_subst);
+    instantiated_field_ty.apply_subst(subst);
+
+    match unify(&field_ty, &instantiated_field_ty, subst, &wanted.info) {
         Ok(new_subst) => {
+            log::debug!(
+                "[solve_has_field] record_ty = {}, field_ty = {}, field_scheme.ty = {}, subst = {}",
+                record_ty,
+                field_ty,
+                instantiated_field_ty,
+                new_subst
+            );
             subst.union(new_subst);
             true
         }

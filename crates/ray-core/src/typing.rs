@@ -695,26 +695,24 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         }
         Expr::Func(_) => todo!("expr::func"),
         Expr::If(ifexpr) => {
-            // Detect the pattern-if sugar `if pat = expr { ... } else { ... }`
-            // before lowering the condition as a regular expression. The spec
-            // only permits this form when an else-branch is present.
+            // Detect the pattern-if sugar `if pat = expr { ... }` (with an
+            // optional `else { ... }`) before lowering the condition as a
+            // regular expression.
             if let Expr::Assign(assign_cond) = &ifexpr.cond.value {
-                if let Some(else_branch_node) = &ifexpr.els {
-                    if is_supported_guard_pattern(&assign_cond.lhs) {
-                        let scrutinee = lower_expr(ctx, &assign_cond.rhs);
-                        let pattern = lower_guard_pattern(ctx, &assign_cond.lhs);
-                        let then_branch = lower_expr(ctx, &ifexpr.then);
-                        let else_branch = lower_expr(ctx, else_branch_node);
-                        return ctx.record_expr(
-                            node,
-                            ExprKind::IfPattern {
-                                scrutinee,
-                                pattern,
-                                then_branch,
-                                else_branch,
-                            },
-                        );
-                    }
+                if is_supported_guard_pattern(&assign_cond.lhs) {
+                    let scrutinee = lower_expr(ctx, &assign_cond.rhs);
+                    let pattern = lower_guard_pattern(ctx, &assign_cond.lhs);
+                    let then_branch = lower_expr(ctx, &ifexpr.then);
+                    let else_branch = ifexpr.els.as_ref().map(|els| lower_expr(ctx, els));
+                    return ctx.record_expr(
+                        node,
+                        ExprKind::IfPattern {
+                            scrutinee,
+                            pattern,
+                            then_branch,
+                            else_branch,
+                        },
+                    );
                 }
             }
 

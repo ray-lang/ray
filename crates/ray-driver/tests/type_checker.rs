@@ -565,6 +565,44 @@ fn typechecks_list_and_int_literals() {
 }
 
 #[test]
+fn typechecks_pointer_field_access_unconstrained_ptr_add() {
+    let src = r#"
+@intrinsic extern fn __rawptr_add(p: rawptr['a], offset: uint) -> rawptr['a]
+@intrinsic extern fn u32_add(lhs: uint, rhs: uint) -> uint
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+impl Add[rawptr['a], uint, rawptr['a]] {
+    fn +(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __rawptr_add(lhs, rhs)
+}
+
+impl Add[uint, uint, uint] {
+    fn +(lhs: uint, rhs: uint) -> uint => u32_add(lhs, rhs)
+}
+
+struct list['a] {
+    values: rawptr['a]
+    len: uint
+    capacity: uint
+}
+
+fn set_like(self: *list['a], idx: uint, el: 'a) -> 'a? {
+    ptr = self.values + idx
+    nil
+}
+"#;
+
+    let (_, result, _) =
+        typecheck_src("typechecks_pointer_field_access_unconstrained_ptr_add", src);
+    assert_typechecks(
+        "typechecks_pointer_field_access_unconstrained_ptr_add",
+        &result,
+    );
+}
+
+#[test]
 fn typechecks_polymorphic_closure() {
     let src = r#"
 @intrinsic extern fn u32_add(a: u32, b: u32) -> u32

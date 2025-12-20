@@ -1,7 +1,12 @@
 fn main() {
-    l = [1, 2]
-    x = l.get(1)
-    if some(x) = x {
+    l = [1,2]
+    prev = l.set(1, 10)
+    if some(x) = prev {
+        print(x)
+    }
+
+    curr = l.get(1)
+    if some(x) = curr {
         print(x)
     } else {
         print("none")

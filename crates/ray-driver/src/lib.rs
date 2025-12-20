@@ -256,8 +256,15 @@ impl Driver {
             ..
         } = frontend;
 
-        let mut program =
-            lir::Program::generate(&module, &tcx, &srcmap, &bindings, &closure_analysis, libs)?;
+        let mut program = lir::Program::generate(
+            &module,
+            &tcx,
+            &ncx,
+            &srcmap,
+            &bindings,
+            &closure_analysis,
+            libs,
+        )?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
             println!("{}", program);
             return Ok(());

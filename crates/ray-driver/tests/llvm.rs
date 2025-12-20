@@ -36,6 +36,7 @@ pub fn main() -> u32 {
     let mut program = Program::generate(
         &frontend.module,
         &frontend.tcx,
+        &frontend.ncx,
         &frontend.srcmap,
         &frontend.bindings,
         &frontend.closure_analysis,

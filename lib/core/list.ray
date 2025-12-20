@@ -15,6 +15,13 @@ impl Index[list['a], 'a, uint] {
     }
 
     fn set(self: *list['a], idx: uint, el: 'a) -> 'a? {
-        nil
+        if idx >= self.len {
+            return nil
+        }
+
+        ptr = self.values + idx
+        prev = *ptr
+        *ptr = el
+        some(prev)
     }
 }

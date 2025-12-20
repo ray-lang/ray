@@ -754,7 +754,7 @@ fn generate_constraints_for_expr(
                     node.wanteds
                         .push(Constraint::eq(item_ty, elem_ty.clone(), info.clone()));
                 }
-                let list_ty = Ty::list(elem_ty);
+                let list_ty = Ty::proj(ctx.ncx().builtin_ty("list"), vec![elem_ty]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, list_ty, info.clone()));
             }
@@ -1208,12 +1208,18 @@ fn generate_constraints_for_expr(
                 apply_pattern_guard(pattern, *scrutinee, ctx, node, &info);
 
                 let then_ty = ctx.expr_ty_or_fresh(*then_branch);
-                let else_ty = ctx.expr_ty_or_fresh(*else_branch);
-
-                node.wanteds
-                    .push(Constraint::eq(then_ty.clone(), else_ty, info.clone()));
-                node.wanteds
-                    .push(Constraint::eq(expr_ty, then_ty, info.clone()));
+                if let Some(else_branch) = else_branch {
+                    let else_ty = ctx.expr_ty_or_fresh(*else_branch);
+                    node.wanteds
+                        .push(Constraint::eq(then_ty.clone(), else_ty, info.clone()));
+                    node.wanteds
+                        .push(Constraint::eq(expr_ty, then_ty, info.clone()));
+                } else {
+                    node.wanteds
+                        .push(Constraint::eq(then_ty.clone(), Ty::unit(), info.clone()));
+                    node.wanteds
+                        .push(Constraint::eq(expr_ty, Ty::unit(), info.clone()));
+                }
             }
             ExprKind::While { cond, body } => {
                 // While expressions (spec "While expressions"):
@@ -1909,7 +1915,7 @@ mod tests {
                 scrutinee,
                 pattern: Pattern::Some(binding_id),
                 then_branch: then_expr,
-                else_branch: else_expr,
+                else_branch: Some(else_expr),
             },
         );
 

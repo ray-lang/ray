@@ -692,8 +692,8 @@ impl Ty {
 
     pub fn is_builtin_name(name: &str) -> bool {
         match name {
-            "list" | "string" | "char" | "bool" | "int" | "uint" | "i8" | "i16" | "i32" | "i64"
-            | "u8" | "u16" | "u32" | "u64" => true,
+            "string" | "char" | "bool" | "int" | "uint" | "i8" | "i16" | "i32" | "i64" | "u8"
+            | "u16" | "u32" | "u64" => true,
             _ => false,
         }
     }

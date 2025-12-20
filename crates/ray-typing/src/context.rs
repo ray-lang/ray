@@ -95,7 +95,7 @@ pub enum ExprKind {
         scrutinee: NodeId,
         pattern: Pattern,
         then_branch: NodeId,
-        else_branch: NodeId,
+        else_branch: Option<NodeId>,
     },
     /// While expression `while cond { body }`, following the rule in
     /// docs/type-system.md "While expressions".
