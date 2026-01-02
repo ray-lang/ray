@@ -1,3 +1,10 @@
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::Display,
+    iter::Sum,
+    usize,
+};
+
 use petgraph::{
     graph::NodeIndex,
     visit::{Dfs, DfsEvent, EdgeRef, depth_first_search},
@@ -5,9 +12,13 @@ use petgraph::{
 use ray_shared::{
     pathlib::Path,
     span::Source,
+    ty::Ty,
     utils::{join, map_join},
 };
-use ray_typing::types::{StructTy, Subst, Substitutable, Ty, TyScheme};
+use ray_typing::{
+    binding_groups::BindingId,
+    types::{ImplTy, StructTy, Subst, Substitutable, TyScheme},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -15,13 +26,6 @@ use crate::{
     convert::ToSet,
     lir::IntrinsicKind,
     strutils::indent_lines,
-};
-
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
-    iter::Sum,
-    usize,
 };
 
 use super::RAY_MAIN_FUNCTION;
@@ -152,6 +156,7 @@ where
                 | Inst::SetGlobal(_, _)
                 | Inst::SetLocal(_, _)
                 | Inst::Store(_)
+                | Inst::Insert(_)
                 | Inst::StructInit(_, _)
                 | Inst::SetField(_)
                 | Inst::MemCopy(_, _, _)
@@ -434,6 +439,7 @@ pub enum Value {
     Select(Select),
     Phi(Phi),
     Load(Load),
+    Extract(Extract),
     Lea(Lea),
     GetField(GetField),
     BasicOp(BasicOp),
@@ -473,6 +479,7 @@ impl Display for Value {
             Value::Select(a) => write!(f, "{}", a),
             Value::Phi(a) => write!(f, "{}", a),
             Value::Load(a) => write!(f, "{}", a),
+            Value::Extract(a) => write!(f, "{}", a),
             Value::Lea(a) => write!(f, "{}", a),
             Value::GetField(a) => write!(f, "{}", a),
             Value::BasicOp(a) => write!(f, "{}", a),
@@ -499,6 +506,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::Select(s) => s.get_locals_mut(),
             Value::Phi(p) => p.get_locals_mut(),
             Value::Load(l) => l.get_locals_mut(),
+            Value::Extract(e) => e.get_locals_mut(),
             Value::Malloc(m) => m.get_locals_mut(),
             Value::Lea(l) => l.get_locals_mut(),
             Value::GetField(g) => g.get_locals_mut(),
@@ -520,6 +528,7 @@ impl<'a> GetLocals<'a> for Value {
             Value::Select(s) => s.get_locals(),
             Value::Phi(p) => p.get_locals(),
             Value::Load(l) => l.get_locals(),
+            Value::Extract(e) => e.get_locals(),
             Value::Malloc(m) => m.get_locals(),
             Value::Lea(l) => l.get_locals(),
             Value::GetField(g) => g.get_locals(),
@@ -543,6 +552,7 @@ impl Substitutable for Value {
             Value::Select(s) => s.apply_subst(subst),
             Value::Phi(phi) => phi.apply_subst(subst),
             Value::Load(l) => l.apply_subst(subst),
+            Value::Extract(e) => e.apply_subst(subst),
             Value::Lea(l) => l.apply_subst(subst),
             Value::GetField(g) => g.apply_subst(subst),
             Value::BasicOp(b) => b.apply_subst(subst),
@@ -589,6 +599,7 @@ impl Value {
             | Value::Select(_)
             | Value::Phi(_)
             | Value::Load(_)
+            | Value::Extract(_)
             | Value::Lea(_)
             | Value::GetField(_)
             | Value::BasicOp(_)
@@ -609,6 +620,7 @@ pub enum Inst {
     SetLocal(usize, Value),
     If(If),
     Store(Store),
+    Insert(Insert),
     StructInit(Variable, StructTy),
     SetField(SetField),
     MemCopy(Variable, Variable, Atom),
@@ -641,6 +653,7 @@ impl Display for Inst {
             Inst::SetLocal(s, v) => write!(f, "${} = {}", s, v),
             Inst::If(b) => write!(f, "{}", b),
             Inst::Store(s) => write!(f, "{}", s),
+            Inst::Insert(i) => write!(f, "{}", i),
             Inst::StructInit(v, ty) => write!(f, "{}: {}", v, ty),
             Inst::SetField(s) => write!(f, "{}", s),
             Inst::IncRef(v, i) => write!(f, "incref {} {}", v, i),
@@ -669,6 +682,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             }
             Inst::If(b) => b.get_locals_mut(),
             Inst::Store(s) => s.get_locals_mut(),
+            Inst::Insert(i) => i.get_locals_mut(),
             Inst::StructInit(v, _) => v.get_locals_mut(),
             Inst::SetField(s) => s.get_locals_mut(),
             Inst::MemCopy(d, s, z) => {
@@ -702,6 +716,7 @@ impl<'a> GetLocals<'a> for Inst {
             Inst::StructInit(v, _) => v.get_locals(),
             Inst::SetField(s) => s.get_locals(),
             Inst::Store(s) => s.get_locals(),
+            Inst::Insert(i) => i.get_locals(),
             Inst::MemCopy(d, s, z) => {
                 let mut locs = d.get_locals();
                 locs.extend(s.get_locals());
@@ -728,6 +743,7 @@ impl Substitutable for Inst {
             Inst::StructInit(v, _) => v.apply_subst(subst),
             Inst::SetField(s) => s.apply_subst(subst),
             Inst::Store(s) => s.apply_subst(subst),
+            Inst::Insert(i) => i.apply_subst(subst),
             Inst::MemCopy(d, s, z) => {
                 d.apply_subst(subst);
                 s.apply_subst(subst);
@@ -790,6 +806,9 @@ pub enum Op {
     GtEq,
     Eq,
     Neq,
+    And,
+    Or,
+    Not,
 }
 
 impl Display for Op {
@@ -817,6 +836,9 @@ impl Display for Op {
             Op::GtEq => write!(f, "gteq"),
             Op::Eq => write!(f, "eq"),
             Op::Neq => write!(f, "neq"),
+            Op::And => write!(f, "and"),
+            Op::Or => write!(f, "or"),
+            Op::Not => write!(f, "not"),
         }
     }
 }
@@ -1012,6 +1034,12 @@ pub struct Program {
     pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
     pub poly_fn_map: HashMap<Path, usize>,
+    /// Side table of available impls keyed by trait FQN (string form).
+    ///
+    /// This is populated from the typing context and extended across linked
+    /// libraries. The monomorphizer uses it to validate impl-qualifiers when
+    /// selecting between overlapping polymorphic impl bodies.
+    pub impls_by_trait: BTreeMap<String, Vec<ImplTy>>,
     pub start_idx: i64,       // index in Funcs for _start
     pub module_main_idx: i64, // index in Funcs for module main
     pub user_main_idx: i64,   // index in Funcs for user main
@@ -1044,6 +1072,12 @@ impl Substitutable for Program {
         for ext in &mut self.externs {
             ext.ty.apply_subst(subst);
         }
+
+        for bucket in self.impls_by_trait.values_mut() {
+            for impl_ty in bucket {
+                impl_ty.apply_subst(subst);
+            }
+        }
     }
 }
 
@@ -1058,6 +1092,7 @@ impl Program {
             poly_fn_map: HashMap::new(),
             extern_map: HashMap::new(),
             trait_member_set: HashSet::new(),
+            impls_by_trait: BTreeMap::new(),
             start_idx: -1,
             module_main_idx: -1,
             user_main_idx: -1,
@@ -1079,12 +1114,18 @@ impl Program {
         self.extern_map.extend(other.extern_map);
         self.trait_member_set.extend(other.trait_member_set);
         self.synthetic_structs.extend(other.synthetic_structs);
+        for (trait_name, bucket) in other.impls_by_trait {
+            self.impls_by_trait
+                .entry(trait_name)
+                .or_default()
+                .extend(bucket);
+        }
     }
 
     pub fn main_path(&self) -> Path {
         self.module_path
             .append(RAY_MAIN_FUNCTION)
-            .append_func_type("<():()>")
+            .append_func_type(vec![Ty::unit()], Ty::unit())
     }
 
     pub fn user_main_path(&self) -> Path {
@@ -1515,7 +1556,7 @@ impl Substitutable for Func {
         self.params.apply_subst(subst);
         self.locals.apply_subst(subst);
         self.blocks.apply_subst(subst);
-        // self.symbols.apply_subst(subst);
+        self.symbols.apply_subst(subst);
     }
 }
 
@@ -2171,6 +2212,90 @@ impl Load {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Extract {
+    pub src: Variable,
+    pub index: usize,
+}
+
+LirImplInto!(Value for Extract);
+
+impl Display for Extract {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "extract {} index=({})", self.src, self.index)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for Extract {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        self.src.get_locals_mut()
+    }
+}
+
+impl<'a> GetLocals<'a> for Extract {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        self.src.get_locals()
+    }
+}
+
+impl Substitutable for Extract {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.src.apply_subst(subst);
+    }
+}
+
+impl Extract {
+    pub fn new(src: Variable, index: usize) -> Value {
+        Value::Extract(Extract { src, index })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Insert {
+    pub src: Variable,
+    pub index: usize,
+    pub value: Value,
+}
+
+impl Display for Insert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "insert {} index=({}) value={}",
+            self.src, self.index, self.value
+        )
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for Insert {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        let mut locs = self.src.get_locals_mut();
+        locs.extend(self.value.get_locals_mut());
+        locs
+    }
+}
+
+impl<'a> GetLocals<'a> for Insert {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        let mut locs = self.src.get_locals();
+        locs.extend(self.value.get_locals());
+        locs
+    }
+}
+
+impl Substitutable for Insert {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.src.apply_subst(subst);
+        self.value.apply_subst(subst);
+    }
+}
+
+impl Insert {
+    pub fn new(src: Variable, index: usize, value: Value) -> Insert {
+        Insert { src, index, value }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum LeaOffset {
     Const(Size),
     Field(TyScheme, String),
@@ -2486,6 +2611,7 @@ impl Substitutable for Closure {
 
 #[derive(Clone)]
 pub struct CaptureSlot {
+    pub binding: BindingId,
     pub name: String,
     pub ty: TyScheme,
     pub value: Variable,

@@ -1,0 +1,294 @@
+struct dict_entry['k, 'v] {
+    hash: u64
+    key: 'k
+    value: 'v
+    // 0 = empty, 1 = full, 2 = tombstone
+    state: u8
+}
+
+struct dict['k, 'v] {
+    ctrl: rawptr[u8]
+    keys: rawptr['k]
+    values: rawptr['v]
+    len: uint
+    capacity: uint
+    tombstones: uint
+}
+
+impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
+    fn get(self: *dict['k, 'v], key: 'k) -> 'v? {
+        if self.capacity == 0 {
+            return nil
+        }
+
+        hash = key.hash()
+        found, idx = self.__find_slot(key, hash)
+        if !found {
+            return nil
+        }
+
+        vptr = self.values + idx
+        some(*vptr)
+    }
+
+    fn set(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
+        self.insert(key, value)
+    }
+}
+
+impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
+    static fn __ctrl_empty() -> u8 => 128u8
+
+    static fn __ctrl_deleted() -> u8 => 254u8
+
+    static fn __h2(hash: u64) -> u8 {
+        (hash % 128u64) as u8
+    }
+
+    static fn __round_capacity(capacity: uint) -> uint {
+        if capacity == 0 {
+            return 0
+        }
+
+        // SwissTable-style tables assume power-of-two capacity with a minimum
+        // group size (16) so we can scan ctrl bytes in fixed chunks.
+        mut cap: uint = 16
+        while cap < capacity {
+            cap = cap * 2
+        }
+        cap
+    }
+
+    static fn with_capacity(capacity: uint) -> dict['k, 'v] {
+        if capacity == 0 {
+            return dict {
+                ctrl: malloc(0) as rawptr[u8],
+                keys: malloc(0) as rawptr['k],
+                values: malloc(0) as rawptr['v],
+                len: 0,
+                capacity: 0,
+                tombstones: 0,
+            }
+        }
+
+        cap = dict['k, 'v]::__round_capacity(capacity)
+
+        if cap == 0 {
+            return dict {
+                ctrl: malloc(0) as rawptr[u8],
+                keys: malloc(0) as rawptr['k],
+                values: malloc(0) as rawptr['v],
+                len: 0,
+                capacity: 0,
+                tombstones: 0,
+            }
+        }
+
+        ctrl_bytes = cap
+        ctrl = malloc(ctrl_bytes) as rawptr[u8]
+
+        key_bytes = cap * sizeof('k)
+        keys = malloc(key_bytes) as rawptr['k]
+
+        value_bytes = cap * sizeof('v)
+        values = malloc(value_bytes) as rawptr['v]
+
+        mut i: uint = 0
+        while i < cap {
+            p = ctrl + i
+            *p = 128u8
+            i += 1
+        }
+
+        dict { ctrl, keys, values, len: 0, capacity: cap, tombstones: 0 }
+    }
+
+    fn is_empty(self: *dict['k, 'v]) -> bool {
+        self.len == 0
+    }
+
+    fn contains_key(self: *dict['k, 'v], key: 'k) -> bool {
+        if self.capacity == 0 {
+            return false
+        }
+
+        hash = key.hash()
+        found, _ = self.__find_slot(key, hash)
+        found
+    }
+
+    fn insert(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
+        self.__ensure_capacity(1)
+
+        if self.capacity == 0 {
+            return nil
+        }
+
+        hash = key.hash()
+        h2 = dict['k, 'v]::__h2(hash)
+        found, idx = self.__find_slot(key, hash)
+        if found {
+            vptr = self.values + idx
+            prev = *vptr
+            *vptr = value
+            return some(prev)
+        }
+
+        cptr = self.ctrl + idx
+        prev_ctrl = *cptr
+        *cptr = h2
+
+        kptr = self.keys + idx
+        *kptr = key
+
+        vptr = self.values + idx
+        *vptr = value
+
+        self.len = self.len + 1
+        if prev_ctrl == dict['k, 'v]::__ctrl_deleted() {
+            self.tombstones = self.tombstones - 1
+        }
+
+        nil
+    }
+
+    fn remove(self: *dict['k, 'v], key: 'k) -> 'v? {
+        if self.capacity == 0 {
+            return nil
+        }
+
+        hash = key.hash()
+        found, idx = self.__find_slot(key, hash)
+        if !found {
+            return nil
+        }
+
+        vptr = self.values + idx
+        prev = *vptr
+
+        cptr = self.ctrl + idx
+        *cptr = dict['k, 'v]::__ctrl_deleted()
+
+        self.len = self.len - 1
+        self.tombstones = self.tombstones + 1
+
+        some(prev)
+    }
+
+    fn __ensure_capacity(self: *dict['k, 'v], additional: uint) -> () {
+        if self.capacity == 0 {
+            next = dict['k, 'v]::with_capacity(16)
+            self.ctrl = next.ctrl
+            self.keys = next.keys
+            self.values = next.values
+            self.len = 0
+            self.capacity = next.capacity
+            self.tombstones = 0
+            return
+        }
+
+        needed = self.len + self.tombstones + additional
+        // Grow when the table is ~7/8 full, or if tombstones dominate.
+        if needed * 8 >= self.capacity * 7 || self.tombstones * 2 > self.len {
+            mut new_cap: uint = self.capacity
+            if needed * 8 >= self.capacity * 7 {
+                new_cap = self.capacity * 2
+            }
+            self.__rehash(new_cap)
+        }
+    }
+
+    fn __rehash(self: *dict['k, 'v], capacity: uint) -> () {
+        cap = dict['k, 'v]::__round_capacity(capacity)
+        if cap == 0 {
+            return
+        }
+
+        old_ctrl = self.ctrl
+        old_keys = self.keys
+        old_values = self.values
+        old_cap = self.capacity
+
+        next = dict['k, 'v]::with_capacity(cap)
+        self.ctrl = next.ctrl
+        self.keys = next.keys
+        self.values = next.values
+        self.len = 0
+        self.capacity = next.capacity
+        self.tombstones = 0
+
+        mut i: uint = 0
+        while i < old_cap {
+            c = *(old_ctrl + i)
+            if c != dict['k, 'v]::__ctrl_empty() && c != dict['k, 'v]::__ctrl_deleted() {
+                k = *(old_keys + i)
+                v = *(old_values + i)
+                self.__insert_rehash(k, v)
+            }
+            i += 1
+        }
+    }
+
+    fn __insert_rehash(self: *dict['k, 'v], key: 'k, value: 'v) -> () {
+        hash = key.hash()
+        h2 = dict['k, 'v]::__h2(hash)
+        _, idx = self.__find_slot(key, hash)
+
+        cptr = self.ctrl + idx
+        *cptr = h2
+        kptr = self.keys + idx
+        *kptr = key
+        vptr = self.values + idx
+        *vptr = value
+        self.len = self.len + 1
+    }
+
+    fn __find_slot(self: *dict['k, 'v], key: 'k, hash: u64) -> (bool, uint) {
+        if self.capacity == 0 {
+            return false, 0
+        }
+
+        h2 = dict['k, 'v]::__h2(hash)
+        start = (hash as uint) % self.capacity
+
+        mut have_tomb: bool = false
+        mut tomb_idx: uint = 0
+
+        mut i: uint = 0
+        while i < self.capacity {
+            idx = (start + i) % self.capacity
+            c = *(self.ctrl + idx)
+
+            if c == dict['k, 'v]::__ctrl_empty() {
+                if have_tomb {
+                    return false, tomb_idx
+                }
+                return false, idx
+            }
+
+            if c == dict['k, 'v]::__ctrl_deleted() {
+                if !have_tomb {
+                    have_tomb = true
+                    tomb_idx = idx
+                }
+                i += 1
+                continue
+            }
+
+            if c == h2 {
+                kptr = self.keys + idx
+                if *kptr == key {
+                    return true, idx
+                }
+            }
+
+            i += 1
+        }
+
+        if have_tomb {
+            return false, tomb_idx
+        }
+
+        false, 0
+    }
+}

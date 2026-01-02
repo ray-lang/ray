@@ -2,17 +2,22 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::Path;
+use ray_shared::{
+    node_id::NodeId,
+    pathlib::Path,
+    ty::{Ty, TyVar},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::constraints::Predicate;
-use crate::env::GlobalEnv;
-use crate::types::{
-    ImplTy, SchemaVarAllocator, StructTy, Subst, Substitutable, TraitField, TraitTy, Ty, TyScheme,
-    TyVar,
+use crate::{
+    constraints::Predicate,
+    env::GlobalEnv,
+    types::{
+        ImplField, ImplTy, NominalKind, SchemaVarAllocator, StructTy, Subst, Substitutable,
+        TraitField, TraitTy, TyScheme,
+    },
+    unify::mgu,
 };
-use crate::unify::mgu;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CallResolution {
@@ -175,6 +180,46 @@ impl TyCtx {
         } else {
             None
         }
+    }
+
+    pub fn map_vars(&mut self, ty: &mut Ty) {
+        match ty {
+            Ty::Never | Ty::Any | Ty::Const(_) => {}
+            Ty::Var(tv) => {
+                if tv.is_ret_placeholder() {
+                    return;
+                }
+
+                *tv = if let Some(mapped_tv) = self.get_var_mapping(tv) {
+                    log::debug!("found mapping: {} -> {}", tv, mapped_tv);
+                    mapped_tv.clone()
+                } else {
+                    let mapped_tv = self.new_schema_var();
+                    self.add_var_mapping(tv.clone(), mapped_tv.clone());
+                    mapped_tv
+                };
+            }
+            Ty::Tuple(tys) => {
+                tys.iter_mut().for_each(|t| self.map_vars(t));
+            }
+            Ty::Proj(_, param_tys) => {
+                param_tys.iter_mut().for_each(|t| self.map_vars(t));
+            }
+            Ty::Array(inner, _) | Ty::Ref(inner) | Ty::RawPtr(inner) => self.map_vars(inner),
+            Ty::Func(param_tys, ret_ty) => {
+                param_tys.iter_mut().for_each(|t| self.map_vars(t));
+                self.map_vars(ret_ty);
+            }
+        }
+    }
+
+    pub fn nominal_kind(&self, ty: &Ty) -> Option<NominalKind> {
+        let fqn = ty.get_path().with_names_only();
+        self.get_struct_ty(&fqn).map(|s| s.kind)
+    }
+
+    pub fn is_struct(&self, ty: &Ty) -> bool {
+        self.nominal_kind(ty) == Some(NominalKind::Struct)
     }
 
     /// Access the resolved call targets for this module.
@@ -476,10 +521,15 @@ impl TyCtx {
     }
 
     pub fn get_impls(&self, ty: &Ty) -> Option<&Vec<ImplTy>> {
-        let target = match ty {
-            Ty::Proj(p, _) | Ty::Const(p) => p.to_string(),
+        let fqn = match ty {
+            Ty::Proj(p, _) | Ty::Const(p) => p,
             _ => return None,
         };
+        self.get_impls_for_fqn(fqn)
+    }
+
+    pub fn get_impls_for_fqn(&self, fqn: &Path) -> Option<&Vec<ImplTy>> {
+        let target = fqn.to_string();
         self.global_env.impls_by_trait.get(&target)
     }
 
@@ -507,18 +557,29 @@ impl TyCtx {
         })
     }
 
+    pub fn resolve_inherent_method(
+        &self,
+        recv_fqn: &Path,
+        method_name: &str,
+    ) -> Option<(&ImplTy, &ImplField)> {
+        let recv_key = recv_fqn.to_string();
+        self.global_env
+            .inherent_impls
+            .get(&recv_key)
+            .and_then(|impls| {
+                impls.iter().find_map(|impl_ty| {
+                    match impl_ty.fields.iter().find(|f| match f.path.name() {
+                        Some(name) if &name == method_name => true,
+                        _ => false,
+                    }) {
+                        Some(field) => Some((impl_ty, field)),
+                        _ => None,
+                    }
+                })
+            })
+    }
+
     pub fn instantiate_scheme(&self, scheme: TyScheme) -> TyScheme {
         scheme
-        // let inst_map = self.inst_ty_map();
-        // if inst_map.is_empty() {
-        //     return scheme;
-        // }
-
-        // let mut subst = Subst::new();
-        // for (tv, inst) in inst_map.iter() {
-        //     subst.insert(tv.clone(), inst.clone().into_mono());
-        // }
-        // scheme.apply_subst(&subst);
-        // scheme
     }
 }

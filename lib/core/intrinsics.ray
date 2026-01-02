@@ -1,6 +1,8 @@
 @intrinsic extern fn sizeof(t: type['a]) -> uint
 @intrinsic extern fn memcopy(dst: rawptr[u8], src: rawptr[u8], len: uint) -> ()
 
+@intrinsic extern fn int_hash_bytes(x: 'a) -> (u64, uint) where Int['a]
+
 // Arithmetic comparisons
 @intrinsic extern fn int_eq(a: int, b: int) -> bool
 @intrinsic extern fn i8_eq(a: i8, b: i8) -> bool
@@ -12,6 +14,7 @@
 @intrinsic extern fn u16_eq(a: u16, b: u16) -> bool
 @intrinsic extern fn u32_eq(a: u32, b: u32) -> bool
 @intrinsic extern fn u64_eq(a: u64, b: u64) -> bool
+@intrinsic extern fn bool_eq(a: bool, b: bool) -> bool
 
 @intrinsic extern fn int_neq(a: int, b: int) -> bool
 @intrinsic extern fn i8_neq(a: i8, b: i8) -> bool
@@ -23,6 +26,7 @@
 @intrinsic extern fn u16_neq(a: u16, b: u16) -> bool
 @intrinsic extern fn u32_neq(a: u32, b: u32) -> bool
 @intrinsic extern fn u64_neq(a: u64, b: u64) -> bool
+@intrinsic extern fn bool_neq(a: bool, b: bool) -> bool
 
 // Add / Subtract / Multiply / Divide / Modulus
 @intrinsic extern fn int_add(a: int, b: int) -> int
@@ -87,39 +91,44 @@
 @intrinsic extern fn i32_neg(a: i32) -> i32
 @intrinsic extern fn i64_neg(a: i64) -> i64
 
+// Logic
+@intrinsic extern fn bool_and(a: bool, b: bool) -> bool
+@intrinsic extern fn bool_or(a: bool, b: bool) -> bool
+@intrinsic extern fn bool_not(a: bool) -> bool
+
 // Bitwise logic
-@intrinsic extern fn int_and(a: int, b: int) -> int
-@intrinsic extern fn i8_and(a: i8, b: i8) -> i8
-@intrinsic extern fn i16_and(a: i16, b: i16) -> i16
-@intrinsic extern fn i32_and(a: i32, b: i32) -> i32
-@intrinsic extern fn i64_and(a: i64, b: i64) -> i64
-@intrinsic extern fn uint_and(a: uint, b: uint) -> uint
-@intrinsic extern fn u8_and(a: u8, b: u8) -> u8
-@intrinsic extern fn u16_and(a: u16, b: u16) -> u16
-@intrinsic extern fn u32_and(a: u32, b: u32) -> u32
-@intrinsic extern fn u64_and(a: u64, b: u64) -> u64
+@intrinsic extern fn int_bit_and(a: int, b: int) -> int
+@intrinsic extern fn i8_bit_and(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_bit_and(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_bit_and(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_bit_and(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_bit_and(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_bit_and(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_bit_and(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_bit_and(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_bit_and(a: u64, b: u64) -> u64
 
-@intrinsic extern fn int_or(a: int, b: int) -> int
-@intrinsic extern fn i8_or(a: i8, b: i8) -> i8
-@intrinsic extern fn i16_or(a: i16, b: i16) -> i16
-@intrinsic extern fn i32_or(a: i32, b: i32) -> i32
-@intrinsic extern fn i64_or(a: i64, b: i64) -> i64
-@intrinsic extern fn uint_or(a: uint, b: uint) -> uint
-@intrinsic extern fn u8_or(a: u8, b: u8) -> u8
-@intrinsic extern fn u16_or(a: u16, b: u16) -> u16
-@intrinsic extern fn u32_or(a: u32, b: u32) -> u32
-@intrinsic extern fn u64_or(a: u64, b: u64) -> u64
+@intrinsic extern fn int_bit_or(a: int, b: int) -> int
+@intrinsic extern fn i8_bit_or(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_bit_or(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_bit_or(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_bit_or(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_bit_or(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_bit_or(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_bit_or(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_bit_or(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_bit_or(a: u64, b: u64) -> u64
 
-@intrinsic extern fn int_xor(a: int, b: int) -> int
-@intrinsic extern fn i8_xor(a: i8, b: i8) -> i8
-@intrinsic extern fn i16_xor(a: i16, b: i16) -> i16
-@intrinsic extern fn i32_xor(a: i32, b: i32) -> i32
-@intrinsic extern fn i64_xor(a: i64, b: i64) -> i64
-@intrinsic extern fn uint_xor(a: uint, b: uint) -> uint
-@intrinsic extern fn u8_xor(a: u8, b: u8) -> u8
-@intrinsic extern fn u16_xor(a: u16, b: u16) -> u16
-@intrinsic extern fn u32_xor(a: u32, b: u32) -> u32
-@intrinsic extern fn u64_xor(a: u64, b: u64) -> u64
+@intrinsic extern fn int_bit_xor(a: int, b: int) -> int
+@intrinsic extern fn i8_bit_xor(a: i8, b: i8) -> i8
+@intrinsic extern fn i16_bit_xor(a: i16, b: i16) -> i16
+@intrinsic extern fn i32_bit_xor(a: i32, b: i32) -> i32
+@intrinsic extern fn i64_bit_xor(a: i64, b: i64) -> i64
+@intrinsic extern fn uint_bit_xor(a: uint, b: uint) -> uint
+@intrinsic extern fn u8_bit_xor(a: u8, b: u8) -> u8
+@intrinsic extern fn u16_bit_xor(a: u16, b: u16) -> u16
+@intrinsic extern fn u32_bit_xor(a: u32, b: u32) -> u32
+@intrinsic extern fn u64_bit_xor(a: u64, b: u64) -> u64
 
 // Comparison operators
 @intrinsic extern fn int_lt(a: int, b: int) -> bool

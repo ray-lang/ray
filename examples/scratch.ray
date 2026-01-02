@@ -1,14 +1,18 @@
 fn main() {
-    l = [1,2]
-    prev = l.set(1, 10)
-    if some(x) = prev {
-        print(x)
-    }
+    s = {1, 2, 3}
+    v = s.contains(1)
+    print(v)
 
-    curr = l.get(1)
-    if some(x) = curr {
-        print(x)
-    } else {
-        print("none")
-    }
+    v = s.contains(2)
+    print(v)
+
+    v = s.contains(3)
+    print(v)
+
+    v = s.contains(4)
+    print(v)
+
+    s.insert(4)
+    v = s.contains(4)
+    print(v)
 }

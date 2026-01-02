@@ -5,7 +5,7 @@ mod utils;
 use std::convert::TryInto;
 
 use ray_core::lir::{Inst, Program, Value};
-use ray_typing::types::Ty;
+use ray_shared::ty::Ty;
 use utils::test_build;
 
 #[test]
@@ -163,4 +163,290 @@ pub fn main() -> u32 {
             other
         ),
     }
+}
+
+#[test]
+fn lir_generation_index_operator() {
+    let src = r#"
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+}
+
+struct Box { v: u32 }
+
+impl Index[Box, u32, u32] {
+    fn get(self: *Box, idx: u32) -> u32? {
+        nil
+    }
+}
+
+pub fn main() -> u32 {
+    b = Box { v: 1u32 }
+    x = b[0u32]
+    0u32
+}
+"#;
+
+    let frontend = test_build(src).expect("frontend build should succeed");
+    assert!(
+        frontend.errors.is_empty(),
+        "expected no frontend errors, got {:?}",
+        frontend.errors
+    );
+
+    Program::generate(
+        &frontend.module,
+        &frontend.tcx,
+        &frontend.ncx,
+        &frontend.srcmap,
+        &frontend.bindings,
+        &frontend.closure_analysis,
+        frontend.libs.clone(),
+    )
+    .expect("lir generation should succeed");
+}
+
+#[test]
+fn lir_generation_index_assignment() {
+    let src = r#"
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+}
+
+struct Box { v: u32 }
+
+impl Index[Box, u32, u32] {
+    fn get(self: *Box, idx: u32) -> u32? { nil }
+    fn set(self: *Box, idx: u32, el: u32) -> u32? { nil }
+}
+
+pub fn main() -> u32 {
+    b = Box { v: 1u32 }
+    b[0u32] = 2u32
+    0u32
+}
+"#;
+
+    let frontend = test_build(src).expect("frontend build should succeed");
+    assert!(
+        frontend.errors.is_empty(),
+        "expected no frontend errors, got {:?}",
+        frontend.errors
+    );
+
+    Program::generate(
+        &frontend.module,
+        &frontend.tcx,
+        &frontend.ncx,
+        &frontend.srcmap,
+        &frontend.bindings,
+        &frontend.closure_analysis,
+        frontend.libs.clone(),
+    )
+    .expect("lir generation should succeed");
+}
+
+#[test]
+fn lir_generation_field_assignment() {
+    let src = r#"
+struct Pair { x: u32, y: u32 }
+
+pub fn main() -> u32 {
+    p = Pair { x: 1u32, y: 2u32 }
+    p.x = 3u32
+    0u32
+}
+"#;
+
+    let frontend = test_build(src).expect("frontend build should succeed");
+    assert!(
+        frontend.errors.is_empty(),
+        "expected no frontend errors, got {:?}",
+        frontend.errors
+    );
+
+    Program::generate(
+        &frontend.module,
+        &frontend.tcx,
+        &frontend.ncx,
+        &frontend.srcmap,
+        &frontend.bindings,
+        &frontend.closure_analysis,
+        frontend.libs.clone(),
+    )
+    .expect("lir generation should succeed");
+}
+
+#[test]
+fn lir_generation_while_break_exits_loop() {
+    let src = r#"
+pub fn main() -> u32 {
+    mut x = 0u32
+    while true {
+        x = 1u32
+        break
+    }
+    x = 2u32
+    x
+}
+"#;
+
+    let frontend = test_build(src).expect("frontend build should succeed");
+    assert!(
+        frontend.errors.is_empty(),
+        "expected no frontend errors, got {:?}",
+        frontend.errors
+    );
+
+    let program = Program::generate(
+        &frontend.module,
+        &frontend.tcx,
+        &frontend.ncx,
+        &frontend.srcmap,
+        &frontend.bindings,
+        &frontend.closure_analysis,
+        frontend.libs.clone(),
+    )
+    .expect("lir generation should succeed");
+
+    let user_main_idx: usize = program
+        .user_main_idx
+        .try_into()
+        .expect("user main index should be set");
+    let main_func = &program.funcs[user_main_idx];
+
+    let loop_header = main_func
+        .value
+        .blocks
+        .iter()
+        .find(|block| block.is_loop_header())
+        .expect("expected at least one loop header block");
+    let cond_label = loop_header.label();
+
+    let Some(Inst::If(loop_if)) = loop_header.last() else {
+        panic!(
+            "expected loop header to end with Inst::If\n--- LIR Program ---\n{}",
+            program
+        );
+    };
+    let break_label = loop_if.else_label;
+
+    let break_block = main_func
+        .value
+        .blocks
+        .iter()
+        .find(|block| block.label() == break_label)
+        .expect("expected loop break target block to exist");
+    let Some(Inst::Goto(after_label)) = break_block.last().cloned() else {
+        panic!(
+            "expected break target block to end with Inst::Goto\n--- LIR Program ---\n{}",
+            program
+        );
+    };
+
+    let after_block = main_func
+        .value
+        .blocks
+        .iter()
+        .find(|block| block.label() == after_label)
+        .expect("expected post-loop block to exist");
+    assert!(
+        after_block
+            .markers()
+            .iter()
+            .any(|marker| matches!(marker, ray_core::lir::ControlMarker::End(label) if *label == cond_label)),
+        "expected post-loop block to be marked as End({}), got markers={:?}\n--- LIR Program ---\n{}",
+        cond_label,
+        after_block.markers(),
+        program
+    );
+}
+
+#[test]
+fn lir_generation_for_loop_calls_iter_next() {
+    let src = r#"
+trait Iter['it, 'el] {
+    fn next(self: *'it) -> 'el?
+}
+
+trait Iterable['c, 'it, 'el] {
+    fn iter(self: *'c) -> 'it
+}
+
+struct Counter { start: u32 }
+struct CounterIter { done: bool }
+
+impl Iterable[Counter, CounterIter, u32] {
+    fn iter(self: *Counter) -> CounterIter {
+        CounterIter { done: false }
+    }
+}
+
+impl Iter[CounterIter, u32] {
+    fn next(self: *CounterIter) -> u32? { nil }
+}
+
+pub fn main() -> u32 {
+    c = Counter { start: 0u32 }
+    for x in c {
+        y = x
+    }
+    0u32
+}
+"#;
+
+    let frontend = test_build(src).expect("frontend build should succeed");
+    assert!(
+        frontend.errors.is_empty(),
+        "expected no frontend errors, got {:?}",
+        frontend.errors
+    );
+
+    let program = Program::generate(
+        &frontend.module,
+        &frontend.tcx,
+        &frontend.ncx,
+        &frontend.srcmap,
+        &frontend.bindings,
+        &frontend.closure_analysis,
+        frontend.libs.clone(),
+    )
+    .expect("lir generation should succeed");
+
+    let user_main_idx: usize = program
+        .user_main_idx
+        .try_into()
+        .expect("user main index should be set");
+    let main_func = &program.funcs[user_main_idx];
+
+    let mut saw_iter = false;
+    let mut saw_next = false;
+
+    for block in &main_func.value.blocks {
+        for inst in block.iter() {
+            if let Inst::SetLocal(_, value) = inst {
+                if let Value::Call(call) = value {
+                    let name = call.fn_name.to_string();
+                    if name.contains("Iterable::iter") {
+                        saw_iter = true;
+                    }
+                    if name.contains("Iter::next") {
+                        saw_next = true;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_iter,
+        "expected `for` lowering to call Iterable::iter\n--- LIR Program ---\n{}",
+        program
+    );
+    assert!(
+        saw_next,
+        "expected `for` lowering to call Iter::next\n--- LIR Program ---\n{}",
+        program
+    );
 }

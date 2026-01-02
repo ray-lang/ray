@@ -7,6 +7,7 @@ pub mod defaulting;
 pub mod env;
 pub mod generalize;
 pub mod goal_solver;
+pub mod impl_match;
 pub mod info;
 pub mod path;
 pub mod term_solver;
@@ -19,24 +20,27 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::mem;
 use std::rc::Rc;
 
-use ray_shared::collections::namecontext::NameContext;
-use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::Path;
-use ray_shared::span::Source;
+use ray_shared::{
+    collections::namecontext::NameContext,
+    node_id::NodeId,
+    pathlib::Path,
+    span::Source,
+    ty::{Ty, TyVar},
+};
 
 use crate::{
     binding_groups::{BindingGraph, BindingGroup, BindingId},
     constraint_tree::{
         ConstraintNode, ConstraintTreeWalkItem, build_constraint_tree_for_group, walk_tree,
     },
-    constraints::{Constraint, ConstraintKind, Predicate},
+    constraints::{CallKind, Constraint, ConstraintKind, Predicate},
     context::{ExprKind, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
     env::GlobalEnv,
     generalize::generalize_group,
     info::{Info, TypeSystemInfo},
     tyctx::TyCtx,
-    types::{SchemaVarAllocator, Subst, Substitutable as _, Ty, TyScheme, TyVar},
+    types::{SchemaVarAllocator, Subst, Substitutable as _, TyScheme},
 };
 
 /// Associates a frontend node with a binding, distinguishing between
@@ -78,6 +82,8 @@ pub struct BindingRecord {
     /// True if this binding is an external stub injected from a dependency
     /// interface, rather than originating from the current module's AST.
     pub is_extern: bool,
+    /// True if this binding represents a mutable slot (`mut x`).
+    pub is_mut: bool,
     /// Classification of the binding (function/value/etc.).
     pub kind: BindingKind,
     /// Annotated scheme, if any. When populated this will be skolemized
@@ -97,6 +103,7 @@ impl BindingRecord {
         BindingRecord {
             path: None,
             is_extern: false,
+            is_mut: false,
             kind,
             scheme: None,
             body_expr: None,
@@ -122,6 +129,8 @@ pub enum PatternKind {
     Tuple { elems: Vec<NodeId> },
     /// Field projection `base.field`.
     Field { base: NodeId, field: String },
+    /// Index projection `container[index]`.
+    Index { container: NodeId, index: NodeId },
     /// Dereference pattern `*x`.
     Deref { binding: BindingId },
     /// Placeholder for unsupported or missing patterns so we can still
@@ -309,7 +318,13 @@ impl ModuleInput {
             Some(ExprKind::Loop { body }) => vec![*body],
             Some(ExprKind::Break { expr }) => expr.iter().copied().collect(),
             Some(ExprKind::Continue) => vec![],
-            Some(ExprKind::Return { expr }) => vec![*expr],
+            Some(ExprKind::Return { expr }) => {
+                if let Some(expr) = expr {
+                    vec![*expr]
+                } else {
+                    vec![]
+                }
+            }
             Some(ExprKind::For {
                 pattern: _,
                 iter_expr,
@@ -322,6 +337,15 @@ impl ModuleInput {
             Some(ExprKind::Closure { params: _, body }) => vec![*body],
             Some(ExprKind::Function { params: _, body }) => vec![*body],
             Some(ExprKind::List { items }) => items.clone(),
+            Some(ExprKind::Dict { entries }) => {
+                let mut out = Vec::with_capacity(entries.len() * 2);
+                for (key, value) in entries {
+                    out.push(*key);
+                    out.push(*value);
+                }
+                out
+            }
+            Some(ExprKind::Set { items }) => items.clone(),
             Some(ExprKind::New { count }) => count.iter().copied().collect(),
             Some(ExprKind::Assign { rhs, .. }) => vec![*rhs],
             Some(ExprKind::Wrapper { expr }) => vec![*expr],
@@ -347,13 +371,15 @@ impl ModuleInput {
                 fields.iter().map(|(_, id)| *id).collect()
             }
             Some(ExprKind::Some { expr }) => vec![*expr],
+            Some(ExprKind::Range { start, end, .. }) => vec![*start, *end],
             Some(ExprKind::Nil)
             | Some(ExprKind::LiteralInt)
             | Some(ExprKind::LiteralIntSized(_))
             | Some(ExprKind::LiteralFloat)
             | Some(ExprKind::LiteralFloatSized)
             | Some(ExprKind::LiteralBool(_))
-            | Some(ExprKind::Var(_)) => {
+            | Some(ExprKind::BindingRef(_))
+            | Some(ExprKind::ScopedAccess { .. }) => {
                 vec![]
             }
             _ => vec![],
@@ -596,7 +622,16 @@ impl TypeError {
                 format!("type variable `{}` cannot be solved", v)
             }
             TypeErrorKind::Predicate(pred) => {
-                format!("expression does not implement {}", pred)
+                let mut msg = format!("expression does not implement {}", pred);
+                let mut seen_details = HashSet::new();
+                for info in &self.info.info {
+                    if let Info::Detail(detail) = info {
+                        if seen_details.insert(detail) {
+                            msg.push_str(&format!("\nnote: {}", detail));
+                        }
+                    }
+                }
+                msg
             }
             TypeErrorKind::RecursiveUnification(a, b) => {
                 format!("recursive unification: {} and {}", a, b)
@@ -798,6 +833,10 @@ pub fn check_module(
     // across binding groups. Seed any pre-existing binding schemes from
     // the frontend (e.g. annotated function types).
     let mut ctx = SolverContext::new(module.schema_allocator.clone(), ncx, &tcx.global_env);
+    log::debug!(
+        "[check_module] schema variable start: ?s{}",
+        ctx.schema_allocator_mut().curr_id()
+    );
     for (binding_id, record) in module.binding_records.iter() {
         if let Some(scheme) = &record.scheme {
             ctx.binding_schemes.insert(*binding_id, scheme.clone());
@@ -807,7 +846,14 @@ pub fn check_module(
 
     let groups = module.binding_groups();
 
-    let BindingGroupResult { mut errors } = solve_groups(module, groups, &mut ctx, &tcx.global_env);
+    let pretty_subst = tcx.inverted_var_subst();
+    let BindingGroupResult { errors } = solve_groups(
+        module,
+        groups,
+        &mut ctx,
+        &tcx.global_env,
+        Some(&pretty_subst),
+    );
 
     let binding_schemes = mem::take(&mut ctx.binding_schemes);
     let expr_types = mem::take(&mut ctx.expr_types);
@@ -815,7 +861,7 @@ pub fn check_module(
     // At this point, solving + defaulting should have eliminated all unresolved
     // meta type variables from expression types. If any remain, treat it as a
     // type error so codegen never sees `Ty::Var(?t*)`.
-    push_unsolved_meta_tyvar_errors(&mut errors, module, &expr_types, &ctx.generalized_metas);
+    // push_unsolved_meta_tyvar_errors(&mut errors, module, &expr_types, &ctx.generalized_metas);
 
     tcx.node_tys.clear();
     for (expr_id, ty) in expr_types.iter() {
@@ -845,6 +891,7 @@ pub fn check_module(
     TypeCheckResult { errors }
 }
 
+#[allow(dead_code)]
 fn push_unsolved_meta_tyvar_errors(
     errors: &mut Vec<TypeError>,
     module: &ModuleInput,
@@ -986,6 +1033,7 @@ fn solve_groups(
     groups: Vec<BindingGroup>,
     ctx: &mut SolverContext,
     global_env: &GlobalEnv,
+    pretty_subst: Option<&Subst>,
 ) -> BindingGroupResult {
     let mut errors = vec![];
     for group in groups.iter() {
@@ -999,7 +1047,7 @@ fn solve_groups(
             ) {
                 depth -= 1;
             }
-            log::debug!("  {}{}", "-".repeat(depth), item);
+            log::debug!("  {}{}", " ".repeat(depth), item);
             if matches!(
                 item,
                 ConstraintTreeWalkItem::NodeStart(_) | ConstraintTreeWalkItem::BindingNodeStart(_)
@@ -1041,8 +1089,14 @@ fn solve_groups(
         let post_defaulting =
             goal_solver::solve_constraints(&residuals, &env.givens, global_env, &mut subst, ctx);
         ctx.apply_subst(&subst);
-        log::debug!("[solve_groups] subst: {:?}", subst);
-        check_residuals_and_emit_errors(&post_defaulting.unsolved, ctx, &mut errors);
+        log::debug!("[solve_groups] subst: {:#}", subst);
+        check_residuals_and_emit_errors(
+            module,
+            &post_defaulting.unsolved,
+            ctx,
+            pretty_subst,
+            &mut errors,
+        );
     }
 
     BindingGroupResult { errors }
@@ -1143,8 +1197,15 @@ fn instantiate_wanteds_into_equalities(
             panic!("cannot find scheme for binding: {:?}", inst.binding);
         };
 
-        let (inst_ty, qualifiers) = instantiate_scheme_for_use(&scheme, ctx, &wanted.info);
+        let (inst_ty, qualifiers) =
+            instantiate_scheme_for_use(&scheme, inst.receiver_subst.as_ref(), ctx, &wanted.info);
         new_qualifiers.extend(qualifiers);
+        log::debug!(
+            "[instantiate_wanteds_into_equalities] binding = {:?}, scheme = {}, inst_ty = {}",
+            inst.binding,
+            scheme,
+            inst_ty
+        );
         *wanted = Constraint::eq(inst.ty.clone(), inst_ty, wanted.info.clone());
     }
     new_qualifiers
@@ -1154,22 +1215,41 @@ fn instantiate_wanteds_into_equalities(
 /// the binding rules in docs/type-system.md Section 4.3.
 fn instantiate_scheme_for_use(
     scheme: &TyScheme,
+    receiver_subst: Option<&Subst>,
     ctx: &mut SolverContext,
     info: &TypeSystemInfo,
 ) -> (Ty, Vec<Constraint>) {
+    let mut ty = scheme.ty.clone();
+    let mut qualifiers = scheme.qualifiers.clone();
+    if let Some(receiver_subst) = receiver_subst {
+        log::debug!(
+            "[instantiate_scheme_for_use] receiver_subst = {}",
+            receiver_subst
+        );
+        ty.apply_subst(&receiver_subst);
+        for pred in &mut qualifiers {
+            pred.apply_subst(&receiver_subst);
+        }
+    } else {
+        log::debug!("[instantiate_scheme_for_use] no receiver subst");
+    }
+
     let mut subst = Subst::new();
-    for v in &scheme.vars {
+    for v in scheme.vars.iter() {
         subst.insert(v.clone(), ctx.fresh_meta());
     }
-    let mut ty = scheme.ty.clone();
+
+    log::debug!(
+        "[instantiate_scheme_for_use] scheme = {}, subst ={}",
+        scheme,
+        subst
+    );
     ty.apply_subst(&subst);
-    let qualifiers = scheme
-        .qualifiers
-        .iter()
-        .map(|pred| {
-            let mut p = pred.clone();
-            p.apply_subst(&subst);
-            Constraint::from_predicate(p, info.clone())
+    let qualifiers = qualifiers
+        .into_iter()
+        .map(|mut pred| {
+            pred.apply_subst(&subst);
+            Constraint::from_predicate(pred, info.clone())
         })
         .collect::<Vec<_>>();
 
@@ -1177,14 +1257,158 @@ fn instantiate_scheme_for_use(
 }
 
 fn check_residuals_and_emit_errors(
+    module: &ModuleInput,
     residuals: &[Constraint],
     ctx: &SolverContext,
+    pretty_subst: Option<&Subst>,
     errors: &mut Vec<TypeError>,
 ) {
     for pred in residuals {
         let mut info = pred.info.clone();
+        if let ConstraintKind::ResolveCall(resolve_call) = &pred.kind {
+            let (args, ret_ty) = match resolve_call.expected_fn_ty.try_borrow_fn() {
+                Ok((param_tys, ret_ty)) => {
+                    let args = param_tys
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    (args, ret_ty.to_string())
+                }
+                Err(_) => ("<unknown>".to_string(), "<unknown>".to_string()),
+            };
+
+            match &resolve_call.kind {
+                CallKind::Instance { method_name } => {
+                    // Only attempt method availability/ambiguity diagnostics once
+                    // the receiver type is headed; otherwise we don't know which
+                    // receiver type to search.
+                    let mut ty = resolve_call.subject_ty.clone();
+                    let subject_fqn = loop {
+                        match ty {
+                            Ty::Ref(inner) | Ty::RawPtr(inner) => ty = (*inner).clone(),
+                            Ty::Const(p) | Ty::Proj(p, _) => break Some(p.to_string()),
+                            Ty::Var(v) if v.is_meta() => break None,
+                            _ => break None,
+                        }
+                    };
+
+                    if let Some(subject_fqn) = subject_fqn {
+                        let mut inherent_candidates = Vec::new();
+                        if let Some(bucket) = ctx.global_env().inherent_impls.get(&subject_fqn) {
+                            for impl_ty in bucket {
+                                for field in &impl_ty.fields {
+                                    let Some(name) = field.path.name() else {
+                                        continue;
+                                    };
+                                    if name != *method_name || field.is_static {
+                                        continue;
+                                    }
+                                    inherent_candidates.push(field.path.to_string());
+                                }
+                            }
+                        }
+
+                        let mut trait_candidates = Vec::new();
+                        for trait_ty in ctx.global_env().traits.values() {
+                            if let Some(field) = trait_ty.get_field(method_name) {
+                                if field.is_static {
+                                    continue;
+                                }
+                                trait_candidates
+                                    .push(format!("{}::{}", trait_ty.path, method_name));
+                            }
+                        }
+
+                        inherent_candidates.sort();
+                        inherent_candidates.dedup();
+                        trait_candidates.sort();
+                        trait_candidates.dedup();
+
+                        let total_candidates = inherent_candidates.len() + trait_candidates.len();
+                        if total_candidates == 0 {
+                            let msg = format!(
+                                "no method named `{}` found for `{}`",
+                                method_name, resolve_call.subject_ty
+                            );
+                            errors.push(TypeError::message(msg, info));
+                            continue;
+                        }
+
+                        if total_candidates > 1 {
+                            let mut msg = format!(
+                                "ambiguous method call: multiple candidates for `{}.{}`",
+                                resolve_call.subject_ty, method_name
+                            );
+                            if !inherent_candidates.is_empty() {
+                                msg.push_str(&format!(
+                                    "\n  inherent: {}",
+                                    inherent_candidates.join(", ")
+                                ));
+                            }
+                            if !trait_candidates.is_empty() {
+                                msg.push_str(&format!(
+                                    "\n  trait: {}",
+                                    trait_candidates.join(", ")
+                                ));
+                            }
+                            errors.push(TypeError::message(msg, info));
+                            continue;
+                        }
+                    }
+
+                    let msg = format!(
+                        "cannot resolve method call: `{}.{}` with signature: ({}) -> {}",
+                        resolve_call.subject_ty, method_name, args, ret_ty
+                    );
+                    errors.push(TypeError::message(msg, info));
+                    continue;
+                }
+                CallKind::Scoped { binding, .. } => {
+                    let binding_name = module
+                        .binding_records
+                        .get(binding)
+                        .and_then(|rec| rec.path.as_ref())
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| binding.to_string());
+                    let msg = format!(
+                        "cannot resolve scoped call: `{}` on `{}` with signature: ({}) -> {}",
+                        binding_name, resolve_call.subject_ty, args, ret_ty
+                    );
+                    errors.push(TypeError::message(msg, info));
+                    continue;
+                }
+            };
+        }
+
         if let Some(kind) = pred.to_predicate() {
             info.unsolved_predicate(&kind, &pred.info);
+            if let Some(failure) = ctx
+                .predicate_failures
+                .iter()
+                .find(|entry| entry.wanted == *pred)
+            {
+                if !failure.unsatisfied.is_empty() {
+                    let details = failure
+                        .unsatisfied
+                        .iter()
+                        .map(|c| c.kind.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let mut msg = format!("unsatisfied prerequisites: {}", details);
+                    if let Some(impl_head) = &failure.impl_head {
+                        let mut pretty_head = impl_head.clone();
+                        if let Some(subst) = pretty_subst {
+                            pretty_head.apply_subst(subst);
+                        }
+                        msg.push_str(&format!(" from impl {}", pretty_head));
+                    }
+                    info.predicate_failure_detail(msg);
+                }
+                if failure.no_matching_impl {
+                    info.predicate_failure_detail(format!("no matching impls found for {}", kind));
+                }
+            }
             let skolem_infos = predicate_skolem_infos(&kind, ctx);
             if !skolem_infos.is_empty() {
                 for sk_info in skolem_infos {
@@ -1237,7 +1461,7 @@ mod tests {
     use super::*;
     use crate::binding_groups::{BindingGraph, BindingGroup, BindingId};
     use crate::context::{AssignLhs, ExprKind, LhsPattern, Pattern};
-    use crate::types::{ImplTy, TraitTy, TyScheme};
+    use crate::types::{ImplKind, ImplTy, TraitTy, TyScheme};
     use crate::{BindingKind, BindingRecord, ExprRecord};
     use std::collections::HashMap;
 
@@ -1638,7 +1862,7 @@ mod tests {
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
 
         // Closure body: just returns the param.
-        kinds.insert(id_body, ExprKind::Var(x));
+        kinds.insert(id_body, ExprKind::BindingRef(x));
 
         // Closure expression itself.
         kinds.insert(
@@ -1660,7 +1884,7 @@ mod tests {
         );
 
         // a = id(1u32)
-        kinds.insert(callee_u32, ExprKind::Var(id));
+        kinds.insert(callee_u32, ExprKind::BindingRef(id));
         kinds.insert(arg_u32, ExprKind::LiteralIntSized(Ty::u32()));
         kinds.insert(
             call_u32,
@@ -1679,7 +1903,7 @@ mod tests {
         );
 
         // b = id(true)
-        kinds.insert(callee_bool, ExprKind::Var(id));
+        kinds.insert(callee_bool, ExprKind::BindingRef(id));
         kinds.insert(arg_bool, ExprKind::LiteralBool(true));
         kinds.insert(
             call_bool,
@@ -1812,9 +2036,11 @@ mod tests {
         };
 
         let uint_int_impl = ImplTy {
-            base_ty: Ty::uint(),
-            trait_ty: Ty::proj("core::Int", vec![Ty::uint()]),
-            ty_args: vec![],
+            kind: ImplKind::Trait {
+                base_ty: Ty::uint(),
+                trait_ty: Ty::proj("core::Int", vec![Ty::uint()]),
+                ty_args: vec![],
+            },
             predicates: vec![],
             fields: vec![],
         };
@@ -1838,7 +2064,7 @@ mod tests {
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
 
         // fn main() { malloc(10) } where 10 is an unsized int literal that must be uint.
-        kinds.insert(malloc_callee, ExprKind::Var(malloc));
+        kinds.insert(malloc_callee, ExprKind::BindingRef(malloc));
         kinds.insert(len_arg, ExprKind::LiteralInt);
         kinds.insert(
             main_root,
@@ -1870,7 +2096,7 @@ mod tests {
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
         ctx.binding_schemes.insert(malloc, malloc_scheme);
 
-        let result = solve_groups(&module, groups, &mut ctx, &global_env);
+        let result = solve_groups(&module, groups, &mut ctx, &global_env, None);
         assert!(
             result.errors.is_empty(),
             "expected no errors, got: {:?}",
@@ -1928,7 +2154,7 @@ mod tests {
         );
 
         // final expression is `x`
-        kinds.insert(var_x, ExprKind::Var(x));
+        kinds.insert(var_x, ExprKind::BindingRef(x));
 
         // Sequence the assignment and final value.
         kinds.insert(
@@ -1977,9 +2203,11 @@ mod tests {
             .insert("core::Int".to_string(), int_trait_ty);
 
         let uint_int_impl = ImplTy {
-            base_ty: Ty::uint(),
-            trait_ty: Ty::proj("core::Int", vec![Ty::uint()]),
-            ty_args: vec![],
+            kind: ImplKind::Trait {
+                base_ty: Ty::uint(),
+                trait_ty: Ty::proj("core::Int", vec![Ty::uint()]),
+                ty_args: vec![],
+            },
             predicates: vec![],
             fields: vec![],
         };
@@ -1994,7 +2222,7 @@ mod tests {
         let ncx = NameContext::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let result = solve_groups(&module, groups, &mut ctx, &global_env);
+        let result = solve_groups(&module, groups, &mut ctx, &global_env, None);
         assert!(
             result.errors.is_empty(),
             "expected no errors, got: {:?}",

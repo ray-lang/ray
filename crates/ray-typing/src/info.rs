@@ -1,9 +1,15 @@
 use std::fmt::Display;
 
-use crate::constraints::Predicate;
-use crate::types::{Subst, Substitutable, Ty, TyScheme, TyVar};
-use ray_shared::span::Source;
+use ray_shared::{
+    span::Source,
+    ty::{Ty, TyVar},
+};
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    constraints::Predicate,
+    types::{Subst, Substitutable, TyScheme},
+};
 
 /// Additional contextual information for type errors and diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +145,10 @@ impl TypeSystemInfo {
     pub fn predicate_arising_from(&mut self, predicate: &Predicate) {
         self.info
             .push(Info::PredicateArisingFrom(predicate.clone()));
+    }
+
+    pub fn predicate_failure_detail(&mut self, msg: impl Into<String>) {
+        self.info.push(Info::Detail(msg.into()));
     }
 
     /// Record the parent predicate (e.g. enclosing context) for diagnostics.

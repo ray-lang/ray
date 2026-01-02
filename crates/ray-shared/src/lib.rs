@@ -7,4 +7,5 @@ pub mod node_id;
 pub mod optlevel;
 pub mod pathlib;
 pub mod span;
+pub mod ty;
 pub mod utils;

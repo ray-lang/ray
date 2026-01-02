@@ -3,3 +3,34 @@ struct range['a] {
     end: 'a
     inclusive: bool
 }
+
+struct RangeIter['a] {
+    range: *range['a]
+    curr: 'a
+}
+
+impl Iterable[range['a], RangeIter['a], 'a] {
+    fn iter(self: *range['a]) -> RangeIter['a] {
+        RangeIter { range: self, curr: self.start }
+    }
+}
+
+impl Iter[RangeIter['a], 'a] where Int['a], Add['a, 'a, 'a], Lt['a, 'a], LtEq['a, 'a] {
+    fn next(self: *RangeIter['a]) -> 'a? {
+        if self.range.inclusive {
+            if self.curr <= self.range.end {
+                val = self.curr
+                self.curr = self.curr + 1
+                return some(val)
+            }
+        } else {
+            if self.curr < self.range.end {
+                val = self.curr
+                self.curr = self.curr + 1
+                return some(val)
+            }
+        }
+
+        nil
+    }
+}

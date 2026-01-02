@@ -1,17 +1,7 @@
-// trait Seq['a] {
-//     fn get(self: 'a, index: uint) -> 'b? // end of line
-// }
+trait Iter['it, 'el] {
+    fn next(self: *'it) -> 'el?
+}
 
-// trait Iterable['a] {
-//     fn iter(self: 'a) -> Iterator['b]
-// }
-
-// trait Next['a] {
-//     fn next(self: 'a) -> 'b?
-// }
-
-// struct Iterator['a] {
-//     value: *'a
-//     index: uint
-//     size: uint
-// }
+trait Iterable['c, 'it, 'el] {
+    fn iter(self: *'c) -> 'it
+}

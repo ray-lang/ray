@@ -1,0 +1,27 @@
+struct Counter { start: u32 }
+struct CounterIter { cur: u32, end: u32 }
+
+impl Iterable[Counter, CounterIter, u32] {
+    fn iter(self: *Counter) -> CounterIter {
+        CounterIter { cur: self.start, end: self.start + 5u32 }
+    }
+}
+
+impl Iter[CounterIter, u32] {
+    fn next(self: *CounterIter) -> u32? {
+        if self.cur >= self.end {
+            return nil
+        }
+
+        v = self.cur
+        self.cur = self.cur + 1u32
+        some(v)
+    }
+}
+
+fn main() {
+    c = Counter { start: 0u32 }
+    for x in c {
+        print(x)
+    }
+}

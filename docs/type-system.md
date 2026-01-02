@@ -158,7 +158,7 @@ Class predicates represent trait obligations. Internally, we treat them as n‑a
 Examples of trait shapes in Ray include:
 
 - `Int['a]` and `Float['a]` for numeric literals.
-- `Index[Container, Index, Elem]` for indexing operations (Section A.3).
+- `Index[Container, Elem, Index]` for indexing operations (Section A.3).
 - `Iter['a, 'el]` for iteration, used by `for` loops (Section A.7).
 
 The goal solver (Section 5.2) resolves class predicates using the instance environment and available givens, producing evidence or reporting unsatisfied obligations.
@@ -288,15 +288,15 @@ Instantiation is the operation that turns a polymorphic type scheme into a monom
 Concretely, consider:
 
 ```rust
-fn head['a](xs: list['a]) -> 'a where Index[list['a], uint, 'a] { xs[0] }
+fn head['a](xs: list['a]) -> 'a where Index[list['a], 'a, uint] { xs[0] }
 ```
 
-Its scheme is `forall['a]. Index[list['a], uint, 'a] => (list['a]) -> 'a`. Instantiating this scheme at a call site:
+Its scheme is `forall['a]. Index[list['a], 'a, uint] => (list['a]) -> 'a`. Instantiating this scheme at a call site:
 
 - Introduces a fresh meta `?0` for `'a`.
 - Produces the mono type `(list[?0]) -> ?0`.
 - Emits a wanted predicate at the call site:
-  - `Index[list[?0], uint, ?0]`
+  - `Index[list[?0], ?0, uint]`
 
 This wanted is then fed into the constraint tree at the node for the call, to be solved later by the goal solver using givens and instances.
 
@@ -927,9 +927,9 @@ Evidence is the internal witness that a predicate has been solved. The goal solv
 
 Each `impl` declaration introduces an *instance scheme* for a trait predicate:
 
-- **Syntax examples**
-  - `impl Foo[Recv, A, B] where P, Q, ...`
-  - `impl Index[list['a], 'a]`
+  - **Syntax examples**
+    - `impl Foo[Recv, A, B] where P, Q, ...`
+    - `impl Index[list['a], 'a, uint]`
 - **Internal representation**
   - A set of universally quantified type variables `'a..` from the impl header.
   - A *head predicate* of the form `C[Recv, A1, …, An]` describing where the instance applies.
@@ -2029,7 +2029,7 @@ Again, whether `e.x` is actually a mutable location is handled by mutability che
 
 **Index assignment `container[index] = rhs`**
 
-Indexing uses the `Index[Container, Index, Elem]` trait (Section 2.2 and A.3). Assignment to an indexed element is typed by reusing this trait:
+Indexing uses the `Index[Container, Elem, Index]` trait (Section 2.2 and A.3). Assignment to an indexed element is typed by reusing this trait:
 
 ```text
 Γ ⊢ container ⇝ (Tc, Cc)
@@ -2039,13 +2039,13 @@ fresh Tel
 ------------------------------------------------------------------
 Γ ⊢ container[index] = rhs ⇝ (unit,
                                Cc ∪ Ci ∪ Crhs
-                               ∪ { Index[Tc, Ti, Tel], Trhs == Tel })
+                               ∪ { Index[Tc, Tel, Ti], Trhs == Tel })
 ```
 
 This says:
 
 - `container` has type `Tc`, `index` has type `Ti`.
-- `Index[Tc, Ti, Tel]` must hold, relating the container and index types to an element type `Tel`.
+- `Index[Tc, Tel, Ti]` must hold, relating the container and index types to an element type `Tel`.
 - The right-hand side `rhs` must have type `Tel`.
 
 As with field assignment, write-ability is enforced by the mutability/borrowing discipline; the type system only checks that the assigned value matches the element type implied by the `Index` predicate.

@@ -1,12 +1,18 @@
-use ray_core::passes::FrontendPassManager;
-use ray_core::passes::binding::BindingPassOutput;
-use ray_core::sema::ModuleBuilder;
-use ray_shared::pathlib::Path;
-use ray_shared::utils::join;
-use ray_typing::constraints::Predicate;
-use ray_typing::tyctx::TyCtx;
-use ray_typing::types::{Subst, Substitutable as _, Ty, TyScheme, TyVar};
-use ray_typing::{NodeBinding, TypeCheckResult, TypecheckOptions};
+use ray_core::{
+    passes::{FrontendPassManager, binding::BindingPassOutput},
+    sema::ModuleBuilder,
+};
+use ray_shared::{
+    pathlib::Path,
+    ty::{Ty, TyVar},
+    utils::join,
+};
+use ray_typing::{
+    NodeBinding, TypeCheckResult, TypecheckOptions,
+    constraints::Predicate,
+    tyctx::TyCtx,
+    types::{Subst, Substitutable as _, TyScheme},
+};
 
 #[allow(dead_code)]
 fn enable_debug_logs() {
@@ -603,6 +609,89 @@ fn set_like(self: *list['a], idx: uint, el: 'a) -> 'a? {
 }
 
 #[test]
+fn typechecks_index_operator_returns_nilable_elem() {
+    let src = r#"
+trait Int['a] {
+    default(int)
+}
+
+impl Int[int] {}
+impl Int[uint] {}
+
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+}
+
+struct list['a] {
+    values: rawptr['a]
+    len: uint
+    capacity: uint
+}
+
+impl Index[list['a], 'a, uint] {
+    fn get(self: *list['a], idx: uint) -> 'a? { nil }
+    fn set(self: *list['a], idx: uint, el: 'a) -> 'a? { nil }
+}
+
+fn main() {
+    l = [1, 2]
+    curr = l[1]
+}
+"#;
+
+    let (module_path, result, tcx, bindings) =
+        typecheck_src_with_bindings("typechecks_index_operator_returns_nilable_elem", src);
+    assert_typechecks("typechecks_index_operator_returns_nilable_elem", &result);
+
+    assert_local_scheme_eq(
+        &tcx,
+        &bindings,
+        &module_path,
+        "main::curr",
+        &[],
+        Ty::nilable(Ty::int()),
+        &[],
+    );
+}
+
+#[test]
+fn typechecks_index_assignment() {
+    let src = r#"
+trait Int['a] {
+    default(int)
+}
+
+impl Int[int] {}
+impl Int[uint] {}
+
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+}
+
+struct list['a] {
+    values: rawptr['a]
+    len: uint
+    capacity: uint
+}
+
+impl Index[list['a], 'a, uint] {
+    fn get(self: *list['a], idx: uint) -> 'a? { nil }
+    fn set(self: *list['a], idx: uint, el: 'a) -> 'a? { nil }
+}
+
+fn main() {
+    l = [1, 2]
+    l[1] = 10
+}
+"#;
+
+    let (_, result, _) = typecheck_src("typechecks_index_assignment", src);
+    assert_typechecks("typechecks_index_assignment", &result);
+}
+
+#[test]
 fn typechecks_polymorphic_closure() {
     let src = r#"
 @intrinsic extern fn u32_add(a: u32, b: u32) -> u32
@@ -732,6 +821,146 @@ fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
         Predicate::class(neg_trait, vec![ty_a.clone(), ty_a.clone()]),
     ];
     assert_scheme_eq(&tcx, &module_path, "abs", &[var_a], abs_ty, &predicates);
+}
+
+#[test]
+fn typechecks_method_call_discharged_by_given_trait() {
+    let src = r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+fn io_print(v: 'a) -> () where ToStr['a] {
+    s = v.to_str()
+    _ = s
+}
+"#;
+
+    let (module_path, result, tcx, bindings) =
+        typecheck_src_with_bindings("typechecks_method_call_discharged_by_given_trait", src);
+    assert_typechecks("typechecks_method_call_discharged_by_given_trait", &result);
+    assert_local_ty_eq(&tcx, &bindings, &module_path, "io_print::s", Ty::string());
+}
+
+#[test]
+fn typechecks_cross_function_given_trait_discharge() {
+    let src = r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+fn io_print(v: 'a) -> () where ToStr['a] {
+    s = v.to_str()
+    _ = s
+}
+
+fn core_print(v: 'a) -> () where ToStr['a] {
+    io_print(v)
+}
+"#;
+
+    let (_module_path, result, _tcx) =
+        typecheck_src("typechecks_cross_function_given_trait_discharge", src);
+    assert_typechecks("typechecks_cross_function_given_trait_discharge", &result);
+}
+
+#[test]
+fn typechecks_signed_tostr_calls_abs_under_qualifiers() {
+    enable_debug_logs();
+    let src = r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+trait Int['a] {
+    default(int)
+}
+
+trait Lt['a, 'b] {
+    fn <(lhs: 'a, rhs: 'b) -> bool
+}
+
+trait Neg['a, 'b] {
+    fn -(lhs: 'a) -> 'b
+}
+
+trait SignedInt['a] {}
+
+impl Int[int] {}
+impl SignedInt[int] {}
+
+impl Lt[int, int] {
+    fn <(lhs: int, rhs: int) -> bool { true }
+}
+
+impl Neg[int, int] {
+    fn -(lhs: int) -> int { lhs }
+}
+
+fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
+    a
+}
+
+impl ToStr['a] where SignedInt['a], Int['a], Lt['a, 'a], Neg['a, 'a] {
+    fn to_str(self: 'a) -> string {
+        i = abs(self)
+        _ = i
+        ""
+    }
+}
+
+fn core_print(v: 'a) -> () where ToStr['a] {
+    s = v.to_str()
+    _ = s
+}
+"#;
+
+    let (_module_path, result, _tcx) =
+        typecheck_src("typechecks_signed_tostr_calls_abs_under_qualifiers", src);
+    assert_typechecks(
+        "typechecks_signed_tostr_calls_abs_under_qualifiers",
+        &result,
+    );
+}
+
+#[test]
+fn typechecks_generic_tostr_for_u32() {
+    enable_debug_logs();
+    let src = r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+trait Int['a] {}
+trait UnsignedInt['a] {}
+trait Div['a, 'b, 'c] {}
+trait Mod['a, 'b, 'c] {}
+trait Eq['a, 'b] {}
+
+impl Int[u32] {}
+impl UnsignedInt[u32] {}
+impl Div[u32, u32, u32] {}
+impl Mod[u32, u32, u32] {}
+impl Eq[u32, u32] {}
+
+impl ToStr['a] where UnsignedInt['a], Int['a], Div['a, 'a, 'a], Mod['a, 'a, 'a], Eq['a, 'a] {
+    fn to_str(self: 'a) -> string {
+        ""
+    }
+}
+
+fn print(v: 'a) -> () where ToStr['a] {
+    s = v.to_str()
+    _ = s
+}
+
+fn f(x: u32) -> () {
+    print(x)
+}
+"#;
+
+    let (_module_path, result, _tcx) = typecheck_src("typechecks_generic_tostr_for_u32", src);
+    assert_typechecks("typechecks_generic_tostr_for_u32", &result);
 }
 
 #[test]
@@ -896,6 +1125,98 @@ fn mk_string() {
     let scheme = tcx.all_schemes().get(&len_path).expect("len scheme");
     assert!(scheme.vars.is_empty(), "scheme vars not empty: {}", scheme);
     assert_eq!(*scheme.mono(), Ty::uint());
+}
+
+#[test]
+fn typechecks_int_literal_not_captured_by_givens() {
+    let src = r#"
+extern fn malloc(size: uint) -> rawptr[u8]
+
+trait Int['a] {
+    default(int)
+}
+impl Int[int] {}
+impl Int[uint] {}
+
+fn foo['a](x: 'a) -> rawptr[u8] where Int['a] {
+    len = 1
+    _ = x
+    malloc(len)
+}
+"#;
+
+    let (module_path, result, tcx, bindings) =
+        typecheck_src_with_bindings("typechecks_int_literal_not_captured_by_givens", src);
+    assert_typechecks("typechecks_int_literal_not_captured_by_givens", &result);
+    assert_local_ty_eq(&tcx, &bindings, &module_path, "foo::len", Ty::uint());
+}
+
+#[test]
+fn typechecks_generic_div_assign_uses_receiver_given_to_constrain_rhs() {
+    let src = r#"
+trait Int['a] {
+    default(int)
+}
+
+trait Div['a, 'b, 'c] {
+    fn /(lhs: 'a, rhs: 'b) -> 'c
+}
+
+impl Int[int] {}
+impl Int[uint] {}
+
+impl Div[int, int, int] {
+    fn /(lhs: int, rhs: int) -> int { lhs }
+}
+
+fn foo(i: 'a) -> 'a where Int['a], Div['a, 'a, 'a] {
+    i /= 10
+    i
+}
+"#;
+
+    let (_module_path, result, _tcx) = typecheck_src(
+        "typechecks_generic_div_assign_uses_receiver_given_to_constrain_rhs",
+        src,
+    );
+    assert_typechecks(
+        "typechecks_generic_div_assign_uses_receiver_given_to_constrain_rhs",
+        &result,
+    );
+}
+
+#[test]
+fn typechecks_generic_eq_zero_uses_receiver_given_to_constrain_rhs() {
+    enable_debug_logs();
+    let src = r#"
+trait Int['a] {
+    default(int)
+}
+
+trait Eq['a, 'b] {
+    fn ==(lhs: 'a, rhs: 'b) -> bool
+}
+
+impl Int[int] {}
+impl Int[uint] {}
+
+impl Eq[int, int] {
+    fn ==(lhs: int, rhs: int) -> bool { true }
+}
+
+fn is_one(x: 'a) -> bool where Int['a], Eq['a, 'a] {
+    x == 1
+}
+"#;
+
+    let (_module_path, result, _tcx) = typecheck_src(
+        "typechecks_generic_eq_zero_uses_receiver_given_to_constrain_rhs",
+        src,
+    );
+    assert_typechecks(
+        "typechecks_generic_eq_zero_uses_receiver_given_to_constrain_rhs",
+        &result,
+    );
 }
 
 #[test]

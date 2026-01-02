@@ -1,0 +1,3 @@
+trait Hash['a] {
+    fn hash(self: 'a) -> u64
+}

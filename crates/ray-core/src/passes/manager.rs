@@ -103,7 +103,7 @@ impl<'a> FrontendPassManager<'a> {
                 result.errors = errors;
             }
 
-            call_resolution::run_call_resolution_pass(input, self.tcx);
+            call_resolution::run_call_resolution_pass(input, self.tcx, ncx);
             self.typecheck_result = Some(result);
         }
     }

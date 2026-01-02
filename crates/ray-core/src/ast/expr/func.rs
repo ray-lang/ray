@@ -4,12 +4,9 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::{FilePath, Path},
     span::{Source, Span, parsed::Parsed},
+    ty::Ty,
 };
-use ray_typing::{
-    constraints::Predicate,
-    tyctx::TyCtx,
-    types::{Ty, TyScheme},
-};
+use ray_typing::{constraints::Predicate, tyctx::TyCtx, types::TyScheme};
 
 use crate::sourcemap::SourceMap;
 use crate::{
@@ -211,7 +208,7 @@ impl FuncSig {
         if let Some(ty_params) = &mut self.ty_params {
             for ty_param in ty_params.tys.iter_mut() {
                 let ty = ty_param.deref_mut();
-                ty.map_vars(tcx);
+                tcx.map_vars(ty);
             }
         }
 
@@ -235,7 +232,7 @@ impl FuncSig {
                     param
                 );
                 let mut ty = ty.clone();
-                ty.map_vars(fn_tcx);
+                fn_tcx.map_vars(&mut ty);
                 param_tys.push(ty);
             } else {
                 return Err(RayError {
@@ -258,39 +255,16 @@ impl FuncSig {
                 Ty::unit()
             }
         });
-        ret_ty.map_vars(fn_tcx);
+        fn_tcx.map_vars(&mut ret_ty);
 
         let ty = Ty::Func(param_tys, Box::new(ret_ty));
 
-        let vars = if let Some(ty_params) = &self.ty_params {
-            let mut vars = vec![];
-            for ty_param in ty_params.tys.iter() {
-                let mut ty = ty_param.deref().clone();
-                ty.map_vars(fn_tcx);
-                if let Ty::Var(v) = ty {
-                    vars.push(v.clone());
-                }
-            }
-
-            vars
-        } else {
-            let mut vars = ty
-                .free_vars()
-                .into_iter()
-                .filter(|tv| !tv.is_ret_placeholder())
-                .cloned()
-                .collect::<Vec<_>>();
-            vars.sort();
-            vars.dedup();
-            vars
-        };
-
-        let scheme = if self.qualifiers.len() != 0 {
-            let mut preds = vec![];
+        let mut preds = vec![];
+        if self.qualifiers.len() != 0 {
             for q in self.qualifiers.iter() {
                 let ty_span = *q.span().unwrap();
                 let mut q = q.clone_value();
-                q.map_vars(fn_tcx);
+                fn_tcx.map_vars(&mut q);
 
                 let (fqn, ty_args) = match q {
                     Ty::Proj(name, args) => (name, args),
@@ -328,9 +302,49 @@ impl FuncSig {
                     ty_args,
                 ));
             }
+        }
+
+        let vars = if let Some(ty_params) = &self.ty_params {
+            let mut vars = vec![];
+            for ty_param in ty_params.tys.iter() {
+                let mut ty = ty_param.deref().clone();
+                fn_tcx.map_vars(&mut ty);
+                if let Ty::Var(v) = ty {
+                    vars.push(v);
+                }
+            }
+
+            vars
+        } else {
+            let mut vars = ty
+                .free_vars()
+                .into_iter()
+                .chain(
+                    preds
+                        .iter()
+                        .flat_map(|q| {
+                            let Predicate::Class(pred) = q else {
+                                return None;
+                            };
+
+                            Some(&pred.args)
+                        })
+                        .flatten()
+                        .flat_map(|ty| {
+                            let Ty::Var(v) = ty else { return None };
+                            Some(v)
+                        }),
+                )
+                .filter(|tv| !tv.is_ret_placeholder())
+                .cloned()
+                .collect::<Vec<_>>();
+            vars.sort();
+            vars.dedup();
+            vars
+        };
+
+        let scheme = if vars.len() != 0 || preds.len() != 0 {
             TyScheme::new(vars, preds, ty)
-        } else if vars.len() != 0 {
-            TyScheme::new(vars, vec![], ty)
         } else {
             TyScheme::from_mono(ty)
         };

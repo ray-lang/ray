@@ -7,8 +7,10 @@ use ray_core::{
     errors::RayError,
 };
 use ray_driver::*;
-use ray_shared::pathlib::{FilePath, Path, RayPaths};
-use ray_typing::types::Ty;
+use ray_shared::{
+    pathlib::{FilePath, Path, RayPaths},
+    ty::Ty,
+};
 
 #[derive(Debug, Default)]
 pub struct TestBuildOptions {

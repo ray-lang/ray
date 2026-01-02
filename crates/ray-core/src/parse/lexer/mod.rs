@@ -216,6 +216,7 @@ impl Lexer {
             "fn" => TokenKind::Fn,
             "return" => TokenKind::Return,
             "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
             "async" => TokenKind::Async,
             "extern" => TokenKind::Extern,
             "struct" => TokenKind::Struct,

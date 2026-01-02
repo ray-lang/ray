@@ -266,6 +266,11 @@ impl Driver {
             libs,
         )?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
+            if !options.build_lib {
+                log::debug!("program before monomorphization:\n{}", program);
+                program.monomorphize();
+                log::debug!("program after monomorphization:");
+            }
             println!("{}", program);
             return Ok(());
         }
@@ -636,6 +641,10 @@ fn collect_fn_param_refs(param: &FnParam, refs: &mut Vec<(NodeId, Path)>) {
 fn collect_pattern_refs(pattern: &Pattern, refs: &mut Vec<(NodeId, Path)>) {
     match pattern {
         Pattern::Missing(_) | Pattern::Name(_) | Pattern::Deref(_) | Pattern::Dot(_, _) => {}
+        Pattern::Index(lhs, index, _) => {
+            collect_pattern_refs(&lhs.value, refs);
+            collect_expr_name_refs(index.as_ref(), refs);
+        }
         Pattern::Sequence(patterns) | Pattern::Tuple(patterns) => {
             for pat in patterns {
                 collect_pattern_refs(&pat.value, refs);
@@ -682,9 +691,16 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(NodeId, Path)>) {
             }
             collect_expr_name_refs(&closure.body, refs);
         }
+        Expr::Continue => {}
         Expr::Curly(curly) => {
             for element in &curly.elements {
                 collect_curly_element_refs(element, refs);
+            }
+        }
+        Expr::Dict(dict) => {
+            for (key, value) in dict.entries.iter() {
+                collect_expr_name_refs(key, refs);
+                collect_expr_name_refs(value, refs);
             }
         }
         Expr::DefaultValue(value) => collect_expr_name_refs(value, refs),
@@ -743,8 +759,17 @@ fn collect_expr_name_refs(expr: &Node<Expr>, refs: &mut Vec<(NodeId, Path)>) {
                 collect_expr_name_refs(v, refs);
             }
         }
+        Expr::ScopedAccess(scoped_access) => {
+            collect_expr_name_refs(&scoped_access.lhs, refs);
+            refs.push((scoped_access.rhs.id, scoped_access.rhs.value.path.clone()));
+        }
         Expr::Sequence(seq) => {
             for item in &seq.items {
+                collect_expr_name_refs(item, refs);
+            }
+        }
+        Expr::Set(set) => {
+            for item in set.items.iter() {
                 collect_expr_name_refs(item, refs);
             }
         }
@@ -807,6 +832,7 @@ fn maybe_push_node_type<T>(
     }
 }
 
+#[allow(dead_code)]
 fn pretty_print_tys<T>(tcx: &TyCtx, ty: &T) -> String
 where
     T: Clone + Substitutable + ToString,

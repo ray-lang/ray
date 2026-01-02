@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 
-use ray_typing::types::{Ty, TyScheme};
+use ray_shared::ty::Ty;
+use ray_typing::binding_groups::BindingId;
+use ray_typing::types::TyScheme;
 
 use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
-pub type VarMap = HashMap<String, usize>;
+pub type VarMap = HashMap<BindingId, usize>;
 
 #[derive(Clone, Debug)]
 pub struct Builder {
     pub(super) curr_block: usize,
     pub(super) control_block: Option<usize>,
+    pub(super) continue_block: Option<usize>,
     pub(super) params: Vec<Param>,
     pub(super) locals: Vec<Local>,
     pub(super) vars: VarMap,
@@ -25,6 +28,7 @@ impl Builder {
         Builder {
             curr_block: 0,
             control_block: None,
+            continue_block: None,
             params: vec![],
             locals: vec![],
             vars: HashMap::new(),
@@ -83,20 +87,27 @@ impl Builder {
     }
 
     #[inline(always)]
-    pub fn get_var(&self, name: &String) -> Option<&usize> {
-        self.vars.get(name)
+    pub fn get_var(&self, binding: &BindingId) -> Option<&usize> {
+        self.vars.get(binding)
     }
 
     #[inline(always)]
-    pub fn set_var(&mut self, name: String, idx: usize) {
-        self.block().define_var(name.clone(), idx);
-        self.vars.insert(name, idx);
+    pub fn set_var(&mut self, binding: BindingId, debug_name: String, idx: usize) {
+        self.block().define_var(debug_name, idx);
+        self.vars.insert(binding, idx);
     }
 
-    pub fn param(&mut self, name: String, ty: Ty) -> usize {
+    pub fn param_unbound(&mut self, name: String, ty: Ty) -> usize {
         let idx = self.local(ty.clone().into());
         self.params.push(Param::new(name.clone(), idx, ty));
-        self.set_var(name, idx);
+        self.block().define_var(name, idx);
+        idx
+    }
+
+    pub fn param(&mut self, binding: BindingId, name: String, ty: Ty) -> usize {
+        let idx = self.local(ty.clone().into());
+        self.params.push(Param::new(name.clone(), idx, ty));
+        self.set_var(binding, name, idx);
         idx
     }
 

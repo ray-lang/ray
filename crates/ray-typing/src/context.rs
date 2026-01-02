@@ -7,11 +7,12 @@ use std::rc::Rc;
 
 use crate::binding_groups::BindingId;
 use crate::constraint_tree::SkolemizedAnnotation;
-use crate::constraints::Predicate;
+use crate::constraints::{ClassPredicate, Constraint, Predicate};
 use crate::env::GlobalEnv;
 use crate::info::TypeSystemInfo;
-use crate::types::{SKOLEM_PREFIX, SchemaVarAllocator, Subst, Substitutable, Ty, TyScheme, TyVar};
+use crate::types::{SchemaVarAllocator, Subst, Substitutable, TyScheme};
 use ray_shared::collections::namecontext::NameContext;
+use ray_shared::ty::{SKOLEM_PREFIX, Ty, TyVar};
 use ray_shared::{node_id::NodeId, pathlib::Path};
 
 /// Minimal expression and pattern kinds used for v2 constraint generation.
@@ -31,8 +32,13 @@ pub enum Pattern {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
-    /// A variable reference to a binding in the current group.
-    Var(BindingId),
+    /// A reference to a binding.
+    BindingRef(BindingId),
+    /// A scoped access `T::member`.
+    ///
+    /// Note: any type arguments in `T[...]::member` belong to the left-hand
+    /// side type `T[...]`, not to the member itself.
+    ScopedAccess { binding: BindingId, lhs_ty: Ty },
     /// An integer literal without an explicit size suffix; its concrete
     /// type is determined by the `Int` class constraints and defaulting.
     LiteralInt,
@@ -60,6 +66,11 @@ pub enum ExprKind {
     LiteralChar,
     /// Unicode escape sequence literal.
     LiteralUnicodeEsc,
+    /// Meta-type expression `type[T]` used at runtime by intrinsics like `sizeof`.
+    ///
+    /// This is an expression whose value is a "type object" (represented in the
+    /// type system as `type[T]`), not a normal runtime value of type `T`.
+    Type { ty: Ty },
     /// Struct construction `A { x: e1, y: e2 }`.
     StructLiteral {
         struct_name: String,
@@ -114,7 +125,7 @@ pub enum ExprKind {
     /// `continue` within a loop.
     Continue,
     /// `return e` from within a function (see "Return expressions").
-    Return { expr: NodeId },
+    Return { expr: Option<NodeId> },
     /// Heap allocation / boxing `box e`, treated as producing a pointer
     /// type `*T` when `e : T` (see docs/type-system.md Section 1.1
     /// "Pointer types").
@@ -144,6 +155,10 @@ pub enum ExprKind {
     /// from the items and related to the list's element type via the
     /// `Index` and `Iter` traits (docs/type-system.md Section A.3).
     List { items: Vec<NodeId> },
+    /// Dict literal `{ k0: v0, k1: v1, ..., kn: vn }`.
+    Dict { entries: Vec<(NodeId, NodeId)> },
+    /// Set literal `{ e0, e1, ..., en, }` (trailing comma required for singleton).
+    Set { items: Vec<NodeId> },
     /// Range expression `start .. end` or `start ..= end`, which has
     /// nominal type `range[T]` for some element type `T` shared by the
     /// endpoints.
@@ -184,7 +199,7 @@ pub enum ExprKind {
     /// cast expression's type to `Tcast`.
     Cast { expr: NodeId, ty: Ty },
     /// Indexing operation `container[index]`, which generates an
-    /// `Index[ContainerTy, IndexTy, ElemTy]` predicate (see the
+    /// `Index[ContainerTy, ElemTy, IndexTy]` predicate (see the
     /// `Index` trait in docs/type-system.md Section A.3).
     Index { container: NodeId, index: NodeId },
     /// Heap allocation `new(T, count?)`. For now we only track the optional
@@ -245,7 +260,7 @@ pub enum AssignLhs {
     /// This corresponds to the field-assignment rule in Section A.8.
     Field { recv: BindingId, field: String },
     /// Index assignment `container[index] = rhs`, which uses the
-    /// `Index[Container, Index, Elem]` trait as described in
+    /// `Index[Container, Elem, Index]` trait as described in
     /// docs/type-system.md A.8.
     Index { container: BindingId, index: NodeId },
     /// Error placeholder produced from a `Missing` pattern on the left-hand
@@ -311,6 +326,23 @@ pub struct SolverContext<'a> {
     /// during `generalize_group`. These should not be treated as "unsolved"
     /// leaks when checking expression types post-solve.
     pub generalized_metas: HashSet<TyVar>,
+    /// Failed class predicate attempts (e.g. impl head matched, but predicates failed).
+    pub predicate_failures: Vec<PredicateFailure>,
+}
+
+pub trait MetaAllocator {
+    fn fresh_meta(&mut self) -> Ty;
+    fn reuse_metas(&mut self, metas: Vec<TyVar>);
+}
+
+impl<'a> MetaAllocator for SolverContext<'a> {
+    fn fresh_meta(&mut self) -> Ty {
+        SolverContext::fresh_meta(self)
+    }
+
+    fn reuse_metas(&mut self, metas: Vec<TyVar>) {
+        SolverContext::reuse_metas(self, metas)
+    }
 }
 
 impl<'a> SolverContext<'a> {
@@ -336,11 +368,34 @@ impl<'a> SolverContext<'a> {
             ncx,
             global_env,
             generalized_metas: HashSet::new(),
+            predicate_failures: Vec::new(),
         }
     }
 
     pub fn is_explicitly_annotated(&self, binding: &BindingId) -> bool {
         self.explicitly_annotated_bindings.contains(binding)
+    }
+
+    pub fn record_predicate_failure(
+        &mut self,
+        wanted: &Constraint,
+        unsatisfied: Vec<Constraint>,
+        no_matching_impl: bool,
+        impl_head: Option<ClassPredicate>,
+    ) {
+        if self
+            .predicate_failures
+            .iter()
+            .any(|entry| entry.wanted == *wanted)
+        {
+            return;
+        }
+        self.predicate_failures.push(PredicateFailure {
+            wanted: wanted.clone(),
+            unsatisfied,
+            no_matching_impl,
+            impl_head,
+        });
     }
 
     /// Apply a type substitution to all tracked types and schemes.
@@ -529,6 +584,14 @@ impl<'a> SolverContext<'a> {
     pub fn global_env(&self) -> &GlobalEnv {
         self.global_env
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct PredicateFailure {
+    pub wanted: Constraint,
+    pub unsatisfied: Vec<Constraint>,
+    pub no_matching_impl: bool,
+    pub impl_head: Option<ClassPredicate>,
 }
 
 /// Metadata associated with skolem variables introduced for annotated

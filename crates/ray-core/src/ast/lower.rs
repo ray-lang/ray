@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::{Deref, DerefMut},
     vec,
 };
@@ -8,13 +8,17 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::{FilePath, Path},
     span::{Source, Sourced, parsed::Parsed},
+    ty::{Ty, TyVar},
+    utils::join,
 };
 use ray_typing::{
+    TypeError,
     constraints::Predicate,
+    info::TypeSystemInfo,
     tyctx::TyCtx,
     types::{
-        FieldKind, ImplField, ImplTy, ReceiverMode, StructTy, Subst, Substitutable as _,
-        TraitField, TraitTy, Ty, TyScheme, TyVar,
+        FieldKind, ImplField, ImplKind, ImplTy, ReceiverMode, StructTy, Subst, Substitutable as _,
+        TraitField, TraitTy, TyScheme,
     },
 };
 
@@ -114,7 +118,7 @@ fn map_ty_vars(
     if let Some(ty_params) = ty_params {
         for tp in ty_params.tys.iter_mut() {
             tp.resolve_fqns(scopes, ncx);
-            tp.map_vars(tcx);
+            tcx.map_vars(tp);
             if let Ty::Var(v) = tp.value() {
                 ty_vars.push(v.clone());
             } else {
@@ -235,7 +239,13 @@ impl<'a> AstLowerCtx<'a> {
 
     #[inline(always)]
     fn get_scopes(&self, src: &Source) -> &Vec<Scope> {
+        log::debug!("[get_scopes] src = {:?}", src);
         self.scope_map.get(&src.src_module).unwrap()
+    }
+
+    fn resolve_fqn_for_parsed_ty(&self, ty: &mut Parsed<Ty>) {
+        let scopes = self.get_scopes(ty.src());
+        ty.resolve_fqns(scopes, &self.ncx);
     }
 }
 
@@ -385,7 +395,7 @@ impl LowerAST for Sourced<'_, Struct> {
                     let ty = if let Some(ty) = &mut field.ty {
                         let scopes = ctx.get_scopes(src);
                         ty.resolve_fqns(scopes, ctx.ncx);
-                        ty.mono_mut().map_vars(ctx.tcx);
+                        ctx.tcx.map_vars(ty.mono_mut());
                         ty.clone_value()
                     } else {
                         let src = ctx.srcmap.get(field);
@@ -440,9 +450,7 @@ impl LowerAST for Sourced<'_, Trait> {
 
         let fqn = trait_fqn.to_string();
         let mut trait_tcx = ctx.tcx.clone();
-        ty_params
-            .iter_mut()
-            .for_each(|t| t.map_vars(&mut trait_tcx));
+        ty_params.iter_mut().for_each(|t| trait_tcx.map_vars(t));
 
         if ty_params.is_empty() {
             return Err(RayError {
@@ -504,7 +512,10 @@ impl LowerAST for Sourced<'_, Trait> {
 
             // Borrow the function type to inspect its parameters, but immediately
             // clone the parameter list so we can later mutate the scheme safely.
-            let (param_tys, _) = scheme.mono().try_borrow_fn()?;
+            let param_tys = match scheme.mono().try_borrow_fn() {
+                Ok((p, _)) => p,
+                Err(err) => return Err(TypeError::message(err, TypeSystemInfo::new()).into()),
+            };
             let param_tys = param_tys.clone();
             let func_fqn = trait_fqn
                 .append_type_args(ty_params.iter())
@@ -564,25 +575,6 @@ impl LowerAST for Sourced<'_, Trait> {
             None
         };
 
-        // let directives = tr
-        //     .directives
-        //     .iter()
-        //     .map(|directive| match directive.kind {
-        //         TraitDirectiveKind::Default => {
-        //             let args = directive
-        //                 .args
-        //                 .iter()
-        //                 .map(|arg| arg.value().clone())
-        //                 .collect();
-        //             TypeClassDirective::Default(
-        //                 trait_fqn.to_string(),
-        //                 args,
-        //                 TypeSystemInfo::default(),
-        //             )
-        //         }
-        //     })
-        //     .collect();
-
         let default_ty = tr
             .directives
             .iter()
@@ -611,8 +603,7 @@ impl LowerAST for Sourced<'_, Impl> {
 
     fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
         let (imp, src) = self.unpack_mut();
-        let scopes = ctx.get_scopes(src);
-        imp.ty.resolve_fqns(scopes, ctx.ncx);
+        ctx.resolve_fqn_for_parsed_ty(&mut imp.ty);
 
         let (trait_fqn, orig_ty_args) = match imp.ty.deref() {
             Ty::Proj(path, ty_params) => (path, ty_params.clone()),
@@ -632,18 +623,9 @@ impl LowerAST for Sourced<'_, Impl> {
 
         // lookup the trait in the context
         log::debug!("found fqn: {}", trait_fqn);
-        let trait_ty = if imp.is_object {
-            // we construct a special "object" trait for object implementations
-            TraitTy {
-                path: Path::from("core::object"),
-                ty: Ty::proj("object", vec![Ty::var("core::object::'a")]),
-                super_traits: vec![],
-                fields: vec![],
-                default_ty: None,
-            }
-        } else {
+        let trait_ty = if !imp.is_object {
             match ctx.tcx.get_trait_ty(&trait_fqn) {
-                Some(t) => t.clone(),
+                Some(t) => Some(t.clone()),
                 _ => {
                     return Err(RayError {
                         msg: format!("trait `{}` is not defined", trait_fqn),
@@ -653,22 +635,26 @@ impl LowerAST for Sourced<'_, Impl> {
                     });
                 }
             }
+        } else {
+            None
         };
 
         // get the type parameter of the original trait
-        let orig_trait_tps = trait_ty.ty.get_ty_params();
-        let mut trait_ty_params = Vec::with_capacity(orig_trait_tps.len());
-        for ty in orig_trait_tps {
-            let Ty::Var(v) = ty else {
-                return Err(RayError {
-                    msg: str!("expected a type parameter for trait"),
-                    src: vec![src.respan(*imp.ty.span().unwrap())],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower trait impl".to_string()),
-                });
-            };
+        let mut trait_ty_params = vec![];
+        if let Some(trait_ty) = &trait_ty {
+            let orig_trait_tps = trait_ty.ty.get_ty_params();
+            for ty in orig_trait_tps {
+                let Ty::Var(v) = ty else {
+                    return Err(RayError {
+                        msg: str!("expected a type parameter for trait"),
+                        src: vec![src.respan(*imp.ty.span().unwrap())],
+                        kind: RayErrorKind::Type,
+                        context: Some("lower trait impl".to_string()),
+                    });
+                };
 
-            trait_ty_params.push(v.clone());
+                trait_ty_params.push(v.clone());
+            }
         }
 
         let impl_scope = if imp.is_object {
@@ -682,12 +668,18 @@ impl LowerAST for Sourced<'_, Impl> {
         let mut impl_srcs = HashMap::new();
 
         let mut ty_args = orig_ty_args.clone();
-        ty_args.iter_mut().for_each(|t| t.map_vars(&mut impl_tcx));
+        ty_args.iter_mut().for_each(|t| impl_tcx.map_vars(t));
 
         let mut trait_arg_subst = Subst::new();
         for (ty_param, ty_arg) in trait_ty_params.iter().zip(&ty_args) {
             trait_arg_subst.insert(ty_param.clone(), ty_arg.clone());
         }
+
+        // resolve any qualifiers
+        for qualifier in &mut imp.qualifiers {
+            ctx.resolve_fqn_for_parsed_ty(qualifier);
+        }
+        let impl_qualifiers = imp.qualifiers.clone();
 
         // consts have to be first in case they're used inside of functions
         if let Some(consts) = &mut imp.consts {
@@ -700,8 +692,11 @@ impl LowerAST for Sourced<'_, Impl> {
             }
         }
 
+        let mut fields = vec![];
         if let Some(funcs) = &mut imp.funcs {
             for func in funcs {
+                func.sig.qualifiers.extend(impl_qualifiers.iter().cloned());
+
                 let func_name = match func.sig.path.name() {
                     Some(n) => n,
                     _ => {
@@ -735,16 +730,22 @@ impl LowerAST for Sourced<'_, Impl> {
                     "lower trait impl",
                 )?;
 
-                if func.sig.ty.is_none() {
-                    if let Some(field) = trait_ty.get_field(&func_name) {
-                        let mut scheme = field.ty.clone();
-                        scheme.apply_subst(&trait_arg_subst);
+                if let Some(field) = trait_ty.as_ref().and_then(|tr| tr.get_field(&func_name)) {
+                    let mut scheme = field.ty.clone();
+                    scheme.apply_subst(&trait_arg_subst);
 
-                        let mut free = HashSet::new();
-                        scheme.free_ty_vars(&mut free);
-                        scheme.vars.retain(|var| free.contains(var));
-
-                        func.sig.ty = Some(scheme);
+                    if let Some(self_ty) = scheme
+                        .ty
+                        .try_borrow_fn()
+                        .ok()
+                        .and_then(|(params, _)| params.first())
+                    {
+                        annotate_trait_self_param_if_missing(
+                            &mut func.sig,
+                            self_ty,
+                            src,
+                            &ctx.srcmap,
+                        );
                     }
                 }
 
@@ -754,11 +755,49 @@ impl LowerAST for Sourced<'_, Impl> {
 
                 let func_src = ctx.srcmap.get(func);
                 let sig_src = func_src.respan(func.sig.span);
-                impl_srcs.insert(func_name.clone(), sig_src);
-                impl_set.insert(
-                    func_name,
-                    Some((func.sig.path.value.clone(), func.sig.ty.clone())),
+                let is_static = func
+                    .sig
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, ast::Modifier::Static));
+
+                let param_tys = func
+                    .sig
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.try_borrow_fn())
+                    .map(|(_, _, params, _)| &params[..])
+                    .expect("parameter types for impl method");
+
+                let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
+                log::debug!(
+                    "[Impl::lower] sig.path = {}, param_tys = [{}], is_static = {}, recv_mode = {:?}",
+                    func.sig.path.value,
+                    join(param_tys, ", "),
+                    is_static,
+                    recv_mode
                 );
+                if imp.is_object {
+                    fields.push(ImplField {
+                        kind: FieldKind::Method,
+                        path: func.sig.path.value.clone(),
+                        scheme: func.sig.ty.clone(),
+                        src: sig_src,
+                        recv_mode,
+                        is_static,
+                    });
+                } else {
+                    impl_srcs.insert(func_name.clone(), sig_src);
+                    impl_set.insert(
+                        func_name,
+                        Some((
+                            func.sig.path.value.clone(),
+                            func.sig.ty.clone(),
+                            recv_mode,
+                            is_static,
+                        )),
+                    );
+                }
             }
         }
 
@@ -773,31 +812,34 @@ impl LowerAST for Sourced<'_, Impl> {
         }
 
         // make sure that everything has been implemented
-        let mut fields = Vec::with_capacity(trait_ty.fields.len());
-        for field in trait_ty.fields.iter() {
-            let n = &field.name;
-            let Some(def) = impl_set.get(n) else {
-                return Err(RayError {
-                    msg: format!("trait implementation is missing for field `{}`", n),
-                    src: vec![src.respan(*imp.ty.span().unwrap())],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower trait impl".to_string()),
-                });
-            };
+        if let Some(trait_ty) = &trait_ty {
+            for field in trait_ty.fields.iter() {
+                let n = &field.name;
+                let Some(def) = impl_set.get(n) else {
+                    return Err(RayError {
+                        msg: format!("trait implementation is missing for field `{}`", n),
+                        src: vec![src.respan(*imp.ty.span().unwrap())],
+                        kind: RayErrorKind::Type,
+                        context: Some("lower trait impl".to_string()),
+                    });
+                };
 
-            if let Some((path, scheme)) = def {
-                log::debug!("[Impl::lower] field path={}, scheme={:?}", path, scheme);
-                let src = impl_srcs.get(n).cloned().unwrap_or_else(|| src.clone());
-                fields.push(ImplField {
-                    kind: field.kind,
-                    path: path.clone(),
-                    scheme: scheme.clone(),
-                    src,
-                });
+                if let Some((path, scheme, recv_mode, is_static)) = def {
+                    log::debug!("[Impl::lower] field path={}, scheme={:?}", path, scheme);
+                    let src = impl_srcs.get(n).cloned().unwrap_or_else(|| src.clone());
+                    fields.push(ImplField {
+                        kind: field.kind,
+                        path: path.clone(),
+                        scheme: scheme.clone(),
+                        src,
+                        recv_mode: *recv_mode,
+                        is_static: *is_static,
+                    });
+                }
             }
         }
 
-        if trait_ty_params.len() != ty_args.len() {
+        if !imp.is_object && trait_ty_params.len() != ty_args.len() {
             return Err(RayError {
                 msg: format!(
                     "trait expected {} type argument(s) but found {}",
@@ -816,8 +858,6 @@ impl LowerAST for Sourced<'_, Impl> {
             sub.insert(ty_param.clone(), ty_arg.clone());
         }
 
-        let mut trait_ty = trait_ty.ty.clone();
-        trait_ty.apply_subst(&sub);
         let mut predicates = vec![];
         for q in imp.qualifiers.iter() {
             predicates.push(predicate_from_ast_ty(
@@ -828,16 +868,24 @@ impl LowerAST for Sourced<'_, Impl> {
             )?);
         }
 
-        let base_ty = if imp.is_object {
-            imp.ty.deref().clone()
+        let kind = if let Some(trait_ty) = &trait_ty {
+            let mut trait_ty = trait_ty.ty.clone();
+            trait_ty.apply_subst(&sub);
+            let base_ty = ty_args[0].clone();
+
+            ImplKind::Trait {
+                base_ty,
+                trait_ty,
+                ty_args: ty_args[1..].to_vec(),
+            }
         } else {
-            ty_args[0].clone()
+            ImplKind::Inherent {
+                recv_ty: imp.ty.deref().clone(),
+            }
         };
 
         let impl_ty = ImplTy {
-            trait_ty,
-            base_ty,
-            ty_args: ty_args[1..].to_vec(),
+            kind,
             predicates,
             fields,
         };
@@ -920,10 +968,18 @@ impl LowerAST for Node<Expr> {
                 }
                 Ok(())
             }
+            Expr::Continue => Ok(()),
             Expr::Call(c) => c.lower(ctx),
             Expr::Cast(c) => Sourced(c, &src).lower(ctx),
             Expr::Closure(closure) => closure.lower(ctx),
             Expr::Curly(c) => Sourced(c, &src).lower(ctx),
+            Expr::Dict(dict) => {
+                for (key, value) in dict.entries.iter_mut() {
+                    key.lower(ctx)?;
+                    value.lower(ctx)?;
+                }
+                Ok(())
+            }
             Expr::DefaultValue(_) => todo!("lower: Expr::DefaultValue: {:?}", self),
             Expr::Deref(d) => d.expr.lower(ctx),
             Expr::Dot(d) => d.lower(ctx),
@@ -933,9 +989,18 @@ impl LowerAST for Node<Expr> {
                 self.value = Expr::Closure(closure);
                 Ok(())
             }
-            Expr::For(_) => todo!("lower: Expr::For: {:?}", self),
+            Expr::For(for_loop) => {
+                let pat_src = ctx.srcmap.get(&for_loop.pat);
+                Sourced(&mut for_loop.pat.value, &pat_src).lower(ctx)?;
+                for_loop.expr.lower(ctx)?;
+                for_loop.body.lower(ctx)
+            }
             Expr::If(if_ex) => Sourced(if_ex, &src).lower(ctx),
-            Expr::Index(_) => todo!("lower: Expr::Index: {:?}", self),
+            Expr::Index(index) => {
+                index.index.lower(ctx)?;
+                index.lhs.lower(ctx)?;
+                Ok(())
+            }
             Expr::Labeled(_, _) => todo!("lower: Expr::Labeled: {:?}", self),
             Expr::List(l) => l.lower(ctx),
             Expr::Literal(_) => Ok(()),
@@ -954,6 +1019,16 @@ impl LowerAST for Node<Expr> {
                 Ok(())
             }
             Expr::Sequence(seq) => seq.lower(ctx),
+            Expr::Set(set) => {
+                for item in set.items.iter_mut() {
+                    item.lower(ctx)?;
+                }
+                Ok(())
+            }
+            Expr::ScopedAccess(scoped_access) => {
+                scoped_access.lhs.lower(ctx)?;
+                Sourced(&mut scoped_access.rhs.value, &src).lower(ctx)
+            }
             Expr::Tuple(t) => t.lower(ctx),
             Expr::Type(ty) => Sourced(ty, &src).lower(ctx),
             Expr::TypeAnnotated(_, _) => {
@@ -1009,10 +1084,14 @@ impl LowerAST for ast::Assign {
             }
         }
 
+        log::debug!("[Assign::lower] op = {:?}", self.op);
+
         if let ast::InfixOp::AssignOp(op) = &mut self.op {
             let lhs_src = ctx.srcmap.get(&self.lhs);
-            let lhs = match self.lhs.clone().try_take_map(|pat| match pat {
-                ast::Pattern::Name(_) | ast::Pattern::Dot(_, _) => Ok(pat.into()),
+            let mut lhs: Node<Expr> = match self.lhs.clone().try_take_map(|pat| match pat {
+                ast::Pattern::Name(_) | ast::Pattern::Dot(_, _) | ast::Pattern::Index(_, _, _) => {
+                    Ok(pat.into())
+                }
                 ast::Pattern::Sequence(_)
                 | ast::Pattern::Tuple(_)
                 | ast::Pattern::Deref(_)
@@ -1030,6 +1109,9 @@ impl LowerAST for ast::Assign {
                     return Ok(());
                 }
             };
+
+            log::debug!("[Assign::lower] lower lhs = {}", lhs);
+            lhs.lower(ctx)?;
 
             let new_op = Node::new(ast::InfixOp::Assign);
             let op_src = ctx.srcmap.get(op);
@@ -1052,6 +1134,9 @@ impl LowerAST for ast::Assign {
 
             self.rhs = Box::new(node);
         } else {
+            let lhs_src = ctx.srcmap.get(&self.lhs);
+            Sourced(&mut self.lhs.value, &lhs_src).lower(ctx)?;
+
             self.rhs.lower(ctx)?;
         };
 
@@ -1156,6 +1241,7 @@ impl LowerAST for Sourced<'_, ast::Cast> {
         cast.lhs.lower(ctx)?;
         let scopes = ctx.get_scopes(src);
         cast.ty.resolve_fqns(scopes, ctx.ncx);
+        ctx.tcx.map_vars(&mut cast.ty);
         Ok(())
     }
 }
@@ -1206,10 +1292,6 @@ impl LowerAST for Sourced<'_, ast::Curly> {
 
         curly.ty = struct_ty.ty.clone();
         log::debug!("lower Curly: set ty for {:?} to {}", struct_fqn, curly.ty);
-        // Must be a concrete struct scheme by now.
-        if !matches!(curly.ty.mono(), Ty::Const(_)) {
-            log::warn!("Curly.ty not Const after lowering: {}", curly.ty);
-        }
 
         let mut idx = HashMap::new();
         for (i, (f, _)) in struct_ty.fields.iter().enumerate() {
@@ -1287,7 +1369,14 @@ impl LowerAST for ast::List {
 impl LowerAST for Sourced<'_, ast::Name> {
     type Output = ();
 
-    fn lower(&mut self, _: &mut AstLowerCtx) -> RayResult<Self::Output> {
+    fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
+        let (name, src) = self.unpack_mut();
+        let scopes = ctx.get_scopes(src);
+        if let Some(ty) = &mut name.ty {
+            log::debug!("[Name::lower] resolve FQN for scheme (before): {}", ty);
+            ty.resolve_fqns(scopes, ctx.ncx);
+            log::debug!("[Name::lower] resolve FQN for scheme (after): {}", ty);
+        }
         Ok(())
     }
 }
@@ -1303,7 +1392,7 @@ impl LowerAST for Sourced<'_, ast::New> {
     }
 }
 
-impl LowerAST for Sourced<'_, ray_shared::pathlib::Path> {
+impl LowerAST for Sourced<'_, Path> {
     type Output = ();
 
     fn lower(&mut self, _: &mut AstLowerCtx) -> RayResult<Self::Output> {
@@ -1326,13 +1415,22 @@ impl LowerAST for Sourced<'_, ast::Pattern> {
                 let rhs_src = ctx.srcmap.get(rhs);
                 Sourced(&mut rhs.value, &rhs_src).lower(ctx)?;
             }
+            ast::Pattern::Index(lhs, index, _) => {
+                let lhs_src = ctx.srcmap.get(lhs.as_ref());
+                Sourced(&mut lhs.as_mut().value, &lhs_src).lower(ctx)?;
+                index.lower(ctx)?;
+            }
             ast::Pattern::Some(inner) => {
                 let inner_src = ctx.srcmap.get(inner.as_ref());
                 Sourced(&mut inner.as_mut().value, &inner_src).lower(ctx)?;
             }
-            ast::Pattern::Missing(_) => todo!(),
-            ast::Pattern::Sequence(_) => todo!(),
-            ast::Pattern::Tuple(_) => todo!(),
+            ast::Pattern::Sequence(pats) | ast::Pattern::Tuple(pats) => {
+                for pat in pats {
+                    let pat_src = ctx.srcmap.get(pat);
+                    Sourced(&mut pat.value, &pat_src).lower(ctx)?;
+                }
+            }
+            ast::Pattern::Missing(_) => {}
         }
 
         Ok(())
@@ -1379,6 +1477,10 @@ impl LowerAST for Sourced<'_, Parsed<TyScheme>> {
         let (ty_scheme, src) = self.unpack_mut();
         let scopes = ctx.get_scopes(&src);
         ty_scheme.mono_mut().resolve_fqns(scopes, ctx.ncx);
+        // Normalize type variables (e.g. `'k`) into the same internal tyvar
+        // namespace used by signature schemes so expression-level type
+        // applications like `T['a]::method` unify correctly.
+        ctx.tcx.map_vars(ty_scheme.mono_mut());
         Ok(())
     }
 }
@@ -1404,7 +1506,7 @@ impl LowerAST for Sourced<'_, ast::While> {
 
 pub fn predicate_from_ast_ty(
     q: &Parsed<Ty>,
-    scope: &ray_shared::pathlib::Path,
+    scope: &Path,
     filepath: &FilePath,
     tcx: &mut TyCtx,
 ) -> Result<Predicate, RayError> {
@@ -1429,7 +1531,7 @@ pub fn predicate_from_ast_ty(
     };
 
     for ty_arg in ty_args.iter_mut() {
-        ty_arg.map_vars(tcx);
+        tcx.map_vars(ty_arg);
     }
 
     log::debug!("converting from ast type: {}", fqn);
@@ -1476,6 +1578,7 @@ mod tests {
         collections::namecontext::NameContext,
         pathlib::{FilePath, Path},
         span::{Pos, Source, Sourced, Span, parsed::Parsed},
+        ty::Ty,
     };
 
     use crate::ast::{AstLowerCtx, Curly, CurlyElement, LowerAST, Name, Node};
@@ -1483,7 +1586,7 @@ mod tests {
     use ray_typing::{
         env::GlobalEnv,
         tyctx::TyCtx,
-        types::{NominalKind, StructTy, Ty, TyScheme},
+        types::{NominalKind, StructTy, TyScheme},
     };
 
     fn mkspan(sline: usize, scol: usize, eline: usize, ecol: usize) -> Span {

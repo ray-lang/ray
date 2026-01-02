@@ -2,28 +2,88 @@ trait Int['a] {
     default (int)
 }
 
+trait SignedInt['a] {}
+trait UnsignedInt['a] {}
+
 impl Int[int] {}
+impl SignedInt[int] {}
 impl Int[i8] {}
+impl SignedInt[i8] {}
 impl Int[i16] {}
+impl SignedInt[i16] {}
 impl Int[i32] {}
+impl SignedInt[i32] {}
 impl Int[i64] {}
+impl SignedInt[i64] {}
 
 impl Int[uint] {}
+impl UnsignedInt[uint] {}
 impl Int[u8] {}
+impl UnsignedInt[u8] {}
 impl Int[u16] {}
+impl UnsignedInt[u16] {}
 impl Int[u32] {}
+impl UnsignedInt[u32] {}
 impl Int[u64] {}
+impl UnsignedInt[u64] {}
 
-impl ToStr[int] {
-    fn to_str(self: int) -> string {
-        len = 1
-        mut i = abs(self)
+impl Hash['a] where Int['a] {
+    fn hash(self: 'a) -> u64 {
+        mut packed, len = int_hash_bytes(self)
+
+        // FNV-1a (64-bit)
+        mut h: u64 = 14695981039346656037u64
+        mut i: uint = 0
+        while i < len {
+            byte = packed % 256
+            h = h ^ byte
+            h = h * 1099511628211
+            packed = packed / 256
+            i += 1
+        }
+
+        h
+    }
+}
+
+impl ToStr['a] where UnsignedInt['a], Int['a], Div['a, 'a, 'a], Mod['a, 'a, 'a], Eq['a, 'a] {
+    fn to_str(self: 'a) -> string {
+        mut len = 1
+        mut i = self
         while true {
             i /= 10
-            len += 1
             if i == 0 {
                 break
             }
+            len += 1
+        }
+
+        raw_ptr = malloc(len)
+        i = self
+        mut ptr = raw_ptr + (len - 1)
+        while true {
+            *ptr = ('0' as u8) + ((i % 10) as u8)
+            ptr = ptr - 1
+            i /= 10
+            if i == 0 {
+                break
+            }
+        }
+
+        string { raw_ptr, len }
+    }
+}
+
+impl ToStr['a] where SignedInt['a], Int['a], Lt['a, 'a], Neg['a, 'a], Div['a, 'a, 'a], Mod['a, 'a, 'a], Eq['a, 'a] {
+    fn to_str(self: 'a) -> string {
+        mut len = 1
+        mut i = abs(self)
+        while true {
+            i /= 10
+            if i == 0 {
+                break
+            }
+            len += 1
         }
 
         if self < 0 {
@@ -34,7 +94,7 @@ impl ToStr[int] {
         i = abs(self)
         mut ptr = raw_ptr + (len - 1)
         while true {
-            *ptr = ('0' as u8) + ((i%10) as u8)
+            *ptr = ('0' as u8) + ((i % 10) as u8)
             ptr = ptr - 1
             i /= 10
             if i == 0 {

@@ -8,8 +8,12 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::{FilePath, Path, PathPart},
     span::Span,
+    ty::Ty,
 };
-use ray_typing::{tyctx::TyCtx, types::Ty};
+use ray_typing::{
+    tyctx::TyCtx,
+    types::{Subst, Substitutable},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -258,22 +262,30 @@ pub fn collect_definition_records(
 }
 
 pub fn canonical_path_key(path: &Path) -> Path {
-    let mut tyvar_map = HashMap::new();
+    let mut subst = Subst::new();
     let mut counter = 0usize;
 
     path.iter()
         .filter_map(|segment| match segment {
-            PathPart::Name(name) => {
-                let normalized = normalize_tyvars_in_segment(name, &mut tyvar_map, &mut counter);
-                Some(PathPart::Name(normalized))
+            PathPart::Name(name) => Some(PathPart::Name(name.clone())),
+            PathPart::Array(ty, size) => {
+                let ty = normalize_tyvars_in_ty(ty, &mut subst, &mut counter);
+                Some(PathPart::Array(ty, *size))
             }
-            PathPart::FuncType(ty) => {
-                let normalized = normalize_tyvars_in_segment(ty, &mut tyvar_map, &mut counter);
-                Some(PathPart::FuncType(normalized))
+            PathPart::FuncType(params, ret) => {
+                let params = params
+                    .iter()
+                    .map(|p| normalize_tyvars_in_ty(p, &mut subst, &mut counter))
+                    .collect();
+                let ret = normalize_tyvars_in_ty(ret, &mut subst, &mut counter);
+                Some(PathPart::FuncType(params, ret))
             }
             PathPart::TypeArgs(args) => {
-                let normalized = normalize_tyvars_in_segment(args, &mut tyvar_map, &mut counter);
-                Some(PathPart::TypeArgs(normalized))
+                let args = args
+                    .iter()
+                    .map(|p| normalize_tyvars_in_ty(p, &mut subst, &mut counter))
+                    .collect();
+                Some(PathPart::TypeArgs(args))
             }
         })
         .collect::<VecDeque<_>>()
@@ -281,26 +293,7 @@ pub fn canonical_path_key(path: &Path) -> Path {
 }
 
 pub fn display_path(path: &Path) -> Path {
-    let mut tyvar_map = HashMap::new();
-    let mut counter = 0usize;
-
-    path.iter()
-        .map(|segment| match segment {
-            PathPart::Name(name) => {
-                let normalized = normalize_tyvars_in_segment(name, &mut tyvar_map, &mut counter);
-                PathPart::Name(normalized)
-            }
-            PathPart::TypeArgs(ty) => {
-                let normalized = normalize_tyvars_in_segment(ty, &mut tyvar_map, &mut counter);
-                PathPart::TypeArgs(normalized)
-            }
-            PathPart::FuncType(ty) => {
-                let normalized = normalize_tyvars_in_segment(ty, &mut tyvar_map, &mut counter);
-                PathPart::FuncType(normalized)
-            }
-        })
-        .collect::<VecDeque<_>>()
-        .into()
+    canonical_path_key(path)
 }
 
 fn register_decl_paths(
@@ -499,6 +492,7 @@ fn register_in_expr(
                 register_in_expr(&expr, srcmap, tcx, records, parent);
             }
         }
+        Expr::Continue => {}
         Expr::Call(call) => {
             register_in_expr(&call.callee, srcmap, tcx, records, parent);
             for arg in call.args.items.iter() {
@@ -522,6 +516,12 @@ fn register_in_expr(
                         register_in_expr(&node, srcmap, tcx, records, parent);
                     }
                 }
+            }
+        }
+        Expr::Dict(dict) => {
+            for (key, value) in dict.entries.iter() {
+                register_in_expr(key, srcmap, tcx, records, parent);
+                register_in_expr(value, srcmap, tcx, records, parent);
             }
         }
         Expr::Deref(deref) => {
@@ -584,8 +584,16 @@ fn register_in_expr(
                 register_in_expr(&expr, srcmap, tcx, records, parent);
             }
         }
+        Expr::ScopedAccess(scoped_access) => {
+            register_in_expr(&scoped_access.lhs, srcmap, tcx, records, parent);
+        }
         Expr::Sequence(sequence) => {
             for item in sequence.items.iter() {
+                register_in_expr(item, srcmap, tcx, records, parent);
+            }
+        }
+        Expr::Set(set) => {
+            for item in set.items.iter() {
                 register_in_expr(item, srcmap, tcx, records, parent);
             }
         }
@@ -654,7 +662,7 @@ fn register_in_pattern(
             }
         }
         Pattern::Some(pattern) => register_in_pattern(pattern, srcmap, tcx, records),
-        Pattern::Deref(_) | Pattern::Dot(_, _) | Pattern::Missing(_) => {
+        Pattern::Deref(_) | Pattern::Dot(_, _) | Pattern::Index(_, _, _) | Pattern::Missing(_) => {
             // ignore
         }
     }
@@ -705,43 +713,19 @@ fn func_sig_kind(sig: &FuncSig, parent: Option<&DefinitionKind>) -> DefinitionKi
     }
 }
 
-fn normalize_tyvars_in_segment(
-    segment: &str,
-    tyvar_map: &mut HashMap<String, String>,
-    counter: &mut usize,
-) -> String {
-    let mut out = String::new();
-    let mut chars = segment.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '?' {
-            if let Some(&next) = chars.peek() {
-                if next == 't' {
-                    chars.next();
-                    let mut var = String::from("?t");
-                    while let Some(&peek) = chars.peek() {
-                        if peek.is_ascii_alphanumeric() || peek == '_' {
-                            var.push(peek);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let pretty = tyvar_map.entry(var.clone()).or_insert_with(|| {
-                        let name = pretty_tyvar_name(*counter);
-                        *counter += 1;
-                        name
-                    });
-                    out.push_str(pretty.as_str());
-                    continue;
-                }
-            }
+fn normalize_tyvars_in_ty(ty: &Ty, subst: &mut Subst, counter: &mut usize) -> Ty {
+    let vars = ty.free_vars();
+    for var in vars {
+        if var.is_meta() && !subst.contains_key(var) {
+            let name = pretty_tyvar_name(*counter);
+            *counter += 1;
+            let ty = Ty::var(name);
+            subst.insert(var.clone(), ty);
         }
-
-        out.push(ch);
     }
 
+    let mut out = ty.clone();
+    out.apply_subst(subst);
     out
 }
 

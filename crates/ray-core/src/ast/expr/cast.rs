@@ -1,6 +1,9 @@
+use ray_shared::{
+    span::{Span, parsed::Parsed},
+    ty::Ty,
+};
+
 use crate::ast::{Expr, Node};
-use ray_shared::span::{Span, parsed::Parsed};
-use ray_typing::types::Ty;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cast {

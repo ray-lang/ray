@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use ray_shared::node_id::NodeId;
+use ray_shared::{node_id::NodeId, ty::Ty};
 
-use crate::{binding_groups::BindingId, constraints::Constraint, types::Ty};
+use crate::{binding_groups::BindingId, constraints::Constraint};
 
 #[derive(Clone, Debug)]
 pub struct BindingBundle {

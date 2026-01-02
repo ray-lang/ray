@@ -1,9 +1,8 @@
 use std::fmt;
 
-use ray_shared::{pathlib::FilePath, span::Span};
+use ray_shared::{pathlib::FilePath, span::Span, ty::Ty};
 
 use crate::ast::{Decl, Node};
-use ray_typing::types::Ty;
 
 #[derive(Debug)]
 pub struct CType {

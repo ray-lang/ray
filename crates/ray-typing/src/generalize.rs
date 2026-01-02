@@ -20,12 +20,18 @@
 //!
 use std::collections::HashSet;
 
-use crate::ModuleInput;
-use crate::binding_groups::BindingId;
-use crate::constraints::{Constraint, ConstraintKind, Predicate};
-use crate::context::{ExprKind, SolverContext};
-use crate::types::{Subst, Substitutable as _, Ty, TyScheme, TyVar};
-use ray_shared::node_id::NodeId;
+use ray_shared::{
+    node_id::NodeId,
+    ty::{Ty, TyVar},
+};
+
+use crate::{
+    ModuleInput,
+    binding_groups::BindingId,
+    constraints::{Constraint, ConstraintKind, Predicate},
+    context::{ExprKind, SolverContext},
+    types::{Subst, Substitutable as _, TyScheme},
+};
 
 /// Result of generalizing a single binding group.
 pub struct GeneralizationResult {

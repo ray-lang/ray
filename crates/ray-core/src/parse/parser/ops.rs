@@ -90,8 +90,20 @@ impl Parser<'_> {
             } else if matches!(op, InfixOp::Comma) {
                 ctx = ctx.clone();
                 ctx.restrictions |= Restrictions::EXPECT_EXPR | Restrictions::AFTER_COMMA;
-            } else if matches!(op, InfixOp::Colon) && !matches!(lhs.value, Expr::Name(_)) {
-                // this is a typed expression
+            } else if matches!(op, InfixOp::Colon) {
+                // `:` is used for type annotation (e.g. `x: uint`) and for expression-level
+                // type ascription (e.g. `e: SomeType`).
+                //
+                // For a bare name, preserve the original AST shape by attaching the parsed type
+                // to the `Name` itself, rather than producing a binary op.
+                if let Expr::Name(name) = &mut lhs.value {
+                    if name.ty.is_none() {
+                        name.ty = Some(parser.parse_type_annotation(None, &ctx));
+                        continue;
+                    }
+                }
+
+                // Otherwise, treat this as expression type ascription.
                 let ty = parser.parse_type_annotation(None, &ctx);
                 let rhs = parser.mk_tyscheme(ty, ctx.path.clone());
                 let span = parser
@@ -137,15 +149,6 @@ impl Parser<'_> {
                 .span_of(&lhs)
                 .extend_to(&parser.srcmap.span_of(&rhs));
 
-            if matches!(op, InfixOp::Colon) && matches!(lhs.value, Expr::Name(_)) {
-                lhs = parser.mk_expr(
-                    Expr::Labeled(Box::new(lhs), Box::new(rhs)),
-                    span,
-                    ctx.path.clone(),
-                );
-                continue;
-            }
-
             let kind = match op {
                 InfixOp::Assign | InfixOp::AssignOp(_) => {
                     let src = parser.srcmap.get(&lhs);
@@ -185,7 +188,7 @@ impl Parser<'_> {
                 _ => Expr::BinOp(BinOp {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
-                    op: parser.mk_node(op, op_span),
+                    op: parser.mk_node(op, op_span, ctx.path.clone()),
                 }),
             };
 
@@ -203,7 +206,7 @@ impl Parser<'_> {
     pub(crate) fn parse_prefix_expr(&mut self, ctx: &ParseContext) -> ExprResult {
         if let Some((op, tok_count)) = self.peek_prefix_op()? {
             let (_, op_span) = self.lex.consume_count(tok_count);
-            let op = self.mk_node(op, op_span);
+            let op = self.mk_node(op, op_span, ctx.path.clone());
             let mut expr = self.parse_prefix_expr(ctx)?;
             let span = op_span.extend_to(&self.srcmap.span_of(&expr));
             let expr = match (&op.value, &mut expr.value) {
@@ -289,6 +292,12 @@ impl Parser<'_> {
     ) -> ParseResult<Option<(InfixOp, usize)>> {
         if self.is_eol() && !ctx.restrictions.contains(Restrictions::IN_PAREN) {
             return Ok(None);
+        }
+
+        if let Some(stop_token) = &ctx.stop_token {
+            if self.peek_kind().similar_to(stop_token) {
+                return Ok(None);
+            }
         }
 
         use TokenKind::*;

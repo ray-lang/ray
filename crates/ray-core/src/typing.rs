@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::Path};
+use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::Path, ty::Ty};
 use ray_typing::{
     BindingKind, BindingRecord, ExprRecord, ModuleInput, NodeBinding, PatternKind, PatternRecord,
     TypeCheckResult, TypeError, TypecheckOptions,
@@ -12,7 +12,7 @@ use ray_typing::{
     env::GlobalEnv,
     info::TypeSystemInfo,
     tyctx::TyCtx,
-    types::{SchemaVarAllocator, Ty},
+    types::SchemaVarAllocator,
 };
 
 use crate::{
@@ -67,6 +67,7 @@ struct TyLowerCtx<'a> {
     /// bodies (e.g. via assignment). Each scope maps a simple name to a
     /// BindingId; lookup walks the stack from innermost to outermost.
     local_scopes: Vec<HashMap<Path, BindingId>>,
+    loop_depth: usize,
     errors: Vec<TypeError>,
 }
 
@@ -82,6 +83,7 @@ impl<'a> TyLowerCtx<'a> {
             pattern_records: HashMap::new(),
             value_bindings: binding_output.value_bindings.clone(),
             local_scopes: vec![],
+            loop_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -112,6 +114,14 @@ impl<'a> TyLowerCtx<'a> {
         self.local_scopes.pop();
     }
 
+    fn enter_loop(&mut self) {
+        self.loop_depth += 1;
+    }
+
+    fn exit_loop(&mut self) {
+        self.loop_depth = self.loop_depth.saturating_sub(1);
+    }
+
     fn insert_local_binding(&mut self, path: Path, binding: BindingId) {
         if let Some(scope) = self.local_scopes.last_mut() {
             scope.insert(path, binding);
@@ -138,7 +148,8 @@ impl<'a> TyLowerCtx<'a> {
             self.insert_local_binding(path.clone(), existing);
             existing
         } else {
-            panic!("missing binding for `{}` (node {:#x})", path, node_id);
+            log::warn!("missing binding for `{}` (node {:#x})", path, node_id);
+            BindingId(0)
         }
     }
 
@@ -417,6 +428,7 @@ fn lower_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> LhsPattern
         }
         AstPattern::Deref(_)
         | AstPattern::Dot(_, _)
+        | AstPattern::Index(_, _, _)
         | AstPattern::Some(_)
         | AstPattern::Missing(_) => {
             // These forms are handled at the AssignLhs layer in `lower_lhs_pattern`.
@@ -463,6 +475,26 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                 }
             }
         }
+        AstPattern::Index(lhs, index, _) => match &lhs.value {
+            AstPattern::Name(n) => {
+                let binding = ctx.binding_from_node_or_path(lhs.id, &n.path);
+                let lowered_index = lower_expr(ctx, index.as_ref());
+                let base_id = ctx.expr_id(lhs.as_ref());
+                ctx.record_pattern(lhs.as_ref(), PatternKind::Binding { binding });
+                ctx.record_pattern(
+                    pat,
+                    PatternKind::Index {
+                        container: base_id,
+                        index: lowered_index,
+                    },
+                );
+                AssignLhs::Index {
+                    container: binding,
+                    index: lowered_index,
+                }
+            }
+            _ => todo!("lowering for complex index assignment patterns into ExprKind::Assign"),
+        },
         AstPattern::Some(_) => {
             // Assignment with `some(...)` patterns on the left-hand side is
             // not permitted; these should be rejected earlier in the pipeline
@@ -656,6 +688,15 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 },
             )
         }
+        Expr::Dict(dict) => {
+            let mut entries = Vec::with_capacity(dict.entries.len());
+            for (key, value) in dict.entries.iter() {
+                let key_id = lower_expr(ctx, key);
+                let value_id = lower_expr(ctx, value);
+                entries.push((key_id, value_id));
+            }
+            ctx.record_expr(node, ExprKind::Dict { entries })
+        }
         // Default-value expressions appear primarily in parameter positions.
         // As standalone expressions, we treat `default e` as just `e` for
         // typing purposes, since the value's type is what matters here.
@@ -671,6 +712,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         Expr::Dot(dot) => {
             let recv = lower_expr(ctx, &dot.lhs);
             let field = dot.rhs.path.name().unwrap_or_else(|| dot.rhs.to_string());
+            log::debug!("[lower_expr] record field access: {:?}", dot);
             ctx.record_expr(node, ExprKind::FieldAccess { recv, field })
         }
         // For-loops, following docs/type-system.md A.6 "For loops":
@@ -683,7 +725,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         Expr::For(for_loop) => {
             let pattern = lower_guard_pattern(ctx, &for_loop.pat);
             let iter_expr = lower_expr(ctx, &for_loop.expr);
+            ctx.enter_loop();
             let body = lower_expr(ctx, &for_loop.body);
+            ctx.exit_loop();
             ctx.record_expr(
                 node,
                 ExprKind::For {
@@ -750,7 +794,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         }
         Expr::Literal(lit) => lower_literal(ctx, node, lit),
         Expr::Loop(loop_expr) => {
+            ctx.enter_loop();
             let body = lower_expr(ctx, &loop_expr.body);
+            ctx.exit_loop();
             ctx.record_expr(node, ExprKind::Loop { body })
         }
         Expr::Missing(_) => {
@@ -767,9 +813,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             // Prefer a local binding from the current function scope if one
             // exists; otherwise fall back to module-level value bindings.
             if let Some(binding) = ctx.resolve_local(&path) {
-                ctx.record_expr(node, ExprKind::Var(binding))
+                ctx.record_expr(node, ExprKind::BindingRef(binding))
             } else if let Some(binding) = ctx.value_bindings.get(&path).copied() {
-                ctx.record_expr(node, ExprKind::Var(binding))
+                ctx.record_expr(node, ExprKind::BindingRef(binding))
             } else {
                 todo!(
                     "lowering for unresolved Expr::Name `{}` into ExprKind",
@@ -791,7 +837,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         }
         Expr::Path(path) => {
             if let Some(binding) = ctx.value_bindings.get(path).copied() {
-                ctx.record_expr(node, ExprKind::Var(binding))
+                ctx.record_expr(node, ExprKind::BindingRef(binding))
             } else {
                 todo!(
                     "lowering for unresolved Expr::Path `{}` into ExprKind",
@@ -838,22 +884,64 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             // is equated with the current function result type by the
             // constraint generator (docs/type-system.md A.6 "Return
             // expressions").
-            let expr = if let Some(expr) = opt_expr.as_ref() {
-                lower_expr(ctx, expr)
-            } else {
-                ctx.expr_id(node)
-            };
+            let expr = opt_expr.as_ref().map(|expr| lower_expr(ctx, expr));
             ctx.record_expr(node, ExprKind::Return { expr })
         }
+        Expr::Continue => {
+            if ctx.loop_depth == 0 {
+                ctx.emit_error(node, "`continue` is only valid inside a loop");
+            }
+            ctx.record_expr(node, ExprKind::Continue)
+        }
         Expr::Sequence(seq) => {
-            if seq.items.is_empty() {
-                ctx.record_expr(node, ExprKind::Tuple { elems: Vec::new() })
-            } else {
-                let mut items = Vec::with_capacity(seq.items.len());
-                for item in &seq.items {
-                    items.push(lower_expr(ctx, item));
+            let mut elems = Vec::with_capacity(seq.items.len());
+            for item in &seq.items {
+                elems.push(lower_expr(ctx, item));
+            }
+            ctx.record_expr(node, ExprKind::Tuple { elems })
+        }
+        Expr::Set(set) => {
+            let mut items = Vec::with_capacity(set.items.len());
+            for item in set.items.iter() {
+                items.push(lower_expr(ctx, item));
+            }
+            ctx.record_expr(node, ExprKind::Set { items })
+        }
+        Expr::ScopedAccess(scoped_access) => {
+            // For now we support `type[T]::name` style access only when the LHS is
+            // an explicit type expression (e.g. `dict['k, 'v]::with_capacity`),
+            // lowering it to a fully-qualified value path `T::name`.
+            if let Expr::Type(ty) = &scoped_access.lhs.value {
+                let base = ty.value().mono().get_path().without_type_args();
+                let member = scoped_access
+                    .rhs
+                    .value
+                    .path
+                    .name()
+                    .unwrap_or_else(|| scoped_access.rhs.value.to_string());
+                let path = base.append(member);
+
+                if let Some(binding) = ctx.value_bindings.get(&path).copied() {
+                    ctx.record_expr(
+                        node,
+                        ExprKind::ScopedAccess {
+                            binding,
+                            lhs_ty: ty.value().mono().clone(),
+                        },
+                    )
+                } else {
+                    ctx.emit_error(node, format!("could not resolve static member `{}`", path));
+                    ctx.record_expr(node, ExprKind::Missing)
                 }
-                ctx.record_expr(node, ExprKind::Sequence { items })
+            } else {
+                ctx.emit_error(
+                    node,
+                    format!(
+                        "expected a type on the left-hand side of `::`, but found `{}`",
+                        scoped_access.lhs.value
+                    ),
+                );
+                ctx.record_expr(node, ExprKind::Missing)
             }
         }
         // Optional / nil expressions map onto the nilable forms.
@@ -868,7 +956,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             }
             ctx.record_expr(node, ExprKind::Tuple { elems })
         }
-        Expr::Type(_) => todo!("lowering for Expr::Type into ExprKind"),
+        Expr::Type(ty) => {
+            let ty = ty.value().mono().clone();
+            ctx.record_expr(node, ExprKind::Type { ty })
+        }
         Expr::TypeAnnotated(value, _) => {
             let expr = lower_expr(ctx, value);
             ctx.record_expr(node, ExprKind::Wrapper { expr })
@@ -905,7 +996,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         Expr::Unsafe(inner) => lower_expr(ctx, inner),
         Expr::While(whileexpr) => {
             let cond = lower_expr(ctx, &whileexpr.cond);
+            ctx.enter_loop();
             let body = lower_expr(ctx, &whileexpr.body);
+            ctx.exit_loop();
             ctx.record_expr(node, ExprKind::While { cond, body })
         }
     }

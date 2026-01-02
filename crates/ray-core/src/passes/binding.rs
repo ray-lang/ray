@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::Path;
-use ray_typing::binding_groups::{BindingGraph, BindingId};
-use ray_typing::env::GlobalEnv;
-use ray_typing::types::TyScheme;
-use ray_typing::{BindingKind, BindingRecord, NodeBinding};
+use ray_shared::{node_id::NodeId, pathlib::Path};
+use ray_typing::{
+    BindingKind, BindingRecord, NodeBinding,
+    binding_groups::{BindingGraph, BindingId},
+    env::GlobalEnv,
+    types::TyScheme,
+};
 
 use crate::ast::{
-    Decl, Expr, FnParam, Func, FuncSig, InfixOp, Module, Name, Node, Pattern as AstPattern,
+    Assign, Decl, Expr, FnParam, Func, FuncSig, InfixOp, Module, Name, Node, Pattern as AstPattern,
     WalkItem, WalkScopeKind, walk_module,
 };
 use crate::sourcemap::SourceMap;
@@ -139,7 +140,12 @@ impl<'a> BindingPassCtx<'a> {
                         let Some(path) = record.path.clone() else {
                             continue;
                         };
-                        self.value_bindings.insert(path.clone(), binding_id);
+                        // Only module-scope bindings participate in the global `value_bindings`
+                        // index. Local bindings are resolved via the scope stack; inserting
+                        // locals here can cause cross-function collisions for the same path.
+                        if self.in_module_scope() {
+                            self.value_bindings.insert(path.clone(), binding_id);
+                        }
                         self.bind_local(path, binding_id);
                     }
                 }
@@ -176,7 +182,8 @@ impl<'a> BindingPassCtx<'a> {
             Decl::Declare(assign) => {
                 self.record_assignment(decl_node.id, &assign.lhs.value, Some(assign.rhs.id))
             }
-            Decl::Mutable(name) | Decl::Name(name) => self.record_name_decl(name),
+            Decl::Mutable(name) => self.record_name_decl(name, true),
+            Decl::Name(name) => self.record_name_decl(name, false),
             Decl::Extern(ext) => {
                 let inner_decl = ext.decl_node();
                 if let Decl::FnSig(sig) = &inner_decl.value {
@@ -223,14 +230,19 @@ impl<'a> BindingPassCtx<'a> {
         }
     }
 
-    fn record_name_decl(&mut self, name_node: &Node<Name>) {
+    fn record_name_decl(&mut self, name_node: &Node<Name>, is_mut: bool) {
         let scheme = name_node.value.ty.as_ref().map(|parsed| (**parsed).clone());
-        self.new_binding(
+        let binding = self.new_binding(
             name_node.id,
             Some(name_node.value.path.clone()),
             BindingKind::Value,
             scheme,
         );
+        if is_mut {
+            if let Some(record) = self.binding_records.get_mut(&binding) {
+                record.is_mut = true;
+            }
+        }
     }
 
     fn record_extern(&mut self, extern_decl_id: NodeId, sig_decl_id: NodeId, sig: &FuncSig) {
@@ -322,7 +334,6 @@ impl<'a> BindingPassCtx<'a> {
             record
         );
         self.binding_records.insert(binding, record);
-        self.value_bindings.insert(path.clone(), binding);
         self.bind_local(path, binding);
         binding
     }
@@ -452,6 +463,7 @@ impl<'a> BindingPassCtx<'a> {
                 };
                 vec![binding]
             }
+            AstPattern::Deref(_) | AstPattern::Dot(_, _) | AstPattern::Index(_, _, _) => Vec::new(),
             AstPattern::Sequence(items) | AstPattern::Tuple(items) => {
                 let mut bindings = Vec::new();
                 for item in items {
@@ -488,7 +500,10 @@ impl<'a> BindingPassCtx<'a> {
                 bindings
             }
             AstPattern::Some(inner) => self.record_pattern_unbound(inner.id, &inner.value),
-            _ => Vec::new(),
+            AstPattern::Deref(_)
+            | AstPattern::Dot(_, _)
+            | AstPattern::Index(_, _, _)
+            | AstPattern::Missing(_) => Vec::new(),
         }
     }
 
@@ -498,9 +513,77 @@ impl<'a> BindingPassCtx<'a> {
         }
     }
 
+    fn record_name_use(&mut self, node_id: NodeId, path: &Path) {
+        if let Some(target) = self.resolve_binding(path) {
+            self.node_bindings
+                .entry(node_id)
+                .or_insert(NodeBinding::Use(target));
+            if let Some(source) = self.current_binding() {
+                if source != target {
+                    self.bindings.add_edge(source, target);
+                }
+            }
+        }
+    }
+
+    fn record_binding_use_with_edge(&mut self, node_id: NodeId, target: BindingId) {
+        self.node_bindings
+            .entry(node_id)
+            .or_insert(NodeBinding::Use(target));
+        if let Some(source) = self.current_binding() {
+            if source != target {
+                self.bindings.add_edge(source, target);
+            }
+        }
+    }
+
+    fn is_mut_binding(&self, binding: BindingId) -> bool {
+        self.binding_records
+            .get(&binding)
+            .map(|record| record.is_mut)
+            .unwrap_or(false)
+    }
+
+    fn resolve_mut_slot_assignment_target(&self, assign: &Assign) -> Option<BindingId> {
+        let AstPattern::Name(name) = &assign.lhs.value else {
+            return None;
+        };
+        let target = self.resolve_binding(&name.path)?;
+        if !self.is_mut_binding(target) {
+            return None;
+        }
+        Some(target)
+    }
+
+    fn record_lvalue_pattern_uses(&mut self, pattern: &Node<AstPattern>) {
+        match &pattern.value {
+            AstPattern::Deref(name) => {
+                self.record_name_use(name.id, &name.path);
+            }
+            AstPattern::Dot(lhs, _) => self.record_lvalue_pattern_uses(lhs.as_ref()),
+            AstPattern::Index(lhs, index, _) => {
+                self.record_lvalue_pattern_uses(lhs.as_ref());
+                self.visit_expr(index.as_ref());
+            }
+            AstPattern::Sequence(items) | AstPattern::Tuple(items) => {
+                for item in items {
+                    self.record_lvalue_pattern_uses(item);
+                }
+            }
+            AstPattern::Some(inner) => self.record_lvalue_pattern_uses(inner.as_ref()),
+            AstPattern::Name(name) => self.record_name_use(pattern.id, &name.path),
+            AstPattern::Missing(_) => {}
+        }
+    }
+
     fn visit_expr(&mut self, expr: &Node<Expr>) {
         match &expr.value {
             Expr::Assign(assign) => {
+                if let Some(target) = self.resolve_mut_slot_assignment_target(assign) {
+                    self.record_binding_use_with_edge(assign.lhs.id, target);
+                    return;
+                }
+
                 // Create fresh binding ids for the LHS, but defer binding them
                 // into the local scope until after the RHS has been walked.
                 // This ensures RHS name uses resolve to the pre-assignment
@@ -510,6 +593,11 @@ impl<'a> BindingPassCtx<'a> {
                 if !bindings.is_empty() {
                     for binding in &bindings {
                         self.set_binding_body(*binding, assign.rhs.id);
+                        if assign.is_mut {
+                            if let Some(record) = self.binding_records.get_mut(binding) {
+                                record.is_mut = true;
+                            }
+                        }
                     }
                     let count = bindings.len();
                     self.schedule_pattern_pop(assign.lhs.id, count);
@@ -518,6 +606,11 @@ impl<'a> BindingPassCtx<'a> {
                     for binding in bindings {
                         self.push_binding_context(binding);
                     }
+                }
+
+                // Record uses of the lvalue (e.g. `*ptr = ...`, `p.x = ...`, `l[i] = ...`).
+                if !matches!(assign.lhs.value, AstPattern::Name(_)) {
+                    self.record_lvalue_pattern_uses(&assign.lhs);
                 }
             }
             Expr::Closure(closure) => {
@@ -551,6 +644,30 @@ impl<'a> BindingPassCtx<'a> {
                     if let Some(source) = self.current_binding() {
                         if source != target {
                             self.bindings.add_edge(source, target);
+                        }
+                    }
+                }
+            }
+            Expr::ScopedAccess(scoped_access) => {
+                // Only record binding edges for type-qualified scoped access
+                // like `dict['k,'v]::with_capacity` for now.
+                if let Expr::Type(ty) = &scoped_access.lhs.value {
+                    let base = ty.value().mono().get_path().without_type_args();
+                    let member = scoped_access
+                        .rhs
+                        .value
+                        .path
+                        .name()
+                        .unwrap_or_else(|| scoped_access.rhs.value.to_string());
+                    let path = base.append(member);
+                    if let Some(target) = self.resolve_binding(&path) {
+                        self.node_bindings
+                            .entry(expr.id)
+                            .or_insert(NodeBinding::Use(target));
+                        if let Some(source) = self.current_binding() {
+                            if source != target {
+                                self.bindings.add_edge(source, target);
+                            }
                         }
                     }
                 }
@@ -599,8 +716,9 @@ mod tests {
     };
     use ray_shared::pathlib::{FilePath, Path};
     use ray_shared::span::{Source, Span, parsed::Parsed};
+    use ray_shared::ty::Ty;
     use ray_typing::env::GlobalEnv;
-    use ray_typing::types::{Ty, TyScheme};
+    use ray_typing::types::TyScheme;
 
     fn test_source() -> Source {
         Source::new(

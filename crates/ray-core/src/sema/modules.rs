@@ -7,12 +7,13 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::{FilePath, Path, RayPaths},
     span::{Source, Span},
+    ty::{Ty, TyVar},
     utils::map_join,
 };
 use ray_typing::{
     env::GlobalEnv,
     tyctx::TyCtx,
-    types::{Subst, Substitutable, Ty, TyVar},
+    types::{Subst, Substitutable},
 };
 
 use crate::{
@@ -134,17 +135,20 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let global_env = GlobalEnv::new();
         let mut tcx = TyCtx::new(global_env);
         let mut definitions = HashMap::new();
+
+        let curr_schema_allocator = tcx.schema_allocator();
         for (lib_path, mut lib) in self.libs {
             // create a substitution to map the library's variables
             let subst = {
-                let curr_schema_allocator = tcx.schema_allocator();
-                let curr_id = lib.tcx.schema_allocator().borrow().curr_id();
+                let local_curr_id = curr_schema_allocator.borrow().curr_id();
+                let lib_curr_id = lib.tcx.schema_allocator().borrow().curr_id();
                 log::debug!(
-                    "serialized schema allocator curr_id from {}: {}",
+                    "[ModuleBuilder::finish] map schema variables from lib: lib_path = {}, lib_curr_id = {}, local_curr_id = {}",
                     lib_path,
-                    curr_id
+                    lib_curr_id,
+                    local_curr_id
                 );
-                (0..curr_id)
+                (0..lib_curr_id)
                     .flat_map(|u| {
                         let old_var = TyVar::new(format!("?s{}", u));
                         if u == curr_schema_allocator.borrow().curr_id() {

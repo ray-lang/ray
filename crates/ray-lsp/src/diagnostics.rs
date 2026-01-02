@@ -22,6 +22,8 @@ use ray_shared::{
 };
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
+use crate::helpers::{is_core_library_uri, uri_to_filepath};
+
 #[derive(Debug, Clone)]
 pub struct TypeInfoSnapshot {
     pub ty: String,
@@ -52,20 +54,11 @@ pub enum CollectResult {
     ToolchainMissing,
 }
 
-fn is_core_library_uri(uri: &Url) -> bool {
-    use std::path::Component;
-    if let Ok(path) = uri.to_file_path() {
-        // Match .../lib/core/... in a platform-independent way.
-        let mut seen_lib = false;
-        for comp in path.components() {
-            match comp {
-                Component::Normal(os) if os == "lib" => seen_lib = true,
-                Component::Normal(os) if seen_lib && os == "core" => return true,
-                _ => {}
-            }
-        }
-    }
-    false
+#[derive(Debug, Clone)]
+pub struct CollectOptions {
+    pub force_no_core: bool,
+    pub workspace_root: Option<FilePath>,
+    pub toolchain_root: Option<FilePath>,
 }
 
 pub fn collect(
@@ -74,20 +67,33 @@ pub fn collect(
     workspace_root: Option<&FilePath>,
     toolchain_root: Option<&FilePath>,
 ) -> CollectResult {
-    let filepath = to_filepath(uri);
+    collect_with_options(
+        uri,
+        text,
+        CollectOptions {
+            force_no_core: false,
+            workspace_root: workspace_root.cloned(),
+            toolchain_root: toolchain_root.cloned(),
+        },
+    )
+}
+
+pub fn collect_with_options(uri: &Url, text: &str, options: CollectOptions) -> CollectResult {
+    let filepath =
+        uri_to_filepath(uri).unwrap_or_else(|| FilePath::from(PathBuf::from(uri.path())));
     log::info!("collecting filepath: {}", filepath);
 
     // When editing core sources, instruct the analyzer to run with "no core" (don't load prebuilt core),
     // so diagnostics reflect the live core files in the workspace.
-    let mut no_core: bool = is_core_library_uri(uri);
-    let mut options = ParseOptions::default();
-    options.module_path = Path::new();
-    options.use_stdin = false;
-    options.filepath = filepath.clone();
-    options.original_filepath = filepath.clone();
+    let mut no_core: bool = options.force_no_core || is_core_library_uri(uri);
+    let mut parse_options = ParseOptions::default();
+    parse_options.module_path = Path::new();
+    parse_options.use_stdin = false;
+    parse_options.filepath = filepath.clone();
+    parse_options.original_filepath = filepath.clone();
 
     let mut srcmap = SourceMap::new();
-    let parsed = Parser::parse_from_src_with_diagnostics(text, options, &mut srcmap);
+    let parsed = Parser::parse_from_src_with_diagnostics(text, parse_options, &mut srcmap);
 
     let mut diagnostics: Vec<Diagnostic> = parsed
         .errors
@@ -114,7 +120,13 @@ pub fn collect(
         }
     }
 
-    match collect_semantic_errors(text, &filepath, workspace_root, toolchain_root, no_core) {
+    match collect_semantic_errors(
+        text,
+        &filepath,
+        options.workspace_root.as_ref(),
+        options.toolchain_root.as_ref(),
+        no_core,
+    ) {
         Ok((semantic_errors, snapshot)) => {
             diagnostics.extend(
                 semantic_errors
@@ -282,19 +294,19 @@ fn default_range() -> Range {
     Range::new(Position::new(0, 0), Position::new(0, 0))
 }
 
-fn to_filepath(uri: &Url) -> FilePath {
-    if let Ok(path) = uri.to_file_path() {
-        FilePath::from(path)
-    } else {
-        FilePath::from(PathBuf::from(uri.path()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ray_shared::node_id::NodeId;
     use tower_lsp::lsp_types::Url;
+
+    #[allow(dead_code)]
+    fn enable_debug_logs() {
+        fern::Dispatch::new()
+            .level(log::LevelFilter::Debug)
+            .chain(std::io::stderr())
+            .apply()
+            .unwrap();
+    }
 
     fn expect_diagnostics(result: CollectResult) -> Vec<Diagnostic> {
         match result {
@@ -320,11 +332,6 @@ mod tests {
 
     #[test]
     fn returns_no_diagnostics_for_valid_source() {
-        fern::Dispatch::new()
-            .level(log::LevelFilter::Debug)
-            .chain(std::io::stderr())
-            .apply()
-            .unwrap();
         let uri = test_uri();
         let root = workspace_root();
         let diagnostics = expect_diagnostics(collect(

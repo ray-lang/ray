@@ -14,6 +14,7 @@ use super::{Expr, Name, Sequence};
 pub enum Pattern {
     Deref(Node<Name>),
     Dot(Box<Node<Pattern>>, Node<Name>),
+    Index(Box<Node<Pattern>>, Box<Node<Expr>>, Span),
     Missing(Missing),
     Name(Name),
     Sequence(Vec<Node<Pattern>>),
@@ -53,6 +54,11 @@ impl Into<Expr> for Pattern {
                     span: Span::new(),
                 },
             }),
+            Pattern::Index(lhs, index, bracket_span) => Expr::Index(ast::Index {
+                lhs: Box::new(lhs.take_map(Pattern::into)),
+                index,
+                bracket_span,
+            }),
             Pattern::Missing(missing) => Expr::Missing(missing),
             Pattern::Some(inner) => {
                 let expr = inner.take_map(Pattern::into);
@@ -84,6 +90,14 @@ impl TryFrom<Expr> for Pattern {
             Expr::Dot(dot) => {
                 let lhs = dot.lhs.try_take_map(|lhs| Pattern::try_from(lhs))?;
                 Ok(Pattern::Dot(Box::new(lhs), dot.rhs))
+            }
+            Expr::Index(index) => {
+                let lhs = index.lhs.try_take_map(|lhs| Pattern::try_from(lhs))?;
+                Ok(Pattern::Index(
+                    Box::new(lhs),
+                    index.index,
+                    index.bracket_span,
+                ))
             }
             Expr::Some(inner) => {
                 let pat = Pattern::try_from(inner.value)?;
@@ -128,6 +142,7 @@ impl std::fmt::Display for Pattern {
                 Pattern::Tuple(seq) => format!("(tuple ({}))", join(seq, ", ")),
                 Pattern::Deref(n) => format!("(deref {})", n),
                 Pattern::Dot(lhs, name) => format!("(dot {}.{})", lhs, name),
+                Pattern::Index(lhs, index, _) => format!("(index {} {})", lhs, index),
                 Pattern::Some(pat) => format!("(some {})", pat),
                 Pattern::Missing(m) => format!("(missing {})", m),
             }
@@ -149,6 +164,7 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&n.path),
             Pattern::Some(inner) => inner.value.path(),
+            Pattern::Index(_, _, _) => None,
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -159,6 +175,7 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&mut n.path),
             Pattern::Some(inner) => inner.value.path_mut(),
+            Pattern::Index(_, _, _) => None,
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -169,6 +186,7 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(n.path.to_string()),
             Pattern::Some(inner) => inner.value.get_name(),
+            Pattern::Index(_, _, _) => None,
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -186,6 +204,11 @@ impl Node<Pattern> {
                 .into_iter()
                 .chain(std::iter::once(Node::with_id(n.id, (&n.path, true))))
                 .collect(),
+            Pattern::Index(lhs, _, _) => match &lhs.value {
+                Pattern::Name(n) => vec![Node::with_id(lhs.id, (&n.path, true))],
+                Pattern::Deref(n) => vec![Node::with_id(lhs.id, (&n.path, true))],
+                _ => lhs.paths(),
+            },
             Pattern::Some(inner) => inner.paths(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
                 ps.iter().map(|p| p.paths()).flatten().collect()
@@ -202,6 +225,14 @@ impl Node<Pattern> {
                 .paths_mut()
                 .into_iter()
                 .chain(std::iter::once(Node::with_id(n.id, (&mut n.path, true))))
+                .collect(),
+            Pattern::Index(lhs, _, _) => lhs
+                .paths_mut()
+                .into_iter()
+                .map(|mut node| {
+                    node.value.1 = true;
+                    node
+                })
                 .collect(),
             Pattern::Some(inner) => inner.paths_mut(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {

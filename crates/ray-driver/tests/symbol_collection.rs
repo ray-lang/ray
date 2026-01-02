@@ -9,8 +9,10 @@ use ray_core::{
     sema::{ModuleBuilder, SymbolRole},
 };
 use ray_driver::{BuildOptions, Driver};
-use ray_shared::pathlib::{Path, RayPaths};
-use ray_typing::types::Ty;
+use ray_shared::{
+    pathlib::{Path, RayPaths},
+    ty::Ty,
+};
 
 use utils::{find_func, find_func_in, find_impl, test_build};
 

@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, Cast, Curly, CurlyElement, Decl, Dot, Expr, Index, List, Module, Name, New, Node,
-    Pattern, Range, Tuple, UnaryOp,
+    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, Index, List, Module, Name, New,
+    Node, Pattern, Range, ScopedAccess, Set, Tuple, UnaryOp,
     expr::{Assign, Block, Call, Closure, For, Func, If, Loop, Sequence, While},
 };
 
@@ -124,6 +124,7 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
             Expr::BinOp(bin_op) => push_bin_op(walk, bin_op),
             Expr::Cast(cast) => push_cast(walk, cast),
             Expr::Curly(curly) => push_curly(walk, curly),
+            Expr::Dict(dict) => push_dict(walk, dict),
             Expr::Dot(dot) => push_dot(walk, dot),
             Expr::Index(index) => push_index(walk, index),
             Expr::List(list) => push_list(walk, list),
@@ -134,12 +135,15 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
                 .push(StackEntry::EnterNode(WalkItem::Expr(&rf.expr))),
             Expr::Tuple(tuple) => push_tuple(walk, tuple),
             Expr::UnaryOp(unary) => push_unary_op(walk, unary),
+            Expr::Set(set) => push_set(walk, set),
+            Expr::ScopedAccess(scoped_access) => push_scoped_access(walk, scoped_access),
             Expr::Return(maybe_node) | Expr::Break(maybe_node) => {
                 if let Some(node) = maybe_node {
                     walk.stack
                         .push(StackEntry::EnterNode(WalkItem::Expr(&node)));
                 }
             }
+            Expr::Continue => {}
             Expr::DefaultValue(node)
             | Expr::Labeled(_, node)
             | Expr::Paren(node)
@@ -155,6 +159,13 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
         WalkItem::CurlyElement(element) => push_curly_element(walk, element),
         WalkItem::Name(_) | WalkItem::EnterScope(_) | WalkItem::ExitScope(_) => {}
     }
+}
+
+fn push_scoped_access<'a>(walk: &mut ModuleWalk<'a>, scoped_access: &'a ScopedAccess) {
+    walk.stack
+        .push(StackEntry::EnterNode(WalkItem::Expr(scoped_access.lhs.as_ref())));
+    walk.stack
+        .push(StackEntry::EnterNode(WalkItem::Name(&scoped_access.rhs)));
 }
 
 fn push_assign<'a>(walk: &mut ModuleWalk<'a>, assign: &'a Assign) {
@@ -250,6 +261,12 @@ fn push_pattern<'a>(walk: &mut ModuleWalk<'a>, pattern: &'a Pattern) {
             walk.stack
                 .push(StackEntry::EnterNode(WalkItem::Pattern(lhs)));
         }
+        Pattern::Index(lhs, index, _) => {
+            walk.stack
+                .push(StackEntry::EnterNode(WalkItem::Expr(index.as_ref())));
+            walk.stack
+                .push(StackEntry::EnterNode(WalkItem::Pattern(lhs.as_ref())));
+        }
         Pattern::Some(pattern) => {
             walk.stack
                 .push(StackEntry::EnterNode(WalkItem::Pattern(pattern)));
@@ -274,6 +291,13 @@ fn push_curly<'a>(walk: &mut ModuleWalk<'a>, curly: &'a Curly) {
     for elem in curly.elements.iter().rev() {
         walk.stack
             .push(StackEntry::EnterNode(WalkItem::CurlyElement(elem)));
+    }
+}
+
+fn push_dict<'a>(walk: &mut ModuleWalk<'a>, dict: &'a Dict) {
+    for (key, value) in dict.entries.iter().rev() {
+        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(value)));
+        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(key)));
     }
 }
 
@@ -303,6 +327,12 @@ fn push_index<'a>(walk: &mut ModuleWalk<'a>, index: &'a Index) {
 fn push_list<'a>(walk: &mut ModuleWalk<'a>, list: &'a List) {
     for elem in list.items.iter().rev() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(elem)));
+    }
+}
+
+fn push_set<'a>(walk: &mut ModuleWalk<'a>, set: &'a Set) {
+    for item in set.items.iter().rev() {
+        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(item)));
     }
 }
 

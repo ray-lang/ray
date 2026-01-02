@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use ray_shared::pathlib::Path;
-use ray_typing::binding_groups::BindingId;
-use ray_typing::types::{Ty, TyScheme};
-use ray_typing::{BindingKind, BindingRecord};
+use ray_shared::{pathlib::Path, ty::Ty};
+use ray_typing::{BindingKind, BindingRecord, binding_groups::BindingId, types::TyScheme};
 
 use crate::passes::binding::BindingPassOutput;
 

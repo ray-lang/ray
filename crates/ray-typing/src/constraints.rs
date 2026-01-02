@@ -3,11 +3,14 @@
 
 use std::collections::HashSet;
 
+use ray_shared::ty::{Ty, TyVar};
 use serde::{Deserialize, Serialize};
 
-use crate::binding_groups::BindingId;
-use crate::info::TypeSystemInfo;
-use crate::types::{Subst, Substitutable, Ty, TyVar};
+use crate::{
+    binding_groups::BindingId,
+    info::TypeSystemInfo,
+    types::{Subst, Substitutable},
+};
 
 // Class predicates: trait-like constraints C[Recv, A1, ..., An].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -23,6 +26,10 @@ impl ClassPredicate {
             name: name.into(),
             args,
         }
+    }
+
+    pub fn is_ground(&self) -> bool {
+        self.args.iter().all(|t| t.free_vars().is_empty())
     }
 
     pub fn free_ty_vars(&self, out: &mut HashSet<TyVar>) {
@@ -98,15 +105,106 @@ impl EqConstraint {
 }
 
 // Equality constraints t1 == t2.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstantiateConstraint {
     pub binding: BindingId,
     pub ty: Ty,
+    /// Optional pre-substitution to apply to the binding's scheme at this use
+    /// site before instantiation.
+    ///
+    /// This is used for associated member references like `T::member` where
+    /// the left-hand side type `T[...]` determines how impl-scoped schema
+    /// variables in the member scheme should be rewritten.
+    pub receiver_subst: Option<Subst>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallKind {
+    /// `recv.method(args...)`
+    Instance { method_name: String },
+    /// `T::method(args...)` or `T[...]::method(args...)`
+    Scoped {
+        binding: BindingId,
+        receiver_subst: Option<Subst>,
+    },
+}
+
+/// Deferred resolution of a member call.
+///
+/// This is emitted during constraint generation for member-call syntax when
+/// the receiver/LHS type is not yet known (it is often still a meta variable
+/// at this phase). The solver is responsible for resolving this into the
+/// existing constraint forms (Instantiate/Eq/Recv) once the subject type is
+/// headed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolveCallConstraint {
+    pub kind: CallKind,
+    /// Receiver type (for instance calls) or LHS type (for scoped calls).
+    pub subject_ty: Ty,
+    /// Expected function type at the call site, including the receiver.
+    pub expected_fn_ty: Ty,
+}
+
+impl ResolveCallConstraint {
+    pub fn new_instance(
+        subject_ty: Ty,
+        method_name: impl Into<String>,
+        expected_fn_ty: Ty,
+    ) -> Self {
+        let method_name = method_name.into();
+        ResolveCallConstraint {
+            kind: CallKind::Instance { method_name },
+            subject_ty,
+            expected_fn_ty,
+        }
+    }
+
+    pub fn new_scoped(
+        subject_ty: Ty,
+        binding: BindingId,
+        expected_fn_ty: Ty,
+        receiver_subst: Option<Subst>,
+    ) -> Self {
+        ResolveCallConstraint {
+            kind: CallKind::Scoped {
+                binding,
+                receiver_subst,
+            },
+            subject_ty,
+            expected_fn_ty,
+        }
+    }
+
+    pub fn free_ty_vars(&self, out: &mut HashSet<TyVar>) {
+        self.subject_ty.free_ty_vars(out);
+        self.expected_fn_ty.free_ty_vars(out);
+        if let CallKind::Scoped {
+            receiver_subst: Some(receiver_subst),
+            ..
+        } = &self.kind
+        {
+            for ty in receiver_subst.values() {
+                ty.free_ty_vars(out);
+            }
+        }
+    }
 }
 
 impl InstantiateConstraint {
     pub fn new(binding: BindingId, ty: Ty) -> Self {
-        InstantiateConstraint { binding, ty }
+        InstantiateConstraint {
+            binding,
+            ty,
+            receiver_subst: None,
+        }
+    }
+
+    pub fn new_with_receiver_subst(binding: BindingId, ty: Ty, receiver_subst: Subst) -> Self {
+        InstantiateConstraint {
+            binding,
+            ty,
+            receiver_subst: Some(receiver_subst),
+        }
     }
 }
 
@@ -153,10 +251,11 @@ impl Predicate {
 }
 
 // Unified constraint kind used in the solver pipeline.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstraintKind {
     Eq(EqConstraint),
     Instantiate(InstantiateConstraint),
+    ResolveCall(ResolveCallConstraint),
     Class(ClassPredicate),
     HasField(HasFieldPredicate),
     Recv(RecvPredicate),
@@ -166,7 +265,7 @@ pub enum ConstraintKind {
 ///
 /// The `info` field is used to thread source locations and other contextual
 /// details from constraint generation through the solvers into diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Constraint {
     pub kind: ConstraintKind,
     pub info: TypeSystemInfo,
@@ -208,7 +307,23 @@ impl Constraint {
 
     pub fn inst(binding: BindingId, ty: Ty, info: TypeSystemInfo) -> Self {
         Constraint {
-            kind: ConstraintKind::Instantiate(InstantiateConstraint { binding, ty }),
+            kind: ConstraintKind::Instantiate(InstantiateConstraint::new(binding, ty)),
+            info,
+        }
+    }
+
+    pub fn inst_with_receiver_subst(
+        binding: BindingId,
+        ty: Ty,
+        receiver_subst: Subst,
+        info: TypeSystemInfo,
+    ) -> Self {
+        Constraint {
+            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_with_receiver_subst(
+                binding,
+                ty,
+                receiver_subst,
+            )),
             info,
         }
     }
@@ -230,7 +345,9 @@ impl Constraint {
             ConstraintKind::Class(c) => Some(Predicate::Class(c.clone())),
             ConstraintKind::HasField(h) => Some(Predicate::HasField(h.clone())),
             ConstraintKind::Recv(r) => Some(Predicate::Recv(r.clone())),
-            ConstraintKind::Eq(_) | ConstraintKind::Instantiate(_) => None,
+            ConstraintKind::Eq(_)
+            | ConstraintKind::Instantiate(_)
+            | ConstraintKind::ResolveCall(_) => None,
         }
     }
 
@@ -256,6 +373,14 @@ impl Constraint {
             }
             ConstraintKind::Instantiate(inst) => {
                 inst.ty.free_ty_vars(out);
+                if let Some(receiver_subst) = &inst.receiver_subst {
+                    for ty in receiver_subst.values() {
+                        ty.free_ty_vars(out);
+                    }
+                }
+            }
+            ConstraintKind::ResolveCall(call) => {
+                call.free_ty_vars(out);
             }
         }
     }
@@ -293,6 +418,27 @@ impl Substitutable for EqConstraint {
 impl Substitutable for InstantiateConstraint {
     fn apply_subst(&mut self, subst: &Subst) {
         self.ty.apply_subst(subst);
+        if let Some(receiver_subst) = &mut self.receiver_subst {
+            for ty in receiver_subst.values_mut() {
+                ty.apply_subst(subst);
+            }
+        }
+    }
+}
+
+impl Substitutable for ResolveCallConstraint {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.subject_ty.apply_subst(subst);
+        self.expected_fn_ty.apply_subst(subst);
+        if let CallKind::Scoped {
+            receiver_subst: Some(receiver_subst),
+            ..
+        } = &mut self.kind
+        {
+            for ty in receiver_subst.values_mut() {
+                ty.apply_subst(subst);
+            }
+        }
     }
 }
 
@@ -311,6 +457,7 @@ impl Substitutable for ConstraintKind {
         match self {
             ConstraintKind::Eq(c) => c.apply_subst(subst),
             ConstraintKind::Instantiate(c) => c.apply_subst(subst),
+            ConstraintKind::ResolveCall(c) => c.apply_subst(subst),
             ConstraintKind::Class(c) => c.apply_subst(subst),
             ConstraintKind::HasField(c) => c.apply_subst(subst),
             ConstraintKind::Recv(c) => c.apply_subst(subst),
@@ -330,6 +477,7 @@ impl std::fmt::Display for ConstraintKind {
         match self {
             ConstraintKind::Eq(eq) => write!(f, "{}", eq),
             ConstraintKind::Instantiate(inst) => write!(f, "{}", inst),
+            ConstraintKind::ResolveCall(call) => write!(f, "{}", call),
             ConstraintKind::Class(c) => write!(f, "{}", c),
             ConstraintKind::HasField(h) => write!(f, "{}", h),
             ConstraintKind::Recv(r) => write!(f, "{}", r),
@@ -377,7 +525,35 @@ impl std::fmt::Display for EqConstraint {
 
 impl std::fmt::Display for InstantiateConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Instantiate({}, {})", self.binding, self.ty)
+        if let Some(receiver_subst) = &self.receiver_subst {
+            write!(
+                f,
+                "Instantiate({}, {}, receiver_subst = {:#})",
+                self.binding, self.ty, receiver_subst
+            )
+        } else {
+            write!(f, "Instantiate({}, {})", self.binding, self.ty)
+        }
+    }
+}
+
+impl std::fmt::Display for ResolveCallConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let method_name = match &self.kind {
+            CallKind::Instance { method_name } => method_name.as_str(),
+            CallKind::Scoped { .. } => "<scoped>",
+        };
+        let kind_str = match &self.kind {
+            CallKind::Instance { method_name } => {
+                format!("Instance {{ method_name: \"{}\" }}", method_name)
+            }
+            CallKind::Scoped { binding, .. } => format!("Scoped {{ binding: {:?} }}", binding),
+        };
+        write!(
+            f,
+            "ResolveCall({}, {}, {}: expected_fn_ty = {})",
+            kind_str, self.subject_ty, method_name, self.expected_fn_ty
+        )
     }
 }
 

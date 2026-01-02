@@ -1,6 +1,9 @@
-use ray_shared::pathlib::FilePath;
-use ray_shared::span::{Pos, Span, parsed::Parsed};
-use ray_typing::types::{Ty, TyScheme};
+use ray_shared::{
+    pathlib::FilePath,
+    span::{Pos, Span, parsed::Parsed},
+    ty::Ty,
+};
+use ray_typing::types::TyScheme;
 
 use crate::{
     ast::{
@@ -331,6 +334,10 @@ impl<'a> SemanticTokenCollector<'a> {
                 let span = self.srcmap.span_of(rhs);
                 self.emit_span(span, SemanticTokenKind::Variable, &[]);
             }
+            Pattern::Index(lhs, index, _) => {
+                self.visit_pattern(lhs);
+                self.visit_expr(index.as_ref());
+            }
             Pattern::Sequence(seq) | Pattern::Tuple(seq) => {
                 for pat in seq {
                     self.visit_pattern(pat);
@@ -364,6 +371,7 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.visit_expr(expr);
                 }
             }
+            Expr::Continue => {}
             Expr::Return(value) => {
                 if let Some(expr) = value {
                     self.visit_expr(expr);
@@ -392,6 +400,12 @@ impl<'a> SemanticTokenCollector<'a> {
                 self.visit_expr(&closure.body);
             }
             Expr::Curly(curly) => self.visit_curly(curly),
+            Expr::Dict(dict) => {
+                for (key, value) in &dict.entries {
+                    self.visit_expr(key);
+                    self.visit_expr(value);
+                }
+            }
             Expr::Deref(deref) => {
                 self.emit_span(deref.op_span, SemanticTokenKind::Operator, &[]);
                 self.visit_expr(&deref.expr);
@@ -475,6 +489,21 @@ impl<'a> SemanticTokenCollector<'a> {
                 for item in &seq.items {
                     self.visit_expr(item);
                 }
+            }
+            Expr::Set(set) => {
+                for item in &set.items {
+                    self.visit_expr(item);
+                }
+            }
+            Expr::ScopedAccess(scoped_access) => {
+                self.visit_expr(scoped_access.lhs.as_ref());
+                let span = self.srcmap.span_of(&scoped_access.rhs);
+                self.emit_name(
+                    &scoped_access.rhs.value,
+                    span,
+                    SemanticTokenKind::Namespace,
+                    &[],
+                );
             }
             Expr::Tuple(tuple) => {
                 for item in &tuple.seq.items {

@@ -311,170 +311,200 @@ impl Neg[i64, i64] {
 
 // ---- And
 
-trait And['a, 'b, 'c] {
-    fn &(a: 'a, b: 'b) -> 'c
+trait And['a, 'b] {
+    fn &&(a: 'a, b: 'b) -> bool
 }
 
-impl And[int, int, int] {
-    @inline
-    fn &(a: int, b: int) -> int => int_and(a, b)
-}
-
-impl And[i8, i8, i8] {
-    @inline
-    fn &(a: i8, b: i8) -> i8 => i8_and(a, b)
-}
-
-impl And[i16, i16, i16] {
-    @inline
-    fn &(a: i16, b: i16) -> i16 => i16_and(a, b)
-}
-
-impl And[i32, i32, i32] {
-    @inline
-    fn &(a: i32, b: i32) -> i32 => i32_and(a, b)
-}
-
-impl And[i64, i64, i64] {
-    @inline
-    fn &(a: i64, b: i64) -> i64 => i64_and(a, b)
-}
-
-impl And[uint, uint, uint] {
-    @inline
-    fn &(a: uint, b: uint) -> uint => uint_and(a, b)
-}
-
-impl And[u8, u8, u8] {
-    @inline
-    fn &(a: u8, b: u8) -> u8 => u8_and(a, b)
-}
-
-impl And[u16, u16, u16] {
-    @inline
-    fn &(a: u16, b: u16) -> u16 => u16_and(a, b)
-}
-
-impl And[u32, u32, u32] {
-    @inline
-    fn &(a: u32, b: u32) -> u32 => u32_and(a, b)
-}
-
-impl And[u64, u64, u64] {
-    @inline
-    fn &(a: u64, b: u64) -> u64 => u64_and(a, b)
+impl And[bool, bool] {
+    fn &&(a: bool, b: bool) -> bool => bool_and(a, b)
 }
 
 // ---- Or
 
-trait Or['a, 'b, 'c] {
+trait Or['a, 'b] {
+    fn ||(a: 'a, b: 'b) -> bool
+}
+
+impl Or[bool, bool] {
+    fn ||(a: bool, b: bool) -> bool => bool_or(a, b)
+}
+
+// ---- Not
+
+trait Not['a] {
+    fn !(a: 'a) -> bool
+}
+
+impl Not[bool] {
+    fn !(a: bool) -> bool => bool_not(a)
+}
+
+// ---- BitAnd
+
+trait BitAnd['a, 'b, 'c] {
+    fn &(a: 'a, b: 'b) -> 'c
+}
+
+impl BitAnd[int, int, int] {
+    @inline
+    fn &(a: int, b: int) -> int => int_bit_and(a, b)
+}
+
+impl BitAnd[i8, i8, i8] {
+    @inline
+    fn &(a: i8, b: i8) -> i8 => i8_bit_and(a, b)
+}
+
+impl BitAnd[i16, i16, i16] {
+    @inline
+    fn &(a: i16, b: i16) -> i16 => i16_bit_and(a, b)
+}
+
+impl BitAnd[i32, i32, i32] {
+    @inline
+    fn &(a: i32, b: i32) -> i32 => i32_bit_and(a, b)
+}
+
+impl BitAnd[i64, i64, i64] {
+    @inline
+    fn &(a: i64, b: i64) -> i64 => i64_bit_and(a, b)
+}
+
+impl BitAnd[uint, uint, uint] {
+    @inline
+    fn &(a: uint, b: uint) -> uint => uint_bit_and(a, b)
+}
+
+impl BitAnd[u8, u8, u8] {
+    @inline
+    fn &(a: u8, b: u8) -> u8 => u8_bit_and(a, b)
+}
+
+impl BitAnd[u16, u16, u16] {
+    @inline
+    fn &(a: u16, b: u16) -> u16 => u16_bit_and(a, b)
+}
+
+impl BitAnd[u32, u32, u32] {
+    @inline
+    fn &(a: u32, b: u32) -> u32 => u32_bit_and(a, b)
+}
+
+impl BitAnd[u64, u64, u64] {
+    @inline
+    fn &(a: u64, b: u64) -> u64 => u64_bit_and(a, b)
+}
+
+// ---- BitOr
+
+trait BitOr['a, 'b, 'c] {
     fn |(a: 'a, b: 'b) -> 'c
 }
 
-impl Or[int, int, int] {
+impl BitOr[int, int, int] {
     @inline
-    fn |(a: int, b: int) -> int => int_or(a, b)
+    fn |(a: int, b: int) -> int => int_bit_or(a, b)
 }
 
-impl Or[i8, i8, i8] {
+impl BitOr[i8, i8, i8] {
     @inline
-    fn |(a: i8, b: i8) -> i8 => i8_or(a, b)
+    fn |(a: i8, b: i8) -> i8 => i8_bit_or(a, b)
 }
 
-impl Or[i16, i16, i16] {
+impl BitOr[i16, i16, i16] {
     @inline
-    fn |(a: i16, b: i16) -> i16 => i16_or(a, b)
+    fn |(a: i16, b: i16) -> i16 => i16_bit_or(a, b)
 }
 
-impl Or[i32, i32, i32] {
+impl BitOr[i32, i32, i32] {
     @inline
-    fn |(a: i32, b: i32) -> i32 => i32_or(a, b)
+    fn |(a: i32, b: i32) -> i32 => i32_bit_or(a, b)
 }
 
-impl Or[i64, i64, i64] {
+impl BitOr[i64, i64, i64] {
     @inline
-    fn |(a: i64, b: i64) -> i64 => i64_or(a, b)
+    fn |(a: i64, b: i64) -> i64 => i64_bit_or(a, b)
 }
 
-impl Or[uint, uint, uint] {
+impl BitOr[uint, uint, uint] {
     @inline
-    fn |(a: uint, b: uint) -> uint => uint_or(a, b)
+    fn |(a: uint, b: uint) -> uint => uint_bit_or(a, b)
 }
 
-impl Or[u8, u8, u8] {
+impl BitOr[u8, u8, u8] {
     @inline
-    fn |(a: u8, b: u8) -> u8 => u8_or(a, b)
+    fn |(a: u8, b: u8) -> u8 => u8_bit_or(a, b)
 }
 
-impl Or[u16, u16, u16] {
+impl BitOr[u16, u16, u16] {
     @inline
-    fn |(a: u16, b: u16) -> u16 => u16_or(a, b)
+    fn |(a: u16, b: u16) -> u16 => u16_bit_or(a, b)
 }
 
-impl Or[u32, u32, u32] {
+impl BitOr[u32, u32, u32] {
     @inline
-    fn |(a: u32, b: u32) -> u32 => u32_or(a, b)
+    fn |(a: u32, b: u32) -> u32 => u32_bit_or(a, b)
 }
 
-impl Or[u64, u64, u64] {
+impl BitOr[u64, u64, u64] {
     @inline
-    fn |(a: u64, b: u64) -> u64 => u64_or(a, b)
+    fn |(a: u64, b: u64) -> u64 => u64_bit_or(a, b)
 }
 
-// ---- Xor
+// ---- BitXor
 
-trait Xor['a, 'b, 'c] {
+trait BitXor['a, 'b, 'c] {
     fn ^(a: 'a, b: 'b) -> 'c
 }
 
-impl Xor[int, int, int] {
+impl BitXor[int, int, int] {
     @inline
-    fn ^(a: int, b: int) -> int => int_xor(a, b)
+    fn ^(a: int, b: int) -> int => int_bit_xor(a, b)
 }
 
-impl Xor[i8, i8, i8] {
+impl BitXor[i8, i8, i8] {
     @inline
-    fn ^(a: i8, b: i8) -> i8 => i8_xor(a, b)
+    fn ^(a: i8, b: i8) -> i8 => i8_bit_xor(a, b)
 }
 
-impl Xor[i16, i16, i16] {
+impl BitXor[i16, i16, i16] {
     @inline
-    fn ^(a: i16, b: i16) -> i16 => i16_xor(a, b)
+    fn ^(a: i16, b: i16) -> i16 => i16_bit_xor(a, b)
 }
 
-impl Xor[i32, i32, i32] {
+impl BitXor[i32, i32, i32] {
     @inline
-    fn ^(a: i32, b: i32) -> i32 => i32_xor(a, b)
+    fn ^(a: i32, b: i32) -> i32 => i32_bit_xor(a, b)
 }
 
-impl Xor[i64, i64, i64] {
+impl BitXor[i64, i64, i64] {
     @inline
-    fn ^(a: i64, b: i64) -> i64 => i64_xor(a, b)
+    fn ^(a: i64, b: i64) -> i64 => i64_bit_xor(a, b)
 }
 
-impl Xor[uint, uint, uint] {
+impl BitXor[uint, uint, uint] {
     @inline
-    fn ^(a: uint, b: uint) -> uint => uint_xor(a, b)
+    fn ^(a: uint, b: uint) -> uint => uint_bit_xor(a, b)
 }
 
-impl Xor[u8, u8, u8] {
+impl BitXor[u8, u8, u8] {
     @inline
-    fn ^(a: u8, b: u8) -> u8 => u8_xor(a, b)
+    fn ^(a: u8, b: u8) -> u8 => u8_bit_xor(a, b)
 }
 
-impl Xor[u16, u16, u16] {
+impl BitXor[u16, u16, u16] {
     @inline
-    fn ^(a: u16, b: u16) -> u16 => u16_xor(a, b)
+    fn ^(a: u16, b: u16) -> u16 => u16_bit_xor(a, b)
 }
 
-impl Xor[u32, u32, u32] {
+impl BitXor[u32, u32, u32] {
     @inline
-    fn ^(a: u32, b: u32) -> u32 => u32_xor(a, b)
+    fn ^(a: u32, b: u32) -> u32 => u32_bit_xor(a, b)
 }
 
-impl Xor[u64, u64, u64] {
+impl BitXor[u64, u64, u64] {
     @inline
-    fn ^(a: u64, b: u64) -> u64 => u64_xor(a, b)
+    fn ^(a: u64, b: u64) -> u64 => u64_bit_xor(a, b)
 }
 
 // ---- Eq
@@ -533,6 +563,35 @@ impl Eq[u64, u64] {
     fn ==(a: u64, b: u64) -> bool => u64_eq(a, b)
 }
 
+impl Eq[(), ()] {
+    @inline
+    fn ==(a: (), b: ()) -> bool => true
+}
+
+impl Eq[bool, bool] {
+    @inline
+    fn ==(a: bool, b: bool) -> bool => bool_eq(a, b)
+}
+
+impl Eq['a?, 'a?] where Eq['a, 'a] {
+    @inline
+    fn ==(a: 'a?, b: 'a?) -> bool {
+        if some(av) = a {
+            if some(bv) = b {
+                av == bv
+            } else {
+                false
+            }
+        } else {
+            if some(_) = b {
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
+
 // ---- Neq
 
 trait Neq['a, 'b] {
@@ -587,6 +646,21 @@ impl Neq[u32, u32] {
 impl Neq[u64, u64] {
     @inline
     fn !=(a: u64, b: u64) -> bool => u64_neq(a, b)
+}
+
+impl Neq[(), ()] {
+    @inline
+    fn !=(a: (), b: ()) -> bool => false
+}
+
+impl Neq[bool, bool] {
+    @inline
+    fn !=(a: bool, b: bool) -> bool => bool_neq(a, b)
+}
+
+impl Neq['a?, 'a?] where Eq['a, 'a] {
+    @inline
+    fn !=(a: 'a?, b: 'a?) -> bool => !(a == b)
 }
 
 // ---- Gt

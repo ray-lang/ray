@@ -1,8 +1,11 @@
 use std::ops::Deref;
 
 use itertools::Itertools;
-use ray_shared::span::{Pos, Span, parsed::Parsed};
-use ray_typing::types::{NominalKind, Ty};
+use ray_shared::{
+    span::{Pos, Span, parsed::Parsed},
+    ty::Ty,
+};
+use ray_typing::types::NominalKind;
 
 use crate::{
     ast::{
@@ -89,7 +92,7 @@ impl Parser<'_> {
                     let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
                     f.sig.doc_comment = doc;
                     f.sig.is_method = true;
-                    let func_node = this.mk_node_with_path(f, span, ctx.path.clone());
+                    let func_node = this.mk_node(f, span, ctx.path.clone());
                     funcs.push(func_node);
                     Ok(span.end)
                 }
@@ -238,7 +241,7 @@ impl Parser<'_> {
         let (name_str, name_span) = self.expect_id(ctx)?;
 
         let raw_path = ctx.path.append(&name_str);
-        let path = self.mk_node(raw_path, name_span);
+        let path = self.mk_node(raw_path, name_span, ctx.path.clone());
 
         let parser = &mut self
             .with_scope(&ctx)
@@ -383,7 +386,7 @@ impl Parser<'_> {
         // parse name of struct
         let (name_str, name_span) = self.expect_id(ctx)?;
         let raw_path = ctx.path.append(&name_str);
-        let path = self.mk_node(raw_path, name_span);
+        let path = self.mk_node(raw_path, name_span, ctx.path.clone());
 
         let mut end = name_span.end;
 
@@ -437,9 +440,19 @@ impl Parser<'_> {
         let qualifiers = self.parse_where_clause(ctx)?;
 
         let (funcs, externs, consts) = if !is_extern {
-            let impl_ty = ty.get_ty_param_at(0).unwrap_or(&Ty::Never).get_path();
+            let impl_path = if !is_object {
+                ty.get_ty_param_at(0).unwrap_or(&Ty::Never).get_path()
+            } else {
+                ty.get_path()
+            };
             let mut ctx = ctx.clone();
-            ctx.path = ctx.path.append_path(impl_ty);
+            log::debug!(
+                "[parse_impl] base ctx.path = {}, impl_ty = {}",
+                ctx.path,
+                impl_path
+            );
+            ctx.path = ctx.path.append_path(impl_path);
+            log::debug!("[parse_impl] appended ctx.path = {}", ctx.path);
             let start = self.expect_end(TokenKind::LeftCurly, &ctx)?;
             let (f, ex, consts) = self.parse_impl_body(start, only_sigs, &ctx)?;
             end = self.expect_end(TokenKind::RightCurly, &ctx)?;

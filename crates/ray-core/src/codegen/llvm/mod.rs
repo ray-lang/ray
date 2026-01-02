@@ -29,11 +29,12 @@ use rand::RngCore;
 use ray_shared::{
     optlevel::OptLevel,
     pathlib::{FilePath, Path},
+    ty::{Ty, TyVar},
     utils::map_join,
 };
 use ray_typing::{
     tyctx::TyCtx,
-    types::{StructTy, Ty},
+    types::{StructTy, Subst, Substitutable},
 };
 
 use crate::{
@@ -253,7 +254,7 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     curr_ret_ty: Option<Ty>,
     fn_index: HashMap<Path, FunctionValue<'ctx>>,
     tcx: &'a TyCtx,
-    struct_types: HashMap<String, StructType<'ctx>>,
+    struct_types: HashMap<Path, StructType<'ctx>>,
     data_addrs: HashMap<(Path, usize), GlobalValue<'ctx>>,
     globals: HashMap<(Path, usize), GlobalValue<'ctx>>,
     locals: HashMap<usize, PointerValue<'ctx>>,
@@ -404,8 +405,40 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .expect(&format!("could not find struct type: {}", path))
     }
 
+    fn lookup_struct_ty_instantiated(&self, def_path: &Path, args: &[Ty]) -> StructTy {
+        let def_path = def_path.with_names_only();
+        let mut struct_ty = if let Some(ty) = self.tcx.get_struct_ty(&def_path) {
+            ty.clone()
+        } else if let Some(extra) = self.synthetic_structs.get(&def_path) {
+            extra.clone()
+        } else {
+            panic!("could not find struct type: {}", def_path);
+        };
+
+        if args.is_empty() {
+            return struct_ty;
+        }
+
+        let vars: Vec<TyVar> = struct_ty.ty.vars.clone();
+        if vars.len() != args.len() {
+            panic!(
+                "cannot instantiate struct type: path={} vars={} args={}",
+                def_path,
+                vars.len(),
+                args.len()
+            );
+        }
+
+        let mut subst = Subst::new();
+        for (var, arg) in vars.into_iter().zip(args.iter()) {
+            subst.insert(var, arg.clone());
+        }
+        struct_ty.apply_subst(&subst);
+        struct_ty
+    }
+
     fn is_struct(&self, ty: &Ty) -> bool {
-        if ty.is_struct(self.tcx) {
+        if self.tcx.is_struct(ty) {
             return true;
         }
 
@@ -418,9 +451,13 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             Ty::Array(elem_ty, _) => elem_ty.as_ref().clone(),
             Ty::Ref(inner_ty) => inner_ty.as_ref().clone(),
             Ty::RawPtr(inner_ty) => inner_ty.as_ref().clone(),
+            Ty::Proj(fqn, args) => {
+                let struct_ty = self.lookup_struct_ty_instantiated(fqn, args);
+                struct_ty.field_tys()[index].mono().clone()
+            }
             ty => {
                 let fqn = ty.get_path();
-                let struct_ty = self.lookup_struct_ty(&fqn);
+                let struct_ty = self.lookup_struct_ty_instantiated(&fqn, &[]);
                 struct_ty.field_tys()[index].mono().clone()
             }
         }
@@ -548,11 +585,16 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 field_storage_llty.print_to_string().to_string()
             );
 
-            let fqn = container_ty.get_path();
-            let llvm_struct = self.get_struct_type(&fqn);
+            let llvm_struct = match &container_ty {
+                Ty::Proj(fqn, args) => self.get_struct_type(fqn, args),
+                _ => {
+                    let fqn = container_ty.get_path();
+                    self.get_struct_type(&fqn, &[])
+                }
+            };
             log::debug!(
                 "[get_element_ptr] struct GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
-                fqn,
+                container_ty.get_path(),
                 base_ptr.to_string(),
                 index,
                 llvm_struct.print_to_string().to_string()
@@ -777,7 +819,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 }
 
                 // For all other projections, lower to the underlying type.
-                self.get_struct_type(&fqn).as_basic_type_enum()
+                self.get_struct_type(fqn, args).as_basic_type_enum()
             }
             Ty::Const(fqn) => match fqn.name().unwrap().as_str() {
                 "bool" => self.lcx.bool_type().into(),
@@ -788,7 +830,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 "int" | "uint" => self.ptr_type().into(),
                 _ => {
                     let fqn = ty.get_path();
-                    self.get_struct_type(&fqn).as_basic_type_enum()
+                    self.get_struct_type(&fqn, &[]).as_basic_type_enum()
                 }
             },
         }
@@ -1407,24 +1449,22 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         fn_val.add_attribute(AttributeLoc::Function, attribute);
     }
 
-    fn get_struct_type(&mut self, path: &Path) -> StructType<'ctx> {
-        let path = path.with_names_only();
-        let key = path.to_string();
+    fn get_struct_type(&mut self, path: &Path, args: &[Ty]) -> StructType<'ctx> {
+        let key = if args.is_empty() {
+            path.clone()
+        } else {
+            path.without_type_args().append_type_args(args.iter())
+        };
 
         if let Some(st) = self.struct_types.get(&key) {
             return st.clone();
         }
 
-        let opaque = self.lcx.opaque_struct_type(&key);
+        let opaque = self.lcx.opaque_struct_type(&key.to_string());
         self.struct_types.insert(key.clone(), opaque);
 
-        let struct_ty = if let Some(ty) = self.tcx.get_struct_ty(&path) {
-            ty.clone()
-        } else if let Some(extra) = self.synthetic_structs.get(&path) {
-            extra.clone()
-        } else {
-            panic!("cannot find struct type definition: path={:?}", path);
-        };
+        let def_path = key.with_names_only();
+        let struct_ty = self.lookup_struct_ty_instantiated(&def_path, args);
 
         let field_types = struct_ty
             .fields
@@ -1832,6 +1872,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                 ctx.build_memcpy(dest_var, src_var, size, tcx, srcmap)?
             }
             lir::Inst::Store(s) => s.codegen(ctx, tcx, srcmap)?,
+            lir::Inst::Insert(i) => i.codegen(ctx, tcx, srcmap)?,
             lir::Inst::SetField(s) => s.codegen(ctx, tcx, srcmap)?,
             lir::Inst::IncRef(_, _) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::DecRef(_) => todo!("codegen lir::Inst: {}", self),
@@ -1881,6 +1922,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::Select(_) => todo!("codegen lir::Select: {}", self),
             lir::Value::Phi(phi) => phi.codegen(ctx, tcx, srcmap),
             lir::Value::Load(l) => l.codegen(ctx, tcx, srcmap),
+            lir::Value::Extract(e) => e.codegen(ctx, tcx, srcmap),
             lir::Value::Lea(lea) => lea.codegen(ctx, tcx, srcmap),
             lir::Value::GetField(g) => g.codegen(ctx, tcx, srcmap),
             lir::Value::BasicOp(b) => b.codegen(ctx, tcx, srcmap),
@@ -1890,7 +1932,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::Closure(closure) => {
                 let handle_ty = closure.handle.ty.mono().clone();
                 let path = closure.handle.path.clone();
-                let llvm_struct = ctx.get_struct_type(&path);
+                let llvm_struct = ctx.get_struct_type(&path, &[]);
                 let slot = ctx.alloca(&handle_ty)?;
 
                 let function = ctx.fn_index.get(&closure.fn_name).unwrap_or_else(|| {
@@ -2032,6 +2074,66 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Load {
         let value = ctx.load_pointer(ptr)?;
         log::debug!("[load] derefenced ptr into: {}", value);
         Ok(value)
+    }
+}
+
+impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Extract {
+    type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
+
+    fn codegen(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Self::Output {
+        log::debug!("[extract] generating: {:?}", self);
+        let mut value = self.src.codegen(ctx, tcx, srcmap)?;
+        if let BasicValueEnum::PointerValue(ptr) = value {
+            value = ctx.load_pointer(ptr)?;
+        }
+        let idx = self.index as u32;
+        let extracted =
+            ctx.builder
+                .build_extract_value(value.into_struct_value(), idx, "extract")?;
+        Ok(extracted.as_basic_value_enum())
+    }
+}
+
+impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Insert {
+    type Output = Result<InstructionValue<'ctx>, BuilderError>;
+
+    fn codegen(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        tcx: &TyCtx,
+        srcmap: &SourceMap,
+    ) -> Self::Output {
+        log::debug!("[insert] generating: {:?}", self);
+        let ptr = match self.src {
+            lir::Variable::Local(idx) => ctx.get_local(idx),
+            _ => self.src.codegen(ctx, tcx, srcmap)?.into_pointer_value(),
+        };
+        let dst_ty = ctx.get_pointee_ty(ptr).clone();
+        let base = if self.index == 0 {
+            let llvm_ty = ctx.to_llvm_type(&dst_ty);
+            match llvm_ty {
+                BasicTypeEnum::StructType(struct_ty) => {
+                    struct_ty.const_zero().as_basic_value_enum()
+                }
+                _ => panic!("insert expects aggregate base, got {}", dst_ty),
+            }
+        } else {
+            ctx.load_pointer(ptr)?
+        };
+        let mut value = self.value.codegen(ctx, tcx, srcmap)?;
+        if let BasicValueEnum::PointerValue(ptr) = value {
+            value = ctx.load_pointer(ptr)?;
+        }
+        let idx = self.index as u32;
+        let inserted =
+            ctx.builder
+                .build_insert_value(base.into_struct_value(), value, idx, "insert")?;
+        ctx.store(ptr, inserted.as_basic_value_enum())
     }
 }
 
@@ -2370,7 +2472,48 @@ impl<'a, 'ctx> lir::Call {
                 let inst = ctx.build_memcpy(dst, src, &size_atom, tcx, srcmap)?;
                 Ok(LoweredCall::Inst(inst))
             }
-            lir::IntrinsicKind::IntEq
+            lir::IntrinsicKind::IntHashBytes => {
+                // Returns `(u64, uint)` where:
+                // - the `u64` is the value's low bytes packed little-endian
+                // - the `uint` is the byte length of the input integer type
+                let val = self.eval_intrinsic_int(ctx, tcx, srcmap, 0)?;
+                let bit_width = val.get_type().get_bit_width();
+                if bit_width == 0 {
+                    panic!("int_hash_bytes: zero-width integer");
+                }
+                if bit_width > 64 {
+                    panic!(
+                        "int_hash_bytes: integers wider than 64 bits are not supported (got {})",
+                        bit_width
+                    );
+                }
+
+                let byte_len = ((bit_width + 7) / 8) as u64;
+                let i64_ty = ctx.lcx.i64_type();
+                let casted = ctx.builder.build_int_cast(val, i64_ty, "")?;
+                let packed = if bit_width < 64 {
+                    let mask_u128 = (1u128 << bit_width) - 1;
+                    let mask = i64_ty.const_int(mask_u128 as u64, false);
+                    ctx.builder.build_and(casted, mask, "")?
+                } else {
+                    casted
+                };
+
+                let len = ctx.ptr_type().const_int(byte_len, false);
+                let tuple_ty = ctx
+                    .lcx
+                    .struct_type(&[i64_ty.as_basic_type_enum(), ctx.ptr_type().into()], false);
+                let with_packed = ctx.builder.build_insert_value(
+                    tuple_ty.const_zero(),
+                    packed.as_basic_value_enum(),
+                    0,
+                    "",
+                )?;
+                let with_len = ctx.builder.build_insert_value(with_packed, len, 1, "")?;
+                Ok(LoweredCall::Value(with_len.as_basic_value_enum()))
+            }
+            lir::IntrinsicKind::BoolEq
+            | lir::IntrinsicKind::IntEq
             | lir::IntrinsicKind::I8Eq
             | lir::IntrinsicKind::I16Eq
             | lir::IntrinsicKind::I32Eq
@@ -2382,7 +2525,8 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U64Eq => {
                 self.codegen_basic_op(lir::Op::Eq, kind.is_signed(), ctx, tcx, srcmap)
             }
-            lir::IntrinsicKind::IntNeq
+            lir::IntrinsicKind::BoolNeq
+            | lir::IntrinsicKind::IntNeq
             | lir::IntrinsicKind::I8Neq
             | lir::IntrinsicKind::I16Neq
             | lir::IntrinsicKind::I32Neq
@@ -2461,40 +2605,40 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::I64Neg => {
                 self.codegen_basic_op(lir::Op::Neg, true, ctx, tcx, srcmap)
             }
-            lir::IntrinsicKind::IntAnd
-            | lir::IntrinsicKind::I8And
-            | lir::IntrinsicKind::I16And
-            | lir::IntrinsicKind::I32And
-            | lir::IntrinsicKind::I64And
-            | lir::IntrinsicKind::UintAnd
-            | lir::IntrinsicKind::U8And
-            | lir::IntrinsicKind::U16And
-            | lir::IntrinsicKind::U32And
-            | lir::IntrinsicKind::U64And => {
+            lir::IntrinsicKind::IntBitAnd
+            | lir::IntrinsicKind::I8BitAnd
+            | lir::IntrinsicKind::I16BitAnd
+            | lir::IntrinsicKind::I32BitAnd
+            | lir::IntrinsicKind::I64BitAnd
+            | lir::IntrinsicKind::UintBitAnd
+            | lir::IntrinsicKind::U8BitAnd
+            | lir::IntrinsicKind::U16BitAnd
+            | lir::IntrinsicKind::U32BitAnd
+            | lir::IntrinsicKind::U64BitAnd => {
                 self.codegen_basic_op(lir::Op::BitAnd, kind.is_signed(), ctx, tcx, srcmap)
             }
-            lir::IntrinsicKind::IntOr
-            | lir::IntrinsicKind::I8Or
-            | lir::IntrinsicKind::I16Or
-            | lir::IntrinsicKind::I32Or
-            | lir::IntrinsicKind::I64Or
-            | lir::IntrinsicKind::UintOr
-            | lir::IntrinsicKind::U8Or
-            | lir::IntrinsicKind::U16Or
-            | lir::IntrinsicKind::U32Or
-            | lir::IntrinsicKind::U64Or => {
+            lir::IntrinsicKind::IntBitOr
+            | lir::IntrinsicKind::I8BitOr
+            | lir::IntrinsicKind::I16BitOr
+            | lir::IntrinsicKind::I32BitOr
+            | lir::IntrinsicKind::I64BitOr
+            | lir::IntrinsicKind::UintBitOr
+            | lir::IntrinsicKind::U8BitOr
+            | lir::IntrinsicKind::U16BitOr
+            | lir::IntrinsicKind::U32BitOr
+            | lir::IntrinsicKind::U64BitOr => {
                 self.codegen_basic_op(lir::Op::BitOr, kind.is_signed(), ctx, tcx, srcmap)
             }
-            lir::IntrinsicKind::IntXor
-            | lir::IntrinsicKind::I8Xor
-            | lir::IntrinsicKind::I16Xor
-            | lir::IntrinsicKind::I32Xor
-            | lir::IntrinsicKind::I64Xor
-            | lir::IntrinsicKind::UintXor
-            | lir::IntrinsicKind::U8Xor
-            | lir::IntrinsicKind::U16Xor
-            | lir::IntrinsicKind::U32Xor
-            | lir::IntrinsicKind::U64Xor => {
+            lir::IntrinsicKind::IntBitXor
+            | lir::IntrinsicKind::I8BitXor
+            | lir::IntrinsicKind::I16BitXor
+            | lir::IntrinsicKind::I32BitXor
+            | lir::IntrinsicKind::I64BitXor
+            | lir::IntrinsicKind::UintBitXor
+            | lir::IntrinsicKind::U8BitXor
+            | lir::IntrinsicKind::U16BitXor
+            | lir::IntrinsicKind::U32BitXor
+            | lir::IntrinsicKind::U64BitXor => {
                 self.codegen_basic_op(lir::Op::BitXor, kind.is_signed(), ctx, tcx, srcmap)
             }
             lir::IntrinsicKind::IntLt
@@ -2592,6 +2736,15 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U32Rotr
             | lir::IntrinsicKind::U64Rotr => {
                 self.codegen_basic_op(lir::Op::RotateRight, kind.is_signed(), ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::BoolAnd => {
+                self.codegen_basic_op(lir::Op::And, false, ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::BoolOr => {
+                self.codegen_basic_op(lir::Op::Or, false, ctx, tcx, srcmap)
+            }
+            lir::IntrinsicKind::BoolNot => {
+                self.codegen_basic_op(lir::Op::Not, false, ctx, tcx, srcmap)
             }
         }
     }
@@ -2786,7 +2939,23 @@ impl<'a, 'ctx> lir::Call {
                 operands[1].into_int_value(),
                 "",
             ),
-            _ => todo!("binop: (op={}, signed={})", op, signed),
+            (lir::Op::BitAnd, _) | (lir::Op::And, _) => ctx.builder.build_and(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::BitOr, _) | (lir::Op::Or, _) => ctx.builder.build_or(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::BitXor, _) => ctx.builder.build_xor(
+                operands[0].into_int_value(),
+                operands[1].into_int_value(),
+                "",
+            ),
+            (lir::Op::Not, _) => ctx.builder.build_not(operands[0].into_int_value(), ""),
+            _ => todo!("basic op: (op={}, signed={})", op, signed),
         }?
         .as_basic_value_enum();
 

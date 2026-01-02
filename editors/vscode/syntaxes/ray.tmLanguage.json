@@ -73,11 +73,11 @@
         },
         {
           "name": "keyword.declaration.ray",
-          "match": "\\b(fn|struct|trait|impl|type|extern|let|mut|where)\\b"
+          "match": "\\b(fn|struct|trait|impl|object|type|extern|let|mut|where)\\b"
         },
         {
           "name": "keyword.other.ray",
-          "match": "\\b(import|wasi|@intrinsic)\\b"
+          "match": "\\b(import|wasi|static|@intrinsic)\\b"
         },
         {
           "name": "keyword.operator.arrow.ray",

@@ -4,16 +4,14 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::{FilePath, Path},
     span::{Source, Span, parsed::Parsed},
+    ty::Ty,
 };
-use ray_typing::{
-    tyctx::TyCtx,
-    types::{Ty, TyScheme},
-};
+use ray_typing::{tyctx::TyCtx, types::TyScheme};
 
 use crate::{
     ast::{
-        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, WalkItem,
-        walk_module,
+        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, ScopedAccess,
+        WalkItem, walk_module,
     },
     sourcemap::SourceMap,
 };
@@ -225,6 +223,22 @@ impl<'a> SymbolBuildContext<'a> {
         self.ignore.insert(dot.rhs.id);
     }
 
+    fn record_scoped_access(&mut self, scoped_access: &ScopedAccess) {
+        let Expr::Type(ty) = &scoped_access.lhs.value else {
+            return;
+        };
+        let base = ty.value().mono().get_path().without_type_args();
+        let member = scoped_access
+            .rhs
+            .value
+            .path
+            .name()
+            .unwrap_or_else(|| scoped_access.rhs.value.to_string());
+        let path = base.append(member);
+        self.record_reference(scoped_access.rhs.id, &path);
+        self.ignore.insert(scoped_access.rhs.id);
+    }
+
     fn record_parsed_ty(&mut self, parsed_ty: &Parsed<Ty>) {
         let ids = parsed_ty.synthetic_ids();
         let tys = parsed_ty.flatten();
@@ -318,6 +332,7 @@ impl<'a> SymbolBuildContext<'a> {
                     Expr::Path(path) => {
                         self.record_reference(expr.id, path);
                     }
+                    Expr::ScopedAccess(scoped_access) => self.record_scoped_access(scoped_access),
                     _ => continue,
                 },
                 WalkItem::Func(func) => {
@@ -348,7 +363,7 @@ impl<'a> SymbolBuildContext<'a> {
                         node_id,
                         path
                     );
-                    return;
+                    continue;
                 }
             }
 

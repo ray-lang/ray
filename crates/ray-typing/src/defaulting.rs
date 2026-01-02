@@ -9,16 +9,22 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use ray_shared::node_id::NodeId;
+use ray_shared::{
+    node_id::NodeId,
+    ty::{Ty, TyVar},
+    utils::join,
+};
 
-use crate::ModuleInput;
-use crate::binding_groups::BindingGroup;
-use crate::constraints::{Constraint, ConstraintKind};
-use crate::context::{ExprKind, SolverContext};
-use crate::env::GlobalEnv;
-use crate::goal_solver::solve_constraints;
-use crate::types::{Subst, Substitutable as _, Ty, TyVar};
-use crate::unify::unify;
+use crate::{
+    ModuleInput,
+    binding_groups::BindingGroup,
+    constraints::{Constraint, ConstraintKind},
+    context::{ExprKind, SolverContext},
+    env::GlobalEnv,
+    goal_solver::solve_constraints,
+    types::{Subst, Substitutable as _},
+    unify::unify,
+};
 
 /// Outcome of attempting to default a single type-variable class `α`.
 #[derive(Clone, Debug)]
@@ -86,6 +92,12 @@ pub fn apply_defaulting(
 
     // Step 2: cluster predicates by mentions of each α.
     let clusters = group_predicates_by_class(&residuals, &defaultable_classes);
+    if clusters.is_empty() {
+        log::debug!(
+            "[apply_defaulting] no defaultable predicates in residuals: residuals = [{}]",
+            join(&residuals, ", ")
+        );
+    }
 
     for (alpha, preds_alpha) in clusters {
         // Skip classes that are no longer flexible.
@@ -95,6 +107,10 @@ pub fn apply_defaulting(
                 default_ty: Ty::Any,
                 kind: DefaultingOutcomeKind::RejectedRigid,
             });
+            log::debug!(
+                "[apply_defaulting] skipping non flexible variable: alpha = {}",
+                alpha
+            );
             continue;
         }
 
@@ -116,6 +132,11 @@ pub fn apply_defaulting(
         // constraint so we can reuse its TypeSystemInfo when unifying.
         let candidates = default_candidates_for(&alpha, &preds_alpha, global_env);
         if candidates.is_empty() {
+            log::debug!(
+                "[apply_defaulting] no default candidates: alpha = {}, predicates = [{}]",
+                alpha,
+                join(&preds_alpha, ", ")
+            );
             continue;
         }
 
@@ -126,7 +147,13 @@ pub fn apply_defaulting(
             let subst_try = match unify(&var_ty, &default_ty, &current_subst, &from_constraint.info)
             {
                 Ok(s) => s,
-                Err(_) => {
+                Err(err) => {
+                    log::debug!(
+                        "[apply_defaulting] unsatisfiable: alpha = {}, default_ty = {}, err = {}",
+                        alpha,
+                        default_ty,
+                        err
+                    );
                     log.entries.push(DefaultingOutcome {
                         var: alpha.clone(),
                         default_ty: default_ty.clone(),
@@ -144,6 +171,12 @@ pub fn apply_defaulting(
             {
                 viable.push((default_ty.clone(), new_subst));
             } else {
+                log::debug!(
+                    "[apply_defaulting] unsatisfiable: alpha = {}, default_ty = {}, blocking predicates = [{}]",
+                    alpha,
+                    default_ty,
+                    join(&preds_alpha, ", ")
+                );
                 log.entries.push(DefaultingOutcome {
                     var: alpha.clone(),
                     default_ty: default_ty.clone(),
@@ -173,9 +206,19 @@ pub fn apply_defaulting(
         match viable.len() {
             0 => {
                 // No viable default; leave α undecided.
+                log::debug!(
+                    "[apply_defaulting] no viable candidates: alpha = {}, preds_alpha = [{}]",
+                    alpha,
+                    join(&preds_alpha, ", ")
+                );
             }
             1 => {
                 let (default_ty, new_subst) = viable.into_iter().next().unwrap();
+                log::debug!(
+                    "[apply_defaulting] found single candidate: default_ty = {}, new_subst = {}",
+                    default_ty,
+                    new_subst
+                );
                 // Commit the candidate's substitution to the main substitution.
                 current_subst.union(new_subst);
                 log.entries.push(DefaultingOutcome {
@@ -266,39 +309,27 @@ fn group_predicates_by_class(
         match &constraint.kind {
             ConstraintKind::Class(cp) => {
                 for arg in &cp.args {
-                    let mut free = HashSet::new();
-                    arg.free_ty_vars(&mut free);
-                    vars_in_constraint.extend(free.into_iter());
+                    arg.free_ty_vars(&mut vars_in_constraint);
                 }
             }
             ConstraintKind::HasField(hp) => {
-                let mut free = HashSet::new();
-                hp.record_ty.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
-                let mut free = HashSet::new();
-                hp.field_ty.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
+                hp.record_ty.free_ty_vars(&mut vars_in_constraint);
+                hp.field_ty.free_ty_vars(&mut vars_in_constraint);
             }
             ConstraintKind::Recv(rp) => {
-                let mut free = HashSet::new();
-                rp.recv_ty.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
-                let mut free = HashSet::new();
-                rp.expr_ty.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
+                rp.recv_ty.free_ty_vars(&mut vars_in_constraint);
+                rp.expr_ty.free_ty_vars(&mut vars_in_constraint);
             }
             ConstraintKind::Eq(eq) => {
-                let mut free = HashSet::new();
-                eq.lhs.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
-                let mut free = HashSet::new();
-                eq.rhs.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
+                eq.lhs.free_ty_vars(&mut vars_in_constraint);
+                eq.rhs.free_ty_vars(&mut vars_in_constraint);
             }
             ConstraintKind::Instantiate(inst) => {
-                let mut free = HashSet::new();
-                inst.ty.free_ty_vars(&mut free);
-                vars_in_constraint.extend(free.into_iter());
+                inst.ty.free_ty_vars(&mut vars_in_constraint);
+            }
+            ConstraintKind::ResolveCall(call) => {
+                call.subject_ty.free_ty_vars(&mut vars_in_constraint);
+                call.expected_fn_ty.free_ty_vars(&mut vars_in_constraint);
             }
         }
 

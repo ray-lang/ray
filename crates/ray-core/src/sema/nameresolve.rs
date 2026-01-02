@@ -4,14 +4,16 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::Path,
     span::{Sourced, parsed::Parsed},
+    ty::Ty,
 };
-use ray_typing::types::{Ty, TyScheme};
+use ray_typing::types::TyScheme;
 
 use crate::{
     ast::{
-        Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dot,
-        Expr, Extern, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop, Module,
-        Name, New, Node, Pattern, Range, Ref, Sequence, Struct, Trait, Tuple, UnaryOp, While,
+        Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dict,
+        Dot, Expr, Extern, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop,
+        Module, Name, New, Node, Pattern, Range, Ref, ScopedAccess, Sequence, Set, Struct, Trait,
+        Tuple, UnaryOp, While,
     },
     errors::{RayError, RayErrorKind, RayResult},
     sourcemap::SourceMap,
@@ -330,10 +332,12 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::Block(block) => Sourced(block, src).resolve_names(ctx),
             Expr::Boxed(boxed) => Sourced(boxed, src).resolve_names(ctx),
             Expr::Break(break_) => Sourced(break_, src).resolve_names(ctx),
+            Expr::Continue => Ok(()),
             Expr::Call(call) => Sourced(call, src).resolve_names(ctx),
             Expr::Cast(cast) => Sourced(cast, src).resolve_names(ctx),
             Expr::Closure(closure) => Sourced(closure, src).resolve_names(ctx),
             Expr::Curly(curly) => Sourced(curly, src).resolve_names(ctx),
+            Expr::Dict(dict) => Sourced(dict, src).resolve_names(ctx),
             Expr::DefaultValue(default_value) => Sourced(default_value, src).resolve_names(ctx),
             Expr::Deref(deref) => Sourced(deref, src).resolve_names(ctx),
             Expr::Dot(dot) => Sourced(dot, src).resolve_names(ctx),
@@ -354,6 +358,8 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::Ref(rf) => Sourced(rf, src).resolve_names(ctx),
             Expr::Return(return_) => Sourced(return_, src).resolve_names(ctx),
             Expr::Sequence(sequence) => Sourced(sequence, src).resolve_names(ctx),
+            Expr::Set(set) => Sourced(set, src).resolve_names(ctx),
+            Expr::ScopedAccess(scoped_access) => Sourced(scoped_access, src).resolve_names(ctx),
             Expr::Some(inner) => Sourced(inner, src).resolve_names(ctx),
             Expr::Tuple(tuple) => Sourced(tuple, src).resolve_names(ctx),
             Expr::Type(type_) => type_.resolve_names(ctx),
@@ -365,6 +371,12 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::While(while_) => Sourced(while_, src).resolve_names(ctx),
             Expr::Missing(_) => todo!("resolve_names: Expr::Missing: {:?}", expr),
         }
+    }
+}
+
+impl NameResolve for Sourced<'_, ScopedAccess> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        self.lhs.resolve_names(ctx)
     }
 }
 
@@ -460,6 +472,22 @@ impl NameResolve for Sourced<'_, Curly> {
     }
 }
 
+impl NameResolve for Sourced<'_, Dict> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        for (key, value) in self.entries.iter_mut() {
+            key.resolve_names(ctx)?;
+            value.resolve_names(ctx)?;
+        }
+        Ok(())
+    }
+}
+
+impl NameResolve for Sourced<'_, Set> {
+    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+        self.items.resolve_names(ctx)
+    }
+}
+
 impl NameResolve for Node<CurlyElement> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
@@ -485,7 +513,22 @@ impl NameResolve for Sourced<'_, Dot> {
 impl NameResolve for Sourced<'_, For> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         self.expr.resolve_names(ctx)?;
-        self.body.resolve_names(ctx)
+
+        let scope_suffix = format!("__for_{:x}", self.body.id);
+        let base_scope = ctx.current_scope_or(&self.src().path.with_names_only());
+        let for_scope = base_scope.append_path(Path::from(scope_suffix));
+
+        ctx.push_scope_path(for_scope.clone());
+        for node in self.pat.paths_mut() {
+            let (path, is_lvalue) = node.value;
+            if is_lvalue {
+                continue;
+            }
+            ctx.bind_local_name(&for_scope, path);
+        }
+        self.body.resolve_names(ctx)?;
+        ctx.pop_scope_path();
+        Ok(())
     }
 }
 

@@ -1,14 +1,21 @@
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
 };
 
 use itertools::Itertools as _;
-use ray_shared::pathlib::Path;
+use ray_shared::{
+    pathlib::Path,
+    ty::{Ty, TyVar},
+    utils::join,
+};
 use ray_typing::{
-    types::{Subst, Substitutable, Ty, TyScheme},
-    unify::mgu,
+    constraints::{ClassPredicate, Predicate},
+    context::MetaAllocator,
+    impl_match::{instantiate_impl_predicates, match_impl_head},
+    types::{ImplTy, Subst, Substitutable, TyScheme},
+    unify::{match_scheme_vars, mgu},
 };
 
 use crate::{
@@ -31,6 +38,39 @@ struct PolyRef<'a> {
     callee_ty: TyScheme, // the type of the callee (which may be polymorphic as well)
 }
 
+struct MonoMetaAllocator {
+    next_meta_id: u32,
+    reusable_metas: Vec<TyVar>,
+}
+
+impl MonoMetaAllocator {
+    fn new() -> Self {
+        MonoMetaAllocator {
+            next_meta_id: 0,
+            reusable_metas: Vec::new(),
+        }
+    }
+}
+
+impl MetaAllocator for MonoMetaAllocator {
+    fn fresh_meta(&mut self) -> Ty {
+        if let Some(meta) = self.reusable_metas.pop() {
+            return Ty::Var(meta);
+        }
+
+        let id = self.next_meta_id;
+        self.next_meta_id += 1;
+
+        let mut path = Path::new();
+        path.append_mut(format!("?tm{}", id));
+        Ty::Var(TyVar::new(path))
+    }
+
+    fn reuse_metas(&mut self, metas: Vec<TyVar>) {
+        self.reusable_metas.extend(metas);
+    }
+}
+
 #[derive(Debug)]
 pub struct Monomorphizer<'p> {
     program: Rc<RefCell<&'p mut lir::Program>>,
@@ -38,9 +78,10 @@ pub struct Monomorphizer<'p> {
     name_set: HashSet<Path>,
     poly_fn_map: HashMap<Path, Node<lir::Func>>, // polymorphic functions
     poly_groups: HashMap<Path, Vec<Path>>,       // names-only -> candidate poly function names
+    impls_by_trait: BTreeMap<String, Vec<ImplTy>>,
+    trait_member_set: HashSet<Path>,
     poly_mono_fn_idx: HashMap<Path, Vec<(Path, Ty)>>, // a mapping of polymorphic functions to monomorphizations
     mono_poly_fn_idx: HashMap<Path, Path>, // a mapping of monomorphic functions to their polymorphic counterpart
-    mono_fn_ty_map: HashMap<Path, Ty>,     // map of all monomorphic function types
 }
 
 impl<'p> Monomorphizer<'p> {
@@ -66,16 +107,105 @@ impl<'p> Monomorphizer<'p> {
             .map(|p| p.with_names_only())
             .to_set();
         log::debug!("[monomorphize] extern set: {:#?}", extern_set);
+        let trait_member_set = program.trait_member_set.clone();
+        log::debug!("[monomorphize] trait_member_set: {:#?}", trait_member_set);
+        let impls_by_trait = program.impls_by_trait.clone();
         Monomorphizer {
             program: Rc::new(RefCell::new(program)),
             poly_fn_map,
             poly_groups,
             name_set,
             extern_set,
+            impls_by_trait,
+            trait_member_set,
             poly_mono_fn_idx: HashMap::new(),
             mono_poly_fn_idx: HashMap::new(),
-            mono_fn_ty_map: HashMap::new(),
         }
+    }
+
+    fn candidate_is_applicable(&self, cand_ty: &TyScheme, subst: &Subst) -> Option<Vec<Predicate>> {
+        if cand_ty.qualifiers.is_empty() {
+            return None;
+        }
+
+        let mut preds = cand_ty.qualifiers.clone();
+        preds.apply_subst(subst);
+
+        let mut meta_alloc = MonoMetaAllocator::new();
+        let mut visiting = HashSet::new();
+        if self.check_predicates(&preds, subst, &mut meta_alloc, &mut visiting) {
+            None
+        } else {
+            Some(preds)
+        }
+    }
+
+    fn check_predicates(
+        &self,
+        preds: &[Predicate],
+        subst: &Subst,
+        meta_alloc: &mut MonoMetaAllocator,
+        visiting: &mut HashSet<ClassPredicate>,
+    ) -> bool {
+        for pred in preds {
+            let Predicate::Class(class_pred) = pred else {
+                continue;
+            };
+
+            // Only reject if the predicate is ground; if it's still polymorphic
+            // after substitution, we can't decide here.
+            if !class_pred.is_ground() {
+                continue;
+            }
+
+            if visiting.contains(class_pred) {
+                continue;
+            }
+
+            visiting.insert(class_pred.clone());
+            let ok = self.check_class_predicate(class_pred, subst, meta_alloc, visiting);
+            visiting.remove(class_pred);
+            if !ok {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn check_class_predicate(
+        &self,
+        pred: &ClassPredicate,
+        subst: &Subst,
+        meta_alloc: &mut MonoMetaAllocator,
+        visiting: &mut HashSet<ClassPredicate>,
+    ) -> bool {
+        for impl_ty in self.impls_by_trait.get(&pred.name).into_iter().flatten() {
+            let Some(head) = match_impl_head(pred, impl_ty, subst, meta_alloc, &Default::default())
+            else {
+                log::debug!(
+                    "[check_class_predicate] could not match predicate {} with impl: {:?}",
+                    pred,
+                    impl_ty
+                );
+                continue;
+            };
+
+            log::debug!("[check_class_predicate] impl match = {:?}", head);
+            let preds = instantiate_impl_predicates(impl_ty, &head.schema_subst, &head.trial_subst);
+            if self.check_predicates(&preds, &head.trial_subst, meta_alloc, visiting) {
+                meta_alloc.reuse_metas(head.trial_metas);
+                return true;
+            }
+
+            log::debug!(
+                "[check_class_predicate] child predicates failed impl check: predicates = [{}]",
+                join(&preds, ", ")
+            );
+            meta_alloc.reuse_metas(head.trial_metas);
+        }
+
+        false
     }
 
     fn add_mono_fn_mapping(&mut self, poly_name: &Path, mono_name: &Path, mono_ty: Ty) {
@@ -109,6 +239,7 @@ impl<'p> Monomorphizer<'p> {
          * branched accordingly.
          */
 
+        log::debug!("[monomorphize] BEGIN");
         let mut globals = vec![];
         let mut funcs = vec![];
         let rc_prog = Rc::clone(&self.program);
@@ -360,20 +491,32 @@ impl<'p> Monomorphizer<'p> {
         if let Some(cands) = self.poly_groups.get(&poly_fqn) {
             for cand_key in cands {
                 if let Some(cand_fn) = self.poly_fn_map.get(cand_key) {
-                    if let Ok((_, s)) = mgu(cand_fn.ty.mono(), callee_ty.mono()) {
-                        log::debug!("[monomorphize] selected impl {} for {}", cand_key, poly_fqn);
-                        subst = s;
-                        poly_impl_key = Some(cand_key.clone());
-                        break;
+                    let Some(s) = match_scheme_vars(&cand_fn.ty, callee_ty) else {
+                        continue;
+                    };
+
+                    if let Some(unsatisfied_predicates) =
+                        self.candidate_is_applicable(&cand_fn.ty, &s)
+                    {
+                        log::debug!(
+                            "[monomorphize] rejected impl {} for {} due to unsatisfied qualifiers: [{}]",
+                            cand_key,
+                            poly_fqn,
+                            join(&unsatisfied_predicates, ", ")
+                        );
+                        continue;
                     }
+
+                    log::debug!("[monomorphize] selected impl {} for {}", cand_key, poly_fqn);
+                    subst = s;
+                    poly_impl_key = Some(cand_key.clone());
+                    break;
                 }
             }
         }
 
         if poly_impl_key.is_none() {
-            let (_, s) = mgu(poly_ty.mono(), callee_ty.mono())
-                .ok()
-                .unwrap_or_default();
+            let s = match_scheme_vars(poly_ty, callee_ty).unwrap_or_default();
             log::debug!(
                 "[monomorphize] fallback impl for {} using subst = {:#?}",
                 poly_fqn,
@@ -399,87 +542,108 @@ impl<'p> Monomorphizer<'p> {
         log::debug!("[monomorphize] poly_name = {}", poly_name);
         log::debug!("[monomorphize] mono_name = {}", mono_name);
 
-        let (resolved_poly_name, resolved_mono_name) =
-            if self.name_set.contains(&mono_name) || self.mono_fn_ty_map.contains_key(&mono_name) {
-                (poly_base_name, mono_name.clone())
-            } else {
-                let mut mono_fn = self
-                .poly_fn_map
-                .get(&poly_impl_key)
-                .cloned()
-                .expect(&format!(
-                    "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
-                    poly_impl_key,
-                    self.poly_fn_map
-                        .keys()
-                        .map(|a| format!("  {}", a))
-                        .join("\n")
-                ));
-                mono_fn.name = mono_name.clone();
-                mono_fn.ty = mono_ty.clone();
-
-                log::debug!(
-                    "[monomorphize] before apply_subst: mono_name={} mono_ty={} symbols={:?}",
-                    mono_name,
-                    mono_ty,
-                    mono_fn.symbols
-                );
-
-                // BEFORE substitution
-                let tvs_before = scan_tyvars_in_paths(&mono_fn.symbols);
-                log::debug!(
-                    "[monomorphize] tvs in symbols before subst for `{}`: {:?}",
-                    mono_name,
-                    tvs_before
-                );
-                log::debug!(
-                    "[monomorphize] subst bindings for `{}`: {:?}",
-                    mono_name,
-                    subst
-                );
-
-                // apply the substitution to the function
-                mono_fn.apply_subst(&subst);
-                log::debug!(
-                    "[monomorphize] symbols for `{}` after subst: {:?}",
-                    mono_name,
-                    mono_fn.symbols
-                );
-
-                // summary
-                let tvs_after = scan_tyvars_in_paths(&mono_fn.symbols);
-                log::debug!(
-                    "[monomorphize] tvs in symbols after subst for `{}`: {:?}",
-                    mono_name,
-                    tvs_after
-                );
-
-                // per symbol details
-                for p in mono_fn.symbols.iter() {
-                    let s = p.to_string();
-                    if s.contains("?t") {
-                        log::warn!(
-                            "[monomorphize] unresolved tyvar in `{}` of `{}`",
-                            s,
-                            mono_name
-                        );
+        let (resolved_poly_name, resolved_mono_name) = if self.name_set.contains(&mono_name) {
+            (poly_base_name, mono_name.clone())
+        } else {
+            let mut mono_fn = match self.poly_fn_map.get(&poly_impl_key).cloned() {
+                Some(f) => f,
+                None => {
+                    let trait_member_key = poly_impl_key.with_names_only();
+                    let is_trait_member = self.trait_member_set.contains(&trait_member_key);
+                    log::debug!(
+                        "[monomorphize] trait_member_key = {}, is_trait_member = {}",
+                        trait_member_key,
+                        is_trait_member
+                    );
+                    if is_trait_member {
+                        let subst = match_scheme_vars(poly_ty, callee_ty).unwrap_or_default();
+                        let mut qs = poly_ty.qualifiers.clone();
+                        qs.apply_subst(&subst);
+                        for q in qs {
+                            let Predicate::Class(cp) = q else {
+                                continue;
+                            };
+                            if cp.is_ground() {
+                                panic!("no implementation for predicate {}", cp);
+                            }
+                        }
                     }
-                }
 
-                self.monomorphize_func(&mut mono_fn, funcs, globals);
-                log::debug!(
-                    "[monomorphize] params for `{}`: {:?}",
-                    mono_name,
-                    mono_fn.params
-                );
-                log::debug!(
-                    "[monomorphize] locals for `{}`: {:?}",
-                    mono_name,
-                    mono_fn.locals
-                );
-                funcs.push(mono_fn);
-                (poly_name, mono_name.clone())
+                    panic!(
+                        "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
+                        poly_impl_key,
+                        self.poly_fn_map
+                            .keys()
+                            .map(|a| format!("  {}", a))
+                            .join("\n")
+                    )
+                }
             };
+            mono_fn.name = mono_name.clone();
+            mono_fn.ty = mono_ty.clone();
+
+            log::debug!(
+                "[monomorphize] before apply_subst: mono_name={} mono_ty={} symbols={:?}",
+                mono_name,
+                mono_ty,
+                mono_fn.symbols
+            );
+
+            // BEFORE substitution
+            let tvs_before = scan_tyvars_in_paths(&mono_fn.symbols);
+            log::debug!(
+                "[monomorphize] tvs in symbols before subst for `{}`: {:?}",
+                mono_name,
+                tvs_before
+            );
+            log::debug!(
+                "[monomorphize] subst bindings for `{}`: {:?}",
+                mono_name,
+                subst
+            );
+
+            // apply the substitution to the function
+            mono_fn.apply_subst(&subst);
+            log::debug!(
+                "[monomorphize] symbols for `{}` after subst: {:?}",
+                mono_name,
+                mono_fn.symbols
+            );
+
+            // summary
+            let tvs_after = scan_tyvars_in_paths(&mono_fn.symbols);
+            log::debug!(
+                "[monomorphize] tvs in symbols after subst for `{}`: {:?}",
+                mono_name,
+                tvs_after
+            );
+
+            // per symbol details
+            for p in mono_fn.symbols.iter() {
+                let s = p.to_string();
+                if s.contains("?t") || s.contains("?s") || s.contains("?k") {
+                    log::warn!(
+                        "[monomorphize] unresolved tyvar in `{}` of `{}`",
+                        s,
+                        mono_name
+                    );
+                }
+            }
+
+            self.monomorphize_func(&mut mono_fn, funcs, globals);
+            log::debug!(
+                "[monomorphize] params for `{}`: {:?}",
+                mono_name,
+                mono_fn.params
+            );
+            log::debug!(
+                "[monomorphize] locals for `{}`: {:?}",
+                mono_name,
+                mono_fn.locals
+            );
+            funcs.push(mono_fn);
+            (poly_name, mono_name.clone())
+        };
 
         self.mono_poly_fn_idx
             .insert(resolved_poly_name.clone(), resolved_mono_name.clone());
@@ -528,6 +692,7 @@ impl<'p> Monomorphizer<'p> {
                 | lir::Inst::DecRef(v)
                 | lir::Inst::Return(v) => self.add_ref_from_value(v, poly_refs),
                 lir::Inst::Store(s) => self.add_ref_from_value(&mut s.value, poly_refs),
+                lir::Inst::Insert(i) => self.add_ref_from_value(&mut i.value, poly_refs),
                 lir::Inst::SetField(s) => self.add_ref_from_value(&mut s.value, poly_refs),
                 lir::Inst::Call(call) => self.add_call_ref(poly_refs, call),
 
@@ -610,12 +775,10 @@ impl<'p> Monomorphizer<'p> {
 // }
 
 fn scan_tyvars_in_paths(paths: &std::collections::HashSet<Path>) -> Vec<String> {
-    let mut out = Vec::new();
-    for p in paths {
-        let s = p.to_string();
-        // very simple scan for substrings like ?t123
+    fn scan_substring(s: &str, sub: &str, out: &mut Vec<String>) {
+        // very simple scan for substrings
         let mut i = 0;
-        while let Some(pos) = s[i..].find("?t") {
+        while let Some(pos) = s[i..].find(sub) {
             let start = i + pos;
             let mut end = start + 2;
             while end < s.len() && s.as_bytes()[end].is_ascii_digit() {
@@ -624,6 +787,16 @@ fn scan_tyvars_in_paths(paths: &std::collections::HashSet<Path>) -> Vec<String> 
             out.push(s[start..end].to_string());
             i = end;
         }
+    }
+
+    let mut out = Vec::new();
+    for p in paths {
+        let s = p.to_string();
+        // very simple scan for substrings like ?t123
+        scan_substring(&s, "?t", &mut out);
+        scan_substring(&s, "?tm", &mut out);
+        scan_substring(&s, "?s", &mut out);
+        scan_substring(&s, "?k", &mut out);
     }
     out.sort();
     out.dedup();

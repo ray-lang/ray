@@ -60,7 +60,7 @@ impl Parser<'_> {
         if expect_if!(self, TokenKind::DoubleColon) {
             self.parse_path_with((id, span), ctx)
         } else {
-            Ok(self.mk_node(Path::from(vec![id]), span))
+            Ok(self.mk_node(Path::from(vec![id]), span, ctx.path.clone()))
         }
     }
 
@@ -82,7 +82,7 @@ impl Parser<'_> {
             }
         }
 
-        Ok(self.mk_node(Path::from(parts), span))
+        Ok(self.mk_node(Path::from(parts), span, ctx.path.clone()))
     }
 
     pub(crate) fn parse_pattern_with_stop(
@@ -121,13 +121,13 @@ impl Parser<'_> {
                 e
             })?;
 
-            parser.mk_node(value, span)
+            parser.mk_node(value, span, ctx.path.clone())
         })
     }
 
     pub(crate) fn parse_name(&mut self, ctx: &ParseContext) -> ParseResult<Node<Name>> {
         let (name, span) = self.expect_id(ctx)?;
-        Ok(self.mk_node(Name::new(name), span))
+        Ok(self.mk_node(Name::new(name), span, ctx.path.clone()))
     }
 
     pub(crate) fn parse_name_with_type(
@@ -143,7 +143,7 @@ impl Parser<'_> {
             None
         };
 
-        Ok(self.mk_node(name, span))
+        Ok(self.mk_node(name, span, ctx.path.clone()))
     }
 
     pub(crate) fn parse_paren_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Node<Pattern>> {
@@ -186,7 +186,7 @@ impl Parser<'_> {
             })?
         };
 
-        Ok(parser.mk_node(pattern, span))
+        Ok(parser.mk_node(pattern, span, ctx.path.clone()))
     }
 
     pub(crate) fn parse_paren_expr(&mut self, ctx: &ParseContext) -> ExprResult {
@@ -260,11 +260,12 @@ impl Parser<'_> {
             parser.peek_kind()
         );
         let stop_ref = stop_token.as_ref();
+        let stop_token_for_expr = stop_token.clone();
         let seq_ctx = RecoveryCtx::default_seq(stop_ref)
             .with_trailing(trail)
             .with_newline(false);
 
-        let (mut items, trailing) =
+        let (mut items, mut trailing) =
             parser.parse_sep_seq(&TokenKind::Comma, trail, stop_ref, &ctx, |parser, ctx| {
                 match vkind {
                     ValueKind::LValue => {
@@ -277,8 +278,10 @@ impl Parser<'_> {
                         Ok(parser.mk_expr(Expr::Name(name.value), span, ctx.path.clone()))
                     }
                     ValueKind::RValue => {
+                        let mut elem_ctx = ctx.clone();
+                        elem_ctx.stop_token = stop_token_for_expr.clone();
                         let expr = parser
-                            .parse_expr(ctx)
+                            .parse_expr(&elem_ctx)
                             .map(Some)
                             .recover_seq_with_ctx(parser, seq_ctx.clone(), |_| None)
                             .ok_or_else(|| {
@@ -292,14 +295,17 @@ impl Parser<'_> {
 
         if let ValueKind::RValue = vkind {
             let mut flattened = Vec::with_capacity(items.len());
+            let mut inner_trailing = false;
             for expr in items.drain(..) {
                 if let Expr::Sequence(seq) = expr.value {
+                    inner_trailing |= seq.trailing;
                     flattened.extend(seq.items);
                 } else {
                     flattened.push(expr);
                 }
             }
             items = flattened;
+            trailing |= inner_trailing;
         }
 
         Ok(Sequence { items, trailing })

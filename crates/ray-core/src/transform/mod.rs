@@ -64,8 +64,6 @@ impl ModuleCombiner {
         let mut ctx = ResolveContext::new(&mut self.ncx, &mut srcmap, &self.scope_map);
         new_module.resolve_names(&mut ctx)?;
 
-        log::debug!("ncx: {:#?}", self.ncx);
-
         // lower the declarations for the current module
         let mut ctx = self.get_lower_ctx(&mut srcmap);
         for decl in new_module.decls.iter_mut() {

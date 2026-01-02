@@ -6,8 +6,9 @@ use crate::ast::{Boxed, Node, Ref, expr::deref::Deref};
 use ray_typing::types::TyScheme;
 
 use super::{
-    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dot, For, Func, If, Index, List, Literal,
-    Loop, Missing, Name, New, Pattern, Range, Sequence, Tuple, UnaryOp, While,
+    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dict, Dot, For, Func, If, Index, List,
+    Literal, Loop, Missing, Name, New, Pattern, Range, ScopedAccess, Sequence, Set, Tuple, UnaryOp,
+    While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,10 +18,12 @@ pub enum Expr {
     Block(Block),
     Boxed(Boxed),
     Break(Option<Box<Node<Expr>>>),
+    Continue,
     Call(Call),
     Cast(Cast),
     Closure(Closure),
     Curly(Curly),
+    Dict(Dict),
     DefaultValue(Box<Node<Expr>>),
     Deref(Deref),
     Dot(Dot),
@@ -42,6 +45,8 @@ pub enum Expr {
     Ref(Ref),
     Return(Option<Box<Node<Expr>>>),
     Sequence(Sequence),
+    Set(Set),
+    ScopedAccess(ScopedAccess),
     Some(Box<Node<Expr>>),
     Tuple(Tuple),
     Type(Parsed<TyScheme>),
@@ -78,10 +83,12 @@ impl std::fmt::Display for Expr {
                     || "(break)".to_string(),
                     |ex| format!("(break {})", ex.to_string())
                 ),
+                Expr::Continue => "(continue)".to_string(),
                 Expr::Call(ex) => ex.to_string(),
                 Expr::Cast(ex) => ex.to_string(),
                 Expr::Closure(ex) => ex.to_string(),
                 Expr::Curly(ex) => ex.to_string(),
+                Expr::Dict(ex) => ex.to_string(),
                 Expr::DefaultValue(ex) => ex.to_string(),
                 Expr::Deref(ex) => ex.to_string(),
                 Expr::Dot(ex) => ex.to_string(),
@@ -105,6 +112,8 @@ impl std::fmt::Display for Expr {
                     .as_ref()
                     .map_or_else(|| "(return)".to_string(), |ex| format!("(return {})", ex)),
                 Expr::Sequence(ex) => ex.to_string(),
+                Expr::Set(ex) => ex.to_string(),
+                Expr::ScopedAccess(ex) => ex.to_string(),
                 Expr::Some(ex) => format!("(some {})", ex),
                 Expr::Tuple(ex) => ex.to_string(),
                 Expr::Type(ex) => ex.to_string(),
@@ -125,10 +134,12 @@ impl Expr {
             Expr::Block(..) => "Block",
             Expr::Boxed(..) => "Boxed",
             Expr::Break(..) => "Break",
+            Expr::Continue => "Continue",
             Expr::Call(..) => "Call",
             Expr::Cast(..) => "Cast",
             Expr::Closure(..) => "Closure",
             Expr::Curly(..) => "Curly",
+            Expr::Dict(..) => "Dict",
             Expr::DefaultValue(..) => "DefaultValue",
             Expr::Deref(..) => "Deref",
             Expr::Dot(..) => "Dot",
@@ -150,6 +161,8 @@ impl Expr {
             Expr::Ref(..) => "Ref",
             Expr::Return(..) => "Return",
             Expr::Sequence(..) => "Sequence",
+            Expr::Set(..) => "Set",
+            Expr::ScopedAccess(..) => "ScopedAccess",
             Expr::Some(..) => "Some",
             Expr::Tuple(..) => "Tuple",
             Expr::Type(..) => "Type",
@@ -171,10 +184,12 @@ impl Expr {
             | Expr::Block(_)
             | Expr::Boxed(_)
             | Expr::Break(_)
+            | Expr::Continue
             | Expr::Call(_)
             | Expr::Cast(_)
             | Expr::Closure(_)
             | Expr::Curly(_)
+            | Expr::Dict(_)
             | Expr::DefaultValue(_)
             | Expr::Deref(_)
             | Expr::Dot(_)
@@ -192,6 +207,8 @@ impl Expr {
             | Expr::Ref(_)
             | Expr::Return(_)
             | Expr::Sequence(_)
+            | Expr::Set(_)
+            | Expr::ScopedAccess(_)
             | Expr::Some(_)
             | Expr::Tuple(_)
             | Expr::Type(_)
@@ -213,10 +230,12 @@ impl Expr {
             | Expr::Block(_)
             | Expr::Boxed(_)
             | Expr::Break(_)
+            | Expr::Continue
             | Expr::Call(_)
             | Expr::Cast(_)
             | Expr::Closure(_)
             | Expr::Curly(_)
+            | Expr::Dict(_)
             | Expr::DefaultValue(_)
             | Expr::Deref(_)
             | Expr::Dot(_)
@@ -234,6 +253,8 @@ impl Expr {
             | Expr::Ref(_)
             | Expr::Return(_)
             | Expr::Sequence(_)
+            | Expr::Set(_)
+            | Expr::ScopedAccess(_)
             | Expr::Some(_)
             | Expr::Tuple(_)
             | Expr::Type(_)
@@ -252,10 +273,12 @@ impl Expr {
             Expr::Block(..) => "block",
             Expr::Boxed(..) => "box",
             Expr::Break(..) => "break",
+            Expr::Continue => "continue",
             Expr::Call(..) => "call",
             Expr::Cast(..) => "cast",
             Expr::Closure(..) => "closure",
             Expr::Curly(..) => "curly",
+            Expr::Dict(..) => "dict",
             Expr::DefaultValue(..) => "default value",
             Expr::Deref(..) => "deref",
             Expr::Dot(..) => "dot",
@@ -276,6 +299,8 @@ impl Expr {
             Expr::Ref(..) => "ref",
             Expr::Return(..) => "return",
             Expr::Sequence(..) => "sequence",
+            Expr::Set(..) => "set",
+            Expr::ScopedAccess(..) => "scoped access",
             Expr::Some(..) => "some",
             Expr::Tuple(..) => "tuple",
             Expr::Type(..) => "type",

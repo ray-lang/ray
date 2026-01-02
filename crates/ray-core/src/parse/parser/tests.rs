@@ -1,7 +1,10 @@
 #![cfg(test)]
 
-use ray_shared::pathlib::{FilePath, Path};
-use ray_typing::types::{NominalKind, Ty};
+use ray_shared::{
+    pathlib::{FilePath, Path},
+    ty::Ty,
+};
+use ray_typing::types::NominalKind;
 
 use crate::{
     ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, Pattern},
@@ -911,6 +914,43 @@ fn main() {
 }
 
 #[test]
+fn parses_continue_expression() {
+    let source = r#"
+fn main() {
+    loop {
+        continue
+    }
+}
+"#;
+    let (file, errors) = parse_source(source);
+    assert!(
+        errors.is_empty(),
+        "expected continue expression to parse without errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let loop_expr = match &block.stmts.first().expect("expected statement").value {
+        Expr::Loop(loop_expr) => loop_expr,
+        other => panic!("expected loop expression, got {:?}", other),
+    };
+    match &loop_expr.body.as_ref().value {
+        Expr::Block(body) => {
+            assert_eq!(
+                body.stmts.len(),
+                1,
+                "expected loop body to contain a single statement"
+            );
+            match &body.stmts[0].value {
+                Expr::Continue => {}
+                other => panic!("expected continue statement in loop body, got {:?}", other),
+            }
+        }
+        other => panic!("expected block body for loop expression, got {:?}", other),
+    }
+}
+
+#[test]
 fn parses_chained_ternary_expression() {
     let source = r#"
 fn main() {
@@ -1017,6 +1057,40 @@ fn main() {
 }
 
 #[test]
+fn parses_multiline_curly_expression_allows_trailing_comma() {
+    let src = r#"
+fn main() {
+    len = 10
+    raw_ptr = new(u8, len)
+    s = string {
+        raw_ptr,
+        len,
+    }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected parse without errors, got {:?}",
+        errors
+    );
+
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[2].value {
+        Expr::Assign(assign) => assign,
+        other => panic!("expected assignment statement, got {:?}", other),
+    };
+
+    let curly = match &assign.rhs.value {
+        Expr::Curly(curly) => curly,
+        other => panic!("expected curly expression, got {:?}", other),
+    };
+
+    assert_eq!(curly.elements.len(), 2);
+}
+
+#[test]
 fn parses_oneline_struct() {
     let src = r#"
 struct T { x: u32, y: u32 }
@@ -1040,6 +1114,133 @@ struct T { x: u32, y: u32 }
     };
     assert_eq!(st.kind, NominalKind::Struct);
     assert_eq!(st.path.to_string(), "test::T");
+}
+
+#[test]
+fn parses_empty_dict_literal_expr() {
+    let src = r#"
+fn main() {
+    {}
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected parse without errors, got: {:?}",
+        errors
+    );
+
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let stmt = block.stmts.first().expect("expected statement");
+
+    let dict = match &stmt.value {
+        Expr::Dict(dict) => dict,
+        other => panic!("expected dict literal expression, got {:?}", other),
+    };
+
+    assert!(dict.entries.is_empty());
+}
+
+#[test]
+fn parses_empty_set_literal_expr() {
+    let src = r#"
+fn main() {
+    {,}
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected parse without errors, got: {:?}",
+        errors
+    );
+
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let stmt = block.stmts.first().expect("expected statement");
+
+    let set = match &stmt.value {
+        Expr::Set(set) => set,
+        other => panic!("expected set literal expression, got {:?}", other),
+    };
+
+    assert!(set.items.is_empty());
+    assert!(set.trailing_comma);
+}
+
+#[test]
+fn parses_set_literal_requires_trailing_comma_for_singleton() {
+    let src = r#"
+fn main() {
+    { x }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected parse without errors, got: {:?}",
+        errors
+    );
+
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let stmt = block.stmts.first().expect("expected statement");
+
+    match &stmt.value {
+        Expr::Block(_) => {}
+        other => panic!("expected block expression, got {:?}", other),
+    }
+
+    let src = r#"
+fn main() {
+    { x, }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected parse without errors, got: {:?}",
+        errors
+    );
+
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let stmt = block.stmts.first().expect("expected statement");
+
+    let set = match &stmt.value {
+        Expr::Set(set) => set,
+        other => panic!("expected set literal expression, got {:?}", other),
+    };
+
+    assert_eq!(set.items.len(), 1);
+    assert!(set.trailing_comma);
+}
+
+#[test]
+fn parses_dict_literal_expr() {
+    let src = r#"
+fn main() {
+    { x: 1, y: 2 }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected parse without errors, got: {:?}",
+        errors
+    );
+
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let stmt = block.stmts.first().expect("expected statement");
+
+    let dict = match &stmt.value {
+        Expr::Dict(dict) => dict,
+        other => panic!("expected dict literal expression, got {:?}", other),
+    };
+
+    assert_eq!(dict.entries.len(), 2);
 }
 
 #[test]

@@ -2,21 +2,29 @@
 // This mirrors the constraint generation and tree construction described in
 // docs/type-system.md Section 4 (especially 4.3 and 4.6).
 
+use std::collections::HashSet;
+
+use ray_shared::{
+    node_id::NodeId,
+    ty::{Ty, TyVar},
+    utils::{join, map_join},
+};
+
 use crate::{
     BindingKind, BindingRecord, ModuleInput, PatternKind,
     binding_groups::{BindingGroup, BindingId},
-    constraints::{Constraint, RecvKind},
+    constraints::{Constraint, ConstraintKind, ResolveCallConstraint},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
     info::TypeSystemInfo,
-    types::{ReceiverMode, Subst, Substitutable, Ty, TyScheme, TyVar},
+    types::{Subst, Substitutable, TyScheme},
 };
-use ray_shared::{node_id::NodeId, utils::map_join};
 
 #[derive(Clone, Debug)]
 pub struct SkolemizedAnnotation {
     ty: Ty,
     givens: Vec<Constraint>,
     skolems: Vec<TyVar>,
+    subst: Subst,
 }
 
 fn skolemize_annotated_scheme(
@@ -53,10 +61,24 @@ fn skolemize_annotated_scheme(
         givens.push(Constraint::from_predicate(pred, pred_info));
     }
 
+    log::debug!("[skolemize_annotated_scheme] binding = {:?}", binding);
+    log::debug!("[skolemize_annotated_scheme] scheme = {}", scheme);
+    log::debug!("[skolemize_annotated_scheme] subst = {:?}", subst);
+    log::debug!("[skolemize_annotated_scheme] skolemized_ty = {}", ty);
+    log::debug!(
+        "[skolemize_annotated_scheme] givens = [{}]",
+        join(&givens, ", ")
+    );
+    log::debug!(
+        "[skolemize_annotated_scheme] skolems = [{}]",
+        join(&skolems, ", ")
+    );
+
     let anno = SkolemizedAnnotation {
         ty,
         givens,
         skolems,
+        subst,
     };
 
     ctx.skolemized_schemes.insert(binding, anno.clone());
@@ -68,7 +90,7 @@ fn skolemize_annotated_scheme(
 /// Pattern-while), following the "Pattern-if" and "Pattern-while" rules in
 /// docs/type-system.md:
 ///
-/// - For `Some(x)` patterns, we constrain the scrutinee type to `nilable[T]`
+/// - For `some(x)` patterns, we constrain the scrutinee type to `nilable[T]`
 ///   for a fresh `T` and introduce `x : T` as a mono scheme in the context.
 fn apply_pattern_guard(
     pattern: &Pattern,
@@ -77,9 +99,19 @@ fn apply_pattern_guard(
     node: &mut ConstraintNode,
     info: &TypeSystemInfo,
 ) {
+    let scrut_ty = ctx.expr_ty_or_fresh(scrutinee);
+    apply_pattern_guard_with_ty(pattern, scrut_ty, ctx, node, info);
+}
+
+fn apply_pattern_guard_with_ty(
+    pattern: &Pattern,
+    scrut_ty: Ty,
+    ctx: &mut SolverContext,
+    node: &mut ConstraintNode,
+    info: &TypeSystemInfo,
+) {
     match pattern {
         Pattern::Some(binding) => {
-            let scrut_ty = ctx.expr_ty_or_fresh(scrutinee);
             let inner_ty = ctx.fresh_meta();
             let nilable_ty = Ty::nilable(inner_ty.clone());
             node.wanteds
@@ -91,7 +123,6 @@ fn apply_pattern_guard(
         }
         Pattern::Binding(binding) => {
             // Simple binding pattern `x = e`: record a mono scheme x : Te.
-            let scrut_ty = ctx.expr_ty_or_fresh(scrutinee);
             ctx.binding_schemes
                 .entry(*binding)
                 .or_insert_with(|| TyScheme::from_mono(scrut_ty));
@@ -404,6 +435,7 @@ pub fn generate_constraints_for_group(
             ret_ty,
             givens,
             metas,
+            skolem_subst,
         } = prepare_binding_context(ctx, *binding_id, record, &mut binding_info);
         binding_node.metas.extend(metas);
         binding_node.givens.extend(givens);
@@ -412,7 +444,19 @@ pub fn generate_constraints_for_group(
             ctx.push_fn_ret(ret_ty.clone());
         }
 
-        generate_constraints_for_expr(module, ctx, expr_root, &mut binding_node, &mut next_id);
+        log::debug!(
+            "[generate_constraints_for_group] binding prep: binding_ty = {}",
+            binding_ty
+        );
+        generate_constraints_for_expr(
+            module,
+            ctx,
+            *binding_id,
+            skolem_subst.as_ref(),
+            expr_root,
+            &mut binding_node,
+            &mut next_id,
+        );
 
         // Ensure we have a type for the binding's root expression.
         let expr_ty = ctx.expr_ty_or_fresh(expr_root);
@@ -436,6 +480,7 @@ pub struct BindingPreparation {
     pub ret_ty: Option<Ty>,
     pub givens: Vec<Constraint>,
     pub metas: Vec<TyVar>,
+    pub skolem_subst: Option<Subst>,
 }
 
 /// Prepare the per-binding context prior to walking its body.
@@ -457,6 +502,7 @@ pub fn prepare_binding_context(
     // schemes and add the corresponding qualifiers as givens.
     let mut givens = vec![];
     let mut metas = vec![];
+    let mut skolem_subst = None;
     let mut binding_ty = if let Some(scheme) = ctx.binding_schemes.get(&binding_id).cloned() {
         if !scheme.vars.is_empty() || !scheme.qualifiers.is_empty() {
             let skolemized = skolemize_annotated_scheme(ctx, binding_id, &scheme, binding_info);
@@ -465,6 +511,7 @@ pub fn prepare_binding_context(
             }
             givens.extend(skolemized.givens);
             metas.extend(skolemized.skolems);
+            skolem_subst = Some(skolemized.subst.clone());
             skolemized.ty
         } else {
             scheme.ty
@@ -517,6 +564,7 @@ pub fn prepare_binding_context(
         ret_ty,
         givens,
         metas,
+        skolem_subst,
     }
 }
 
@@ -557,6 +605,8 @@ pub fn collect_binding_nodes_for_group<'a>(
 fn generate_constraints_for_expr(
     module: &ModuleInput,
     ctx: &mut SolverContext,
+    binding_id: BindingId,
+    skolem_subst: Option<&Subst>,
     expr: NodeId,
     node: &mut ConstraintNode,
     next_id: &mut u32,
@@ -575,6 +625,11 @@ fn generate_constraints_for_expr(
     // if-expressions, pattern-if/while, nilable literals, and field
     // access/records per Section 4.5).
     if let Some(kind) = module.expr_kind(expr) {
+        log::debug!(
+            "[generate_constraints_for_expr] id = {:?}, kind = {:?}",
+            expr,
+            kind
+        );
         match kind {
             ExprKind::LiteralInt => {
                 // For unsuffixed integer literals, generate an `Int[T]`
@@ -652,18 +707,59 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::eq(expr_ty, Ty::string(), info));
             }
+            ExprKind::Type { ty } => {
+                // Meta-type expressions `T` have type `type[T]`.
+                log::debug!("[generate_constraints_for_expr] type = {}", ty);
+                node.wanteds
+                    .push(Constraint::eq(expr_ty, Ty::ty_type(ty.clone()), info));
+            }
             ExprKind::Missing => {
                 // Missing expression placeholder: leave expr_ty unconstrained
                 // so type checking can continue on the rest of the tree.
             }
-            ExprKind::Var(binding_id) => {
-                // Variable references are handled by instantiating the
+            ExprKind::BindingRef(binding_id) => {
+                // Binding references are handled by instantiating the
                 // binding's scheme (Section 4.3) and equating it with the
-                // variable expression's type. Unannotated bindings may not
-                // have a recorded scheme yet, so we fall back to the mono
-                // type tracked for the binding.
+                // reference expression's type.
                 node.wanteds
                     .push(Constraint::inst(*binding_id, expr_ty, info));
+            }
+            ExprKind::ScopedAccess { binding, lhs_ty } => {
+                // Scoped access `T::member`: `T[...]` instantiates the *type*
+                // on the left-hand side, not the member binding itself.
+                //
+                // However, many associated members currently have schemes
+                // whose qualifiers mention impl-scoped schema variables.
+                //
+                // Inside an annotated binding body, we already have a
+                // schema->skolem substitution from skolemization. When the LHS
+                // type is parameterized by those same schema vars, we can
+                // derive the receiver substitution simply by restricting that
+                // skolem substitution to the vars that appear in `lhs_ty`.
+                let receiver_subst = skolem_subst.and_then(|skolem_subst| {
+                    let mut lhs_vars = HashSet::new();
+                    lhs_ty.free_ty_vars(&mut lhs_vars);
+
+                    let mut subst = Subst::new();
+                    for var in lhs_vars {
+                        if let Some(ty) = skolem_subst.get(&var) {
+                            subst.insert(var, ty.clone());
+                        }
+                    }
+
+                    if subst.is_empty() { None } else { Some(subst) }
+                });
+
+                if let Some(receiver_subst) = receiver_subst {
+                    node.wanteds.push(Constraint::inst_with_receiver_subst(
+                        *binding,
+                        expr_ty,
+                        receiver_subst,
+                        info,
+                    ));
+                } else {
+                    node.wanteds.push(Constraint::inst(*binding, expr_ty, info));
+                }
             }
             ExprKind::FieldAccess { recv, field } => {
                 // Field access `e.field` generates a nominal HasField
@@ -691,7 +787,18 @@ fn generate_constraints_for_expr(
                 //
                 // The goal solver, using the nominal StructTy metadata,
                 // relates these to the declared field types.
-                let struct_ty = Ty::Const(struct_name.as_str().into());
+                let struct_ty = if let Some(struct_decl) = ctx.global_env().get_struct(struct_name)
+                {
+                    let mut struct_scheme = struct_decl.ty.clone();
+                    let mut subst = Subst::new();
+                    for var in struct_scheme.vars.iter() {
+                        subst.insert(var.clone(), ctx.fresh_meta());
+                    }
+                    struct_scheme.apply_subst(&subst);
+                    struct_scheme.mono().clone()
+                } else {
+                    Ty::Const(struct_name.as_str().into())
+                };
 
                 // Tie the expression's type to the nominal struct type.
                 node.wanteds.push(Constraint::eq(
@@ -736,7 +843,15 @@ fn generate_constraints_for_expr(
                 let child_id = ConstraintNodeId(*next_id);
                 *next_id += 1;
                 let mut body_node = ConstraintNode::new(child_id);
-                generate_constraints_for_expr(module, ctx, *body, &mut body_node, next_id);
+                generate_constraints_for_expr(
+                    module,
+                    ctx,
+                    binding_id,
+                    skolem_subst,
+                    *body,
+                    &mut body_node,
+                    next_id,
+                );
                 node.children.push(body_node);
 
                 // return here so we don't recurse children again
@@ -757,6 +872,69 @@ fn generate_constraints_for_expr(
                 let list_ty = Ty::proj(ctx.ncx().builtin_ty("list"), vec![elem_ty]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, list_ty, info.clone()));
+            }
+            ExprKind::Dict { entries } => {
+                // Dict literal `{ k0: v0, ..., kn: vn }` produces `dict[K, V]`
+                // for fresh K and V, equates all keys/values, and requires
+                // `Hash[K]` and `Eq[K, K]`.
+                let key_ty = ctx.fresh_meta();
+                let value_ty = ctx.fresh_meta();
+                for (key, value) in entries {
+                    let entry_key_ty = ctx.expr_ty_or_fresh(*key);
+                    let entry_value_ty = ctx.expr_ty_or_fresh(*value);
+                    node.wanteds
+                        .push(Constraint::eq(entry_key_ty, key_ty.clone(), info.clone()));
+                    node.wanteds.push(Constraint::eq(
+                        entry_value_ty,
+                        value_ty.clone(),
+                        info.clone(),
+                    ));
+                }
+
+                let dict_ty =
+                    Ty::proj(ctx.ncx().builtin_ty("dict"), vec![key_ty.clone(), value_ty]);
+                node.wanteds
+                    .push(Constraint::eq(expr_ty, dict_ty, info.clone()));
+
+                let hash_trait_fqn = ctx.ncx().builtin_ty("Hash");
+                node.wanteds.push(Constraint::class(
+                    hash_trait_fqn.to_string(),
+                    vec![key_ty.clone()],
+                    info.clone(),
+                ));
+                let eq_trait_fqn = ctx.ncx().builtin_ty("Eq");
+                node.wanteds.push(Constraint::class(
+                    eq_trait_fqn.to_string(),
+                    vec![key_ty.clone(), key_ty],
+                    info,
+                ));
+            }
+            ExprKind::Set { items } => {
+                // Set literal `{ e0, ..., en, }` produces `set[K]` for fresh K,
+                // equates all elements, and requires `Hash[K]` and `Eq[K, K]`.
+                let elem_ty = ctx.fresh_meta();
+                for item in items {
+                    let item_ty = ctx.expr_ty_or_fresh(*item);
+                    node.wanteds
+                        .push(Constraint::eq(item_ty, elem_ty.clone(), info.clone()));
+                }
+
+                let set_ty = Ty::proj(ctx.ncx().builtin_ty("set"), vec![elem_ty.clone()]);
+                node.wanteds
+                    .push(Constraint::eq(expr_ty, set_ty, info.clone()));
+
+                let hash_trait_fqn = ctx.ncx().builtin_ty("Hash");
+                node.wanteds.push(Constraint::class(
+                    hash_trait_fqn.to_string(),
+                    vec![elem_ty.clone()],
+                    info.clone(),
+                ));
+                let eq_trait_fqn = ctx.ncx().builtin_ty("Eq");
+                node.wanteds.push(Constraint::class(
+                    eq_trait_fqn.to_string(),
+                    vec![elem_ty.clone(), elem_ty],
+                    info,
+                ));
             }
             ExprKind::Range {
                 start,
@@ -780,7 +958,8 @@ fn generate_constraints_for_expr(
                 let elem_ty = ctx.fresh_meta();
 
                 // expr_ty == range[Tel]
-                let range_ty = Ty::range(elem_ty.clone());
+                let range_fqn = ctx.ncx().builtin_ty("range");
+                let range_ty = Ty::proj(range_fqn, vec![elem_ty.clone()]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty.clone(), range_ty, info.clone()));
 
@@ -829,17 +1008,26 @@ fn generate_constraints_for_expr(
                 // Indexing operation (Section A.3): `container[index]`.
                 //
                 // Γ ⊢ container ⇝ (Tc, Cc)
-                // Γ ⊢ index ⇝ (Ti, Ci)
+                // Γ ⊢ index ⇝ (Tidx, Ci)
                 // ---------------------------------------
-                // Γ ⊢ container[index] ⇝ (Te, Cc ∪ Ci ∪ { Index[Tc, Ti, Te] })
+                // Γ ⊢ container[index] ⇝ (T, Cc ∪ Ci ∪ { Index[Tc, Tel, Tidx], T == nilable[Tel] })
                 //
-                // We generate the class predicate:
-                //   Index[Tc, Ti, expr_ty]
+                // We generate the class predicate (matching `trait Index['a, 'el, 'idx]`):
+                //   Index[Tc, Tel, Tidx]
                 let container_ty = ctx.expr_ty_or_fresh(*container);
                 let index_ty = ctx.expr_ty_or_fresh(*index);
+                let elem_ty = ctx.fresh_meta();
+
+                node.wanteds.push(Constraint::eq(
+                    expr_ty.clone(),
+                    Ty::nilable(elem_ty.clone()),
+                    info.clone(),
+                ));
+
+                let index_fqn = ctx.ncx().builtin_ty("Index");
                 node.wanteds.push(Constraint::class(
-                    "Index",
-                    vec![container_ty, index_ty, expr_ty.clone()],
+                    index_fqn.to_string(),
+                    vec![container_ty, elem_ty, index_ty],
                     info.clone(),
                 ));
             }
@@ -906,7 +1094,10 @@ fn generate_constraints_for_expr(
                     .push(Constraint::eq(expr_ty.clone(), fn_ty, info.clone()));
             }
             ExprKind::UnaryOp {
-                trait_fqn, expr, ..
+                trait_fqn,
+                method_fqn,
+                expr,
+                ..
             } => {
                 // Unary operators (docs/type-system.md "Operators"):
                 //
@@ -917,11 +1108,42 @@ fn generate_constraints_for_expr(
                 //
                 // where `trait_fqn` is the unary operator's trait (e.g. "core::Neg").
                 let arg_ty = ctx.expr_ty_or_fresh(*expr);
-                node.wanteds.push(Constraint::class(
-                    trait_fqn.clone(),
-                    vec![arg_ty, expr_ty.clone()],
-                    info.clone(),
-                ));
+
+                let mut args = vec![arg_ty];
+
+                // Look up declared arity of the trait, if available.
+                let trait_name = trait_fqn.to_string();
+                if let Some(trait_decl) = ctx.global_env().get_trait(&trait_name).cloned() {
+                    let arity = trait_decl.ty.arity();
+
+                    // For operator traits we use the *last* type parameter as the result.
+                    // Everything between [1 .. arity-1) gets fresh metas.
+                    for i in 1..arity {
+                        if i == arity - 1 {
+                            args.push(expr_ty.clone());
+                        } else {
+                            args.push(ctx.fresh_meta());
+                        }
+                    }
+
+                    let field_name = method_fqn.to_short_name();
+                    if let Some(field) = trait_decl.get_field(&field_name) {
+                        if let Some((_, _, _, ret_ty)) = field.ty.try_borrow_fn() {
+                            if !ret_ty.is_tyvar() {
+                                node.wanteds.push(Constraint::eq(
+                                    expr_ty,
+                                    ret_ty.clone(),
+                                    info.clone(),
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback: assume 2-ary [arg, result].
+                    args.push(expr_ty);
+                }
+                node.wanteds
+                    .push(Constraint::class(trait_fqn.clone(), args, info.clone()));
             }
             ExprKind::Boxed { expr: inner } => {
                 // Heap allocation / boxing (Section 1.1 "Pointer types"):
@@ -956,8 +1178,33 @@ fn generate_constraints_for_expr(
                 // We still typecheck the operand and ensure the cast
                 // expression's type equals the target type.
                 let _inner_ty = ctx.expr_ty_or_fresh(*inner);
+                let mut cast_ty = ty.clone();
+                if let Some(anno) = ctx.skolemized_schemes.get(&binding_id) {
+                    log::debug!(
+                        "[generate_constraints] cast in binding {:?}: raw cast_ty = {}",
+                        binding_id,
+                        cast_ty
+                    );
+                    log::debug!(
+                        "[generate_constraints] cast in binding {:?}: skolem subst = {:?}",
+                        binding_id,
+                        anno.subst
+                    );
+                    cast_ty.apply_subst(&anno.subst);
+                    log::debug!(
+                        "[generate_constraints] cast in binding {:?}: cast_ty after subst = {}",
+                        binding_id,
+                        cast_ty
+                    );
+                } else {
+                    log::debug!(
+                        "[generate_constraints] cast in binding {:?}: missing skolemized scheme; cast_ty = {}",
+                        binding_id,
+                        cast_ty
+                    );
+                }
                 node.wanteds
-                    .push(Constraint::eq(expr_ty, ty.clone(), info.clone()));
+                    .push(Constraint::eq(expr_ty, cast_ty, info.clone()));
             }
             ExprKind::New { count } => {
                 // Heap allocation `new(T, count?)`, following:
@@ -1032,7 +1279,15 @@ fn generate_constraints_for_expr(
                         *next_id += 1;
                         let mut rhs_node = ConstraintNode::new(rhs_node_id);
 
-                        generate_constraints_for_expr(module, ctx, *rhs, &mut rhs_node, next_id);
+                        generate_constraints_for_expr(
+                            module,
+                            ctx,
+                            binding_id,
+                            skolem_subst,
+                            *rhs,
+                            &mut rhs_node,
+                            next_id,
+                        );
 
                         let bindings = apply_lhs_pattern(
                             module,
@@ -1056,21 +1311,22 @@ fn generate_constraints_for_expr(
                         // Index assignment `container[index] = rhs` (A.8):
                         //
                         //   Γ ⊢ container ⇝ (Tc, Cc)
-                        //   Γ ⊢ index ⇝ (Ti, Ci)
+                        //   Γ ⊢ index ⇝ (Tidx, Ci)
                         //   Γ ⊢ rhs ⇝ (Trhs, Crhs)
                         //   fresh Tel
                         //   --------------------------------------------------
                         //   Γ ⊢ container[index] = rhs ⇝ (unit,
-                        //      Cc ∪ Ci ∪ Crhs ∪ { Index[Tc, Ti, Tel], Trhs == Tel })
+                        //      Cc ∪ Ci ∪ Crhs ∪ { Index[Tc, Tel, Tidx], Trhs == Tel })
                         //
                         let container_ty = ctx.binding_ty_or_fresh(*container);
                         let index_ty = ctx.expr_ty_or_fresh(*index);
                         let elem_ty = ctx.fresh_meta();
                         ctx.expr_types.insert(*lhs_pattern, elem_ty.clone());
 
+                        let index_fqn = ctx.ncx().builtin_ty("Index");
                         node.wanteds.push(Constraint::class(
-                            "Index",
-                            vec![container_ty, index_ty, elem_ty.clone()],
+                            index_fqn.to_string(),
+                            vec![container_ty, elem_ty.clone(), index_ty],
                             info.clone(),
                         ));
                         node.wanteds
@@ -1321,7 +1577,11 @@ fn generate_constraints_for_expr(
                 // We require the current function result type `Tret` to be
                 // available from the context (pushed by the caller).
                 if let Some(ret_ty) = ctx.current_fn_ret() {
-                    let value_ty = ctx.expr_ty_or_fresh(*ret_expr);
+                    let value_ty = if let Some(ret_expr) = ret_expr {
+                        ctx.expr_ty_or_fresh(*ret_expr)
+                    } else {
+                        Ty::unit()
+                    };
                     node.wanteds
                         .push(Constraint::eq(value_ty, ret_ty, info.clone()));
                 }
@@ -1339,27 +1599,39 @@ fn generate_constraints_for_expr(
                 //
                 //   for pat in e { body }
                 //
-                // use a trait Iter[Recv, Elem] relating an iterable
-                // type to its element type.
+                // use traits Iterable[Container, Iter, Elem] and Iter[Iter, Elem]
+                // relating a container to an iterator state and element type.
                 //
                 // Γ ⊢ e ⇝ (Te, Ce)
+                // fresh It
                 // fresh Elem
                 // -------------------------------------------------
                 // Γ ⊢ for pat in e { body } ⇝
-                //   (unit, Ce ∪ Cbody ∪ { Iter[Te, Elem] } ∪ pattern/body constraints)
+                //   (unit, Ce ∪ Cbody ∪ { Iterable[Te, It, Elem], Iter[It, Elem] } ∪ pattern/body constraints)
 
                 let iter_ty = ctx.expr_ty_or_fresh(*iter_expr);
+                let it_ty = ctx.fresh_meta();
                 let elem_ty = ctx.fresh_meta();
 
-                // Iter[Te, Elem]
+                let iterable_trait_fqn = ctx.ncx().builtin_ty("Iterable");
+                let iter_trait_fqn = ctx.ncx().builtin_ty("Iter");
+
+                // Iterable[Te, It, Elem]
                 node.wanteds.push(Constraint::class(
-                    "Iter",
-                    vec![iter_ty, elem_ty.clone()],
+                    iterable_trait_fqn.to_string(),
+                    vec![iter_ty, it_ty.clone(), elem_ty.clone()],
+                    info.clone(),
+                ));
+
+                // Iter[It, Elem]
+                node.wanteds.push(Constraint::class(
+                    iter_trait_fqn.to_string(),
+                    vec![it_ty, elem_ty.clone()],
                     info.clone(),
                 ));
 
                 // Pattern binds element type into the loop body environment.
-                apply_pattern_guard(pattern, *body, ctx, node, &info);
+                apply_pattern_guard_with_ty(pattern, elem_ty, ctx, node, &info);
 
                 let _body_ty = ctx.expr_ty_or_fresh(*body);
                 node.wanteds
@@ -1380,126 +1652,118 @@ fn generate_constraints_for_expr(
                     }
 
                     let recv_ty = ctx.expr_ty_or_fresh(recv);
+                    log::debug!("[generate_constraints_for_expr] recv_ty = {}", recv_ty);
 
-                    // Find a trait that defines this method name. For now we
-                    // pick the unique match if it exists.
-                    let mut matches = ctx
-                        .global_env()
-                        .traits
-                        .values()
-                        .filter_map(|trait_ty| {
-                            trait_ty
-                                .get_field(field.as_str())
-                                .map(|f| (trait_ty.clone(), f.clone()))
-                        })
-                        .collect::<Vec<_>>();
+                    // Even though we do not recurse into the `FieldAccess` callee node (to
+                    // avoid generating `HasField`), downstream passes still expect the
+                    // callee expression to have a type. Record it as a function type:
+                    //
+                    //   recv.method(args...) : (Trecv, Targs...) -> Tret
+                    //
+                    let recv_param_ty = ctx.fresh_meta();
+                    let mut callee_arg_tys = Vec::with_capacity(explicit_arg_tys.len() + 1);
+                    callee_arg_tys.push(recv_param_ty);
+                    callee_arg_tys.extend(explicit_arg_tys.iter().cloned());
+                    let expected_fn_ty = Ty::Func(callee_arg_tys, Box::new(expr_ty.clone()));
+                    ctx.expr_types.insert(*callee, expected_fn_ty.clone());
 
-                    if let Some((trait_ty, method_field)) = matches.pop() {
-                        if matches.is_empty() {
-                            // Instantiate the method's type scheme at this use site.
-                            let mut method_subst = Subst::new();
-                            for v in &method_field.ty.vars {
-                                method_subst.insert(v.clone(), ctx.fresh_meta());
-                            }
+                    // Do not attempt to resolve methods during constraint generation.
+                    //
+                    // The receiver type is frequently still a meta variable at this phase
+                    // (even in the presence of annotations), and global-by-name lookup is
+                    // ambiguous once multiple traits or inherent impls share method names.
+                    //
+                    // Instead, emit a deferred `ResolveCall` constraint and let the solver
+                    // rewrite it into existing constraints (Instantiate/Eq/Recv) once the
+                    // receiver/LHS type becomes headed.
+                    node.wanteds.push(Constraint {
+                        kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                            recv_ty,
+                            field,
+                            expected_fn_ty,
+                        )),
+                        info: info.clone(),
+                    });
 
-                            let mut method_ty = method_field.ty.ty.clone();
-                            method_ty.apply_subst(&method_subst);
-                            let mut qualifiers = method_field
-                                .ty
-                                .qualifiers
-                                .iter()
-                                .map(|pred| {
-                                    let mut p = pred.clone();
-                                    p.apply_subst(&method_subst);
-                                    Constraint::from_predicate(p, info.clone())
-                                })
-                                .collect::<Vec<_>>();
-
-                            // Record a type for the callee expression node so downstream
-                            // passes can still look it up (even though we won't type it
-                            // as a `HasField`).
-                            ctx.expr_types.insert(*callee, method_ty.clone());
-
-                            // Add a class predicate for the trait itself. This is expected
-                            // to be solvable via givens (e.g. `where ToStr['a]`) or impls.
-                            let mut trait_args = match &trait_ty.ty {
-                                Ty::Proj(_, args) => args.clone(),
-                                Ty::Const(_) => Vec::new(),
-                                _ => Vec::new(),
-                            };
-                            for arg in &mut trait_args {
-                                arg.apply_subst(&method_subst);
-                            }
-                            node.wanteds.push(Constraint::class(
-                                trait_ty.path.to_string(),
-                                trait_args,
-                                info.clone(),
-                            ));
-
-                            // Build the expected function type for the call, including an
-                            // implicit receiver argument for non-static methods.
-                            let expected_fn_ty = if !method_field.is_static {
-                                let Some((param_tys, _ret_ty)) = method_ty.try_borrow_fn().ok()
-                                else {
-                                    // Not a function type; fall back to generic call handling.
-                                    let callee_ty = ctx.expr_ty_or_fresh(*callee);
-                                    let func_ty = Ty::Func(explicit_arg_tys, Box::new(expr_ty));
-                                    node.wanteds.push(Constraint::eq(callee_ty, func_ty, info));
-                                    return;
-                                };
-
-                                let recv_param_ty = param_tys
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_else(|| ctx.fresh_meta());
-
-                                node.wanteds.push(Constraint::recv(
-                                    match method_field.recv_mode {
-                                        ReceiverMode::Ptr => RecvKind::Ref,
-                                        _ => RecvKind::Value,
-                                    },
-                                    recv_param_ty.clone(),
-                                    recv_ty,
-                                    info.clone(),
-                                ));
-
-                                let mut all_args = Vec::with_capacity(1 + explicit_arg_tys.len());
-                                all_args.push(recv_param_ty);
-                                all_args.extend(explicit_arg_tys);
-                                Ty::Func(all_args, Box::new(expr_ty.clone()))
-                            } else {
-                                Ty::Func(explicit_arg_tys, Box::new(expr_ty.clone()))
-                            };
-
-                            // method_ty == expected_fn_ty
-                            node.wanteds.push(Constraint::eq(
-                                method_ty,
-                                expected_fn_ty,
-                                info.clone(),
-                            ));
-
-                            node.wanteds.append(&mut qualifiers);
-
-                            // Recurse into receiver and explicit args, but do not recurse into
-                            // the callee `FieldAccess` node (which would generate `HasField`).
-                            for child_expr in std::iter::once(recv).chain(args.iter().copied()) {
-                                let child_id = ConstraintNodeId(*next_id);
-                                *next_id += 1;
-                                let mut child_node = ConstraintNode::new(child_id);
-                                generate_constraints_for_expr(
-                                    module,
-                                    ctx,
-                                    child_expr,
-                                    &mut child_node,
-                                    next_id,
-                                );
-                                node.children.push(child_node);
-                            }
-
-                            // Return here so we don't recurse via `expr_children` again.
-                            return;
-                        }
+                    // Recurse into receiver and explicit args, but do not recurse into
+                    // the callee `FieldAccess` node (which would generate `HasField`).
+                    for child_expr in std::iter::once(recv).chain(args.iter().copied()) {
+                        generate_constraints_for_child(
+                            module,
+                            ctx,
+                            node,
+                            binding_id,
+                            skolem_subst,
+                            next_id,
+                            child_expr,
+                        );
                     }
+
+                    // Return here so we don't recurse via `expr_children` again.
+                    return;
+                }
+
+                // Also treat `T::method(args...)` / `T[...]::method(args...)` as a deferred
+                // member call. The callee is lowered as `ScopedAccess { binding, lhs_ty }`.
+                if let Some(ExprKind::ScopedAccess { binding, lhs_ty }) =
+                    module.expr_kind(*callee).cloned()
+                {
+                    // Collect types for explicit arguments.
+                    let mut explicit_arg_tys = Vec::with_capacity(args.len());
+                    for arg_expr in args {
+                        let arg_ty = ctx.expr_ty_or_fresh(*arg_expr);
+                        explicit_arg_tys.push(arg_ty);
+                    }
+
+                    // Downstream passes still expect the callee expression to
+                    // have a type. Record it as a function type:
+                    //
+                    //   T::member(args...) : (Targs...) -> Tret
+                    //
+                    let expected_fn_ty =
+                        Ty::Func(explicit_arg_tys.clone(), Box::new(expr_ty.clone()));
+                    ctx.expr_types.insert(*callee, expected_fn_ty.clone());
+
+                    let receiver_subst = skolem_subst.and_then(|skolem_subst| {
+                        let mut lhs_vars = HashSet::new();
+                        lhs_ty.free_ty_vars(&mut lhs_vars);
+
+                        let mut subst = Subst::new();
+                        for var in lhs_vars {
+                            if let Some(ty) = skolem_subst.get(&var) {
+                                subst.insert(var, ty.clone());
+                            }
+                        }
+
+                        if subst.is_empty() { None } else { Some(subst) }
+                    });
+
+                    node.wanteds.push(Constraint {
+                        kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_scoped(
+                            lhs_ty,
+                            binding,
+                            expected_fn_ty,
+                            receiver_subst,
+                        )),
+                        info: info.clone(),
+                    });
+
+                    // Recurse into explicit args, but do not recurse into the callee
+                    // `ScopedAccess` node (which would instantiate the binding scheme).
+                    for child_expr in args.iter().copied() {
+                        generate_constraints_for_child(
+                            module,
+                            ctx,
+                            node,
+                            binding_id,
+                            skolem_subst,
+                            next_id,
+                            child_expr,
+                        );
+                    }
+
+                    // Return here so we don't recurse via `expr_children` again.
+                    return;
                 }
 
                 // Generic call: relate the callee's type and the call result
@@ -1521,12 +1785,40 @@ fn generate_constraints_for_expr(
 
     // Recurse into children based on the ModuleInput's view of the AST.
     for child_expr in module.expr_children(expr) {
-        let child_id = ConstraintNodeId(*next_id);
-        *next_id += 1;
-        let mut child_node = ConstraintNode::new(child_id);
-        generate_constraints_for_expr(module, ctx, child_expr, &mut child_node, next_id);
-        node.children.push(child_node);
+        generate_constraints_for_child(
+            module,
+            ctx,
+            node,
+            binding_id,
+            skolem_subst,
+            next_id,
+            child_expr,
+        );
     }
+}
+
+fn generate_constraints_for_child(
+    module: &ModuleInput,
+    ctx: &mut SolverContext<'_>,
+    node: &mut ConstraintNode,
+    binding_id: BindingId,
+    skolem_subst: Option<&Subst>,
+    next_id: &mut u32,
+    child_expr: NodeId,
+) {
+    let child_id = ConstraintNodeId(*next_id);
+    *next_id += 1;
+    let mut child_node = ConstraintNode::new(child_id);
+    generate_constraints_for_expr(
+        module,
+        ctx,
+        binding_id,
+        skolem_subst,
+        child_expr,
+        &mut child_node,
+        next_id,
+    );
+    node.children.push(child_node);
 }
 
 #[cfg(test)]
@@ -1538,7 +1830,7 @@ mod tests {
     use crate::constraints::ConstraintKind;
     use crate::context::{ExprKind, Pattern};
     use crate::env::GlobalEnv;
-    use crate::types::{SchemaVarAllocator, Ty, TyScheme};
+    use crate::types::{SchemaVarAllocator, TyScheme};
     use crate::{BindingKind, BindingRecord, ExprRecord, ModuleInput};
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -1758,7 +2050,7 @@ mod tests {
         let expr_id = NodeId(6);
 
         let mut kinds = HashMap::new();
-        kinds.insert(expr_id, ExprKind::Var(binding_id));
+        kinds.insert(expr_id, ExprKind::BindingRef(binding_id));
 
         let module = make_module(binding_id, expr_id, kinds);
         let group = single_binding_group(binding_id.0);
@@ -2004,7 +2296,9 @@ mod tests {
             Vec::new(),
             func_expr,
             body_expr,
-            ExprKind::Return { expr: ret_expr },
+            ExprKind::Return {
+                expr: Some(ret_expr),
+            },
         );
         // Attach the literal as a separate binding so constraint generation
         // can look up its type.

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
-use ray_shared::pathlib::Path;
-use ray_typing::types::{ReceiverMode, Ty};
+use ray_shared::{pathlib::Path, ty::Ty};
+use ray_typing::types::ReceiverMode;
 
 fn ty_var(name: &str) -> Ty {
     Ty::var(Path::from(name))

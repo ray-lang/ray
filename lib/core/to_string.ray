@@ -1,3 +1,17 @@
 trait ToStr['a] {
     fn to_str(self: 'a) -> string
 }
+
+impl ToStr[()] {
+    fn to_str(self: ()) -> string => "()"
+}
+
+impl ToStr[bool] {
+    fn to_str(self: bool) -> string {
+        if self {
+            "true"
+        } else {
+            "false"
+        }
+    }
+}

@@ -24,14 +24,17 @@ use tower_lsp::{
 
 use ray_core::libgen;
 use ray_core::libgen::DefinitionKind;
-use ray_shared::span::{Source, Span};
+use ray_shared::span::Span;
 use ray_shared::{node_id::NodeId, pathlib::FilePath};
 use serde_json::Value;
 
 use crate::{
     diagnostics::{self, AnalysisSnapshotData},
-    helpers::{filepath_to_uri, parse_toolchain_path, span_to_range, uri_to_filepath},
+    helpers::{
+        filepath_to_uri, is_core_library_uri, parse_toolchain_path, span_to_range, uri_to_filepath,
+    },
     semantic_tokens::{self, pretty_dump},
+    symbols::{ResolvedSymbol, resolve_symbol_at_position},
 };
 
 #[derive(Clone)]
@@ -343,21 +346,22 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let Some((snapshot, node_id, source)) = self.lookup_symbol_targets_at(&uri, position).await
+        let Some((_snapshot, resolved)) = self.lookup_symbol_targets_at(&uri, position).await
         else {
             return Ok(None);
         };
 
         self.log(format!(
             "[server] goto_definition: found source for node_id={} source_span={:?}",
-            node_id, source.span
+            resolved.node_id, resolved.source.span
         ))
         .await;
 
-        let Some(symbol_targets) = snapshot.data.symbol_map.get(&node_id) else {
+        let symbol_targets = &resolved.symbol_targets;
+        if symbol_targets.is_empty() {
             self.log(format!(
                 "[server] goto_definition: no symbol target for node_id={}",
-                node_id
+                resolved.node_id
             ))
             .await;
             return Ok(None);
@@ -392,7 +396,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         if locations.is_empty() {
             self.log(format!(
                 "[server] goto_definition: empty symbol target list for node_id={}",
-                node_id
+                resolved.node_id
             ))
             .await;
             return Ok(None);
@@ -405,35 +409,37 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let Some((snapshot, node_id, source)) = self.lookup_symbol_targets_at(&uri, position).await
-        else {
+        let Some((snapshot, resolved)) = self.lookup_symbol_targets_at(&uri, position).await else {
             return Ok(None);
         };
 
         self.log(format!(
             "[server] hover: found source for node_id={} source_span={:?}",
-            node_id, source.span
+            resolved.node_id, resolved.source.span
         ))
         .await;
 
-        let Some(symbol_targets) = snapshot.data.symbol_map.get(&node_id) else {
+        let symbol_targets = &resolved.symbol_targets;
+        if symbol_targets.is_empty() {
             self.log(format!(
                 "[server] hover: no symbol target for node_id={}",
-                node_id
+                resolved.node_id
             ))
             .await;
             return Ok(None);
         };
 
-        let has_node_type = snapshot.data.node_type_info.contains_key(&node_id);
+        let has_node_type = snapshot.data.node_type_info.contains_key(&resolved.node_id);
         let mut hover_entries: Vec<(String, Span)> = Vec::new();
-        if let Some(span) = source.span {
-            if let Some(entry) = node_type_hover_entry(&snapshot, node_id, symbol_targets, span) {
+        if let Some(span) = resolved.source.span {
+            if let Some(entry) =
+                node_type_hover_entry(&snapshot, resolved.node_id, symbol_targets, span)
+            {
                 hover_entries.push(entry);
             }
             hover_entries.extend(definition_hover_entries(
                 &snapshot,
-                node_id,
+                resolved.node_id,
                 symbol_targets,
                 span,
                 has_node_type,
@@ -443,7 +449,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         if hover_entries.is_empty() {
             self.log(format!(
                 "[server] hover: empty symbol target list for node_id={}",
-                node_id
+                resolved.node_id
             ))
             .await;
             return Ok(None);
@@ -610,22 +616,6 @@ impl RayLanguageServer {
         }
     }
 
-    fn is_core_library_uri(uri: &Url) -> bool {
-        use std::path::Component;
-        if let Ok(path) = uri.to_file_path() {
-            // Match .../lib/core/... in a platform-independent way
-            let mut seen_lib = false;
-            for comp in path.components() {
-                match comp {
-                    Component::Normal(os) if os == "lib" => seen_lib = true,
-                    Component::Normal(os) if seen_lib && os == "core" => return true,
-                    _ => {}
-                }
-            }
-        }
-        false
-    }
-
     async fn publish_diagnostics(&self, uri: &Url) {
         let (text, version) = {
             let documents = self.documents.read().await;
@@ -665,7 +655,7 @@ impl RayLanguageServer {
         // Avoid trying to load a precompiled core.raylib, which causes IO errors and stale diagnostics.
         let toolchain_root = {
             let configured = { self.toolchain_root.read().await.clone() };
-            if RayLanguageServer::is_core_library_uri(uri) {
+            if is_core_library_uri(uri) {
                 // Signal the analyzer to not rely on an external/built core; use the open files instead.
                 None
             } else {
@@ -673,7 +663,7 @@ impl RayLanguageServer {
             }
         };
 
-        if RayLanguageServer::is_core_library_uri(uri) {
+        if is_core_library_uri(uri) {
             self.log(
                 "[server] diagnostics: core file detected; using workspace core (no prebuilt)",
             )
@@ -783,7 +773,7 @@ impl RayLanguageServer {
         &self,
         uri: &Url,
         position: Position,
-    ) -> Option<(AnalysisSnapshot, NodeId, Source)> {
+    ) -> Option<(AnalysisSnapshot, ResolvedSymbol)> {
         // 1. snapshot
         let snapshot = {
             let cache = self.analysis_cache.read().await;
@@ -804,7 +794,8 @@ impl RayLanguageServer {
         let canon = filepath.canonicalize().unwrap_or(filepath.clone());
 
         // 3. node + source span in this file
-        let (node_id, source) = snapshot.data.srcmap.find_at_position(
+        let resolved = resolve_symbol_at_position(
+            &snapshot.data,
             &canon,
             position.line as usize,
             position.character as usize,
@@ -812,10 +803,10 @@ impl RayLanguageServer {
 
         self.log(format!(
             "[server] lookup_symbol_targets_at: node_id={} source_span={:?}",
-            node_id, source.span
+            resolved.node_id, resolved.source.span
         ))
         .await;
 
-        Some((snapshot, node_id, source))
+        Some((snapshot, resolved))
     }
 }

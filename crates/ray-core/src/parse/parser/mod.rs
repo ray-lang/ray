@@ -17,14 +17,17 @@ mod ty;
 mod tests;
 
 pub use context::ParseContext;
-use ray_shared::node_id::{NodeId, NodeIdNamespaceGuard};
 pub use recover::{Recover, RecoveryCtx};
 
 use std::{fs, io, mem};
 
-use ray_shared::pathlib::{FilePath, Path};
-use ray_shared::span::{Pos, Source, Span, parsed::Parsed};
-use ray_typing::types::{Ty, TyScheme};
+use ray_shared::{
+    node_id::{NodeId, NodeIdNamespaceGuard},
+    pathlib::{FilePath, Path},
+    span::{Pos, Source, Span, parsed::Parsed},
+    ty::Ty,
+};
+use ray_typing::types::TyScheme;
 
 use crate::{
     ast::{
@@ -1095,7 +1098,7 @@ impl<'src> Parser<'src> {
         let span = Span { start, end };
         let context = Some(ctx.path.to_string());
         let missing = Missing::new("pattern", context);
-        self.mk_node(Pattern::Missing(missing), span)
+        self.mk_node(Pattern::Missing(missing), span, ctx.path.clone())
     }
 
     fn missing_type(&mut self, start: Pos, mut end: Pos) -> Parsed<TyScheme> {
@@ -1329,18 +1332,7 @@ impl<'src> Parser<'src> {
         node
     }
 
-    pub(crate) fn mk_node<T>(&mut self, value: T, span: Span) -> Node<T> {
-        let node = Node::new(value);
-        let src = Source {
-            span: Some(span),
-            filepath: self.options.filepath.clone(),
-            ..Default::default()
-        };
-        self.srcmap.set_src(&node, src);
-        node
-    }
-
-    pub(crate) fn mk_node_with_path<T>(&mut self, value: T, span: Span, path: Path) -> Node<T> {
+    pub(crate) fn mk_node<T>(&mut self, value: T, span: Span, path: Path) -> Node<T> {
         let node = Node::new(value);
         let src = Source {
             span: Some(span),

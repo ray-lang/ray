@@ -114,6 +114,10 @@ impl<T> Parsed<T> {
         self.value
     }
 
+    pub fn src(&self) -> &Source {
+        &self.src
+    }
+
     pub fn span(&self) -> Option<&Span> {
         self.src.span.as_ref()
     }

@@ -92,7 +92,7 @@ impl Parser<'_> {
         let is_anon = name.is_none();
         let path = if let Some((name, span)) = &name {
             let path = ctx.path.append(name);
-            parser.mk_node(path, *span)
+            parser.mk_node(path, *span, ctx.path.clone())
         } else {
             Node::new(ctx.path.append("<anon>"))
         };
@@ -185,7 +185,7 @@ impl Parser<'_> {
         self.parse_name_with_type(Some(&TokenKind::RightParen), ctx)
             .map(|name| {
                 let span = self.srcmap.span_of(&name);
-                self.mk_node_with_path(FnParam::Name(name.value), span, path.clone())
+                self.mk_node(FnParam::Name(name.value), span, path.clone())
             })
     }
 
@@ -196,7 +196,7 @@ impl Parser<'_> {
         let (name, span) = self.expect_id(ctx)?;
         self.expect(TokenKind::Colon, ctx)?;
         let ty = self.parse_type_annotation(Some(&TokenKind::Comma), ctx);
-        Ok(self.mk_node(FnParam::Name(Name::typed(name, ty)), span))
+        Ok(self.mk_node(FnParam::Name(Name::typed(name, ty)), span, ctx.path.clone()))
     }
 
     fn parse_params_with<F>(
@@ -233,7 +233,11 @@ impl Parser<'_> {
                             };
                             let info = Missing::new("parameter", Some(ctx.path.to_string()));
                             let placeholder = Name::new("_");
-                            Some(parser.mk_node(FnParam::Missing { info, placeholder }, span))
+                            Some(parser.mk_node(
+                                FnParam::Missing { info, placeholder },
+                                span,
+                                ctx.path.clone(),
+                            ))
                         })
                         .unwrap_or_else(|| {
                             let span = Span {
@@ -242,7 +246,11 @@ impl Parser<'_> {
                             };
                             let info = Missing::new("parameter", Some(ctx.path.to_string()));
                             let placeholder = Name::new("_");
-                            parser.mk_node(FnParam::Missing { info, placeholder }, span)
+                            parser.mk_node(
+                                FnParam::Missing { info, placeholder },
+                                span,
+                                ctx.path.clone(),
+                            )
                         });
 
                     if expect_if!(parser, TokenKind::Equals) {
@@ -254,6 +262,7 @@ impl Parser<'_> {
                         param = parser.mk_node(
                             FnParam::DefaultValue(Box::new(param), Box::new(default)),
                             span,
+                            ctx.path.clone(),
                         );
                     }
 

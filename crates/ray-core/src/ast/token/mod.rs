@@ -55,6 +55,8 @@ pub enum TokenKind {
     Return,
     /// break
     Break,
+    /// continue
+    Continue,
     /// async
     Async,
     /// extern
@@ -232,6 +234,7 @@ impl TokenKind {
             TokenKind::Else => "`else`",
             TokenKind::Then => "`then`",
             TokenKind::Break => "`break`",
+            TokenKind::Continue => "`continue`",
             TokenKind::Return => "`return`",
             TokenKind::Async => "`async`",
             TokenKind::Extern => "`extern`",
@@ -350,6 +353,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Then => "then".to_string(),
             TokenKind::Return => "return".to_string(),
             TokenKind::Break => "break".to_string(),
+            TokenKind::Continue => "continue".to_string(),
             TokenKind::Async => "async".to_string(),
             TokenKind::Extern => "extern".to_string(),
             TokenKind::Struct => "struct".to_string(),

@@ -1,5 +1,9 @@
-use ray_shared::span::{Span, parsed::Parsed};
-use ray_typing::types::{Ty, TyScheme};
+use ray_shared::{
+    pathlib::Path,
+    span::{Span, parsed::Parsed},
+    ty::Ty,
+};
+use ray_typing::types::TyScheme;
 
 use crate::{
     ast::{TrailingPolicy, TypeParams, token::TokenKind},
@@ -113,11 +117,19 @@ impl Parser<'_> {
     ) -> ParseResult<Parsed<TyScheme>> {
         if let Some(t) = self.parse_ty_complex(ctx)? {
             Ok(t)
-        } else if let Some((name, span)) = ident {
-            self.parse_ty_with_name(name, span, ctx)
         } else {
-            let (name, span) = self.expect_id(ctx)?;
-            self.parse_ty_with_name(name, span, ctx)
+            let (name, span) = if let Some((name, span)) = ident {
+                (name, span)
+            } else {
+                self.expect_id(ctx)?
+            };
+            let path = if expect_if!(self, TokenKind::DoubleColon) {
+                self.parse_path_with((name, span), ctx)?
+            } else {
+                self.mk_node(Path::from(vec![name]), span, ctx.path.clone())
+            };
+            let span = self.srcmap.span_of(&path);
+            self.parse_ty_with_path(path.value, span, ctx)
         }
     }
 
@@ -221,6 +233,15 @@ impl Parser<'_> {
         span: Span,
         ctx: &ParseContext,
     ) -> ParseResult<Parsed<TyScheme>> {
+        self.parse_ty_with_path(Path::from(name), span, ctx)
+    }
+
+    fn parse_ty_with_path(
+        &mut self,
+        path: Path,
+        span: Span,
+        ctx: &ParseContext,
+    ) -> ParseResult<Parsed<TyScheme>> {
         let mut synth_ids = vec![];
 
         let Span { start, mut end } = span;
@@ -229,7 +250,12 @@ impl Parser<'_> {
             end = p.rb_span.end;
         }
 
-        let ty = if let Some(mut ty) = Ty::from_str(&name) {
+        let builtin_name = if path.len() == 1 {
+            Some(path.as_str())
+        } else {
+            None
+        };
+        let ty = if let Some(mut ty) = builtin_name.and_then(Ty::from_str) {
             match &mut ty {
                 Ty::Proj(_, el_tys) => {
                     if let Some(ty_params) = ty_params {
@@ -290,7 +316,7 @@ impl Parser<'_> {
                 vec![]
             };
 
-            Ty::with_tys(&name, tys)
+            Ty::with_tys(path, tys)
         };
 
         if !matches!(ty, Ty::RawPtr(_)) {

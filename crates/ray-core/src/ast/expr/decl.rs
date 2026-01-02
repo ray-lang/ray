@@ -4,13 +4,13 @@ use std::{
 };
 
 use itertools::Itertools;
-use ray_shared::{pathlib::Path, span::parsed::Parsed, utils::join};
+use ray_shared::{pathlib::Path, span::parsed::Parsed, ty::Ty, utils::join};
+use ray_typing::types::{NominalKind, TyScheme};
 
 use crate::{
     ast::{Assign, Func, FuncSig, Name, Node, TypeParams},
     strutils,
 };
-use ray_typing::types::{NominalKind, Ty, TyScheme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extern {

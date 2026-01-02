@@ -9,8 +9,8 @@ use lang_c::span::Node;
 use ray_shared::{
     pathlib::FilePath,
     span::{Pos, Source, Span},
+    ty::Ty,
 };
-use ray_typing::types::Ty;
 
 use crate::{
     ast,

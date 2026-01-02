@@ -30,6 +30,13 @@ where
                         continue;
                     }
                 }
+                lir::Inst::Insert(i) => {
+                    if matches!(i.value, lir::Value::Call(_)) {
+                        inst
+                    } else {
+                        continue;
+                    }
+                }
                 lir::Inst::SetField(s) => {
                     if matches!(s.value, lir::Value::Call(_)) {
                         inst

@@ -7,6 +7,41 @@ impl ToStr[string] {
     fn to_str(self) => self
 }
 
+impl Eq[string, string] {
+    fn ==(a: string, b: string) -> bool {
+        if a.len != b.len {
+            return false
+        }
+
+        mut i: uint = 0
+        while i < a.len {
+            pa = a.raw_ptr + i
+            pb = b.raw_ptr + i
+            if *pa != *pb {
+                return false
+            }
+            i += 1
+        }
+
+        true
+    }
+}
+
+impl Hash[string] {
+    fn hash(self: string) -> u64 {
+        // FNV-1a (64-bit)
+        mut h: u64 = 14695981039346656037u64
+        mut i: uint = 0
+        while i < self.len {
+            b = *(self.raw_ptr + i)
+            h = h ^ (b as u64)
+            h = h * 1099511628211u64
+            i += 1
+        }
+        h
+    }
+}
+
 impl Add[string, string, string] {
     fn +(a: string, b: string) -> string {
         len = a.len + b.len

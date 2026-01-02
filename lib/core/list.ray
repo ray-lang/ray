@@ -25,3 +25,79 @@ impl Index[list['a], 'a, uint] {
         some(prev)
     }
 }
+
+impl object list['a] {
+    static fn with_capacity(capacity: uint) -> list['a] {
+        if capacity == 0 {
+            return list { values: malloc(0) as rawptr['a], len: 0, capacity: 0 }
+        }
+
+        elem_size = sizeof('a)
+        bytes = capacity * elem_size
+        values = malloc(bytes) as rawptr['a]
+        list { values, len: 0, capacity }
+    }
+
+    fn is_empty(self: *list['a]) -> bool {
+        self.len == 0
+    }
+
+    fn clear(self: *list['a]) -> () {
+        self.len = 0
+    }
+
+    fn pop(self: *list['a]) -> 'a? {
+        if self.len == 0 {
+            return nil
+        }
+
+        idx = self.len - 1
+        ptr = self.values + idx
+        prev = *ptr
+        self.len = idx
+        some(prev)
+    }
+
+    fn reserve(self: *list['a], capacity: uint) -> () {
+        if capacity == self.capacity {
+            return
+        }
+
+        if capacity == 0 {
+            self.values = malloc(0) as rawptr['a]
+            self.len = 0
+            self.capacity = 0
+            return
+        }
+
+        elem_size = sizeof('a)
+        bytes = capacity * elem_size
+        new_values = malloc(bytes) as rawptr['a]
+
+        mut copy_len = self.len
+        if capacity < copy_len {
+            copy_len = capacity
+        }
+
+        copy_bytes = copy_len * elem_size
+        memcopy(new_values as rawptr[u8], self.values as rawptr[u8], copy_bytes)
+
+        self.values = new_values
+        self.len = copy_len
+        self.capacity = capacity
+    }
+
+    fn push(self: *list['a], el: 'a) -> () {
+        if self.len == self.capacity {
+            if self.capacity == 0 {
+                self.reserve(1)
+            } else {
+                self.reserve(self.capacity * 2)
+            }
+        }
+
+        ptr = self.values + self.len
+        *ptr = el
+        self.len = self.len + 1
+    }
+}

@@ -10,6 +10,8 @@ pub enum IntrinsicKind {
     DerefRaw,
     SizeOf,
     Memcopy,
+    IntHashBytes,
+    BoolEq,
     IntEq,
     I8Eq,
     I16Eq,
@@ -20,6 +22,7 @@ pub enum IntrinsicKind {
     U16Eq,
     U32Eq,
     U64Eq,
+    BoolNeq,
     IntNeq,
     I8Neq,
     I16Neq,
@@ -85,36 +88,36 @@ pub enum IntrinsicKind {
     I16Neg,
     I32Neg,
     I64Neg,
-    IntAnd,
-    I8And,
-    I16And,
-    I32And,
-    I64And,
-    UintAnd,
-    U8And,
-    U16And,
-    U32And,
-    U64And,
-    IntOr,
-    I8Or,
-    I16Or,
-    I32Or,
-    I64Or,
-    UintOr,
-    U8Or,
-    U16Or,
-    U32Or,
-    U64Or,
-    IntXor,
-    I8Xor,
-    I16Xor,
-    I32Xor,
-    I64Xor,
-    UintXor,
-    U8Xor,
-    U16Xor,
-    U32Xor,
-    U64Xor,
+    IntBitAnd,
+    I8BitAnd,
+    I16BitAnd,
+    I32BitAnd,
+    I64BitAnd,
+    UintBitAnd,
+    U8BitAnd,
+    U16BitAnd,
+    U32BitAnd,
+    U64BitAnd,
+    IntBitOr,
+    I8BitOr,
+    I16BitOr,
+    I32BitOr,
+    I64BitOr,
+    UintBitOr,
+    U8BitOr,
+    U16BitOr,
+    U32BitOr,
+    U64BitOr,
+    IntBitXor,
+    I8BitXor,
+    I16BitXor,
+    I32BitXor,
+    I64BitXor,
+    UintBitXor,
+    U8BitXor,
+    U16BitXor,
+    U32BitXor,
+    U64BitXor,
     IntLt,
     I8Lt,
     I16Lt,
@@ -195,6 +198,9 @@ pub enum IntrinsicKind {
     U16Rotr,
     U32Rotr,
     U64Rotr,
+    BoolAnd,
+    BoolOr,
+    BoolNot,
 }
 
 impl IntrinsicKind {
@@ -206,6 +212,8 @@ impl IntrinsicKind {
             "__deref_raw" => Some(Self::DerefRaw),
             "sizeof" => Some(Self::SizeOf),
             "memcopy" => Some(Self::Memcopy),
+            "int_hash_bytes" => Some(Self::IntHashBytes),
+            "bool_eq" => Some(Self::BoolEq),
             "int_eq" => Some(Self::IntEq),
             "i8_eq" => Some(Self::I8Eq),
             "i16_eq" => Some(Self::I16Eq),
@@ -216,6 +224,7 @@ impl IntrinsicKind {
             "u16_eq" => Some(Self::U16Eq),
             "u32_eq" => Some(Self::U32Eq),
             "u64_eq" => Some(Self::U64Eq),
+            "bool_neq" => Some(Self::BoolNeq),
             "int_neq" => Some(Self::IntNeq),
             "i8_neq" => Some(Self::I8Neq),
             "i16_neq" => Some(Self::I16Neq),
@@ -281,36 +290,36 @@ impl IntrinsicKind {
             "i16_neg" => Some(Self::I16Neg),
             "i32_neg" => Some(Self::I32Neg),
             "i64_neg" => Some(Self::I64Neg),
-            "int_and" => Some(Self::IntAnd),
-            "i8_and" => Some(Self::I8And),
-            "i16_and" => Some(Self::I16And),
-            "i32_and" => Some(Self::I32And),
-            "i64_and" => Some(Self::I64And),
-            "uint_and" => Some(Self::UintAnd),
-            "u8_and" => Some(Self::U8And),
-            "u16_and" => Some(Self::U16And),
-            "u32_and" => Some(Self::U32And),
-            "u64_and" => Some(Self::U64And),
-            "int_or" => Some(Self::IntOr),
-            "i8_or" => Some(Self::I8Or),
-            "i16_or" => Some(Self::I16Or),
-            "i32_or" => Some(Self::I32Or),
-            "i64_or" => Some(Self::I64Or),
-            "uint_or" => Some(Self::UintOr),
-            "u8_or" => Some(Self::U8Or),
-            "u16_or" => Some(Self::U16Or),
-            "u32_or" => Some(Self::U32Or),
-            "u64_or" => Some(Self::U64Or),
-            "int_xor" => Some(Self::IntXor),
-            "i8_xor" => Some(Self::I8Xor),
-            "i16_xor" => Some(Self::I16Xor),
-            "i32_xor" => Some(Self::I32Xor),
-            "i64_xor" => Some(Self::I64Xor),
-            "uint_xor" => Some(Self::UintXor),
-            "u8_xor" => Some(Self::U8Xor),
-            "u16_xor" => Some(Self::U16Xor),
-            "u32_xor" => Some(Self::U32Xor),
-            "u64_xor" => Some(Self::U64Xor),
+            "int_bit_and" => Some(Self::IntBitAnd),
+            "i8_bit_and" => Some(Self::I8BitAnd),
+            "i16_bit_and" => Some(Self::I16BitAnd),
+            "i32_bit_and" => Some(Self::I32BitAnd),
+            "i64_bit_and" => Some(Self::I64BitAnd),
+            "uint_bit_and" => Some(Self::UintBitAnd),
+            "u8_bit_and" => Some(Self::U8BitAnd),
+            "u16_bit_and" => Some(Self::U16BitAnd),
+            "u32_bit_and" => Some(Self::U32BitAnd),
+            "u64_bit_and" => Some(Self::U64BitAnd),
+            "int_bit_or" => Some(Self::IntBitOr),
+            "i8_bit_or" => Some(Self::I8BitOr),
+            "i16_bit_or" => Some(Self::I16BitOr),
+            "i32_bit_or" => Some(Self::I32BitOr),
+            "i64_bit_or" => Some(Self::I64BitOr),
+            "uint_bit_or" => Some(Self::UintBitOr),
+            "u8_bit_or" => Some(Self::U8BitOr),
+            "u16_bit_or" => Some(Self::U16BitOr),
+            "u32_bit_or" => Some(Self::U32BitOr),
+            "u64_bit_or" => Some(Self::U64BitOr),
+            "int_bit_xor" => Some(Self::IntBitXor),
+            "i8_bit_xor" => Some(Self::I8BitXor),
+            "i16_bit_xor" => Some(Self::I16BitXor),
+            "i32_bit_xor" => Some(Self::I32BitXor),
+            "i64_bit_xor" => Some(Self::I64BitXor),
+            "uint_bit_xor" => Some(Self::UintBitXor),
+            "u8_bit_xor" => Some(Self::U8BitXor),
+            "u16_bit_xor" => Some(Self::U16BitXor),
+            "u32_bit_xor" => Some(Self::U32BitXor),
+            "u64_bit_xor" => Some(Self::U64BitXor),
             "int_lt" => Some(Self::IntLt),
             "i8_lt" => Some(Self::I8Lt),
             "i16_lt" => Some(Self::I16Lt),
@@ -391,6 +400,9 @@ impl IntrinsicKind {
             "u16_rotr" => Some(Self::U16Rotr),
             "u32_rotr" => Some(Self::U32Rotr),
             "u64_rotr" => Some(Self::U64Rotr),
+            "bool_and" => Some(Self::BoolAnd),
+            "bool_or" => Some(Self::BoolOr),
+            "bool_not" => Some(Self::BoolNot),
             _ => None,
         }
     }
@@ -438,21 +450,21 @@ impl IntrinsicKind {
                 | Self::I16Neg
                 | Self::I32Neg
                 | Self::I64Neg
-                | Self::IntAnd
-                | Self::I8And
-                | Self::I16And
-                | Self::I32And
-                | Self::I64And
-                | Self::IntOr
-                | Self::I8Or
-                | Self::I16Or
-                | Self::I32Or
-                | Self::I64Or
-                | Self::IntXor
-                | Self::I8Xor
-                | Self::I16Xor
-                | Self::I32Xor
-                | Self::I64Xor
+                | Self::IntBitAnd
+                | Self::I8BitAnd
+                | Self::I16BitAnd
+                | Self::I32BitAnd
+                | Self::I64BitAnd
+                | Self::IntBitOr
+                | Self::I8BitOr
+                | Self::I16BitOr
+                | Self::I32BitOr
+                | Self::I64BitOr
+                | Self::IntBitXor
+                | Self::I8BitXor
+                | Self::I16BitXor
+                | Self::I32BitXor
+                | Self::I64BitXor
                 | Self::IntLt
                 | Self::I8Lt
                 | Self::I16Lt
