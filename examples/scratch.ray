@@ -1,18 +1,7 @@
 fn main() {
-    s = {1, 2, 3}
-    v = s.contains(1)
-    print(v)
-
-    v = s.contains(2)
-    print(v)
-
-    v = s.contains(3)
-    print(v)
-
-    v = s.contains(4)
-    print(v)
-
-    s.insert(4)
-    v = s.contains(4)
-    print(v)
+    d = { 1: 10, 2: 20, 3: 30 }
+    d[4] = 40
+    for entry in d {
+        print(entry)
+    }
 }

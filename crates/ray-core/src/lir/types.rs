@@ -740,7 +740,10 @@ impl Substitutable for Inst {
             Inst::SetGlobal(_, v) => v.apply_subst(subst),
             Inst::SetLocal(_, v) => v.apply_subst(subst),
             Inst::If(b) => b.apply_subst(subst),
-            Inst::StructInit(v, _) => v.apply_subst(subst),
+            Inst::StructInit(v, struct_ty) => {
+                v.apply_subst(subst);
+                struct_ty.apply_subst(subst);
+            }
             Inst::SetField(s) => s.apply_subst(subst),
             Inst::Store(s) => s.apply_subst(subst),
             Inst::Insert(i) => i.apply_subst(subst),
@@ -2131,7 +2134,7 @@ impl Select {
 pub struct Store {
     pub dst: Variable,
     pub value: Value,
-    pub offset: Size,
+    pub offset: usize,
 }
 
 impl Display for Store {
@@ -2168,7 +2171,7 @@ impl Substitutable for Store {
 }
 
 impl Store {
-    pub fn new(dst: Variable, value: Value, offset: Size) -> Inst {
+    pub fn new(dst: Variable, value: Value, offset: usize) -> Inst {
         Inst::Store(Store { dst, value, offset })
     }
 }

@@ -251,19 +251,25 @@ fn typechecks_unannotated_bool_literal_function() {
 #[test]
 fn records_call_resolution_for_unary_ops() {
     let src = r#"
+        @intrinsic extern fn i32_neg(a: i32) -> i32
+        trait Neg['a, 'b] { fn -(self: 'a) -> 'b }
+        impl Neg[i32, i32] {
+            fn -(self: i32) -> i32 => i32_neg(self)
+        }
         fn main() {
-            a = -1
+            x = 1i32
+            a = -x
         }
     "#;
 
     let (_, result, tcx) = typecheck_src("records_call_resolution_for_unary_ops", src);
     assert_typechecks("records_call_resolution_for_unary_ops", &result);
 
-    let expected = Path::from("core::Neg::-");
+    let expected = Path::from("records_call_resolution_for_unary_ops::Neg::-");
     assert!(
         tcx.call_resolutions()
             .values()
-            .any(|resolution| resolution.base_fqn == expected),
+            .any(|resolution| resolution.base_fqn.with_names_only() == expected),
         "expected a call resolution for unary - via {}, got: {:?}",
         expected,
         tcx.call_resolutions()
@@ -536,7 +542,6 @@ fn typechecks_struct_literal_and_field_access() {
 
 #[test]
 fn typechecks_list_and_int_literals() {
-    enable_debug_logs();
     let src = r#"
         trait Int['a] {
             default(int)
@@ -565,7 +570,7 @@ fn typechecks_list_and_int_literals() {
         &module_path,
         "main::l",
         &[],
-        Ty::list(Ty::int()),
+        Ty::proj("test::list", vec![Ty::int()]),
         &[],
     );
 }
@@ -732,12 +737,12 @@ fn poly() {
     let ty_a = Ty::Var(var_a);
     let ty_b = Ty::Var(var_b);
     let ty_c = Ty::Var(var_c);
-    let expected_ty = Ty::func(vec![ty_a.clone()], ty_b.clone());
+    let expected_ty = Ty::func(vec![ty_b.clone()], ty_c.clone());
     let add_trait = module_path.append("Add").to_string();
     let int_trait = module_path.append("Int").to_string();
     let expected_predicates = vec![
-        Predicate::class(int_trait, vec![ty_c.clone()]),
-        Predicate::class(add_trait, vec![ty_a, ty_c, ty_b]),
+        Predicate::class(int_trait, vec![ty_a.clone()]),
+        Predicate::class(add_trait, vec![ty_b, ty_a, ty_c]),
     ];
     assert_local_scheme_eq(
         &tcx,
@@ -866,7 +871,6 @@ fn core_print(v: 'a) -> () where ToStr['a] {
 
 #[test]
 fn typechecks_signed_tostr_calls_abs_under_qualifiers() {
-    enable_debug_logs();
     let src = r#"
 trait ToStr['a] {
     fn to_str(self: 'a) -> string
@@ -925,7 +929,6 @@ fn core_print(v: 'a) -> () where ToStr['a] {
 
 #[test]
 fn typechecks_generic_tostr_for_u32() {
-    enable_debug_logs();
     let src = r#"
 trait ToStr['a] {
     fn to_str(self: 'a) -> string
@@ -1047,7 +1050,6 @@ fn main() {
 }
 "#;
 
-    enable_debug_logs();
     let (_module_path, result, _tcx) = typecheck_src("core", src);
     assert_typechecks("typechecks_writev_stdout_wasi_shape", &result);
 }
@@ -1187,7 +1189,6 @@ fn foo(i: 'a) -> 'a where Int['a], Div['a, 'a, 'a] {
 
 #[test]
 fn typechecks_generic_eq_zero_uses_receiver_given_to_constrain_rhs() {
-    enable_debug_logs();
     let src = r#"
 trait Int['a] {
     default(int)
@@ -1560,7 +1561,6 @@ fn print(v: 'a) -> () where ToStr['a] {
     assert_typechecks("test", &result);
 }
 
-// Regression test for list.ray:9,13,14 failure - field access on pointer to generic struct
 #[test]
 fn typechecks_field_access_on_pointer_to_generic_struct() {
     let src = r#"
@@ -1631,4 +1631,29 @@ impl Index[Container['a], 'a, uint] {
 
     let (_module_path, result, _tcx, _) = typecheck_src_with_bindings("test", src);
     assert_typechecks("test", &result);
+}
+
+#[test]
+fn typechecks_scoped_static_call_in_impl_with_bounds() {
+    let src = r#"
+        struct A['a, 'b] {}
+        struct B['a, 'b] { value: A['a, 'b] }
+
+        trait T['a] {}
+        trait U['a] { fn go(self: *'a) -> u32 }
+
+        impl U[B['a, 'b]] where T['a] {
+            fn go(self: *B['a, 'b]) -> u32 {
+                A['a, 'b]::check()
+            }
+        }
+
+        impl object A['a, 'b] where T['a] {
+            static fn check() -> u32 { 0u32 }
+        }
+    "#;
+
+    let (_module_path, result, _tcx) =
+        typecheck_src("typechecks_scoped_static_call_in_impl_with_bounds", src);
+    assert_typechecks("typechecks_scoped_static_call_in_impl_with_bounds", &result);
 }

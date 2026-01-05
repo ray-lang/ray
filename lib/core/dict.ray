@@ -15,6 +15,11 @@ struct dict['k, 'v] {
     tombstones: uint
 }
 
+struct DictIter['k, 'v] {
+    dict: *dict['k, 'v]
+    idx: uint
+}
+
 impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
     fn get(self: *dict['k, 'v], key: 'k) -> 'v? {
         if self.capacity == 0 {
@@ -33,6 +38,30 @@ impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
 
     fn set(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.insert(key, value)
+    }
+}
+
+impl Iterable[dict['k, 'v], DictIter['k, 'v], ('k, 'v)] {
+    fn iter(self: *dict['k, 'v]) -> DictIter['k, 'v] {
+        DictIter { dict: self, idx: 0 }
+    }
+}
+
+impl Iter[DictIter['k, 'v], ('k, 'v)] where Hash['k], Eq['k, 'k] {
+    fn next(self: *DictIter['k, 'v]) -> ('k, 'v)? {
+        while self.idx < self.dict.capacity {
+            idx = self.idx
+            self.idx = self.idx + 1
+
+            c = *(self.dict.ctrl + idx)
+            if c != dict['k, 'v]::__ctrl_empty() && c != dict['k, 'v]::__ctrl_deleted() {
+                kptr = self.dict.keys + idx
+                vptr = self.dict.values + idx
+                return some((*kptr, *vptr))
+            }
+        }
+
+        nil
     }
 }
 

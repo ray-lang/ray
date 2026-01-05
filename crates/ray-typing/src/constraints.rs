@@ -121,7 +121,7 @@ pub struct InstantiateConstraint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallKind {
     /// `recv.method(args...)`
-    Instance { method_name: String },
+    Instance,
     /// `T::method(args...)` or `T[...]::method(args...)`
     Scoped {
         binding: BindingId,
@@ -143,6 +143,8 @@ pub struct ResolveCallConstraint {
     pub subject_ty: Ty,
     /// Expected function type at the call site, including the receiver.
     pub expected_fn_ty: Ty,
+    /// Name of the method for the call
+    pub method_name: String,
 }
 
 impl ResolveCallConstraint {
@@ -153,9 +155,10 @@ impl ResolveCallConstraint {
     ) -> Self {
         let method_name = method_name.into();
         ResolveCallConstraint {
-            kind: CallKind::Instance { method_name },
+            kind: CallKind::Instance,
             subject_ty,
             expected_fn_ty,
+            method_name,
         }
     }
 
@@ -163,8 +166,10 @@ impl ResolveCallConstraint {
         subject_ty: Ty,
         binding: BindingId,
         expected_fn_ty: Ty,
+        method_name: impl Into<String>,
         receiver_subst: Option<Subst>,
     ) -> Self {
+        let method_name = method_name.into();
         ResolveCallConstraint {
             kind: CallKind::Scoped {
                 binding,
@@ -172,6 +177,7 @@ impl ResolveCallConstraint {
             },
             subject_ty,
             expected_fn_ty,
+            method_name,
         }
     }
 
@@ -539,13 +545,10 @@ impl std::fmt::Display for InstantiateConstraint {
 
 impl std::fmt::Display for ResolveCallConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let method_name = match &self.kind {
-            CallKind::Instance { method_name } => method_name.as_str(),
-            CallKind::Scoped { .. } => "<scoped>",
-        };
+        let method_name = &self.method_name;
         let kind_str = match &self.kind {
-            CallKind::Instance { method_name } => {
-                format!("Instance {{ method_name: \"{}\" }}", method_name)
+            CallKind::Instance => {
+                format!("Instance")
             }
             CallKind::Scoped { binding, .. } => format!("Scoped {{ binding: {:?} }}", binding),
         };

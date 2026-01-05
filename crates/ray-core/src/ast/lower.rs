@@ -852,12 +852,6 @@ impl LowerAST for Sourced<'_, Impl> {
             });
         }
 
-        // create a subst mapping the type parameter to the argument
-        let mut sub = Subst::new();
-        for (ty_param, ty_arg) in trait_ty_params.iter().zip(&ty_args) {
-            sub.insert(ty_param.clone(), ty_arg.clone());
-        }
-
         let mut predicates = vec![];
         for q in imp.qualifiers.iter() {
             predicates.push(predicate_from_ast_ty(
@@ -870,7 +864,7 @@ impl LowerAST for Sourced<'_, Impl> {
 
         let kind = if let Some(trait_ty) = &trait_ty {
             let mut trait_ty = trait_ty.ty.clone();
-            trait_ty.apply_subst(&sub);
+            trait_ty.apply_subst(&trait_arg_subst);
             let base_ty = ty_args[0].clone();
 
             ImplKind::Trait {
@@ -879,9 +873,9 @@ impl LowerAST for Sourced<'_, Impl> {
                 ty_args: ty_args[1..].to_vec(),
             }
         } else {
-            ImplKind::Inherent {
-                recv_ty: imp.ty.deref().clone(),
-            }
+            let mut recv_ty = imp.ty.deref().clone();
+            impl_tcx.map_vars(&mut recv_ty);
+            ImplKind::Inherent { recv_ty }
         };
 
         let impl_ty = ImplTy {

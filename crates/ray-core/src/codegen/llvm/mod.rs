@@ -40,7 +40,7 @@ use ray_typing::{
 use crate::{
     ast::{Modifier, Node},
     codegen::{CodegenOptions, collect_symbols},
-    errors::RayError,
+    errors::{RayError, RayErrorKind},
     lir::{self, SymbolSet},
     sourcemap::SourceMap,
     target::Target,
@@ -159,7 +159,7 @@ where
     let wasm_path = output_path("wasm");
     log::info!("writing to {}", wasm_path);
     let curr_dir = env::current_dir().unwrap();
-    lld::link(
+    if let Some(msg) = lld::link(
         target.to_string(),
         &[
             obj_path.to_string(),
@@ -169,8 +169,17 @@ where
             curr_dir.join(wasm_path).to_str().unwrap().to_string(),
         ],
     )
-    .ok()
-    .unwrap();
+    .to_result()
+    .err()
+    {
+        let err = RayError {
+            msg,
+            src: vec![],
+            kind: RayErrorKind::Link,
+            context: None,
+        };
+        return Err(vec![err]);
+    }
     Ok(())
 }
 
@@ -285,7 +294,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .create_target_machine(
                 &target_triple,
                 "generic",
-                "",
+                "+bulk-memory",
                 llvm::OptimizationLevel::Default,
                 llvm::targets::RelocMode::Default,
                 llvm::targets::CodeModel::Default,
@@ -1171,7 +1180,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         if src_var.is_local() && self.get_pointee_ty(src).is_any_pointer() {
             src = self.load_pointer(src)?.into_pointer_value();
         }
-        let size = size.codegen(self, tcx, srcmap)?.into_int_value();
+        let size_val = size.codegen(self, tcx, srcmap)?;
+        let size = self.maybe_load_pointer(size_val)?.into_int_value();
         let td = self.target_machine.get_target_data();
         let dest_align = {
             let dest_pointee = self.get_pointee_ty(dest).clone();
@@ -2156,12 +2166,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Store {
                     ptr = ctx.load_pointer(ptr)?.into_pointer_value();
                 }
 
-                if self.offset.ptrs > 0 {
-                    ptr = ctx.get_element_ptr(ptr, self.offset.ptrs)?;
-                }
-
-                if self.offset.bytes > 0 {
-                    ptr = ctx.byte_offset_ptr(ptr, self.offset.bytes)?;
+                if self.offset > 0 {
+                    ptr = ctx.get_element_ptr(ptr, self.offset)?;
                 }
 
                 let value = self.value.codegen(ctx, tcx, srcmap)?;
@@ -2346,11 +2352,13 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Cast {
         tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Self::Output {
+        log::debug!("[Cast::codegen] src = {}, ty = {}", self.src, self.ty);
         let mut val = self.src.codegen(ctx, tcx, srcmap)?;
         val = ctx.maybe_load_pointer(val)?;
 
         let ty = ctx.to_llvm_type(&self.ty);
-        log::debug!("{}", ty.print_to_string());
+
+        log::debug!("[Cast::codegen] RHS value = {}, llvm_ty = {}", val, ty);
         Ok(match (val, ty) {
             (BasicValueEnum::IntValue(int_val), BasicTypeEnum::PointerType(ptr_type)) => ctx
                 .builder
@@ -2364,10 +2372,15 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Cast {
                 .builder
                 .build_int_cast(int_val, ty.into_int_type(), "")?
                 .as_basic_value_enum(),
-            _ => ctx
-                .builder
-                .build_bit_cast(val, ty, "")?
-                .as_basic_value_enum(),
+            _ => {
+                let bit_cast_value = ctx.builder.build_bit_cast(val, ty, "")?;
+                if let BasicValueEnum::PointerValue(ptr) = bit_cast_value {
+                    if let Some(pointee_ty) = self.ty.unwrap_pointer() {
+                        ctx.register_pointee_ty(ptr, pointee_ty.clone());
+                    }
+                }
+                bit_cast_value
+            }
         })
     }
 }
@@ -2769,6 +2782,7 @@ impl<'a, 'ctx> lir::Call {
             .to_llvm_type(&pointee_ty)
             .size_of()
             .expect("element size must be computable");
+        log::debug!("[codegen_ptr_offset] elem_size_raw={}", elem_size_raw);
         let elem_size = ctx
             .builder
             .build_int_cast(elem_size_raw, ctx.ptr_type(), "elem_size")?;

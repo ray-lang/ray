@@ -913,19 +913,20 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             // lowering it to a fully-qualified value path `T::name`.
             if let Expr::Type(ty) = &scoped_access.lhs.value {
                 let base = ty.value().mono().get_path().without_type_args();
-                let member = scoped_access
+                let member_name = scoped_access
                     .rhs
                     .value
                     .path
                     .name()
                     .unwrap_or_else(|| scoped_access.rhs.value.to_string());
-                let path = base.append(member);
+                let path = base.append(member_name.clone());
 
                 if let Some(binding) = ctx.value_bindings.get(&path).copied() {
                     ctx.record_expr(
                         node,
                         ExprKind::ScopedAccess {
                             binding,
+                            member_name,
                             lhs_ty: ty.value().mono().clone(),
                         },
                     )
@@ -987,10 +988,14 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     },
                 )
             } else {
-                todo!(
-                    "lowering for unsupported unary operator `{:?}` into ExprKind",
-                    unary.op.value
-                )
+                ctx.emit_error(
+                    node,
+                    format!(
+                        "unsupported unary operator `{}`; missing trait implementation",
+                        op_sym
+                    ),
+                );
+                ctx.record_expr(node, ExprKind::Missing)
             }
         }
         Expr::Unsafe(inner) => lower_expr(ctx, inner),

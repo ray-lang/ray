@@ -9,12 +9,25 @@ use crate::types::{
     ImplField, ImplKind, ImplTy, StructTy, Subst, Substitutable, TraitField, TraitTy,
 };
 
+#[derive(
+    Clone, Copy, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
+pub struct ImplIndex(usize);
+
+impl ImplIndex {
+    pub fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GlobalEnv {
     pub structs: HashMap<String, StructTy>,
     pub traits: HashMap<String, TraitTy>,
-    pub impls_by_trait: BTreeMap<String, Vec<ImplTy>>,
-    pub inherent_impls: BTreeMap<String, Vec<ImplTy>>,
+    pub impls: Vec<ImplTy>,
+    pub impls_by_trait: BTreeMap<String, Vec<ImplIndex>>,
+    pub impls_by_recv: BTreeMap<String, Vec<ImplIndex>>,
+    pub inherent_impls: BTreeMap<String, Vec<ImplIndex>>,
     /// Mapping from binary operator symbols (e.g. "+") to the name of the
     /// trait that governs them (e.g. "Add"). This is populated in the same
     /// place as the old TyCtx operator tables during trait lowering.
@@ -37,8 +50,28 @@ impl GlobalEnv {
         self.traits.get(name)
     }
 
+    pub fn resolve_impl_from_index(&self, idx: &ImplIndex) -> Option<&ImplTy> {
+        self.impls.get(idx.as_usize())
+    }
+
+    pub fn resolve_impl_from_index_mut(&mut self, idx: &ImplIndex) -> Option<&mut ImplTy> {
+        self.impls.get_mut(idx.as_usize())
+    }
+
     pub fn impls_for_trait(&self, trait_name: &str) -> impl Iterator<Item = &ImplTy> {
-        self.impls_by_trait.get(trait_name).into_iter().flatten()
+        self.impls_by_trait
+            .get(trait_name)
+            .into_iter()
+            .flatten()
+            .flat_map(|idx| self.resolve_impl_from_index(idx))
+    }
+
+    pub fn inherent_impls_for_key(&self, key: &str) -> impl Iterator<Item = &ImplTy> {
+        self.inherent_impls
+            .get(key)
+            .into_iter()
+            .flatten()
+            .flat_map(|idx| self.resolve_impl_from_index(idx))
     }
 
     pub fn add_impl(&mut self, impl_ty: ImplTy) {
@@ -49,9 +82,13 @@ impl GlobalEnv {
                     _ => return,
                 };
 
-                self.inherent_impls.entry(fqn).or_default().push(impl_ty)
+                let idx = ImplIndex(self.impls.len());
+                self.impls.push(impl_ty);
+                self.inherent_impls.entry(fqn).or_default().push(idx)
             }
-            ImplKind::Trait { trait_ty, .. } => {
+            ImplKind::Trait {
+                trait_ty, base_ty, ..
+            } => {
                 let trait_name = match trait_ty {
                     Ty::Const(p) | Ty::Proj(p, _) => p.to_string(),
                     _ => return,
@@ -62,10 +99,12 @@ impl GlobalEnv {
                     trait_name,
                     impl_ty
                 );
-                self.impls_by_trait
-                    .entry(trait_name)
-                    .or_default()
-                    .push(impl_ty);
+
+                let recv_name = base_ty.get_path().to_string();
+                let idx = ImplIndex(self.impls.len());
+                self.impls.push(impl_ty);
+                self.impls_by_trait.entry(trait_name).or_default().push(idx);
+                self.impls_by_recv.entry(recv_name).or_default().push(idx);
             }
         }
     }
@@ -129,7 +168,10 @@ impl GlobalEnv {
         self.inherent_impls
             .values()
             .flatten()
-            .filter_map(|impl_ty| {
+            .filter_map(|idx| {
+                let Some(impl_ty) = self.resolve_impl_from_index(idx) else {
+                    return None;
+                };
                 impl_ty.fields.iter().find_map(|field| {
                     let Some(name) = field.path.name() else {
                         return None;
@@ -154,13 +196,13 @@ impl GlobalEnv {
         for s in self.structs.values_mut() {
             s.apply_subst(subst);
         }
+
         for t in self.traits.values_mut() {
             t.apply_subst(subst);
         }
-        for bucket in self.impls_by_trait.values_mut() {
-            for impl_ty in bucket {
-                impl_ty.apply_subst(subst);
-            }
+
+        for impl_ty in self.impls.iter_mut() {
+            impl_ty.apply_subst(subst);
         }
     }
 
@@ -170,18 +212,39 @@ impl GlobalEnv {
         for (name, struct_ty) in other.structs {
             self.structs.entry(name).or_insert(struct_ty);
         }
+
         for (name, trait_ty) in other.traits {
             self.traits.entry(name).or_insert(trait_ty);
         }
-        for (trait_name, bucket) in other.impls_by_trait {
+
+        let mut impl_reindex = HashMap::new();
+        for (idx, impl_ty) in other.impls.into_iter().enumerate() {
+            let new_idx = ImplIndex(self.impls.len());
+            self.impls.push(impl_ty);
+            impl_reindex.insert(ImplIndex(idx), new_idx);
+        }
+
+        for (trait_name, impls) in other.impls_by_trait {
             self.impls_by_trait
                 .entry(trait_name)
                 .or_default()
-                .extend(bucket);
+                .extend(impls.into_iter().map(|idx| impl_reindex[&idx]));
         }
+
+        for (recv_fqn, impls) in other.impls_by_recv {
+            self.impls_by_recv
+                .entry(recv_fqn)
+                .or_default()
+                .extend(impls.into_iter().map(|idx| impl_reindex[&idx]));
+        }
+
         for (fqn, impls) in other.inherent_impls {
-            self.inherent_impls.entry(fqn).or_default().extend(impls);
+            self.inherent_impls
+                .entry(fqn)
+                .or_default()
+                .extend(impls.into_iter().map(|idx| impl_reindex[&idx]));
         }
+
         self.infix_ops.extend(other.infix_ops.into_iter());
         self.prefix_ops.extend(other.prefix_ops.into_iter());
     }

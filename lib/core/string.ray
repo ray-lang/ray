@@ -51,10 +51,10 @@ impl Add[string, string, string] {
         mut src_ptr = a.raw_ptr
         mut dst_ptr = raw_ptr
         memcopy(dst_ptr, src_ptr, src_len)
+        dst_ptr = dst_ptr + src_len
 
         src_len = b.len
         src_ptr = b.raw_ptr
-        dst_ptr = dst_ptr + src_len
         memcopy(dst_ptr, src_ptr, src_len)
 
         string { raw_ptr, len }

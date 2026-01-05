@@ -127,6 +127,28 @@ impl Subst {
             }
         }
     }
+
+    pub fn merge_checked(&mut self, other: &Subst) -> bool {
+        for (_, ty) in self.iter_mut() {
+            ty.apply_subst(other);
+        }
+
+        for (var, ty) in other.iter() {
+            if let Some(existing) = self.get(var) {
+                let mut existing_ty = existing.clone();
+                existing_ty.apply_subst(self);
+                let mut next_ty = ty.clone();
+                next_ty.apply_subst(self);
+                if existing_ty != next_ty {
+                    return false;
+                }
+            } else {
+                self.insert(var.clone(), ty.clone());
+            }
+        }
+
+        true
+    }
 }
 
 /// Trait for values that can have a type substitution applied to them.

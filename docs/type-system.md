@@ -1138,7 +1138,7 @@ For each trait `C` with a `default(T_default)` marker:
 - Defaulting is described in terms of **type-variable classes**:
   - After unification, each type variable belongs to an equivalence class `α` (all metas unified together).
   - A class `α` is *flexible* if it is represented by a meta variable that is not unified with a rigid or skolem and is not yet fixed by an equality.
-  - Residual predicates are grouped by the type-variable classes they mention; defaulting considers those classes that appear in at least one predicate whose trait declares `default(T_default)`.
+- Residual predicates are grouped into **clusters** of mutually-dependent type-variable classes; defaulting considers clusters that contain at least one class appearing as the receiver of a trait with `default(T_default)`.
 
 We also talk about when a type-variable class `α` *will be generalized* in this binding group:
 
@@ -1171,13 +1171,13 @@ Intuitively:
 - Defaulting is triggered **by residual predicates**, not by metas in isolation.
 - Other predicates that mention the same type-variable class `α` are allowed; they do not prevent defaulting a priori, but they may veto a particular default choice if it would make the cluster of predicates involving `α` unsatisfiable.
 
-More concretely, defaulting uses a two-step view of `α`:
+More concretely, defaulting uses a two-step view of defaultable classes and their clusters:
 
 1. **Selecting defaultable classes**  
    Scan the residual predicates at the group root. For each predicate `C[args...]` where `C` has `default(T_default)` and the receiver argument is a type-variable class `α`, mark `α` as *defaultable*.
 
-2. **Clustering by mentions of `α`**  
-   For each such defaultable `α`, define `preds_alpha` to be *all* residual predicates that mention `α` in any argument position (not just as receiver). `preds_alpha` is the cluster that must stay solvable when testing a candidate default for `α`.
+2. **Clustering by shared predicates**  
+   Build an undirected graph over defaultable classes where an edge connects any two classes that co-occur in a residual predicate. Each connected component is a *cluster*. For a cluster `C`, define `preds_C` to be all residual predicates that mention any class in `C`. A candidate default assignment is only accepted if `preds_C` remains solvable.
 
 ### 8.3 Defaulting algorithm
 
@@ -1218,75 +1218,89 @@ fn default_residuals(
 ) {
   let residuals = root.residual_predicates();
 
-  // Group predicates by flexible type-variable class α that appears
-  // in receiver position of a trait with default(T_default).
-  let groups: Vec<(TyVarId, Vec<Predicate>)> =
-    group_by_defaultable_type_class(&residuals, subst);
+  // Build clusters of defaultable classes connected by shared predicates.
+  let clusters: Vec<(Vec<TyVarId>, Vec<Predicate>)> =
+    build_defaulting_clusters(&residuals, subst);
 
-  for (alpha, preds_alpha) in groups {
-    // Skip classes that are no longer flexible or will be generalized into schemes.
-    if !is_flexible(alpha, subst) {
-      log.entries.push(DefaultingOutcome {
-        var: alpha,
-        default_ty: inferred_default_ty_for(alpha, &preds_alpha),
-        kind: DefaultingOutcomeKind::RejectedRigid,
-      });
+  for (cluster, preds_cluster) in clusters {
+    // Skip clusters containing any class that is rigid or will be generalized.
+    if cluster.iter().any(|alpha| !is_flexible(*alpha, subst)) {
+      for alpha in cluster {
+        log.entries.push(DefaultingOutcome {
+          var: alpha,
+          default_ty: inferred_default_ty_for(alpha, &preds_cluster),
+          kind: DefaultingOutcomeKind::RejectedRigid,
+        });
+      }
       continue;
     }
-    if will_be_generalized(alpha, root) {
-      log.entries.push(DefaultingOutcome {
-        var: alpha,
-        default_ty: inferred_default_ty_for(alpha, &preds_alpha),
-        kind: DefaultingOutcomeKind::RejectedPoly,
-      });
+    if cluster.iter().any(|alpha| will_be_generalized(*alpha, root)) {
+      for alpha in cluster {
+        log.entries.push(DefaultingOutcome {
+          var: alpha,
+          default_ty: inferred_default_ty_for(alpha, &preds_cluster),
+          kind: DefaultingOutcomeKind::RejectedPoly,
+        });
+      }
       continue;
     }
 
-    // Collect candidate default types from all predicates C[alpha, …]
-    // whose trait C has default(T_default).
-    let candidates: Vec<Ty> = default_candidates_for(alpha, &preds_alpha);
+    // Collect candidates per class and consider joint assignments.
+    let candidates = default_candidates_for_cluster(&cluster, &preds_cluster);
     if candidates.is_empty() {
       continue;
     }
 
     let mut viable = Vec::new();
-    for T_default in candidates {
-      // Try α == T_default without committing yet.
+    for assignment in candidates {
+      // Try { α_i == T_i } without committing yet.
       let mut subst_try = subst.clone();
-      subst_try.bind(alpha, T_default.clone());
+      for (alpha, ty) in &assignment {
+        subst_try.bind(*alpha, ty.clone());
+      }
 
-      if solve_predicates_for_class(&preds_alpha, &mut subst_try, instances).is_ok() {
-        viable.push(T_default);
+      if solve_predicates_for_class(&preds_cluster, &mut subst_try, instances).is_ok() {
+        viable.push(assignment);
       } else {
-        log.entries.push(DefaultingOutcome {
-          var: alpha,
-          default_ty: T_default,
-          kind: DefaultingOutcomeKind::RejectedUnsat {
-            blocking_preds: preds_alpha.clone(),
-          },
-        });
+        for (alpha, ty) in assignment {
+          log.entries.push(DefaultingOutcome {
+            var: alpha,
+            default_ty: ty,
+            kind: DefaultingOutcomeKind::RejectedUnsat {
+              blocking_preds: preds_cluster.clone(),
+            },
+          });
+        }
       }
     }
 
     match viable.len() {
-      0 => { /* no viable default; leave α undecided */ }
+      0 => { /* no viable defaults; leave cluster undecided */ }
       1 => {
-        let T_default = viable.into_iter().next().unwrap();
-        subst.bind(alpha, T_default.clone());
-        log.entries.push(DefaultingOutcome {
-          var: alpha,
-          default_ty: T_default,
-          kind: DefaultingOutcomeKind::Succeeded,
-        });
+        let assignment = viable.into_iter().next().unwrap();
+        for (alpha, ty) in assignment {
+          subst.bind(alpha, ty.clone());
+          log.entries.push(DefaultingOutcome {
+            var: alpha,
+            default_ty: ty,
+            kind: DefaultingOutcomeKind::Succeeded,
+          });
+        }
       }
       _ => {
-        log.entries.push(DefaultingOutcome {
-          var: alpha,
-          default_ty: Ty::Unknown, // implementation-specific placeholder
-          kind: DefaultingOutcomeKind::RejectedAmbiguous {
-            candidates: viable,
-          },
-        });
+        for alpha in cluster {
+          log.entries.push(DefaultingOutcome {
+            var: alpha,
+            default_ty: Ty::Unknown, // implementation-specific placeholder
+            kind: DefaultingOutcomeKind::RejectedAmbiguous {
+              candidates: viable
+                .iter()
+                .filter_map(|assignment| assignment.iter().find(|(a, _)| *a == alpha))
+                .map(|(_, ty)| ty.clone())
+                .collect(),
+            },
+          });
+        }
       }
     }
   }
@@ -1296,8 +1310,8 @@ fn default_residuals(
 Notes:
 
 - This algorithm is phrased in terms of **predicates**, not raw meta variables:
-  - It first finds the type-variable classes `α` that appear in residual predicates from traits with `default(T_default)`.
-  - It then examines all predicates that mention `α` as a cluster when checking whether a candidate default works.
+- It first finds the type-variable classes `α` that appear in residual predicates from traits with `default(T_default)`.
+  - It then groups those classes into clusters based on shared predicates, and checks candidate defaults per cluster.
 - Other constraints (including non-defaultable traits) do not prevent defaulting:
   - They only veto a particular default `T_default` if adding `α == T_default` would make the cluster unsatisfiable.
 - Only flexible, non-generalized type-variable classes are considered:

@@ -17,6 +17,7 @@ pub mod unify;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Display;
 use std::mem;
 use std::rc::Rc;
 
@@ -34,7 +35,7 @@ use crate::{
         ConstraintNode, ConstraintTreeWalkItem, build_constraint_tree_for_group, walk_tree,
     },
     constraints::{CallKind, Constraint, ConstraintKind, Predicate},
-    context::{ExprKind, SolverContext},
+    context::{ExprKind, InstanceFailureStatus, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
     env::GlobalEnv,
     generalize::generalize_group,
@@ -1279,7 +1280,7 @@ fn check_residuals_and_emit_errors(
             };
 
             match &resolve_call.kind {
-                CallKind::Instance { method_name } => {
+                CallKind::Instance => {
                     // Only attempt method availability/ambiguity diagnostics once
                     // the receiver type is headed; otherwise we don't know which
                     // receiver type to search.
@@ -1295,28 +1296,28 @@ fn check_residuals_and_emit_errors(
 
                     if let Some(subject_fqn) = subject_fqn {
                         let mut inherent_candidates = Vec::new();
-                        if let Some(bucket) = ctx.global_env().inherent_impls.get(&subject_fqn) {
-                            for impl_ty in bucket {
-                                for field in &impl_ty.fields {
-                                    let Some(name) = field.path.name() else {
-                                        continue;
-                                    };
-                                    if name != *method_name || field.is_static {
-                                        continue;
-                                    }
-                                    inherent_candidates.push(field.path.to_string());
+                        for impl_ty in ctx.global_env().inherent_impls_for_key(&subject_fqn) {
+                            for field in &impl_ty.fields {
+                                let Some(name) = field.path.name() else {
+                                    continue;
+                                };
+                                if name != resolve_call.method_name || field.is_static {
+                                    continue;
                                 }
+                                inherent_candidates.push(field.path.to_string());
                             }
                         }
 
                         let mut trait_candidates = Vec::new();
                         for trait_ty in ctx.global_env().traits.values() {
-                            if let Some(field) = trait_ty.get_field(method_name) {
+                            if let Some(field) = trait_ty.get_field(&resolve_call.method_name) {
                                 if field.is_static {
                                     continue;
                                 }
-                                trait_candidates
-                                    .push(format!("{}::{}", trait_ty.path, method_name));
+                                trait_candidates.push(format!(
+                                    "{}::{}",
+                                    trait_ty.path, resolve_call.method_name
+                                ));
                             }
                         }
 
@@ -1329,7 +1330,7 @@ fn check_residuals_and_emit_errors(
                         if total_candidates == 0 {
                             let msg = format!(
                                 "no method named `{}` found for `{}`",
-                                method_name, resolve_call.subject_ty
+                                resolve_call.method_name, resolve_call.subject_ty
                             );
                             errors.push(TypeError::message(msg, info));
                             continue;
@@ -1338,7 +1339,7 @@ fn check_residuals_and_emit_errors(
                         if total_candidates > 1 {
                             let mut msg = format!(
                                 "ambiguous method call: multiple candidates for `{}.{}`",
-                                resolve_call.subject_ty, method_name
+                                resolve_call.subject_ty, resolve_call.method_name
                             );
                             if !inherent_candidates.is_empty() {
                                 msg.push_str(&format!(
@@ -1359,7 +1360,7 @@ fn check_residuals_and_emit_errors(
 
                     let msg = format!(
                         "cannot resolve method call: `{}.{}` with signature: ({}) -> {}",
-                        resolve_call.subject_ty, method_name, args, ret_ty
+                        resolve_call.subject_ty, resolve_call.method_name, args, ret_ty
                     );
                     errors.push(TypeError::message(msg, info));
                     continue;
@@ -1388,25 +1389,33 @@ fn check_residuals_and_emit_errors(
                 .iter()
                 .find(|entry| entry.wanted == *pred)
             {
-                if !failure.unsatisfied.is_empty() {
-                    let details = failure
-                        .unsatisfied
-                        .iter()
-                        .map(|c| c.kind.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let mut msg = format!("unsatisfied prerequisites: {}", details);
-                    if let Some(impl_head) = &failure.impl_head {
-                        let mut pretty_head = impl_head.clone();
-                        if let Some(subst) = pretty_subst {
-                            pretty_head.apply_subst(subst);
-                        }
-                        msg.push_str(&format!(" from impl {}", pretty_head));
+                match failure.instance_failure.status {
+                    InstanceFailureStatus::NoMatchingImpl => {
+                        info.predicate_failure_detail(format!(
+                            "no matching impls found for {}",
+                            kind
+                        ));
                     }
-                    info.predicate_failure_detail(msg);
-                }
-                if failure.no_matching_impl {
-                    info.predicate_failure_detail(format!("no matching impls found for {}", kind));
+                    InstanceFailureStatus::HeadMatchFailed => {
+                        for candidate in &failure.instance_failure.failures {
+                            let details = candidate
+                                .unsatisfied
+                                .iter()
+                                .map(|c| c.kind.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let mut pretty_head = candidate.impl_head.clone();
+                            if let Some(subst) = pretty_subst {
+                                pretty_head.apply_subst(subst);
+                            }
+                            let msg = format!(
+                                "unsatisfied prerequisites: {} from impl {}",
+                                details, pretty_head
+                            );
+                            info.predicate_failure_detail(msg);
+                        }
+                    }
+                    InstanceFailureStatus::Deferred => {}
                 }
             }
             let skolem_infos = predicate_skolem_infos(&kind, ctx);

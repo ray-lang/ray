@@ -520,17 +520,14 @@ impl TyCtx {
         self.global_env.add_impl(impl_ty);
     }
 
-    pub fn get_impls(&self, ty: &Ty) -> Option<&Vec<ImplTy>> {
-        let fqn = match ty {
-            Ty::Proj(p, _) | Ty::Const(p) => p,
-            _ => return None,
-        };
-        self.get_impls_for_fqn(fqn)
-    }
-
-    pub fn get_impls_for_fqn(&self, fqn: &Path) -> Option<&Vec<ImplTy>> {
+    pub fn get_impls_for_trait_fqn(&self, fqn: &Path) -> impl Iterator<Item = &ImplTy> {
         let target = fqn.to_string();
-        self.global_env.impls_by_trait.get(&target)
+        self.global_env
+            .impls_by_trait
+            .get(&target)
+            .into_iter()
+            .flatten()
+            .flat_map(|idx| self.global_env.resolve_impl_from_index(idx))
     }
 
     pub fn has_member(&self, fqn: &Path, member: &String) -> bool {
@@ -541,10 +538,6 @@ impl TyCtx {
         } else {
             false
         }
-    }
-
-    pub fn tf(&mut self) -> () {
-        todo!("TyCtx::tf is not yet implemented for the v2 type system");
     }
 
     pub fn resolve_trait_method(&self, method_name: &str) -> Option<(&TraitTy, &TraitField)> {
@@ -564,18 +557,15 @@ impl TyCtx {
     ) -> Option<(&ImplTy, &ImplField)> {
         let recv_key = recv_fqn.to_string();
         self.global_env
-            .inherent_impls
-            .get(&recv_key)
-            .and_then(|impls| {
-                impls.iter().find_map(|impl_ty| {
-                    match impl_ty.fields.iter().find(|f| match f.path.name() {
-                        Some(name) if &name == method_name => true,
-                        _ => false,
-                    }) {
-                        Some(field) => Some((impl_ty, field)),
-                        _ => None,
-                    }
-                })
+            .inherent_impls_for_key(&recv_key)
+            .find_map(|impl_ty| {
+                match impl_ty.fields.iter().find(|f| match f.path.name() {
+                    Some(name) if &name == method_name => true,
+                    _ => false,
+                }) {
+                    Some(field) => Some((impl_ty, field)),
+                    _ => None,
+                }
             })
     }
 

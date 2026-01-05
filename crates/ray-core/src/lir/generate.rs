@@ -201,7 +201,19 @@ impl lir::Program {
         prog.start_idx = start_idx;
         prog.resolved_user_main = user_main_resolved_path.clone();
         prog.synthetic_structs = synthetic_structs;
-        prog.impls_by_trait = tcx.global_env.impls_by_trait.clone();
+        prog.impls_by_trait = tcx
+            .global_env
+            .impls_by_trait
+            .iter()
+            .map(|(s, indices)| {
+                let impls = indices
+                    .iter()
+                    .flat_map(|idx| tcx.global_env.resolve_impl_from_index(idx))
+                    .cloned()
+                    .collect();
+                (s.clone(), impls)
+            })
+            .collect();
         if prog.user_main_idx < 0 {
             if let Some(path) = &user_main_resolved_path {
                 if let Some(idx) = prog.funcs.iter().position(|f| f.name == *path) {
@@ -1397,9 +1409,7 @@ impl<'a> GenCtx<'a> {
         elem_ty: &Ty,
         tcx: &TyCtx,
     ) -> Option<Ty> {
-        let impls = tcx.get_impls_for_fqn(iterable_trait_fqn)?;
-
-        for impl_ty in impls {
+        for impl_ty in tcx.get_impls_for_trait_fqn(iterable_trait_fqn) {
             let ImplKind::Trait { trait_ty, .. } = &impl_ty.kind else {
                 continue;
             };
@@ -1907,7 +1917,7 @@ impl<'a> GenCtx<'a> {
                 self.push(lir::Store::new(
                     lir::Variable::Local(lhs_loc),
                     lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
-                    lir::Size::zero(),
+                    0,
                 ));
                 Ok(())
             }
@@ -1975,8 +1985,7 @@ impl<'a> GenCtx<'a> {
 
         // create a new local for the tuple value
         let tuple_loc = self.local(ty.clone());
-        let size = ty.mono().size_of();
-        if !size.is_zero() {
+        if !items.is_empty() {
             // build tuple value with inserts
             for (index, (el, el_ty)) in items.iter().zip(tys.iter().cloned()).enumerate() {
                 let el_val = el.lir_gen(self, tcx)?;
@@ -2586,12 +2595,11 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 // allocate memory for the values
                 let el_ty = ty.mono().get_ty_param_at(0).unwrap();
-                let el_size = el_ty.size_of();
                 let values_loc = ctx.local(Ty::ref_of(el_ty.clone()).into());
                 let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));
                 ctx.set_local(values_loc, values_ptr.into());
 
-                let mut offset = lir::Size::zero();
+                let mut offset: usize = 0;
                 for item in list.items.iter() {
                     let item_val = item.lir_gen(ctx, tcx)?;
                     let item_ty = ctx.ty_of(tcx, item.id);
@@ -2603,7 +2611,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         ));
                     }
 
-                    offset += el_size;
+                    offset += 1;
                 }
 
                 let list_loc = ctx.local(ty.clone());
@@ -2794,7 +2802,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 ctx.push(lir::Store::new(
                     lir::Variable::Local(ptr_loc),
                     value,
-                    lir::Size::zero(),
+                    0,
                 ));
 
                 lir::Variable::Local(ptr_loc).into()

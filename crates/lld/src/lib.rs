@@ -29,7 +29,7 @@ pub struct LLDResult {
 }
 
 impl LLDResult {
-    pub fn ok(self) -> Result<(), String> {
+    pub fn to_result(self) -> Result<(), String> {
         if self.success {
             Ok(())
         } else {

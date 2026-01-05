@@ -724,7 +724,9 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::inst(*binding_id, expr_ty, info));
             }
-            ExprKind::ScopedAccess { binding, lhs_ty } => {
+            ExprKind::ScopedAccess {
+                binding, lhs_ty, ..
+            } => {
                 // Scoped access `T::member`: `T[...]` instantiates the *type*
                 // on the left-hand side, not the member binding itself.
                 //
@@ -1705,8 +1707,11 @@ fn generate_constraints_for_expr(
 
                 // Also treat `T::method(args...)` / `T[...]::method(args...)` as a deferred
                 // member call. The callee is lowered as `ScopedAccess { binding, lhs_ty }`.
-                if let Some(ExprKind::ScopedAccess { binding, lhs_ty }) =
-                    module.expr_kind(*callee).cloned()
+                if let Some(ExprKind::ScopedAccess {
+                    binding,
+                    member_name,
+                    lhs_ty,
+                }) = module.expr_kind(*callee).cloned()
                 {
                     // Collect types for explicit arguments.
                     let mut explicit_arg_tys = Vec::with_capacity(args.len());
@@ -1743,6 +1748,7 @@ fn generate_constraints_for_expr(
                             lhs_ty,
                             binding,
                             expected_fn_ty,
+                            member_name,
                             receiver_subst,
                         )),
                         info: info.clone(),

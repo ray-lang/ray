@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use ray_shared::{
     node_id::NodeId,
     ty::{Ty, TyVar},
-    utils::join,
+    utils::{join, map_join},
 };
 
 use crate::{
@@ -86,12 +86,18 @@ pub fn apply_defaulting(
     let mut log = DefaultingLog::default();
     let mut current_subst = subst.clone();
 
-    // Step 1: find defaultable type-variable classes α that appear as
+    // Find defaultable type-variable classes α that appear as
     // receivers in residual class predicates from traits with defaults.
     let defaultable_classes = find_defaultable_classes(&residuals, global_env, &current_subst);
+    log::debug!(
+        "[apply_defaulting] defaultable_classes = {{ {} }}",
+        join(&defaultable_classes, ", ")
+    );
 
-    // Step 2: cluster predicates by mentions of each α.
-    let clusters = group_predicates_by_class(&residuals, &defaultable_classes);
+    // Build clusters of mutually-dependent defaultable classes and
+    // their predicates. This is the cluster-level analogue of "group by α"
+    // from the single-variable algorithm.
+    let clusters = collect_defaulting_clusters(&residuals, &defaultable_classes);
     if clusters.is_empty() {
         log::debug!(
             "[apply_defaulting] no defaultable predicates in residuals: residuals = [{}]",
@@ -99,145 +105,138 @@ pub fn apply_defaulting(
         );
     }
 
-    for (alpha, preds_alpha) in clusters {
-        // Skip classes that are no longer flexible.
-        if !is_flexible(&alpha, &current_subst) {
-            log.entries.push(DefaultingOutcome {
-                var: alpha.clone(),
-                default_ty: Ty::Any,
-                kind: DefaultingOutcomeKind::RejectedRigid,
-            });
-            log::debug!(
-                "[apply_defaulting] skipping non flexible variable: alpha = {}",
-                alpha
-            );
+    for (cluster_vars, preds_cluster) in clusters {
+        // Skip classes that are no longer flexible. If any member of the
+        // cluster is rigid, the whole cluster is blocked.
+        let mut blocked = false;
+        for var in &cluster_vars {
+            if !is_flexible(var, &current_subst) {
+                log.entries.push(DefaultingOutcome {
+                    var: var.clone(),
+                    default_ty: Ty::Any,
+                    kind: DefaultingOutcomeKind::RejectedRigid,
+                });
+                log::debug!(
+                    "[apply_defaulting] skipping non flexible variable: alpha = {}",
+                    var
+                );
+                blocked = true;
+            }
+
+            // Skip classes that will be generalized into schemes according to
+            // the value restriction (Section 3.4). If any member will be
+            // generalized, we do not default the cluster.
+            if will_be_generalized(var, module, group, ctx, &current_subst) {
+                log.entries.push(DefaultingOutcome {
+                    var: var.clone(),
+                    default_ty: Ty::Any,
+                    kind: DefaultingOutcomeKind::RejectedPoly,
+                });
+                blocked = true;
+            }
+        }
+        if blocked {
             continue;
         }
 
-        // Skip classes that will be generalized into schemes according to
-        // the value restriction (Section 3.4): if `alpha` appears as a free
-        // meta in the type of an eligible binding in this group, we do not
-        // default it.
-        if will_be_generalized(&alpha, module, group, ctx, &current_subst) {
-            log.entries.push(DefaultingOutcome {
-                var: alpha.clone(),
-                default_ty: Ty::Any,
-                kind: DefaultingOutcomeKind::RejectedPoly,
-            });
-            continue;
-        }
-
-        // Step 4: collect candidate defaults from all predicates C[alpha, …]
+        // Collect candidate defaults from all predicates C[alpha, …]
         // whose trait C has default(T_default). We keep the originating
         // constraint so we can reuse its TypeSystemInfo when unifying.
-        let candidates = default_candidates_for(&alpha, &preds_alpha, global_env);
-        if candidates.is_empty() {
-            log::debug!(
-                "[apply_defaulting] no default candidates: alpha = {}, predicates = [{}]",
-                alpha,
-                join(&preds_alpha, ", ")
-            );
+        let mut candidates_by_var = Vec::new();
+        for var in &cluster_vars {
+            let candidates = default_candidates_for(var, &preds_cluster, global_env);
+            if candidates.is_empty() {
+                log::debug!(
+                    "[apply_defaulting] no default candidates: alpha = {}, predicates = [{}]",
+                    var,
+                    join(&preds_cluster, ", ")
+                );
+                blocked = true;
+                break;
+            }
+            candidates_by_var.push((var.clone(), candidates));
+        }
+        if blocked {
             continue;
         }
 
-        let mut viable: Vec<(Ty, Subst)> = Vec::new();
-        for (default_ty, from_constraint) in candidates {
-            // Try α == default_ty without committing yet.
-            let var_ty = Ty::Var(alpha.clone());
-            let subst_try = match unify(&var_ty, &default_ty, &current_subst, &from_constraint.info)
-            {
-                Ok(s) => s,
-                Err(err) => {
-                    log::debug!(
-                        "[apply_defaulting] unsatisfiable: alpha = {}, default_ty = {}, err = {}",
-                        alpha,
-                        default_ty,
-                        err
-                    );
-                    log.entries.push(DefaultingOutcome {
-                        var: alpha.clone(),
-                        default_ty: default_ty.clone(),
-                        kind: DefaultingOutcomeKind::RejectedUnsat {
-                            blocking_preds: preds_alpha.clone(),
-                        },
-                    });
-                    continue;
-                }
-            };
-
-            // Re-solve the cluster preds_alpha under this trial substitution.
-            if let Ok(new_subst) =
-                solve_predicates_for_class(&preds_alpha, global_env, &subst_try, ctx)
-            {
-                viable.push((default_ty.clone(), new_subst));
-            } else {
-                log::debug!(
-                    "[apply_defaulting] unsatisfiable: alpha = {}, default_ty = {}, blocking predicates = [{}]",
-                    alpha,
-                    default_ty,
-                    join(&preds_alpha, ", ")
-                );
-                log.entries.push(DefaultingOutcome {
-                    var: alpha.clone(),
-                    default_ty: default_ty.clone(),
-                    kind: DefaultingOutcomeKind::RejectedUnsat {
-                        blocking_preds: preds_alpha.clone(),
-                    },
-                });
-            }
-        }
+        // Evaluate candidates per variable, but only accept an assignment if
+        // the whole cluster is satisfiable under the trial substitution.
+        let (viable, blocking_preds) = collect_cluster_viable_defaults(
+            &candidates_by_var,
+            &preds_cluster,
+            global_env,
+            &current_subst,
+            ctx,
+        );
 
         // Multiple predicates can yield identical viable defaults (e.g. two
-        // separate `Int[α]` constraints). De-duplicate by default type and
-        // union their substitutions so we don't incorrectly treat identical
-        // candidates as ambiguous.
-        let mut deduped: BTreeMap<String, (Ty, Subst)> = BTreeMap::new();
-        for (default_ty, subst_for_ty) in viable {
-            let key = default_ty.to_string();
+        // separate `Int[α]` constraints). De-duplicate by assignment and
+        // union substitutions so identical candidates do not appear ambiguous.
+        let mut deduped: BTreeMap<String, (Vec<(TyVar, Ty)>, Subst)> = BTreeMap::new();
+        for (assignment, subst_for_assignment) in viable {
+            let key = assignment
+                .iter()
+                .map(|(var, ty)| format!("{}={}", var, ty))
+                .collect::<Vec<_>>()
+                .join(",");
             match deduped.get_mut(&key) {
-                Some((_, existing_subst)) => existing_subst.union(subst_for_ty),
+                Some((_, existing_subst)) => existing_subst.union(subst_for_assignment),
                 None => {
-                    deduped.insert(key, (default_ty, subst_for_ty));
+                    deduped.insert(key, (assignment, subst_for_assignment));
                 }
             }
         }
-        let viable: Vec<(Ty, Subst)> = deduped.into_values().collect();
+        let viable: Vec<(Vec<(TyVar, Ty)>, Subst)> = deduped.into_values().collect();
 
         match viable.len() {
             0 => {
-                // No viable default; leave α undecided.
-                log::debug!(
-                    "[apply_defaulting] no viable candidates: alpha = {}, preds_alpha = [{}]",
-                    alpha,
-                    join(&preds_alpha, ", ")
-                );
+                let blocking_preds = blocking_preds.unwrap_or_else(|| preds_cluster.clone());
+                for var in cluster_vars {
+                    log.entries.push(DefaultingOutcome {
+                        var,
+                        default_ty: Ty::Any,
+                        kind: DefaultingOutcomeKind::RejectedUnsat {
+                            blocking_preds: blocking_preds.clone(),
+                        },
+                    });
+                }
             }
             1 => {
-                let (default_ty, new_subst) = viable.into_iter().next().unwrap();
+                let (assignment, new_subst) = viable.into_iter().next().unwrap();
                 log::debug!(
-                    "[apply_defaulting] found single candidate: default_ty = {}, new_subst = {}",
-                    default_ty,
+                    "[apply_defaulting] found single assignment: {}, new_subst = {}",
+                    map_join(&assignment, ", ", |(v, t)| format!("({}, {})", v, t)),
                     new_subst
                 );
-                // Commit the candidate's substitution to the main substitution.
                 current_subst.union(new_subst);
-                log.entries.push(DefaultingOutcome {
-                    var: alpha.clone(),
-                    default_ty,
-                    kind: DefaultingOutcomeKind::Succeeded,
-                });
+                for (var, default_ty) in assignment {
+                    log.entries.push(DefaultingOutcome {
+                        var,
+                        default_ty,
+                        kind: DefaultingOutcomeKind::Succeeded,
+                    });
+                }
             }
             _ => {
-                log::debug!("[apply_defaulting] multiple candidates:");
-                for (ty, subst) in &viable {
-                    log::debug!("[apply_defaulting]   ty = {}, subst = {}", ty, subst);
+                let mut candidates: HashMap<TyVar, Vec<Ty>> = HashMap::new();
+                for (assignment, _) in viable {
+                    for (var, ty) in assignment {
+                        candidates.entry(var).or_default().push(ty);
+                    }
                 }
-                let candidates = viable.into_iter().map(|(ty, _)| ty).collect::<Vec<_>>();
-                log.entries.push(DefaultingOutcome {
-                    var: alpha.clone(),
-                    default_ty: Ty::Any,
-                    kind: DefaultingOutcomeKind::RejectedAmbiguous { candidates },
-                });
+                for var in cluster_vars {
+                    let mut options = candidates.remove(&var).unwrap_or_default();
+                    options.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+                    options.dedup_by(|a, b| a.to_string() == b.to_string());
+                    log.entries.push(DefaultingOutcome {
+                        var,
+                        default_ty: Ty::Any,
+                        kind: DefaultingOutcomeKind::RejectedAmbiguous {
+                            candidates: options,
+                        },
+                    });
+                }
             }
         }
     }
@@ -297,51 +296,88 @@ fn find_defaultable_classes(
 }
 
 /// Group residual predicates by the type-variable classes they mention.
-fn group_predicates_by_class(
+fn collect_defaulting_clusters(
     residuals: &[Constraint],
     defaultable: &HashSet<TyVar>,
-) -> Vec<(TyVar, Vec<Constraint>)> {
-    let mut map: HashMap<TyVar, Vec<Constraint>> = HashMap::new();
+) -> Vec<(Vec<TyVar>, Vec<Constraint>)> {
+    let mut adjacency: HashMap<TyVar, HashSet<TyVar>> = HashMap::new();
 
     for constraint in residuals {
-        // Collect all type variables mentioned in this predicate.
-        let mut vars_in_constraint = HashSet::new();
-        match &constraint.kind {
-            ConstraintKind::Class(cp) => {
-                for arg in &cp.args {
-                    arg.free_ty_vars(&mut vars_in_constraint);
-                }
-            }
-            ConstraintKind::HasField(hp) => {
-                hp.record_ty.free_ty_vars(&mut vars_in_constraint);
-                hp.field_ty.free_ty_vars(&mut vars_in_constraint);
-            }
-            ConstraintKind::Recv(rp) => {
-                rp.recv_ty.free_ty_vars(&mut vars_in_constraint);
-                rp.expr_ty.free_ty_vars(&mut vars_in_constraint);
-            }
-            ConstraintKind::Eq(eq) => {
-                eq.lhs.free_ty_vars(&mut vars_in_constraint);
-                eq.rhs.free_ty_vars(&mut vars_in_constraint);
-            }
-            ConstraintKind::Instantiate(inst) => {
-                inst.ty.free_ty_vars(&mut vars_in_constraint);
-            }
-            ConstraintKind::ResolveCall(call) => {
-                call.subject_ty.free_ty_vars(&mut vars_in_constraint);
-                call.expected_fn_ty.free_ty_vars(&mut vars_in_constraint);
-            }
+        // Track which defaultable metas appear in each predicate.
+        let vars = defaultable_vars_in_constraint(constraint, defaultable);
+        if vars.is_empty() {
+            continue;
         }
 
-        // For each defaultable class α that appears, add this predicate to its cluster.
-        for var in vars_in_constraint {
-            if defaultable.contains(&var) {
-                map.entry(var).or_default().push(constraint.clone());
+        // Build an undirected graph where metas that co-occur in a predicate
+        // must be defaulted together, so they share an edge.
+        for var in &vars {
+            adjacency.entry(var.clone()).or_default();
+        }
+        for i in 0..vars.len() {
+            for j in (i + 1)..vars.len() {
+                adjacency
+                    .entry(vars[i].clone())
+                    .or_default()
+                    .insert(vars[j].clone());
+                adjacency
+                    .entry(vars[j].clone())
+                    .or_default()
+                    .insert(vars[i].clone());
             }
         }
     }
 
-    map.into_iter().collect()
+    let mut visited = HashSet::new();
+    let mut clusters = Vec::new();
+
+    for var in defaultable {
+        if visited.contains(var) {
+            continue;
+        }
+
+        // Discover a connected component of mutually-dependent metas.
+        let mut stack = vec![var.clone()];
+        visited.insert(var.clone());
+        let mut component = Vec::new();
+
+        while let Some(node) = stack.pop() {
+            component.push(node.clone());
+            if let Some(neighbors) = adjacency.get(&node) {
+                for neighbor in neighbors {
+                    if visited.insert(neighbor.clone()) {
+                        stack.push(neighbor.clone());
+                    }
+                }
+            }
+        }
+
+        // Collect every residual predicate that mentions any meta in this component.
+        let component_set: HashSet<TyVar> = component.iter().cloned().collect();
+        let mut preds = Vec::new();
+        for constraint in residuals {
+            let vars = defaultable_vars_in_constraint(constraint, defaultable);
+            if vars.iter().any(|v| component_set.contains(v)) {
+                preds.push(constraint.clone());
+            }
+        }
+
+        clusters.push((component, preds));
+    }
+
+    clusters
+}
+
+fn defaultable_vars_in_constraint(
+    constraint: &Constraint,
+    defaultable: &HashSet<TyVar>,
+) -> Vec<TyVar> {
+    let mut vars_in_constraint = HashSet::new();
+    constraint.free_ty_vars(&mut vars_in_constraint);
+    vars_in_constraint
+        .into_iter()
+        .filter(|var| defaultable.contains(var))
+        .collect()
 }
 
 /// Collect candidate default types for a given type-variable class `alpha`
@@ -459,12 +495,89 @@ fn solve_predicates_for_class(
     global_env: &GlobalEnv,
     subst: &Subst,
     ctx: &mut SolverContext,
-) -> Result<Subst, ()> {
+) -> Result<Subst, Vec<Constraint>> {
     let mut subst = subst.clone();
     let batch = solve_constraints(preds, &[], global_env, &mut subst, ctx);
     if batch.unsolved.is_empty() {
         Ok(subst)
     } else {
-        Err(())
+        Err(batch.unsolved)
     }
+}
+
+fn collect_cluster_viable_defaults(
+    candidates_by_var: &[(TyVar, Vec<(Ty, Constraint)>)],
+    preds_cluster: &[Constraint],
+    global_env: &GlobalEnv,
+    subst: &Subst,
+    ctx: &mut SolverContext,
+) -> (Vec<(Vec<(TyVar, Ty)>, Subst)>, Option<Vec<Constraint>>) {
+    let mut viable = Vec::new();
+    let mut first_blocking = None;
+    let mut assignments = Vec::new();
+
+    fn visit(
+        idx: usize,
+        candidates_by_var: &[(TyVar, Vec<(Ty, Constraint)>)],
+        preds_cluster: &[Constraint],
+        global_env: &GlobalEnv,
+        ctx: &mut SolverContext,
+        current_subst: &Subst,
+        assignments: &mut Vec<(TyVar, Ty)>,
+        viable: &mut Vec<(Vec<(TyVar, Ty)>, Subst)>,
+        first_blocking: &mut Option<Vec<Constraint>>,
+    ) {
+        if idx == candidates_by_var.len() {
+            // Only check satisfiability after assigning defaults for every
+            // meta in the cluster.
+            match solve_predicates_for_class(preds_cluster, global_env, current_subst, ctx) {
+                Ok(new_subst) => {
+                    viable.push((assignments.clone(), new_subst));
+                }
+                Err(blocking_preds) => {
+                    if first_blocking.is_none() {
+                        *first_blocking = Some(blocking_preds);
+                    }
+                }
+            }
+            return;
+        }
+
+        let (var, candidates) = &candidates_by_var[idx];
+        for (default_ty, from_constraint) in candidates {
+            let var_ty = Ty::Var(var.clone());
+            let subst_try = match unify(&var_ty, default_ty, current_subst, &from_constraint.info) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            // Try this candidate for the current variable, then recurse.
+            assignments.push((var.clone(), default_ty.clone()));
+            visit(
+                idx + 1,
+                candidates_by_var,
+                preds_cluster,
+                global_env,
+                ctx,
+                &subst_try,
+                assignments,
+                viable,
+                first_blocking,
+            );
+            assignments.pop();
+        }
+    }
+
+    visit(
+        0,
+        candidates_by_var,
+        preds_cluster,
+        global_env,
+        ctx,
+        subst,
+        &mut assignments,
+        &mut viable,
+        &mut first_blocking,
+    );
+
+    (viable, first_blocking)
 }

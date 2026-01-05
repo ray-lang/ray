@@ -38,7 +38,11 @@ pub enum ExprKind {
     ///
     /// Note: any type arguments in `T[...]::member` belong to the left-hand
     /// side type `T[...]`, not to the member itself.
-    ScopedAccess { binding: BindingId, lhs_ty: Ty },
+    ScopedAccess {
+        binding: BindingId,
+        member_name: String,
+        lhs_ty: Ty,
+    },
     /// An integer literal without an explicit size suffix; its concrete
     /// type is determined by the `Int` class constraints and defaulting.
     LiteralInt,
@@ -379,9 +383,7 @@ impl<'a> SolverContext<'a> {
     pub fn record_predicate_failure(
         &mut self,
         wanted: &Constraint,
-        unsatisfied: Vec<Constraint>,
-        no_matching_impl: bool,
-        impl_head: Option<ClassPredicate>,
+        instance_failure: InstanceFailure,
     ) {
         if self
             .predicate_failures
@@ -390,12 +392,8 @@ impl<'a> SolverContext<'a> {
         {
             return;
         }
-        self.predicate_failures.push(PredicateFailure {
-            wanted: wanted.clone(),
-            unsatisfied,
-            no_matching_impl,
-            impl_head,
-        });
+        self.predicate_failures
+            .push(PredicateFailure { wanted: wanted.clone(), instance_failure });
     }
 
     /// Apply a type substitution to all tracked types and schemes.
@@ -589,9 +587,26 @@ impl<'a> SolverContext<'a> {
 #[derive(Clone, Debug)]
 pub struct PredicateFailure {
     pub wanted: Constraint,
+    pub instance_failure: InstanceFailure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstanceFailureStatus {
+    NoMatchingImpl,
+    HeadMatchFailed,
+    Deferred,
+}
+
+#[derive(Clone, Debug)]
+pub struct InstanceFailure {
+    pub status: InstanceFailureStatus,
+    pub failures: Vec<ImplFailure>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImplFailure {
+    pub impl_head: ClassPredicate,
     pub unsatisfied: Vec<Constraint>,
-    pub no_matching_impl: bool,
-    pub impl_head: Option<ClassPredicate>,
 }
 
 /// Metadata associated with skolem variables introduced for annotated

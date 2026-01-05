@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use ray_shared::ty::Ty;
+use ray_shared::{ty::Ty, utils::join};
 
 use crate::{
     constraint_tree::ConstraintNode,
@@ -21,31 +21,37 @@ use crate::{
         CallKind, ClassPredicate, Constraint, ConstraintKind, Predicate, RecvKind,
         ResolveCallConstraint,
     },
-    context::SolverContext,
+    context::{ImplFailure, InstanceFailure, InstanceFailureStatus, SolverContext},
     env::GlobalEnv,
     impl_match::{
         ImplHeadMatch, collect_discarded_trial_metas, collect_meta_roots, commit_trial_subst,
         instantiate_impl_predicates, match_impl_head,
     },
     info::TypeSystemInfo,
-    types::{ReceiverMode, Subst, Substitutable, TraitField, TraitTy, TyScheme},
-    unify::unify,
+    types::{ImplKind, ReceiverMode, Subst, Substitutable, TraitField, TraitTy, TyScheme},
+    unify::{match_ty, unify},
 };
 
 #[derive(Debug)]
 enum SolveOutcome {
     Solved,
     SolvedWith(Vec<Constraint>),
-    UnsolvedWith(Vec<Constraint>, Option<ClassPredicate>),
-    UnsolvedNoMatch,
+    UnsolvedInstance(InstanceSolveResult),
     Unsolved,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstanceSolveStatus {
+    Solved,
+    NoMatchingImpl,
+    HeadMatchFailed,
+    Deferred,
+}
+
+#[derive(Debug)]
 struct InstanceSolveResult {
-    solved: bool,
-    failed_predicates: Vec<Constraint>,
-    no_matching_impl: bool,
-    impl_head: Option<ClassPredicate>,
+    status: InstanceSolveStatus,
+    failures: Vec<ImplFailure>,
 }
 
 fn solve_constraint(
@@ -55,6 +61,7 @@ fn solve_constraint(
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> SolveOutcome {
+    log::debug!("[solve_constraint] {}", constraint);
     // First try to solve this wanted using the available givens.
     if solve_with_givens(constraint, givens_with_subst, subst) {
         return SolveOutcome::Solved;
@@ -63,17 +70,14 @@ fn solve_constraint(
     // Next, try to solve via instance resolution.
     let instance_result =
         solve_with_instances(constraint, givens_with_subst, global_env, subst, ctx);
-    if instance_result.solved {
-        return SolveOutcome::Solved;
-    }
-    if !instance_result.failed_predicates.is_empty() {
-        return SolveOutcome::UnsolvedWith(
-            instance_result.failed_predicates,
-            instance_result.impl_head,
-        );
-    }
-    if instance_result.no_matching_impl {
-        return SolveOutcome::UnsolvedNoMatch;
+    match instance_result.status {
+        InstanceSolveStatus::Solved => {
+            return SolveOutcome::Solved;
+        }
+        InstanceSolveStatus::NoMatchingImpl | InstanceSolveStatus::HeadMatchFailed => {
+            return SolveOutcome::UnsolvedInstance(instance_result);
+        }
+        InstanceSolveStatus::Deferred => {}
     }
 
     // Then try HasField / Recv using the global metadata and auto-ref/deref.
@@ -195,12 +199,25 @@ pub fn solve_constraints(
                     progress = true;
                     new_goals.append(&mut emitted);
                 }
-                SolveOutcome::UnsolvedWith(unsatisfied, impl_head) => {
-                    ctx.record_predicate_failure(&constraint, unsatisfied, false, impl_head);
-                    unsolved.push(constraint);
-                }
-                SolveOutcome::UnsolvedNoMatch => {
-                    ctx.record_predicate_failure(&constraint, Vec::new(), true, None);
+                SolveOutcome::UnsolvedInstance(instance_result) => {
+                    let status = match instance_result.status {
+                        InstanceSolveStatus::NoMatchingImpl => {
+                            InstanceFailureStatus::NoMatchingImpl
+                        }
+                        InstanceSolveStatus::HeadMatchFailed => {
+                            InstanceFailureStatus::HeadMatchFailed
+                        }
+                        InstanceSolveStatus::Deferred | InstanceSolveStatus::Solved => {
+                            InstanceFailureStatus::Deferred
+                        }
+                    };
+                    ctx.record_predicate_failure(
+                        &constraint,
+                        InstanceFailure {
+                            status,
+                            failures: instance_result.failures,
+                        },
+                    );
                     unsolved.push(constraint);
                 }
                 SolveOutcome::Unsolved => {
@@ -225,6 +242,14 @@ pub fn solve_constraints(
         worklist.clear();
         worklist.extend(unsolved.drain(..));
         worklist.extend(new_goals.drain(..));
+        if !worklist.is_empty() {
+            log::debug!("[solve_constraints] continuing with worklist:");
+            for c in worklist.iter() {
+                log::debug!("  {}", c);
+            }
+        } else {
+            log::debug!("[solve_constraints] worklist is empty");
+        }
     }
 
     ConstraintSolveResult { unsolved, solved }
@@ -414,14 +439,13 @@ fn solve_with_instances(
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> InstanceSolveResult {
+    log::debug!("[solve_with_instances] wanted = {}", wanted);
     let wp = match &wanted.kind {
         ConstraintKind::Class(wp) => wp,
         _ => {
             return InstanceSolveResult {
-                solved: false,
-                failed_predicates: Vec::new(),
-                no_matching_impl: false,
-                impl_head: None,
+                status: InstanceSolveStatus::Deferred,
+                failures: Vec::new(),
             };
         }
     };
@@ -429,10 +453,8 @@ fn solve_with_instances(
     if wp.args.is_empty() {
         // Class predicates should always have at least a receiver argument.
         return InstanceSolveResult {
-            solved: false,
-            failed_predicates: Vec::new(),
-            no_matching_impl: false,
-            impl_head: None,
+            status: InstanceSolveStatus::Deferred,
+            failures: Vec::new(),
         };
     }
 
@@ -442,21 +464,36 @@ fn solve_with_instances(
     // choosing an impl (e.g. `Int[int]` for `Int[?t]`) would be arbitrary and
     // can block valid solutions that would otherwise be determined by other
     // constraints (e.g. via `Div['a,'a,'a]` or `Eq['a,'a]` givens).
-    let mut recv_ty = wp.args[0].clone();
-    recv_ty.apply_subst(subst);
-    if matches!(recv_ty, Ty::Var(v) if v.is_meta()) {
+    // let mut recv_ty = wp.args[0].clone();
+    // recv_ty.apply_subst(subst);
+    // if matches!(recv_ty, Ty::Var(v) if v.is_meta()) {
+    //     return InstanceSolveResult {
+    //         solved: false,
+    //         failed_predicates: Vec::new(),
+    //         no_matching_impl: false,
+    //         impl_head: None,
+    //     };
+    // }
+    let mut wp_args = wp.args.clone();
+    wp_args.apply_subst(subst);
+    if wp_args
+        .iter()
+        .all(|ty| matches!(ty, Ty::Var(v) if v.is_meta()))
+    {
+        // Do not continue if there isn't a grounded type in the arguments
+        log::debug!(
+            "[solve_with_instances] no grounded type in the arguments: {}",
+            wp
+        );
         return InstanceSolveResult {
-            solved: false,
-            failed_predicates: Vec::new(),
-            no_matching_impl: false,
-            impl_head: None,
+            status: InstanceSolveStatus::Deferred,
+            failures: Vec::new(),
         };
     }
 
     let mut successful_impls = Vec::new();
-    let mut failed_predicates: Vec<Constraint> = Vec::new();
+    let mut failures: Vec<ImplFailure> = Vec::new();
     let mut saw_head_match = false;
-    let mut failing_impl_head: Option<ClassPredicate> = None;
 
     for impl_ty in global_env.impls_for_trait(&wp.name) {
         let Some(head) = match_impl_head(wp, impl_ty, subst, ctx, &wanted.info) else {
@@ -489,7 +526,7 @@ fn solve_with_instances(
                 .map(|p| Constraint::from_predicate(p, wanted.info.clone()))
                 .collect::<Vec<_>>();
 
-            let batch = solve_constraints(
+            let mut batch = solve_constraints(
                 &instantiated_constraints,
                 givens,
                 global_env,
@@ -497,13 +534,13 @@ fn solve_with_instances(
                 ctx,
             );
             if !batch.unsolved.is_empty() {
-                failed_predicates.extend(batch.unsolved);
-                if failing_impl_head.is_none() {
-                    let mut args = Vec::with_capacity(1 + ty_args_head.len());
-                    args.push(base_ty_head.clone());
-                    args.extend(ty_args_head.iter().cloned());
-                    failing_impl_head = Some(ClassPredicate::new(wp.name.clone(), args));
-                }
+                let mut args = Vec::with_capacity(1 + ty_args_head.len());
+                args.push(base_ty_head.clone());
+                args.extend(ty_args_head.iter().cloned());
+                failures.push(ImplFailure {
+                    impl_head: ClassPredicate::new(wp.name.clone(), args),
+                    unsatisfied: batch.unsolved,
+                });
                 ctx.reuse_metas(trial_metas);
                 continue;
             }
@@ -512,13 +549,14 @@ fn solve_with_instances(
         successful_impls.push((impl_ty, trial_subst, trial_metas));
     }
 
-    let no_matching_impl = !saw_head_match && failed_predicates.is_empty();
     match successful_impls.len() {
         0 => InstanceSolveResult {
-            solved: false,
-            failed_predicates,
-            no_matching_impl,
-            impl_head: failing_impl_head,
+            status: if saw_head_match {
+                InstanceSolveStatus::HeadMatchFailed
+            } else {
+                InstanceSolveStatus::NoMatchingImpl
+            },
+            failures,
         },
         1 => {
             let (impl_ty, trial_subst, trial_metas) = successful_impls.remove(0);
@@ -540,10 +578,8 @@ fn solve_with_instances(
             );
             subst.union(commit_subst);
             InstanceSolveResult {
-                solved: true,
-                failed_predicates: Vec::new(),
-                no_matching_impl: false,
-                impl_head: None,
+                status: InstanceSolveStatus::Solved,
+                failures: Vec::new(),
             }
         }
         _ => {
@@ -552,10 +588,8 @@ fn solve_with_instances(
                 ctx.reuse_metas(fresh_metas);
             }
             InstanceSolveResult {
-                solved: false,
-                failed_predicates,
-                no_matching_impl: false,
-                impl_head: None,
+                status: InstanceSolveStatus::Deferred,
+                failures,
             }
         }
     }
@@ -740,47 +774,50 @@ fn solve_resolve_call(
             receiver_subst,
         } => {
             // Scoped calls already have a resolved binding; do not re-resolve by name.
-            let Some(scheme) = ctx.binding_schemes.get(binding).cloned() else {
+            if !ctx.binding_schemes.contains_key(binding) {
                 log::debug!("[solve_resolve_call] cannot find binding {:?}", binding);
                 return SolveOutcome::Unsolved;
             };
 
-            log::debug!("[solve_resolve_call] scheme for {:?}: {}", binding, scheme);
+            let mut subject_ty = call.subject_ty.clone();
+            subject_ty.apply_subst(subst);
+            let maybe_subject_fqn = subject_fqn(&subject_ty);
 
-            let mut trial_subst = subst.clone();
-            let outcome = solve_chosen_method_call(
-                &scheme,
-                receiver_subst.as_ref(),
-                true,
-                ReceiverMode::None,
-                None,
+            log::debug!(
+                "[solve_resolve_call] scoped subject_ty = {}, method_name = {}",
+                subject_ty,
+                call.method_name
+            );
+
+            let mut ctx_bundle = ResolveCallContext {
                 call,
                 wanted,
                 givens,
                 global_env,
-                &mut trial_subst,
+                subst,
                 ctx,
-            );
+                subject_ty: &subject_ty,
+                subject_fqn: maybe_subject_fqn.as_ref(),
+                receiver_subst: receiver_subst.as_ref(),
+            };
 
-            match outcome {
-                SolveOutcome::Solved | SolveOutcome::SolvedWith(_) => {
-                    subst.union(trial_subst);
-                    outcome
-                }
-                _ => outcome,
+            if let Some((trial_subst, outcome)) =
+                solve_scoped_call(StaticRequirement::Either, &mut ctx_bundle)
+            {
+                subst.union(trial_subst);
+                outcome
+            } else {
+                SolveOutcome::Unsolved
             }
         }
-        CallKind::Instance { method_name } => {
-            // Instance calls always target non-static methods.
-            let required_is_static = false;
-
+        CallKind::Instance => {
             let mut subject_ty = call.subject_ty.clone();
             subject_ty.apply_subst(subst);
 
             log::debug!(
                 "[solve_resolve_call] subject_ty = {}, method_name = {}",
                 subject_ty,
-                method_name
+                call.method_name
             );
 
             // Candidate inherent methods require a headed receiver type (we
@@ -790,71 +827,33 @@ fn solve_resolve_call(
                 "[solve_resolve_call] maybe_subject_fqn = {:?}",
                 maybe_subject_fqn
             );
-            let inherent = maybe_subject_fqn.and_then(|subject_fqn| {
-                find_unique_inherent_method(
-                    global_env,
-                    &subject_fqn,
-                    method_name,
-                    required_is_static,
-                )
-            });
-
-            log::debug!("[solve_resolve_call] inherent_method = {:?}", inherent);
-
-            // Prefer trait methods that are in-scope via givens (including
-            // expanded supertraits). This supports generic receiver method calls
-            // like `key: 'k` under `where Hash['k]` without requiring a headed
-            // subject type.
-            let trait_method = find_unique_trait_method_from_givens(
+            let chosen = match choose_method(
+                maybe_subject_fqn.as_deref(),
+                &call.method_name,
+                StaticRequirement::NonStatic,
                 givens,
                 global_env,
-                method_name,
-                required_is_static,
-            )
-            .or_else(|| find_unique_trait_method(global_env, method_name, required_is_static));
-
-            let chosen = match (inherent, trait_method) {
-                (Some(inherent), None) => ChosenMethod::Inherent(inherent),
-                (None, Some(trait_method)) => ChosenMethod::Trait(trait_method),
-                (Some(_), Some(_)) => {
-                    // Ambiguous between inherent and trait.
-                    return SolveOutcome::Unsolved;
-                }
-                (None, None) => return SolveOutcome::Unsolved,
+            ) {
+                Some(chosen) => chosen,
+                None => return SolveOutcome::Unsolved,
             };
 
             // Solve transactionally: if we cannot fully discharge the call (including
             // its qualifiers), do not commit any unifications to the outer subst.
-            let mut trial_subst = subst.clone();
-
-            let outcome = match chosen {
-                ChosenMethod::Inherent(method) => solve_chosen_method_call(
-                    &method.scheme,
-                    None,
-                    method.is_static,
-                    method.recv_mode,
-                    None,
-                    call,
-                    wanted,
-                    givens,
-                    global_env,
-                    &mut trial_subst,
-                    ctx,
-                ),
-                ChosenMethod::Trait(method) => solve_chosen_method_call(
-                    &method.field.ty,
-                    None,
-                    method.field.is_static,
-                    method.field.recv_mode,
-                    Some((method.trait_ty, method.field)),
-                    call,
-                    wanted,
-                    givens,
-                    global_env,
-                    &mut trial_subst,
-                    ctx,
-                ),
+            let mut call_ctx = ResolveCallContext {
+                call,
+                wanted,
+                givens,
+                global_env,
+                subst,
+                ctx,
+                subject_ty: &subject_ty,
+                subject_fqn: maybe_subject_fqn.as_ref(),
+                receiver_subst: None,
             };
+
+            let mut trial_subst = subst.clone();
+            let outcome = solve_with_chosen_method(&chosen, None, &mut call_ctx, &mut trial_subst);
 
             match outcome {
                 SolveOutcome::Solved | SolveOutcome::SolvedWith(_) => {
@@ -872,17 +871,27 @@ struct InherentMethod {
     scheme: TyScheme,
     is_static: bool,
     recv_mode: ReceiverMode,
+    recv_ty: Ty,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct TraitMethod<'a> {
     trait_ty: &'a TraitTy,
     field: &'a TraitField,
 }
 
+#[derive(Debug)]
 enum ChosenMethod<'a> {
     Inherent(InherentMethod),
     Trait(TraitMethod<'a>),
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+enum StaticRequirement {
+    Static,
+    NonStatic,
+    Either,
 }
 
 fn subject_fqn(subject_ty: &Ty) -> Option<String> {
@@ -904,7 +913,7 @@ fn find_unique_inherent_method(
     global_env: &GlobalEnv,
     recv_fqn: &str,
     method_name: &str,
-    required_is_static: bool,
+    required_is_static: StaticRequirement,
 ) -> Option<InherentMethod> {
     let impls = global_env.inherent_impls.get(recv_fqn)?;
     log::debug!(
@@ -914,7 +923,14 @@ fn find_unique_inherent_method(
     );
     let mut matches: Vec<InherentMethod> = Vec::new();
 
-    for impl_ty in impls {
+    for idx in impls {
+        let Some(impl_ty) = global_env.resolve_impl_from_index(idx) else {
+            continue;
+        };
+        let recv_ty = match &impl_ty.kind {
+            ImplKind::Inherent { recv_ty } => recv_ty.clone(),
+            _ => continue,
+        };
         for field in &impl_ty.fields {
             let Some(name) = field.path.name() else {
                 continue;
@@ -922,8 +938,10 @@ fn find_unique_inherent_method(
             if name != method_name {
                 continue;
             }
-            if field.is_static != required_is_static {
-                continue;
+            match required_is_static {
+                StaticRequirement::Static if !field.is_static => continue,
+                StaticRequirement::NonStatic if field.is_static => continue,
+                _ => {}
             }
             let Some(scheme) = &field.scheme else {
                 continue;
@@ -932,6 +950,7 @@ fn find_unique_inherent_method(
                 scheme: scheme.clone(),
                 is_static: field.is_static,
                 recv_mode: field.recv_mode,
+                recv_ty: recv_ty.clone(),
             });
         }
     }
@@ -943,16 +962,153 @@ fn find_unique_inherent_method(
     }
 }
 
+fn solve_scoped_call(
+    required_is_static: StaticRequirement,
+    ctx_bundle: &mut ResolveCallContext<'_, '_>,
+) -> Option<(Subst, SolveOutcome)> {
+    let Some(subject_fqn) = ctx_bundle.subject_fqn else {
+        return None;
+    };
+
+    let chosen = choose_method(
+        Some(subject_fqn),
+        &ctx_bundle.call.method_name,
+        required_is_static,
+        ctx_bundle.givens,
+        ctx_bundle.global_env,
+    )?;
+    log::debug!(
+        "[solve_scoped_call] chosen = {:?}, subject_ty = {}, recv_subst = {:?}",
+        chosen,
+        ctx_bundle.subject_ty,
+        ctx_bundle.receiver_subst
+    );
+
+    let mut trial_subst = ctx_bundle.subst.clone();
+    let outcome = match chosen {
+        ChosenMethod::Inherent(method) => {
+            let impl_subst = receiver_subst_from_recv_ty(&method.recv_ty, ctx_bundle.subject_ty)?;
+            log::debug!(
+                "[solve_scoped_call] inherent recv_ty = {}, impl_subst = {}",
+                method.recv_ty,
+                impl_subst
+            );
+            let mut combined = impl_subst;
+            if let Some(receiver_subst) = ctx_bundle.receiver_subst {
+                if !combined.merge_checked(receiver_subst) {
+                    log::debug!(
+                        "[solve_scoped_call] receiver_subst merge failed: {} vs {}",
+                        combined,
+                        receiver_subst
+                    );
+                    return None;
+                }
+            }
+            solve_with_chosen_method(
+                &ChosenMethod::Inherent(method),
+                Some(&combined),
+                ctx_bundle,
+                &mut trial_subst,
+            )
+        }
+        ChosenMethod::Trait(method) => {
+            let trait_subst = receiver_subst_for_trait(method.trait_ty, ctx_bundle.subject_ty)?;
+            log::debug!(
+                "[solve_scoped_call] trait recv_ty = {}, trait_subst = {}",
+                method.trait_ty.ty,
+                trait_subst
+            );
+            let mut combined = trait_subst;
+            if let Some(receiver_subst) = ctx_bundle.receiver_subst {
+                if !combined.merge_checked(receiver_subst) {
+                    log::debug!(
+                        "[solve_scoped_call] receiver_subst merge failed: {} vs {}",
+                        combined,
+                        receiver_subst
+                    );
+                    return None;
+                }
+            }
+            solve_with_chosen_method(
+                &ChosenMethod::Trait(method),
+                Some(&combined),
+                ctx_bundle,
+                &mut trial_subst,
+            )
+        }
+    };
+
+    match outcome {
+        SolveOutcome::Solved | SolveOutcome::SolvedWith(_) => Some((trial_subst, outcome)),
+        _ => None,
+    }
+}
+
+struct ResolveCallContext<'a, 'ctx> {
+    call: &'a ResolveCallConstraint,
+    wanted: &'a Constraint,
+    givens: &'a [Constraint],
+    global_env: &'a GlobalEnv,
+    subst: &'a Subst,
+    ctx: &'a mut SolverContext<'ctx>,
+    subject_ty: &'a Ty,
+    subject_fqn: Option<&'a String>,
+    receiver_subst: Option<&'a Subst>,
+}
+
+fn choose_method<'a>(
+    subject_fqn: Option<&str>,
+    method_name: &str,
+    required_is_static: StaticRequirement,
+    givens: &[Constraint],
+    global_env: &'a GlobalEnv,
+) -> Option<ChosenMethod<'a>> {
+    let inherent = subject_fqn.and_then(|subject_fqn| {
+        find_unique_inherent_method(global_env, subject_fqn, method_name, required_is_static)
+    });
+
+    let trait_method = subject_fqn
+        .and_then(|subject_fqn| {
+            find_unique_trait_method_for_recv(
+                global_env,
+                subject_fqn,
+                method_name,
+                required_is_static,
+            )
+        })
+        .or_else(|| {
+            // Prefer trait methods that are in-scope via givens (including
+            // expanded supertraits). This supports generic receiver method calls
+            // like `key: 'k` under `where Hash['k]` without requiring a headed
+            // subject type.
+            find_unique_trait_method_from_givens(
+                givens,
+                global_env,
+                method_name,
+                required_is_static,
+            )
+        })
+        .or_else(|| find_unique_trait_method(global_env, method_name, required_is_static));
+
+    match (inherent, trait_method) {
+        (Some(inherent), None) => Some(ChosenMethod::Inherent(inherent)),
+        (None, Some(trait_method)) => Some(ChosenMethod::Trait(trait_method)),
+        _ => None,
+    }
+}
+
 fn find_unique_trait_method<'a>(
     global_env: &'a GlobalEnv,
     method_name: &str,
-    required_is_static: bool,
+    required_is_static: StaticRequirement,
 ) -> Option<TraitMethod<'a>> {
     let mut matches: Vec<TraitMethod<'a>> = Vec::new();
     for trait_ty in global_env.traits.values() {
         if let Some(field) = trait_ty.get_field(method_name) {
-            if field.is_static != required_is_static {
-                continue;
+            match required_is_static {
+                StaticRequirement::Static if !field.is_static => continue,
+                StaticRequirement::NonStatic if field.is_static => continue,
+                _ => {}
             }
             matches.push(TraitMethod { trait_ty, field });
         }
@@ -968,7 +1124,7 @@ fn find_unique_trait_method_from_givens<'a>(
     givens: &[Constraint],
     global_env: &'a GlobalEnv,
     method_name: &str,
-    required_is_static: bool,
+    required_is_static: StaticRequirement,
 ) -> Option<TraitMethod<'a>> {
     let mut seen_trait_names: HashSet<&str> = HashSet::new();
     let mut matches: Vec<TraitMethod<'a>> = Vec::new();
@@ -987,8 +1143,10 @@ fn find_unique_trait_method_from_givens<'a>(
         let Some(field) = trait_ty.get_field(method_name) else {
             continue;
         };
-        if field.is_static != required_is_static {
-            continue;
+        match required_is_static {
+            StaticRequirement::Static if !field.is_static => continue,
+            StaticRequirement::NonStatic if field.is_static => continue,
+            _ => {}
         }
         matches.push(TraitMethod { trait_ty, field });
     }
@@ -1000,18 +1158,86 @@ fn find_unique_trait_method_from_givens<'a>(
     }
 }
 
+fn find_unique_trait_method_for_recv<'a>(
+    global_env: &'a GlobalEnv,
+    recv_fqn: &str,
+    method_name: &str,
+    required_is_static: StaticRequirement,
+) -> Option<TraitMethod<'a>> {
+    let impls = global_env.impls_by_recv.get(recv_fqn)?;
+    let mut seen_traits: HashSet<&str> = HashSet::new();
+    let mut matches: Vec<TraitMethod<'a>> = Vec::new();
+
+    for idx in impls {
+        let Some(impl_ty) = global_env.resolve_impl_from_index(idx) else {
+            continue;
+        };
+        let ImplKind::Trait { trait_ty, .. } = &impl_ty.kind else {
+            continue;
+        };
+        let trait_name = match trait_ty {
+            Ty::Const(p) | Ty::Proj(p, _) => p.as_str(),
+            _ => continue,
+        };
+        if !seen_traits.insert(trait_name) {
+            continue;
+        }
+
+        if !impl_ty
+            .fields
+            .iter()
+            .any(|field| field.path.name().as_ref() == Some(&method_name.to_string()))
+        {
+            continue;
+        }
+
+        let Some(trait_ty) = global_env.get_trait(trait_name) else {
+            continue;
+        };
+        let Some(field) = trait_ty.get_field(method_name) else {
+            continue;
+        };
+        match required_is_static {
+            StaticRequirement::Static if !field.is_static => continue,
+            StaticRequirement::NonStatic if field.is_static => continue,
+            _ => {}
+        }
+        matches.push(TraitMethod { trait_ty, field });
+    }
+
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
+fn receiver_subst_from_recv_ty(recv_ty: &Ty, subject_ty: &Ty) -> Option<Subst> {
+    let mut vars = HashSet::new();
+    recv_ty.free_ty_vars(&mut vars);
+    let mut subst = Subst::new();
+    if match_ty(recv_ty, subject_ty, &vars, &mut subst) {
+        Some(subst)
+    } else {
+        None
+    }
+}
+
+fn receiver_subst_for_trait(trait_ty: &TraitTy, subject_ty: &Ty) -> Option<Subst> {
+    let Some(recv_ty) = trait_ty.ty.get_ty_param_at(0) else {
+        return Some(Subst::new());
+    };
+    receiver_subst_from_recv_ty(recv_ty, subject_ty)
+}
+
 fn solve_chosen_method_call(
     scheme: &TyScheme,
     receiver_subst: Option<&Subst>,
     is_static: bool,
     recv_mode: ReceiverMode,
     trait_method: Option<(&TraitTy, &TraitField)>,
-    call: &ResolveCallConstraint,
-    wanted: &Constraint,
-    _givens: &[Constraint],
-    _global_env: &GlobalEnv,
+    ctx_bundle: &mut ResolveCallContext<'_, '_>,
     subst: &mut Subst,
-    ctx: &mut SolverContext,
 ) -> SolveOutcome {
     // Instantiate the method scheme at this use site.
     let mut method_ty = scheme.ty.clone();
@@ -1026,7 +1252,7 @@ fn solve_chosen_method_call(
 
     let mut method_subst = Subst::new();
     for v in &scheme.vars {
-        method_subst.insert(v.clone(), ctx.fresh_meta());
+        method_subst.insert(v.clone(), ctx_bundle.ctx.fresh_meta());
     }
     method_ty.apply_subst(&method_subst);
     for pred in &mut qualifiers {
@@ -1042,7 +1268,7 @@ fn solve_chosen_method_call(
         let recv_param_ty = param_tys
             .first()
             .cloned()
-            .unwrap_or_else(|| ctx.fresh_meta());
+            .unwrap_or_else(|| ctx_bundle.ctx.fresh_meta());
 
         // Enforce receiver compatibility (auto-ref/deref) without emitting a
         // separate constraint into the outer worklist.
@@ -1054,8 +1280,8 @@ fn solve_chosen_method_call(
             &Constraint::recv(
                 recv_kind,
                 recv_param_ty.clone(),
-                call.subject_ty.clone(),
-                wanted.info.clone(),
+                ctx_bundle.call.subject_ty.clone(),
+                ctx_bundle.wanted.info.clone(),
             ),
             subst,
         );
@@ -1064,7 +1290,7 @@ fn solve_chosen_method_call(
         }
     }
 
-    let mut expected_fn_ty = call.expected_fn_ty.clone();
+    let mut expected_fn_ty = ctx_bundle.call.expected_fn_ty.clone();
     expected_fn_ty.apply_subst(subst);
 
     // Unify the method type against the expected call signature.
@@ -1073,7 +1299,7 @@ fn solve_chosen_method_call(
         method_ty,
         expected_fn_ty
     );
-    match unify(&method_ty, &expected_fn_ty, subst, &wanted.info) {
+    match unify(&method_ty, &expected_fn_ty, subst, &ctx_bundle.wanted.info) {
         Ok(new_subst) => subst.union(new_subst),
         Err(_) => return SolveOutcome::Unsolved,
     }
@@ -1096,7 +1322,7 @@ fn solve_chosen_method_call(
         emitted.push(Constraint::class(
             trait_ty.path.to_string(),
             trait_args,
-            wanted.info.clone(),
+            ctx_bundle.wanted.info.clone(),
         ));
     }
 
@@ -1105,13 +1331,44 @@ fn solve_chosen_method_call(
     // equalities while deferring trait obligations.
     for mut pred in qualifiers {
         pred.apply_subst(subst);
-        emitted.push(Constraint::from_predicate(pred, wanted.info.clone()));
+        emitted.push(Constraint::from_predicate(
+            pred,
+            ctx_bundle.wanted.info.clone(),
+        ));
     }
 
     if emitted.is_empty() {
         SolveOutcome::Solved
     } else {
         SolveOutcome::SolvedWith(emitted)
+    }
+}
+
+fn solve_with_chosen_method(
+    chosen: &ChosenMethod<'_>,
+    receiver_subst: Option<&Subst>,
+    ctx_bundle: &mut ResolveCallContext<'_, '_>,
+    trial_subst: &mut Subst,
+) -> SolveOutcome {
+    match chosen {
+        ChosenMethod::Inherent(method) => solve_chosen_method_call(
+            &method.scheme,
+            receiver_subst,
+            method.is_static,
+            method.recv_mode,
+            None,
+            ctx_bundle,
+            trial_subst,
+        ),
+        ChosenMethod::Trait(method) => solve_chosen_method_call(
+            &method.field.ty,
+            receiver_subst,
+            method.field.is_static,
+            method.field.recv_mode,
+            Some((method.trait_ty, method.field)),
+            ctx_bundle,
+            trial_subst,
+        ),
     }
 }
 
@@ -1131,6 +1388,7 @@ mod tests {
         },
         context::SolverContext,
         env::GlobalEnv,
+        goal_solver::InstanceSolveStatus,
         info::TypeSystemInfo,
         types::{
             FieldKind, ImplKind, ImplTy, ReceiverMode, Subst, Substitutable as _, TraitField,
@@ -1183,7 +1441,7 @@ mod tests {
         let result = solve_with_instances(&wanted, &givens, &global_env, &mut subst, &mut ctx);
 
         // Assert
-        assert!(result.solved);
+        assert_eq!(result.status, InstanceSolveStatus::Solved);
 
         // Should force ?t0 = uint, ?t1 = rawptr[T]
         let mut rhs0 = subst.get(&t0).unwrap().clone();
@@ -1254,7 +1512,7 @@ mod tests {
         let givens: Vec<Constraint> = vec![];
 
         let result = solve_with_instances(&wanted, &givens, &global_env, &mut subst, &mut ctx);
-        assert!(!result.solved);
+        assert_ne!(result.status, InstanceSolveStatus::Solved);
 
         // Ensure we did not commit any bindings on ambiguity.
         assert!(subst.get(&t0).is_none());
@@ -1292,7 +1550,7 @@ mod tests {
         let givens: Vec<Constraint> = vec![];
 
         let result = solve_with_instances(&wanted, &givens, &global_env, &mut subst, &mut ctx);
-        assert!(!result.solved);
+        assert_ne!(result.status, InstanceSolveStatus::Solved);
         assert!(subst.get(&t0).is_none());
     }
 

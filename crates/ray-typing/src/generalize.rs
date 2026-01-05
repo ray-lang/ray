@@ -23,6 +23,7 @@ use std::collections::HashSet;
 use ray_shared::{
     node_id::NodeId,
     ty::{Ty, TyVar},
+    utils::join,
 };
 
 use crate::{
@@ -113,28 +114,76 @@ pub fn generalize_group(
                 continue;
             }
 
+            if !is_value {
+                schemes.push((*binding_id, TyScheme::from_mono(instantiated.ty)));
+                continue;
+            }
+
             // Collect type variables that still appear free in the binding's
             // type. Generalization decisions for vars and qualifiers are
             // made relative to the binding's type, not vars that appear only
             // in constraints.
             let mut free_in_ty: HashSet<TyVar> = HashSet::new();
             instantiated.ty.free_ty_vars(&mut free_in_ty);
+            log::debug!(
+                "[generalize] instantiated = {}, free_in_ty = [{}]",
+                instantiated,
+                join(&free_in_ty, ", ")
+            );
+
+            // Grow the variable set by pulling in predicates connected through
+            // shared type variables, and collect qualifiers along the way.
+            let mut closure_vars = free_in_ty.clone();
+            let mut qualifiers: Vec<Predicate> = Vec::new();
+            let mut included_predicates: HashSet<usize> = HashSet::new();
+            loop {
+                let mut grew = false;
+                for (idx, c) in residuals.iter().enumerate() {
+                    if matches!(c.kind, ConstraintKind::Eq(_)) {
+                        continue;
+                    }
+
+                    let mut pred_vars = HashSet::new();
+                    c.free_ty_vars(&mut pred_vars);
+
+                    if pred_vars.iter().any(|v| closure_vars.contains(v)) {
+                        if included_predicates.insert(idx) {
+                            let pred = c.to_predicate().expect("predicate from constraint");
+                            qualifiers.push(pred);
+                            for v in pred_vars {
+                                if closure_vars.insert(v) {
+                                    grew = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !grew {
+                    break;
+                }
+            }
 
             // If any meta variable in this binding's type still appears in
             // residual constraints, treat the binding as non-generalizable.
-            let has_residual_meta = free_in_ty
+            let has_residual_meta = closure_vars
                 .iter()
                 .any(|v| v.is_meta() && vars_in_residuals.contains(v) && !global_metas.contains(v));
 
-            if has_residual_meta || !is_value {
+            if has_residual_meta {
                 schemes.push((*binding_id, TyScheme::from_mono(instantiated.ty)));
                 continue;
             }
 
+            consumed.extend(included_predicates);
+
             // Remaining meta variables (not mentioned in residuals) are
             // candidates for generalization.
-            let mut metas: Vec<TyVar> =
-                free_in_ty.iter().filter(|v| v.is_meta()).cloned().collect();
+            let mut metas: Vec<TyVar> = closure_vars
+                .iter()
+                .filter(|v| v.is_meta())
+                .cloned()
+                .collect();
             metas.sort();
 
             // Rename each meta class to a fresh schema variable name and
@@ -150,22 +199,6 @@ pub fn generalize_group(
                     let new_var = allocator.alloc();
                     local_closing.insert(old.clone(), Ty::Var(new_var.clone()));
                     vars.push(new_var);
-                }
-            }
-
-            let mut qualifiers: Vec<Predicate> = Vec::new();
-            for (idx, c) in residuals.iter().enumerate() {
-                if matches!(c.kind, ConstraintKind::Eq(_)) {
-                    continue;
-                }
-
-                let mut pred_vars = HashSet::new();
-                c.free_ty_vars(&mut pred_vars);
-
-                if pred_vars.iter().any(|v| free_in_ty.contains(v)) {
-                    let pred = c.to_predicate().expect("predicate from constraint");
-                    qualifiers.push(pred);
-                    consumed.insert(idx);
                 }
             }
 

@@ -6,6 +6,13 @@ impl ToStr[()] {
     fn to_str(self: ()) -> string => "()"
 }
 
+impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
+    fn to_str(self: ('a, 'b)) -> string {
+        a, b = self
+        "(" + a.to_str() + ", " + b.to_str() + ")"
+    }
+}
+
 impl ToStr[bool] {
     fn to_str(self: bool) -> string {
         if self {

@@ -4,6 +4,11 @@ struct list['a] {
     capacity: uint
 }
 
+struct ListIter['a] {
+    list: *list['a]
+    idx: uint
+}
+
 impl Index[list['a], 'a, uint] {
     fn get(self: *list['a], idx: uint) -> 'a? {
         if idx >= self.len {
@@ -23,6 +28,25 @@ impl Index[list['a], 'a, uint] {
         prev = *ptr
         *ptr = el
         some(prev)
+    }
+}
+
+impl Iterable[list['a], ListIter['a], 'a] {
+    fn iter(self: *list['a]) -> ListIter['a] {
+        ListIter { list: self, idx: 0 }
+    }
+}
+
+impl Iter[ListIter['a], 'a] {
+    fn next(self: *ListIter['a]) -> 'a? {
+        if self.idx >= self.list.len {
+            return nil
+        }
+
+        ptr = self.list.values + self.idx
+        val = *ptr
+        self.idx = self.idx + 1
+        some(val)
     }
 }
 
