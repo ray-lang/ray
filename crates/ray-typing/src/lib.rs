@@ -17,7 +17,6 @@ pub mod unify;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt::Display;
 use std::mem;
 use std::rc::Rc;
 

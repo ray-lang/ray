@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use ray_shared::{ty::Ty, utils::join};
+use ray_shared::ty::Ty;
 
 use crate::{
     constraint_tree::ConstraintNode,
@@ -526,7 +526,7 @@ fn solve_with_instances(
                 .map(|p| Constraint::from_predicate(p, wanted.info.clone()))
                 .collect::<Vec<_>>();
 
-            let mut batch = solve_constraints(
+            let batch = solve_constraints(
                 &instantiated_constraints,
                 givens,
                 global_env,

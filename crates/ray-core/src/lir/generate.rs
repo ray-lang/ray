@@ -17,7 +17,7 @@ use crate::{
         Node, Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
     },
     errors::RayResult,
-    lir::{self, types::SizeOf},
+    lir,
     passes::{
         binding::BindingPassOutput,
         closure::{ClosureInfo, ClosurePassOutput},
@@ -2799,11 +2799,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 ctx.set_local(ptr_loc, ptr_malloc);
                 let value = boxed.inner.lir_gen(ctx, tcx)?;
-                ctx.push(lir::Store::new(
-                    lir::Variable::Local(ptr_loc),
-                    value,
-                    0,
-                ));
+                ctx.push(lir::Store::new(lir::Variable::Local(ptr_loc), value, 0));
 
                 lir::Variable::Local(ptr_loc).into()
             }
