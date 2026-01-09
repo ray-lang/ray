@@ -1,0 +1,10 @@
+[package]
+name = "ray-frontend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4"
+ray-query-macros = { path = "../ray-query-macros" }
+ray-shared = { path = "../ray-shared" }
+serde = { version = "1.0", features = ["derive", "rc"] }

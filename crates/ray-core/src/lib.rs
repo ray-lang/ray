@@ -1,3 +1,5 @@
+use crate::ast::LowerAST;
+
 #[macro_use]
 extern crate lazy_static;
 

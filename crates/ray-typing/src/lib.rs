@@ -168,7 +168,6 @@ pub struct ModuleInput {
 impl ModuleInput {
     /// Compute binding groups for this module.
     ///
-    /// In the full implementation this will:
     /// - Walk the module's bindings and build a dependency graph over
     ///   `BindingId`.
     /// - Compute strongly connected components (SCCs) of this graph.
@@ -182,50 +181,6 @@ impl ModuleInput {
             .collect();
 
         self.bindings.compute_binding_groups_over(&top_level)
-    }
-
-    /// Compute binding groups for all bindings lexically nested under `parent`.
-    ///
-    /// This returns SCC groups in dependency order, restricted to the induced
-    /// subgraph containing only bindings whose `record.parent` chain leads back
-    /// to `parent`.
-    pub fn binding_groups_for_parent(&self, parent: BindingId) -> Vec<BindingGroup> {
-        fn collect_descendants(
-            module: &ModuleInput,
-            parent: BindingId,
-            out: &mut BTreeSet<BindingId>,
-        ) {
-            for child in module.bindings_with_parent(parent) {
-                if out.insert(child) {
-                    collect_descendants(module, child, out);
-                }
-            }
-        }
-
-        let mut descendants = BTreeSet::new();
-        collect_descendants(self, parent, &mut descendants);
-        self.bindings.compute_binding_groups_over(&descendants)
-    }
-
-    /// Compute binding groups for all direct bindings lexically nested under
-    /// any binding in `group`.
-    ///
-    /// This returns SCC groups in dependency order, restricted to the induced
-    /// subgraph containing only bindings whose `record.parent` chain leads back
-    /// to one of `group.bindings`.
-    pub fn local_binding_groups_for_group(&self, group: &BindingGroup) -> Vec<BindingGroup> {
-        if group.bindings.is_empty() {
-            return Vec::new();
-        }
-
-        let mut locals = BTreeSet::new();
-        for root in &group.bindings {
-            for child in self.bindings_with_parent(*root) {
-                locals.insert(child);
-            }
-        }
-
-        self.bindings.compute_binding_groups_over(&locals)
     }
 
     /// Return the root expression for a given binding, if any. Prefer the

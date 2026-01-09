@@ -1158,6 +1158,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ray-frontend"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "ray-query-macros",
+ "ray-shared",
+ "serde",
+]
+
+[[package]]
 name = "ray-lsp"
 version = "0.1.0"
 dependencies = [
@@ -1171,6 +1181,15 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-lsp",
+]
+
+[[package]]
+name = "ray-query-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

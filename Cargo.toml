@@ -11,6 +11,7 @@ members = [
     "crates/wasi_malloc",
     "crates/ray-cfg",
     "crates/ray-core",
+    "crates/ray-frontend",
     "crates/ray-lsp",
     "crates/ray-shared",
     "crates/ray-typing",
