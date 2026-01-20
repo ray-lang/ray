@@ -2,18 +2,27 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::Path, ty::Ty};
+use ray_shared::{
+    collections::namecontext::NameContext,
+    def::DefId,
+    local_binding::LocalBindingId,
+    node_id::NodeId,
+    pathlib::Path,
+    resolution::{DefTarget, Resolution},
+    ty::{SchemaVarAllocator, Ty},
+};
 use ray_typing::{
-    BindingKind, BindingRecord, ExprRecord, ModuleInput, NodeBinding, PatternKind, PatternRecord,
-    TypeCheckResult, TypeError, TypecheckOptions,
-    binding_groups::{BindingGraph, BindingId},
-    check_module,
+    BindingKind, BindingRecord, ExprRecord, NodeBinding, PatternKind, PatternRecord,
+    TypeCheckInput, TypeCheckResult, TypeError, TypecheckOptions,
+    binding_groups::{BindingGraph, BindingId, LegacyBindingGraph},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern},
     env::GlobalEnv,
     info::TypeSystemInfo,
     tyctx::TyCtx,
-    types::SchemaVarAllocator,
+    typecheck,
 };
+
+use crate::passes::deps::build_binding_graph;
 
 use crate::{
     ast::{
@@ -33,16 +42,25 @@ pub fn typecheck_module(
     ncx: &NameContext,
     options: TypecheckOptions,
     binding_output: &BindingPassOutput,
+    resolutions: &HashMap<NodeId, Resolution>,
 ) -> TypeCheckResult {
+    // Build DefId-keyed structures.
+    let all_defs = collect_def_ids(module);
+    let def_bindings = build_binding_graph(&all_defs, resolutions);
+    let def_binding_records = build_def_binding_records(binding_output);
+
     let schema_allocator = tcx.schema_allocator();
     let input = lower_module(
         module,
         srcmap,
         &tcx.global_env,
         binding_output,
+        resolutions,
+        def_bindings,
+        def_binding_records,
         schema_allocator,
     );
-    let mut result = check_module(&input, options, tcx, ncx);
+    let mut result = typecheck(&input, options, tcx, ncx);
     if !input.lowering_errors.is_empty() {
         let mut errors = input.lowering_errors.clone();
         errors.extend(result.errors);
@@ -54,7 +72,8 @@ pub fn typecheck_module(
 struct TyLowerCtx<'a> {
     srcmap: &'a SourceMap,
     env: &'a GlobalEnv,
-    bindings: BindingGraph,
+    resolutions: &'a HashMap<NodeId, Resolution>,
+    bindings: LegacyBindingGraph,
     binding_records: HashMap<BindingId, BindingRecord>,
     node_bindings: HashMap<NodeId, NodeBinding>,
     expr_records: HashMap<NodeId, ExprRecord>,
@@ -72,10 +91,16 @@ struct TyLowerCtx<'a> {
 }
 
 impl<'a> TyLowerCtx<'a> {
-    fn new(srcmap: &'a SourceMap, env: &'a GlobalEnv, binding_output: &BindingPassOutput) -> Self {
+    fn new(
+        srcmap: &'a SourceMap,
+        env: &'a GlobalEnv,
+        binding_output: &BindingPassOutput,
+        resolutions: &'a HashMap<NodeId, Resolution>,
+    ) -> Self {
         TyLowerCtx {
             srcmap,
             env,
+            resolutions,
             bindings: binding_output.bindings.clone(),
             binding_records: binding_output.binding_records.clone(),
             node_bindings: binding_output.node_bindings.clone(),
@@ -183,14 +208,71 @@ impl<'a> TyLowerCtx<'a> {
     }
 }
 
+/// Collect DefIds from module declarations that produce value bindings.
+pub fn collect_def_ids(module: &Module<(), Decl>) -> Vec<DefId> {
+    let mut all_defs: Vec<DefId> = Vec::new();
+
+    for decl_node in &module.decls {
+        match &decl_node.value {
+            Decl::Func(func) if func.body.is_some() => {
+                all_defs.push(decl_node.id.owner);
+            }
+            Decl::Declare(_) => {
+                all_defs.push(decl_node.id.owner);
+            }
+            Decl::Extern(_) => {
+                all_defs.push(decl_node.id.owner);
+            }
+            Decl::Impl(im) => {
+                if let Some(funcs) = &im.funcs {
+                    for func_node in funcs {
+                        if func_node.value.body.is_some() {
+                            all_defs.push(func_node.id.owner);
+                        }
+                    }
+                }
+                if let Some(consts) = &im.consts {
+                    for const_node in consts {
+                        all_defs.push(const_node.id.owner);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    all_defs
+}
+
+/// Build DefId-keyed binding records from the legacy BindingId-keyed records.
+pub fn build_def_binding_records(
+    binding_output: &BindingPassOutput,
+) -> HashMap<DefId, BindingRecord> {
+    let mut def_binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
+    for (binding_id, record) in &binding_output.binding_records {
+        for (node_id, node_binding) in &binding_output.node_bindings {
+            if let NodeBinding::Def(bid) = node_binding {
+                if bid == binding_id {
+                    def_binding_records.insert(node_id.owner, record.clone());
+                    break;
+                }
+            }
+        }
+    }
+    def_binding_records
+}
+
 pub fn lower_module(
     module: &Module<(), Decl>,
     srcmap: &SourceMap,
     env: &GlobalEnv,
     binding_output: &BindingPassOutput,
+    resolutions: &HashMap<NodeId, Resolution>,
+    def_bindings: BindingGraph<DefId>,
+    def_binding_records: HashMap<DefId, BindingRecord>,
     schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
-) -> ModuleInput {
-    let mut ctx = TyLowerCtx::new(srcmap, env, binding_output);
+) -> TypeCheckInput {
+    let mut ctx = TyLowerCtx::new(srcmap, env, binding_output, resolutions);
 
     // For now, treat each function declaration with a body as a separate
     // binding whose root expression is the function body. This matches the
@@ -289,9 +371,9 @@ pub fn lower_module(
         }
     }
 
-    ModuleInput {
-        bindings: ctx.bindings,
-        binding_records: ctx.binding_records,
+    TypeCheckInput {
+        bindings: def_bindings,
+        binding_records: def_binding_records,
         node_bindings: ctx.node_bindings,
         expr_records: ctx.expr_records,
         pattern_records: ctx.pattern_records,
@@ -314,7 +396,7 @@ fn lower_func_binding(
         }
     };
 
-    let mut param_bindings: Vec<BindingId> = Vec::with_capacity(sig.params.len());
+    let mut param_bindings: Vec<LocalBindingId> = Vec::with_capacity(sig.params.len());
 
     // If this function has an already-resolved type scheme on the v1 side,
     // convert it into the new TyScheme and seed the binding schemes with it.
@@ -333,23 +415,32 @@ fn lower_func_binding(
     // Seed the local scope with bindings for function parameters so that
     // parameter uses lower to ExprKind::Var.
     for param_node in &sig.params {
+        // Get LocalBindingId from resolutions (set by name resolution phase)
+        let local_id = match ctx.resolutions.get(&param_node.id) {
+            Some(Resolution::Local(local_id)) => *local_id,
+            _ => {
+                // Fallback: create a placeholder LocalBindingId if not resolved
+                log::warn!("Parameter {:?} not found in resolutions", param_node.id);
+                continue;
+            }
+        };
+
+        // Also record in legacy binding system for backwards compatibility
         match &param_node.value {
             FnParam::Name(n) => {
                 let binding = ctx.binding_from_node_or_path(param_node.id, &n.path);
                 ctx.note_binding_source(binding, param_node.id);
-                param_bindings.push(binding);
             }
             FnParam::DefaultValue(p, _) => {
                 let binding = ctx.binding_from_node_or_path(param_node.id, p.name());
                 ctx.note_binding_source(binding, param_node.id);
-                param_bindings.push(binding);
             }
             FnParam::Missing { placeholder, .. } => {
                 let binding = ctx.binding_from_node_or_path(param_node.id, &placeholder.path);
                 ctx.note_binding_source(binding, param_node.id);
-                param_bindings.push(binding);
             }
         }
+        param_bindings.push(local_id);
     }
     if let Some(rec) = ctx.binding_records.get_mut(&binding_id) {
         rec.kind = BindingKind::Function {
@@ -410,9 +501,22 @@ fn lower_signature_binding(
 fn lower_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> LhsPattern {
     match &pat.value {
         AstPattern::Name(name) => {
-            let binding = ctx.binding_from_node_or_path(pat.id, &name.path);
-            ctx.record_pattern(pat, PatternKind::Binding { binding });
-            LhsPattern::Binding(binding)
+            // Get LocalBindingId from resolutions
+            let local_id = match ctx.resolutions.get(&pat.id) {
+                Some(Resolution::Local(local_id)) => *local_id,
+                _ => {
+                    // Fallback for unresolved patterns - should not happen in valid code
+                    log::warn!("Pattern {:?} not found in resolutions", pat.id);
+                    // Still record in legacy system for backwards compatibility
+                    let binding = ctx.binding_from_node_or_path(pat.id, &name.path);
+                    ctx.record_pattern(pat, PatternKind::Missing);
+                    return LhsPattern::Binding(LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 0));
+                }
+            };
+            // Also record in legacy binding system
+            let _binding = ctx.binding_from_node_or_path(pat.id, &name.path);
+            ctx.record_pattern(pat, PatternKind::Binding { binding: local_id });
+            LhsPattern::Binding(local_id)
         }
         AstPattern::Sequence(items) | AstPattern::Tuple(items) => {
             // Destructuring pattern `p1, p2, ...` or `(p1, p2, ...)`, which
@@ -443,16 +547,34 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
             AssignLhs::Pattern(lower_pattern(ctx, pat))
         }
         AstPattern::Deref(node) => {
-            let binding = ctx.binding_from_node_or_path(pat.id, &node.value.path);
-            ctx.record_pattern(pat, PatternKind::Deref { binding });
-            AssignLhs::Deref(binding)
+            // Get LocalBindingId from resolutions
+            let local_id = match ctx.resolutions.get(&pat.id) {
+                Some(Resolution::Local(local_id)) => *local_id,
+                _ => {
+                    log::warn!("Deref pattern {:?} not found in resolutions", pat.id);
+                    ctx.record_pattern(pat, PatternKind::Missing);
+                    return AssignLhs::ErrorPlaceholder;
+                }
+            };
+            let _binding = ctx.binding_from_node_or_path(pat.id, &node.value.path);
+            ctx.record_pattern(pat, PatternKind::Deref { binding: local_id });
+            AssignLhs::Deref(local_id)
         }
         AstPattern::Dot(lhs_pat, field_name) => {
             // Only support `x.field = rhs` where `x` is a simple name.
             match &lhs_pat.value {
                 AstPattern::Name(n) => {
-                    let binding = ctx.binding_from_node_or_path(lhs_pat.id, &n.path);
-                    ctx.record_pattern(lhs_pat, PatternKind::Binding { binding });
+                    // Get LocalBindingId from resolutions
+                    let local_id = match ctx.resolutions.get(&lhs_pat.id) {
+                        Some(Resolution::Local(local_id)) => *local_id,
+                        _ => {
+                            log::warn!("Field pattern base {:?} not found in resolutions", lhs_pat.id);
+                            ctx.record_pattern(pat, PatternKind::Missing);
+                            return AssignLhs::ErrorPlaceholder;
+                        }
+                    };
+                    let _binding = ctx.binding_from_node_or_path(lhs_pat.id, &n.path);
+                    ctx.record_pattern(lhs_pat, PatternKind::Binding { binding: local_id });
                     let field = field_name
                         .path
                         .name()
@@ -466,7 +588,7 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                         },
                     );
                     AssignLhs::Field {
-                        recv: binding,
+                        recv: local_id,
                         field,
                     }
                 }
@@ -477,10 +599,19 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
         }
         AstPattern::Index(lhs, index, _) => match &lhs.value {
             AstPattern::Name(n) => {
-                let binding = ctx.binding_from_node_or_path(lhs.id, &n.path);
+                // Get LocalBindingId from resolutions
+                let local_id = match ctx.resolutions.get(&lhs.id) {
+                    Some(Resolution::Local(local_id)) => *local_id,
+                    _ => {
+                        log::warn!("Index pattern base {:?} not found in resolutions", lhs.id);
+                        ctx.record_pattern(pat, PatternKind::Missing);
+                        return AssignLhs::ErrorPlaceholder;
+                    }
+                };
+                let _binding = ctx.binding_from_node_or_path(lhs.id, &n.path);
                 let lowered_index = lower_expr(ctx, index.as_ref());
                 let base_id = ctx.expr_id(lhs.as_ref());
-                ctx.record_pattern(lhs.as_ref(), PatternKind::Binding { binding });
+                ctx.record_pattern(lhs.as_ref(), PatternKind::Binding { binding: local_id });
                 ctx.record_pattern(
                     pat,
                     PatternKind::Index {
@@ -489,7 +620,7 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                     },
                 );
                 AssignLhs::Index {
-                    container: binding,
+                    container: local_id,
                     index: lowered_index,
                 }
             }
@@ -804,23 +935,26 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             // missing node so that the rest of the tree can still be typed.
             ctx.record_expr(node, ExprKind::Missing)
         }
-        // Variable references: if the name/path corresponds to a known value
-        // binding, we lower it to ExprKind::Var so that the
-        // constraint generator can instantiate its scheme (docs/type-system.md
-        // Section 4.3). Unresolved names are left as TODO for now.
-        Expr::Name(name) => {
-            let path = name.path.clone();
-            // Prefer a local binding from the current function scope if one
-            // exists; otherwise fall back to module-level value bindings.
-            if let Some(binding) = ctx.resolve_local(&path) {
-                ctx.record_expr(node, ExprKind::BindingRef(binding))
-            } else if let Some(binding) = ctx.value_bindings.get(&path).copied() {
-                ctx.record_expr(node, ExprKind::BindingRef(binding))
+        // Variable references: use the resolutions table to determine whether
+        // this is a local binding or a top-level definition reference.
+        Expr::Name(_) => {
+            if let Some(resolution) = ctx.resolutions.get(&node.id) {
+                match resolution {
+                    Resolution::Local(local_id) => {
+                        ctx.record_expr(node, ExprKind::LocalRef(*local_id))
+                    }
+                    Resolution::Def(DefTarget::Workspace(def_id)) => {
+                        ctx.record_expr(node, ExprKind::DefRef(*def_id))
+                    }
+                    Resolution::Def(DefTarget::External(_path)) => {
+                        // External references (from libraries) - emit DefRef with a placeholder
+                        // TODO: Handle external references properly once we have DefId for externals
+                        todo!("Handle external references properly once we have DefId for externals")
+                    }
+                }
             } else {
-                todo!(
-                    "lowering for unresolved Expr::Name `{}` into ExprKind",
-                    path
-                )
+                ctx.emit_error(node, "unresolved name reference".to_string());
+                ctx.record_expr(node, ExprKind::Missing)
             }
         }
         Expr::New(new) => {
@@ -835,14 +969,25 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             let expr = lower_expr(ctx, inner);
             ctx.record_expr(node, ExprKind::Wrapper { expr })
         }
-        Expr::Path(path) => {
-            if let Some(binding) = ctx.value_bindings.get(path).copied() {
-                ctx.record_expr(node, ExprKind::BindingRef(binding))
+        Expr::Path(_) => {
+            // Path expressions use the same resolution mechanism as Name expressions
+            if let Some(resolution) = ctx.resolutions.get(&node.id) {
+                match resolution {
+                    Resolution::Local(local_id) => {
+                        ctx.record_expr(node, ExprKind::LocalRef(*local_id))
+                    }
+                    Resolution::Def(DefTarget::Workspace(def_id)) => {
+                        ctx.record_expr(node, ExprKind::DefRef(*def_id))
+                    }
+                    Resolution::Def(DefTarget::External(_path)) => {
+                        // External references (from libraries)
+                        // TODO: Handle external references properly
+                        ctx.record_expr(node, ExprKind::Missing)
+                    }
+                }
             } else {
-                todo!(
-                    "lowering for unresolved Expr::Path `{}` into ExprKind",
-                    path
-                )
+                ctx.emit_error(node, "unresolved path reference".to_string());
+                ctx.record_expr(node, ExprKind::Missing)
             }
         }
         Expr::Pattern(pattern) => {
@@ -912,26 +1057,33 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             // an explicit type expression (e.g. `dict['k, 'v]::with_capacity`),
             // lowering it to a fully-qualified value path `T::name`.
             if let Expr::Type(ty) = &scoped_access.lhs.value {
-                let base = ty.value().mono().get_path().without_type_args();
                 let member_name = scoped_access
                     .rhs
                     .value
                     .path
                     .name()
                     .unwrap_or_else(|| scoped_access.rhs.value.to_string());
-                let path = base.append(member_name.clone());
 
-                if let Some(binding) = ctx.value_bindings.get(&path).copied() {
-                    ctx.record_expr(
-                        node,
-                        ExprKind::ScopedAccess {
-                            binding,
-                            member_name,
-                            lhs_ty: ty.value().mono().clone(),
-                        },
-                    )
+                // Use the resolutions table to find the target definition
+                if let Some(resolution) = ctx.resolutions.get(&node.id) {
+                    match resolution {
+                        Resolution::Def(DefTarget::Workspace(def_id)) => {
+                            ctx.record_expr(
+                                node,
+                                ExprKind::ScopedAccess {
+                                    def_id: *def_id,
+                                    member_name,
+                                    lhs_ty: ty.value().mono().clone(),
+                                },
+                            )
+                        }
+                        _ => {
+                            ctx.emit_error(node, "scoped access must resolve to a definition".to_string());
+                            ctx.record_expr(node, ExprKind::Missing)
+                        }
+                    }
                 } else {
-                    ctx.emit_error(node, format!("could not resolve static member `{}`", path));
+                    ctx.emit_error(node, "could not resolve scoped access".to_string());
                     ctx.record_expr(node, ExprKind::Missing)
                 }
             } else {

@@ -94,7 +94,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node")
-            .field("id", &format!("{:x}", self.id))
+            .field("id", &format!("{:?}", self.id))
             .field("value", &self.value)
             .finish()
     }

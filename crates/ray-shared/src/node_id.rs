@@ -1,66 +1,91 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
 
-use crate::pathlib::Path;
+use std::{
+    collections::HashMap,
+    hash::Hasher,
+    sync::{Mutex, OnceLock},
+};
 
+use crate::{def::DefId, pathlib::Path};
+
+/// Identifies an AST node within a top-level definition.
+///
+/// NodeIds are used to map between AST nodes and their associated metadata
+/// (source spans, inferred types, diagnostics).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
-pub struct NodeId(pub u64);
-
-static NODE_ID_NAMESPACE: AtomicU32 = AtomicU32::new(0);
-static NODE_ID_COUNTERS: OnceLock<Mutex<HashMap<u32, u32>>> = OnceLock::new();
-
-#[must_use]
-pub struct NodeIdNamespaceGuard {
-    prev_namespace: u32,
+pub struct NodeId {
+    /// The definition containing this node.
+    pub owner: DefId,
+    /// A sequential index assigned during indexing of the owner.
+    pub index: u32,
 }
 
-impl Drop for NodeIdNamespaceGuard {
+static CURRENT_DEF_ID: Mutex<Option<DefId>> = Mutex::new(None);
+static NODE_ID_COUNTERS: OnceLock<Mutex<HashMap<DefId, u32>>> = OnceLock::new();
+
+#[must_use]
+pub struct NodeIdGuard {
+    prev_def_id: Option<DefId>,
+}
+
+impl Drop for NodeIdGuard {
     fn drop(&mut self) {
-        NODE_ID_NAMESPACE.store(self.prev_namespace, Ordering::Relaxed);
+        let mut lock = CURRENT_DEF_ID.lock().unwrap();
+        *lock = self.prev_def_id;
     }
 }
 
 impl NodeId {
     pub fn new() -> Self {
-        let namespace = NODE_ID_NAMESPACE.load(Ordering::Relaxed);
+        let owner = CURRENT_DEF_ID.lock().unwrap().unwrap();
         let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut counters = counters.lock().unwrap();
 
-        let counter = counters.entry(namespace).or_insert(1);
-        let id = *counter;
+        let counter = counters.entry(owner).or_insert(1);
+        let index = *counter;
         *counter = counter.checked_add(1).expect("NodeId counter overflow");
 
-        NodeId(((namespace as u64) << 32) | (id as u64))
+        NodeId { owner, index }
     }
 
-    fn namespace_from_path(path: &Path) -> u32 {
-        let hash = path.to_id();
-        let namespace = (hash as u32) ^ ((hash >> 32) as u32);
-        if namespace == 0 { 1 } else { namespace }
+    pub fn enter_def(def_id: DefId) -> NodeIdGuard {
+        let prev_def_id = CURRENT_DEF_ID.lock().unwrap().replace(def_id);
+
+        // Reset counter for this DefId to get deterministic NodeIds on re-parse
+        let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
+        counters.lock().unwrap().insert(def_id, 1);
+
+        NodeIdGuard { prev_def_id }
     }
 
-    pub fn enter_namespace(path: &Path) -> NodeIdNamespaceGuard {
-        let namespace = Self::namespace_from_path(path);
-        let prev_namespace = NODE_ID_NAMESPACE.load(Ordering::Relaxed);
+    pub fn enter_namespace(_path: &Path) -> NodeIdGuard {
+        unreachable!()
+        // let namespace = Self::namespace_from_path(path);
+        // let prev_namespace = CURRENT_DEF_ID.load(Ordering::Relaxed);
 
-        NODE_ID_NAMESPACE.store(namespace, Ordering::Relaxed);
+        // CURRENT_DEF_ID.store(namespace, Ordering::Relaxed);
 
-        NodeIdNamespaceGuard { prev_namespace }
+        // NodeIdGuard {
+        //     prev_def_id: prev_namespace,
+        // }
     }
 }
 
 impl std::fmt::LowerHex for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:x}", self.0)
+        let mut hasher = fnv::FnvHasher::default();
+        hasher.write_u32(self.owner.file.0);
+        hasher.write_u32(self.owner.index);
+        hasher.write_u32(self.index);
+        let out = hasher.finish();
+        write!(f, "{:x}", out)
     }
 }
 
 impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NodeId({})", self.0)
+        write!(f, "NodeId(owner={}, index={})", self.owner, self.index)
     }
 }

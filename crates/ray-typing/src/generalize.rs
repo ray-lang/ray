@@ -21,14 +21,14 @@
 use std::collections::HashSet;
 
 use ray_shared::{
+    def::DefId,
     node_id::NodeId,
     ty::{Ty, TyVar},
     utils::join,
 };
 
 use crate::{
-    ModuleInput,
-    binding_groups::BindingId,
+    TypeCheckInput,
     constraints::{Constraint, ConstraintKind, Predicate},
     context::{ExprKind, SolverContext},
     types::{Subst, Substitutable as _, TyScheme},
@@ -37,7 +37,7 @@ use crate::{
 /// Result of generalizing a single binding group.
 pub struct GeneralizationResult {
     /// Updated schemes for each binding in the group, after generalization.
-    pub schemes: Vec<(BindingId, TyScheme)>,
+    pub schemes: Vec<(DefId, TyScheme)>,
     /// Closing substitution applied during generalization. In many cases this
     /// will be empty; it is exposed here so that callers can update any
     /// cached types if necessary.
@@ -60,9 +60,9 @@ pub struct GeneralizationResult {
 /// This walks each binding, computes the set of generalizable metas per
 /// Section 3.4 (in a simplified form for now), and returns updated schemes.
 pub fn generalize_group(
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     ctx: &SolverContext,
-    bindings: &[BindingId],
+    bindings: &[DefId],
     global_metas: &[TyVar],
     residuals: Vec<Constraint>,
     subst: &Subst,
@@ -85,22 +85,22 @@ pub fn generalize_group(
         constraint.free_ty_vars(&mut vars_in_residuals);
     }
 
-    for binding_id in bindings {
-        if let Some(scheme) = ctx.binding_schemes.get(binding_id) {
+    for def_id in bindings.iter().copied() {
+        if let Some(scheme) = ctx.binding_schemes.get(&def_id.into()) {
             // If this binding already has a non-trivial scheme (e.g. from an
             // annotated function signature), we treat that scheme as the
             // source of truth for its quantifiers and qualifiers. In that
             // case we only apply the final substitution so the scheme's
             // body and qualifiers reflect the solved types, but we do not
             // attempt to infer new quantified variables.
-            let has_annotated_scheme = ctx.is_explicitly_annotated(binding_id)
+            let has_annotated_scheme = ctx.is_explicitly_annotated(def_id)
                 || !scheme.vars.is_empty()
                 || !scheme.qualifiers.is_empty();
 
             // Enforce the value restriction: only bindings whose RHS is a
             // syntactic value are eligible for generalization.
             let is_value = module
-                .binding_root_expr(*binding_id)
+                .binding_root_expr(def_id)
                 .map(|root| is_syntactic_value_expr(module, root))
                 .unwrap_or(false);
 
@@ -110,12 +110,12 @@ pub fn generalize_group(
             instantiated.apply_subst(subst);
 
             if has_annotated_scheme {
-                schemes.push((*binding_id, instantiated));
+                schemes.push((def_id, instantiated));
                 continue;
             }
 
             if !is_value {
-                schemes.push((*binding_id, TyScheme::from_mono(instantiated.ty)));
+                schemes.push((def_id, TyScheme::from_mono(instantiated.ty)));
                 continue;
             }
 
@@ -171,7 +171,7 @@ pub fn generalize_group(
                 .any(|v| v.is_meta() && vars_in_residuals.contains(v) && !global_metas.contains(v));
 
             if has_residual_meta {
-                schemes.push((*binding_id, TyScheme::from_mono(instantiated.ty)));
+                schemes.push((def_id, TyScheme::from_mono(instantiated.ty)));
                 continue;
             }
 
@@ -217,7 +217,7 @@ pub fn generalize_group(
                 generalized
             );
             closing_subst.extend(local_closing);
-            schemes.push((*binding_id, generalized));
+            schemes.push((def_id, generalized));
         }
     }
 
@@ -244,7 +244,7 @@ pub fn generalize_group(
 
 /// Approximate `is_syntactic_value` from Section 3.4 using the expression
 /// kinds available in `ModuleInput`.
-fn is_syntactic_value_expr(module: &ModuleInput, expr: NodeId) -> bool {
+fn is_syntactic_value_expr(module: &TypeCheckInput, expr: NodeId) -> bool {
     match module.expr_kind(expr) {
         Some(ExprKind::Closure { .. }) | Some(ExprKind::Function { .. }) => true,
 

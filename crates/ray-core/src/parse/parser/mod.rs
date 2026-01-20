@@ -19,10 +19,12 @@ mod tests;
 pub use context::ParseContext;
 pub use recover::{Recover, RecoveryCtx};
 
-use std::{fs, io, mem};
+use std::{collections::HashMap, fs, io, mem};
 
 use ray_shared::{
-    node_id::{NodeId, NodeIdNamespaceGuard},
+    def::{DefHeader, DefId},
+    file_id::FileId,
+    node_id::{NodeId, NodeIdGuard},
     pathlib::{FilePath, Path},
     span::{Pos, Source, Span, parsed::Parsed},
     ty::Ty,
@@ -235,40 +237,57 @@ impl<'a> Expect<'a> {
 }
 
 pub struct Parser<'src> {
+    file_id: FileId,
     lex: Lexer,
     options: ParseOptions,
     srcmap: &'src mut SourceMap,
     errors: Vec<RayError>,
-    _node_id_namespace: NodeIdNamespaceGuard,
+    def_index: u32,
+    defs: Vec<DefHeader>,
+    _node_id_guard: NodeIdGuard,
 }
 
 impl<'src> Parser<'src> {
-    pub fn new(src: &str, options: ParseOptions, srcmap: &'src mut SourceMap) -> Self {
+    pub fn new(
+        file_id: FileId,
+        src: &str,
+        options: ParseOptions,
+        srcmap: &'src mut SourceMap,
+    ) -> Self {
         let lex = Lexer::new(src);
-        let _node_id_namespace = NodeId::enter_namespace(&options.module_path);
+        let def_id = DefId::new(file_id, 0);
+        let _node_id_guard = NodeId::enter_def(def_id);
         Self {
+            file_id,
             lex,
             options,
             srcmap,
             errors: Vec::new(),
-            _node_id_namespace,
+            def_index: 1,
+            defs: Vec::new(),
+            _node_id_guard,
         }
     }
 
-    pub fn parse(options: ParseOptions, srcmap: &'src mut SourceMap) -> ParseDiagnostics<File> {
+    pub fn parse(
+        file_id: FileId,
+        options: ParseOptions,
+        srcmap: &'src mut SourceMap,
+    ) -> ParseDiagnostics<File> {
         let src = match Self::get_src(&options) {
             Ok(src) => src,
             Err(err) => return ParseDiagnostics::failure(err),
         };
-        Self::parse_from_src_with_diagnostics(&src, options, srcmap)
+        Self::parse_from_src_with_diagnostics(file_id, &src, options, srcmap)
     }
 
     pub fn parse_from_src(
+        file_id: FileId,
         src: &str,
         options: ParseOptions,
         srcmap: &'src mut SourceMap,
     ) -> ParseDiagnostics<File> {
-        let mut parser = Parser::new(src, options, srcmap);
+        let mut parser = Parser::new(file_id, src, options, srcmap);
         match parser.parse_into_file() {
             Ok(file) => {
                 let errors = mem::take(&mut parser.errors);
@@ -286,11 +305,12 @@ impl<'src> Parser<'src> {
     }
 
     pub fn parse_from_src_with_diagnostics(
+        file_id: FileId,
         src: &str,
         options: ParseOptions,
         srcmap: &'src mut SourceMap,
     ) -> ParseDiagnostics<File> {
-        let mut parser = Parser::new(src, options, srcmap);
+        let mut parser = Parser::new(file_id, src, options, srcmap);
         match parser.parse_into_file() {
             Ok(file) => {
                 let errors = mem::take(&mut parser.errors);
@@ -337,6 +357,22 @@ impl<'src> Parser<'src> {
             undo: vec![],
             ctx: ParseContext::new(path.clone()),
         }
+    }
+
+    fn enter_def<T>(&mut self, f: impl FnOnce(&mut Self, DefId) -> T) -> T {
+        let def_id = self.next_def_id();
+        let _guard = NodeId::enter_def(def_id);
+        f(self, def_id)
+    }
+
+    fn next_def_id(&mut self) -> DefId {
+        DefId::new(self.file_id, self.next_def_index())
+    }
+
+    fn next_def_index(&mut self) -> u32 {
+        let curr = self.def_index;
+        self.def_index += 1;
+        curr
     }
 
     fn parse_into_file(&mut self) -> ParseResult<File> {

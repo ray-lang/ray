@@ -20,7 +20,7 @@ use crate::{
     lir,
     passes::{
         binding::BindingPassOutput,
-        closure::{ClosureInfo, ClosurePassOutput},
+        closure::{ClosurePassOutput, LegacyClosureInfo},
     },
     sema,
     sourcemap::SourceMap,
@@ -590,7 +590,7 @@ impl<'a> GenCtx<'a> {
     ) -> RayResult<GenResult> {
         let resolved = tcx
             .call_resolution(operator_id)
-            .unwrap_or_else(|| panic!("missing call resolution for operator {:#x}", operator_id));
+            .unwrap_or_else(|| panic!("missing call resolution for operator {:?}", operator_id));
 
         let mut call_args: Vec<lir::Variable> = Vec::with_capacity(args.len());
         for arg in args {
@@ -617,7 +617,7 @@ impl<'a> GenCtx<'a> {
     }
 
     #[allow(dead_code)]
-    fn closure_info(&self, node_id: NodeId) -> Option<&ClosureInfo> {
+    fn closure_info(&self, node_id: NodeId) -> Option<&LegacyClosureInfo> {
         let idx = self.closure_map.get(&node_id)?;
         self.closure_info.closures.get(*idx)
     }
@@ -912,7 +912,7 @@ impl<'a> GenCtx<'a> {
         self.ensure_fn_handle_type(&sig)
     }
 
-    fn make_closure_path(&self, info: &ClosureInfo, expr_id: NodeId) -> Path {
+    fn make_closure_path(&self, info: &LegacyClosureInfo, expr_id: NodeId) -> Path {
         if let Some(record) = self.binding_record(info.parent_binding) {
             if let Some(base) = &record.path {
                 return base.append(format!("$closure_{:x}", expr_id));

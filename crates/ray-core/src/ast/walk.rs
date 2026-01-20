@@ -69,6 +69,12 @@ pub fn walk_module(module: &Module<(), Decl>) -> ModuleWalk<'_> {
     }
 }
 
+pub fn walk_decl(decl: &Node<Decl>) -> ModuleWalk<'_> {
+    ModuleWalk {
+        stack: vec![StackEntry::EnterNode(WalkItem::Decl(decl))],
+    }
+}
+
 fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
     match item {
         WalkItem::Module(module) => {

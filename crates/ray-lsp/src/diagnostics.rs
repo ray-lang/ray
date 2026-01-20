@@ -14,6 +14,7 @@ use ray_core::{
 use ray_driver::{BuildOptions, Driver, FrontendResult};
 use ray_shared::{
     collections::namecontext::NameContext,
+    file_id::FileId,
     pathlib::{FilePath, Path, RayPaths},
 };
 use ray_shared::{
@@ -93,7 +94,8 @@ pub fn collect_with_options(uri: &Url, text: &str, options: CollectOptions) -> C
     parse_options.original_filepath = filepath.clone();
 
     let mut srcmap = SourceMap::new();
-    let parsed = Parser::parse_from_src_with_diagnostics(text, parse_options, &mut srcmap);
+    let parsed =
+        Parser::parse_from_src_with_diagnostics(FileId(0), text, parse_options, &mut srcmap);
 
     let mut diagnostics: Vec<Diagnostic> = parsed
         .errors

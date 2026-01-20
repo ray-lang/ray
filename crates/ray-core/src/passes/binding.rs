@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use ray_shared::{node_id::NodeId, pathlib::Path};
+use ray_shared::{def::DefId, node_id::NodeId, pathlib::Path};
 use ray_typing::{
     BindingKind, BindingRecord, NodeBinding,
-    binding_groups::{BindingGraph, BindingId},
+    binding_groups::{BindingId, LegacyBindingGraph},
     env::GlobalEnv,
     types::TyScheme,
 };
@@ -16,7 +16,7 @@ use crate::sourcemap::SourceMap;
 
 #[derive(Clone, Debug)]
 pub struct BindingPassOutput {
-    pub bindings: BindingGraph,
+    pub bindings: LegacyBindingGraph,
     pub binding_records: HashMap<BindingId, BindingRecord>,
     pub node_bindings: HashMap<NodeId, NodeBinding>,
     pub value_bindings: HashMap<Path, BindingId>,
@@ -26,7 +26,7 @@ pub struct BindingPassOutput {
 impl BindingPassOutput {
     pub fn empty() -> Self {
         Self {
-            bindings: BindingGraph::new(),
+            bindings: LegacyBindingGraph::new(),
             binding_records: HashMap::new(),
             node_bindings: HashMap::new(),
             value_bindings: HashMap::new(),
@@ -41,7 +41,7 @@ pub fn run_binding_pass(
     env: &GlobalEnv,
     seed: BindingPassOutput,
 ) -> BindingPassOutput {
-    let mut ctx = BindingPassCtx::new(module, srcmap, env, seed);
+    let mut ctx = BindingPassCtx::new(srcmap, env, seed);
     for item in walk_module(module) {
         ctx.visit_item(item);
     }
@@ -51,7 +51,7 @@ pub fn run_binding_pass(
 struct BindingPassCtx<'a> {
     srcmap: &'a SourceMap,
     env: &'a GlobalEnv,
-    bindings: BindingGraph,
+    bindings: LegacyBindingGraph,
     binding_records: HashMap<BindingId, BindingRecord>,
     node_bindings: HashMap<NodeId, NodeBinding>,
     value_bindings: HashMap<Path, BindingId>,
@@ -69,12 +69,7 @@ struct ScopeFrame {
 }
 
 impl<'a> BindingPassCtx<'a> {
-    fn new(
-        _module: &'a Module<(), Decl>,
-        srcmap: &'a SourceMap,
-        env: &'a GlobalEnv,
-        seed: BindingPassOutput,
-    ) -> Self {
+    fn new(srcmap: &'a SourceMap, env: &'a GlobalEnv, seed: BindingPassOutput) -> Self {
         let BindingPassOutput {
             bindings,
             binding_records,

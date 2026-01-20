@@ -7,6 +7,7 @@ mod node;
 mod walk;
 
 pub mod token;
+pub mod transform;
 
 pub use expr::*;
 pub use file::*;

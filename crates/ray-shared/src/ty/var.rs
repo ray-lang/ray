@@ -5,6 +5,31 @@ use crate::pathlib::Path;
 pub const SCHEMA_PREFIX: &'static str = "?s";
 pub const SKOLEM_PREFIX: &'static str = "?k";
 
+/// Shared allocator for schema variables (`?sN`).
+///
+/// Both the frontend lowering context and the solver need to mint fresh
+/// schema variables, so we keep the allocator tiny and share it via `Rc`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SchemaVarAllocator {
+    next_id: u32,
+}
+
+impl SchemaVarAllocator {
+    pub fn new() -> Self {
+        SchemaVarAllocator { next_id: 0 }
+    }
+
+    pub fn alloc(&mut self) -> TyVar {
+        let name = format!("{}{}", SCHEMA_PREFIX, self.next_id);
+        self.next_id += 1;
+        TyVar::new(name)
+    }
+
+    pub fn curr_id(&self) -> u32 {
+        self.next_id
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TyVar(pub Path);
 

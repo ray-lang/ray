@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use ray_shared::{
+    file_id::FileId,
     pathlib::{FilePath, Path},
     ty::Ty,
 };
@@ -43,7 +44,7 @@ fn parse_source_with_srcmap(
 ) -> (crate::ast::File, Vec<RayError>) {
     let options = test_options();
     let ParseDiagnostics { value, errors } =
-        Parser::parse_from_src_with_diagnostics(src, options, srcmap);
+        Parser::parse_from_src_with_diagnostics(FileId(0), src, options, srcmap);
     let file = value.expect("expected successful parse despite recovery");
     (file, errors)
 }
@@ -72,7 +73,7 @@ fn function_body_block(func: &Func) -> &crate::ast::Block {
 fn parse_from_src_with_diagnostics_success() {
     let mut srcmap = SourceMap::new();
     let options = test_options();
-    let result = Parser::parse_from_src_with_diagnostics("", options, &mut srcmap);
+    let result = Parser::parse_from_src_with_diagnostics(FileId(0), "", options, &mut srcmap);
 
     assert!(result.value.is_some());
     assert!(result.errors.is_empty());
@@ -82,7 +83,8 @@ fn parse_from_src_with_diagnostics_success() {
 fn parse_from_src_with_diagnostics_reports_parse_errors() {
     let mut srcmap = SourceMap::new();
     let options = test_options();
-    let result = Parser::parse_from_src_with_diagnostics("fn main( {", options, &mut srcmap);
+    let result =
+        Parser::parse_from_src_with_diagnostics(FileId(0), "fn main( {", options, &mut srcmap);
 
     assert!(
         result.value.is_some(),
@@ -98,6 +100,7 @@ fn parse_from_src_with_diagnostics_preserves_doc_comment() {
     let mut srcmap = SourceMap::new();
     let options = test_options();
     let result = Parser::parse_from_src_with_diagnostics(
+        FileId(0),
         "//! module documentation\nfn main() {}",
         options,
         &mut srcmap,
@@ -123,7 +126,7 @@ fn main() {
     x = 2
 }
 "#;
-    let result = Parser::parse_from_src_with_diagnostics(source, options, &mut srcmap);
+    let result = Parser::parse_from_src_with_diagnostics(FileId(0), source, options, &mut srcmap);
     assert!(
         result.errors.is_empty(),
         "expected no parse errors, got: {:?}",

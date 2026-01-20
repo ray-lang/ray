@@ -23,17 +23,17 @@ impl std::fmt::Display for BindingId {
 }
 
 #[derive(Clone, Debug)]
-pub struct BindingGroup {
-    pub bindings: Vec<BindingId>,
+pub struct BindingGroup<T> {
+    pub bindings: Vec<T>,
 }
 
-impl BindingGroup {
-    pub fn new(bindings: Vec<BindingId>) -> Self {
+impl<T> BindingGroup<T> {
+    pub fn new(bindings: Vec<T>) -> Self {
         BindingGroup { bindings }
     }
 }
 
-impl std::fmt::Display for BindingGroup {
+impl<T: std::fmt::Display> std::fmt::Display for BindingGroup<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let parts = self
             .bindings
@@ -45,21 +45,27 @@ impl std::fmt::Display for BindingGroup {
     }
 }
 
+/// Type alias for backwards compatibility during migration.
+pub type LegacyBindingGroup = BindingGroup<BindingId>;
+
 /// A dependency graph between bindings. An edge `from -> to` means that the
 /// definition of `from` refers to `to`.
 #[derive(Clone, Debug)]
-pub struct BindingGraph {
-    pub edges: BTreeMap<BindingId, Vec<BindingId>>,
+pub struct BindingGraph<T> {
+    pub edges: BTreeMap<T, Vec<T>>,
 }
 
-struct SccBuilder<'a> {
+/// Type alias for backwards compatibility during migration.
+pub type LegacyBindingGraph = BindingGraph<BindingId>;
+
+struct SccBuilder<'a, T> {
     /// Reference to the binding dependency graph we are analyzing.
-    graph: &'a BindingGraph,
+    graph: &'a BindingGraph<T>,
     /// All binding IDs participating in the graph, each assigned a compact
     /// index for use in Tarjan's algorithm.
-    nodes: Vec<BindingId>,
-    /// Mapping from `BindingId` to its index in `nodes`.
-    id_to_idx: HashMap<BindingId, usize>,
+    nodes: Vec<T>,
+    /// Mapping from node to its index in `nodes`.
+    id_to_idx: HashMap<T, usize>,
     /// Next depth-first search index to assign.
     index: usize,
     /// DFS discovery index for each node, or `None` if not yet visited.
@@ -70,12 +76,12 @@ struct SccBuilder<'a> {
     on_stack: Vec<bool>,
     /// Stack of node indices representing the current DFS path.
     stack: Vec<usize>,
-    /// Accumulated strongly connected components as lists of `BindingId`s.
-    sccs: Vec<Vec<BindingId>>,
+    /// Accumulated strongly connected components as lists of nodes.
+    sccs: Vec<Vec<T>>,
 }
 
-impl<'a> SccBuilder<'a> {
-    fn new(graph: &'a BindingGraph) -> Self {
+impl<'a, T: Copy + Eq + std::hash::Hash + Ord> SccBuilder<'a, T> {
+    fn new(graph: &'a BindingGraph<T>) -> Self {
         let mut nodes = Vec::new();
         let mut id_to_idx = HashMap::new();
 
@@ -153,7 +159,7 @@ impl<'a> SccBuilder<'a> {
         }
     }
 
-    fn run(mut self) -> Vec<Vec<BindingId>> {
+    fn run(mut self) -> Vec<Vec<T>> {
         for v in 0..self.nodes.len() {
             if self.indices[v].is_none() {
                 self.strong_connect(v);
@@ -163,32 +169,32 @@ impl<'a> SccBuilder<'a> {
     }
 }
 
-impl BindingGraph {
+impl<T: Copy + Eq + std::hash::Hash + Ord> BindingGraph<T> {
     pub fn new() -> Self {
         BindingGraph {
             edges: BTreeMap::new(),
         }
     }
 
-    pub fn add_binding(&mut self, id: BindingId) {
+    pub fn add_binding(&mut self, id: T) {
         self.edges.entry(id).or_insert_with(Vec::new);
     }
 
-    pub fn add_edge(&mut self, from: BindingId, to: BindingId) {
+    pub fn add_edge(&mut self, from: T, to: T) {
         self.edges.entry(from).or_insert_with(Vec::new).push(to);
         self.edges.entry(to).or_insert_with(Vec::new);
     }
 
     /// Compute binding groups as strongly connected components (SCCs) of the
     /// dependency graph, as described in the type system spec.
-    pub fn compute_binding_groups(&self) -> Vec<BindingGroup> {
+    pub fn compute_binding_groups(&self) -> Vec<BindingGroup<T>> {
         let builder = SccBuilder::new(self);
         let sccs = builder.run();
 
         // Build a condensation graph of SCCs and compute a topo order where
         // dependencies come before dependents.
         let comp_count = sccs.len();
-        let mut comp_index_of: HashMap<BindingId, usize> = HashMap::new();
+        let mut comp_index_of: HashMap<T, usize> = HashMap::new();
         for (ci, comp) in sccs.iter().enumerate() {
             for &bid in comp {
                 comp_index_of.insert(bid, ci);
@@ -238,10 +244,10 @@ impl BindingGraph {
     /// Returns a new BindingGraph induced by the set of nodes.
     /// Only bindings in `nodes` are included as keys in the new graph,
     /// and only edges where both endpoints are in `nodes` are kept.
-    pub fn induced_subgraph(&self, nodes: &BTreeSet<BindingId>) -> BindingGraph {
+    pub fn induced_subgraph(&self, nodes: &BTreeSet<T>) -> BindingGraph<T> {
         let mut edges = BTreeMap::new();
         for &id in nodes {
-            let filtered: Vec<BindingId> = self
+            let filtered: Vec<T> = self
                 .edges
                 .get(&id)
                 .map(|neighs| {
@@ -258,7 +264,7 @@ impl BindingGraph {
     }
 
     /// Computes binding groups (SCCs) over a filtered set of bindings.
-    pub fn compute_binding_groups_over(&self, nodes: &BTreeSet<BindingId>) -> Vec<BindingGroup> {
+    pub fn compute_binding_groups_over(&self, nodes: &BTreeSet<T>) -> Vec<BindingGroup<T>> {
         self.induced_subgraph(nodes).compute_binding_groups()
     }
 }
@@ -312,14 +318,14 @@ mod tests {
         assert!(!sub.edges.contains_key(&bid(2)));
     }
 
-    fn group_index_of(groups: &[BindingGroup], b: BindingId) -> usize {
+    fn group_index_of(groups: &[BindingGroup<BindingId>], b: BindingId) -> usize {
         groups
             .iter()
             .position(|g| g.bindings.contains(&b))
             .unwrap_or_else(|| panic!("binding {b} not found in any group"))
     }
 
-    fn group_set(groups: &[BindingGroup]) -> Vec<Vec<BindingId>> {
+    fn group_set(groups: &[BindingGroup<BindingId>]) -> Vec<Vec<BindingId>> {
         let mut out: Vec<Vec<BindingId>> = groups
             .iter()
             .map(|g| {

@@ -10,13 +10,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ray_shared::{
+    def::DefId,
     node_id::NodeId,
     ty::{Ty, TyVar},
     utils::{join, map_join},
 };
 
 use crate::{
-    ModuleInput,
+    TypeCheckInput,
     binding_groups::BindingGroup,
     constraints::{Constraint, ConstraintKind},
     context::{ExprKind, SolverContext},
@@ -76,9 +77,9 @@ pub struct DefaultingResult {
 ///   a unique viable default.
 /// - Record all decisions in a `DefaultingLog`.
 pub fn apply_defaulting(
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     ctx: &mut SolverContext,
-    group: &BindingGroup,
+    group: &BindingGroup<DefId>,
     global_env: &GlobalEnv,
     residuals: Vec<Constraint>,
     subst: &Subst,
@@ -444,8 +445,8 @@ fn is_flexible(var: &TyVar, subst: &Subst) -> bool {
 /// quantified rather than defaulted.
 fn will_be_generalized(
     var: &TyVar,
-    module: &ModuleInput,
-    group: &BindingGroup,
+    module: &TypeCheckInput,
+    group: &BindingGroup<DefId>,
     ctx: &SolverContext,
     subst: &Subst,
 ) -> bool {
@@ -453,16 +454,16 @@ fn will_be_generalized(
         return false;
     }
 
-    for binding_id in &group.bindings {
+    for def_id in group.bindings.iter().copied() {
         let is_value = module
-            .binding_root_expr(*binding_id)
+            .binding_root_expr(def_id)
             .map(|root| is_syntactic_value_expr(module, root))
             .unwrap_or(false);
         if !is_value {
             continue;
         }
 
-        if let Some(scheme) = ctx.binding_schemes.get(binding_id) {
+        if let Some(scheme) = ctx.binding_schemes.get(&def_id.into()) {
             let mut ty = scheme.ty.clone();
             ty.apply_subst(subst);
             let mut free = HashSet::new();
@@ -478,7 +479,7 @@ fn will_be_generalized(
 
 /// Approximate `is_syntactic_value` from Section 3.4 using the expression
 /// kinds available in `ModuleInput`.
-fn is_syntactic_value_expr(module: &ModuleInput, expr: NodeId) -> bool {
+fn is_syntactic_value_expr(module: &TypeCheckInput, expr: NodeId) -> bool {
     match module.expr_kind(expr) {
         Some(ExprKind::Closure { .. }) | Some(ExprKind::Function { .. }) => true,
 

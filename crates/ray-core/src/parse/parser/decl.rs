@@ -2,6 +2,8 @@ use std::ops::Deref;
 
 use itertools::Itertools;
 use ray_shared::{
+    def::{DefHeader, DefId, DefKind, SignatureStatus},
+    node_id::NodeId,
     span::{Pos, Span, parsed::Parsed},
     ty::Ty,
 };
@@ -39,6 +41,7 @@ impl Parser<'_> {
 
     pub(crate) fn parse_impl_body(
         &mut self,
+        impl_def_id: DefId,
         start: Pos,
         only_sigs: bool,
         ctx: &ParseContext,
@@ -57,11 +60,11 @@ impl Parser<'_> {
             start,
             Some(TokenKind::RightCurly),
             &ctx,
-            |this, kind, doc, _| match kind {
-                TokenKind::Const => {
-                    this.expect_keyword(TokenKind::Const, ctx)?;
-                    let ex = this.parse_expr(ctx)?;
-                    let span = this.srcmap.span_of(&ex);
+            |parser, kind, doc, _| match kind {
+                TokenKind::Const => parser.enter_def::<ParseResult<Pos>>(|parser, def_id| {
+                    parser.expect_keyword(TokenKind::Const, ctx)?;
+                    let ex = parser.parse_expr(ctx)?;
+                    let span = parser.srcmap.span_of(&ex);
                     let ex_desc = ex.desc().to_string();
                     let assign_node = ex.try_take_map(|ex| {
                         maybe_variant!(ex, if Expr::Assign(a))
@@ -73,7 +76,7 @@ impl Parser<'_> {
                                 }
                             })
                             .ok_or_else(|| {
-                                this.parse_error(
+                                parser.parse_error(
                                     format!(
                                         "expected a constant assignment expression, but found {}",
                                         ex_desc,
@@ -84,29 +87,55 @@ impl Parser<'_> {
                             })
                     })?;
 
-                    let end = this.srcmap.span_of(&assign_node).end;
+                    let name = assign_node.lhs.get_name().unwrap();
+                    let name_span = parser.srcmap.span_of(&assign_node.lhs);
+                    let annotated = assign_node.is_annotated();
+                    parser.defs.push(DefHeader {
+                        def_id,
+                        root_node: assign_node.lhs.id,
+                        name,
+                        kind: DefKind::AssociatedConst { annotated },
+                        span,
+                        name_span,
+                        parent: Some(impl_def_id),
+                    });
+
+                    let end = parser.srcmap.span_of(&assign_node).end;
                     consts.push(assign_node);
                     Ok(end)
-                }
+                }),
                 TokenKind::Fn | TokenKind::Modifier(_) => {
-                    let (mut f, span) = this.parse_fn(only_sigs, ctx)?;
-                    f.sig.doc_comment = doc;
-                    f.sig.is_method = true;
-                    let func_node = this.mk_node(f, span, ctx.path.clone());
-                    funcs.push(func_node);
-                    Ok(span.end)
+                    parser.enter_def::<ParseResult<Pos>>(|parser, def_id| {
+                        let (mut f, span) = parser.parse_fn(only_sigs, ctx)?;
+                        f.sig.doc_comment = doc;
+                        f.sig.is_method = true;
+                        let name = f.sig.path.to_short_name();
+                        let name_span = parser.srcmap.get(&f.sig.path).span.unwrap();
+                        let func_node = parser.mk_node(f, span, ctx.path.clone());
+                        parser.defs.push(DefHeader {
+                            def_id,
+                            root_node: func_node.id,
+                            name,
+                            kind: DefKind::Method,
+                            span,
+                            name_span,
+                            parent: Some(impl_def_id),
+                        });
+                        funcs.push(func_node);
+                        Ok(span.end)
+                    })
                 }
                 TokenKind::Extern => {
-                    let extern_span = this.expect_keyword(TokenKind::Extern, ctx)?;
+                    let extern_span = parser.expect_keyword(TokenKind::Extern, ctx)?;
                     let start = extern_span.start;
-                    let decl = this.parse_extern_fn_sig(start, ctx)?;
-                    let end = this.srcmap.span_of(&decl).end;
+                    let decl = parser.parse_extern_fn_sig(start, Some(impl_def_id), ctx)?;
+                    let end = parser.srcmap.span_of(&decl).end;
                     externs.push(decl);
                     Ok(end)
                 }
                 _ => {
-                    let tok = this.token()?;
-                    Err(this.unexpected_token(&tok, "a function modifier or signature", ctx))
+                    let tok = parser.token()?;
+                    Err(parser.unexpected_token(&tok, "a function modifier or signature", ctx))
                 }
             },
         )?;
@@ -114,75 +143,119 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_decl(&mut self, kind: &TokenKind, ctx: &ParseContext) -> DeclResult {
-        Ok(match kind {
-            TokenKind::Extern => self.parse_extern(ctx)?,
-            TokenKind::Struct => {
-                let (st, span) = self.parse_struct(ctx)?;
-                let path = ctx.path.append(&st.path);
-                self.mk_decl(Decl::Struct(st), span, path)
-            }
-            TokenKind::Impl => {
-                let (i, span) = self.parse_impl(false, false, ctx)?;
-                self.mk_decl(Decl::Impl(i), span, ctx.path.clone())
-            }
-            TokenKind::Trait => self.parse_trait(ctx)?,
+        match kind {
+            TokenKind::Extern => self.parse_extern(ctx),
+            TokenKind::Struct => self.parse_struct(ctx),
+            TokenKind::Impl => self.parse_impl(false, false, ctx),
+            TokenKind::Trait => self.parse_trait(ctx),
             TokenKind::Fn | TokenKind::Modifier(_) => {
-                let (f, span) = self.parse_fn(false, ctx)?;
-                self.mk_decl(Decl::Func(f), span, ctx.path.clone())
+                self.enter_def::<DeclResult>(|parser, def_id| {
+                    let (f, span) = parser.parse_fn(false, ctx)?;
+                    let name = f.sig.path.to_short_name();
+                    let name_span = parser.srcmap.get(&f.sig.path).span.unwrap();
+                    let signature = f.sig.to_sig_status();
+                    let node = parser.mk_decl(Decl::Func(f), span, ctx.path.clone());
+                    parser.defs.push(DefHeader {
+                        def_id,
+                        root_node: node.id,
+                        name,
+                        kind: DefKind::Function { signature },
+                        span,
+                        name_span,
+                        parent: None,
+                    });
+                    Ok(node)
+                })
             }
             _ => unreachable!(),
-        })
+        }
     }
 
     pub(crate) fn parse_extern(&mut self, ctx: &ParseContext) -> DeclResult {
         // extern
         let extern_span = self.expect_keyword(TokenKind::Extern, ctx)?;
         let start = extern_span.start;
-        let (kind, span) = match self.must_peek_kind()? {
-            TokenKind::Struct => {
-                let (st, span) = self.parse_struct(ctx)?;
-                (Decl::Struct(st), span)
-            }
-            TokenKind::Impl => {
-                let (imp, span) = self.parse_impl(true, true, ctx)?;
-                (Decl::Impl(imp), span)
-            }
-            TokenKind::Fn | TokenKind::Modifier(_) => return self.parse_extern_fn_sig(start, ctx),
-            TokenKind::Mut => {
-                let mut_span = self.expect_keyword(TokenKind::Mut, ctx)?;
-                let n = self.parse_name_with_type(None, ctx)?;
-                let mut span = self.srcmap.span_of(&n);
-                span.start = mut_span.start;
-                (Decl::Mutable(n), span)
-            }
-            _ => {
-                let n = self.parse_name_with_type(None, ctx)?;
-                let span = self.srcmap.span_of(&n);
-                (Decl::Name(n), span)
-            }
-        };
+        let decl = match self.must_peek_kind()? {
+            TokenKind::Struct => self.parse_struct(ctx)?,
+            TokenKind::Impl => self.parse_impl(true, true, ctx)?,
+            TokenKind::Fn | TokenKind::Modifier(_) => self.parse_extern_fn_sig(start, None, ctx)?,
+            _ => self.enter_def::<DeclResult>(|parser, def_id| {
+                let (mutable, mut_span) = if matches!(parser.must_peek_kind()?, TokenKind::Mut) {
+                    (true, Some(parser.expect_keyword(TokenKind::Mut, ctx)?))
+                } else {
+                    (false, None)
+                };
 
-        let decl = self.mk_decl(kind, span, ctx.path.clone());
+                let name_node = parser.parse_name_with_type(None, ctx)?;
+                let name = name_node.path.to_short_name();
+                let name_span = parser.srcmap.span_of(&name_node);
+                let mut span = name_span;
+                if let Some(mut_span) = mut_span {
+                    span.start = mut_span.start;
+                }
+
+                let annotated = name_node.ty.is_some();
+                let decl = if mutable {
+                    parser.mk_decl(Decl::Mutable(name_node), span, ctx.path.clone())
+                } else {
+                    parser.mk_decl(Decl::Name(name_node), span, ctx.path.clone())
+                };
+
+                parser.defs.push(DefHeader {
+                    def_id,
+                    root_node: decl.id,
+                    name,
+                    kind: DefKind::Binding { annotated, mutable },
+                    span,
+                    name_span,
+                    parent: None,
+                });
+
+                Ok(decl)
+            })?,
+        };
+        let decl_span = self.srcmap.get(&decl).span.unwrap();
         Ok(self.mk_decl(
             Decl::Extern(Extern::new(decl)),
             Span {
                 start,
-                end: span.end,
+                end: decl_span.end,
             },
             ctx.path.clone(),
         ))
     }
 
-    pub(crate) fn parse_extern_fn_sig(&mut self, start: Pos, ctx: &ParseContext) -> DeclResult {
+    pub(crate) fn parse_extern_fn_sig(
+        &mut self,
+        start: Pos,
+        parent_def_id: Option<DefId>,
+        ctx: &ParseContext,
+    ) -> DeclResult {
         let parser = &mut self.with_scope(ctx).with_description("parse extern fn sig");
         let ctx = &parser.ctx_clone();
 
         let decl = match parser.must_peek_kind()? {
             TokenKind::Fn | TokenKind::Modifier(_) => {
-                let sig = parser.parse_fn_sig(ctx)?;
-                let span = sig.span;
-                let path = sig.path.value.clone();
-                parser.mk_decl(Decl::FnSig(sig), span, path)
+                parser.enter_def::<DeclResult>(|parser, def_id| {
+                    let sig = parser.parse_fn_sig(ctx)?;
+                    let span = sig.span;
+                    let path = sig.path.value.clone();
+
+                    let name = path.to_short_name();
+                    let name_span = parser.srcmap.get(&sig.path).span.unwrap();
+
+                    let node = parser.mk_decl(Decl::FnSig(sig), span, path);
+                    parser.defs.push(DefHeader {
+                        def_id,
+                        root_node: node.id,
+                        name,
+                        kind: DefKind::Method,
+                        span,
+                        name_span,
+                        parent: parent_def_id,
+                    });
+                    Ok(node)
+                })?
             }
             _ => {
                 let tok = parser.token()?;
@@ -236,87 +309,114 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_trait(&mut self, ctx: &ParseContext) -> DeclResult {
-        let trait_span = self.expect_keyword(TokenKind::Trait, ctx)?;
-        let start = trait_span.start;
-        let (name_str, name_span) = self.expect_id(ctx)?;
+        self.enter_def::<DeclResult>(|parser, trait_def_id| {
+            let trait_span = parser.expect_keyword(TokenKind::Trait, ctx)?;
+            let start = trait_span.start;
+            let (name, name_span) = parser.expect_id(ctx)?;
 
-        let raw_path = ctx.path.append(&name_str);
-        let path = self.mk_node(raw_path, name_span, ctx.path.clone());
+            let raw_path = ctx.path.append(&name);
+            let path = parser.mk_node(raw_path, name_span, ctx.path.clone());
 
-        let parser = &mut self
-            .with_scope(&ctx)
-            .with_path(path.value.clone())
-            .with_description("parsing trait declaration");
-        let ctx = &parser.ctx_clone();
+            let parser = &mut parser
+                .with_scope(&ctx)
+                .with_path(path.value.clone())
+                .with_description("parsing trait declaration");
+            let ctx = &parser.ctx_clone();
 
-        let ty = parser
-            .parse_ty_with_name(name_str, name_span, &ctx)
-            .recover_with_ctx(
-                parser,
-                RecoveryCtx::expr(Some(&TokenKind::LeftCurly)).with_ternary_sensitive(false),
-                |parser, recovered| parser.missing_type(name_span.start, recovered),
-            )
-            .map(|t| t.into_mono());
+            let ty = parser
+                .parse_ty_with_name(name.clone(), name_span, &ctx)
+                .recover_with_ctx(
+                    parser,
+                    RecoveryCtx::expr(Some(&TokenKind::LeftCurly)).with_ternary_sensitive(false),
+                    |parser, recovered| parser.missing_type(name_span.start, recovered),
+                )
+                .map(|t| t.into_mono());
 
-        let super_trait = if expect_if!(parser, TokenKind::Colon) {
-            Some(
-                parser
-                    .parse_type_annotation(Some(&TokenKind::LeftCurly), &ctx)
-                    .map(|t| t.into_mono()),
-            )
-        } else {
-            None
-        };
+            let super_trait = if expect_if!(parser, TokenKind::Colon) {
+                Some(
+                    parser
+                        .parse_type_annotation(Some(&TokenKind::LeftCurly), &ctx)
+                        .map(|t| t.into_mono()),
+                )
+            } else {
+                None
+            };
 
-        let mut fields = vec![];
-        let mut directives = vec![];
+            let mut fields = vec![];
+            let mut directives = vec![];
 
-        let parser = &mut parser
-            .with_scope(&ctx)
-            .with_description("parse trait fields");
-        let ctx = &parser.ctx_clone();
+            let parser = &mut parser
+                .with_scope(&ctx)
+                .with_description("parse trait fields");
+            let ctx = &parser.ctx_clone();
 
-        (|| {
-            parser.expect(TokenKind::LeftCurly, &ctx)?;
-            parser.consume_newlines(ctx)?;
-
-            parser.parse_trait_directives(&mut directives, ctx)?;
-
-            loop {
+            (|| {
+                parser.expect(TokenKind::LeftCurly, &ctx)?;
                 parser.consume_newlines(ctx)?;
-                if peek!(parser, TokenKind::RightCurly) {
-                    break;
+
+                parser.parse_trait_directives(&mut directives, ctx)?;
+
+                loop {
+                    parser.consume_newlines(ctx)?;
+                    if peek!(parser, TokenKind::RightCurly) {
+                        break;
+                    }
+
+                    parser.enter_def::<ParseResult<()>>(|parser, def_id| {
+                        let sig = parser.parse_trait_fn_sig(&ctx)?;
+                        let span = sig.span;
+                        let name = sig.path.to_short_name();
+                        let name_span = parser.srcmap.get(&sig.path).span.unwrap();
+                        let node = parser.mk_decl(Decl::FnSig(sig), span, ctx.path.clone());
+                        parser.defs.push(DefHeader {
+                            def_id,
+                            root_node: node.id,
+                            name,
+                            kind: DefKind::Method,
+                            span,
+                            name_span,
+                            parent: Some(trait_def_id),
+                        });
+                        fields.push(node);
+                        Ok(())
+                    })?
                 }
 
-                let sig = parser.parse_trait_fn_sig(&ctx)?;
-                let span = sig.span;
-                fields.push(parser.mk_decl(Decl::FnSig(sig), span, ctx.path.clone()));
-            }
+                Ok(())
+            })()
+            .recover_with_ctx(
+                parser,
+                RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
+                    .with_newline(true)
+                    .with_decl_stops(false),
+                |_, _| (),
+            );
 
-            Ok(())
-        })()
-        .recover_with_ctx(
-            parser,
-            RecoveryCtx::stmt(Some(&TokenKind::RightCurly))
-                .with_newline(true)
-                .with_decl_stops(false),
-            |_, _| (),
-        );
+            let end = parser.expect_end(TokenKind::RightCurly, &ctx)?;
 
-        let end = parser.expect_end(TokenKind::RightCurly, &ctx)?;
-
-        let scope_path = parser.ctx().path.clone();
-        Ok(parser.mk_decl(
-            Decl::Trait(Trait {
+            let tr = Trait {
                 path,
                 ty,
                 fields,
                 super_trait,
                 directives,
-            }),
-            Span { start, end },
-            scope_path,
-        ))
+            };
+
+            let scope_path = tr.path.value.clone();
+            let span = Span { start, end };
+            let node = parser.mk_decl(Decl::Trait(tr), span, scope_path);
+            parser.defs.push(DefHeader {
+                def_id: trait_def_id,
+                root_node: node.id,
+                name,
+                kind: DefKind::Trait,
+                span,
+                name_span,
+                parent: None,
+            });
+
+            Ok(node)
+        })
     }
 
     fn parse_trait_directives(
@@ -368,52 +468,66 @@ impl Parser<'_> {
         Ok(())
     }
 
-    pub(crate) fn parse_struct(&mut self, ctx: &ParseContext) -> ParseResult<(Struct, Span)> {
-        let keyword_kinds = &[TokenKind::Struct];
-        let Some(kw) = self.expect_one_of(keyword_kinds, Some(TriviaKind::Keyword), ctx)? else {
-            let tok = self.token()?;
-            let expected = keyword_kinds.iter().map(TokenKind::to_string).join(" or ");
-            return Err(self.unexpected_token(&tok, &expected, ctx));
-        };
+    pub(crate) fn parse_struct(&mut self, ctx: &ParseContext) -> DeclResult {
+        self.enter_def(|parser, def_id| {
+            let keyword_kinds = &[TokenKind::Struct];
+            let Some(kw) = parser.expect_one_of(keyword_kinds, Some(TriviaKind::Keyword), ctx)?
+            else {
+                let tok = parser.token()?;
+                let expected = keyword_kinds.iter().map(TokenKind::to_string).join(" or ");
+                return Err(parser.unexpected_token(&tok, &expected, ctx));
+            };
 
-        let kind = match kw.kind {
-            TokenKind::Struct => NominalKind::Struct,
-            _ => unreachable!("expected nominal kind token"),
-        };
+            let kind = match kw.kind {
+                TokenKind::Struct => NominalKind::Struct,
+                _ => unreachable!("expected nominal kind token"),
+            };
 
-        let start = kw.span.start;
+            let start = kw.span.start;
 
-        // parse name of struct
-        let (name_str, name_span) = self.expect_id(ctx)?;
-        let raw_path = ctx.path.append(&name_str);
-        let path = self.mk_node(raw_path, name_span, ctx.path.clone());
+            // parse name of struct
+            let (name, name_span) = parser.expect_id(ctx)?;
+            let raw_path = ctx.path.append(&name);
+            let path = parser.mk_node(raw_path, name_span, ctx.path.clone());
 
-        let mut end = name_span.end;
+            let mut end = name_span.end;
 
-        let ty_params = self.parse_ty_params(ctx)?;
-        if let Some(ref tp) = ty_params {
-            end = tp.rb_span.end;
-        }
+            let ty_params = parser.parse_ty_params(ctx)?;
+            if let Some(ref tp) = ty_params {
+                end = tp.rb_span.end;
+            }
 
-        let fields = if peek!(self, TokenKind::LeftCurly) {
-            self.expect(TokenKind::LeftCurly, ctx)?;
-            self.consume_newlines(ctx)?;
-            let f = self.parse_fields(ctx)?;
-            end = self.expect_end(TokenKind::RightCurly, ctx)?;
-            Some(f)
-        } else {
-            None
-        };
+            let fields = if peek!(parser, TokenKind::LeftCurly) {
+                parser.expect(TokenKind::LeftCurly, ctx)?;
+                parser.consume_newlines(ctx)?;
+                let f = parser.parse_fields(ctx)?;
+                end = parser.expect_end(TokenKind::RightCurly, ctx)?;
+                Some(f)
+            } else {
+                None
+            };
 
-        Ok((
-            Struct {
+            let node_path = ctx.path.append(&path);
+            let st = Struct {
                 kind,
                 path,
                 ty_params,
                 fields,
-            },
-            Span { start, end },
-        ))
+            };
+
+            let span = Span { start, end };
+            let node = parser.mk_decl(Decl::Struct(st), span, node_path);
+            parser.defs.push(DefHeader {
+                def_id,
+                root_node: node.id,
+                kind: DefKind::Struct,
+                span,
+                name,
+                name_span,
+                parent: None,
+            });
+            Ok(node)
+        })
     }
 
     pub(crate) fn parse_impl(
@@ -421,57 +535,72 @@ impl Parser<'_> {
         only_sigs: bool,
         is_extern: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(Impl, Span)> {
-        let impl_span = self.expect_keyword(TokenKind::Impl, ctx)?;
-        let start = impl_span.start;
+    ) -> DeclResult {
+        self.enter_def(|parser, impl_def_id| {
+            let impl_span = parser.expect_keyword(TokenKind::Impl, ctx)?;
+            let start = impl_span.start;
 
-        let is_object = if peek!(self, TokenKind::Object) {
-            self.expect_keyword(TokenKind::Object, ctx)?;
-            true
-        } else {
-            false
-        };
-
-        let ty = self
-            .parse_type_annotation(Some(&TokenKind::LeftCurly), ctx)
-            .map(|t| t.into_mono());
-        let mut end = ty.span().unwrap().end;
-
-        let qualifiers = self.parse_where_clause(ctx)?;
-
-        let (funcs, externs, consts) = if !is_extern {
-            let impl_path = if !is_object {
-                ty.get_ty_param_at(0).unwrap_or(&Ty::Never).get_path()
+            let is_object = if peek!(parser, TokenKind::Object) {
+                parser.expect_keyword(TokenKind::Object, ctx)?;
+                true
             } else {
-                ty.get_path()
+                false
             };
-            let mut ctx = ctx.clone();
-            log::debug!(
-                "[parse_impl] base ctx.path = {}, impl_ty = {}",
-                ctx.path,
-                impl_path
-            );
-            ctx.path = ctx.path.append_path(impl_path);
-            log::debug!("[parse_impl] appended ctx.path = {}", ctx.path);
-            let start = self.expect_end(TokenKind::LeftCurly, &ctx)?;
-            let (f, ex, consts) = self.parse_impl_body(start, only_sigs, &ctx)?;
-            end = self.expect_end(TokenKind::RightCurly, &ctx)?;
-            (Some(f), Some(ex), Some(consts))
-        } else {
-            (None, None, None)
-        };
 
-        Ok((
-            Impl {
+            let ty = parser
+                .parse_type_annotation(Some(&TokenKind::LeftCurly), ctx)
+                .map(|t| t.into_mono());
+            let mut end = ty.span().unwrap().end;
+
+            let qualifiers = parser.parse_where_clause(ctx)?;
+
+            let (funcs, externs, consts) = if !is_extern {
+                let impl_path = if !is_object {
+                    ty.get_ty_param_at(0).unwrap_or(&Ty::Never).get_path()
+                } else {
+                    ty.get_path()
+                };
+                let mut ctx = ctx.clone();
+                log::debug!(
+                    "[parse_impl] base ctx.path = {}, impl_ty = {}",
+                    ctx.path,
+                    impl_path
+                );
+                ctx.path = ctx.path.append_path(impl_path);
+                log::debug!("[parse_impl] appended ctx.path = {}", ctx.path);
+                let start = parser.expect_end(TokenKind::LeftCurly, &ctx)?;
+                let (f, ex, consts) =
+                    parser.parse_impl_body(impl_def_id, start, only_sigs, &ctx)?;
+                end = parser.expect_end(TokenKind::RightCurly, &ctx)?;
+                (Some(f), Some(ex), Some(consts))
+            } else {
+                (None, None, None)
+            };
+
+            let imp = Impl {
                 ty,
                 qualifiers,
                 funcs,
                 externs,
                 consts,
                 is_object,
-            },
-            Span { start, end },
-        ))
+            };
+
+            let span = Span { start, end };
+            let name = imp.ty.get_path().to_short_name();
+            let name_span = *imp.ty.span().unwrap();
+            let node = parser.mk_decl(Decl::Impl(imp), span, ctx.path.clone());
+            parser.defs.push(DefHeader {
+                def_id: impl_def_id,
+                root_node: node.id,
+                name,
+                kind: DefKind::Impl,
+                span,
+                name_span,
+                parent: None,
+            });
+            Ok(node)
+        })
     }
 
     pub(crate) fn parse_decorators(

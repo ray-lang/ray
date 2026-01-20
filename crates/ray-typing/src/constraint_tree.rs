@@ -5,14 +5,16 @@
 use std::collections::HashSet;
 
 use ray_shared::{
+    def::DefId,
+    local_binding::LocalBindingId,
     node_id::NodeId,
     ty::{Ty, TyVar},
     utils::{join, map_join},
 };
 
 use crate::{
-    BindingKind, BindingRecord, ModuleInput, PatternKind,
-    binding_groups::{BindingGroup, BindingId},
+    BindingKind, BindingRecord, PatternKind, TypeCheckInput,
+    binding_groups::BindingGroup,
     constraints::{Constraint, ConstraintKind, ResolveCallConstraint},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
     info::TypeSystemInfo,
@@ -29,11 +31,11 @@ pub struct SkolemizedAnnotation {
 
 fn skolemize_annotated_scheme(
     ctx: &mut SolverContext,
-    binding: BindingId,
+    def_id: DefId,
     scheme: &TyScheme,
     info: &TypeSystemInfo,
 ) -> SkolemizedAnnotation {
-    if let Some(anno) = ctx.skolemized_schemes.get(&binding).cloned() {
+    if let Some(anno) = ctx.skolemized_schemes.get(&def_id.into()).cloned() {
         return anno;
     }
 
@@ -41,7 +43,7 @@ fn skolemize_annotated_scheme(
     let mut skolems = Vec::new();
     if !scheme.vars.is_empty() {
         for var in &scheme.vars {
-            let skolem = ctx.fresh_skolem_var(binding, var.clone(), info);
+            let skolem = ctx.fresh_skolem_var(def_id, var.clone(), info);
             let ty = Ty::Var(skolem.clone());
             subst.insert(var.clone(), ty.clone());
             skolems.push(skolem);
@@ -57,11 +59,11 @@ fn skolemize_annotated_scheme(
         pred.apply_subst(&subst);
         let mut pred_info = info.clone();
         pred_info.predicate_arising_from(&pred);
-        ctx.record_required_predicate(binding, pred.clone());
+        ctx.record_required_predicate(def_id, pred.clone());
         givens.push(Constraint::from_predicate(pred, pred_info));
     }
 
-    log::debug!("[skolemize_annotated_scheme] binding = {:?}", binding);
+    log::debug!("[skolemize_annotated_scheme] def_id = {:?}", def_id);
     log::debug!("[skolemize_annotated_scheme] scheme = {}", scheme);
     log::debug!("[skolemize_annotated_scheme] subst = {:?}", subst);
     log::debug!("[skolemize_annotated_scheme] skolemized_ty = {}", ty);
@@ -81,7 +83,7 @@ fn skolemize_annotated_scheme(
         subst,
     };
 
-    ctx.skolemized_schemes.insert(binding, anno.clone());
+    ctx.skolemized_schemes.insert(def_id.into(), anno.clone());
 
     anno
 }
@@ -111,20 +113,20 @@ fn apply_pattern_guard_with_ty(
     info: &TypeSystemInfo,
 ) {
     match pattern {
-        Pattern::Some(binding) => {
+        Pattern::Some(local_id) => {
             let inner_ty = ctx.fresh_meta();
             let nilable_ty = Ty::nilable(inner_ty.clone());
             node.wanteds
                 .push(Constraint::eq(scrut_ty, nilable_ty, info.clone()));
 
             ctx.binding_schemes
-                .entry(*binding)
+                .entry((*local_id).into())
                 .or_insert_with(|| TyScheme::from_mono(inner_ty));
         }
-        Pattern::Binding(binding) => {
+        Pattern::Binding(local_id) => {
             // Simple binding pattern `x = e`: record a mono scheme x : Te.
             ctx.binding_schemes
-                .entry(*binding)
+                .entry((*local_id).into())
                 .or_insert_with(|| TyScheme::from_mono(scrut_ty));
         }
         Pattern::Wild => {
@@ -199,18 +201,18 @@ impl ConstraintNode {
 /// used to implement the general binding/destructuring assignment rule
 /// for `lhs = rhs` when `lhs` is a pattern.
 fn apply_lhs_pattern(
-    module: &ModuleInput,
+    input: &TypeCheckInput,
     ctx: &mut SolverContext,
     pat: &LhsPattern,
     expected_ty: Ty,
     pattern_id: NodeId,
     node: &mut ConstraintNode,
     info: &TypeSystemInfo,
-) -> Vec<BindingId> {
+) -> Vec<LocalBindingId> {
     let mut bindings = vec![];
     ctx.expr_types.insert(pattern_id, expected_ty.clone());
     match pat {
-        LhsPattern::Binding(binding) => {
+        LhsPattern::Binding(local_id) => {
             // Variable pattern `x`:
             //
             // - If this binding has been seen before in the current scope,
@@ -219,15 +221,15 @@ fn apply_lhs_pattern(
             // - Otherwise, we treat this as a first-time binding and record
             //   `x : T` as a mono scheme; generalization decisions are made
             //   later at the binding-group boundary.
-            let binding_ty = ctx.binding_ty_or_fresh(*binding);
+            let binding_ty = ctx.binding_ty_or_fresh(*local_id);
             log::debug!(
                 "[apply_lhs_pattern] binding_ty (type of {:?}) = {}",
-                binding,
+                local_id,
                 binding_ty
             );
             node.wanteds
                 .push(Constraint::eq(expected_ty, binding_ty, info.clone()));
-            bindings.push(*binding);
+            bindings.push(*local_id);
         }
         LhsPattern::Tuple(elems) => {
             // Tuple / sequence pattern `(p1, ..., pn)` or `p1, ..., pn`,
@@ -242,7 +244,7 @@ fn apply_lhs_pattern(
             // - constraining expected_ty == tuple[T1..Tn],
             // - recursively applying the pattern judgment to each element.
             let mut elem_tys = Vec::with_capacity(elems.len());
-            let record = module
+            let record = input
                 .pattern_records
                 .get(&pattern_id)
                 .expect("missing tuple pattern record");
@@ -264,7 +266,7 @@ fn apply_lhs_pattern(
                 elems.iter().zip(child_ids.iter()).zip(elem_tys.into_iter())
             {
                 bindings.extend(apply_lhs_pattern(
-                    module, ctx, sub_pat, sub_ty, *child_id, node, info,
+                    input, ctx, sub_pat, sub_ty, *child_id, node, info,
                 ));
             }
         }
@@ -289,7 +291,7 @@ fn apply_lhs_pattern(
                 ));
                 // TODO: record per-field pattern ids once struct patterns are lowered.
                 bindings.extend(apply_lhs_pattern(
-                    module, ctx, sub_pat, field_ty, pattern_id, node, info,
+                    input, ctx, sub_pat, field_ty, pattern_id, node, info,
                 ));
             }
         }
@@ -380,15 +382,15 @@ where
 /// active nodes and attaching equality and predicate constraints to the
 /// appropriate nodes as it visits expressions and statements.
 pub fn build_constraint_tree_for_group(
-    module: &ModuleInput,
+    input: &TypeCheckInput,
     ctx: &mut SolverContext,
-    group: &BindingGroup,
+    group: &BindingGroup<DefId>,
 ) -> ConstraintNode {
     // For now we create a single root node and delegate to a stubbed
     // constraint generator that will eventually walk the AST for all bindings
     // in this group.
     let mut root = ConstraintNode::new(ConstraintNodeId(0));
-    generate_constraints_for_group(module, ctx, group, &mut root);
+    generate_constraints_for_group(input, ctx, group, &mut root);
     root
 }
 
@@ -401,9 +403,9 @@ pub fn build_constraint_tree_for_group(
 ///   (blocks, branches, etc.) and attaching equality and predicate
 ///   constraints to the appropriate nodes as described in Section 4.
 pub fn generate_constraints_for_group(
-    module: &ModuleInput,
+    input: &TypeCheckInput,
     ctx: &mut SolverContext,
-    group: &BindingGroup,
+    group: &BindingGroup<DefId>,
     root: &mut ConstraintNode,
 ) {
     // This follows the spec's algorithm structurally: we create one child
@@ -415,7 +417,7 @@ pub fn generate_constraints_for_group(
         // binding that participates in type checking. If it is missing we
         // skip this binding rather than building an incomplete constraint
         // tree.
-        let Some(record) = module.binding_records.get(binding_id) else {
+        let Some(record) = input.binding_records.get(binding_id) else {
             continue;
         };
         let Some(expr_root) = record.body_expr else {
@@ -449,7 +451,7 @@ pub fn generate_constraints_for_group(
             binding_ty
         );
         generate_constraints_for_expr(
-            module,
+            input,
             ctx,
             *binding_id,
             skolem_subst.as_ref(),
@@ -492,7 +494,7 @@ pub struct BindingPreparation {
 ///   the caller can push it on the function-return stack.
 pub fn prepare_binding_context(
     ctx: &mut SolverContext,
-    binding_id: BindingId,
+    def_id: DefId,
     record: &BindingRecord,
     binding_info: &mut TypeSystemInfo,
 ) -> BindingPreparation {
@@ -503,9 +505,9 @@ pub fn prepare_binding_context(
     let mut givens = vec![];
     let mut metas = vec![];
     let mut skolem_subst = None;
-    let mut binding_ty = if let Some(scheme) = ctx.binding_schemes.get(&binding_id).cloned() {
+    let mut binding_ty = if let Some(scheme) = ctx.binding_schemes.get(&def_id.into()).cloned() {
         if !scheme.vars.is_empty() || !scheme.qualifiers.is_empty() {
-            let skolemized = skolemize_annotated_scheme(ctx, binding_id, &scheme, binding_info);
+            let skolemized = skolemize_annotated_scheme(ctx, def_id, &scheme, binding_info);
             if !skolemized.skolems.is_empty() {
                 binding_info.skolemized_type_scheme(&skolemized.skolems, &scheme);
             }
@@ -517,7 +519,7 @@ pub fn prepare_binding_context(
             scheme.ty
         }
     } else {
-        ctx.binding_ty_or_fresh(binding_id)
+        ctx.binding_ty_or_fresh(def_id)
     };
 
     // Functions require special handling so that their parameter bindings
@@ -528,9 +530,9 @@ pub fn prepare_binding_context(
                 // Annotated function: propagate the skolemized parameter
                 // types down into each parameter binding so references to
                 // the parameters pick up the right mono type.
-                for (binding, param_ty) in params.iter().zip(param_tys.iter()) {
+                for (local_id, param_ty) in params.iter().zip(param_tys.iter()) {
                     ctx.binding_schemes
-                        .insert(*binding, TyScheme::from_mono(param_ty.clone()));
+                        .insert((*local_id).into(), TyScheme::from_mono(param_ty.clone()));
                 }
                 Some((**ret).clone())
             }
@@ -552,7 +554,7 @@ pub fn prepare_binding_context(
 
                 binding_ty = Ty::func(synthesized.clone(), ret.clone());
                 ctx.binding_schemes
-                    .insert(binding_id, TyScheme::from_mono(binding_ty.clone()));
+                    .insert(def_id.into(), TyScheme::from_mono(binding_ty.clone()));
                 Some(ret)
             }
         },
@@ -570,27 +572,8 @@ pub fn prepare_binding_context(
 
 #[derive(Clone, Debug)]
 pub struct BindingNode {
-    pub bindings: Vec<BindingId>,
+    pub bindings: Vec<LocalBindingId>,
     pub root: ConstraintNode,
-}
-
-pub fn collect_binding_nodes_for_group<'a>(
-    module: &ModuleInput,
-    root: &'a mut ConstraintNode,
-    group: &BindingGroup,
-) -> Vec<&'a mut BindingNode> {
-    let mut binding_nodes = vec![];
-    for b in root.binding_nodes.iter_mut() {
-        if b.bindings.iter().any(|bid| group.bindings.contains(bid)) {
-            binding_nodes.push(b);
-        }
-    }
-
-    for child in root.children.iter_mut() {
-        binding_nodes.extend(collect_binding_nodes_for_group(module, child, group));
-    }
-
-    binding_nodes
 }
 
 /// Skeleton constraint generation for a single expression subtree.
@@ -603,9 +586,9 @@ pub fn collect_binding_nodes_for_group<'a>(
 /// - Create additional child nodes for lexical scopes that introduce new
 ///   givens or environments.
 fn generate_constraints_for_expr(
-    module: &ModuleInput,
+    input: &TypeCheckInput,
     ctx: &mut SolverContext,
-    binding_id: BindingId,
+    def_id: DefId,
     skolem_subst: Option<&Subst>,
     expr: NodeId,
     node: &mut ConstraintNode,
@@ -616,7 +599,7 @@ fn generate_constraints_for_expr(
 
     // Seed TypeSystemInfo for this expression from its source span, if any.
     let mut info = TypeSystemInfo::new();
-    if let Some(src) = module.expr_src(expr) {
+    if let Some(src) = input.expr_src(expr) {
         info.source.push(src.clone());
     }
 
@@ -624,7 +607,7 @@ fn generate_constraints_for_expr(
     // rules sketched in docs/type-system.md Section 4 (literals, calls,
     // if-expressions, pattern-if/while, nilable literals, and field
     // access/records per Section 4.5).
-    if let Some(kind) = module.expr_kind(expr) {
+    if let Some(kind) = input.expr_kind(expr) {
         log::debug!(
             "[generate_constraints_for_expr] id = {:?}, kind = {:?}",
             expr,
@@ -639,7 +622,7 @@ fn generate_constraints_for_expr(
                 //
                 // Defaulting and surrounding context will refine `?a`.
                 log::debug!(
-                    "[generate_constraints] literal int type (type of {:x}) = {}",
+                    "[generate_constraints] literal int type (type of {}) = {}",
                     expr,
                     expr_ty
                 );
@@ -717,16 +700,19 @@ fn generate_constraints_for_expr(
                 // Missing expression placeholder: leave expr_ty unconstrained
                 // so type checking can continue on the rest of the tree.
             }
-            ExprKind::BindingRef(binding_id) => {
-                // Binding references are handled by instantiating the
+            ExprKind::LocalRef(local_id) => {
+                // Local binding references are handled by instantiating the
                 // binding's scheme (Section 4.3) and equating it with the
                 // reference expression's type.
                 node.wanteds
-                    .push(Constraint::inst(*binding_id, expr_ty, info));
+                    .push(Constraint::inst_local(*local_id, expr_ty, info));
             }
-            ExprKind::ScopedAccess {
-                binding, lhs_ty, ..
-            } => {
+            ExprKind::DefRef(def_id) => {
+                // Top-level definition references are handled by instantiating
+                // the definition's scheme and equating with the expression type.
+                node.wanteds.push(Constraint::inst(*def_id, expr_ty, info));
+            }
+            ExprKind::ScopedAccess { def_id, lhs_ty, .. } => {
                 // Scoped access `T::member`: `T[...]` instantiates the *type*
                 // on the left-hand side, not the member binding itself.
                 //
@@ -754,13 +740,13 @@ fn generate_constraints_for_expr(
 
                 if let Some(receiver_subst) = receiver_subst {
                     node.wanteds.push(Constraint::inst_with_receiver_subst(
-                        *binding,
+                        *def_id,
                         expr_ty,
                         receiver_subst,
                         info,
                     ));
                 } else {
-                    node.wanteds.push(Constraint::inst(*binding, expr_ty, info));
+                    node.wanteds.push(Constraint::inst(*def_id, expr_ty, info));
                 }
             }
             ExprKind::FieldAccess { recv, field } => {
@@ -846,9 +832,9 @@ fn generate_constraints_for_expr(
                 *next_id += 1;
                 let mut body_node = ConstraintNode::new(child_id);
                 generate_constraints_for_expr(
-                    module,
+                    input,
                     ctx,
-                    binding_id,
+                    def_id,
                     skolem_subst,
                     *body,
                     &mut body_node,
@@ -1181,27 +1167,27 @@ fn generate_constraints_for_expr(
                 // expression's type equals the target type.
                 let _inner_ty = ctx.expr_ty_or_fresh(*inner);
                 let mut cast_ty = ty.clone();
-                if let Some(anno) = ctx.skolemized_schemes.get(&binding_id) {
+                if let Some(anno) = ctx.skolemized_schemes.get(&def_id.into()) {
                     log::debug!(
-                        "[generate_constraints] cast in binding {:?}: raw cast_ty = {}",
-                        binding_id,
+                        "[generate_constraints] cast in def {:?}: raw cast_ty = {}",
+                        def_id,
                         cast_ty
                     );
                     log::debug!(
-                        "[generate_constraints] cast in binding {:?}: skolem subst = {:?}",
-                        binding_id,
+                        "[generate_constraints] cast in def {:?}: skolem subst = {:?}",
+                        def_id,
                         anno.subst
                     );
                     cast_ty.apply_subst(&anno.subst);
                     log::debug!(
-                        "[generate_constraints] cast in binding {:?}: cast_ty after subst = {}",
-                        binding_id,
+                        "[generate_constraints] cast in def {:?}: cast_ty after subst = {}",
+                        def_id,
                         cast_ty
                     );
                 } else {
                     log::debug!(
-                        "[generate_constraints] cast in binding {:?}: missing skolemized scheme; cast_ty = {}",
-                        binding_id,
+                        "[generate_constraints] cast in def {:?}: missing skolemized scheme; cast_ty = {}",
+                        def_id,
                         cast_ty
                     );
                 }
@@ -1266,7 +1252,7 @@ fn generate_constraints_for_expr(
                 // destructuring patterns are left for future work.
                 let rhs_ty = ctx.expr_ty_or_fresh(*rhs);
                 log::debug!(
-                    "[generate_constraints] rhs_ty (type of {:x}) = {}",
+                    "[generate_constraints] rhs_ty (type of {}) = {}",
                     rhs,
                     rhs_ty
                 );
@@ -1282,9 +1268,9 @@ fn generate_constraints_for_expr(
                         let mut rhs_node = ConstraintNode::new(rhs_node_id);
 
                         generate_constraints_for_expr(
-                            module,
+                            input,
                             ctx,
-                            binding_id,
+                            def_id,
                             skolem_subst,
                             *rhs,
                             &mut rhs_node,
@@ -1292,7 +1278,7 @@ fn generate_constraints_for_expr(
                         );
 
                         let bindings = apply_lhs_pattern(
-                            module,
+                            input,
                             ctx,
                             pat,
                             rhs_ty.clone(),
@@ -1644,7 +1630,7 @@ fn generate_constraints_for_expr(
                 // `Call(FieldAccess { recv, field }, args)`) as a trait
                 // method call rather than a struct field access.
                 if let Some(ExprKind::FieldAccess { recv, field }) =
-                    module.expr_kind(*callee).cloned()
+                    input.expr_kind(*callee).cloned()
                 {
                     // Collect types for explicit arguments.
                     let mut explicit_arg_tys = Vec::with_capacity(args.len());
@@ -1691,10 +1677,10 @@ fn generate_constraints_for_expr(
                     // the callee `FieldAccess` node (which would generate `HasField`).
                     for child_expr in std::iter::once(recv).chain(args.iter().copied()) {
                         generate_constraints_for_child(
-                            module,
+                            input,
                             ctx,
                             node,
-                            binding_id,
+                            def_id,
                             skolem_subst,
                             next_id,
                             child_expr,
@@ -1706,12 +1692,12 @@ fn generate_constraints_for_expr(
                 }
 
                 // Also treat `T::method(args...)` / `T[...]::method(args...)` as a deferred
-                // member call. The callee is lowered as `ScopedAccess { binding, lhs_ty }`.
+                // member call. The callee is lowered as `ScopedAccess { def_id, lhs_ty }`.
                 if let Some(ExprKind::ScopedAccess {
-                    binding,
+                    def_id,
                     member_name,
                     lhs_ty,
-                }) = module.expr_kind(*callee).cloned()
+                }) = input.expr_kind(*callee).cloned()
                 {
                     // Collect types for explicit arguments.
                     let mut explicit_arg_tys = Vec::with_capacity(args.len());
@@ -1746,7 +1732,7 @@ fn generate_constraints_for_expr(
                     node.wanteds.push(Constraint {
                         kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_scoped(
                             lhs_ty,
-                            binding,
+                            def_id,
                             expected_fn_ty,
                             member_name,
                             receiver_subst,
@@ -1758,10 +1744,10 @@ fn generate_constraints_for_expr(
                     // `ScopedAccess` node (which would instantiate the binding scheme).
                     for child_expr in args.iter().copied() {
                         generate_constraints_for_child(
-                            module,
+                            input,
                             ctx,
                             node,
-                            binding_id,
+                            def_id,
                             skolem_subst,
                             next_id,
                             child_expr,
@@ -1790,24 +1776,16 @@ fn generate_constraints_for_expr(
     }
 
     // Recurse into children based on the ModuleInput's view of the AST.
-    for child_expr in module.expr_children(expr) {
-        generate_constraints_for_child(
-            module,
-            ctx,
-            node,
-            binding_id,
-            skolem_subst,
-            next_id,
-            child_expr,
-        );
+    for child_expr in input.expr_children(expr) {
+        generate_constraints_for_child(input, ctx, node, def_id, skolem_subst, next_id, child_expr);
     }
 }
 
 fn generate_constraints_for_child(
-    module: &ModuleInput,
+    input: &TypeCheckInput,
     ctx: &mut SolverContext<'_>,
     node: &mut ConstraintNode,
-    binding_id: BindingId,
+    def_id: DefId,
     skolem_subst: Option<&Subst>,
     next_id: &mut u32,
     child_expr: NodeId,
@@ -1816,9 +1794,9 @@ fn generate_constraints_for_child(
     *next_id += 1;
     let mut child_node = ConstraintNode::new(child_id);
     generate_constraints_for_expr(
-        module,
+        input,
         ctx,
-        binding_id,
+        def_id,
         skolem_subst,
         child_expr,
         &mut child_node,
@@ -1829,42 +1807,50 @@ fn generate_constraints_for_child(
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::collections::namecontext::NameContext;
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-    use super::*;
-    use crate::binding_groups::{BindingGraph, BindingId};
-    use crate::constraints::ConstraintKind;
-    use crate::context::{ExprKind, Pattern};
-    use crate::env::GlobalEnv;
-    use crate::types::{SchemaVarAllocator, TyScheme};
-    use crate::{BindingKind, BindingRecord, ExprRecord, ModuleInput};
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
+    use ray_shared::{
+        collections::namecontext::NameContext,
+        def::DefId,
+        file_id::FileId,
+        local_binding::LocalBindingId,
+        node_id::NodeId,
+        ty::{SchemaVarAllocator, Ty},
+    };
 
-    fn single_binding_group(id: u64) -> BindingGroup {
-        BindingGroup::new(vec![BindingId(id)])
+    use crate::{
+        BindingKind, BindingRecord, ExprRecord, TypeCheckInput,
+        binding_groups::{BindingGraph, BindingGroup},
+        constraint_tree::{ConstraintNode, build_constraint_tree_for_group, walk_tree},
+        constraints::ConstraintKind,
+        context::{ExprKind, Pattern, SolverContext},
+        env::GlobalEnv,
+        types::TyScheme,
+    };
+
+    fn single_binding_group(def_id: DefId) -> BindingGroup<DefId> {
+        BindingGroup::new(vec![def_id])
     }
 
-    fn make_module(
-        binding_id: BindingId,
+    fn make_input(
+        def_id: DefId,
         root_expr: NodeId,
         kinds: HashMap<NodeId, ExprKind>,
-    ) -> ModuleInput {
-        let mut graph = BindingGraph::new();
-        graph.add_binding(binding_id);
+    ) -> TypeCheckInput {
+        let mut graph = BindingGraph::<DefId>::new();
+        graph.add_binding(def_id);
 
         let mut binding_records = HashMap::new();
         let mut record = BindingRecord::new(BindingKind::Value);
         record.body_expr = Some(root_expr);
-        binding_records.insert(binding_id, record);
+        binding_records.insert(def_id, record);
 
         let expr_records = kinds
             .into_iter()
             .map(|(expr_id, kind)| (expr_id, ExprRecord { kind, source: None }))
             .collect();
 
-        ModuleInput {
+        TypeCheckInput {
             bindings: graph,
             binding_records,
             node_bindings: HashMap::new(),
@@ -1875,22 +1861,22 @@ mod tests {
         }
     }
 
-    fn make_function_module(
-        binding_id: BindingId,
-        params: Vec<BindingId>,
+    fn make_function_input(
+        def_id: DefId,
+        params: Vec<LocalBindingId>,
         func_expr: NodeId,
         root_expr: NodeId,
         kind: ExprKind,
-    ) -> ModuleInput {
-        let mut graph = BindingGraph::new();
-        graph.add_binding(binding_id);
+    ) -> TypeCheckInput {
+        let mut graph = BindingGraph::<DefId>::new();
+        graph.add_binding(def_id);
 
         let mut binding_records = HashMap::new();
         let mut record = BindingRecord::new(BindingKind::Function {
             params: params.clone(),
         });
         record.body_expr = Some(func_expr);
-        binding_records.insert(binding_id, record);
+        binding_records.insert(def_id, record);
 
         let mut expr_records = HashMap::new();
         expr_records.insert(root_expr, ExprRecord { kind, source: None });
@@ -1905,7 +1891,7 @@ mod tests {
             },
         );
 
-        ModuleInput {
+        TypeCheckInput {
             bindings: graph,
             binding_records,
             node_bindings: HashMap::new(),
@@ -1925,19 +1911,20 @@ mod tests {
 
     #[test]
     fn literal_int_generates_int_class_constraint() {
-        let binding_id = BindingId(1);
-        let expr_id = NodeId(1);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(expr_id, ExprKind::LiteralInt);
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert_eq!(binding_node.wanteds.len(), 2);
@@ -1952,19 +1939,20 @@ mod tests {
 
     #[test]
     fn literal_float_generates_float_class_constraint() {
-        let binding_id = BindingId(2);
-        let expr_id = NodeId(2);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(expr_id, ExprKind::LiteralFloat);
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -1977,19 +1965,20 @@ mod tests {
 
     #[test]
     fn literal_bool_is_constrained_to_bool() {
-        let binding_id = BindingId(3);
-        let expr_id = NodeId(3);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(expr_id, ExprKind::LiteralBool(true));
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -2002,21 +1991,22 @@ mod tests {
 
     #[test]
     fn some_literal_generates_nilable_equality() {
-        let binding_id = BindingId(4);
-        let inner_id = NodeId(40);
-        let expr_id = NodeId(4);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let inner_id = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(inner_id, ExprKind::LiteralInt);
         kinds.insert(expr_id, ExprKind::Some { expr: inner_id });
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(binding_node.wanteds.iter().any(|c| match &c.kind {
@@ -2028,19 +2018,20 @@ mod tests {
 
     #[test]
     fn nil_literal_generates_nilable_equality() {
-        let binding_id = BindingId(5);
-        let expr_id = NodeId(5);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(expr_id, ExprKind::Nil);
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(binding_node.wanteds.iter().any(|c| match &c.kind {
@@ -2052,36 +2043,44 @@ mod tests {
 
     #[test]
     fn var_uses_binding_scheme() {
-        let binding_id = BindingId(6);
-        let expr_id = NodeId(6);
+        let def_id = DefId::new(FileId(0), 0);
+        let local_binding_id = LocalBindingId::new(def_id, 6);
+        let _guard = NodeId::enter_def(def_id);
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
-        kinds.insert(expr_id, ExprKind::BindingRef(binding_id));
+        kinds.insert(expr_id, ExprKind::LocalRef(local_binding_id));
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
         let scheme_ty = Ty::int();
-        ctx.binding_schemes
-            .insert(binding_id, TyScheme::from_mono(scheme_ty.clone()));
+        ctx.binding_schemes.insert(
+            local_binding_id.into(),
+            TyScheme::from_mono(scheme_ty.clone()),
+        );
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
+        // BindingRef now generates an InstantiateConstraint for local bindings
         assert!(binding_node.wanteds.iter().any(|c| match &c.kind {
-            ConstraintKind::Eq(eq) => eq.lhs == scheme_ty || eq.rhs == scheme_ty,
+            ConstraintKind::Instantiate(inst) => {
+                matches!(inst.target, crate::constraints::InstantiateTarget::Local(bid) if bid == local_binding_id)
+            }
             _ => false,
         }));
     }
 
     #[test]
     fn struct_literal_generates_struct_and_hasfield() {
-        let binding_id = BindingId(7);
-        let field_expr = NodeId(70);
-        let expr_id = NodeId(7);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let field_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(field_expr, ExprKind::LiteralInt);
@@ -2093,13 +2092,13 @@ mod tests {
             },
         );
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -2118,9 +2117,10 @@ mod tests {
 
     #[test]
     fn field_access_generates_hasfield_predicate() {
-        let binding_id = BindingId(8);
-        let recv_expr = NodeId(80);
-        let expr_id = NodeId(8);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let recv_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(
@@ -2138,13 +2138,13 @@ mod tests {
             },
         );
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -2157,11 +2157,12 @@ mod tests {
 
     #[test]
     fn if_generates_expected_equalities() {
-        let binding_id = BindingId(9);
-        let cond = NodeId(90);
-        let then_expr = NodeId(91);
-        let else_expr = NodeId(92);
-        let expr_id = NodeId(9);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let cond = NodeId::new();
+        let then_expr = NodeId::new();
+        let else_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(cond, ExprKind::LiteralBool(true));
@@ -2176,13 +2177,13 @@ mod tests {
             },
         );
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -2197,11 +2198,13 @@ mod tests {
 
     #[test]
     fn if_pattern_some_applies_pattern_guard() {
-        let binding_id = BindingId(10);
-        let scrutinee = NodeId(100);
-        let then_expr = NodeId(101);
-        let else_expr = NodeId(102);
-        let expr_id = NodeId(10);
+        let def_id = DefId::new(FileId(0), 0);
+        let local_binding_id = LocalBindingId::new(def_id, 10);
+        let _guard = NodeId::enter_def(def_id);
+        let scrutinee = NodeId::new();
+        let then_expr = NodeId::new();
+        let else_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(scrutinee, ExprKind::Nil);
@@ -2211,19 +2214,19 @@ mod tests {
             expr_id,
             ExprKind::IfPattern {
                 scrutinee,
-                pattern: Pattern::Some(binding_id),
+                pattern: Pattern::Some(local_binding_id),
                 then_branch: then_expr,
                 else_branch: Some(else_expr),
             },
         );
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(binding_node.wanteds.iter().any(|c| match &c.kind {
@@ -2231,28 +2234,29 @@ mod tests {
                 matches!(eq.lhs, Ty::Proj(_, _)) || matches!(eq.rhs, Ty::Proj(_, _)),
             _ => false,
         }));
-        assert!(ctx.binding_schemes.contains_key(&binding_id));
+        assert!(ctx.binding_schemes.contains_key(&local_binding_id.into()));
     }
 
     #[test]
     fn while_generates_bool_and_unit_constraints() {
-        let binding_id = BindingId(11);
-        let cond = NodeId(110);
-        let body = NodeId(111);
-        let expr_id = NodeId(11);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let cond = NodeId::new();
+        let body = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(cond, ExprKind::LiteralBool(true));
         kinds.insert(body, ExprKind::LiteralInt);
         kinds.insert(expr_id, ExprKind::While { cond, body });
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -2265,21 +2269,22 @@ mod tests {
 
     #[test]
     fn loop_and_break_contribute_loop_result_constraint() {
-        let binding_id = BindingId(12);
-        let break_expr = NodeId(120);
-        let loop_expr = NodeId(121);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let break_expr = NodeId::new();
+        let loop_expr = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(break_expr, ExprKind::LiteralInt);
         kinds.insert(loop_expr, ExprKind::Loop { body: break_expr });
 
-        let module = make_module(binding_id, loop_expr, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, loop_expr, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(
@@ -2292,13 +2297,14 @@ mod tests {
 
     #[test]
     fn return_uses_current_function_result_type() {
-        let func_binding = BindingId(13);
-        let func_expr = NodeId(100);
-        let ret_expr = NodeId(130);
-        let body_expr = NodeId(131);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let func_expr = NodeId::new();
+        let ret_expr = NodeId::new();
+        let body_expr = NodeId::new();
 
-        let module = make_function_module(
-            func_binding,
+        let mut input = make_function_input(
+            def_id,
             Vec::new(),
             func_expr,
             body_expr,
@@ -2308,8 +2314,7 @@ mod tests {
         );
         // Attach the literal as a separate binding so constraint generation
         // can look up its type.
-        let mut module = module;
-        module.expr_records.insert(
+        input.expr_records.insert(
             ret_expr,
             ExprRecord {
                 kind: ExprKind::LiteralInt,
@@ -2317,17 +2322,17 @@ mod tests {
             },
         );
 
-        let group = single_binding_group(func_binding.0);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
         ctx.binding_schemes.insert(
-            func_binding,
+            def_id.into(),
             TyScheme::from_mono(Ty::func(vec![], Ty::int())),
         );
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
         walk_tree(&tree, &mut |item| println!("{}", item));
 
@@ -2347,10 +2352,12 @@ mod tests {
 
     #[test]
     fn for_loop_generates_iter_constraint() {
-        let binding_id = BindingId(14);
-        let iter_expr = NodeId(140);
-        let body_expr = NodeId(141);
-        let expr_id = NodeId(14);
+        let def_id = DefId::new(FileId(0), 0);
+        let local_binding_id = LocalBindingId::new(def_id, 14);
+        let _guard = NodeId::enter_def(def_id);
+        let iter_expr = NodeId::new();
+        let body_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(iter_expr, ExprKind::LiteralInt);
@@ -2358,19 +2365,19 @@ mod tests {
         kinds.insert(
             expr_id,
             ExprKind::For {
-                pattern: Pattern::Binding(binding_id),
+                pattern: Pattern::Binding(local_binding_id),
                 iter_expr,
                 body: body_expr,
             },
         );
 
-        let module = make_module(binding_id, expr_id, kinds);
-        let group = single_binding_group(binding_id.0);
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let tree = build_constraint_tree_for_group(&module, &mut ctx, &group);
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
         assert!(

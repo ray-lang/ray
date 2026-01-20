@@ -1,17 +1,32 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 
+use ray_shared::def::DefId;
+use ray_shared::local_binding::LocalBindingId;
 use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::Path;
+use ray_shared::resolution::Resolution;
 use ray_typing::NodeBinding;
 use ray_typing::binding_groups::BindingId;
 
-use crate::ast::{Closure, Decl, Expr, FnParam, Module, WalkItem, WalkScopeKind, walk_module};
+use crate::ast::{Closure, Decl, Expr, FnParam, Module, Node, WalkItem, WalkScopeKind, walk_decl, walk_module};
 use crate::passes::binding::BindingPassOutput;
-use crate::sourcemap::SourceMap;
 
-/// Information about a single closure expression.
-#[derive(Debug, Default, Clone)]
+/// Information about a single closure expression (new API).
+#[derive(Debug, Clone)]
 pub struct ClosureInfo {
+    pub parent_def: DefId,
+    pub captures: Vec<LocalBindingId>,
+    pub body_expr: Option<NodeId>,
+    pub closure_expr: NodeId,
+}
+
+// =============================================================================
+// Legacy API (for existing system using BindingId)
+// =============================================================================
+
+/// Information about a single closure expression (legacy API).
+#[derive(Debug, Default, Clone)]
+pub struct LegacyClosureInfo {
     pub parent_binding: BindingId,
     pub captures: Vec<BindingId>,
     pub body_expr: Option<NodeId>,
@@ -20,37 +35,167 @@ pub struct ClosureInfo {
 
 #[derive(Debug, Default, Clone)]
 pub struct ClosurePassOutput {
-    pub closures: Vec<ClosureInfo>,
+    pub closures: Vec<LegacyClosureInfo>,
 }
 
 pub fn run_closure_pass(
     module: &Module<(), Decl>,
-    _srcmap: &SourceMap,
     bindings: &BindingPassOutput,
 ) -> ClosurePassOutput {
-    let mut ctx = ClosurePassCtx::new(bindings);
+    let lookup = LegacyBindingLookup { bindings };
+    let mut ctx = ClosureCtx::new(lookup);
     for item in walk_module(module) {
         ctx.visit_item(item);
     }
     ClosurePassOutput {
-        closures: ctx.closures,
+        closures: ctx
+            .closures
+            .into_iter()
+            .map(|c| LegacyClosureInfo {
+                parent_binding: c.parent_id,
+                captures: c.captures,
+                body_expr: c.body_expr,
+                closure_expr: c.closure_expr,
+            })
+            .collect(),
     }
 }
 
-struct ClosurePassCtx<'a> {
+/// Analyze closures within a single definition.
+///
+/// This is the new per-definition API that will be used by the query system.
+pub fn closures_in_def(
+    def_id: DefId,
+    def_ast: &Node<Decl>,
+    resolutions: &HashMap<NodeId, Resolution>,
+) -> Vec<ClosureInfo> {
+    let lookup = ResolutionLookup {
+        current_def: def_id,
+        resolutions,
+    };
+    let mut ctx = ClosureCtx::new(lookup);
+    for item in walk_decl(def_ast) {
+        ctx.visit_item(item);
+    }
+    ctx.closures
+        .into_iter()
+        .map(|c| ClosureInfo {
+            parent_def: def_id,
+            captures: c.captures,
+            body_expr: c.body_expr,
+            closure_expr: c.closure_expr,
+        })
+        .collect()
+}
+
+// =============================================================================
+// Generic implementation
+// =============================================================================
+
+/// Trait for looking up binding information from different sources.
+trait BindingLookup {
+    type BindingId: Clone + Eq + Hash;
+
+    /// Look up a binding definition for a node (e.g., parameter, let-binding).
+    fn binding_for_def(&self, node_id: NodeId) -> Option<Self::BindingId>;
+
+    /// Look up a binding usage for a node (e.g., name reference).
+    fn binding_for_use(&self, node_id: NodeId) -> Option<Self::BindingId>;
+
+    /// Get the parent binding (enclosing function) for a declaration node.
+    fn parent_binding(&self, node_id: NodeId) -> Option<Self::BindingId>;
+
+    /// Get a sortable key for consistent ordering of captures.
+    fn sort_key(id: &Self::BindingId) -> u64;
+}
+
+/// Lookup using the new resolution table.
+struct ResolutionLookup<'a> {
+    current_def: DefId,
+    resolutions: &'a HashMap<NodeId, Resolution>,
+}
+
+impl<'a> BindingLookup for ResolutionLookup<'a> {
+    type BindingId = LocalBindingId;
+
+    fn binding_for_def(&self, node_id: NodeId) -> Option<Self::BindingId> {
+        match self.resolutions.get(&node_id)? {
+            Resolution::Local(id) if id.owner == self.current_def => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn binding_for_use(&self, node_id: NodeId) -> Option<Self::BindingId> {
+        match self.resolutions.get(&node_id)? {
+            Resolution::Local(id) if id.owner == self.current_def => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn parent_binding(&self, _node_id: NodeId) -> Option<Self::BindingId> {
+        // For the new system, the parent is always the current_def (passed to closures_in_def)
+        // We return a dummy LocalBindingId since the caller uses current_def directly
+        Some(LocalBindingId::new(self.current_def, 0))
+    }
+
+    fn sort_key(id: &Self::BindingId) -> u64 {
+        // Combine file, owner index, and local index for sorting
+        ((id.owner.file.0 as u64) << 32) | ((id.owner.index as u64) << 16) | (id.index as u64)
+    }
+}
+
+/// Lookup using the legacy BindingPassOutput.
+struct LegacyBindingLookup<'a> {
     bindings: &'a BindingPassOutput,
-    closures: Vec<ClosureInfo>,
-    scope_stack: Vec<ScopeFrame>,
-    function_stack: Vec<Option<BindingId>>,
-    closure_stack: Vec<ActiveClosure>,
 }
 
-#[derive(Debug, Clone)]
-struct ScopeFrame {
-    bindings: HashMap<Path, BindingId>,
+impl<'a> BindingLookup for LegacyBindingLookup<'a> {
+    type BindingId = BindingId;
+
+    fn binding_for_def(&self, node_id: NodeId) -> Option<Self::BindingId> {
+        match self.bindings.node_bindings.get(&node_id).copied()? {
+            NodeBinding::Def(binding) => Some(binding),
+            NodeBinding::Use(_) => None,
+        }
+    }
+
+    fn binding_for_use(&self, node_id: NodeId) -> Option<Self::BindingId> {
+        match self.bindings.node_bindings.get(&node_id).copied()? {
+            NodeBinding::Def(binding) | NodeBinding::Use(binding) => Some(binding),
+        }
+    }
+
+    fn parent_binding(&self, node_id: NodeId) -> Option<Self::BindingId> {
+        self.binding_for_def(node_id)
+    }
+
+    fn sort_key(id: &Self::BindingId) -> u64 {
+        id.0
+    }
 }
 
-impl ScopeFrame {
+/// Generic closure info collected during analysis.
+struct GenericClosureInfo<B> {
+    parent_id: B,
+    captures: Vec<B>,
+    body_expr: Option<NodeId>,
+    closure_expr: NodeId,
+}
+
+/// Generic context for closure analysis.
+struct ClosureCtx<L: BindingLookup> {
+    lookup: L,
+    closures: Vec<GenericClosureInfo<L::BindingId>>,
+    scope_stack: Vec<GenericScopeFrame<L::BindingId>>,
+    function_stack: Vec<Option<L::BindingId>>,
+    closure_stack: Vec<GenericActiveClosure<L::BindingId>>,
+}
+
+struct GenericScopeFrame<B> {
+    bindings: HashMap<B, usize>,
+}
+
+impl<B> GenericScopeFrame<B> {
     fn new() -> Self {
         Self {
             bindings: HashMap::new(),
@@ -58,38 +203,20 @@ impl ScopeFrame {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ActiveClosure {
-    parent_binding: BindingId,
+struct GenericActiveClosure<B> {
+    parent_id: B,
     closure_expr: NodeId,
     body_expr: Option<NodeId>,
     scope_index: usize,
-    captures: HashSet<BindingId>,
+    captures: HashSet<B>,
 }
 
-impl ActiveClosure {
-    fn new(
-        parent_binding: BindingId,
-        closure_expr: NodeId,
-        body_expr: Option<NodeId>,
-        scope_index: usize,
-    ) -> Self {
+impl<L: BindingLookup> ClosureCtx<L> {
+    fn new(lookup: L) -> Self {
         Self {
-            parent_binding,
-            closure_expr,
-            body_expr,
-            scope_index,
-            captures: HashSet::new(),
-        }
-    }
-}
-
-impl<'a> ClosurePassCtx<'a> {
-    fn new(bindings: &'a BindingPassOutput) -> Self {
-        Self {
-            bindings,
+            lookup,
             closures: Vec::new(),
-            scope_stack: vec![ScopeFrame::new()],
+            scope_stack: vec![GenericScopeFrame::new()],
             function_stack: Vec::new(),
             closure_stack: Vec::new(),
         }
@@ -107,7 +234,7 @@ impl<'a> ClosurePassCtx<'a> {
     }
 
     fn enter_scope(&mut self, kind: WalkScopeKind) {
-        self.scope_stack.push(ScopeFrame::new());
+        self.scope_stack.push(GenericScopeFrame::new());
         if matches!(kind, WalkScopeKind::Function) {
             self.function_stack.push(None);
         }
@@ -117,10 +244,10 @@ impl<'a> ClosurePassCtx<'a> {
         match kind {
             WalkScopeKind::Closure => {
                 if let Some(active) = self.closure_stack.pop() {
-                    let mut captures: Vec<BindingId> = active.captures.into_iter().collect();
-                    captures.sort_unstable_by_key(|id| id.0);
-                    self.closures.push(ClosureInfo {
-                        parent_binding: active.parent_binding,
+                    let mut captures: Vec<L::BindingId> = active.captures.into_iter().collect();
+                    captures.sort_unstable_by_key(|id| L::sort_key(id));
+                    self.closures.push(GenericClosureInfo {
+                        parent_id: active.parent_id,
                         captures,
                         body_expr: active.body_expr,
                         closure_expr: active.closure_expr,
@@ -135,101 +262,83 @@ impl<'a> ClosurePassCtx<'a> {
         self.scope_stack.pop();
     }
 
-    fn visit_decl(&mut self, decl: &crate::ast::Node<Decl>) {
-        if let Some(binding) = self.node_binding(decl.id) {
-            self.register_binding(binding);
+    fn visit_decl(&mut self, decl: &Node<Decl>) {
+        if let Some(binding) = self.lookup.binding_for_def(decl.id) {
+            self.register_binding(binding.clone());
         }
 
-        match &decl.value {
-            Decl::Func(func) => {
-                if let Some(binding) = self.node_binding(decl.id) {
-                    self.set_current_function_binding(Some(binding));
-                }
-                self.register_function_params(&func.sig.params);
+        if let Decl::Func(func) = &decl.value {
+            if let Some(binding) = self.lookup.parent_binding(decl.id) {
+                self.set_current_function_binding(Some(binding));
             }
-            Decl::Mutable(_)
-            | Decl::Name(_)
-            | Decl::Declare(_)
-            | Decl::Struct(_)
-            | Decl::Trait(_)
-            | Decl::TypeAlias(_, _)
-            | Decl::Extern(_)
-            | Decl::Impl(_)
-            | Decl::FnSig(_) => {}
+            self.register_function_params(&func.sig.params);
         }
     }
 
-    fn visit_expr(&mut self, expr: &crate::ast::Node<Expr>) {
+    fn visit_expr(&mut self, expr: &Node<Expr>) {
         match &expr.value {
             Expr::Closure(closure) => self.visit_closure(expr, closure),
             Expr::Func(func) => self.register_function_params(&func.sig.params),
-            Expr::Name(name) => self.record_usage(&name.path),
-            Expr::Path(path) => self.record_usage(path),
+            Expr::Name(_) | Expr::Path(_) => self.record_usage(expr.id),
             _ => {}
         }
     }
 
-    fn visit_closure(&mut self, expr: &crate::ast::Node<Expr>, closure: &Closure) {
+    fn visit_closure(&mut self, expr: &Node<Expr>, closure: &Closure) {
         self.register_closure_params(&closure.args.items);
-        if let Some(parent_binding) = self.current_parent_binding() {
-            if let Some(scope_index) = self.scope_stack.len().checked_sub(1) {
-                let context =
-                    ActiveClosure::new(parent_binding, expr.id, Some(closure.body.id), scope_index);
-                self.closure_stack.push(context);
-            }
+        if let Some(parent_id) = self.current_parent_binding() {
+            let scope_index = self.scope_stack.len().saturating_sub(1);
+            self.closure_stack.push(GenericActiveClosure {
+                parent_id,
+                closure_expr: expr.id,
+                body_expr: Some(closure.body.id),
+                scope_index,
+                captures: HashSet::new(),
+            });
         }
     }
 
-    fn register_function_params(&mut self, params: &[crate::ast::Node<FnParam>]) {
+    fn register_function_params(&mut self, params: &[Node<FnParam>]) {
         for param in params {
-            if let Some(binding) = self.node_binding(param.id) {
-                self.register_binding(binding);
-            }
+            self.register_binding_for_node(param.id);
         }
     }
 
-    fn register_closure_params(&mut self, params: &[crate::ast::Node<Expr>]) {
+    fn register_closure_params(&mut self, params: &[Node<Expr>]) {
         for param in params {
-            if let Some(binding) = self.node_binding(param.id) {
-                self.register_binding(binding);
-            }
+            self.register_binding_for_node(param.id);
         }
     }
 
     fn register_binding_for_node(&mut self, node_id: NodeId) {
-        if let Some(binding) = self.node_binding(node_id) {
+        if let Some(binding) = self.lookup.binding_for_def(node_id) {
             self.register_binding(binding);
         }
     }
 
-    fn node_binding(&self, node_id: NodeId) -> Option<BindingId> {
-        match self.bindings.node_bindings.get(&node_id).copied()? {
-            NodeBinding::Def(binding) => Some(binding),
-            NodeBinding::Use(_) => None,
+    fn register_binding(&mut self, binding: L::BindingId) {
+        let scope_index = self.scope_stack.len().saturating_sub(1);
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.bindings.insert(binding, scope_index);
         }
     }
 
-    fn register_binding(&mut self, binding: BindingId) {
-        if let Some(record) = self.bindings.binding_records.get(&binding) {
-            if let Some(path) = record.path.clone() {
-                if let Some(scope) = self.scope_stack.last_mut() {
-                    scope.bindings.insert(path, binding);
-                }
-            }
-        }
-    }
+    fn record_usage(&mut self, node_id: NodeId) {
+        let binding = match self.lookup.binding_for_use(node_id) {
+            Some(b) => b,
+            None => return,
+        };
 
-    fn record_usage(&mut self, path: &Path) {
-        let mut defining_scope_index = None;
-        let mut binding = None;
-        for (idx, scope) in self.scope_stack.iter().enumerate().rev() {
-            if let Some(candidate) = scope.bindings.get(path) {
-                binding = Some(*candidate);
-                defining_scope_index = Some(idx);
-                break;
-            }
-        }
-        if let (Some(binding), Some(scope_idx)) = (binding, defining_scope_index) {
+        // Find what scope this binding was defined in
+        let defining_scope_index = self
+            .scope_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, scope)| scope.bindings.get(&binding).map(|_| idx));
+
+        // If defined outside the closure's scope, it's a capture
+        if let Some(scope_idx) = defining_scope_index {
             if let Some(active) = self.closure_stack.last_mut() {
                 if scope_idx < active.scope_index {
                     active.captures.insert(binding);
@@ -238,14 +347,14 @@ impl<'a> ClosurePassCtx<'a> {
         }
     }
 
-    fn set_current_function_binding(&mut self, binding: Option<BindingId>) {
+    fn set_current_function_binding(&mut self, binding: Option<L::BindingId>) {
         if let Some(entry) = self.function_stack.last_mut() {
             *entry = binding;
         }
     }
 
-    fn current_parent_binding(&self) -> Option<BindingId> {
-        self.function_stack.iter().rev().find_map(|b| *b)
+    fn current_parent_binding(&self) -> Option<L::BindingId> {
+        self.function_stack.iter().rev().find_map(|b| b.clone())
     }
 }
 
@@ -258,6 +367,9 @@ mod tests {
     };
     use crate::passes::binding;
     use crate::sourcemap::SourceMap;
+    use ray_shared::def::DefId;
+    use ray_shared::file_id::FileId;
+    use ray_shared::node_id::NodeId;
     use ray_shared::pathlib::{FilePath, Path};
     use ray_shared::span::{Source, Span};
     use ray_typing::NodeBinding;
@@ -298,12 +410,16 @@ mod tests {
         let env = GlobalEnv::default();
         let binding_output =
             binding::run_binding_pass(module, srcmap, &env, BindingPassOutput::empty());
-        let closure_output = run_closure_pass(module, srcmap, &binding_output);
+        let closure_output = run_closure_pass(module, &binding_output);
         (binding_output, closure_output)
     }
 
     #[test]
     fn closure_captures_outer_local() {
+        // Enter a DefId context for creating nodes
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
         let local_pattern = Node::new(AstPattern::Name(Name::new("outer")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let assign = Assign {
@@ -359,6 +475,10 @@ mod tests {
 
     #[test]
     fn closure_without_captures_reports_empty() {
+        // Enter a DefId context for creating nodes
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
         let closure_body = Node::new(Expr::Literal(Literal::Bool(true)));
         let closure = AstClosure {
             args: Sequence::new(vec![]),
@@ -382,5 +502,81 @@ mod tests {
         let (_binding_output, closure_output) = run_binding_and_closure(&module, &srcmap);
         assert_eq!(closure_output.closures.len(), 1);
         assert!(closure_output.closures[0].captures.is_empty());
+    }
+
+    // Tests for the new closures_in_def API
+
+    #[test]
+    fn closures_in_def_captures_outer_local() {
+        let def_id = DefId::new(FileId(0), 1);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Build AST: fn f() { outer = true; || outer }
+        let local_pattern = Node::new(AstPattern::Name(Name::new("outer")));
+        let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
+        let assign = Assign {
+            lhs: local_pattern.clone(),
+            rhs: Box::new(rhs_expr.clone()),
+            is_mut: false,
+            mut_span: None,
+            op: crate::ast::InfixOp::Assign,
+            op_span: Span::new(),
+        };
+        let assign_expr = Node::new(Expr::Assign(assign));
+        let closure_body = Node::new(Expr::Name(Name::new("outer")));
+        let closure = AstClosure {
+            args: Sequence::new(vec![]),
+            body: Box::new(closure_body.clone()),
+            arrow_span: None,
+            curly_spans: None,
+        };
+        let closure_expr = Node::new(Expr::Closure(closure));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![assign_expr.clone(), closure_expr.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("pkg::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        // Build resolution table: local_pattern defines a local, closure_body uses it
+        let local_id = LocalBindingId::new(def_id, 1);
+        let mut resolutions = HashMap::new();
+        resolutions.insert(local_pattern.id, Resolution::Local(local_id));
+        resolutions.insert(closure_body.id, Resolution::Local(local_id));
+
+        let closures = closures_in_def(def_id, &decl, &resolutions);
+        assert_eq!(closures.len(), 1);
+        let info = &closures[0];
+        assert_eq!(info.parent_def, def_id);
+        assert_eq!(info.captures, vec![local_id]);
+        assert_eq!(info.body_expr, Some(closure_body.id));
+        assert_eq!(info.closure_expr, closure_expr.id);
+    }
+
+    #[test]
+    fn closures_in_def_no_captures() {
+        let def_id = DefId::new(FileId(0), 1);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Build AST: fn f() { || true }
+        let closure_body = Node::new(Expr::Literal(Literal::Bool(true)));
+        let closure = AstClosure {
+            args: Sequence::new(vec![]),
+            body: Box::new(closure_body.clone()),
+            arrow_span: None,
+            curly_spans: None,
+        };
+        let closure_expr = Node::new(Expr::Closure(closure));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![closure_expr.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("pkg::g")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        // No resolutions needed - closure body is a literal
+        let resolutions = HashMap::new();
+
+        let closures = closures_in_def(def_id, &decl, &resolutions);
+        assert_eq!(closures.len(), 1);
+        assert!(closures[0].captures.is_empty());
     }
 }

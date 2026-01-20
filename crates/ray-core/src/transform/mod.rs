@@ -5,6 +5,7 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     node_id::NodeId,
     pathlib::{FilePath, Path},
+    resolution::Resolution,
 };
 use ray_typing::tyctx::TyCtx;
 
@@ -21,6 +22,7 @@ pub struct CombineResult {
     pub srcmap: SourceMap,
     pub tcx: TyCtx,
     pub ncx: NameContext,
+    pub resolutions: HashMap<NodeId, Resolution>,
 }
 
 struct ModuleCombiner {
@@ -61,15 +63,16 @@ impl ModuleCombiner {
         new_module.decls.sort();
 
         // process name resolution
-        let mut ctx = ResolveContext::new(&mut self.ncx, &mut srcmap, &self.scope_map);
-        new_module.resolve_names(&mut ctx)?;
+        let mut resolve_ctx = ResolveContext::new(&mut self.ncx, &mut srcmap, &self.scope_map);
+        new_module.resolve_names(&mut resolve_ctx)?;
+        let resolutions = resolve_ctx.into_resolutions();
 
         // lower the declarations for the current module
-        let mut ctx = self.get_lower_ctx(&mut srcmap);
+        let mut lower_ctx = self.get_lower_ctx(&mut srcmap);
         for decl in new_module.decls.iter_mut() {
-            let src = ctx.srcmap().get(decl);
+            let src = lower_ctx.srcmap().get(decl);
             let _node_id_namespace = NodeId::enter_namespace(&src.src_module);
-            decl.lower(&mut ctx)?;
+            decl.lower(&mut lower_ctx)?;
         }
 
         Ok(CombineResult {
@@ -77,6 +80,7 @@ impl ModuleCombiner {
             srcmap,
             tcx: self.tcx,
             ncx: self.ncx,
+            resolutions,
         })
     }
 

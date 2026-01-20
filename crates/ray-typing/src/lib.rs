@@ -20,12 +20,15 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::mem;
 use std::rc::Rc;
 
+use ray_shared::binding_target::BindingTarget;
+use ray_shared::def::DefId;
+use ray_shared::local_binding::LocalBindingId;
 use ray_shared::{
     collections::namecontext::NameContext,
     node_id::NodeId,
     pathlib::Path,
     span::Source,
-    ty::{Ty, TyVar},
+    ty::{SchemaVarAllocator, Ty, TyVar},
 };
 
 use crate::{
@@ -33,14 +36,14 @@ use crate::{
     constraint_tree::{
         ConstraintNode, ConstraintTreeWalkItem, build_constraint_tree_for_group, walk_tree,
     },
-    constraints::{CallKind, Constraint, ConstraintKind, Predicate},
+    constraints::{CallKind, Constraint, ConstraintKind, InstantiateTarget, Predicate},
     context::{ExprKind, InstanceFailureStatus, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
     env::GlobalEnv,
     generalize::generalize_group,
     info::{Info, TypeSystemInfo},
     tyctx::TyCtx,
-    types::{SchemaVarAllocator, Subst, Substitutable as _, TyScheme},
+    types::{Subst, Substitutable as _, TyScheme},
 };
 
 /// Associates a frontend node with a binding, distinguishing between
@@ -66,7 +69,7 @@ pub enum BindingKind {
     /// A function binding with parameters and a result type (`Ty::Func`).
     Function {
         /// Binding identifiers for each parameter, in order.
-        params: Vec<BindingId>,
+        params: Vec<LocalBindingId>,
     },
     /// A plain value binding (let-binding, constant, etc.).
     Value,
@@ -124,7 +127,7 @@ pub struct PatternRecord {
 #[derive(Clone, Debug)]
 pub enum PatternKind {
     /// Simple binding like `x`.
-    Binding { binding: BindingId },
+    Binding { binding: LocalBindingId },
     /// Tuple or sequence pattern `(p1, ..., pn)` / `p1, ..., pn`.
     Tuple { elems: Vec<NodeId> },
     /// Field projection `base.field`.
@@ -132,7 +135,7 @@ pub enum PatternKind {
     /// Index projection `container[index]`.
     Index { container: NodeId, index: NodeId },
     /// Dereference pattern `*x`.
-    Deref { binding: BindingId },
+    Deref { binding: LocalBindingId },
     /// Placeholder for unsupported or missing patterns so we can still
     /// assign a type to the node.
     Missing,
@@ -145,11 +148,11 @@ pub struct ExprRecord {
     pub source: Option<Source>,
 }
 
-pub struct ModuleInput {
-    pub bindings: BindingGraph,
-    /// Consolidated binding metadata keyed by `BindingId`. This gradually
+pub struct TypeCheckInput {
+    pub bindings: BindingGraph<DefId>,
+    /// Consolidated binding metadata keyed by `DefId`. This gradually
     /// replaces the scattered binding_* maps as the pipeline is reworked.
-    pub binding_records: HashMap<BindingId, BindingRecord>,
+    pub binding_records: HashMap<DefId, BindingRecord>,
     /// Mapping from frontend node ids to lowered binding ids.
     pub node_bindings: HashMap<NodeId, NodeBinding>,
     /// Consolidated expression metadata keyed by NodeId, replacing the
@@ -164,19 +167,19 @@ pub struct ModuleInput {
     pub lowering_errors: Vec<TypeError>,
 }
 
-impl ModuleInput {
-    /// Compute binding groups for this module.
+impl TypeCheckInput {
+    /// Compute binding groups.
     ///
-    /// - Walk the module's bindings and build a dependency graph over
-    ///   `BindingId`.
+    /// - Walk the bindings and build a dependency graph over
+    ///   `DefId`.
     /// - Compute strongly connected components (SCCs) of this graph.
     /// - Return one `BindingGroup` per SCC, in a topologically sorted order
     ///   so groups can only depend on earlier groups.
-    pub fn binding_groups(&self) -> Vec<BindingGroup> {
-        let top_level: BTreeSet<BindingId> = self
+    pub fn binding_groups(&self) -> Vec<BindingGroup<DefId>> {
+        let top_level: BTreeSet<DefId> = self
             .binding_records
             .iter()
-            .filter_map(|(bid, rec)| (!rec.is_extern && rec.parent.is_none()).then_some(*bid))
+            .filter_map(|(def_id, rec)| (!rec.is_extern && rec.parent.is_none()).then_some(*def_id))
             .collect();
 
         self.bindings.compute_binding_groups_over(&top_level)
@@ -185,20 +188,22 @@ impl ModuleInput {
     /// Return the root expression for a given binding, if any. Prefer the
     /// consolidated binding record and fall back to legacy state while the
     /// lowering pipeline is migrating.
-    pub fn binding_root_expr(&self, id: BindingId) -> Option<NodeId> {
+    pub fn binding_root_expr(&self, id: DefId) -> Option<NodeId> {
         let record = self.binding_records.get(&id);
         record.and_then(|record| record.body_expr)
     }
 
-    /// Parent binding for the given binding id, if any.
-    pub fn binding_parent(&self, id: BindingId) -> Option<BindingId> {
+    /// Parent binding for the given def id, if any.
+    /// Note: During migration, parent field still uses BindingId.
+    pub fn binding_parent(&self, id: DefId) -> Option<BindingId> {
         self.binding_records
             .get(&id)
             .and_then(|record| record.parent)
     }
 
-    /// Collect all bindings whose parent matches the provided id.
-    pub fn bindings_with_parent(&self, parent: BindingId) -> Vec<BindingId> {
+    /// Collect all def ids whose parent matches the provided binding id.
+    /// Note: During migration, parent field still uses BindingId.
+    pub fn defs_with_parent(&self, parent: BindingId) -> Vec<DefId> {
         self.binding_records
             .iter()
             .filter_map(|(id, record)| {
@@ -212,10 +217,11 @@ impl ModuleInput {
     }
 
     /// Determine the parent binding shared by all members of this group.
-    pub fn group_parent(&self, group: &BindingGroup) -> Option<BindingId> {
+    /// Note: During migration, parent field still uses BindingId.
+    pub fn group_parent(&self, group: &BindingGroup<DefId>) -> Option<BindingId> {
         let mut parent: Option<BindingId> = None;
-        for binding in &group.bindings {
-            let this_parent = self.binding_parent(*binding);
+        for def_id in &group.bindings {
+            let this_parent = self.binding_parent(*def_id);
             match (parent, this_parent) {
                 (None, Some(p)) => parent = Some(p),
                 (Some(existing), Some(p)) if existing != p => {
@@ -333,7 +339,8 @@ impl ModuleInput {
             | Some(ExprKind::LiteralFloat)
             | Some(ExprKind::LiteralFloatSized)
             | Some(ExprKind::LiteralBool(_))
-            | Some(ExprKind::BindingRef(_))
+            | Some(ExprKind::LocalRef(_))
+            | Some(ExprKind::DefRef(_))
             | Some(ExprKind::ScopedAccess { .. }) => {
                 vec![]
             }
@@ -757,10 +764,14 @@ pub struct BindingGroupResult {
     pub errors: Vec<TypeError>,
 }
 
-/// Result of typechecking an entire module.
+/// Result of typechecking.
 #[derive(Clone, Debug)]
 pub struct TypeCheckResult {
-    /// All type errors discovered while typechecking the module.
+    /// Type schemes for every definition from the input
+    pub schemes: HashMap<DefId, TyScheme>,
+    /// Monomorphic types for every expression node in the input
+    pub node_tys: HashMap<NodeId, Ty>,
+    /// All type errors discovered while typechecking
     pub errors: Vec<TypeError>,
 }
 
@@ -770,40 +781,40 @@ struct SolverEnv {
     metas: Vec<TyVar>,
 }
 
-/// Top-level entry point for typechecking a whole module.
+/// Top-level entry point for typechecking.
 ///
 /// Conceptually, this should:
-/// - Build binding groups for the module.
+/// - Build binding groups.
 /// - For each group, build a constraint tree.
 /// - Run the term solver (equalities/unification).
 /// - Run the goal solver (traits, HasField, Recv).
 /// - Apply defaulting, then generalization at the group boundary.
-pub fn check_module(
-    module: &ModuleInput,
+pub fn typecheck(
+    input: &TypeCheckInput,
     _options: TypecheckOptions,
     tcx: &mut TyCtx,
     ncx: &NameContext,
 ) -> TypeCheckResult {
-    // Shared type context for the module. This will accumulate information
+    // Shared type context checking pass. This will accumulate information
     // across binding groups. Seed any pre-existing binding schemes from
     // the frontend (e.g. annotated function types).
-    let mut ctx = SolverContext::new(module.schema_allocator.clone(), ncx, &tcx.global_env);
+    let mut ctx = SolverContext::new(input.schema_allocator.clone(), ncx, &tcx.global_env);
     log::debug!(
-        "[check_module] schema variable start: ?s{}",
+        "[typecheck] schema variable start: ?s{}",
         ctx.schema_allocator_mut().curr_id()
     );
-    for (binding_id, record) in module.binding_records.iter() {
+    for (def_id, record) in input.binding_records.iter() {
         if let Some(scheme) = &record.scheme {
-            ctx.binding_schemes.insert(*binding_id, scheme.clone());
-            ctx.explicitly_annotated_bindings.insert(*binding_id);
+            ctx.binding_schemes.insert((*def_id).into(), scheme.clone());
+            ctx.explicitly_annotated.insert((*def_id).into());
         }
     }
 
-    let groups = module.binding_groups();
+    let groups = input.binding_groups();
 
     let pretty_subst = tcx.inverted_var_subst();
     let BindingGroupResult { errors } = solve_groups(
-        module,
+        input,
         groups,
         &mut ctx,
         &tcx.global_env,
@@ -811,7 +822,7 @@ pub fn check_module(
     );
 
     let binding_schemes = mem::take(&mut ctx.binding_schemes);
-    let expr_types = mem::take(&mut ctx.expr_types);
+    let node_tys = mem::take(&mut ctx.expr_types);
 
     // At this point, solving + defaulting should have eliminated all unresolved
     // meta type variables from expression types. If any remain, treat it as a
@@ -819,37 +830,44 @@ pub fn check_module(
     // push_unsolved_meta_tyvar_errors(&mut errors, module, &expr_types, &ctx.generalized_metas);
 
     tcx.node_tys.clear();
-    for (expr_id, ty) in expr_types.iter() {
+    for (expr_id, ty) in node_tys.iter() {
         tcx.node_tys.insert(*expr_id, ty.clone());
     }
 
-    for (node_id, node_binding) in module.node_bindings.iter() {
-        let binding_id = node_binding.binding();
-        if let Some(scheme) = binding_schemes.get(&binding_id) {
-            tcx.node_schemes.insert(*node_id, scheme.clone());
-        }
-    }
+    // TODO: node_bindings still use BindingId from binding_groups.
+    // This needs to be migrated to use LocalBindingId or DefId.
+    // For now, skip this population step.
+    let _ = &input.node_bindings;
 
     tcx.schemes.clear();
     tcx.all_schemes.clear();
-    for (binding_id, scheme) in binding_schemes.iter() {
-        if let Some(record) = module.binding_records.get(binding_id) {
-            if let Some(path) = &record.path {
-                tcx.all_schemes.insert(path.clone(), scheme.clone());
-                if !record.is_extern && record.parent.is_none() {
-                    tcx.schemes.insert(path.clone(), scheme.clone());
+    #[allow(unused_mut)] // TEMP
+    let mut schemes = HashMap::new();
+    for (target, scheme) in binding_schemes.iter() {
+        // Only process top-level definitions for path-based scheme storage
+        if let BindingTarget::Def(def_id) = target {
+            if let Some(record) = input.binding_records.get(def_id) {
+                if let Some(path) = &record.path {
+                    tcx.all_schemes.insert(path.clone(), scheme.clone());
+                    if !record.is_extern && record.parent.is_none() {
+                        tcx.schemes.insert(path.clone(), scheme.clone());
+                    }
                 }
             }
         }
     }
 
-    TypeCheckResult { errors }
+    TypeCheckResult {
+        schemes,
+        node_tys,
+        errors,
+    }
 }
 
 #[allow(dead_code)]
 fn push_unsolved_meta_tyvar_errors(
     errors: &mut Vec<TypeError>,
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     expr_types: &HashMap<NodeId, Ty>,
     generalized_metas: &HashSet<TyVar>,
 ) {
@@ -903,7 +921,7 @@ fn push_unsolved_meta_tyvar_errors(
 
 fn push_defaulting_outcome_errors(
     errors: &mut Vec<TypeError>,
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     expr_types: &HashMap<NodeId, Ty>,
     generalized_metas: &HashSet<TyVar>,
     log: &DefaultingLog,
@@ -984,15 +1002,15 @@ fn push_defaulting_outcome_errors(
 }
 
 fn solve_groups(
-    module: &ModuleInput,
-    groups: Vec<BindingGroup>,
+    input: &TypeCheckInput,
+    groups: Vec<BindingGroup<DefId>>,
     ctx: &mut SolverContext,
     global_env: &GlobalEnv,
     pretty_subst: Option<&Subst>,
 ) -> BindingGroupResult {
     let mut errors = vec![];
     for group in groups.iter() {
-        let mut root = build_constraint_tree_for_group(module, ctx, group);
+        let mut root = build_constraint_tree_for_group(input, ctx, group);
         log::debug!("[solve_groups] constraints before solving");
         let mut depth = 0;
         walk_tree(&root, &mut |item| {
@@ -1014,7 +1032,7 @@ fn solve_groups(
         let env = SolverEnv::default();
         let mut subst = Subst::new();
         let residuals = solve_bindings(
-            module,
+            input,
             &mut root,
             &group.bindings,
             ctx,
@@ -1027,12 +1045,12 @@ fn solve_groups(
             subst: defaulted_subst,
             residuals,
             log,
-        } = apply_defaulting(module, ctx, group, global_env, residuals, &subst);
+        } = apply_defaulting(input, ctx, group, global_env, residuals, &subst);
         subst = defaulted_subst;
         ctx.apply_subst(&subst);
         push_defaulting_outcome_errors(
             &mut errors,
-            module,
+            input,
             &ctx.expr_types,
             &ctx.generalized_metas,
             &log,
@@ -1046,7 +1064,7 @@ fn solve_groups(
         ctx.apply_subst(&subst);
         log::debug!("[solve_groups] subst: {:#}", subst);
         check_residuals_and_emit_errors(
-            module,
+            input,
             &post_defaulting.unsolved,
             ctx,
             pretty_subst,
@@ -1058,9 +1076,9 @@ fn solve_groups(
 }
 
 fn solve_bindings(
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     root: &mut ConstraintNode,
-    bindings: &[BindingId],
+    bindings: &[DefId],
     ctx: &mut SolverContext,
     env: &SolverEnv,
     global_env: &GlobalEnv,
@@ -1072,20 +1090,45 @@ fn solve_bindings(
     for meta in gen_result.closing_subst.keys() {
         ctx.generalized_metas.insert(meta.clone());
     }
-    for (binding_id, scheme) in gen_result.schemes {
-        ctx.binding_schemes.insert(binding_id, scheme);
-        let skolem_subst = ctx.skolem_to_schema_subst_for_binding(binding_id);
+    for (def_id, scheme) in gen_result.schemes {
+        ctx.binding_schemes.insert(def_id.into(), scheme);
+        let skolem_subst = ctx.skolem_to_schema_subst(def_id);
         if !skolem_subst.is_empty() {
             ctx.apply_subst(&skolem_subst);
             subst.union(skolem_subst);
         }
-        ctx.clear_skolems_for_binding(binding_id);
+        ctx.clear_skolems(def_id);
     }
     gen_result.residuals
 }
 
+/// Solve local bindings (let-bindings inside functions).
+/// Local bindings don't get full generalization - they just get mono schemes.
+fn solve_local_bindings(
+    module: &TypeCheckInput,
+    root: &mut ConstraintNode,
+    bindings: &[LocalBindingId],
+    ctx: &mut SolverContext,
+    env: &SolverEnv,
+    global_env: &GlobalEnv,
+    subst: &mut Subst,
+    errors: &mut Vec<TypeError>,
+) -> Vec<Constraint> {
+    let residuals = solve_node(module, root, ctx, env, global_env, subst, errors);
+    // Local bindings get mono schemes - no generalization
+    for local_id in bindings {
+        if let Some(scheme) = ctx.binding_schemes.get(&(*local_id).into()) {
+            let mut instantiated = scheme.clone();
+            instantiated.apply_subst(subst);
+            ctx.binding_schemes
+                .insert((*local_id).into(), TyScheme::from_mono(instantiated.ty));
+        }
+    }
+    residuals
+}
+
 fn solve_node(
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     node: &mut ConstraintNode,
     ctx: &mut SolverContext,
     env: &SolverEnv,
@@ -1114,7 +1157,7 @@ fn solve_node(
     env.givens.extend(goal_result.solved);
 
     for binding_node in &mut node.binding_nodes {
-        let child_residuals = solve_bindings(
+        let child_residuals = solve_local_bindings(
             module,
             &mut binding_node.root,
             &binding_node.bindings,
@@ -1148,16 +1191,27 @@ fn instantiate_wanteds_into_equalities(
             continue;
         };
 
-        let Some(scheme) = ctx.binding_schemes.get(&inst.binding).cloned() else {
-            panic!("cannot find scheme for binding: {:?}", inst.binding);
+        let scheme = match &inst.target {
+            InstantiateTarget::Def(def_id) => ctx
+                .binding_schemes
+                .get(&(*def_id).into())
+                .cloned()
+                .unwrap_or_else(|| panic!("cannot find scheme for def: {:?}", def_id)),
+            InstantiateTarget::Local(binding_id) => ctx
+                .binding_schemes
+                .get(&(*binding_id).into())
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("cannot find scheme for local binding: {:?}", binding_id)
+                }),
         };
 
         let (inst_ty, qualifiers) =
             instantiate_scheme_for_use(&scheme, inst.receiver_subst.as_ref(), ctx, &wanted.info);
         new_qualifiers.extend(qualifiers);
         log::debug!(
-            "[instantiate_wanteds_into_equalities] binding = {:?}, scheme = {}, inst_ty = {}",
-            inst.binding,
+            "[instantiate_wanteds_into_equalities] target = {:?}, scheme = {}, inst_ty = {}",
+            inst.target,
             scheme,
             inst_ty
         );
@@ -1212,7 +1266,7 @@ fn instantiate_scheme_for_use(
 }
 
 fn check_residuals_and_emit_errors(
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     residuals: &[Constraint],
     ctx: &SolverContext,
     pretty_subst: Option<&Subst>,
@@ -1319,13 +1373,13 @@ fn check_residuals_and_emit_errors(
                     errors.push(TypeError::message(msg, info));
                     continue;
                 }
-                CallKind::Scoped { binding, .. } => {
+                CallKind::Scoped { def_id, .. } => {
                     let binding_name = module
                         .binding_records
-                        .get(binding)
+                        .get(def_id)
                         .and_then(|rec| rec.path.as_ref())
                         .map(|p| p.to_string())
-                        .unwrap_or_else(|| binding.to_string());
+                        .unwrap_or_else(|| def_id.to_string());
                     let msg = format!(
                         "cannot resolve scoped call: `{}` on `{}` with signature: ({}) -> {}",
                         binding_name, resolve_call.subject_ty, args, ret_ty
@@ -1421,6 +1475,10 @@ fn collect_predicate_vars(pred: &Predicate) -> HashSet<TyVar> {
 
 #[cfg(test)]
 mod tests {
+    use ray_shared::def::DefId;
+    use ray_shared::file_id::FileId;
+    use ray_shared::local_binding::LocalBindingId;
+
     use super::*;
     use crate::binding_groups::{BindingGraph, BindingGroup, BindingId};
     use crate::context::{AssignLhs, ExprKind, LhsPattern, Pattern};
@@ -1429,24 +1487,24 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_single_binding_module(
-        binding_id: BindingId,
+        def_id: DefId,
         root_expr: NodeId,
         kinds: HashMap<NodeId, ExprKind>,
-    ) -> ModuleInput {
-        let mut graph = BindingGraph::new();
-        graph.add_binding(binding_id);
+    ) -> TypeCheckInput {
+        let mut graph = BindingGraph::<DefId>::new();
+        graph.add_binding(def_id);
 
         let mut binding_records = HashMap::new();
         let mut record = BindingRecord::new(BindingKind::Value);
         record.body_expr = Some(root_expr);
-        binding_records.insert(binding_id, record);
+        binding_records.insert(def_id, record);
 
         let expr_records = kinds
             .into_iter()
             .map(|(expr_id, kind)| (expr_id, ExprRecord { kind, source: None }))
             .collect();
 
-        ModuleInput {
+        TypeCheckInput {
             bindings: graph,
             binding_records,
             node_bindings: HashMap::new(),
@@ -1458,12 +1516,13 @@ mod tests {
     }
 
     #[test]
-    fn check_module_if_expression_succeeds() {
-        let binding_id = BindingId(3);
-        let cond = NodeId(30);
-        let then_expr = NodeId(31);
-        let else_expr = NodeId(32);
-        let expr_id = NodeId(3);
+    fn typecheck_if_expression_succeeds() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let cond = NodeId::new();
+        let then_expr = NodeId::new();
+        let else_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(cond, ExprKind::LiteralBool(true));
@@ -1478,22 +1537,23 @@ mod tests {
             },
         );
 
-        let module = make_single_binding_module(binding_id, expr_id, kinds);
+        let module = make_single_binding_module(def_id, expr_id, kinds);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = check_module(&module, options, &mut ty_ctx, &ncx);
+        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
         assert!(result.errors.is_empty());
     }
 
     #[test]
-    fn check_module_while_expression_succeeds() {
-        let binding_id = BindingId(4);
-        let cond = NodeId(40);
-        let body_expr = NodeId(41);
-        let expr_id = NodeId(4);
+    fn typecheck_while_expression_succeeds() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let cond = NodeId::new();
+        let body_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(cond, ExprKind::LiteralBool(true));
@@ -1506,23 +1566,25 @@ mod tests {
             },
         );
 
-        let module = make_single_binding_module(binding_id, expr_id, kinds);
+        let module = make_single_binding_module(def_id, expr_id, kinds);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = check_module(&module, options, &mut ty_ctx, &ncx);
+        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
         assert!(result.errors.is_empty());
     }
 
     #[test]
-    fn check_module_pattern_if_nilable_succeeds() {
-        let binding_id = BindingId(5);
-        let scrutinee = NodeId(50);
-        let then_expr = NodeId(51);
-        let else_expr = NodeId(52);
-        let expr_id = NodeId(5);
+    fn typecheck_pattern_if_nilable_succeeds() {
+        let def_id = DefId::new(FileId(0), 0);
+        let local_binding_id = LocalBindingId::new(def_id, 5);
+        let _guard = NodeId::enter_def(def_id);
+        let scrutinee = NodeId::new();
+        let then_expr = NodeId::new();
+        let else_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(scrutinee, ExprKind::Nil);
@@ -1532,47 +1594,49 @@ mod tests {
             expr_id,
             ExprKind::IfPattern {
                 scrutinee,
-                pattern: Pattern::Some(binding_id),
+                pattern: Pattern::Some(local_binding_id),
                 then_branch: then_expr,
                 else_branch: Some(else_expr),
             },
         );
 
-        let module = make_single_binding_module(binding_id, expr_id, kinds);
+        let module = make_single_binding_module(def_id, expr_id, kinds);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = check_module(&module, options, &mut ty_ctx, &ncx);
+        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
         assert!(result.errors.is_empty());
     }
 
     #[test]
-    fn check_module_loop_with_break_succeeds() {
-        let binding_id = BindingId(6);
-        let break_expr = NodeId(60);
-        let loop_expr = NodeId(61);
+    fn typecheck_loop_with_break_succeeds() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let break_expr = NodeId::new();
+        let loop_expr = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(break_expr, ExprKind::LiteralBool(true));
         kinds.insert(loop_expr, ExprKind::Loop { body: break_expr });
 
-        let module = make_single_binding_module(binding_id, loop_expr, kinds);
+        let module = make_single_binding_module(def_id, loop_expr, kinds);
         let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = check_module(&module, options, &mut ty_ctx, &ncx);
+        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
         assert!(result.errors.is_empty());
     }
 
     #[test]
-    fn check_module_struct_literal_with_hasfield_succeeds() {
-        let binding_id = BindingId(2);
-        let field_expr = NodeId(20);
-        let expr_id = NodeId(2);
+    fn typecheck_struct_literal_with_hasfield_succeeds() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let field_expr = NodeId::new();
+        let expr_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(field_expr, ExprKind::LiteralBool(true));
@@ -1584,7 +1648,7 @@ mod tests {
             },
         );
 
-        let module = make_single_binding_module(binding_id, expr_id, kinds);
+        let module = make_single_binding_module(def_id, expr_id, kinds);
 
         // Build a GlobalEnv with a struct A { x: bool } so HasField can succeed.
         let mut global_env = GlobalEnv::new();
@@ -1603,15 +1667,16 @@ mod tests {
         let options = TypecheckOptions::default();
         let ncx = NameContext::new();
         let mut ty_ctx = TyCtx::new(global_env);
-        let result = check_module(&module, options, &mut ty_ctx, &ncx);
+        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
 
         assert!(result.errors.is_empty());
     }
 
     #[test]
     fn solve_module_with_solve_bindings_basic_expression() {
-        let binding_id = BindingId(1); // fn f(...)
-        let root_expr = NodeId(10); // { 1u32 }
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let root_expr = NodeId::new(); // { 1u32 }
         let mut kinds = HashMap::new();
         kinds.insert(root_expr, ExprKind::LiteralIntSized(Ty::u32()));
 
@@ -1621,10 +1686,10 @@ mod tests {
         let ncx = NameContext::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let module = make_single_binding_module(binding_id, root_expr, kinds);
+        let module = make_single_binding_module(def_id, root_expr, kinds);
 
         let group = BindingGroup {
-            bindings: vec![binding_id],
+            bindings: vec![def_id],
         };
         let mut root = build_constraint_tree_for_group(&module, &mut ctx, &group);
         walk_tree(&root, &mut |item| {
@@ -1635,7 +1700,7 @@ mod tests {
         let residuals = solve_bindings(
             &module,
             &mut root,
-            &[binding_id],
+            &[def_id],
             &mut ctx,
             &env,
             &global_env,
@@ -1650,11 +1715,12 @@ mod tests {
 
     #[test]
     fn solve_module_with_solve_bindings_if_else() {
-        let binding_id = BindingId(1); // fn f(...)
-        let root_expr = NodeId(1); // if/else
-        let cond = NodeId(2);
-        let then_branch = NodeId(3);
-        let else_branch = NodeId(4);
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let root_expr = NodeId::new(); // if/else
+        let cond = NodeId::new();
+        let then_branch = NodeId::new();
+        let else_branch = NodeId::new();
         let mut kinds = HashMap::new();
         kinds.insert(cond, ExprKind::LiteralBool(true));
         kinds.insert(then_branch, ExprKind::LiteralIntSized(Ty::u32()));
@@ -1674,10 +1740,10 @@ mod tests {
         let ncx = NameContext::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
 
-        let module = make_single_binding_module(binding_id, root_expr, kinds);
+        let module = make_single_binding_module(def_id, root_expr, kinds);
 
         let group = BindingGroup {
-            bindings: vec![binding_id],
+            bindings: vec![def_id],
         };
         let mut root = build_constraint_tree_for_group(&module, &mut ctx, &group);
         walk_tree(&root, &mut |item| {
@@ -1688,7 +1754,7 @@ mod tests {
         let residuals = solve_bindings(
             &module,
             &mut root,
-            &[binding_id],
+            &[def_id],
             &mut ctx,
             &env,
             &global_env,
@@ -1702,12 +1768,12 @@ mod tests {
     }
 
     fn make_multi_binding_module(
-        binding_records: HashMap<BindingId, BindingRecord>,
+        binding_records: HashMap<DefId, BindingRecord>,
         expr_kinds: HashMap<NodeId, ExprKind>,
-    ) -> ModuleInput {
-        let mut graph = BindingGraph::new();
-        for bid in binding_records.keys() {
-            graph.add_binding(*bid);
+    ) -> TypeCheckInput {
+        let mut graph = BindingGraph::<DefId>::new();
+        for def_id in binding_records.keys() {
+            graph.add_binding(*def_id);
         }
 
         let expr_records = expr_kinds
@@ -1715,7 +1781,7 @@ mod tests {
             .map(|(expr_id, kind)| (expr_id, ExprRecord { kind, source: None }))
             .collect();
 
-        ModuleInput {
+        TypeCheckInput {
             bindings: graph,
             binding_records,
             node_bindings: HashMap::new(),
@@ -1727,13 +1793,13 @@ mod tests {
     }
 
     fn make_multi_binding_module_with_patterns(
-        binding_records: HashMap<BindingId, BindingRecord>,
+        binding_records: HashMap<DefId, BindingRecord>,
         expr_kinds: HashMap<NodeId, ExprKind>,
         pattern_records: HashMap<NodeId, PatternRecord>,
-    ) -> ModuleInput {
-        let mut graph = BindingGraph::new();
-        for bid in binding_records.keys() {
-            graph.add_binding(*bid);
+    ) -> TypeCheckInput {
+        let mut graph = BindingGraph::<DefId>::new();
+        for def_id in binding_records.keys() {
+            graph.add_binding(*def_id);
         }
 
         let expr_records = expr_kinds
@@ -1741,7 +1807,7 @@ mod tests {
             .map(|(expr_id, kind)| (expr_id, ExprRecord { kind, source: None }))
             .collect();
 
-        ModuleInput {
+        TypeCheckInput {
             bindings: graph,
             binding_records,
             node_bindings: HashMap::new(),
@@ -1762,70 +1828,54 @@ mod tests {
         //   b = id(true)
         // }
 
-        // Binding ids
-        let main = BindingId(1);
-        let id = BindingId(2); // local value binding inside main
-        let x = BindingId(3); // closure parameter, nested under id
-        let a = BindingId(4);
-        let b = BindingId(5);
+        // Top-level def id for main
+        let main_def = DefId::new(FileId(0), 0);
+
+        // Local binding ids (still use BindingId for locals)
+        let id = LocalBindingId::new(main_def, 2); // local value binding inside main
+        let x = LocalBindingId::new(main_def, 3); // closure parameter, nested under id
+        let a = LocalBindingId::new(main_def, 4);
+        let b = LocalBindingId::new(main_def, 5);
+
+        let _guard = NodeId::enter_def(main_def);
 
         // Expression node ids
-        let main_root = NodeId(1000);
-        let main_fn = NodeId(1004);
+        let main_root = NodeId::new();
+        let main_fn = NodeId::new();
 
         // id = (x) => x
-        let id_body = NodeId(100);
-        let id_closure = NodeId(101);
-        let assign_id = NodeId(1110);
-        let pat_id = NodeId(1100);
+        let id_body = NodeId::new();
+        let id_closure = NodeId::new();
+        let assign_id = NodeId::new();
+        let pat_id = NodeId::new();
 
         // a = id(1u32)
-        let call_u32 = NodeId(1001);
-        let callee_u32 = NodeId(1002);
-        let arg_u32 = NodeId(1003);
-        let assign_a = NodeId(1111);
-        let pat_a = NodeId(1101);
+        let call_u32 = NodeId::new();
+        let callee_u32 = NodeId::new();
+        let arg_u32 = NodeId::new();
+        let assign_a = NodeId::new();
+        let pat_a = NodeId::new();
 
         // b = id(true)
-        let call_bool = NodeId(1011);
-        let callee_bool = NodeId(1012);
-        let arg_bool = NodeId(1013);
-        let assign_b = NodeId(1112);
-        let pat_b = NodeId(1102);
+        let call_bool = NodeId::new();
+        let callee_bool = NodeId::new();
+        let arg_bool = NodeId::new();
+        let assign_b = NodeId::new();
+        let pat_b = NodeId::new();
 
-        // Build binding records.
-        let mut binding_records: HashMap<BindingId, BindingRecord> = HashMap::new();
+        // Build binding records - only top-level definitions go here now.
+        let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
 
         // main is a top-level function binding.
         let mut main_rec = BindingRecord::new(BindingKind::Function { params: vec![] });
         main_rec.body_expr = Some(main_fn);
-        binding_records.insert(main, main_rec);
-
-        // id is a local value binding inside main.
-        let mut id_rec = BindingRecord::new(BindingKind::Function { params: vec![x] });
-        id_rec.parent = Some(main);
-        id_rec.body_expr = Some(id_closure);
-        binding_records.insert(id, id_rec);
-
-        // x is a parameter binding for the closure; nest it under id.
-        let mut x_rec = BindingRecord::new(BindingKind::Value);
-        x_rec.parent = Some(id);
-        binding_records.insert(x, x_rec);
-
-        // locals a and b are also nested under main.
-        let mut a_rec = BindingRecord::new(BindingKind::Value);
-        a_rec.parent = Some(main);
-        binding_records.insert(a, a_rec);
-
-        let mut b_rec = BindingRecord::new(BindingKind::Value);
-        b_rec.parent = Some(main);
-        binding_records.insert(b, b_rec);
+        binding_records.insert(main_def, main_rec);
 
         // Build expression kinds.
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
 
         // Closure body: just returns the param.
-        kinds.insert(id_body, ExprKind::BindingRef(x));
+        kinds.insert(id_body, ExprKind::LocalRef(x));
 
         // Closure expression itself.
         kinds.insert(
@@ -1847,7 +1897,7 @@ mod tests {
         );
 
         // a = id(1u32)
-        kinds.insert(callee_u32, ExprKind::BindingRef(id));
+        kinds.insert(callee_u32, ExprKind::LocalRef(id));
         kinds.insert(arg_u32, ExprKind::LiteralIntSized(Ty::u32()));
         kinds.insert(
             call_u32,
@@ -1866,7 +1916,7 @@ mod tests {
         );
 
         // b = id(true)
-        kinds.insert(callee_bool, ExprKind::BindingRef(id));
+        kinds.insert(callee_bool, ExprKind::LocalRef(id));
         kinds.insert(arg_bool, ExprKind::LiteralBool(true));
         kinds.insert(
             call_bool,
@@ -1931,7 +1981,7 @@ mod tests {
         // Solve the top-level group containing only `main`. The local binding `id`
         // must be solved and generalized before its uses in later statements.
         let group = BindingGroup {
-            bindings: vec![main],
+            bindings: vec![main_def],
         };
 
         let mut subst = Subst::new();
@@ -1947,7 +1997,7 @@ mod tests {
         let residuals = solve_bindings(
             &module,
             &mut root,
-            &group.bindings,
+            &[main_def],
             &mut ctx,
             &env,
             &global_env,
@@ -1975,14 +2025,16 @@ mod tests {
         // extern malloc(len: uint) -> rawptr[u8]
         // fn main() { malloc(10) }
 
-        let malloc = BindingId(10);
-        let main = BindingId(11);
-        let malloc_arg = BindingId(12);
+        let malloc_def = DefId::new(FileId(0), 0);
+        let main_def = DefId::new(FileId(0), 1);
+        let malloc_arg = LocalBindingId::new(malloc_def, 12); // local param
 
-        let main_fn = NodeId(400);
-        let main_root = NodeId(500);
-        let malloc_callee = NodeId(501);
-        let len_arg = NodeId(502);
+        let _guard = NodeId::enter_def(main_def);
+
+        let main_fn = NodeId::new();
+        let main_root = NodeId::new();
+        let malloc_callee = NodeId::new();
+        let len_arg = NodeId::new();
 
         let malloc_scheme = TyScheme {
             vars: vec![],
@@ -2008,26 +2060,26 @@ mod tests {
             fields: vec![],
         };
 
-        // Binding records
-        let mut binding_records: HashMap<BindingId, BindingRecord> = HashMap::new();
+        // Binding records - only top-level definitions
+        let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
 
         // malloc is a value binding with an annotated scheme.
         let mut malloc_rec = BindingRecord::new(BindingKind::Function {
             params: vec![malloc_arg],
         });
         malloc_rec.scheme = Some(malloc_scheme.clone());
-        binding_records.insert(malloc, malloc_rec);
+        binding_records.insert(malloc_def, malloc_rec);
 
         // main is a top-level function binding.
         let mut main_rec = BindingRecord::new(BindingKind::Function { params: vec![] });
         main_rec.body_expr = Some(main_fn);
-        binding_records.insert(main, main_rec);
+        binding_records.insert(main_def, main_rec);
 
         // Expressions
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
 
         // fn main() { malloc(10) } where 10 is an unsized int literal that must be uint.
-        kinds.insert(malloc_callee, ExprKind::BindingRef(malloc));
+        kinds.insert(malloc_callee, ExprKind::DefRef(malloc_def));
         kinds.insert(len_arg, ExprKind::LiteralInt);
         kinds.insert(
             main_root,
@@ -2046,7 +2098,7 @@ mod tests {
 
         let module = make_multi_binding_module(binding_records, kinds);
         let groups = vec![BindingGroup {
-            bindings: vec![malloc, main],
+            bindings: vec![malloc_def, main_def],
         }];
 
         let mut global_env = GlobalEnv::new();
@@ -2057,7 +2109,7 @@ mod tests {
 
         let ncx = NameContext::new();
         let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
-        ctx.binding_schemes.insert(malloc, malloc_scheme);
+        ctx.binding_schemes.insert(malloc_def.into(), malloc_scheme);
 
         let result = solve_groups(&module, groups, &mut ctx, &global_env, None);
         assert!(
@@ -2077,30 +2129,29 @@ mod tests {
         // Here `10` is an unsized int literal with no contextual type.
         // We expect it to be resolved via defaulting from the `core::Int` trait.
 
-        // Binding ids
-        let main = BindingId(1);
-        let x = BindingId(2);
+        // Top-level def id for main
+        let main_def = DefId::new(FileId(0), 0);
+
+        // Local binding id for x
+        let x = LocalBindingId::new(main_def, 2);
+
+        let _guard = NodeId::enter_def(main_def);
 
         // Expression node ids
-        let main_fn = NodeId(100);
-        let main_root = NodeId(101);
-        let assign_x = NodeId(102);
-        let pat_x = NodeId(103);
-        let lit_10 = NodeId(104);
-        let var_x = NodeId(105);
+        let main_fn = NodeId::new();
+        let main_root = NodeId::new();
+        let assign_x = NodeId::new();
+        let pat_x = NodeId::new();
+        let lit_10 = NodeId::new();
+        let var_x = NodeId::new();
 
-        // Build binding records.
-        let mut binding_records: HashMap<BindingId, BindingRecord> = HashMap::new();
+        // Build binding records - only top-level definitions.
+        let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
 
         // main is a top-level function binding.
         let mut main_rec = BindingRecord::new(BindingKind::Function { params: vec![] });
         main_rec.body_expr = Some(main_fn);
-        binding_records.insert(main, main_rec);
-
-        // x is a local value binding inside main.
-        let mut x_rec = BindingRecord::new(BindingKind::Value);
-        x_rec.parent = Some(main);
-        binding_records.insert(x, x_rec);
+        binding_records.insert(main_def, main_rec);
 
         // Build expression kinds.
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
@@ -2117,7 +2168,7 @@ mod tests {
         );
 
         // final expression is `x`
-        kinds.insert(var_x, ExprKind::BindingRef(x));
+        kinds.insert(var_x, ExprKind::LocalRef(x));
 
         // Sequence the assignment and final value.
         kinds.insert(
@@ -2179,7 +2230,7 @@ mod tests {
         // Solve only the top-level group containing `main`. Local bindings are
         // solved via binding nodes under `main`.
         let groups = vec![BindingGroup {
-            bindings: vec![main],
+            bindings: vec![main_def],
         }];
 
         let ncx = NameContext::new();

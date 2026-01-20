@@ -5,15 +5,17 @@ use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::binding_groups::BindingId;
 use crate::constraint_tree::SkolemizedAnnotation;
 use crate::constraints::{ClassPredicate, Constraint, Predicate};
 use crate::env::GlobalEnv;
 use crate::info::TypeSystemInfo;
-use crate::types::{SchemaVarAllocator, Subst, Substitutable, TyScheme};
+use crate::types::{Subst, Substitutable, TyScheme};
 use ray_shared::collections::namecontext::NameContext;
-use ray_shared::ty::{SKOLEM_PREFIX, Ty, TyVar};
-use ray_shared::{node_id::NodeId, pathlib::Path};
+use ray_shared::ty::{SKOLEM_PREFIX, SchemaVarAllocator, Ty, TyVar};
+use ray_shared::{
+    binding_target::BindingTarget, def::DefId, local_binding::LocalBindingId, node_id::NodeId,
+    pathlib::Path,
+};
 
 /// Minimal expression and pattern kinds used for v2 constraint generation.
 ///
@@ -24,22 +26,24 @@ pub enum Pattern {
     /// Wildcard `_`.
     Wild,
     /// Plain binding pattern `x`.
-    Binding(BindingId),
+    Binding(LocalBindingId),
     /// `some(x)` pattern for nilable types (used by pattern-if and
     /// pattern-while, see the spec's "Pattern-if" and "Pattern-while").
-    Some(BindingId),
+    Some(LocalBindingId),
 }
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
-    /// A reference to a binding.
-    BindingRef(BindingId),
+    /// A reference to a local binding (parameter, let-binding, etc.).
+    LocalRef(LocalBindingId),
+    /// A reference to a top-level definition.
+    DefRef(DefId),
     /// A scoped access `T::member`.
     ///
     /// Note: any type arguments in `T[...]::member` belong to the left-hand
     /// side type `T[...]`, not to the member itself.
     ScopedAccess {
-        binding: BindingId,
+        def_id: DefId,
         member_name: String,
         lhs_ty: Ty,
     },
@@ -84,7 +88,7 @@ pub enum ExprKind {
     /// Parameters are represented as bindings in `params`, and `body` is
     /// the expression identifier for the function body.
     Closure {
-        params: Vec<BindingId>,
+        params: Vec<LocalBindingId>,
         body: NodeId,
     },
     /// `some(e)` for nilable literals (Section "Nilable literals").
@@ -95,7 +99,7 @@ pub enum ExprKind {
     /// to declared functions and always carry binding identifiers for their
     /// parameters.
     Function {
-        params: Vec<BindingId>,
+        params: Vec<LocalBindingId>,
         body: NodeId,
     },
     /// If expression `if cond { then_expr } else { else_expr }`.
@@ -234,7 +238,7 @@ pub enum ExprKind {
 #[derive(Clone, Debug)]
 pub enum LhsPattern {
     /// Simple variable pattern `x`, which binds or reuses a single name.
-    Binding(BindingId),
+    Binding(LocalBindingId),
     /// Tuple / sequence pattern `(p1, ..., pn)` or `p1, ..., pn`, matching
     /// a tuple scrutinee `tuple[T1, ..., Tn]` and recursively typing the
     /// subpatterns against the component types.
@@ -259,14 +263,14 @@ pub enum AssignLhs {
     Pattern(LhsPattern),
     /// Deref assignment `*p = rhs` where `p` is a simple variable.
     /// This corresponds to the deref-assignment rule in Section A.8.
-    Deref(BindingId),
+    Deref(LocalBindingId),
     /// Field assignment `recv.field = rhs` where `recv` is a simple variable.
     /// This corresponds to the field-assignment rule in Section A.8.
-    Field { recv: BindingId, field: String },
+    Field { recv: LocalBindingId, field: String },
     /// Index assignment `container[index] = rhs`, which uses the
     /// `Index[Container, Elem, Index]` trait as described in
     /// docs/type-system.md A.8.
-    Index { container: BindingId, index: NodeId },
+    Index { container: LocalBindingId, index: NodeId },
     /// Error placeholder produced from a `Missing` pattern on the left-hand
     /// side. This allows type checking to continue for the right-hand side
     /// and surrounding expression without introducing bindings or additional
@@ -283,18 +287,18 @@ pub struct SolverContext<'a> {
     /// Inferred or expected mono types for expressions.
     pub expr_types: HashMap<NodeId, Ty>,
 
-    /// Schemes associated with named bindings (e.g. top-level items, locals).
-    pub binding_schemes: HashMap<BindingId, TyScheme>,
+    /// Schemes associated with bindings (both local and top-level definitions).
+    pub binding_schemes: HashMap<BindingTarget, TyScheme>,
 
     /// Bindings that had an explicit (frontend-provided) annotation.
     ///
     /// Note: monomorphic annotations have empty `TyScheme.vars` and
     /// `TyScheme.qualifiers`, so we track "explicitness" separately to avoid
     /// incorrectly treating them as inferred and generalizing them.
-    pub explicitly_annotated_bindings: HashSet<BindingId>,
+    pub explicitly_annotated: HashSet<BindingTarget>,
 
-    /// Skolemized schemes associated with named bindings (e.g. top-level items, locals).
-    pub skolemized_schemes: HashMap<BindingId, SkolemizedAnnotation>,
+    /// Skolemized schemes associated with bindings.
+    pub skolemized_schemes: HashMap<BindingTarget, SkolemizedAnnotation>,
 
     /// Counter used to generate fresh meta type variables for expressions.
     next_meta_id: u32,
@@ -315,11 +319,11 @@ pub struct SolverContext<'a> {
     /// annotated bindings.
     next_skolem_id: u32,
     /// Per-binding list of skolems currently in scope.
-    binding_skolems: HashMap<BindingId, Vec<TyVar>>,
-    /// Metadata for each skolem variable (binding origin + info).
+    binding_skolems: HashMap<BindingTarget, Vec<TyVar>>,
+    /// Metadata for each skolem variable.
     skolem_metadata: HashMap<TyVar, SkolemMetadata>,
     /// Predicates required by annotated bindings (after skolemization).
-    binding_required_preds: HashMap<BindingId, Vec<Predicate>>,
+    binding_required_preds: HashMap<BindingTarget, Vec<Predicate>>,
     /// Shared allocator for schema variables.
     schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
     /// Name context containing resolved FQNs
@@ -358,7 +362,7 @@ impl<'a> SolverContext<'a> {
         SolverContext {
             expr_types: HashMap::new(),
             binding_schemes: HashMap::new(),
-            explicitly_annotated_bindings: HashSet::new(),
+            explicitly_annotated: HashSet::new(),
             skolemized_schemes: HashMap::new(),
             next_meta_id: 0,
             reusable_metas: vec![],
@@ -376,8 +380,8 @@ impl<'a> SolverContext<'a> {
         }
     }
 
-    pub fn is_explicitly_annotated(&self, binding: &BindingId) -> bool {
-        self.explicitly_annotated_bindings.contains(binding)
+    pub fn is_explicitly_annotated(&self, target: impl Into<BindingTarget>) -> bool {
+        self.explicitly_annotated.contains(&target.into())
     }
 
     pub fn record_predicate_failure(
@@ -392,8 +396,10 @@ impl<'a> SolverContext<'a> {
         {
             return;
         }
-        self.predicate_failures
-            .push(PredicateFailure { wanted: wanted.clone(), instance_failure });
+        self.predicate_failures.push(PredicateFailure {
+            wanted: wanted.clone(),
+            instance_failure,
+        });
     }
 
     /// Apply a type substitution to all tracked types and schemes.
@@ -456,13 +462,14 @@ impl<'a> SolverContext<'a> {
     /// mono scheme if it has not been seen before. This mirrors the common
     /// "if scheme exists else fresh" pattern used when relating bindings to
     /// their body expressions.
-    pub fn binding_ty_or_fresh(&mut self, binding: BindingId) -> Ty {
-        if let Some(scheme) = self.binding_schemes.get(&binding) {
+    pub fn binding_ty_or_fresh(&mut self, target: impl Into<BindingTarget>) -> Ty {
+        let target = target.into();
+        if let Some(scheme) = self.binding_schemes.get(&target) {
             scheme.ty.clone()
         } else {
             let ty = self.fresh_meta();
             self.binding_schemes
-                .insert(binding, TyScheme::from_mono(ty.clone()));
+                .insert(target, TyScheme::from_mono(ty.clone()));
             ty
         }
     }
@@ -501,22 +508,23 @@ impl<'a> SolverContext<'a> {
     /// record metadata for later diagnostics.
     pub fn fresh_skolem_var(
         &mut self,
-        binding: BindingId,
+        target: impl Into<BindingTarget>,
         schema_var: TyVar,
         info: &TypeSystemInfo,
     ) -> TyVar {
+        let target = target.into();
         let id = self.next_skolem_id;
         self.next_skolem_id += 1;
         let name = format!("{}{}", SKOLEM_PREFIX, id);
         let var = TyVar::new(name);
         self.binding_skolems
-            .entry(binding)
+            .entry(target)
             .or_default()
             .push(var.clone());
         self.skolem_metadata.insert(
             var.clone(),
             SkolemMetadata {
-                binding,
+                target,
                 schema_var,
                 info: info.clone(),
             },
@@ -531,9 +539,10 @@ impl<'a> SolverContext<'a> {
 
     /// Build a substitution that maps the skolems introduced for a binding
     /// back to the original schema variables from its annotation scheme.
-    pub fn skolem_to_schema_subst_for_binding(&self, binding: BindingId) -> Subst {
+    pub fn skolem_to_schema_subst(&self, target: impl Into<BindingTarget>) -> Subst {
+        let target = target.into();
         let mut subst = Subst::new();
-        if let Some(vars) = self.binding_skolems.get(&binding) {
+        if let Some(vars) = self.binding_skolems.get(&target) {
             for skolem in vars {
                 if let Some(meta) = self.skolem_metadata.get(skolem) {
                     subst.insert(skolem.clone(), Ty::Var(meta.schema_var.clone()));
@@ -544,8 +553,9 @@ impl<'a> SolverContext<'a> {
     }
 
     /// Remove skolem metadata for a binding once it is no longer needed.
-    pub fn clear_skolems_for_binding(&mut self, binding: BindingId) {
-        if let Some(vars) = self.binding_skolems.remove(&binding) {
+    pub fn clear_skolems(&mut self, target: impl Into<BindingTarget>) {
+        let target = target.into();
+        if let Some(vars) = self.binding_skolems.remove(&target) {
             for var in vars {
                 self.skolem_metadata.remove(&var);
             }
@@ -553,17 +563,17 @@ impl<'a> SolverContext<'a> {
     }
 
     /// Record that a binding's annotation required a predicate.
-    pub fn record_required_predicate(&mut self, binding: BindingId, predicate: Predicate) {
+    pub fn record_required_predicate(&mut self, target: impl Into<BindingTarget>, predicate: Predicate) {
         self.binding_required_preds
-            .entry(binding)
+            .entry(target.into())
             .or_default()
             .push(predicate);
     }
 
     /// Access recorded required predicates for a binding.
-    pub fn required_predicates(&self, binding: BindingId) -> Option<&[Predicate]> {
+    pub fn required_predicates(&self, target: impl Into<BindingTarget>) -> Option<&[Predicate]> {
         self.binding_required_preds
-            .get(&binding)
+            .get(&target.into())
             .map(|v| v.as_slice())
     }
 
@@ -614,7 +624,7 @@ pub struct ImplFailure {
 /// or skolem escapes are reported.
 #[derive(Clone, Debug)]
 pub struct SkolemMetadata {
-    pub binding: BindingId,
+    pub target: BindingTarget,
     pub schema_var: TyVar,
     pub info: TypeSystemInfo,
 }

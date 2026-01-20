@@ -1,4 +1,5 @@
 use ray_shared::{
+    file_id::FileId,
     pathlib::FilePath,
     span::{Pos, Span, parsed::Parsed},
     ty::Ty,
@@ -83,7 +84,7 @@ pub fn collect_from_source(source: &str) -> Vec<SemanticToken> {
     options.module_path = ray_shared::pathlib::Path::from("semantic_tokens");
 
     let ParseDiagnostics { value, .. } =
-        Parser::parse_from_src_with_diagnostics(source, options, &mut srcmap);
+        Parser::parse_from_src_with_diagnostics(FileId(0), source, options, &mut srcmap);
 
     let Some(file) = value else {
         return Vec::new();

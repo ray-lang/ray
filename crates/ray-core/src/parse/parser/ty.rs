@@ -419,6 +419,7 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
+    use ray_shared::file_id::FileId;
     use ray_shared::node_id::NodeId;
     use ray_shared::pathlib::{FilePath, Path};
     use ray_shared::span::parsed::Parsed;
@@ -445,7 +446,7 @@ mod tests {
     {
         let options = test_options();
         let mut srcmap = SourceMap::new();
-        let mut parser = Parser::new(src, options, &mut srcmap);
+        let mut parser = Parser::new(FileId(0), src, options, &mut srcmap);
         let result = f(&mut parser);
         (result, srcmap)
     }

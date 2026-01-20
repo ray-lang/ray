@@ -1,13 +1,13 @@
 use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::Path, ty::Ty};
 use ray_typing::{
-    ModuleInput, PatternKind, PatternRecord,
+    TypeCheckInput, PatternKind, PatternRecord,
     context::{AssignLhs, ExprKind},
     tyctx::{CallResolution, TyCtx},
     types::{Subst, TyScheme},
     unify::mgu,
 };
 
-pub fn run_call_resolution_pass(module: &ModuleInput, tcx: &mut TyCtx, ncx: &NameContext) {
+pub fn run_call_resolution_pass(module: &TypeCheckInput, tcx: &mut TyCtx, ncx: &NameContext) {
     for (expr_id, record) in module.expr_records.iter() {
         match &record.kind {
             ExprKind::BinaryOp {
@@ -90,7 +90,7 @@ fn resolve_op(operator_id: NodeId, trait_fqn: &Path, method_fqn: &Path, tcx: &mu
     );
 }
 
-fn resolve_call(callee_id: NodeId, module: &ModuleInput, tcx: &mut TyCtx) {
+fn resolve_call(callee_id: NodeId, module: &TypeCheckInput, tcx: &mut TyCtx) {
     if tcx.call_resolution(callee_id).is_some() {
         return;
     }
@@ -216,7 +216,7 @@ fn resolve_index_set(
     container_binding: ray_typing::binding_groups::BindingId,
     index_id: NodeId,
     rhs_id: NodeId,
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     tcx: &mut TyCtx,
     ncx: &NameContext,
 ) {
@@ -294,7 +294,7 @@ fn resolve_index_set(
 
 fn resolve_index_pattern_chain(
     pattern_id: NodeId,
-    module: &ModuleInput,
+    module: &TypeCheckInput,
     tcx: &mut TyCtx,
     ncx: &NameContext,
 ) {

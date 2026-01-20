@@ -5,7 +5,7 @@ use std::rc::Rc;
 use ray_shared::{
     node_id::NodeId,
     pathlib::Path,
-    ty::{Ty, TyVar},
+    ty::{SchemaVarAllocator, Ty, TyVar},
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,8 +13,8 @@ use crate::{
     constraints::Predicate,
     env::GlobalEnv,
     types::{
-        ImplField, ImplTy, NominalKind, SchemaVarAllocator, StructTy, Subst, Substitutable,
-        TraitField, TraitTy, TyScheme,
+        ImplField, ImplTy, NominalKind, StructTy, Subst, Substitutable, TraitField, TraitTy,
+        TyScheme,
     },
     unify::mgu,
 };
@@ -260,7 +260,7 @@ impl TyCtx {
         if let Some(ty) = self.get_ty(id) {
             return TyScheme::from_mono(ty.clone());
         }
-        panic!("could not find type of node {id:#x}");
+        panic!("could not find type of node {id}");
     }
 
     pub fn original_ty_of(&self, id: NodeId) -> Option<&Ty> {

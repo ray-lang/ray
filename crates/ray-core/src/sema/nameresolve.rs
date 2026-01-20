@@ -2,7 +2,11 @@ use std::{collections::HashMap, ops::DerefMut};
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
+    def::DefId,
+    local_binding::LocalBindingId,
+    node_id::NodeId,
     pathlib::Path,
+    resolution::Resolution,
     span::{Sourced, parsed::Parsed},
     ty::Ty,
 };
@@ -21,9 +25,17 @@ use crate::{
 
 pub struct ResolveContext<'a> {
     ncx: &'a mut NameContext,
-    srcmap: &'a mut SourceMap,
+    srcmap: &'a SourceMap,
     scope_map: &'a HashMap<Path, Vec<Scope>>,
     scope_stack: Vec<Path>,
+    /// Current definition being processed (for LocalBindingId.owner).
+    current_def: Option<DefId>,
+    /// Counter for local bindings within current def.
+    local_counter: u32,
+    /// Local bindings in scope: name -> LocalBindingId.
+    local_scopes: Vec<HashMap<String, LocalBindingId>>,
+    /// Output: NodeId -> Resolution mappings (produced as side-effect).
+    resolutions: HashMap<NodeId, Resolution>,
 }
 
 impl<'a> ResolveContext<'a> {
@@ -37,7 +49,69 @@ impl<'a> ResolveContext<'a> {
             srcmap,
             scope_map,
             scope_stack: Vec::new(),
+            current_def: None,
+            local_counter: 0,
+            local_scopes: vec![HashMap::new()],
+            resolutions: HashMap::new(),
         }
+    }
+
+    /// Enter a new definition scope (function, method).
+    pub fn enter_def(&mut self, def_id: DefId) {
+        self.current_def = Some(def_id);
+        self.local_counter = 0;
+        self.local_scopes.push(HashMap::new());
+    }
+
+    /// Exit a definition scope.
+    pub fn exit_def(&mut self) {
+        self.current_def = None;
+        self.local_counter = 0;
+        self.local_scopes.pop();
+    }
+
+    /// Allocate a new LocalBindingId for a binding definition.
+    fn alloc_local(&mut self) -> Option<LocalBindingId> {
+        let owner = self.current_def?;
+        let id = LocalBindingId::new(owner, self.local_counter);
+        self.local_counter += 1;
+        Some(id)
+    }
+
+    /// Register a local binding by name and record its resolution.
+    pub fn bind_local(&mut self, name: &str, node_id: NodeId) -> Option<LocalBindingId> {
+        let local_id = self.alloc_local()?;
+        if let Some(scope) = self.local_scopes.last_mut() {
+            scope.insert(name.to_string(), local_id);
+        }
+        self.resolutions
+            .insert(node_id, Resolution::Local(local_id));
+        Some(local_id)
+    }
+
+    /// Look up a local binding by name.
+    pub fn lookup_local(&self, name: &str) -> Option<LocalBindingId> {
+        for scope in self.local_scopes.iter().rev() {
+            if let Some(&local_id) = scope.get(name) {
+                return Some(local_id);
+            }
+        }
+        None
+    }
+
+    /// Record a resolution for a name reference node.
+    pub fn record_resolution(&mut self, node_id: NodeId, resolution: Resolution) {
+        self.resolutions.insert(node_id, resolution);
+    }
+
+    /// Get the resolution table.
+    pub fn resolutions(&self) -> &HashMap<NodeId, Resolution> {
+        &self.resolutions
+    }
+
+    /// Consume and return the resolution table.
+    pub fn into_resolutions(self) -> HashMap<NodeId, Resolution> {
+        self.resolutions
     }
 
     pub fn add_path(&mut self, path: &Path) {
@@ -73,15 +147,25 @@ impl<'a> ResolveContext<'a> {
             .unwrap_or_else(|| fallback.clone())
     }
 
-    pub fn resolve_func_body(&mut self, func: &mut Func) -> RayResult<()> {
+    pub fn resolve_func_body(&mut self, def_id: DefId, func: &mut Func) -> RayResult<()> {
         if let Some(body) = &mut func.body {
+            self.enter_def(def_id);
             self.push_scope_path(func.sig.path.value.with_names_only());
+
             for param in &mut func.sig.params {
+                // Get the name string before mutating (FnParam.name() returns &Path)
+                let name_str = param.value.name().name();
+                // Mutate the path as before
                 self.bind_local_name(&func.sig.path, param.name_mut());
+                // Register the local binding with its NodeId
+                if let Some(name) = name_str {
+                    self.bind_local(&name, param.id);
+                }
             }
 
             body.resolve_names(self)?;
             self.pop_scope_path();
+            self.exit_def();
         }
         Ok(())
     }
@@ -175,7 +259,34 @@ impl NameResolve for Node<Decl> {
 impl NameResolve for Node<Expr> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
-        Sourced(&mut self.value, &src).resolve_names(ctx)
+        let node_id = self.id;
+
+        // For Name and Path expressions, check for local bindings first
+        match &mut self.value {
+            Expr::Name(name) => {
+                // Check if this is a local binding first
+                let name_str = name.path.name().unwrap_or_default();
+                if let Some(local_id) = ctx.lookup_local(&name_str) {
+                    ctx.record_resolution(node_id, Resolution::Local(local_id));
+                    return Ok(());
+                }
+                // Otherwise resolve as a definition (defer DefTarget recording for now)
+                Sourced(name, &src).resolve_names(ctx)
+            }
+            Expr::Path(path) => {
+                // Check if this is a local binding first (single-segment paths only)
+                if path.len() == 1 {
+                    let name_str = path.name().unwrap_or_default();
+                    if let Some(local_id) = ctx.lookup_local(&name_str) {
+                        ctx.record_resolution(node_id, Resolution::Local(local_id));
+                        return Ok(());
+                    }
+                }
+                // Otherwise resolve as a definition (defer DefTarget recording for now)
+                Sourced(path, &src).resolve_names(ctx)
+            }
+            _ => Sourced(&mut self.value, &src).resolve_names(ctx),
+        }
     }
 }
 
@@ -232,14 +343,16 @@ impl NameResolve for Module<(), Decl> {
 
         // resolve names the declarations again but only process the bodies of functions
         for decl in self.decls.iter_mut() {
+            let decl_def_id = decl.id.owner;
             match decl.deref_mut() {
                 Decl::Func(func) => {
-                    ctx.resolve_func_body(func)?;
+                    ctx.resolve_func_body(decl_def_id, func)?;
                 }
                 Decl::Impl(impl_) => {
                     if let Some(funcs) = &mut impl_.funcs {
-                        for func in funcs {
-                            ctx.resolve_func_body(func)?;
+                        for func_node in funcs {
+                            let func_def_id = func_node.id.owner;
+                            ctx.resolve_func_body(func_def_id, &mut func_node.value)?;
                         }
                     }
                 }
@@ -386,11 +499,16 @@ impl NameResolve for Sourced<'_, Assign> {
         for node in assign.lhs.paths_mut() {
             let (path, is_lvalue) = node.value;
             let base_scope = ctx.current_scope_or(&src.path.with_names_only());
+            let name_str = path.name();
             let full_path = base_scope.append_path(path.clone());
             *path = full_path.clone();
 
             if !is_lvalue {
                 ctx.add_path(&full_path);
+                // Register the local binding with its NodeId
+                if let Some(n) = name_str {
+                    ctx.bind_local(&n, node.id);
+                }
             }
         }
 
@@ -439,12 +557,21 @@ impl NameResolve for Sourced<'_, Closure> {
             .with_names_only()
             .append_path(Path::from(scope_suffix));
         ctx.push_scope_path(closure_scope.clone());
+        // Push a new local scope for the closure's parameters
+        ctx.local_scopes.push(HashMap::new());
 
         for arg in closure.args.items.iter_mut() {
             let arg_src = ctx.srcmap.get(arg);
+            let arg_node_id = arg.id;
             match &mut arg.value {
                 Expr::Name(name) => {
+                    // Get name string before mutating
+                    let name_str = name.path.name();
                     ctx.bind_local_name(&closure_scope, &mut name.path);
+                    // Register the local binding with its NodeId
+                    if let Some(n) = name_str {
+                        ctx.bind_local(&n, arg_node_id);
+                    }
                 }
                 _ => {
                     return Err(RayError {
@@ -461,6 +588,8 @@ impl NameResolve for Sourced<'_, Closure> {
         }
 
         closure.body.resolve_names(ctx)?;
+        // Pop the local scope
+        ctx.local_scopes.pop();
         ctx.pop_scope_path();
         Ok(())
     }
@@ -519,14 +648,20 @@ impl NameResolve for Sourced<'_, For> {
         let for_scope = base_scope.append_path(Path::from(scope_suffix));
 
         ctx.push_scope_path(for_scope.clone());
+        ctx.local_scopes.push(HashMap::new());
         for node in self.pat.paths_mut() {
             let (path, is_lvalue) = node.value;
             if is_lvalue {
                 continue;
             }
+            let name_str = path.name();
             ctx.bind_local_name(&for_scope, path);
+            if let Some(n) = name_str {
+                ctx.bind_local(&n, node.id);
+            }
         }
         self.body.resolve_names(ctx)?;
+        ctx.local_scopes.pop();
         ctx.pop_scope_path();
         Ok(())
     }

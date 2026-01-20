@@ -770,12 +770,12 @@ fn solve_resolve_call(
     log::debug!("[solve_resolve_call] {}", call);
     match &call.kind {
         CallKind::Scoped {
-            binding,
+            def_id,
             receiver_subst,
         } => {
-            // Scoped calls already have a resolved binding; do not re-resolve by name.
-            if !ctx.binding_schemes.contains_key(binding) {
-                log::debug!("[solve_resolve_call] cannot find binding {:?}", binding);
+            // Scoped calls already have a resolved def; do not re-resolve by name.
+            if !ctx.binding_schemes.contains_key(&(*def_id).into()) {
+                log::debug!("[solve_resolve_call] cannot find def {:?}", def_id);
                 return SolveOutcome::Unsolved;
             };
 

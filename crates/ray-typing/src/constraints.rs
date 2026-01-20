@@ -3,11 +3,10 @@
 
 use std::collections::HashSet;
 
-use ray_shared::ty::{Ty, TyVar};
+use ray_shared::{def::DefId, local_binding::LocalBindingId, ty::{Ty, TyVar}};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    binding_groups::BindingId,
     info::TypeSystemInfo,
     types::{Subst, Substitutable},
 };
@@ -104,12 +103,23 @@ impl EqConstraint {
     }
 }
 
-// Equality constraints t1 == t2.
+// Instantiate constraint: instantiate a definition's or binding's scheme.
+
+/// Target of an instantiation constraint - either a top-level definition
+/// or a local binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstantiateTarget {
+    /// A top-level definition (functions, structs, etc.)
+    Def(DefId),
+    /// A local binding (parameters, let-bindings, etc.)
+    Local(LocalBindingId),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstantiateConstraint {
-    pub binding: BindingId,
+    pub target: InstantiateTarget,
     pub ty: Ty,
-    /// Optional pre-substitution to apply to the binding's scheme at this use
+    /// Optional pre-substitution to apply to the def's scheme at this use
     /// site before instantiation.
     ///
     /// This is used for associated member references like `T::member` where
@@ -124,7 +134,7 @@ pub enum CallKind {
     Instance,
     /// `T::method(args...)` or `T[...]::method(args...)`
     Scoped {
-        binding: BindingId,
+        def_id: DefId,
         receiver_subst: Option<Subst>,
     },
 }
@@ -164,7 +174,7 @@ impl ResolveCallConstraint {
 
     pub fn new_scoped(
         subject_ty: Ty,
-        binding: BindingId,
+        def_id: DefId,
         expected_fn_ty: Ty,
         method_name: impl Into<String>,
         receiver_subst: Option<Subst>,
@@ -172,7 +182,7 @@ impl ResolveCallConstraint {
         let method_name = method_name.into();
         ResolveCallConstraint {
             kind: CallKind::Scoped {
-                binding,
+                def_id,
                 receiver_subst,
             },
             subject_ty,
@@ -197,17 +207,25 @@ impl ResolveCallConstraint {
 }
 
 impl InstantiateConstraint {
-    pub fn new(binding: BindingId, ty: Ty) -> Self {
+    pub fn new_def(def_id: DefId, ty: Ty) -> Self {
         InstantiateConstraint {
-            binding,
+            target: InstantiateTarget::Def(def_id),
             ty,
             receiver_subst: None,
         }
     }
 
-    pub fn new_with_receiver_subst(binding: BindingId, ty: Ty, receiver_subst: Subst) -> Self {
+    pub fn new_local(local_id: LocalBindingId, ty: Ty) -> Self {
         InstantiateConstraint {
-            binding,
+            target: InstantiateTarget::Local(local_id),
+            ty,
+            receiver_subst: None,
+        }
+    }
+
+    pub fn new_def_with_receiver_subst(def_id: DefId, ty: Ty, receiver_subst: Subst) -> Self {
+        InstantiateConstraint {
+            target: InstantiateTarget::Def(def_id),
             ty,
             receiver_subst: Some(receiver_subst),
         }
@@ -311,22 +329,29 @@ impl Constraint {
         }
     }
 
-    pub fn inst(binding: BindingId, ty: Ty, info: TypeSystemInfo) -> Self {
+    pub fn inst(def_id: DefId, ty: Ty, info: TypeSystemInfo) -> Self {
         Constraint {
-            kind: ConstraintKind::Instantiate(InstantiateConstraint::new(binding, ty)),
+            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_def(def_id, ty)),
+            info,
+        }
+    }
+
+    pub fn inst_local(local_id: LocalBindingId, ty: Ty, info: TypeSystemInfo) -> Self {
+        Constraint {
+            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_local(local_id, ty)),
             info,
         }
     }
 
     pub fn inst_with_receiver_subst(
-        binding: BindingId,
+        def_id: DefId,
         ty: Ty,
         receiver_subst: Subst,
         info: TypeSystemInfo,
     ) -> Self {
         Constraint {
-            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_with_receiver_subst(
-                binding,
+            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_def_with_receiver_subst(
+                def_id,
                 ty,
                 receiver_subst,
             )),
@@ -534,11 +559,11 @@ impl std::fmt::Display for InstantiateConstraint {
         if let Some(receiver_subst) = &self.receiver_subst {
             write!(
                 f,
-                "Instantiate({}, {}, receiver_subst = {:#})",
-                self.binding, self.ty, receiver_subst
+                "Instantiate({:?}, {}, receiver_subst = {:#})",
+                self.target, self.ty, receiver_subst
             )
         } else {
-            write!(f, "Instantiate({}, {})", self.binding, self.ty)
+            write!(f, "Instantiate({:?}, {})", self.target, self.ty)
         }
     }
 }
@@ -550,7 +575,7 @@ impl std::fmt::Display for ResolveCallConstraint {
             CallKind::Instance => {
                 format!("Instance")
             }
-            CallKind::Scoped { binding, .. } => format!("Scoped {{ binding: {:?} }}", binding),
+            CallKind::Scoped { def_id, .. } => format!("Scoped {{ def_id: {:?} }}", def_id),
         };
         write!(
             f,

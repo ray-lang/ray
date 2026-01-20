@@ -1,3 +1,4 @@
+pub mod map_vars;
 pub mod parser;
 mod ty;
 mod var;

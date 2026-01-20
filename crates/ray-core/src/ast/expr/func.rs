@@ -2,6 +2,7 @@ use std::ops::{Deref as _, DerefMut as _};
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
+    def::SignatureStatus,
     pathlib::{FilePath, Path},
     span::{Source, Span, parsed::Parsed},
     ty::Ty,
@@ -351,5 +352,9 @@ impl FuncSig {
 
         log::debug!("ty = {}", scheme);
         Ok(scheme)
+    }
+
+    pub fn to_sig_status(&self) -> SignatureStatus {
+        todo!()
     }
 }

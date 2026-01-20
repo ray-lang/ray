@@ -5,6 +5,7 @@ use std::{
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
+    file_id::FileId,
     pathlib::{FilePath, Path, RayPaths},
     span::{Source, Span},
     ty::{Ty, TyVar},
@@ -189,6 +190,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             srcmap,
             tcx,
             ncx,
+            resolutions: _,
         } = match transform::combine(module_path, modules, srcmaps, lib_set, tcx, ncx) {
             Ok(result) => result,
             Err(errs) => {
@@ -314,6 +316,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
 
         let mut srcmap = SourceMap::new();
         let root_file = match Parser::parse_from_src(
+            FileId(0),
             &src,
             ParseOptions {
                 filepath: FilePath::new(),
@@ -390,6 +393,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let diag = if let Some(src) = self.overlays.as_ref().and_then(|o| o.get(input_path)) {
             log::info!("parsing {} (overlay)", input_path);
             Parser::parse_from_src(
+                FileId(0),
                 src,
                 ParseOptions {
                     filepath: input_path.clone(),
@@ -402,6 +406,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         } else {
             log::info!("parsing {}", input_path);
             Parser::parse(
+                FileId(0),
                 ParseOptions {
                     filepath: input_path.clone(),
                     original_filepath: input_path.clone(),

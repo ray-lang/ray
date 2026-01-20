@@ -5,37 +5,12 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::Path,
     span::Source,
-    ty::{SCHEMA_PREFIX, Ty, TyVar},
+    ty::{Ty, TyVar},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::constraints::Predicate;
 use crate::unify::mgu;
-
-/// Shared allocator for schema variables (`?sN`).
-///
-/// Both the frontend lowering context and the solver need to mint fresh
-/// schema variables, so we keep the allocator tiny and share it via `Rc`.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct SchemaVarAllocator {
-    next_id: u32,
-}
-
-impl SchemaVarAllocator {
-    pub fn new() -> Self {
-        SchemaVarAllocator { next_id: 0 }
-    }
-
-    pub fn alloc(&mut self) -> TyVar {
-        let name = format!("{}{}", SCHEMA_PREFIX, self.next_id);
-        self.next_id += 1;
-        TyVar::new(name)
-    }
-
-    pub fn curr_id(&self) -> u32 {
-        self.next_id
-    }
-}
 
 // Global substitution map for type variables.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

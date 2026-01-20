@@ -1,5 +1,7 @@
-use ray_shared::collections::namecontext::NameContext;
-use ray_typing::{ModuleInput, TypeCheckResult, TypecheckOptions, check_module, tyctx::TyCtx};
+use std::collections::HashMap;
+
+use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, resolution::Resolution};
+use ray_typing::{TypeCheckInput, TypeCheckResult, TypecheckOptions, tyctx::TyCtx, typecheck};
 
 use crate::{
     ast::{Decl, Module},
@@ -7,10 +9,11 @@ use crate::{
         binding::{self, BindingPassOutput},
         call_resolution,
         closure::{self, ClosurePassOutput},
+        deps::build_binding_graph,
         extern_bindings,
     },
     sourcemap::SourceMap,
-    typing::lower_module,
+    typing::{build_def_binding_records, collect_def_ids, lower_module},
 };
 
 /// Simple orchestration helper for frontend passes. It runs binding analysis,
@@ -19,18 +22,25 @@ pub struct FrontendPassManager<'a> {
     module: &'a Module<(), Decl>,
     srcmap: &'a SourceMap,
     tcx: &'a mut TyCtx,
+    resolutions: &'a HashMap<NodeId, Resolution>,
     binding_output: Option<BindingPassOutput>,
     closure_output: Option<ClosurePassOutput>,
-    lowered_input: Option<ModuleInput>,
+    lowered_input: Option<TypeCheckInput>,
     typecheck_result: Option<TypeCheckResult>,
 }
 
 impl<'a> FrontendPassManager<'a> {
-    pub fn new(module: &'a Module<(), Decl>, srcmap: &'a SourceMap, tcx: &'a mut TyCtx) -> Self {
+    pub fn new(
+        module: &'a Module<(), Decl>,
+        srcmap: &'a SourceMap,
+        tcx: &'a mut TyCtx,
+        resolutions: &'a HashMap<NodeId, Resolution>,
+    ) -> Self {
         Self {
             module,
             srcmap,
             tcx,
+            resolutions,
             binding_output: None,
             closure_output: None,
             lowered_input: None,
@@ -63,7 +73,7 @@ impl<'a> FrontendPassManager<'a> {
                 .binding_output
                 .as_ref()
                 .expect("binding pass output should exist");
-            let output = closure::run_closure_pass(self.module, self.srcmap, binding_output);
+            let output = closure::run_closure_pass(self.module, binding_output);
             self.closure_output = Some(output);
         }
     }
@@ -82,12 +92,21 @@ impl<'a> FrontendPassManager<'a> {
                 .binding_output
                 .as_ref()
                 .expect("binding pass output should exist");
+
+            // Build DefId-keyed structures for the new typechecker.
+            let all_defs = collect_def_ids(self.module);
+            let def_bindings = build_binding_graph(&all_defs, self.resolutions);
+            let def_binding_records = build_def_binding_records(binding_output);
+
             let schema_allocator = self.tcx.schema_allocator();
             let input = lower_module(
                 self.module,
                 self.srcmap,
                 &self.tcx.global_env,
                 binding_output,
+                self.resolutions,
+                def_bindings,
+                def_binding_records,
                 schema_allocator,
             );
             self.lowered_input = Some(input);
@@ -96,7 +115,7 @@ impl<'a> FrontendPassManager<'a> {
                 .as_ref()
                 .expect("lowered module input should exist");
 
-            let mut result = check_module(input, options, self.tcx, ncx);
+            let mut result = typecheck(input, options, self.tcx, ncx);
             if !input.lowering_errors.is_empty() {
                 let mut errors = input.lowering_errors.clone();
                 errors.extend(result.errors);

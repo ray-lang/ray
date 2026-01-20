@@ -163,11 +163,11 @@ The following components can be preserved with refactoring. See Section 5 (Legac
 
 **Preserve as-is or with minor changes:**
 - **Parser** (`ray-core/src/parse`): Already per-file. Needs stable `NodeId` allocation strategy.
-- **Closure pass** (`ray-core/src/passes/closure.rs`): Already pure, just needs per-file inputs.
 - **Type checker core** (`ray-typing`): The constraint generation, solving, and generalization logic is sound. Needs to accept per-group inputs rather than whole-module inputs.
 
 **Preserve logic, restructure interface:**
-- **Binding pass** (`ray-core/src/passes/binding.rs`): The binding graph construction logic is correct. Needs to work per-file and then merge results.
+- **Closure pass** (`ray-core/src/passes/closure.rs`): Logic is correct but depends on `BindingPassOutput` with `BindingId`. Must be migrated to use resolution table with `DefId`/`LocalBindingId` instead.
+- **Binding pass** (`ray-core/src/passes/binding.rs`): The binding graph construction logic is correct. Most of the pass is eliminated - only dependency edge extraction (`def_deps`) remains.
 - **Typing IR lowering** (`ray-core/src/typing.rs`): Pure transformation that can work per-file.
 
 **Requires significant rework:**
@@ -231,9 +231,9 @@ The boundary between phases is where per-file results are aggregated. A change t
 
 #### Design Invariant
 
-**All syntax path resolution happens in file-keyed name resolution. All semantic queries consume DefIds.**
+**All syntax path resolution happens in file-keyed name resolution. All semantic queries consume DefIds or LocalBindingIds.**
 
-This is the key architectural boundary. The `name_resolutions(FileId)` query (and its dependencies: `resolved_imports`, `module_def_index`) is the only place where string-based path lookup occurs. Once a name is resolved to a `DefId`, all downstream queries work exclusively with DefIds. No query after name resolution ever needs to "look up a name" - it already has the DefId.
+This is the key architectural boundary. The `name_resolutions(FileId)` query (and its dependencies: `resolved_imports`, `module_def_index`) is the only place where string-based path lookup occurs. Once a name is resolved to a `DefId` or `LocalBindingId`, all downstream queries work exclusively with these identifiers. No query after name resolution ever needs to "look up a name" - it already has the identifier.
 
 This means:
 - Context (which module am I in? what's imported?) is confined to name resolution
@@ -367,7 +367,8 @@ A `DefId` identifies a definition that can be referenced from outside its contai
 | Traits | Yes | |
 | Impl blocks | Yes | The impl as a whole gets a DefId |
 | Type aliases | Yes | |
-| Constants (top-level) | Yes | |
+| Associated constants | Yes | Constants inside impl blocks |
+| Top-level assignments | **No** | Locals of FileMain, get `LocalBindingId` |
 | Nested functions | **No** | Closures get `LocalBindingId`, not DefId |
 | Parameters | **No** | Get `LocalBindingId` |
 | Let-bindings | **No** | Get `LocalBindingId` |
@@ -381,7 +382,7 @@ A `DefId` identifies a definition that can be referenced from outside its contai
 ```rust
 pub struct DefId {
     pub file: FileId,
-    pub local_index: u32,
+    pub index: u32,
 }
 
 // The parent of a method is tracked separately:
@@ -401,15 +402,16 @@ pub struct DefId {
     /// The file containing this definition.
     pub file: FileId,
     /// Index of this definition within the file (in source order).
-    pub local_index: u32,
+    pub index: u32,
 }
 ```
 
-**File-main DefId**: Each file has a reserved `DefId { file, local_index: 0 }` representing its top-level execution context. This "file-main" owns all top-level statements that aren't definitions themselves (e.g., expression statements like `foo(a)`). Top-level constants, variables, functions, etc. get `local_index: 1..`. The file-main DefId:
+**File-main DefId**: Each file has a reserved `DefId { file, index: 0 }` representing its top-level execution context. This "file-main" owns all top-level statements that aren't definitions themselves, including expression statements (like `foo(a)`) and top-level assignments (like `x = 42`). Top-level functions, structs, traits, etc. get `index: 1..`. The file-main DefId:
 - Is unannotated (must be typed together with referenced unannotated definitions)
-- Cannot be referenced cross-module (it's not exported)
+- Cannot be referenced cross-module (it's not exported, though its local bindings can be)
 - Creates inference edges to unannotated definitions it references
-- NodeIds for top-level expression statements have `owner: DefId { file, local_index: 0 }`
+- NodeIds for top-level statements (including assignments) have `owner: DefId { file, index: 0 }`
+- Top-level assignments create `LocalBindingId`s owned by FileMain
 
 This keeps the execution model abstract - no actual "main function" is created until codegen - while ensuring all top-level statements in a file share a typing context.
 
@@ -533,9 +535,10 @@ pub struct BindingGraph {
 | Function with missing annotations | **No** | e.g., `fn foo(x) { ... }` or `fn foo(x: int) { ... }` (missing return type) |
 | Methods (impl/trait) | Yes | Must have explicit signatures |
 | Structs/Traits/TypeAliases | Yes | Define types, signatures are inherent |
-| Constants | Depends | Annotated if type is explicit, e.g., `x: int = 1` |
+| Bindings | Yes | Extern bindings must have type annotations, e.g., `extern x: int` |
+| Associated constants | Depends | Annotated if type is explicit |
 | External/library definitions | Yes | Scheme from `LibraryData` |
-| File-level statements | Depends | Same rules as constants |
+| Top-level assignments | Depends | Locals of FileMain; annotated if type is explicit, e.g., `x: int = 1` |
 
 **Edge rules**: An edge A → B is added to the binding graph when:
 1. A syntactically references B (calls it, uses it as a value, etc.)
@@ -850,6 +853,7 @@ Queries are computed values derived from inputs or other queries. Each query is 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct ParseResult {
       /// The parsed AST with DefIds and NodeIds assigned.
       pub ast: ast::File,
@@ -878,6 +882,7 @@ Queries are computed values derived from inputs or other queries. Each query is 
       fn span_of(&self, node_id: NodeId) -> Span;
   }
 
+  #[derive(Clone, Serialize, Deserialize)]
   struct DefHeader {
       pub def_id: DefId,
       pub name: String,
@@ -887,10 +892,12 @@ Queries are computed values derived from inputs or other queries. Each query is 
       pub parent: Option<DefId>,  // For methods: the impl/trait DefId
   }
 
+  #[derive(Clone, Copy, Serialize, Deserialize)]
   enum DefKind {
-      FileMain,   // Top-level execution context (local_index: 0)
+      FileMain,   // Top-level execution context (index: 0)
       Function { signature: SignatureStatus },
-      Constant { annotated: bool },  // annotated: true if type is explicit
+      Binding { annotated: bool, mutable: bool },
+      AssociatedConst { annotated: bool },  // constants inside impl blocks
       Method,     // Always has explicit signature (from trait or explicit)
       Struct,
       Trait,
@@ -898,6 +905,7 @@ Queries are computed values derived from inputs or other queries. Each query is 
       TypeAlias,
   }
 
+  #[derive(Clone, Copy, Serialize, Deserialize)]
   enum SignatureStatus {
       FullyAnnotated,  // All parameter and return types explicit
       ReturnElided,    // Parameters annotated, return type inferred from => body
@@ -931,6 +939,7 @@ Queries are computed values derived from inputs or other queries. Each query is 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct FileAst {
       /// The transformed AST.
       pub ast: ast::File,
@@ -948,6 +957,26 @@ Queries are computed values derived from inputs or other queries. Each query is 
   - `file_exports(FileId)` - extracts exports from raw parse (no transformation needed)
   - `name_resolutions(FileId)` - resolves names in raw parse (circular dependency otherwise)
 
+  **Legacy component integration**: Implements transformations currently in `AstLowerCtx` (`ray-core/src/ast/lower.rs`):
+
+  | Transformation | Legacy location | New location |
+  |----------------|-----------------|--------------|
+  | Compound assignment desugaring | `AstLowerCtx::lower_expr` | `file_ast` query |
+  | Function literal → closure | `AstLowerCtx::lower_expr` | `file_ast` query |
+  | Curly shorthand expansion | `AstLowerCtx::lower_expr` | `file_ast` query |
+  | Curly field reordering | `AstLowerCtx::lower_expr` | `file_ast` query |
+
+  Extract pure helper functions from `AstLowerCtx`:
+  ```rust
+  // ray-core/src/ast/transform.rs (new file)
+  fn desugar_compound_assignment(expr: &Expr) -> Expr
+  fn convert_func_to_closure(expr: &Expr) -> Expr
+  fn expand_curly_shorthand(expr: &Expr) -> Expr
+  fn reorder_curly_fields(expr: &Expr, field_order: &[String]) -> Expr
+  ```
+
+  The query orchestrates these helpers, using `struct_def(DefTarget)` to look up field order for curly reordering.
+
 - `file_imports(FileId)` → `Vec<ImportPath>`
 
   **Dependencies**: `parse(FileId)`
@@ -958,11 +987,21 @@ Queries are computed values derived from inputs or other queries. Each query is 
 
   **Invalidation**: Re-executes when `parse(FileId)` changes.
 
-- `file_exports(FileId)` → `Vec<(String, DefId)>`
+- `file_exports(FileId)` → `Vec<(String, ExportedItem)>`
 
   **Dependencies**: `parse(FileId)`
 
-  **Semantics**: Returns (name, DefId) pairs for all public definitions in the file. Used by `module_def_index` to build the module's namespace. Methods are not included (see "Method visibility").
+  **Semantics**: Returns (name, ExportedItem) pairs for all public definitions in the file. Used by `module_def_index` to build the module's namespace. Methods are not included (see "Method visibility").
+
+  **Definitions**:
+  ```rust
+  enum ExportedItem {
+      Def(DefId),                // Functions, structs, traits, etc.
+      Local(LocalBindingId),     // Top-level assignments (owned by FileMain)
+  }
+  ```
+
+  Top-level assignments like `x = 42` are exported as `ExportedItem::Local`, where the `LocalBindingId` has `owner: DefId { file, index: 0 }` (the FileMain).
 
   **Invalidation**: Re-executes when `parse(FileId)` changes.
 
@@ -986,6 +1025,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   enum ImportError {
       UnknownModule(String),
       Ambiguous(Vec<ModulePath>),
@@ -1007,6 +1047,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
   **Definitions**:
   ```rust
   /// What a name reference resolves to.
+  #[derive(Clone, Copy, Serialize, Deserialize)]
   enum Resolution {
       /// A top-level definition (function, struct, trait, etc.) - either workspace or library
       Def(DefTarget),
@@ -1017,6 +1058,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
   }
 
   /// Reference to a definition, either in the current workspace or external library.
+  #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
   enum DefTarget {
       /// Definition in current workspace
       Workspace(DefId),
@@ -1032,6 +1074,28 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
   - Name resolution can be recomputed independently when imports change
   - LSP "what does this refer to" is a direct lookup in the side table
 
+  **Legacy component integration**: Replaces `Module::resolve_names()` in `ray-core/src/sema/nameresolve.rs` and `NameContext` accumulation:
+
+  | Legacy | New |
+  |--------|-----|
+  | `ResolveContext` with global `NameContext` | Per-file resolution using `resolved_imports` + `module_def_index` |
+  | AST mutation to replace paths | Side table `HashMap<NodeId, Resolution>` |
+  | Two-pass (declarations then bodies) | Single pass per file (exports available via queries) |
+  | `Module::resolve_names(&mut self, ...)` | Pure function `resolve_names(parse, imports, module_index) -> HashMap` |
+
+  Extract from `nameresolve.rs`:
+  ```rust
+  // ray-core/src/sema/resolve.rs (refactored)
+  pub fn resolve_file_names(
+      ast: &ast::File,
+      imports: &HashMap<String, ModulePath>,
+      module_exports: &HashMap<String, ExportedItem>,
+      sibling_exports: impl Fn(ModulePath) -> HashMap<String, ExportedItem>,
+  ) -> HashMap<NodeId, Resolution>
+  ```
+
+  The scope chain logic (tracking local bindings during walk) is reused but simplified—no global state, just local scope stack during the walk.
+
 - `def_for_path(ItemPath)` → `Option<DefTarget>`
 
   **Dependencies**:
@@ -1046,11 +1110,11 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
 
   **Error handling**: Returns `None` if the path doesn't exist. Does not report diagnostics - callers decide how to handle missing definitions.
 
-- `module_def_index(ModulePath)` → `HashMap<String, Result<DefId, NameCollision>>`
+- `module_def_index(ModulePath)` → `HashMap<String, Result<ExportedItem, NameCollision>>`
 
   **Dependencies**: `file_exports(FileId)` for each file in the module
 
-  **Semantics**: Aggregates exports from all files in a module into a single namespace. Each name maps to either a unique DefId or a collision error.
+  **Semantics**: Aggregates exports from all files in a module into a single namespace. Each name maps to either a unique `ExportedItem` or a collision error. An `ExportedItem` is either a `DefId` (for functions, structs, etc.) or a `LocalBindingId` (for top-level assignments).
 
   Method DefIds (both impl methods and trait methods) are **not** included. Methods are reachable only through:
   - Qualified paths: `Type::method` via `def_for_path(ItemPath)`
@@ -1058,7 +1122,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
 
   This reflects that methods are not "top-level names" in the module namespace - they're accessed through their parent type or trait.
 
-  **Error handling**: If multiple definitions in a module export the same name (e.g., two files both define `fn helper()`), the entry for that name contains `Err(NameCollision)` rather than a DefId. This allows:
+  **Error handling**: If multiple definitions in a module export the same name (e.g., two files both define `fn helper()`), the entry for that name contains `Err(NameCollision)` rather than an `ExportedItem`. This allows:
   - Other names in the module to resolve normally (graceful degradation)
   - Clear diagnostics showing which definitions collided and where
   - Deterministic behavior - the query result fully represents the ambiguity
@@ -1067,6 +1131,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct NameCollision {
       pub name: String,
       pub definitions: Vec<DefId>,
@@ -1092,6 +1157,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct StructDef {
       pub target: DefTarget,
       pub name: String,
@@ -1099,11 +1165,13 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub fields: Vec<FieldDef>,
   }
 
+  #[derive(Clone, Serialize, Deserialize)]
   struct FieldDef {
       pub name: String,
       pub ty: Ty,
   }
 
+  #[derive(Clone, Serialize, Deserialize)]
   struct TraitDef {
       pub target: DefTarget,
       pub name: String,
@@ -1112,6 +1180,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub methods: Vec<DefTarget>,
   }
 
+  #[derive(Clone, Serialize, Deserialize)]
   struct ImplDef {
       pub target: DefTarget,
       pub type_params: Vec<TypeParam>,
@@ -1120,6 +1189,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub methods: Vec<DefTarget>,
   }
 
+  #[derive(Clone, Serialize, Deserialize)]
   struct TypeAliasDef {
       pub target: DefTarget,
       pub name: String,
@@ -1160,6 +1230,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct ImplsForType {
       pub inherent: Vec<DefTarget>,     // impl Foo { ... }
       pub trait_impls: Vec<DefTarget>,  // impl Trait for Foo { ... }
@@ -1188,6 +1259,20 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Error handling**: References to `Resolution::Error` or `Resolution::Local` are skipped. References to `DefTarget::External` are skipped (library calls don't create binding edges). Only `DefTarget::Workspace` creates edges, and only for DefIds in the same module.
 
+  **Legacy component integration**: This is the "Phase A" extraction from `ray-core/src/passes/binding.rs`. The legacy `run_binding_pass` walks the entire merged module; this query walks only nodes within a single definition.
+
+  Extract from `binding.rs`:
+  ```rust
+  // ray-core/src/passes/binding.rs (refactored)
+  pub fn extract_def_references(
+      def_id: DefId,
+      ast: &ast::File,
+      resolutions: &HashMap<NodeId, Resolution>,
+  ) -> Vec<DefId>
+  ```
+
+  Uses `ast.nodes_in_def(def_id)` (from `ParseResult`) to iterate only over nodes owned by this definition. For each node, looks up in `resolutions` and collects `DefTarget::Workspace` references in the same module.
+
 - `binding_graph(ModulePath)` → `BindingGraph`
 
   **Dependencies**: `def_deps(DefId)` for all DefIds in the module, `parse` for all files in the module
@@ -1199,7 +1284,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   2. For each DefId, query `def_deps(DefId)` to get its raw dependencies
   3. Filter edges to **inference edges only**
 
-  **Edge filtering**: An edge A → B from `def_deps` is included in the binding graph only if B is unannotated - i.e., B is `DefKind::Function { signature: Unannotated }`, `DefKind::Constant { annotated: false }`, or `DefKind::FileMain`. References to annotated functions, annotated constants, structs, traits, etc. are excluded.
+  **Edge filtering**: An edge A → B from `def_deps` is included in the binding graph only if B is unannotated - i.e., B is `DefKind::Function { signature: Unannotated }`, `DefKind::Binding { annotated: false, .. }`, `DefKind::AssociatedConst { annotated: false }`, or `DefKind::FileMain`. References to annotated functions, annotated bindings, structs, traits, etc. are excluded.
 
   Note: `def_deps(DefId)` returns all syntactic references. The inference-edge filtering happens in `binding_graph`, not in `def_deps`. This keeps `def_deps` useful for other purposes (e.g., "find references" needs all edges, not just inference edges).
 
@@ -1208,6 +1293,16 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   **Cross-file groups**: Since the graph aggregates from all files in the module, an SCC may contain DefIds from different files. For example, if `file_a.ray` defines unannotated `fn foo()` that calls unannotated `fn bar()` in `file_b.ray`, and `bar` calls `foo`, they form a single binding group spanning both files.
 
   **Error handling**: If a file has parse errors, its DefIds are still included (from the recovered AST). Definitions with incomplete information due to parse errors still participate in the binding graph - they may have fewer edges than they would otherwise, but they're not excluded.
+
+  **Legacy component integration**: This is the "Phase B" merging from `ray-core/src/passes/binding.rs`. The legacy pass builds the graph while walking; this query aggregates pre-computed per-definition edges.
+
+  | Legacy | New |
+  |--------|-----|
+  | `BindingId(u64)` sequential counter | `DefId` directly (structural) |
+  | `BindingGraph` built during walk | Aggregated from `def_deps` queries |
+  | Edge filtering mixed with collection | Edge filtering here, raw edges in `def_deps` |
+
+  The legacy `BindingGraph` structure can be reused directly—only the construction changes. Tarjan's SCC algorithm (in `binding_groups`) is unchanged.
 
 - `binding_groups(ModulePath)` → `Vec<BindingGroupId>`
 
@@ -1235,20 +1330,49 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
 ##### Closure Analysis
 
-- `closure_info(NodeId)` → `Option<ClosureInfo>`
+- `closures_in_def(DefId)` → `Vec<ClosureInfo>`
 
-  **Dependencies**: `parse(node_id.owner.file)`, `name_resolutions(node_id.owner.file)`
+  **Dependencies**: `file_ast(def_id.file)`, `name_resolutions(def_id.file)`
 
-  **Semantics**: For a closure expression NodeId, returns capture analysis. Returns `None` if the NodeId is not a closure.
+  **Semantics**: Returns all closures within a definition and their capture sets. Walks the definition's AST once, collecting closures and computing captures.
 
   **Error handling**: N/A - pure analysis.
 
+- `closure_info(NodeId)` → `Option<ClosureInfo>`
+
+  **Dependencies**: `closures_in_def(node_id.owner)`
+
+  **Semantics**: For a closure expression NodeId, returns capture analysis. Returns `None` if the NodeId is not a closure. This is a lookup into the cached `closures_in_def` result.
+
+  **Error handling**: N/A - pure lookup.
+
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct ClosureInfo {
-      pub parent: DefId,
-      pub captures: Vec<LocalBindingId>,
+      pub parent_def: DefId,            // Enclosing function's DefId
+      pub captures: Vec<LocalBindingId>, // Captured locals
+      pub body_expr: Option<NodeId>,
+      pub closure_expr: NodeId,
   }
+  ```
+
+  **Legacy component integration**: Refactors `run_closure_pass` from `ray-core/src/passes/closure.rs`. The legacy pass walks the entire merged module and depends on `BindingPassOutput`; the new query walks per-definition and uses the resolution table instead.
+
+  | Legacy | New |
+  |--------|-----|
+  | `run_closure_pass(module, bindings)` | `closures_in_def(DefId)` per definition |
+  | Depends on `BindingPassOutput` | Depends on `name_resolutions(FileId)` |
+  | `BindingId` for parent/captures | `DefId` for parent, `LocalBindingId` for captures |
+  | Returns `Vec<ClosureInfo>` for all closures | Returns `Vec<ClosureInfo>` for one definition |
+
+  ```rust
+  // ray-core/src/passes/closure.rs (refactored)
+  pub fn closures_in_def(
+      def_id: DefId,
+      def_ast: &Node<Decl>,
+      resolutions: &HashMap<NodeId, Resolution>,
+  ) -> Vec<ClosureInfo>
   ```
 
 ##### Typechecking
@@ -1269,6 +1393,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct MappedDefTypes {
       /// Forward: user type var -> schema var
       pub var_map: HashMap<TyVar, TyVar>,
@@ -1281,6 +1406,27 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   }
   ```
 
+  **Legacy component integration**: Extracts and refactors `TyCtx::map_vars` from `ray-typing/src/tyctx.rs`.
+
+  | Legacy | New |
+  |--------|-----|
+  | `TyCtx::map_vars(&mut self, ty: &mut Ty)` | Pure function `map_vars(ty, allocator, prev_mappings)` |
+  | Mutates `self.var_map` | Returns new mappings |
+  | Per-type-annotation call | Per-definition call (all annotations at once) |
+
+  Extract to standalone function:
+  ```rust
+  // ray-typing/src/var_mapping.rs (new file)
+  pub fn map_vars(
+      types: &[Ty],
+      allocator: &mut SchemaVarAllocator,
+      prev_mappings: &HashMap<TyVar, TyVar>,
+  ) -> (Vec<Ty>, HashMap<TyVar, TyVar>, HashMap<TyVar, TyVar>)
+  // Returns: (mapped_types, forward_map, reverse_map)
+  ```
+
+  The `prev_mappings` parameter ensures consistent mapping when processing related types (e.g., a function's parameter and return types share the same `'a`).
+
 - `typecheck_group(BindingGroupId)` → `TypecheckResult`
 
   **Dependencies**: `binding_group_members(BindingGroupId)`, `file_ast` for each member's file, `name_resolutions` for each member's file, `mapped_def_types(DefId)` for each member, `closure_info` for closures in the group, `def_scheme(DefTarget)` for dependencies outside the group
@@ -1291,12 +1437,39 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct TypecheckResult {
       pub schemes: HashMap<DefId, TyScheme>,
       pub node_types: HashMap<NodeId, Ty>,
       pub errors: Vec<RayError>,
   }
   ```
+
+  **Legacy component integration**: Refactors the core of `typecheck` in `ray-typing/src/lib.rs`. The legacy function processes all binding groups in a module; this query processes one group.
+
+  | Legacy | New |
+  |--------|-----|
+  | `typecheck(input: &TypeCheckInput, ...)` | `typecheck_group(group_id)` query |
+  | `TypeCheckInput` with all module bindings | Group-specific input from queries |
+  | Mutates `TyCtx` to store results | Returns `TypecheckResult` |
+  | `input.binding_groups()` computes SCCs | `binding_group_members(group_id)` query |
+  | `solve_groups()` iterates all groups | One group per query invocation |
+
+  The constraint tree building, term solver, goal solver, defaulting, and generalization logic are reused directly. The main change is input/output boundaries:
+
+  ```rust
+  // ray-typing/src/lib.rs (refactored entry point)
+  pub fn check_binding_group(
+      members: &[DefId],
+      ast_provider: impl Fn(FileId) -> &FileAst,
+      resolutions_provider: impl Fn(FileId) -> &HashMap<NodeId, Resolution>,
+      mapped_types_provider: impl Fn(DefId) -> &MappedDefTypes,
+      external_scheme: impl Fn(DefTarget) -> TyScheme,
+      closure_info: impl Fn(NodeId) -> Option<ClosureInfo>,
+  ) -> TypecheckResult
+  ```
+
+  The `external_scheme` callback is how cross-group dependencies are resolved—it invokes `def_scheme(DefTarget)` for definitions outside the current group.
 
 - `def_scheme(DefTarget)` → `TyScheme`
 
@@ -1307,6 +1480,16 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   **Semantics**: Returns the type scheme for a definition. For workspace definitions, this is either the declared scheme (annotated) or inferred scheme (unannotated). For library definitions, returns the precomputed scheme from `LibraryData`.
 
   **Error handling**: Returns an error type if the definition failed to typecheck. Library definitions never fail (they were successfully compiled).
+
+  **Legacy component integration**: This query replaces direct lookups into `TyCtx.schemes` and `TyCtx.all_schemes`. The legacy system accumulates schemes during typechecking; the new system retrieves them via query.
+
+  | Legacy | New |
+  |--------|-----|
+  | `tcx.schemes.get(&path)` | `def_scheme(DefTarget::Workspace(def_id))` |
+  | `tcx.all_schemes.get(&path)` | Same query (no public/private distinction needed) |
+  | `lib.schemes.get(&path)` | `def_scheme(DefTarget::External(item_path))` |
+
+  For workspace definitions, this query is a thin wrapper: look up the binding group, invoke `typecheck_group`, extract the scheme. The actual scheme computation happens in `typecheck_group`.
 
 - `ty_of(NodeId)` → `Ty`
 
@@ -1330,6 +1513,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct CallResolution {
       pub target: DefTarget,
       pub poly_callee_ty: TyScheme,
@@ -1430,6 +1614,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct DefinitionRecord {
       pub path: ItemPath,
       pub source_location: Option<SourceLocation>,  // Location for go-to-definition
@@ -1437,6 +1622,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub kind: DefKind,
   }
 
+  #[derive(Clone, Serialize, Deserialize)]
   enum SourceLocation {
       /// Workspace definition with known FileId
       Workspace { file: FileId, span: Span },
@@ -1598,12 +1784,14 @@ Operators in Ray are methods with symbolic names (e.g., `+`, `-`, `*`). A trait 
 
   **Definitions**:
   ```rust
+  #[derive(Clone, Serialize, Deserialize)]
   struct OperatorEntry {
       pub trait_def: DefTarget,
       pub method_def: DefTarget,
       pub arity: OperatorArity,
   }
 
+  #[derive(Clone, Copy, Serialize, Deserialize)]
   enum OperatorArity {
       Prefix,  // unary: -x, !x
       Infix,   // binary: a + b, a * b
@@ -1715,7 +1903,7 @@ Some queries use `Result` for optional values with errors:
 fn resolved_imports(FileId) -> HashMap<String, Result<ModulePath, ImportError>>;
 
 // module_def_index returns per-name results
-fn module_def_index(ModulePath) -> HashMap<String, Result<DefId, NameCollision>>;
+fn module_def_index(ModulePath) -> HashMap<String, Result<ExportedItem, NameCollision>>;
 ```
 
 These per-item results allow partial success - one failed import doesn't prevent other imports from resolving.
@@ -2576,24 +2764,45 @@ Before implementing the new query system, we should understand which legacy comp
 
 *Required changes:*
 ```
-File: ray-core/src/parse/parser/mod.rs
+File: ray-core/src/parse/parser/mod.rs, ray-shared/src/node_id.rs
 
-1. NodeId allocation: Change from namespace-scoped global counter to per-file
-   sequential indexing. NodeIds become (FileId, local_index) pairs.
+1. NodeId allocation: Change from namespace-scoped global counter to per-definition
+sequential indexing. NodeIds become (DefId, index) pairs.
 
-   - Remove: Global `NodeIdAllocator` or namespace-based allocation
-   - Add: Per-parse `NodeIdAllocator` that resets for each file
-   - Modify: `Parser::new()` to accept FileId and initialize local counter
+Current system uses:
+- `NODE_ID_NAMESPACE` global atomic + `NODE_ID_COUNTERS` hashmap
+- `NodeIdNamespaceGuard` RAII guard for entering/exiting namespaces
+- Namespaces derived from module path hash via `NodeId::enter_namespace()`
+- `Node::new(value)` calls `NodeId::new()` internally (145 call sites)
+
+New system - adapt existing pattern to track DefId instead of namespace:
+- Replace `NODE_ID_NAMESPACE: AtomicU32` with `CURRENT_DEF_ID: Mutex<Option<DefId>>`
+- Keep `NODE_ID_COUNTERS: Mutex<HashMap<DefId, u32>>` (now keyed by DefId, not namespace)
+- Rename `NodeIdNamespaceGuard` to `NodeIdDefGuard` (or reuse with different semantics)
+- Replace `NodeId::enter_namespace(path)` with `NodeId::enter_def(def_id)`
+- Change `NodeId` struct to `{ owner: DefId, index: u32 }`
+- `NodeId::new()` reads from synchronized globals (no signature change)
+- `Node::new(value)` remains unchanged - still calls `NodeId::new()` internally
+
+Parser usage:
+```rust
+// When parser enters a definition (fn, struct, impl, etc.)
+let _guard = NodeId::enter_def(def_id);  // Sets current DefId, resets counter to 0
+// All Node::new() calls within this scope get (def_id, sequential_index)
+// Guard restores previous DefId on drop (handles nested defs like methods in impl)
+```
+
+This approach preserves all 145 `Node::new(value)` call sites unchanged.
 
 2. DefId extraction: Parser must identify and record all top-level definitions
-   during parsing, including methods inside impl/trait blocks.
+during parsing, including methods inside impl/trait blocks.
 
-   - Add: `DefHeader` struct with name, kind, span, signature_status
-   - Add: `ParseResult.defs: Vec<DefHeader>` populated during parse
-   - Modify: Parse handlers for fn/struct/trait/impl to emit DefHeaders
+- Add: `DefHeader` struct with name, kind, span, signature_status
+- Add: `ParseResult.defs: Vec<DefHeader>` populated during parse
+- Modify: Parse handlers for fn/struct/trait/impl to emit DefHeaders
 
 3. Return type: Change parser return from `ast::File` to `ParseResult` struct
-   containing AST, SourceMap, DefHeaders, and parse errors.
+containing AST, SourceMap, DefHeaders, and parse errors.
 ```
 
 **Type variable mapping (`TyCtx::map_vars`)**:
@@ -2607,7 +2816,8 @@ File: ray-typing/src/tyctx.rs (or extract to separate module)
 1. Extract `map_vars` into a standalone pure function that takes:
    - Input types/schemes to map
    - A `&mut SchemaVarAllocator` for generating fresh vars
-   - Returns mapped types plus forward/reverse var mappings
+   - Previous mappings (to ensure consistent mapping of the same user variable across calls)
+   - Returns mapped types plus updated forward/reverse var mappings
 
 2. Remove dependency on `TyCtx` - the function should be callable without
    a full typing context.
@@ -2898,136 +3108,1538 @@ Most downstream queries should depend on `file_ast`, not `parse`. The exceptions
 - `file_imports` and `file_exports` - extract data from raw parse
 - `name_resolutions` - must use raw parse to avoid circular dependency
 
-### A. Phase 1: Query Infrastructure & Parsing
+### Phase 0: Legacy Component Refactoring
+
+**Goal**: Refactor legacy components into pure functions that can be called by the query system. This work can be done incrementally without changing the current compilation flow—the refactored functions are called by the existing code paths initially, then later by queries.
+
+**Principle**: Each refactoring extracts a pure function from a stateful component. The existing code continues to work by calling the new pure function and managing state externally. This validates the refactoring before the query system exists.
+
+---
+
+#### 0.A: Parser & NodeId Changes ✓ DONE
+
+These changes are already implemented:
+- [x] `NodeId` now contains `{ owner: DefId, index: u32 }`
+- [x] `NodeId::enter_def(def_id)` sets the current DefId context
+- [x] Parser tracks `def_index` and emits `DefHeader` for each definition
+- [x] `ParseResult` includes `defs: Vec<DefHeader>`
+
+---
+
+#### 0.B: Pure Function Extractions
+
+These extractions have no dependencies on each other and can be done in any order.
+
+##### 0.B.1: `map_vars` extraction
+
+**Used by**: `mapped_def_types(DefId)` query
+
+**Files**: `ray-typing/src/tyctx.rs` → `ray-typing/src/var_mapping.rs` (new)
+
+- [x] Create new file `ray-typing/src/var_mapping.rs`
+- [x] Define standalone function:
+  ```rust
+  pub fn map_vars(
+      types: &[Ty],
+      allocator: &mut SchemaVarAllocator,
+      prev_mappings: &HashMap<String, TyVar>,
+  ) -> (Vec<Ty>, HashMap<String, TyVar>, HashMap<TyVar, String>)
+  ```
+- [x] Move mapping logic from `TyCtx::map_vars` to new function
+- [x] Update `TyCtx::map_vars` to call new function, passing `self.var_map`
+- [x] Add `mod var_mapping;` to `ray-typing/src/lib.rs`
+- [x] **Validate**: Run `cargo test -p ray-typing` — all tests pass
+
+##### 0.B.2: AST transform helpers extraction
+
+**Used by**: `file_ast(FileId)` query
+
+**Files**: `ray-core/src/ast/lower.rs` → `ray-core/src/ast/transform.rs` (new)
+
+- [x] Create new file `ray-core/src/ast/transform.rs`
+- [x] Extract and implement:
+  ```rust
+  pub fn desugar_compound_assignment(assign: &Assign, srcmap: &SourceMap) -> Result<(Assign, SourceMap), RayError>
+  pub fn convert_func_to_closure(func: &Func, src: &Source) -> Result<Closure, RayError>
+  pub fn normalize_curly(curly: &Curly, src: &Source, field_index: &HashMap<String, usize>, srcmap: &SourceMap, def_id: DefId) -> Result<(Curly, SourceMap), RayError>
+  ```
+- [ ] Update `AstLowerCtx` methods to call these helpers
+- [x] Add `pub mod transform;` to `ray-core/src/ast/mod.rs`
+- [ ] **Validate**: Run `cargo test -p ray-core` — all tests pass
+
+#### 0.C: Name Resolution Refactoring
+
+**Depends on**: Nothing (but more complex than 0.B)
+
+**Used by**: `name_resolutions(FileId)` query
+
+**Files**: `ray-core/src/sema/resolve.rs` (or new file `ray-core/src/sema/nameresolve.rs`)
+
+##### Step 1: Define Resolution type
+
+- [ ] Create/update `ray-shared/src/resolution.rs`:
+  ```rust
+  pub enum Resolution {
+      Def(DefTarget),           // Top-level definition
+      Local(LocalBindingId),    // Local binding (param, let)
+      Error,                    // Unresolved
+  }
+
+  pub enum DefTarget {
+      Workspace(DefId),         // Definition in this workspace
+      Library { lib: ModulePath, path: ItemPath },  // From .raylib
+  }
+  ```
+- [ ] Add `LocalBindingId` to `ray-shared/src/lib.rs`:
+  ```rust
+  pub struct LocalBindingId {
+      pub owner: DefId,  // The function/closure containing this local
+      pub index: u32,    // Sequential index within the owner
+  }
+  ```
+- [ ] **Validate**: `cargo check -p ray-shared`
+
+##### Step 2: Create resolution walker
+
+- [ ] Create new function (in `ray-core/src/sema/nameresolve.rs` or similar):
+  ```rust
+  pub fn resolve_file_names(
+      ast: &File,
+      imports: &HashMap<String, ModulePath>,
+      module_exports: &HashMap<String, DefTarget>,
+      sibling_exports: &HashMap<String, DefTarget>,
+  ) -> HashMap<NodeId, Resolution>
+  ```
+- [ ] Implement AST walker that:
+  - Tracks local scope (parameters, let-bindings) → assigns `LocalBindingId`
+  - Resolves names to `Resolution::Def` or `Resolution::Local`
+  - Returns side-table, does NOT mutate AST
+- [ ] **Validate**: Write unit tests for simple cases
+
+##### Step 3: Bridge to legacy system
+
+- [ ] Add `apply_resolutions(ast: &mut File, resolutions: &HashMap<NodeId, Resolution>)` that mutates AST paths based on resolution table
+- [ ] Update `Module::resolve_names` to:
+  1. Call `resolve_file_names` to get side-table
+  2. Call `apply_resolutions` to mutate AST
+- [ ] **Validate**: Run full test suite — behavior unchanged
+
+##### Step 4: Expose resolution table
+
+- [ ] Store resolution table in module or return from `resolve_names`
+- [ ] Update downstream code to optionally read from table instead of AST
+- [ ] **Validate**: Run full test suite
+
+---
+
+#### 0.D: Closure Analysis Migration
+
+**Depends on**: 0.C (name resolution side-table)
+
+**Used by**: `closure_info(NodeId)` query
+
+**Files**: `ray-core/src/passes/closure.rs`
+
+The closure pass currently depends on `BindingPassOutput` which provides `BindingId` mappings. We replace this dependency with the name resolution output from Steps 1-4.
+
+**Current state**:
+```rust
+// Current signature
+pub fn run_closure_pass(
+    module: &Module<(), Decl>,
+    bindings: &BindingPassOutput,  // Uses BindingId throughout
+) -> ClosurePassOutput
+
+// Current ClosureInfo
+pub struct ClosureInfo {
+    pub parent_binding: BindingId,    // Enclosing function
+    pub captures: Vec<BindingId>,     // Captured bindings
+    pub body_expr: Option<NodeId>,
+    pub closure_expr: NodeId,
+}
+```
+
+**What the pass needs from `BindingPassOutput`**:
+1. `node_bindings: HashMap<NodeId, NodeBinding>` — to check if a node defines a binding
+2. `binding_records: HashMap<BindingId, BindingRecord>` — to get the name/path for scope tracking
+
+**New approach**: Replace `BindingPassOutput` with `HashMap<NodeId, Resolution>` from name resolution. The resolution table already contains `LocalBindingId` for all local bindings.
+
+##### Step 1: Update ClosureInfo struct
+
+- [ ] Change `ClosureInfo` to use `DefId`/`LocalBindingId`:
+  ```rust
+  pub struct ClosureInfo {
+      pub parent_def: DefId,              // Enclosing function's DefId
+      pub captures: Vec<LocalBindingId>,  // Captured locals
+      pub body_expr: Option<NodeId>,
+      pub closure_expr: NodeId,
+  }
+  ```
+
+##### Step 2: Add per-def closure analysis function
+
+- [ ] Add new function for analyzing closures within a single definition:
+  ```rust
+  pub fn closures_in_def(
+      def_id: DefId,
+      def_ast: &Node<Decl>,
+      resolutions: &HashMap<NodeId, Resolution>,
+  ) -> Vec<ClosureInfo>
+  ```
+  This walks the definition's AST once, collecting all closures and their captures.
+
+##### Step 3: Update internal scope tracking
+
+- [ ] Change `ScopeFrame` from `HashMap<Path, BindingId>` to `HashMap<Path, LocalBindingId>`
+- [ ] Change `ActiveClosure.captures` from `HashSet<BindingId>` to `HashSet<LocalBindingId>`
+- [ ] Change `ActiveClosure.parent_binding` to `parent_def: DefId`
+
+##### Step 4: Update binding registration
+
+- [ ] Replace `node_binding()` lookup (which used `BindingPassOutput.node_bindings`) with resolution lookup:
+  ```rust
+  fn local_binding_for_node(&self, node_id: NodeId, resolutions: &HashMap<NodeId, Resolution>) -> Option<LocalBindingId> {
+      match resolutions.get(&node_id)? {
+          Resolution::Local(id) if id.owner == self.current_def => Some(*id),
+          _ => None,
+      }
+  }
+  ```
+- [ ] Replace `binding_records` lookup (which got the path/name) with direct AST inspection or pass the name explicitly when registering
+
+##### Step 5: Update usage recording
+
+- [ ] Change `record_usage` to look up `LocalBindingId` from scope instead of `BindingId`
+- [ ] Capture logic stays the same: if defining scope is outside closure's scope, it's a capture
+
+##### Step 6: Bridge for legacy system
+
+- [ ] Keep `run_closure_pass` working during transition by having it call `closures_in_def` per definition
+- [ ] **Validate**: Run `cargo test -p ray-core` — all closure tests pass
+
+##### Step 7: Delete legacy code
+
+- [ ] Once query system uses `closures_in_def`, remove `BindingPassOutput` dependency
+- [ ] **Validate**: No remaining `BindingId` references in closure.rs
+
+---
+
+#### 0.E: Binding Pass Decomposition
+
+**Depends on**: 0.C (name resolution side-table)
+
+**Used by**: `def_deps(DefId)`, `binding_graph(ModulePath)` queries
+
+**Key insight**: Most of the binding pass is eliminated. Only dependency edge extraction remains.
+
+##### Step 1: Write `def_deps` function
+
+- [x] Create `ray-core/src/passes/deps.rs`:
+  ```rust
+  pub fn def_deps(
+      def_id: DefId,
+      resolutions: &HashMap<NodeId, Resolution>,
+  ) -> Vec<DefId> {
+      resolutions.iter()
+          .filter(|(node_id, _)| node_id.owner == def_id)
+          .filter_map(|(_, res)| match res {
+              Resolution::Def(DefTarget::Workspace(target)) => Some(*target),
+              _ => None,
+          })
+          .collect()
+  }
+  ```
+- [x] Add `pub mod deps;` to `ray-core/src/passes/mod.rs`
+- [x] **Validate**: Unit tests for `def_deps`
+
+##### Step 2: Build DefId-based binding graph
+
+- [x] Create `build_binding_graph(defs: &[DefId], resolutions: &HashMap<NodeId, Resolution>) -> BindingGraph<DefId>`
+  - Calls `def_deps` for each def
+  - Builds graph with DefId nodes
+- [x] **Validate**: Unit tests comparing to legacy binding graph output
+
+##### Step 3: Verify SCC equivalence
+
+- [x] Write test that:
+  1. Runs legacy binding pass
+  2. Runs new `build_binding_graph` + Tarjan's SCC
+  3. Asserts same binding groups (modulo ID representation)
+- [x] **Validate**: Test passes on existing test suite
+
+##### Step 4: Delete binding pass
+
+- [ ] Once query system uses new functions, delete:
+  - `run_binding_pass`
+  - `BindingPassOutput`
+  - Scope stack mechanism
+  - `BindingId` allocation logic
+- [ ] **Validate**: Nothing references deleted code
+
+---
+
+#### 0.F: Typechecker BindingId Migration
+
+**Depends on**: 0.E
+
+**Used by**: `typecheck_group(BindingGroupId)`, `def_scheme(DefTarget)` queries
+
+This is the largest migration. Do it incrementally, running tests after each step.
+
+##### Step 1: Make BindingGraph generic
+
+**File**: `ray-typing/src/binding_groups.rs`
+
+- [ ] Change `BindingGraph` to generic:
+  ```rust
+  pub struct BindingGraph<T> {
+      pub edges: BTreeMap<T, Vec<T>>,
+  }
+  ```
+- [ ] Update `BindingGroup` similarly:
+  ```rust
+  pub struct BindingGroup<T> {
+      pub bindings: Vec<T>,
+  }
+  ```
+- [ ] Add type alias for transition: `pub type LegacyBindingGraph = BindingGraph<BindingId>;`
+- [ ] Update Tarjan's algorithm to be generic over `T: Copy + Eq + Hash + Ord`
+- [ ] **Validate**: `cargo test -p ray-typing` — tests use `BindingGraph<BindingId>`
+
+##### Step 2: Update TypeCheckInput
+
+**File**: `ray-typing/src/lib.rs`
+
+- [ ] Change `binding_records: HashMap<BindingId, BindingRecord>` → `HashMap<DefId, BindingRecord>`
+- [ ] Change `bindings: BindingGraph` → `bindings: BindingGraph<DefId>`
+- [ ] Update all tests that create `TypeCheckInput` to use `DefId::new(FileId(0), n)` instead of `BindingId(n)`
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 3: Split scheme storage
+
+**File**: `ray-typing/src/context.rs`
+
+- [ ] Change `binding_schemes: HashMap<BindingId, TyScheme>` to:
+  ```rust
+  def_schemes: HashMap<DefId, TyScheme>,
+  local_schemes: HashMap<LocalBindingId, TyScheme>,
+  ```
+- [ ] Add helper method:
+  ```rust
+  pub fn scheme_for_resolution(&self, res: &Resolution) -> Option<&TyScheme>
+  ```
+- [ ] Update all `binding_schemes` usages to use appropriate map
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 4: Update ExprKind
+
+**File**: `ray-typing/src/context.rs`
+
+- [ ] Change `ExprKind::BindingRef(BindingId)` to:
+  ```rust
+  ExprKind::DefRef(DefId),
+  ExprKind::LocalRef(LocalBindingId),
+  ```
+- [ ] Update expression lowering (`ray-core/src/typing.rs`) to produce correct variant based on `Resolution`
+- [ ] Update constraint generation to handle both variants
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 5: Update PatternKind
+
+**Files**: `ray-typing/src/lib.rs`, `ray-typing/src/context.rs`
+
+- [ ] Change `PatternKind::Binding { binding: BindingId }` → `PatternKind::Local { binding: LocalBindingId }`
+- [ ] Change `PatternKind::Deref { binding: BindingId }` → `PatternKind::Deref { binding: LocalBindingId }`
+- [ ] Change `LhsPattern::Binding(BindingId)` → `LhsPattern::Local(LocalBindingId)`
+- [ ] Change `LhsPattern::Deref(BindingId)` → `LhsPattern::Deref(LocalBindingId)`
+- [ ] etc. for `Field`, `Index`
+- [ ] Update pattern handling in constraint generation
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 6: Update constraint generation
+
+**File**: `ray-typing/src/constraint_tree.rs`
+
+- [ ] Change `prepare_binding_context` to take `DefId` instead of `BindingId`
+- [ ] Change `generate_constraints_for_expr` binding context parameter to `DefId`
+- [ ] Change `skolemize_annotated_scheme` to take `DefId`
+- [ ] Update local binding handling to use `LocalBindingId`
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 7: Update generalization
+
+**File**: `ray-typing/src/generalize.rs`
+
+- [ ] Change `GeneralizationResult.schemes` from `Vec<(BindingId, TyScheme)>` to `Vec<(DefId, TyScheme)>`
+- [ ] Update `generalize_group` signature and implementation
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 8: Remove BindingId
+
+**File**: `ray-typing/src/binding_groups.rs`
+
+- [ ] Delete `pub struct BindingId(pub u64);`
+- [ ] Remove type alias if added
+- [ ] Search for any remaining `BindingId` references
+- [ ] **Validate**: `cargo test -p ray-typing` — no BindingId references remain
+
+---
+
+#### 0.G: Typechecker Entry Point Refactoring
+
+**Depends on**: 0.F
+
+**Used by**: `typecheck_group(BindingGroupId)` query
+
+##### Step 1: Extract single-group typechecking
+
+**File**: `ray-typing/src/lib.rs`
+
+- [ ] Create new function:
+  ```rust
+  pub fn check_single_group(
+      group: &BindingGroup<DefId>,
+      input: &TypeCheckInput,
+      external_schemes: &impl Fn(DefId) -> Option<TyScheme>,
+      options: &TypecheckOptions,
+  ) -> GroupTypecheckResult {
+      // ... extracted from solve_groups loop body
+  }
+  ```
+- [ ] `GroupTypecheckResult` contains:
+  ```rust
+  pub struct GroupTypecheckResult {
+      pub schemes: HashMap<DefId, TyScheme>,
+      pub node_types: HashMap<NodeId, Ty>,
+      pub errors: Vec<TypeError>,
+  }
+  ```
+- [ ] **Validate**: Unit test for `check_single_group` with simple group
+
+##### Step 2: Update solve_groups to use new function
+
+- [ ] Refactor `solve_groups` to call `check_single_group` for each group
+- [ ] Accumulate results across groups
+- [ ] **Validate**: `cargo test -p ray-typing`
+
+##### Step 3: Add external scheme callback
+
+- [ ] Change `TypeCheckInput` to not require all dependent schemes upfront
+- [ ] Add callback parameter for external lookups:
+  ```rust
+  external_schemes: &dyn Fn(DefId) -> Option<TyScheme>
+  ```
+- [ ] Update constraint generation to use callback for non-local refs
+- [ ] **Validate**: Test with mock callback
+
+##### Step 4: Return results instead of mutating
+
+- [ ] Change `typecheck` to return `TypecheckResult` containing all group results
+- [ ] Caller (legacy code) writes results to `TyCtx`
+- [ ] **Validate**: Full test suite passes
+
+---
+
+#### 0.H: Dependency Order & Checklist Summary
+
+```
+0.A: Parser/NodeId ✓ ─────────────────────────────────────────┐
+                                                              │
+0.B.1: map_vars extraction ───────────────────────────────────┤
+0.B.2: AST transform extraction ──────────────────────────────┤
+                                                              │
+0.C: Name resolution refactoring ─────────────────────────────┤
+         │                                                    │
+         v                                                    │
+0.D: Closure analysis migration ───────--─────────────────────┤
+                                                              │
+0.E: Binding pass decomposition ──────────────────────────────┤
+         │                                                    │
+         v                                                    │
+0.F: Typechecker BindingId migration (8 steps) ───────────────┤
+         │                                                    │
+         v                                                    │
+0.G: Typechecker entry point refactoring (4 steps) ───────────┘
+                                                              │
+                                                              v
+                                                     Phase 1: Query System
+```
+
+**Checklist summary** (total items):
+- 0.A: 4 items ✓ (done)
+- 0.B.1: 6 items
+- 0.B.2: 5 items
+- 0.C: 11 items (across 4 steps)
+- 0.D: 14 items (across 7 steps) — closure analysis migration
+- 0.E: 9 items (across 4 steps) — binding pass decomposition
+- 0.F: 23 items (across 8 steps) — typechecker BindingId migration, largest section
+- 0.G: 10 items (across 4 steps) — typechecker entry point refactoring
+
+**Deliverable**: All components refactored into pure functions. Current compilation still works (calls pure functions, manages state externally). Ready to wire up query system.
+
+---
+
+### Phase 1: Query Infrastructure & Parsing
 
 **Goal**: Establish the query system foundation and implement the simplest queries (parsing).
 
-**Queries to implement**:
-- `WorkspaceSnapshot` construction (the root input)
-- `FileSource` input
-- `parse(FileId)` → `ParseResult`
-- `file_imports(FileId)` → `Vec<ImportPath>`
-- `file_exports(FileId)` → `Vec<(String, DefId)>`
+**Depends on**: Phase 0 complete
 
-**Key implementation work**:
-- Query engine: memoization, dependency tracking, fingerprinting, invalidation
-- `DefId` and `NodeId` assignment during parsing
-- `ParseResult` structure with `DefHeader` extraction
-- `WorkspaceSnapshot` builder (file discovery, module structure)
+---
 
-**Testing strategy**:
-- Unit tests for query memoization (same input → cached result)
-- Unit tests for invalidation (change input → dependents recompute)
-- Unit tests for fingerprinting (same content after edit → no invalidation)
-- Parse existing test files through new system, compare AST output to current parser
-- Verify `DefId` assignment is deterministic and stable across parses
+#### 1.A: Query Engine Foundation ✓ DONE
+
+**File**: `ray-frontend/src/query.rs`, `ray-query-macros/src/lib.rs`
+
+##### Step 1: Core query infrastructure ✓
+
+- [x] Implement `Database` struct with input storage and query cache
+- [x] Implement `#[input]` macro for defining input types
+- [x] Implement `#[query]` macro for defining query functions
+- [x] Add fingerprint computation for inputs (content hash)
+- [x] **Validate**: Unit tests exist (`input_fingerprint_invalidation`, `macro_query_uses_inputs`)
+
+##### Step 2: Memoization ✓
+
+- [x] Implement query result caching in `Database`
+- [x] Track dependencies during query execution (which inputs/queries were accessed)
+- [x] Store dependencies with cached results (`CachedValue.input_deps`, `CachedValue.query_deps`)
+- [x] **Validate**: Unit test exists (`queries_without_inputs_remain_cached`)
+
+##### Step 3: Invalidation ✓
+
+- [x] Implement fingerprint-based validation on cache access (`cached_valid`, `inputs_match`)
+- [x] When input fingerprint changes, mark dependent queries as potentially stale
+- [x] Re-validate lazily on next query access (`query_deps_match_with_visited`)
+- [x] **Validate**: Unit tests exist (`input_fingerprint_invalidation`, `query_dependency_invalidation_propagates`)
+
+##### Step 4: Cycle detection ✓
+
+- [x] Track query call stack during execution (`active_stack`)
+- [x] Detect cycles via stack inspection
+- [x] Implement `CyclePolicy::Panic` (default) and `CyclePolicy::Error`
+- [x] **Validate**: Unit test exists (`cycle_policy_error_uses_on_cycle`)
+
+---
+
+#### 1.B: Workspace & File Inputs
+
+##### Step 1: Define input types
+
+- [ ] Define `FileSource` input:
+  ```rust
+  #[input(key = "FileId")]
+  pub struct FileSource(pub String);  // file contents
+  ```
+- [ ] Define `WorkspaceSnapshot` input (or computed from file system):
+  ```rust
+  pub struct WorkspaceSnapshot {
+      pub modules: HashMap<ModulePath, ModuleInfo>,
+      pub files: HashMap<FileId, FileInfo>,
+  }
+  ```
+- [ ] **Validate**: Can create `Database` and set inputs
+
+##### Step 2: Workspace discovery
+
+- [ ] Implement `WorkspaceSnapshot::from_directory(path)` for CLI
+- [ ] Implement `WorkspaceSnapshot::with_overlay(overlay)` for LSP
+- [ ] Map file paths to `FileId`s (stable across session)
+- [ ] Map directories to `ModulePath`s
+- [ ] **Validate**: Discover files in test project, verify module structure
+
+##### Step 3: Library data loading
+
+- [ ] Define `LibraryData` input:
+  ```rust
+  #[input(key = "ModulePath")]
+  pub struct LibraryData { /* schemes, structs, traits, impls, operators */ }
+  ```
+- [ ] Implement library loading with schema variable remapping:
+  ```rust
+  fn load_library(path: &FilePath, allocator: &mut SchemaVarAllocator) -> LibraryData {
+      let raw = RayLib::load(path);
+      // Remap all TyVars in schemes to avoid collisions with workspace vars
+      let max_lib_var = raw.max_schema_var_id;
+      let offset = allocator.reserve(max_lib_var);
+      remap_type_vars(&mut raw.schemes, offset);
+      raw
+  }
+  ```
+- [ ] Reserve schema var ID range to avoid collisions with workspace type inference
+- [ ] **Validate**: Load library, verify scheme vars don't collide with workspace vars
+
+---
+
+#### 1.C: Parse Query
+
+##### Step 1: Define ParseResult
+
+- [ ] Create `ParseResult` struct (if not already):
+  ```rust
+  pub struct ParseResult {
+      pub ast: File,
+      pub defs: Vec<DefHeader>,
+      pub source_map: SourceMap,
+      pub errors: Vec<RayError>,
+  }
+  ```
+- [ ] **Validate**: Existing parser returns this structure
+
+##### Step 2: Implement parse query
+
+- [ ] Define `parse(FileId)` query:
+  ```rust
+  #[query]
+  fn parse(db: &Database, file_id: FileId) -> ParseResult {
+      let source = db.get_input::<FileSource>(file_id);
+      let file_info = db.workspace().files.get(&file_id);
+      Parser::parse(file_id, source, file_info.options(), &mut SourceMap::new())
+  }
+  ```
+- [ ] Ensure `DefId` assignment is deterministic (same source → same DefIds)
+- [ ] **Validate**: Parse test file via query, compare to direct parser call
+
+##### Step 3: Implement file_imports query
+
+- [ ] Define `file_imports(FileId)` query:
+  ```rust
+  #[query]
+  fn file_imports(db: &Database, file_id: FileId) -> Vec<ImportStatement> {
+      let parse_result = parse(db, file_id);
+      extract_imports(&parse_result.ast)
+  }
+  ```
+- [ ] Extract import statements from AST
+- [ ] **Validate**: Unit test with file containing imports
+
+##### Step 4: Implement file_exports query
+
+- [ ] Define `file_exports(FileId)` query:
+  ```rust
+  #[query]
+  fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedItem> {
+      let parse_result = parse(db, file_id);
+      extract_exports(&parse_result.ast, &parse_result.defs)
+  }
+  ```
+- [ ] Extract top-level definitions and their visibility
+- [ ] **Validate**: Unit test with file containing various declarations
+
+---
+
+#### 1.D: Phase 1 Validation
+
+- [ ] **Integration test**: Parse entire test project via query system
+- [ ] **Comparison test**: Verify AST output matches legacy parser for all test files
+- [ ] **Memoization test**: Parse file, parse again, verify cache hit
+- [ ] **Invalidation test**: Parse file, modify content, parse again, verify recompute
+- [ ] **Fingerprint test**: Parse file, "modify" with identical content, verify cache hit
 
 **Deliverable**: Can parse a workspace via the query system and produce identical ASTs to the current system.
 
-### B. Phase 2: Name Resolution
+### Phase 2: Name Resolution
 
 **Goal**: Implement per-file name resolution without merging files into a single module.
 
-**Queries to implement**:
-- `resolved_imports(FileId)` → `HashMap<String, Result<ModulePath, ImportError>>`
-- `module_def_index(ModulePath)` → `HashMap<String, Result<DefId, NameCollision>>`
-- `name_resolutions(FileId)` → `HashMap<NodeId, Resolution>`
-- `def_for_path(ItemPath)` → `Option<DefTarget>`
-- `struct_def(DefTarget)` → `StructDef`
-- `trait_def(DefTarget)` → `TraitDef`
-- `impl_def(DefTarget)` → `ImplDef`
-- `type_alias(DefTarget)` → `TypeAliasDef`
-- `impls_for_type(DefTarget)` → `ImplsForType`
-- `impls_for_trait(DefTarget)` → `Vec<DefTarget>`
-- `file_ast(FileId)` → `FileAst` (AST transformations, depends on `name_resolutions` and `struct_def`)
+**Depends on**: Phase 1 complete, Phase 0.C (name resolution refactoring)
 
-**Key implementation work**:
-- Import resolution against `WorkspaceSnapshot` (no filesystem access)
-- Module namespace aggregation from per-file exports
-- Name resolution walker that produces `Resolution` side-table
-- Cross-module reference validation (unannotated functions can't be referenced)
-- AST transformation pass (compound assignment, curly desugaring/reordering)
+---
 
-**Testing strategy**:
-- Resolve names in test files, verify `Resolution` values match expected
-- Test cross-module references (valid annotated, invalid unannotated)
-- Test name collisions (same name in sibling files)
-- Test import errors (unknown module, ambiguous)
-- Compare `name_resolutions` output against current `NameContext` behavior for existing test suite
-- Test `file_ast` transformations: compound assignment, curly shorthand, curly field ordering
-- Verify `file_ast` output matches legacy lowered AST for existing test files
+#### 2.A: Import Resolution Queries
+
+##### Step 1: resolved_imports query
+
+- [ ] Define `resolved_imports(FileId)` query:
+  ```rust
+  #[query]
+  fn resolved_imports(db: &Database, file_id: FileId) -> HashMap<String, Result<ModulePath, ImportError>> {
+      let imports = file_imports(db, file_id);
+      let workspace = db.get_input::<WorkspaceSnapshot>();
+      resolve_imports(&imports, &workspace)
+  }
+  ```
+- [ ] Implement `resolve_imports` function:
+  - Map import paths to `ModulePath`s
+  - Check workspace for module existence
+  - Return `ImportError` for unknown modules
+- [ ] **Validate**: Unit test with valid and invalid imports
+
+##### Step 2: module_def_index query
+
+- [ ] Define `module_def_index(ModulePath)` query:
+  ```rust
+  #[query]
+  fn module_def_index(db: &Database, module: ModulePath) -> HashMap<String, Result<ExportedItem, NameCollision>> {
+      let workspace = db.get_input::<WorkspaceSnapshot>();
+      let file_ids = workspace.files_in_module(&module);
+      let mut index = HashMap::new();
+      for file_id in file_ids {
+          let exports = file_exports(db, file_id);
+          merge_exports(&mut index, exports, file_id);
+      }
+      index
+  }
+  ```
+- [ ] Implement collision detection (same name in multiple files)
+- [ ] **Validate**: Unit test with module containing multiple files
+
+---
+
+#### 2.B: Name Resolution Query
+
+##### Step 1: name_resolutions query
+
+- [ ] Define `name_resolutions(FileId)` query:
+  ```rust
+  #[query]
+  fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resolution> {
+      let parse_result = parse(db, file_id);
+      let imports = resolved_imports(db, file_id);
+      let file_info = db.workspace().files.get(&file_id);
+      let module_exports = module_def_index(db, file_info.module_path);
+      let sibling_exports = compute_sibling_exports(db, file_id);
+
+      resolve_file_names(&parse_result.ast, &imports, &module_exports, &sibling_exports)
+  }
+  ```
+- [ ] Wire up to `resolve_file_names` from Phase 0.C
+- [ ] **Validate**: Unit test resolving local, sibling, and imported names
+
+##### Step 2: Handle library references
+
+- [ ] Extend `Resolution::Def(DefTarget)` to include library targets
+- [ ] Load library exports from `LibraryData` input
+- [ ] Resolve library references in `resolve_file_names`
+- [ ] **Validate**: Unit test with `use core::...` import
+
+---
+
+#### 2.C: Definition Lookup Queries
+
+##### Step 1: def_for_path query
+
+- [ ] Define `def_for_path(ItemPath)` query:
+  ```rust
+  #[query]
+  fn def_for_path(db: &Database, path: ItemPath) -> Option<DefTarget> {
+      let module_index = module_def_index(db, path.module);
+      module_index.get(&path.item_name())?.ok().map(|e| e.target)
+  }
+  ```
+- [ ] Handle nested paths (e.g., `List::push`)
+- [ ] **Validate**: Unit test looking up various paths
+
+##### Step 2: struct_def query
+
+- [ ] Define `struct_def(DefTarget)` query:
+  ```rust
+  #[query]
+  fn struct_def(db: &Database, target: DefTarget) -> Option<StructDef> {
+      match target {
+          DefTarget::Workspace(def_id) => {
+              let parse_result = parse(db, def_id.file);
+              extract_struct_def(&parse_result.ast, def_id)
+          }
+          DefTarget::Library { lib, path } => {
+              let lib_data = db.get_input::<LibraryData>(lib);
+              lib_data.struct_defs.get(&path).cloned()
+          }
+      }
+  }
+  ```
+- [ ] Extract struct fields, generics, visibility
+- [ ] **Validate**: Unit test for workspace and library structs
+
+##### Step 3: trait_def query
+
+- [ ] Define `trait_def(DefTarget)` query (similar pattern to struct_def)
+- [ ] Extract trait methods, associated types, supertraits
+- [ ] **Validate**: Unit test for traits
+
+##### Step 4: impl_def query
+
+- [ ] Define `impl_def(DefTarget)` query
+- [ ] Extract impl target type, trait (if any), methods
+- [ ] **Validate**: Unit test for impl blocks
+
+##### Step 5: type_alias query
+
+- [ ] Define `type_alias(DefTarget)` query
+- [ ] Extract alias target type and generics
+- [ ] **Validate**: Unit test for type aliases
+
+---
+
+#### 2.D: Impl Index Queries
+
+##### Step 1: impls_for_type query
+
+- [ ] Define `impls_for_type(DefTarget)` query:
+  ```rust
+  #[query]
+  fn impls_for_type(db: &Database, type_target: DefTarget) -> ImplsForType {
+      // Scan all impls in workspace and libraries
+      // Filter to those implementing this type
+      // Return grouped by trait (inherent vs trait impls)
+  }
+  ```
+- [ ] Index impls by target type
+- [ ] **Validate**: Unit test finding impls for a struct
+
+##### Step 2: impls_for_trait query
+
+- [ ] Define `impls_for_trait(DefTarget)` query
+- [ ] Find all impls of a given trait
+- [ ] **Validate**: Unit test finding impls of a trait
+
+##### Step 3: impls_in_module query
+
+- [ ] Define `impls_in_module(ModulePath)` query:
+  ```rust
+  fn impls_in_module(db: &Database, module: ModulePath) -> Vec<DefId> {
+      let workspace = db.get_input::<WorkspaceSnapshot>();
+      let file_ids = workspace.files_in_module(&module);
+      let mut impls = Vec::new();
+      for file_id in file_ids {
+          let parse_result = parse(db, file_id);
+          for def_header in &parse_result.defs {
+              if matches!(def_header.kind, DefKind::Impl { .. }) {
+                  impls.push(def_header.def_id);
+              }
+          }
+      }
+      impls
+  }
+  ```
+- [ ] **Validate**: Unit test listing impls in a module
+
+##### Step 4: traits_in_module query
+
+- [ ] Define `traits_in_module(ModulePath)` query:
+  ```rust
+  fn traits_in_module(db: &Database, module: ModulePath) -> Vec<DefId> {
+      let workspace = db.get_input::<WorkspaceSnapshot>();
+      let file_ids = workspace.files_in_module(&module);
+      let mut traits = Vec::new();
+      for file_id in file_ids {
+          let parse_result = parse(db, file_id);
+          for def_header in &parse_result.defs {
+              if matches!(def_header.kind, DefKind::Trait { .. }) {
+                  traits.push(def_header.def_id);
+              }
+          }
+      }
+      traits
+  }
+  ```
+- [ ] **Validate**: Unit test listing traits in a module
+
+---
+
+#### 2.E: AST Transformation Query
+
+##### Step 1: file_ast query
+
+- [ ] Define `file_ast(FileId)` query:
+  ```rust
+  #[query]
+  fn file_ast(db: &Database, file_id: FileId) -> FileAst {
+      let parse_result = parse(db, file_id);
+      let resolutions = name_resolutions(db, file_id);
+
+      let mut ast = parse_result.ast.clone();
+      transform_ast(&mut ast, |expr| {
+          desugar_compound_assignment(expr);
+          expand_curly_shorthand(expr);
+      });
+      // Curly field reordering needs struct_def lookup
+      reorder_curly_fields(&mut ast, |struct_path| {
+          let target = def_for_path(db, struct_path)?;
+          let struct_def = struct_def(db, target)?;
+          Some(struct_def.field_order())
+      });
+
+      FileAst { ast, resolutions, defs: parse_result.defs }
+  }
+  ```
+- [ ] Wire up to transform helpers from Phase 0.B.2
+- [ ] **Validate**: Compare output to legacy lowered AST
+
+##### Step 2: Handle all transformations
+
+- [ ] Compound assignment desugaring (`x += 1` → `x = x + 1`)
+- [ ] Curly shorthand expansion (`Point { x }` → `Point { x: x }`)
+- [ ] Curly field reordering (match struct definition order)
+- [ ] Function-to-closure conversion (if needed at this stage)
+- [ ] **Validate**: Unit tests for each transformation
+
+---
+
+#### 2.F: Phase 2 Validation
+
+- [ ] **Integration test**: Resolve names in entire test project
+- [ ] **Comparison test**: Verify resolutions match legacy `NameContext` for all test files
+- [ ] **Cross-file test**: Verify sibling file references resolve correctly
+- [ ] **Import error test**: Verify unknown imports produce correct errors
+- [ ] **Collision test**: Verify name collisions are detected
+- [ ] **AST transform test**: Verify `file_ast` output matches legacy lowering
 
 **Deliverable**: Can resolve all names in a module without merging files. Name resolution results match current system for valid programs. AST transformations produce equivalent output to legacy lowering.
 
-### C. Phase 3: Binding Analysis & Typechecking
+### Phase 3: Binding Analysis & Typechecking
 
 **Goal**: Implement binding graph construction, SCC computation, and typechecking at binding-group granularity.
 
-**Queries to implement**:
-- `def_deps(DefId)` → `Vec<DefId>` (workspace-only)
-- `binding_graph(ModulePath)` → `BindingGraph`
-- `binding_groups(ModulePath)` → `Vec<BindingGroupId>`
-- `binding_group_members(BindingGroupId)` → `Vec<DefId>`
-- `binding_group_for_def(DefId)` → `BindingGroupId`
-- `closure_info(NodeId)` → `Option<ClosureInfo>`
-- `mapped_def_types(DefId)` → `MappedDefTypes`
-- `typecheck_group(BindingGroupId)` → `TypecheckResult`
-- `def_scheme(DefTarget)` → `TyScheme` (handles both workspace and library)
-- `ty_of(NodeId)` → `Ty`
-- `call_resolution(NodeId)` → `Option<CallResolution>`
+**Depends on**: Phase 2 complete, Phase 0.E-G (binding pass decomposition, typechecker refactoring)
 
-**Key implementation work**:
-- Binding graph construction with inference-edge filtering
-- Tarjan's SCC algorithm for binding group computation
-- Schema var allocation and type variable mapping (`mapped_def_types`)
-- Adapt existing typechecker to work per-binding-group
-- Type result storage in query results (not mutable `TyCtx`)
+---
 
-**Testing strategy**:
-- Test SCC computation on known dependency graphs
-- Test that annotated functions break inference dependencies
-- Compile test programs through new system, verify inferred types match current system
-- Incremental tests: edit a function body, verify only its binding group retypechecks
-- Incremental tests: edit an unannotated function, verify dependents retypecheck
-- Incremental tests: edit an annotated function body, verify dependents don't retypecheck
+#### 3.A: Dependency Graph Queries
+
+##### Step 1: def_deps query
+
+- [ ] Define `def_deps(DefId)` query:
+  ```rust
+  #[query]
+  fn def_deps(db: &Database, def_id: DefId) -> Vec<DefId> {
+      let resolutions = name_resolutions(db, def_id.file);
+      resolutions.iter()
+          .filter(|(node_id, _)| node_id.owner == def_id)
+          .filter_map(|(_, res)| match res {
+              Resolution::Def(DefTarget::Workspace(target)) => Some(*target),
+              _ => None,
+          })
+          .collect()
+  }
+  ```
+- [ ] Wire up to `def_deps` function from Phase 0.D
+- [ ] **Validate**: Unit test for function with various dependencies
+
+##### Step 2: binding_graph query
+
+- [ ] Define `binding_graph(ModulePath)` query:
+  ```rust
+  #[query]
+  fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
+      let workspace = db.get_input::<WorkspaceSnapshot>();
+      let file_ids = workspace.files_in_module(&module);
+
+      let mut graph = BindingGraph::new();
+      for file_id in file_ids {
+          let parse_result = parse(db, file_id);
+          for def_header in &parse_result.defs {
+              let deps = def_deps(db, def_header.def_id);
+              // Filter edges based on annotation status
+              let filtered_deps = filter_inference_edges(&deps, |dep| {
+                  is_fully_annotated(db, dep)
+              });
+              graph.add_edges(def_header.def_id, filtered_deps);
+          }
+      }
+      graph
+  }
+  ```
+- [ ] Implement inference-edge filtering (edges to annotated defs don't create inference deps)
+- [ ] **Validate**: Unit test comparing to legacy binding graph
+
+##### Step 3: binding_groups query
+
+- [ ] Define `binding_groups(ModulePath)` query:
+  ```rust
+  #[query]
+  fn binding_groups(db: &Database, module: ModulePath) -> Vec<BindingGroupId> {
+      let graph = binding_graph(db, module);
+      let sccs = graph.compute_binding_groups();  // Tarjan's algorithm
+      sccs.into_iter()
+          .enumerate()
+          .map(|(idx, group)| BindingGroupId { module, index: idx as u32 })
+          .collect()
+  }
+  ```
+- [ ] Define `BindingGroupId` struct: `{ module: ModulePath, index: u32 }`
+- [ ] Store SCC results for lookup by other queries
+- [ ] **Validate**: Unit test verifying SCC computation matches legacy
+
+##### Step 4: binding_group_members query
+
+- [ ] Define `binding_group_members(BindingGroupId)` query
+- [ ] Return `Vec<DefId>` for the group
+- [ ] **Validate**: Unit test
+
+##### Step 5: binding_group_for_def query
+
+- [ ] Define `binding_group_for_def(DefId)` query
+- [ ] Reverse lookup from def to its containing group
+- [ ] **Validate**: Unit test
+
+---
+
+#### 3.B: Closure & Type Mapping Queries
+
+##### Step 1: closures_in_def query
+
+- [ ] Define `closures_in_def(DefId)` query:
+  ```rust
+  #[query]
+  fn closures_in_def(db: &Database, def_id: DefId) -> Vec<ClosureInfo> {
+      let file_ast = file_ast(db, def_id.file);
+      let def_ast = find_def_ast(&file_ast.ast, def_id);
+      let resolutions = name_resolutions(db, def_id.file);
+
+      closure::closures_in_def(def_id, def_ast, &resolutions)
+  }
+  ```
+- [ ] Wire up to `closures_in_def` from Phase 0.C.5
+- [ ] **Validate**: Unit test for function with closures capturing locals
+
+##### Step 2: closure_info query
+
+- [ ] Define `closure_info(NodeId)` query as lookup into `closures_in_def`:
+  ```rust
+  #[query]
+  fn closure_info(db: &Database, closure_node: NodeId) -> Option<ClosureInfo> {
+      let def_id = closure_node.owner;
+      let closures = closures_in_def(db, def_id);
+      closures.into_iter().find(|c| c.closure_expr == closure_node)
+  }
+  ```
+- [ ] **Validate**: Unit test for closure_info lookup
+
+##### Step 3: mapped_def_types query
+
+- [ ] Define `mapped_def_types(DefId)` query:
+  ```rust
+  #[query]
+  fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
+      let file_ast = file_ast(db, def_id.file);
+      let def_header = find_def_header(&file_ast.defs, def_id);
+      let type_annotations = extract_type_annotations(&file_ast.ast, def_id);
+
+      let mut allocator = SchemaVarAllocator::new();
+      let (mapped_types, fwd_map, rev_map) = map_vars(
+          &type_annotations,
+          &mut allocator,
+          &HashMap::new(),  // No previous mappings for fresh def
+      );
+
+      MappedDefTypes { mapped_types, var_mappings: fwd_map, allocator }
+  }
+  ```
+- [ ] Wire up to `map_vars` from Phase 0.B.1
+- [ ] **Validate**: Unit test for function with type parameters
+
+---
+
+#### 3.C: Typechecking Queries
+
+##### Step 1: typecheck_group query
+
+- [ ] Define `typecheck_group(BindingGroupId)` query:
+  ```rust
+  #[query]
+  fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypecheckResult {
+      let members = binding_group_members(db, group_id);
+
+      // Build input for this group
+      let group_input = build_group_input(db, &members);
+
+      // External scheme lookup via query
+      let external_schemes = |def_id: DefId| -> Option<TyScheme> {
+          def_scheme(db, DefTarget::Workspace(def_id))
+      };
+
+      check_single_group(&group_input, &external_schemes, &options)
+  }
+  ```
+- [ ] Wire up to `check_single_group` from Phase 0.G
+- [ ] Build `BindingGroupInput` from query results
+- [ ] **Validate**: Unit test typechecking simple binding group
+
+##### Step 2: Handle group dependencies
+
+- [ ] Ensure groups are typechecked in topological order (queries handle this naturally)
+- [ ] Verify external scheme lookup works for cross-group references
+- [ ] **Validate**: Unit test with multi-group dependencies
+
+##### Step 3: def_scheme query
+
+- [ ] Define `def_scheme(DefTarget)` query:
+  ```rust
+  #[query]
+  fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
+      match target {
+          DefTarget::Workspace(def_id) => {
+              let group_id = binding_group_for_def(db, def_id);
+              let result = typecheck_group(db, group_id);
+              result.schemes.get(&def_id).cloned()
+          }
+          DefTarget::Library { lib, path } => {
+              let lib_data = db.get_input::<LibraryData>(lib);
+              lib_data.schemes.get(&path).cloned()
+          }
+      }
+  }
+  ```
+- [ ] Handle annotated vs inferred schemes
+- [ ] **Validate**: Unit test looking up schemes
+
+##### Step 4: ty_of query
+
+- [ ] Define `ty_of(NodeId)` query:
+  ```rust
+  #[query]
+  fn ty_of(db: &Database, node_id: NodeId) -> Option<Ty> {
+      let def_id = node_id.owner;
+      let group_id = binding_group_for_def(db, def_id);
+      let result = typecheck_group(db, group_id);
+      result.node_types.get(&node_id).cloned()
+  }
+  ```
+- [ ] **Validate**: Unit test querying expression types
+
+##### Step 5: call_resolution query
+
+- [ ] Define `call_resolution(NodeId)` query
+- [ ] Return resolved callee, instantiated types, trait impl (if method)
+- [ ] **Validate**: Unit test for method call resolution
+
+---
+
+#### 3.D: Phase 3 Validation
+
+- [ ] **Integration test**: Typecheck entire test project via queries
+- [ ] **Comparison test**: Verify inferred schemes match legacy typechecker
+- [ ] **SCC test**: Verify binding groups match legacy computation
+- [ ] **Incremental test**: Edit function body, verify only its group retypechecks
+- [ ] **Annotation test**: Edit annotated function body, verify dependents don't retypecheck
+- [ ] **Unannotated test**: Edit unannotated function, verify dependents retypecheck
 
 **Deliverable**: Can typecheck a module at binding-group granularity. Type schemes match current system. Incremental recomputation works correctly.
 
-### D. Phase 4: Integration
+### Phase 4: Integration
 
 **Goal**: Wire up CLI and LSP to use the query system, replacing the current frontend.
 
-**Queries to implement**:
-- `file_diagnostics(FileId)` → `Vec<RayError>`
-- `span_of(NodeId)` → `Span`
-- `find_at_position(FileId, line, col)` → `Option<NodeId>`
-- `symbol_targets(NodeId)` → `Vec<SymbolTarget>`
-- `def_name(DefTarget)` → `String`
-- `def_path(DefTarget)` → `ItemPath`
-- `definition_record(DefTarget)` → `DefinitionRecord`
-- `semantic_tokens(FileId)` → `SemanticTokens`
-- `scope_at(FileId, Position)` → `Vec<(String, ScopeEntry)>`
-- `expected_type_at(FileId, Position)` → `Option<Ty>`
-- `completion_context(FileId, Position)` → `Option<CompletionContext>`
-- `methods_for_type(Ty)` → `Vec<(String, DefTarget)>`
-- `associated_items(DefTarget)` → `Vec<(String, DefTarget)>`
-- Operator and builtin queries
+**Depends on**: Phase 3 complete
 
-**Key implementation work**:
-- CLI: `ray build` and `ray analyze` using query system
-- CLI: Persistent cache implementation (`.ray/cache/`)
-- LSP: State management with document overlays
-- LSP: Event handlers (`didOpen`, `didChange`, `didClose`)
-- LSP: Feature handlers (hover, go-to-definition, completion, rename, semantic tokens)
+---
 
-**Testing strategy**:
-- End-to-end CLI tests: build test programs, verify output matches current system
-- CLI cache tests: build, edit file, rebuild, verify cache hits/misses
-- LSP integration tests: hover returns correct type info
-- LSP integration tests: go-to-definition navigates to correct location
-- LSP integration tests: completion returns expected items
-- LSP integration tests: rename updates all references
-- Performance benchmarks: LSP response time on edits
+#### 4.A: Diagnostic & Navigation Queries
+
+##### Step 1: file_diagnostics query
+
+- [ ] Define `file_diagnostics(FileId)` query:
+  ```rust
+  #[query]
+  fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
+      let mut errors = Vec::new();
+
+      // Collect parse errors
+      let parse_result = parse(db, file_id);
+      errors.extend(parse_result.errors.clone());
+
+      // Collect name resolution errors
+      let resolutions = name_resolutions(db, file_id);
+      errors.extend(collect_resolution_errors(&resolutions));
+
+      // Collect type errors (triggers typechecking)
+      let file_ast = file_ast(db, file_id);
+      for def_header in &file_ast.defs {
+          let group_id = binding_group_for_def(db, def_header.def_id);
+          let typecheck_result = typecheck_group(db, group_id);
+          errors.extend(typecheck_result.errors.iter()
+              .filter(|e| e.def_id == def_header.def_id)
+              .cloned());
+      }
+
+      errors
+  }
+  ```
+- [ ] **Validate**: Unit test collecting all error types
+
+##### Step 2: span_of query
+
+- [ ] Define `span_of(NodeId)` query:
+  ```rust
+  #[query]
+  fn span_of(db: &Database, node_id: NodeId) -> Option<Span> {
+      let parse_result = parse(db, node_id.owner.file);
+      parse_result.source_map.span_of_node(node_id)
+  }
+  ```
+- [ ] **Validate**: Unit test looking up spans
+
+##### Step 3: find_at_position query
+
+- [ ] Define `find_at_position(FileId, Position)` query:
+  ```rust
+  #[query]
+  fn find_at_position(db: &Database, file_id: FileId, pos: Position) -> Option<NodeId> {
+      let parse_result = parse(db, file_id);
+      parse_result.source_map.node_at_position(pos)
+  }
+  ```
+- [ ] Build position → NodeId index in SourceMap
+- [ ] **Validate**: Unit test finding nodes at positions
+
+##### Step 4: symbol_targets query
+
+- [ ] Define `symbol_targets(NodeId)` query (for go-to-definition):
+  ```rust
+  #[query]
+  fn symbol_targets(db: &Database, node_id: NodeId) -> Vec<SymbolTarget> {
+      let resolutions = name_resolutions(db, node_id.owner.file);
+      match resolutions.get(&node_id) {
+          Some(Resolution::Def(target)) => vec![SymbolTarget::Def(*target)],
+          Some(Resolution::Local(local_id)) => vec![SymbolTarget::Local(*local_id)],
+          _ => vec![],
+      }
+  }
+  ```
+- [ ] Handle method calls (resolve to impl method)
+- [ ] **Validate**: Unit test for various symbol types
+
+---
+
+#### 4.B: Definition Info Queries
+
+##### Step 1: def_name query
+
+- [ ] Define `def_name(DefTarget)` query
+- [ ] Return definition name from `DefHeader`
+- [ ] **Validate**: Unit test
+
+##### Step 2: def_path query
+
+- [ ] Define `def_path(DefTarget)` query
+- [ ] Return fully qualified `ItemPath`
+- [ ] **Validate**: Unit test
+
+##### Step 3: definition_record query
+
+- [ ] Define `definition_record(DefTarget)` query:
+  ```rust
+  #[query]
+  fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionRecord> {
+      // Aggregate info about a definition for display
+      let name = def_name(db, target)?;
+      let path = def_path(db, target);
+      let scheme = def_scheme(db, target);
+      let span = /* ... */;
+      Some(DefinitionRecord { name, path, scheme, span, kind: /* ... */ })
+  }
+  ```
+- [ ] **Validate**: Unit test
+
+##### Step 4: file_of query
+
+- [ ] Define `file_of(NodeId)` query:
+  ```rust
+  #[query]
+  fn file_of(db: &Database, node_id: NodeId) -> FileId {
+      node_id.owner.file
+  }
+  ```
+- [ ] **Validate**: Unit test
+
+##### Step 5: decorators query
+
+- [ ] Define `decorators(DefId)` query:
+  ```rust
+  #[query]
+  fn decorators(db: &Database, def_id: DefId) -> Vec<Decorator> {
+      let parse_result = parse(db, def_id.file);
+      extract_decorators(&parse_result.source_map, def_id)
+  }
+  ```
+- [ ] Extract decorator nodes from source map
+- [ ] **Validate**: Unit test with decorated definitions
+
+##### Step 6: has_decorator query
+
+- [ ] Define `has_decorator(DefId, name)` query:
+  ```rust
+  #[query]
+  fn has_decorator(db: &Database, def_id: DefId, name: &str) -> bool {
+      let decorators = decorators(db, def_id);
+      decorators.iter().any(|d| d.name == name)
+  }
+  ```
+- [ ] **Validate**: Unit test
+
+##### Step 7: doc_comment query
+
+- [ ] Define `doc_comment(DefId)` query:
+  ```rust
+  #[query]
+  fn doc_comment(db: &Database, def_id: DefId) -> Option<String> {
+      let parse_result = parse(db, def_id.file);
+      parse_result.source_map.doc_comment_for(def_id)
+  }
+  ```
+- [ ] **Validate**: Unit test with documented definitions
+
+---
+
+#### 4.C: Operator & Builtin Queries
+
+##### Step 1: operator_index query
+
+- [ ] Define `operator_index()` query:
+  ```rust
+  #[query]
+  fn operator_index(db: &Database) -> HashMap<String, OperatorEntry> {
+      let workspace = db.get_input::<WorkspaceSnapshot>();
+      let mut index = HashMap::new();
+
+      // Scan workspace traits
+      for module in workspace.all_modules() {
+          for trait_id in traits_in_module(db, module) {
+              let trait_def = trait_def(db, DefTarget::Workspace(trait_id));
+              for method in &trait_def.methods {
+                  if is_operator_name(&method.name) {
+                      index.insert(method.name.clone(), OperatorEntry {
+                          trait_def: DefTarget::Workspace(trait_id),
+                          method_def: DefTarget::Workspace(method.def_id),
+                          arity: infer_arity(&method.sig),
+                      });
+                  }
+              }
+          }
+      }
+
+      // Include library operators
+      for (lib_path, lib_data) in db.all_libraries() {
+          index.extend(lib_data.operators.clone());
+      }
+
+      index
+  }
+  ```
+- [ ] Implement `is_operator_name` helper (non-alphanumeric method names)
+- [ ] **Validate**: Unit test finding `+`, `-`, etc. operators
+
+##### Step 2: lookup_infix_op query
+
+- [ ] Define `lookup_infix_op(symbol)` query:
+  ```rust
+  #[query]
+  fn lookup_infix_op(db: &Database, symbol: &str) -> Option<OperatorEntry> {
+      let index = operator_index(db);
+      index.get(symbol)
+          .filter(|e| e.arity == OperatorArity::Infix)
+          .cloned()
+  }
+  ```
+- [ ] **Validate**: Unit test looking up `+`
+
+##### Step 3: lookup_prefix_op query
+
+- [ ] Define `lookup_prefix_op(symbol)` query:
+  ```rust
+  #[query]
+  fn lookup_prefix_op(db: &Database, symbol: &str) -> Option<OperatorEntry> {
+      let index = operator_index(db);
+      index.get(symbol)
+          .filter(|e| e.arity == OperatorArity::Prefix)
+          .cloned()
+  }
+  ```
+- [ ] **Validate**: Unit test looking up `-` (unary negation)
+
+##### Step 4: builtin_ty query
+
+- [ ] Define `builtin_ty(name)` query:
+  ```rust
+  #[query]
+  fn builtin_ty(db: &Database, name: &str) -> Option<DefTarget> {
+      let path = match name {
+          "string" => ItemPath::parse("core::string::string"),
+          "Index" => ItemPath::parse("core::ops::Index"),
+          "Iterator" => ItemPath::parse("core::iter::Iterator"),
+          "Option" => ItemPath::parse("core::option::Option"),
+          "Result" => ItemPath::parse("core::result::Result"),
+          _ => return None,
+      };
+      def_for_path(db, path)
+  }
+  ```
+- [ ] Add builtin name → path mappings for all well-known types
+- [ ] **Validate**: Unit test looking up `string`, `Iterator`
+
+---
+
+#### 4.D: LSP Feature Queries
+
+##### Step 1: semantic_tokens query
+
+- [ ] Define `semantic_tokens(FileId)` query:
+  ```rust
+  #[query]
+  fn semantic_tokens(db: &Database, file_id: FileId) -> SemanticTokens {
+      let file_ast = file_ast(db, file_id);
+      let resolutions = &file_ast.resolutions;
+      compute_semantic_tokens(&file_ast.ast, resolutions)
+  }
+  ```
+- [ ] Classify tokens: keyword, function, variable, type, etc.
+- [ ] **Validate**: Unit test token classification
+
+##### Step 2: scope_at query
+
+- [ ] Define `scope_at(FileId, Position)` query:
+  ```rust
+  #[query]
+  fn scope_at(db: &Database, file_id: FileId, pos: Position) -> Vec<(String, ScopeEntry)> {
+      let file_ast = file_ast(db, file_id);
+      compute_scope_at_position(&file_ast.ast, &file_ast.resolutions, pos)
+  }
+  ```
+- [ ] Return visible bindings at position (for completion)
+- [ ] **Validate**: Unit test scope computation
+
+##### Step 3: expected_type_at query
+
+- [ ] Define `expected_type_at(FileId, Position)` query
+- [ ] Return expected type at cursor (for smart completion)
+- [ ] **Validate**: Unit test
+
+##### Step 4: completion_context query
+
+- [ ] Define `completion_context(FileId, Position)` query:
+  ```rust
+  #[query]
+  fn completion_context(db: &Database, file_id: FileId, pos: Position) -> Option<CompletionContext> {
+      // Determine what kind of completion: name, field, method, type, etc.
+      let scope = scope_at(db, file_id, pos);
+      let expected_ty = expected_type_at(db, file_id, pos);
+      // ...
+  }
+  ```
+- [ ] **Validate**: Unit test various completion contexts
+
+##### Step 5: methods_for_type query
+
+- [ ] Define `methods_for_type(Ty)` query
+- [ ] Return available methods for a type (inherent + trait)
+- [ ] **Validate**: Unit test
+
+##### Step 6: associated_items query
+
+- [ ] Define `associated_items(DefTarget)` query
+- [ ] Return associated constants, types, methods for a type
+- [ ] **Validate**: Unit test
+
+---
+
+#### 4.E: CLI Integration
+
+##### Step 1: ray build with queries
+
+- [ ] Create `Database` from workspace directory
+- [ ] Set `FileSource` inputs for all files
+- [ ] Query `file_diagnostics` for each file
+- [ ] Collect and report errors
+- [ ] **Validate**: `ray build` on test project matches legacy output
+
+##### Step 2: Persistent cache
+
+- [ ] Implement cache serialization to `.ray/cache/`
+- [ ] Store query results with fingerprints
+- [ ] Load cache on startup, validate fingerprints
+- [ ] **Validate**: Build, modify file, rebuild — verify cache hits
+
+##### Step 3: ray analyze with queries
+
+- [ ] Use queries for type information in `ray analyze` output
+- [ ] **Validate**: `ray analyze` matches legacy output
+
+---
+
+#### 4.F: LSP Integration
+
+##### Step 1: LSP state management
+
+- [ ] Create `Database` per workspace
+- [ ] Implement document overlay for unsaved changes:
+  ```rust
+  fn apply_overlay(&mut self, file_id: FileId, content: String) {
+      self.set_input::<FileSource>(file_id, FileSource(content));
+  }
+  ```
+- [ ] **Validate**: Edit file in memory, verify queries see changes
+
+##### Step 2: Document event handlers
+
+- [ ] `didOpen`: Add file to workspace if needed
+- [ ] `didChange`: Apply overlay with new content
+- [ ] `didClose`: Remove overlay (revert to disk)
+- [ ] `didSave`: Update disk content, clear overlay
+- [ ] **Validate**: Unit tests for each event
+
+##### Step 3: Hover handler
+
+- [ ] Find node at position via `find_at_position`
+- [ ] Get type via `ty_of` or `def_scheme`
+- [ ] Format hover content
+- [ ] **Validate**: Hover shows correct types
+
+##### Step 4: Go-to-definition handler
+
+- [ ] Find node at position
+- [ ] Get targets via `symbol_targets`
+- [ ] Get spans via `span_of`
+- [ ] Return locations
+- [ ] **Validate**: Navigation works correctly
+
+##### Step 5: Completion handler
+
+- [ ] Get completion context
+- [ ] Get scope at position
+- [ ] Filter by expected type if available
+- [ ] Return completion items
+- [ ] **Validate**: Completion returns relevant items
+
+##### Step 6: Rename handler
+
+- [ ] Find all references to symbol
+- [ ] Compute text edits for each reference
+- [ ] Return workspace edit
+- [ ] **Validate**: Rename updates all references
+
+##### Step 7: Semantic tokens handler
+
+- [ ] Query `semantic_tokens`
+- [ ] Convert to LSP format
+- [ ] **Validate**: Syntax highlighting works
+
+---
+
+#### 4.G: Phase 4 Validation
+
+- [ ] **CLI end-to-end**: Build test project, compare to legacy
+- [ ] **CLI cache**: Verify incremental builds work correctly
+- [ ] **LSP hover**: Verify type display matches legacy
+- [ ] **LSP go-to-def**: Verify navigation to correct locations
+- [ ] **LSP completion**: Verify completions are relevant and complete
+- [ ] **LSP rename**: Verify all references updated
+- [ ] **LSP perf**: Measure response time on edits (target: <200ms)
+
+---
+
+#### 4.H: Legacy Removal
+
+Once all tests pass:
+
+- [ ] Remove `ModuleCombiner` and merged module concept
+- [ ] Remove `NameContext` global accumulation
+- [ ] Remove legacy binding pass
+- [ ] Remove `TyCtx` mutation for result storage
+- [ ] Remove `Driver::build_frontend()` legacy path
+- [ ] Update documentation to reflect new architecture
+- [ ] **Validate**: Full test suite passes with legacy code removed
 
 **Deliverable**: CLI and LSP fully migrated to query system. Current frontend can be removed.
 
