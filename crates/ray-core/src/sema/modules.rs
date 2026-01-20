@@ -6,7 +6,9 @@ use std::{
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     file_id::FileId,
+    node_id::NodeId,
     pathlib::{FilePath, Path, RayPaths},
+    resolution::Resolution,
     span::{Source, Span},
     ty::{Ty, TyVar},
     utils::map_join,
@@ -39,6 +41,7 @@ pub struct ModBuilderResult {
     pub srcmap: SourceMap,
     pub libs: Vec<Program>,
     pub paths: HashSet<Path>,
+    pub resolutions: HashMap<NodeId, Resolution>,
 }
 
 #[derive(Debug, Default)]
@@ -190,7 +193,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             srcmap,
             tcx,
             ncx,
-            resolutions: _,
+            resolutions,
         } = match transform::combine(module_path, modules, srcmaps, lib_set, tcx, ncx) {
             Ok(result) => result,
             Err(errs) => {
@@ -205,6 +208,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
             srcmap,
             libs,
             paths,
+            resolutions,
         })
     }
 

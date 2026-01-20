@@ -1001,6 +1001,136 @@ fn push_defaulting_outcome_errors(
     }
 }
 
+/// Typecheck a single binding group.
+///
+/// This is the core typechecking entry point for incremental compilation.
+/// It generates constraints for the group, solves them, applies defaulting,
+/// and generalizes the resulting types.
+///
+/// # Arguments
+/// * `input` - The typechecking input containing expression/pattern records
+/// * `group` - The binding group to typecheck
+/// * `external_schemes` - Callback for looking up schemes from previously-checked groups
+/// * `ncx` - Name context for resolved paths
+/// * `global_env` - Global environment with struct/trait definitions
+///
+/// # Returns
+/// A `TypeCheckResult` containing inferred schemes, expression types, and errors.
+pub fn typecheck_group<'a>(
+    input: &TypeCheckInput,
+    group: &BindingGroup<DefId>,
+    external_schemes: impl Fn(DefId) -> Option<TyScheme> + 'a,
+    ncx: &'a NameContext,
+    global_env: &'a GlobalEnv,
+) -> TypeCheckResult {
+    let mut ctx = SolverContext::new(input.schema_allocator.clone(), ncx, global_env);
+
+    // Set up external scheme lookup callback
+    ctx.set_external_schemes(external_schemes);
+
+    // Seed context with annotated schemes for bindings in this group
+    for def_id in &group.bindings {
+        if let Some(record) = input.binding_records.get(def_id) {
+            if let Some(scheme) = &record.scheme {
+                ctx.binding_schemes.insert((*def_id).into(), scheme.clone());
+                ctx.explicitly_annotated.insert((*def_id).into());
+            }
+        }
+    }
+
+    let errors = solve_single_group(input, group, &mut ctx, global_env, None);
+
+    // Extract results
+    let mut schemes = HashMap::new();
+    for def_id in &group.bindings {
+        if let Some(scheme) = ctx.binding_schemes.get(&(*def_id).into()) {
+            schemes.insert(*def_id, scheme.clone());
+        }
+    }
+
+    let node_tys = mem::take(&mut ctx.expr_types);
+
+    TypeCheckResult {
+        schemes,
+        node_tys,
+        errors,
+    }
+}
+
+/// Internal helper to solve a single group, mutating the context.
+fn solve_single_group(
+    input: &TypeCheckInput,
+    group: &BindingGroup<DefId>,
+    ctx: &mut SolverContext,
+    global_env: &GlobalEnv,
+    pretty_subst: Option<&Subst>,
+) -> Vec<TypeError> {
+    let mut errors = vec![];
+
+    let mut root = build_constraint_tree_for_group(input, ctx, group);
+    log::debug!("[typecheck_group] constraints before solving");
+    let mut depth = 0;
+    walk_tree(&root, &mut |item| {
+        if matches!(
+            item,
+            ConstraintTreeWalkItem::NodeEnd(_) | ConstraintTreeWalkItem::BindingNodeEnd(_)
+        ) {
+            depth -= 1;
+        }
+        log::debug!("  {}{}", " ".repeat(depth), item);
+        if matches!(
+            item,
+            ConstraintTreeWalkItem::NodeStart(_) | ConstraintTreeWalkItem::BindingNodeStart(_)
+        ) {
+            depth += 1;
+        }
+    });
+
+    let env = SolverEnv::default();
+    let mut subst = Subst::new();
+    let residuals = solve_bindings(
+        input,
+        &mut root,
+        &group.bindings,
+        ctx,
+        &env,
+        global_env,
+        &mut subst,
+        &mut errors,
+    );
+    let DefaultingResult {
+        subst: defaulted_subst,
+        residuals,
+        log,
+    } = apply_defaulting(input, ctx, group, global_env, residuals, &subst);
+    subst = defaulted_subst;
+    ctx.apply_subst(&subst);
+    push_defaulting_outcome_errors(
+        &mut errors,
+        input,
+        &ctx.expr_types,
+        &ctx.generalized_metas,
+        &log,
+    );
+
+    // Defaulting can refine metas in residual predicates (e.g. `Int[?t]`
+    // becomes `Int[int]`). Re-run goal solving after defaulting so that
+    // newly-concrete predicates can be discharged by instances.
+    let post_defaulting =
+        goal_solver::solve_constraints(&residuals, &env.givens, global_env, &mut subst, ctx);
+    ctx.apply_subst(&subst);
+    log::debug!("[typecheck_group] subst: {:#}", subst);
+    check_residuals_and_emit_errors(
+        input,
+        &post_defaulting.unsolved,
+        ctx,
+        pretty_subst,
+        &mut errors,
+    );
+
+    errors
+}
+
 fn solve_groups(
     input: &TypeCheckInput,
     groups: Vec<BindingGroup<DefId>>,
@@ -1010,68 +1140,8 @@ fn solve_groups(
 ) -> BindingGroupResult {
     let mut errors = vec![];
     for group in groups.iter() {
-        let mut root = build_constraint_tree_for_group(input, ctx, group);
-        log::debug!("[solve_groups] constraints before solving");
-        let mut depth = 0;
-        walk_tree(&root, &mut |item| {
-            if matches!(
-                item,
-                ConstraintTreeWalkItem::NodeEnd(_) | ConstraintTreeWalkItem::BindingNodeEnd(_)
-            ) {
-                depth -= 1;
-            }
-            log::debug!("  {}{}", " ".repeat(depth), item);
-            if matches!(
-                item,
-                ConstraintTreeWalkItem::NodeStart(_) | ConstraintTreeWalkItem::BindingNodeStart(_)
-            ) {
-                depth += 1;
-            }
-        });
-
-        let env = SolverEnv::default();
-        let mut subst = Subst::new();
-        let residuals = solve_bindings(
-            input,
-            &mut root,
-            &group.bindings,
-            ctx,
-            &env,
-            global_env,
-            &mut subst,
-            &mut errors,
-        );
-        let DefaultingResult {
-            subst: defaulted_subst,
-            residuals,
-            log,
-        } = apply_defaulting(input, ctx, group, global_env, residuals, &subst);
-        subst = defaulted_subst;
-        ctx.apply_subst(&subst);
-        push_defaulting_outcome_errors(
-            &mut errors,
-            input,
-            &ctx.expr_types,
-            &ctx.generalized_metas,
-            &log,
-        );
-
-        // Defaulting can refine metas in residual predicates (e.g. `Int[?t]`
-        // becomes `Int[int]`). Re-run goal solving after defaulting so that
-        // newly-concrete predicates can be discharged by instances.
-        let post_defaulting =
-            goal_solver::solve_constraints(&residuals, &env.givens, global_env, &mut subst, ctx);
-        ctx.apply_subst(&subst);
-        log::debug!("[solve_groups] subst: {:#}", subst);
-        check_residuals_and_emit_errors(
-            input,
-            &post_defaulting.unsolved,
-            ctx,
-            pretty_subst,
-            &mut errors,
-        );
+        errors.extend(solve_single_group(input, group, ctx, global_env, pretty_subst));
     }
-
     BindingGroupResult { errors }
 }
 
@@ -1193,9 +1263,7 @@ fn instantiate_wanteds_into_equalities(
 
         let scheme = match &inst.target {
             InstantiateTarget::Def(def_id) => ctx
-                .binding_schemes
-                .get(&(*def_id).into())
-                .cloned()
+                .lookup_def_scheme(*def_id)
                 .unwrap_or_else(|| panic!("cannot find scheme for def: {:?}", def_id)),
             InstantiateTarget::Local(binding_id) => ctx
                 .binding_schemes
@@ -1480,7 +1548,7 @@ mod tests {
     use ray_shared::local_binding::LocalBindingId;
 
     use super::*;
-    use crate::binding_groups::{BindingGraph, BindingGroup, BindingId};
+    use crate::binding_groups::{BindingGraph, BindingGroup};
     use crate::context::{AssignLhs, ExprKind, LhsPattern, Pattern};
     use crate::types::{ImplKind, ImplTy, TraitTy, TyScheme};
     use crate::{BindingKind, BindingRecord, ExprRecord};

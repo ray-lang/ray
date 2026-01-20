@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ray_shared::{def::DefId, node_id::NodeId, pathlib::Path};
+use ray_shared::{node_id::NodeId, pathlib::Path};
 use ray_typing::{
     BindingKind, BindingRecord, NodeBinding,
     binding_groups::{BindingId, LegacyBindingGraph},
@@ -195,18 +195,21 @@ impl<'a> BindingPassCtx<'a> {
         let path = Some(sig.path.value.clone());
         self.reserve_binding(binding, decl_id, path.as_ref());
 
-        let params = if func.body.is_some() {
+        if func.body.is_some() {
             self.push_binding_context(binding);
-            self.record_fn_params(&sig.params)
-        } else {
-            Vec::new()
-        };
+            // Record fn params in internal binding system (for dependency tracking)
+            // but don't store in BindingKind - the typing phase will populate
+            // params with LocalBindingId values from name resolution
+            let _params = self.record_fn_params(&sig.params);
+        }
 
+        // Use empty params - the typing phase will populate with LocalBindingId
+        // values once it has access to resolutions from name resolution
         self.insert_binding_record(
             binding,
             decl_id,
             path,
-            BindingKind::Function { params },
+            BindingKind::Function { params: vec![] },
             sig.ty.clone(),
             parent,
         );
@@ -925,15 +928,11 @@ mod tests {
         assert_eq!(func_record.body_expr, Some(func_decl.id));
         match &func_record.kind {
             BindingKind::Function { params } => {
-                assert_eq!(params.len(), 1);
-                let param_binding = params[0];
-                let param_record = output
-                    .binding_records
-                    .get(&param_binding)
-                    .expect("param binding recorded");
-                assert_eq!(
-                    param_record.path.as_ref().map(|p| p.to_string()).as_deref(),
-                    Some("param")
+                // Params are now populated by the typing phase from resolutions,
+                // not by the binding pass. The binding pass sets params to empty.
+                assert!(
+                    params.is_empty(),
+                    "expected empty params in binding pass, typing phase populates"
                 );
             }
             other => panic!("expected function binding, found {:?}", other),

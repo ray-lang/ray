@@ -213,7 +213,7 @@ fn resolve_index(
 fn resolve_index_set(
     assign_expr_id: NodeId,
     lhs_pattern_id: NodeId,
-    container_binding: ray_typing::binding_groups::BindingId,
+    _container_binding: ray_shared::local_binding::LocalBindingId,
     index_id: NodeId,
     rhs_id: NodeId,
     module: &TypeCheckInput,
@@ -236,22 +236,16 @@ fn resolve_index_set(
 
     let poly_callee_ty = trait_field.ty.clone();
 
+    // Get container type from pattern records since we can't look up LocalBindingId
+    // in the DefId-keyed binding_records
     let container_ty = module
-        .binding_records
-        .get(&container_binding)
-        .and_then(|rec| rec.path.as_ref())
-        .and_then(|path| tcx.all_schemes.get(path).or_else(|| tcx.schemes.get(path)))
-        .map(|scheme| scheme.mono().clone())
-        .or_else(|| {
-            module
-                .pattern_records
-                .get(&lhs_pattern_id)
-                .and_then(|record| match &record.kind {
-                    ray_typing::PatternKind::Index { container, .. } => tcx.get_ty(*container),
-                    _ => None,
-                })
-                .cloned()
+        .pattern_records
+        .get(&lhs_pattern_id)
+        .and_then(|record| match &record.kind {
+            ray_typing::PatternKind::Index { container, .. } => tcx.get_ty(*container),
+            _ => None,
         })
+        .cloned()
         .unwrap_or_else(|| Ty::Var(tcx.new_schema_var()));
 
     let index_ty = tcx.ty_of(index_id).mono().clone();

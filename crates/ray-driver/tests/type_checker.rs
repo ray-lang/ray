@@ -41,6 +41,7 @@ fn typecheck_src_with_bindings(
         &builder_result.module,
         &builder_result.srcmap,
         &mut builder_result.tcx,
+        &builder_result.resolutions,
     );
     let (binding_output, _, result) = pass_manager.run_passes(&builder_result.ncx, tc_options);
 

@@ -14,7 +14,7 @@ use ray_shared::{
 use ray_typing::{
     BindingKind, BindingRecord, ExprRecord, NodeBinding, PatternKind, PatternRecord,
     TypeCheckInput, TypeCheckResult, TypeError, TypecheckOptions,
-    binding_groups::{BindingGraph, BindingId, LegacyBindingGraph},
+    binding_groups::{BindingGraph, BindingId},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern},
     env::GlobalEnv,
     info::TypeSystemInfo,
@@ -73,7 +73,6 @@ struct TyLowerCtx<'a> {
     srcmap: &'a SourceMap,
     env: &'a GlobalEnv,
     resolutions: &'a HashMap<NodeId, Resolution>,
-    bindings: LegacyBindingGraph,
     binding_records: HashMap<BindingId, BindingRecord>,
     node_bindings: HashMap<NodeId, NodeBinding>,
     expr_records: HashMap<NodeId, ExprRecord>,
@@ -101,7 +100,6 @@ impl<'a> TyLowerCtx<'a> {
             srcmap,
             env,
             resolutions,
-            bindings: binding_output.bindings.clone(),
             binding_records: binding_output.binding_records.clone(),
             node_bindings: binding_output.node_bindings.clone(),
             expr_records: HashMap::new(),
@@ -508,13 +506,15 @@ fn lower_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> LhsPattern
                     // Fallback for unresolved patterns - should not happen in valid code
                     log::warn!("Pattern {:?} not found in resolutions", pat.id);
                     // Still record in legacy system for backwards compatibility
-                    let binding = ctx.binding_from_node_or_path(pat.id, &name.path);
+                    let _binding = ctx.binding_from_node_or_path(pat.id, &name.path);
                     ctx.record_pattern(pat, PatternKind::Missing);
-                    return LhsPattern::Binding(LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 0));
+                    return LhsPattern::Binding(LocalBindingId::new(
+                        DefId::new(ray_shared::file_id::FileId(0), 0),
+                        0,
+                    ));
                 }
             };
             // Also record in legacy binding system
-            let _binding = ctx.binding_from_node_or_path(pat.id, &name.path);
             ctx.record_pattern(pat, PatternKind::Binding { binding: local_id });
             LhsPattern::Binding(local_id)
         }
@@ -568,7 +568,10 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                     let local_id = match ctx.resolutions.get(&lhs_pat.id) {
                         Some(Resolution::Local(local_id)) => *local_id,
                         _ => {
-                            log::warn!("Field pattern base {:?} not found in resolutions", lhs_pat.id);
+                            log::warn!(
+                                "Field pattern base {:?} not found in resolutions",
+                                lhs_pat.id
+                            );
                             ctx.record_pattern(pat, PatternKind::Missing);
                             return AssignLhs::ErrorPlaceholder;
                         }
@@ -758,15 +761,24 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             // Anonymous function expression `fn(p1, ..., pn) { body }`.
             //
             // For now we support parameter lists where each parameter is a
-            // simple name. The parameters are lowered into binding IDs in a
-            // fresh local scope for the closure body.
+            // simple name. The parameters are lowered into LocalBindingIds from
+            // the resolutions in a fresh local scope for the closure body.
             ctx.enter_scope();
-            let mut params = Vec::with_capacity(closure.args.items.len());
+            let mut params: Vec<LocalBindingId> = Vec::with_capacity(closure.args.items.len());
             for param in &closure.args.items {
                 match &param.value {
                     Expr::Name(name) => {
-                        let binding = ctx.binding_from_node_or_path(param.id, &name.path);
-                        params.push(binding);
+                        // Get LocalBindingId from resolutions
+                        let local_id = match ctx.resolutions.get(&param.id) {
+                            Some(Resolution::Local(local_id)) => *local_id,
+                            _ => {
+                                log::warn!("Closure param {:?} not found in resolutions", param.id);
+                                continue;
+                            }
+                        };
+                        // Also record in legacy binding system
+                        let _binding = ctx.binding_from_node_or_path(param.id, &name.path);
+                        params.push(local_id);
                     }
                     _ => {
                         ctx.exit_scope();
@@ -946,11 +958,12 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Def(DefTarget::Workspace(def_id)) => {
                         ctx.record_expr(node, ExprKind::DefRef(*def_id))
                     }
-                    Resolution::Def(DefTarget::External(_path)) => {
-                        // External references (from libraries) - emit DefRef with a placeholder
-                        // TODO: Handle external references properly once we have DefId for externals
-                        todo!("Handle external references properly once we have DefId for externals")
+                    Resolution::Def(DefTarget::Library { .. }) => {
+                        // External references (from libraries) - emit Missing for now
+                        // TODO: Handle library references properly once we have DefId for externals
+                        ctx.record_expr(node, ExprKind::Missing)
                     }
+                    Resolution::Error => ctx.record_expr(node, ExprKind::Missing),
                 }
             } else {
                 ctx.emit_error(node, "unresolved name reference".to_string());
@@ -979,11 +992,12 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Def(DefTarget::Workspace(def_id)) => {
                         ctx.record_expr(node, ExprKind::DefRef(*def_id))
                     }
-                    Resolution::Def(DefTarget::External(_path)) => {
+                    Resolution::Def(DefTarget::Library { .. }) => {
                         // External references (from libraries)
-                        // TODO: Handle external references properly
+                        // TODO: Handle library references properly
                         ctx.record_expr(node, ExprKind::Missing)
                     }
+                    Resolution::Error => ctx.record_expr(node, ExprKind::Missing),
                 }
             } else {
                 ctx.emit_error(node, "unresolved path reference".to_string());
@@ -1067,18 +1081,19 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 // Use the resolutions table to find the target definition
                 if let Some(resolution) = ctx.resolutions.get(&node.id) {
                     match resolution {
-                        Resolution::Def(DefTarget::Workspace(def_id)) => {
-                            ctx.record_expr(
-                                node,
-                                ExprKind::ScopedAccess {
-                                    def_id: *def_id,
-                                    member_name,
-                                    lhs_ty: ty.value().mono().clone(),
-                                },
-                            )
-                        }
+                        Resolution::Def(DefTarget::Workspace(def_id)) => ctx.record_expr(
+                            node,
+                            ExprKind::ScopedAccess {
+                                def_id: *def_id,
+                                member_name,
+                                lhs_ty: ty.value().mono().clone(),
+                            },
+                        ),
                         _ => {
-                            ctx.emit_error(node, "scoped access must resolve to a definition".to_string());
+                            ctx.emit_error(
+                                node,
+                                "scoped access must resolve to a definition".to_string(),
+                            );
                             ctx.record_expr(node, ExprKind::Missing)
                         }
                     }
@@ -1210,13 +1225,29 @@ fn lower_literal(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>, lit: &Literal) -> 
 fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Pattern {
     match &pat.value {
         AstPattern::Name(name) => {
-            let binding = ctx.binding_from_node_or_path(pat.id, &name.path);
-            Pattern::Binding(binding)
+            // Get LocalBindingId from resolutions
+            let local_id = match ctx.resolutions.get(&pat.id) {
+                Some(Resolution::Local(local_id)) => *local_id,
+                _ => {
+                    log::warn!("Guard pattern {:?} not found in resolutions", pat.id);
+                    return Pattern::Wild;
+                }
+            };
+            let _binding = ctx.binding_from_node_or_path(pat.id, &name.path);
+            Pattern::Binding(local_id)
         }
         AstPattern::Some(inner) => match &inner.value {
             AstPattern::Name(name) => {
-                let binding = ctx.binding_from_node_or_path(inner.id, &name.path);
-                Pattern::Some(binding)
+                // Get LocalBindingId from resolutions
+                let local_id = match ctx.resolutions.get(&inner.id) {
+                    Some(Resolution::Local(local_id)) => *local_id,
+                    _ => {
+                        log::warn!("Some pattern inner {:?} not found in resolutions", inner.id);
+                        return Pattern::Wild;
+                    }
+                };
+                let _binding = ctx.binding_from_node_or_path(inner.id, &name.path);
+                Pattern::Some(local_id)
             }
             _ => {
                 todo!("lowering for complex `some(...)` patterns into Pattern")
@@ -1251,6 +1282,7 @@ mod tests {
     use crate::passes::FrontendPassManager;
     use crate::sourcemap::SourceMap;
     use ray_shared::pathlib::{FilePath, Path as RayPath};
+    use ray_shared::resolution::Resolution;
     use ray_shared::span::{Source as RaySource, Span};
     use ray_typing::env::GlobalEnv;
 
@@ -1300,13 +1332,20 @@ mod tests {
 
         let env = GlobalEnv::new();
         let mut tcx = TyCtx::new(env);
-        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx);
+        let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
+        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
         let binding_output = pass_manager.binding_output().clone();
+        let def_ids = collect_def_ids(&module);
+        let def_bindings = build_binding_graph(&def_ids, &resolutions);
+        let def_binding_records = build_def_binding_records(&binding_output);
         let input = lower_module(
             &module,
             &srcmap,
             &tcx.global_env,
             &binding_output,
+            &resolutions,
+            def_bindings,
+            def_binding_records,
             Rc::default(),
         );
 
@@ -1373,7 +1412,8 @@ mod tests {
         let mut tcx = TyCtx::new(global_env);
         let ncx = NameContext::new();
         let options = TypecheckOptions::default();
-        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx);
+        let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
+        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
         let result = pass_manager.typecheck(&ncx, options).clone();
 
         assert!(
@@ -1424,7 +1464,8 @@ mod tests {
         let mut tcx = TyCtx::new(global_env);
         let ncx = NameContext::new();
         let options = TypecheckOptions::default();
-        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx);
+        let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
+        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
         let result = pass_manager.typecheck(&ncx, options).clone();
 
         assert!(

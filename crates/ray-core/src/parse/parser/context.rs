@@ -77,11 +77,6 @@ impl<'a, 'src> ParseScope<'a, 'src> {
         self
     }
 
-    // access to the working ctx
-    pub fn ctx(&self) -> &ParseContext {
-        &self.ctx
-    }
-
     pub fn ctx_clone(&self) -> ParseContext {
         self.ctx.clone()
     }

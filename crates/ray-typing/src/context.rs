@@ -336,6 +336,9 @@ pub struct SolverContext<'a> {
     pub generalized_metas: HashSet<TyVar>,
     /// Failed class predicate attempts (e.g. impl head matched, but predicates failed).
     pub predicate_failures: Vec<PredicateFailure>,
+    /// Optional callback for looking up external schemes (e.g., from previously-checked
+    /// binding groups in incremental compilation).
+    external_schemes: Option<Box<dyn Fn(DefId) -> Option<TyScheme> + 'a>>,
 }
 
 pub trait MetaAllocator {
@@ -377,6 +380,7 @@ impl<'a> SolverContext<'a> {
             global_env,
             generalized_metas: HashSet::new(),
             predicate_failures: Vec::new(),
+            external_schemes: None,
         }
     }
 
@@ -591,6 +595,26 @@ impl<'a> SolverContext<'a> {
 
     pub fn global_env(&self) -> &GlobalEnv {
         self.global_env
+    }
+
+    /// Set the external schemes callback for looking up schemes from
+    /// previously-checked binding groups.
+    pub fn set_external_schemes(&mut self, callback: impl Fn(DefId) -> Option<TyScheme> + 'a) {
+        self.external_schemes = Some(Box::new(callback));
+    }
+
+    /// Lookup a scheme for a top-level definition.
+    ///
+    /// First checks `binding_schemes`, then falls back to the external callback
+    /// if one is set.
+    pub fn lookup_def_scheme(&self, def_id: DefId) -> Option<TyScheme> {
+        if let Some(scheme) = self.binding_schemes.get(&def_id.into()) {
+            return Some(scheme.clone());
+        }
+        if let Some(callback) = &self.external_schemes {
+            return callback(def_id);
+        }
+        None
     }
 }
 

@@ -505,7 +505,7 @@ pub fn prepare_binding_context(
     let mut givens = vec![];
     let mut metas = vec![];
     let mut skolem_subst = None;
-    let mut binding_ty = if let Some(scheme) = ctx.binding_schemes.get(&def_id.into()).cloned() {
+    let mut binding_ty = if let Some(scheme) = ctx.lookup_def_scheme(def_id) {
         if !scheme.vars.is_empty() || !scheme.qualifiers.is_empty() {
             let skolemized = skolemize_annotated_scheme(ctx, def_id, &scheme, binding_info);
             if !skolemized.skolems.is_empty() {

@@ -147,8 +147,12 @@ impl Driver {
         // schemes into the existing defs. The existing v1 pipeline remains
         // available elsewhere for parity checks.
         let tc_options = TypecheckOptions::default();
-        let pass_manager =
-            passes::FrontendPassManager::new(&result.module, &result.srcmap, &mut result.tcx);
+        let pass_manager = passes::FrontendPassManager::new(
+            &result.module,
+            &result.srcmap,
+            &mut result.tcx,
+            &result.resolutions,
+        );
         let (binding_output, closure_output, check_result) =
             pass_manager.run_passes(&result.ncx, tc_options);
 

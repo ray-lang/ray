@@ -2,8 +2,7 @@ use std::ops::Deref;
 
 use itertools::Itertools;
 use ray_shared::{
-    def::{DefHeader, DefId, DefKind, SignatureStatus},
-    node_id::NodeId,
+    def::{DefHeader, DefId, DefKind},
     span::{Pos, Span, parsed::Parsed},
     ty::Ty,
 };

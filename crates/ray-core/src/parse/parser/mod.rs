@@ -19,7 +19,7 @@ mod tests;
 pub use context::ParseContext;
 pub use recover::{Recover, RecoveryCtx};
 
-use std::{collections::HashMap, fs, io, mem};
+use std::{fs, io, mem};
 
 use ray_shared::{
     def::{DefHeader, DefId},
