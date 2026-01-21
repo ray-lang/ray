@@ -6,7 +6,7 @@ use ray_shared::{
     local_binding::LocalBindingId,
     node_id::NodeId,
     pathlib::Path,
-    resolution::Resolution,
+    resolution::{DefTarget, Resolution},
     span::{Sourced, parsed::Parsed},
     ty::Ty,
 };
@@ -15,13 +15,172 @@ use ray_typing::types::TyScheme;
 use crate::{
     ast::{
         Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dict,
-        Dot, Expr, Extern, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop,
+        Dot, Expr, Extern, File, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop,
         Module, Name, New, Node, Pattern, Range, Ref, ScopedAccess, Sequence, Set, Struct, Trait,
-        Tuple, UnaryOp, While,
+        Tuple, UnaryOp, WalkItem, WalkScopeKind, While, walk_file,
     },
     errors::{RayError, RayErrorKind, RayResult},
     sourcemap::SourceMap,
 };
+
+/// Resolve names in a file AST and return the resolution table.
+///
+/// This is a pure function that walks the AST read-only and returns a mapping
+/// from NodeIds to their resolutions without mutating the input.
+pub fn resolve_names_in_file(
+    ast: &File,
+    _imports: &HashMap<String, Path>,
+    module_exports: &HashMap<String, DefTarget>,
+    sibling_exports: &HashMap<String, DefTarget>,
+) -> HashMap<NodeId, Resolution> {
+    let mut resolutions = HashMap::new();
+    let mut local_scopes: Vec<HashMap<String, LocalBindingId>> = vec![HashMap::new()];
+    let mut current_def: Option<DefId> = None;
+    let mut local_counter: u32 = 0;
+
+    for item in walk_file(ast) {
+        match item {
+            WalkItem::EnterScope(WalkScopeKind::Function) => {
+                local_scopes.push(HashMap::new());
+            }
+            WalkItem::EnterScope(WalkScopeKind::Closure | WalkScopeKind::Block) => {
+                local_scopes.push(HashMap::new());
+            }
+            WalkItem::ExitScope(_) => {
+                local_scopes.pop();
+            }
+            WalkItem::Decl(decl) => {
+                if let Decl::Func(func) = &decl.value {
+                    current_def = Some(decl.id.owner);
+                    local_counter = 0;
+                    // Bind function parameters
+                    for param in &func.sig.params {
+                        if let Some(name) = param.value.name().name() {
+                            if let Some(owner) = current_def {
+                                let local_id = LocalBindingId::new(owner, local_counter);
+                                local_counter += 1;
+                                if let Some(scope) = local_scopes.last_mut() {
+                                    scope.insert(name, local_id);
+                                }
+                                resolutions.insert(param.id, Resolution::Local(local_id));
+                            }
+                        }
+                    }
+                }
+            }
+            WalkItem::Func(func) => {
+                // This is emitted for impl methods
+                current_def = Some(func.id.owner);
+                local_counter = 0;
+                // Bind function parameters
+                for param in &func.sig.params {
+                    if let Some(name) = param.value.name().name() {
+                        if let Some(owner) = current_def {
+                            let local_id = LocalBindingId::new(owner, local_counter);
+                            local_counter += 1;
+                            if let Some(scope) = local_scopes.last_mut() {
+                                scope.insert(name, local_id);
+                            }
+                            resolutions.insert(param.id, Resolution::Local(local_id));
+                        }
+                    }
+                }
+            }
+            WalkItem::Expr(expr) => {
+                match &expr.value {
+                    Expr::Name(name) => {
+                        let name_str = name.path.name().unwrap_or_default();
+                        // Check locals first
+                        let resolution = lookup_local(&local_scopes, &name_str)
+                            .map(Resolution::Local)
+                            .or_else(|| {
+                                lookup_def(module_exports, sibling_exports, &name_str)
+                                    .map(Resolution::Def)
+                            });
+                        if let Some(res) = resolution {
+                            resolutions.insert(expr.id, res);
+                        }
+                    }
+                    Expr::Path(path) if path.len() == 1 => {
+                        let name_str = path.name().unwrap_or_default();
+                        let resolution = lookup_local(&local_scopes, &name_str)
+                            .map(Resolution::Local)
+                            .or_else(|| {
+                                lookup_def(module_exports, sibling_exports, &name_str)
+                                    .map(Resolution::Def)
+                            });
+                        if let Some(res) = resolution {
+                            resolutions.insert(expr.id, res);
+                        }
+                    }
+                    Expr::Closure(closure) => {
+                        // Bind closure parameters
+                        for arg in &closure.args.items {
+                            if let Expr::Name(name) = &arg.value {
+                                if let Some(n) = name.path.name() {
+                                    if let Some(owner) = current_def {
+                                        let local_id = LocalBindingId::new(owner, local_counter);
+                                        local_counter += 1;
+                                        if let Some(scope) = local_scopes.last_mut() {
+                                            scope.insert(n, local_id);
+                                        }
+                                        resolutions.insert(arg.id, Resolution::Local(local_id));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            WalkItem::Pattern(pat) => {
+                // Handle assignment patterns that introduce new bindings
+                for node in pat.paths() {
+                    let (path, is_lvalue) = node.value;
+                    if !is_lvalue {
+                        if let Some(name) = path.name() {
+                            if let Some(owner) = current_def {
+                                let local_id = LocalBindingId::new(owner, local_counter);
+                                local_counter += 1;
+                                if let Some(scope) = local_scopes.last_mut() {
+                                    scope.insert(name, local_id);
+                                }
+                                resolutions.insert(node.id, Resolution::Local(local_id));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    resolutions
+}
+
+fn lookup_local(scopes: &[HashMap<String, LocalBindingId>], name: &str) -> Option<LocalBindingId> {
+    for scope in scopes.iter().rev() {
+        if let Some(&local_id) = scope.get(name) {
+            return Some(local_id);
+        }
+    }
+    None
+}
+
+fn lookup_def(
+    module_exports: &HashMap<String, DefTarget>,
+    sibling_exports: &HashMap<String, DefTarget>,
+    name: &str,
+) -> Option<DefTarget> {
+    module_exports
+        .get(name)
+        .or_else(|| sibling_exports.get(name))
+        .cloned()
+}
+
+// ============================================================================
+// Legacy name resolution (mutating AST)
+// ============================================================================
 
 pub struct ResolveContext<'a> {
     ncx: &'a mut NameContext,
@@ -763,164 +922,297 @@ impl NameResolve for Sourced<'_, While> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{
+        Assign, Block, Closure as AstClosure, Decl, Expr, Func, Literal, Name, Node,
+        Pattern as AstPattern, Sequence,
+    };
+    use ray_shared::def::DefId;
+    use ray_shared::file_id::FileId;
+    use ray_shared::node_id::NodeId;
+    use ray_shared::pathlib::{FilePath, Path};
+    use ray_shared::span::Span;
 
-//     use crate::sema::ModuleBuilder;
+    fn test_file(decls: Vec<Node<Decl>>, stmts: Vec<Node<Expr>>) -> File {
+        File {
+            path: Path::from("test"),
+            stmts,
+            decls,
+            imports: vec![],
+            doc_comment: None,
+            filepath: FilePath::from("test.ray"),
+            span: Span::new(),
+        }
+    }
 
-//     #[test]
-//     fn populates_symbol_map_with_definitions_and_references() {
-//         let src = r#"
-// fn foo(x: int, y: int) -> int {
-//     z = x + y
-//     z
-// }"#;
+    #[test]
+    fn resolve_names_in_file_resolves_function_parameter() {
+        // fn f(x) { x }
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
 
-//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
-//             Ok(result) => result,
-//             Err(errors) => {
-//                 panic!(
-//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
-//                     errors
-//                 );
-//             }
-//         };
+        let param = Node::new(crate::ast::FnParam::Name(Name::new("x")));
+        let body_name = Node::new(Expr::Name(Name::new("x")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![body_name.clone()],
+        }));
+        let func = Func::new(
+            Node::new(Path::from("test::f")),
+            vec![param.clone()],
+            func_body,
+        );
+        let decl = Node::new(Decl::Func(func));
 
-//         // find definition and reference for x
-//         let x_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::foo::x"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(x_def.is_some(), "Definition for x not found");
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let module_exports = HashMap::new();
+        let sibling_exports = HashMap::new();
 
-//         let x_ref = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::foo::x"
-//                 && matches!(target.role, SymbolRole::Reference)
-//         });
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
 
-//         assert!(x_ref.is_some(), "Reference for x not found");
+        // Parameter should be resolved
+        assert!(resolutions.contains_key(&param.id));
+        let param_res = resolutions.get(&param.id).unwrap();
+        assert!(matches!(param_res, Resolution::Local(_)));
 
-//         // find definition and reference for z
-//         let z_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::foo::z"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(z_def.is_some(), "Definition for z not found");
+        // Body name should resolve to the parameter
+        assert!(resolutions.contains_key(&body_name.id));
+        let body_res = resolutions.get(&body_name.id).unwrap();
+        assert!(matches!(body_res, Resolution::Local(_)));
 
-//         let z_ref = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::foo::z"
-//                 && matches!(target.role, SymbolRole::Reference)
-//         });
-//         assert!(z_ref.is_some(), "Reference for z not found");
-//     }
+        // Both should resolve to the same LocalBindingId
+        assert_eq!(param_res, body_res);
+    }
 
-//     #[test]
-//     fn populates_symbol_map_with_deref_references() {
-//         let src = r#"
-// fn foo(ptr: *u8) {
-//     *ptr = 42
-// }"#;
+    #[test]
+    fn resolve_names_in_file_resolves_module_export() {
+        // fn f() { foo }  where foo is in module_exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
 
-//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
-//             Ok(result) => result,
-//             Err(errors) => {
-//                 panic!(
-//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
-//                     errors
-//                 );
-//             }
-//         };
+        let body_name = Node::new(Expr::Name(Name::new("foo")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![body_name.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
 
-//         // find definition and reference for ptr
-//         let ptr_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::foo::ptr"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(ptr_def.is_some(), "Definition for ptr not found");
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut module_exports = HashMap::new();
+        let foo_def_id = DefId::new(FileId(0), 1);
+        module_exports.insert("foo".to_string(), DefTarget::Workspace(foo_def_id));
+        let sibling_exports = HashMap::new();
 
-//         let ptr_ref = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::foo::ptr"
-//                 && matches!(target.role, SymbolRole::Reference)
-//         });
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
 
-//         assert!(ptr_ref.is_some(), "Reference for ptr not found");
-//     }
+        // Body name should resolve to the module export
+        assert!(resolutions.contains_key(&body_name.id));
+        let body_res = resolutions.get(&body_name.id).unwrap();
+        assert!(matches!(body_res, Resolution::Def(DefTarget::Workspace(id)) if *id == foo_def_id));
+    }
 
-//     #[test]
-//     fn populates_symbol_map_with_trait_functions() {
-//         let src = r#"
-// trait MyTrait['a] {
-//     fn foo(self: 'a, x: int) -> int
-//     fn bar(self: 'a) -> string
-// }
-// "#;
+    #[test]
+    fn resolve_names_in_file_resolves_sibling_export() {
+        // fn f() { bar }  where bar is in sibling_exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
 
-//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
-//             Ok(result) => result,
-//             Err(errors) => {
-//                 panic!(
-//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
-//                     errors
-//                 );
-//             }
-//         };
+        let body_name = Node::new(Expr::Name(Name::new("bar")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![body_name.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
 
-//         println!("Symbol map: {:#?}", result.symbol_map);
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let module_exports = HashMap::new();
+        let mut sibling_exports = HashMap::new();
+        let bar_def_id = DefId::new(FileId(0), 2);
+        sibling_exports.insert("bar".to_string(), DefTarget::Workspace(bar_def_id));
 
-//         // find trait definition
-//         let trait_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::MyTrait"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(trait_def.is_some(), "Definition for MyTrait not found");
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
 
-//         // find definition for MyTrait::foo
-//         let foo_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::MyTrait::foo"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(foo_def.is_some(), "Definition for MyTrait::foo not found");
+        // Body name should resolve to the sibling export
+        assert!(resolutions.contains_key(&body_name.id));
+        let body_res = resolutions.get(&body_name.id).unwrap();
+        assert!(matches!(body_res, Resolution::Def(DefTarget::Workspace(id)) if *id == bar_def_id));
+    }
 
-//         // find definition for MyTrait::bar
-//         let bar_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::MyTrait::bar"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(bar_def.is_some(), "Definition for MyTrait::bar not found");
-//     }
+    #[test]
+    fn resolve_names_in_file_local_shadows_export() {
+        // fn f(x) { x }  where x is also in module_exports - local should win
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
 
-//     #[test]
-//     fn populates_symbol_map_with_impl_functions() {
-//         let src = r#"
-// trait Foo['a] {
-//     fn foo(self: 'a) -> 'a
-// }
+        let param = Node::new(crate::ast::FnParam::Name(Name::new("x")));
+        let body_name = Node::new(Expr::Name(Name::new("x")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![body_name.clone()],
+        }));
+        let func = Func::new(
+            Node::new(Path::from("test::f")),
+            vec![param.clone()],
+            func_body,
+        );
+        let decl = Node::new(Decl::Func(func));
 
-// impl Foo[int] {
-//     fn foo(self: int) -> int {
-//         42
-//     }
-// }
-// "#;
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut module_exports = HashMap::new();
+        let x_def_id = DefId::new(FileId(0), 1);
+        module_exports.insert("x".to_string(), DefTarget::Workspace(x_def_id));
+        let sibling_exports = HashMap::new();
 
-//         let result = match ModuleBuilder::from_src(src, Path::from("test")) {
-//             Ok(result) => result,
-//             Err(errors) => {
-//                 panic!(
-//                     "ModuleBuilder::build_from_src failed with errors: {:?}",
-//                     errors
-//                 );
-//             }
-//         };
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
 
-//         println!("symbol map: {:#?}", result.symbol_map);
+        // Body name should resolve to local, not module export
+        assert!(resolutions.contains_key(&body_name.id));
+        let body_res = resolutions.get(&body_name.id).unwrap();
+        assert!(matches!(body_res, Resolution::Local(_)));
+    }
 
-//         // find the impl def
-//         let impl_def = result.symbol_map.iter().find(|(_, target)| {
-//             target.path.to_string() == "test::int::foo"
-//                 && matches!(target.role, SymbolRole::Definition)
-//         });
-//         assert!(impl_def.is_some(), "Definition for int::foo not found");
-//     }
-// }
+    #[test]
+    fn resolve_names_in_file_let_binding() {
+        // fn f() { y = 1; y }
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let local_pattern = Node::new(AstPattern::Name(Name::new("y")));
+        let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
+        let assign = Assign {
+            lhs: local_pattern.clone(),
+            rhs: Box::new(rhs_expr),
+            is_mut: false,
+            mut_span: None,
+            op: crate::ast::InfixOp::Assign,
+            op_span: Span::new(),
+        };
+        let assign_expr = Node::new(Expr::Assign(assign));
+        let body_name = Node::new(Expr::Name(Name::new("y")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![assign_expr, body_name.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let module_exports = HashMap::new();
+        let sibling_exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+
+        // The pattern node should have a resolution
+        let pattern_paths = local_pattern.paths();
+        assert!(!pattern_paths.is_empty());
+        let pattern_node_id = pattern_paths[0].id;
+        assert!(resolutions.contains_key(&pattern_node_id));
+
+        // Body name should resolve to local
+        assert!(resolutions.contains_key(&body_name.id));
+        let body_res = resolutions.get(&body_name.id).unwrap();
+        assert!(matches!(body_res, Resolution::Local(_)));
+    }
+
+    #[test]
+    fn resolve_names_in_file_closure_parameter() {
+        // fn f() { |z| z }
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let closure_arg = Node::new(Expr::Name(Name::new("z")));
+        let closure_body = Node::new(Expr::Name(Name::new("z")));
+        let closure = AstClosure {
+            args: Sequence::new(vec![closure_arg.clone()]),
+            body: Box::new(closure_body.clone()),
+            arrow_span: None,
+            curly_spans: None,
+        };
+        let closure_expr = Node::new(Expr::Closure(closure));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![closure_expr],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let module_exports = HashMap::new();
+        let sibling_exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+
+        // Closure arg should be resolved
+        assert!(resolutions.contains_key(&closure_arg.id));
+        let arg_res = resolutions.get(&closure_arg.id).unwrap();
+        assert!(matches!(arg_res, Resolution::Local(_)));
+
+        // Closure body should resolve to the argument
+        assert!(resolutions.contains_key(&closure_body.id));
+        let body_res = resolutions.get(&closure_body.id).unwrap();
+        assert!(matches!(body_res, Resolution::Local(_)));
+
+        // Both should be the same local
+        assert_eq!(arg_res, body_res);
+    }
+
+    #[test]
+    fn resolve_names_in_file_module_export_prefers_over_sibling() {
+        // When same name in both module_exports and sibling_exports, module wins
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let body_name = Node::new(Expr::Name(Name::new("shared")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![body_name.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut module_exports = HashMap::new();
+        let module_def_id = DefId::new(FileId(0), 1);
+        module_exports.insert("shared".to_string(), DefTarget::Workspace(module_def_id));
+        let mut sibling_exports = HashMap::new();
+        let sibling_def_id = DefId::new(FileId(0), 2);
+        sibling_exports.insert("shared".to_string(), DefTarget::Workspace(sibling_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+
+        // Body name should resolve to module export, not sibling
+        assert!(resolutions.contains_key(&body_name.id));
+        let body_res = resolutions.get(&body_name.id).unwrap();
+        assert!(
+            matches!(body_res, Resolution::Def(DefTarget::Workspace(id)) if *id == module_def_id)
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_unresolved_name_not_in_map() {
+        // fn f() { unknown }  where unknown is nowhere
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let body_name = Node::new(Expr::Name(Name::new("unknown")));
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![body_name.clone()],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let module_exports = HashMap::new();
+        let sibling_exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+
+        // Unknown name should not be in the resolution map
+        assert!(!resolutions.contains_key(&body_name.id));
+    }
+}

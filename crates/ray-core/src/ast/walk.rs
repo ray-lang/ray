@@ -1,5 +1,5 @@
 use crate::ast::{
-    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, Index, List, Module, Name, New,
+    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, File, Index, List, Module, Name, New,
     Node, Pattern, Range, ScopedAccess, Set, Tuple, UnaryOp,
     expr::{Assign, Block, Call, Closure, For, Func, If, Loop, Sequence, While},
 };
@@ -73,6 +73,17 @@ pub fn walk_decl(decl: &Node<Decl>) -> ModuleWalk<'_> {
     ModuleWalk {
         stack: vec![StackEntry::EnterNode(WalkItem::Decl(decl))],
     }
+}
+
+pub fn walk_file(file: &File) -> ModuleWalk<'_> {
+    let mut stack = Vec::new();
+    for stmt in file.stmts.iter().rev() {
+        stack.push(StackEntry::EnterNode(WalkItem::Expr(stmt)));
+    }
+    for decl in file.decls.iter().rev() {
+        stack.push(StackEntry::EnterNode(WalkItem::Decl(decl)));
+    }
+    ModuleWalk { stack }
 }
 
 fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {

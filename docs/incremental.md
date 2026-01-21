@@ -1086,7 +1086,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
   Extract from `nameresolve.rs`:
   ```rust
   // ray-core/src/sema/resolve.rs (refactored)
-  pub fn resolve_file_names(
+  pub fn resolve_names_in_file(
       ast: &ast::File,
       imports: &HashMap<String, ModulePath>,
       module_exports: &HashMap<String, ExportedItem>,
@@ -3177,7 +3177,7 @@ These extractions have no dependencies on each other and can be done in any orde
 
 ##### Step 1: Define Resolution type
 
-- [ ] Create/update `ray-shared/src/resolution.rs`:
+- [x] Create/update `ray-shared/src/resolution.rs`:
   ```rust
   pub enum Resolution {
       Def(DefTarget),           // Top-level definition
@@ -3190,37 +3190,37 @@ These extractions have no dependencies on each other and can be done in any orde
       Library { lib: ModulePath, path: ItemPath },  // From .raylib
   }
   ```
-- [ ] Add `LocalBindingId` to `ray-shared/src/lib.rs`:
+- [x] Add `LocalBindingId` to `ray-shared/src/lib.rs`:
   ```rust
   pub struct LocalBindingId {
       pub owner: DefId,  // The function/closure containing this local
       pub index: u32,    // Sequential index within the owner
   }
   ```
-- [ ] **Validate**: `cargo check -p ray-shared`
+- [x] **Validate**: `cargo check -p ray-shared`
 
 ##### Step 2: Create resolution walker
 
-- [ ] Create new function (in `ray-core/src/sema/nameresolve.rs` or similar):
+- [x] Create new function (in `ray-core/src/sema/nameresolve.rs` or similar):
   ```rust
-  pub fn resolve_file_names(
+  pub fn resolve_names_in_file(
       ast: &File,
       imports: &HashMap<String, ModulePath>,
       module_exports: &HashMap<String, DefTarget>,
       sibling_exports: &HashMap<String, DefTarget>,
   ) -> HashMap<NodeId, Resolution>
   ```
-- [ ] Implement AST walker that:
+- [x] Implement AST walker that:
   - Tracks local scope (parameters, let-bindings) → assigns `LocalBindingId`
   - Resolves names to `Resolution::Def` or `Resolution::Local`
   - Returns side-table, does NOT mutate AST
-- [ ] **Validate**: Write unit tests for simple cases
+- [x] **Validate**: Write unit tests for simple cases
 
 ##### Step 3: Bridge to legacy system
 
 - [ ] Add `apply_resolutions(ast: &mut File, resolutions: &HashMap<NodeId, Resolution>)` that mutates AST paths based on resolution table
 - [ ] Update `Module::resolve_names` to:
-  1. Call `resolve_file_names` to get side-table
+  1. Call `resolve_names_in_file` to get side-table
   2. Call `apply_resolutions` to mutate AST
 - [ ] **Validate**: Run full test suite — behavior unchanged
 
@@ -3801,17 +3801,17 @@ This is the largest migration. Do it incrementally, running tests after each ste
       let module_exports = module_def_index(db, file_info.module_path);
       let sibling_exports = compute_sibling_exports(db, file_id);
 
-      resolve_file_names(&parse_result.ast, &imports, &module_exports, &sibling_exports)
+      resolve_names_in_file(&parse_result.ast, &imports, &module_exports, &sibling_exports)
   }
   ```
-- [ ] Wire up to `resolve_file_names` from Phase 0.C
+- [ ] Wire up to `resolve_names_in_file` from Phase 0.C
 - [ ] **Validate**: Unit test resolving local, sibling, and imported names
 
 ##### Step 2: Handle library references
 
 - [ ] Extend `Resolution::Def(DefTarget)` to include library targets
 - [ ] Load library exports from `LibraryData` input
-- [ ] Resolve library references in `resolve_file_names`
+- [ ] Resolve library references in `resolve_names_in_file`
 - [ ] **Validate**: Unit test with `use core::...` import
 
 ---
