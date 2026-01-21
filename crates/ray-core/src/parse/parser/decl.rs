@@ -174,10 +174,13 @@ impl Parser<'_> {
         // extern
         let extern_span = self.expect_keyword(TokenKind::Extern, ctx)?;
         let start = extern_span.start;
+        // parse_extern_fn_sig already wraps in Extern, so return directly
+        if matches!(self.must_peek_kind()?, TokenKind::Fn | TokenKind::Modifier(_)) {
+            return self.parse_extern_fn_sig(start, None, ctx);
+        }
         let decl = match self.must_peek_kind()? {
             TokenKind::Struct => self.parse_struct(ctx)?,
             TokenKind::Impl => self.parse_impl(true, true, ctx)?,
-            TokenKind::Fn | TokenKind::Modifier(_) => self.parse_extern_fn_sig(start, None, ctx)?,
             _ => self.enter_def::<DeclResult>(|parser, def_id| {
                 let (mutable, mut_span) = if matches!(parser.must_peek_kind()?, TokenKind::Mut) {
                     (true, Some(parser.expect_keyword(TokenKind::Mut, ctx)?))

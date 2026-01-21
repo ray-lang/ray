@@ -366,7 +366,7 @@ impl NameResolve for Module<(), Decl> {
 
 impl NameResolve for Sourced<'_, Extern> {
     fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
-        let (ext, _) = self.unpack_mut();
+        let (ext, src) = self.unpack_mut();
         match ext.decl_mut() {
             Decl::Mutable(_) => todo!(),
             Decl::Name(_) => todo!(),
@@ -375,7 +375,11 @@ impl NameResolve for Sourced<'_, Extern> {
                 log::debug!("NameResolve::resolve_names: extern fn sig: {:?}", sig);
                 ctx.add_path(&sig.path);
             }
-            _ => unreachable!(),
+            Decl::Struct(struct_) => Sourced(struct_, src).resolve_names(ctx)?,
+            Decl::Impl(impl_) => Sourced(impl_, src).resolve_names(ctx)?,
+            Decl::Func(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) | Decl::Extern(_) => {
+                unreachable!("extern cannot wrap {:?}", ext.decl())
+            }
         }
 
         Ok(())

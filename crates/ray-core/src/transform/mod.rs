@@ -76,6 +76,8 @@ impl ModuleCombiner {
         // lower the declarations for the current module
         let mut lower_ctx = self.get_lower_ctx(&mut srcmap);
         for decl in new_module.decls.iter_mut() {
+            // Enter the DefId context for this decl so new nodes get proper owners
+            let _guard = NodeId::enter_def(decl.id.owner);
             decl.lower(&mut lower_ctx)?;
         }
 
