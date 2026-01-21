@@ -712,11 +712,19 @@ mod tests {
     use crate::ast::{
         Assign, Block, Closure, Expr, For, Func, If, Impl, InfixOp, Literal, Sequence, While,
     };
+    use ray_shared::def::DefId;
+    use ray_shared::file_id::FileId;
+    use ray_shared::node_id::{NodeId, NodeIdGuard};
     use ray_shared::pathlib::{FilePath, Path};
     use ray_shared::span::{Source, Span, parsed::Parsed};
     use ray_shared::ty::Ty;
     use ray_typing::env::GlobalEnv;
     use ray_typing::types::TyScheme;
+
+    /// Set up a DefId context for tests that create nodes.
+    fn test_def_context() -> NodeIdGuard {
+        NodeId::enter_def(DefId::new(FileId(0), 0))
+    }
 
     fn test_source() -> Source {
         Source::new(
@@ -748,6 +756,7 @@ mod tests {
 
     #[test]
     fn records_use_bindings_for_name_exprs() {
+        let _guard = test_def_context();
         let local_pattern = Node::new(AstPattern::Name(Name::new("x")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let assign = Assign {
@@ -793,6 +802,7 @@ mod tests {
 
     #[test]
     fn records_closure_and_inline_function_params() {
+        let _guard = test_def_context();
         let closure_param = Node::new(Expr::Name(Name::new("closure_param")));
         let closure = Closure {
             args: Sequence::new(vec![closure_param.clone()]),
@@ -879,6 +889,7 @@ mod tests {
 
     #[test]
     fn records_function_params_and_locals() {
+        let _guard = test_def_context();
         let param = Node::new(FnParam::Name(Name::new("param")));
         let local_pattern = Node::new(AstPattern::Name(Name::new("local")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
@@ -961,6 +972,7 @@ mod tests {
 
     #[test]
     fn records_destructuring_declares() {
+        let _guard = test_def_context();
         let first = Node::new(AstPattern::Name(Name::new("first")));
         let second = Node::new(AstPattern::Name(Name::new("second")));
         let tuple = Node::new(AstPattern::Tuple(vec![first.clone(), second.clone()]));
@@ -1009,6 +1021,7 @@ mod tests {
 
     #[test]
     fn records_for_pattern_bindings() {
+        let _guard = test_def_context();
         let pat = Node::new(AstPattern::Name(Name::new("item")));
         let iter_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let body_block = Node::new(Expr::Block(Block { stmts: vec![] }));
@@ -1057,6 +1070,7 @@ mod tests {
 
     #[test]
     fn records_while_assignment_bindings() {
+        let _guard = test_def_context();
         let pat = Node::new(AstPattern::Name(Name::new("loop_var")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let assign = Assign {
@@ -1113,6 +1127,7 @@ mod tests {
 
     #[test]
     fn records_if_assignment_bindings() {
+        let _guard = test_def_context();
         let pat = Node::new(AstPattern::Name(Name::new("if_var")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let assign = Assign {
@@ -1169,6 +1184,7 @@ mod tests {
 
     #[test]
     fn records_impl_const_bindings() {
+        let _guard = test_def_context();
         let const_pattern = Node::new(AstPattern::Name(Name::new("IMPL_CONST")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let assign = Assign {
@@ -1221,6 +1237,7 @@ mod tests {
 
     #[test]
     fn records_mutable_and_named_decls_with_schemes() {
+        let _guard = test_def_context();
         let scheme = TyScheme::from_mono(Ty::bool());
         let parsed = Parsed::new(scheme.clone(), test_source());
         let mutable_name = Node::new(Name::typed("pkg::MUTABLE", parsed.clone()));
@@ -1266,6 +1283,7 @@ mod tests {
 
     #[test]
     fn records_mutable_and_named_decls_without_schemes() {
+        let _guard = test_def_context();
         let mutable_name = Node::new(Name::new("pkg::UNANNOTATED_MUT"));
         let named_name = Node::new(Name::new("pkg::UNANNOTATED_CONST"));
 
@@ -1305,6 +1323,7 @@ mod tests {
 
     #[test]
     fn records_nested_patterns_inside_closures() {
+        let _guard = test_def_context();
         let inner_a = Node::new(AstPattern::Name(Name::new("a")));
         let inner_b = Node::new(AstPattern::Name(Name::new("b")));
         let tuple_pattern = Node::new(AstPattern::Tuple(vec![inner_a.clone(), inner_b.clone()]));
@@ -1363,6 +1382,7 @@ mod tests {
 
     #[test]
     fn records_block_local_bindings_without_global_paths() {
+        let _guard = test_def_context();
         let local_pattern = Node::new(AstPattern::Name(Name::new("pkg::locals::local_var")));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
         let assign = Assign {
@@ -1416,6 +1436,7 @@ mod tests {
 
     #[test]
     fn records_some_patterns_in_declares() {
+        let _guard = test_def_context();
         let inner = Node::new(AstPattern::Name(Name::new("inner")));
         let some_pattern = Node::new(AstPattern::Some(Box::new(inner.clone())));
         let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));

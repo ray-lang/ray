@@ -1281,10 +1281,18 @@ mod tests {
     use crate::ast::{Block, Boxed, Func, Literal};
     use crate::passes::FrontendPassManager;
     use crate::sourcemap::SourceMap;
+    use ray_shared::def::DefId;
+    use ray_shared::file_id::FileId;
+    use ray_shared::node_id::{NodeId, NodeIdGuard};
     use ray_shared::pathlib::{FilePath, Path as RayPath};
     use ray_shared::resolution::Resolution;
     use ray_shared::span::{Source as RaySource, Span};
     use ray_typing::env::GlobalEnv;
+
+    /// Set up a DefId context for tests that create nodes.
+    fn test_def_context() -> NodeIdGuard {
+        NodeId::enter_def(DefId::new(FileId(0), 0))
+    }
 
     fn make_test_source() -> RaySource {
         RaySource::new(
@@ -1297,6 +1305,7 @@ mod tests {
 
     #[test]
     fn lower_simple_bool_function_into_module_input() {
+        let _guard = test_def_context();
         // Build a minimal module with a single function:
         //
         //   fn f() { true }
@@ -1381,6 +1390,7 @@ mod tests {
 
     #[test]
     fn typecheck_simple_bool_function_with_new_typechecker() {
+        let _guard = test_def_context();
         // Use typecheck_module to run the full typechecking pipeline over the same
         // minimal function and assert that it yields no type errors.
 
@@ -1425,6 +1435,7 @@ mod tests {
 
     #[test]
     fn typecheck_boxed_bool_function_with_new_typechecker() {
+        let _guard = test_def_context();
         // fn b() { box true }
         //
         // This exercises lowering of Boxed and the Boxed => *T rule in the

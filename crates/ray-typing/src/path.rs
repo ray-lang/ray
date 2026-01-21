@@ -83,7 +83,7 @@ mod tests {
         subst.insert(TyVar::new("?t0"), Ty::uint());
         path.apply_subst(&subst);
         let curr_str = path.to_string();
-        assert_eq!(curr_str, "T::func::<(i32, i8):uint>");
+        assert_eq!(curr_str, "T::func::<(i32,i8):uint>");
     }
 
     #[test]
@@ -97,6 +97,6 @@ mod tests {
         subst.insert(TyVar::new("?t0"), Ty::uint());
         path.apply_subst(&subst);
         let curr_str = path.to_string();
-        assert_eq!(curr_str, "T::func::<(i32, i8):list[uint]>");
+        assert_eq!(curr_str, "T::func::<(i32,i8):list[uint]>");
     }
 }

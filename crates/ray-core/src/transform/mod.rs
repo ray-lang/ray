@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use ray_shared::def::DefId;
 use ray_shared::span::{Source, Span};
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
@@ -47,13 +48,18 @@ impl ModuleCombiner {
         }
 
         for module in modules {
-            let _node_id_namespace = NodeId::enter_namespace(&module.path);
-
+            // Get a DefId from the module's nodes for NodeId generation context
+            let def_id = module
+                .stmts
+                .first()
+                .map(|n| n.id.owner)
+                .or_else(|| module.decls.first().map(|n| n.id.owner));
             new_module.decls.extend(module.decls);
             let main_decl = self.create_main_func(
                 &module.path,
                 &module.root_filepath,
                 module.stmts,
+                def_id,
                 &mut srcmap,
             )?;
             new_module.decls.push(main_decl);
@@ -70,8 +76,6 @@ impl ModuleCombiner {
         // lower the declarations for the current module
         let mut lower_ctx = self.get_lower_ctx(&mut srcmap);
         for decl in new_module.decls.iter_mut() {
-            let src = lower_ctx.srcmap().get(decl);
-            let _node_id_namespace = NodeId::enter_namespace(&src.src_module);
             decl.lower(&mut lower_ctx)?;
         }
 
@@ -142,10 +146,9 @@ impl ModuleCombiner {
         module_path: &Path,
         filepath: &FilePath,
         mut stmts: Vec<Node<Expr>>,
+        def_id: Option<DefId>,
         srcmap: &mut SourceMap,
     ) -> Result<Node<Decl>, RayError> {
-        let _node_id_namespace = NodeId::enter_namespace(module_path);
-
         let mut span = Span::new();
         if let Some(first) = stmts.first() {
             span.start = srcmap.span_of(first).start;
@@ -154,6 +157,10 @@ impl ModuleCombiner {
         if let Some(last) = stmts.last() {
             span.end = srcmap.span_of(last).end;
         }
+
+        // Enter the DefId context for creating new nodes.
+        // Use the file's main DefId (index 0) if we have a DefId from existing nodes.
+        let _guard = def_id.map(|d| NodeId::enter_def(DefId::new(d.file, 0)));
 
         let end_node = Node::new(Expr::Literal(Literal::Unit));
         srcmap.set_src(

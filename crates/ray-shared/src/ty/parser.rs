@@ -1,4 +1,7 @@
-use crate::{pathlib::Path, ty::Ty};
+use crate::{
+    pathlib::Path,
+    ty::{Ty, TyVar},
+};
 
 pub struct TyParser<'a> {
     src: &'a str,
@@ -137,6 +140,8 @@ impl<'a> TyParser<'a> {
             Some(self.parse_arr_ty()?)
         } else if let Some('\'') = self.peek() {
             Some(self.parse_generic_ty()?)
+        } else if let Some('?') = self.peek() {
+            Some(self.parse_ty_var()?)
         } else if let Some('(') = self.peek() {
             Some(self.parse_tuple_ty()?)
         } else {
@@ -194,7 +199,16 @@ impl<'a> TyParser<'a> {
     fn parse_generic_ty(&mut self) -> Result<Ty, String> {
         self.expect("'");
         let name = self.parse_id();
-        Ok(Ty::var(name))
+        let path = Path::from(vec![name]);
+        Ok(Ty::var(path))
+    }
+
+    fn parse_ty_var(&mut self) -> Result<Ty, String> {
+        self.expect("?");
+        let mut name = "?".to_string();
+        name.push_str(&self.parse_id());
+        let path = Path::from(vec![name]);
+        Ok(Ty::var(path))
     }
 
     fn parse_ty_with_path(&mut self, path: Path) -> Result<Ty, String> {

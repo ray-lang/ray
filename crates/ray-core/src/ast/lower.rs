@@ -1570,6 +1570,9 @@ mod tests {
 
     use ray_shared::{
         collections::namecontext::NameContext,
+        def::DefId,
+        file_id::FileId,
+        node_id::NodeId,
         pathlib::{FilePath, Path},
         span::{Pos, Source, Sourced, Span, parsed::Parsed},
         ty::Ty,
@@ -1600,6 +1603,10 @@ mod tests {
 
     #[test]
     fn lowers_curly_labels() {
+        // Set up DefId context for node creation
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
         let filepath = FilePath::from("test.ray");
         let src_module = Path::from("test");
         let mksrc = |span| Source::new(filepath.clone(), span, Path::new(), src_module.clone());

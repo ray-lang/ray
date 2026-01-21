@@ -355,6 +355,18 @@ impl FuncSig {
     }
 
     pub fn to_sig_status(&self) -> SignatureStatus {
-        todo!()
+        // Check if all parameters have type annotations
+        let all_params_annotated = self.params.iter().all(|p| p.value.ty().is_some());
+        if !all_params_annotated {
+            return SignatureStatus::Unannotated;
+        }
+
+        // All params are annotated, check return type
+        if self.ret_ty.is_some() {
+            SignatureStatus::FullyAnnotated
+        } else {
+            // Parameters annotated but return type elided (inferred from => body)
+            SignatureStatus::ReturnElided
+        }
     }
 }
