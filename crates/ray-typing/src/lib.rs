@@ -2191,11 +2191,14 @@ mod tests {
     fn solve_groups_int_literal_defaults() {
         // fn main() {
         //   x = 10
-        //   x
+        //   ()
         // }
         //
         // Here `10` is an unsized int literal with no contextual type.
         // We expect it to be resolved via defaulting from the `core::Int` trait.
+        // Note: We return `()` instead of `x` so the literal's type doesn't escape
+        // into the function's return type (which would block defaulting due to
+        // `will_be_generalized` check).
 
         // Top-level def id for main
         let main_def = DefId::new(FileId(0), 0);
@@ -2211,7 +2214,7 @@ mod tests {
         let assign_x = NodeId::new();
         let pat_x = NodeId::new();
         let lit_10 = NodeId::new();
-        let var_x = NodeId::new();
+        let unit_lit = NodeId::new();
 
         // Build binding records - only top-level definitions.
         let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
@@ -2235,14 +2238,14 @@ mod tests {
             },
         );
 
-        // final expression is `x`
-        kinds.insert(var_x, ExprKind::LocalRef(x));
+        // final expression is `()` (empty tuple)
+        kinds.insert(unit_lit, ExprKind::Tuple { elems: vec![] });
 
         // Sequence the assignment and final value.
         kinds.insert(
             main_root,
             ExprKind::Sequence {
-                items: vec![assign_x, var_x],
+                items: vec![assign_x, unit_lit],
             },
         );
 
