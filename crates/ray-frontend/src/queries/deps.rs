@@ -197,6 +197,40 @@ pub fn binding_group_members(db: &Database, group_id: BindingGroupId) -> Vec<Def
         .unwrap_or_default()
 }
 
+/// Get the binding group containing a definition.
+///
+/// Returns the binding group that contains the given definition. This is the
+/// inverse of `binding_group_members`.
+///
+/// # Panics
+///
+/// Panics if the DefId is not found in any group. This is an internal error -
+/// every definition should be in exactly one group.
+#[query]
+pub fn binding_group_for_def(db: &Database, def_id: DefId) -> BindingGroupId {
+    // Get the module for this definition's file
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let file_info = workspace
+        .file_info(def_id.file)
+        .expect("file not in workspace");
+    let module = file_info.module_path.clone();
+
+    // Get the binding groups for this module
+    let result = binding_groups(db, module);
+
+    // Find which group contains this def
+    for (idx, members) in result.members.iter().enumerate() {
+        if members.contains(&def_id) {
+            return result.group_ids[idx].clone();
+        }
+    }
+
+    panic!(
+        "DefId {:?} not found in any binding group (internal error)",
+        def_id
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -205,7 +239,10 @@ mod tests {
 
     use crate::{
         queries::{
-            deps::{binding_graph, binding_group_members, binding_groups, def_deps, BindingGroupId},
+            deps::{
+                binding_graph, binding_group_for_def, binding_group_members, binding_groups,
+                def_deps, BindingGroupId,
+            },
             libraries::LoadedLibraries,
             parse::parse_file,
             workspace::{FileSource, WorkspaceSnapshot},
@@ -1303,5 +1340,164 @@ fn is_odd(n) {
 
         let members = binding_group_members(&db, group_id);
         assert!(members.is_empty(), "Unknown module should return empty vec");
+    }
+
+    // ==================== binding_group_for_def tests ====================
+
+    #[test]
+    fn binding_group_for_def_returns_correct_group() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn foo() -> int { 1 }
+fn bar() -> int { 2 }
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "foo")
+            .expect("should find foo");
+        let bar_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bar")
+            .expect("should find bar");
+
+        let foo_group = binding_group_for_def(&db, foo_def.def_id);
+        let bar_group = binding_group_for_def(&db, bar_def.def_id);
+
+        // Both should have correct module
+        assert_eq!(foo_group.module, module_path);
+        assert_eq!(bar_group.module, module_path);
+
+        // They should be in different groups (both are annotated, no edges between them)
+        assert_ne!(foo_group.index, bar_group.index);
+    }
+
+    #[test]
+    fn binding_group_for_def_returns_same_group_for_mutual_recursion() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn is_even(n) {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n) {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let is_even_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_even")
+            .expect("should find is_even");
+        let is_odd_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_odd")
+            .expect("should find is_odd");
+
+        let is_even_group = binding_group_for_def(&db, is_even_def.def_id);
+        let is_odd_group = binding_group_for_def(&db, is_odd_def.def_id);
+
+        // Both should be in the same group
+        assert_eq!(is_even_group, is_odd_group);
+    }
+
+    #[test]
+    fn binding_group_for_def_is_inverse_of_binding_group_members() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Point { x: int, y: int }
+fn make_point() -> Point { Point { x: 1, y: 2 } }
+fn helper(x) { x }
+fn caller() -> int { helper(42) }
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+
+        // For every def, binding_group_for_def should return a group that contains that def
+        for def_header in &parse_result.defs {
+            let group_id = binding_group_for_def(&db, def_header.def_id);
+            let members = binding_group_members(&db, group_id);
+            assert!(
+                members.contains(&def_header.def_id),
+                "binding_group_members should contain the def that was used to find the group"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not found in any binding group")]
+    fn binding_group_for_def_panics_for_unknown_def() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "fn foo() -> int { 1 }".to_string());
+
+        // Create a DefId that doesn't exist in the module
+        let fake_def_id = ray_shared::def::DefId {
+            file: file_id,
+            index: 9999,
+        };
+
+        // This should panic
+        binding_group_for_def(&db, fake_def_id);
     }
 }

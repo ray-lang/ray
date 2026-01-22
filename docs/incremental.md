@@ -4083,15 +4083,15 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 4: binding_group_members query
 
-- [ ] Define `binding_group_members(BindingGroupId)` query
-- [ ] Return `Vec<DefId>` for the group
-- [ ] **Validate**: Unit test
+- [x] Define `binding_group_members(BindingGroupId)` query
+- [x] Return `Vec<DefId>` for the group
+- [x] **Validate**: Unit test
 
 ##### Step 5: binding_group_for_def query
 
-- [ ] Define `binding_group_for_def(DefId)` query
-- [ ] Reverse lookup from def to its containing group
-- [ ] **Validate**: Unit test
+- [x] Define `binding_group_for_def(DefId)` query
+- [x] Reverse lookup from def to its containing group
+- [x] **Validate**: Unit test
 
 ---
 
