@@ -4,7 +4,7 @@ use ray_core::ast::Decl;
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind},
-    pathlib::ItemPath,
+    pathlib::{ItemPath, ModulePath},
     resolution::DefTarget,
     ty::{Ty, TyVar},
 };
@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     queries::{
         exports::{ExportedItem, module_def_index},
-        libraries::{LibraryData, library_data},
+        libraries::{LibraryData, LoadedLibraries, library_data},
         parse::parse_file,
+        workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
 };
@@ -427,51 +428,78 @@ pub fn impl_def(db: &Database, target: DefTarget) -> Option<ImplDef> {
 
 /// Extract an impl definition from the workspace AST.
 fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
-    let parse_result = parse_file(db, def_id.file);
+    use crate::queries::resolve::name_resolutions;
+    use ray_shared::resolution::Resolution;
 
+    let parse_result = parse_file(db, def_id.file);
     let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
     if !matches!(def_header.kind, DefKind::Impl) {
         return None;
     }
 
-    // Find the corresponding AST node in decls
-    for decl in &parse_result.ast.decls {
-        if let Decl::Impl(im) = &**decl {
-            // The impl type is stored in im.ty
-            // We match by checking the implementing type name matches the def_header name
-            let impl_type_name = im.ty.name();
-            if impl_type_name == def_header.name {
-                // Extract type params from qualifiers if present
-                // Note: impl blocks in Ray don't have explicit type params in the same way,
-                // they're inferred from the implementing type
-                let type_params = extract_type_params_from_ty(&im.ty);
+    // Get name resolutions for this file to resolve the trait reference
+    let resolutions = name_resolutions(db, def_id.file);
 
-                // The implementing type
-                let implementing_type = (*im.ty).clone();
+    // Find the AST node using root_node from DefHeader
+    let im = parse_result
+        .ast
+        .decls
+        .iter()
+        .find(|decl| decl.id == def_header.root_node)
+        .and_then(|decl| match &**decl {
+            Decl::Impl(im) => Some(im),
+            _ => None,
+        })?;
 
-                // For trait impls, the trait is typically in qualifiers
-                // For `impl Trait for Type`, we need to check qualifiers
-                let trait_ref = im
-                    .qualifiers
+    // Handle the two forms of impl:
+    // 1. `impl object Point { ... }` - inherent impl, is_object=true
+    // 2. `impl ToStr[Point] { ... }` - trait impl, is_object=false
+    let (implementing_type, trait_ref, type_params) = if im.is_object {
+        // Inherent impl: the implementing type is im.ty directly
+        let impl_ty = (*im.ty).clone();
+        let ty_params = extract_type_params_from_ty(&im.ty);
+        (impl_ty, None, ty_params)
+    } else {
+        // Trait impl: im.ty is Ty::Proj(trait_path, [implementing_type, ...])
+        match &*im.ty {
+            Ty::Proj(_, args) if !args.is_empty() => {
+                // First argument is the implementing type
+                let impl_ty = args[0].clone();
+
+                // Resolve the trait using synthetic_ids and name_resolutions
+                // synthetic_ids[0] is the NodeId for the trait type (e.g., ToStr)
+                let synth_ids = im.ty.synthetic_ids();
+                let trait_target = synth_ids
                     .first()
-                    .and_then(|q| resolve_type_to_def_target(db, q));
+                    .and_then(|node_id| resolutions.get(node_id))
+                    .and_then(|res| match res {
+                        Resolution::Def(target) => Some(target.clone()),
+                        _ => None,
+                    });
 
-                // Extract method names
-                let methods = extract_impl_method_names(im);
-
-                return Some(ImplDef {
-                    target: DefTarget::Workspace(def_id),
-                    type_params,
-                    implementing_type,
-                    trait_ref,
-                    methods,
-                });
+                let ty_params = extract_type_params_from_ty(&impl_ty);
+                (impl_ty, trait_target, ty_params)
+            }
+            _ => {
+                // Fallback: treat as inherent
+                let impl_ty = (*im.ty).clone();
+                let ty_params = extract_type_params_from_ty(&im.ty);
+                (impl_ty, None, ty_params)
             }
         }
-    }
+    };
 
-    None
+    // Extract method names
+    let methods = extract_impl_method_names(im);
+
+    Some(ImplDef {
+        target: DefTarget::Workspace(def_id),
+        type_params,
+        implementing_type,
+        trait_ref,
+        methods,
+    })
 }
 
 /// Extract method names from an impl block.
@@ -573,6 +601,153 @@ fn extract_workspace_type_alias(db: &Database, def_id: DefId) -> Option<TypeAlia
     None
 }
 
+// ============================================================================
+// impls_in_module query
+// ============================================================================
+
+/// Collect all impl block DefIds from a module.
+///
+/// Iterates through all files in the module and collects DefIds for all
+/// `DefKind::Impl` definitions.
+#[query]
+pub fn impls_in_module(db: &Database, module_path: ModulePath) -> Vec<DefId> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    let file_ids = match workspace.module_info(&module_path) {
+        Some(info) => info.files.clone(),
+        None => return Vec::new(),
+    };
+
+    let mut impls = Vec::new();
+    for file_id in file_ids {
+        let parse_result = parse_file(db, file_id);
+        for def_header in &parse_result.defs {
+            if matches!(def_header.kind, DefKind::Impl) {
+                impls.push(def_header.def_id);
+            }
+        }
+    }
+
+    impls
+}
+
+// ============================================================================
+// impls_for_type query
+// ============================================================================
+
+/// Result of looking up all impls for a type.
+///
+/// Separates inherent impls (no trait) from trait impls.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ImplsForType {
+    /// Inherent impl blocks: `impl object Foo { ... }`
+    pub inherent: Vec<DefTarget>,
+    /// Trait impl blocks: `impl Trait[Foo] { ... }`
+    pub trait_impls: Vec<DefTarget>,
+}
+
+/// Find all impl blocks for a given type.
+///
+/// Searches both workspace and library impls, returning them separated
+/// into inherent impls and trait impls.
+#[query]
+pub fn impls_for_type(db: &Database, type_target: DefTarget) -> ImplsForType {
+    let mut result = ImplsForType::default();
+
+    // Search workspace impls
+    collect_workspace_impls_for_type(db, &type_target, &mut result);
+
+    // Search library impls
+    collect_library_impls_for_type(db, &type_target, &mut result);
+
+    result
+}
+
+/// Collect workspace impls that implement the target type.
+fn collect_workspace_impls_for_type(
+    db: &Database,
+    type_target: &DefTarget,
+    result: &mut ImplsForType,
+) {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    // Iterate through all modules in the workspace
+    for module_path in workspace.modules.keys() {
+        let impl_ids = impls_in_module(db, module_path.clone());
+
+        for impl_id in impl_ids {
+            // Get the impl definition
+            let impl_target = DefTarget::Workspace(impl_id);
+            if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
+                // Check if this impl's implementing_type matches the target
+                if type_matches_target(&impl_definition.implementing_type, type_target, db) {
+                    if impl_definition.trait_ref.is_some() {
+                        result.trait_impls.push(impl_target);
+                    } else {
+                        result.inherent.push(impl_target);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect library impls that implement the target type.
+fn collect_library_impls_for_type(
+    db: &Database,
+    type_target: &DefTarget,
+    _result: &mut ImplsForType,
+) {
+    let libraries = db.get_input::<LoadedLibraries>(());
+
+    for (_lib_path, lib_data) in &libraries.libraries {
+        for lib_impl in &lib_data.impls {
+            // Check if this impl's self_ty matches the target
+            if type_matches_target(&lib_impl.self_ty, type_target, db) {
+                // Library impls don't have a DefTarget path directly,
+                // but we can identify them by the implementing type + trait
+                // For now, we skip library impls since they don't have DefTarget paths
+                // TODO: Consider how to represent library impl DefTargets
+                let _ = lib_impl;
+            }
+        }
+    }
+}
+
+/// Check if a Ty matches a DefTarget.
+///
+/// A type matches if it refers to the same definition as the target.
+/// For workspace definitions, we compare type names since the impl's type
+/// is typically a local reference (e.g., `Point` not `mymodule::Point`).
+fn type_matches_target(ty: &Ty, target: &DefTarget, db: &Database) -> bool {
+    // Extract the type's name
+    let type_name = ty.name();
+
+    match target {
+        DefTarget::Workspace(def_id) => {
+            // For workspace targets, look up the def header to get the name
+            let parse_result = parse_file(db, def_id.file);
+            if let Some(def_header) = parse_result.defs.iter().find(|h| h.def_id == *def_id) {
+                // Compare by name - the impl's type reference is local
+                return def_header.name == type_name;
+            }
+            false
+        }
+        DefTarget::Library(path) => {
+            // For library targets, try to resolve the type path
+            let type_path = match ty {
+                Ty::Const(p) => p.clone(),
+                Ty::Proj(p, _) => p.clone(),
+                _ => return false,
+            };
+
+            // Compare paths
+            let item_path = ItemPath::from(&type_path);
+            &item_path == path
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ray_shared::{
@@ -583,7 +758,10 @@ mod tests {
 
     use crate::{
         queries::{
-            defs::{def_for_path, impl_def, struct_def, trait_def, type_alias},
+            defs::{
+                def_for_path, impl_def, impls_for_type, impls_in_module, struct_def, trait_def,
+                type_alias,
+            },
             libraries::{LibraryData, LibraryScheme, LibraryStruct, LibraryTrait, LoadedLibraries},
             workspace::{FileSource, WorkspaceSnapshot},
         },
@@ -1061,5 +1239,185 @@ impl object Point {
 
         let result = type_alias(&db, target);
         assert!(result.is_none());
+    }
+
+    // impls_in_module tests
+
+    #[test]
+    fn impls_in_module_finds_impl_blocks() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn new(x: int, y: int): Point => Point { x, y }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let impls = impls_in_module(&db, module_path);
+
+        assert_eq!(impls.len(), 1);
+    }
+
+    #[test]
+    fn impls_in_module_returns_empty_for_no_impls() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+
+        let impls = impls_in_module(&db, module_path);
+
+        assert!(impls.is_empty());
+    }
+
+    #[test]
+    fn impls_in_module_returns_empty_for_unknown_module() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let impls = impls_in_module(&db, ModulePath::from("unknown"));
+
+        assert!(impls.is_empty());
+    }
+
+    // impls_for_type tests
+
+    #[test]
+    fn impls_for_type_finds_inherent_impl() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn new(x: int, y: int): Point => Point { x, y }
+    fn distance(self): int => self.x + self.y
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the struct's DefTarget
+        let path = ItemPath::new(module_path, vec!["Point".into()]);
+        let target = def_for_path(&db, path).expect("struct should be found");
+
+        let result = impls_for_type(&db, target);
+
+        assert_eq!(result.inherent.len(), 1);
+        assert!(result.trait_impls.is_empty());
+    }
+
+    #[test]
+    fn impls_for_type_returns_empty_for_type_without_impls() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+
+        let path = ItemPath::new(module_path, vec!["Point".into()]);
+        let target = def_for_path(&db, path).expect("struct should be found");
+
+        let result = impls_for_type(&db, target);
+
+        assert!(result.inherent.is_empty());
+        assert!(result.trait_impls.is_empty());
+    }
+
+    #[test]
+    fn impls_for_type_finds_trait_impl() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Define a trait and a struct with a trait impl
+        // Ray syntax: impl Trait[Type] { ... }
+        let source = r#"
+trait ToStr['T] {
+    fn to_str(self: 'T) -> string
+}
+
+struct Point { x: int, y: int }
+
+impl ToStr[Point] {
+    fn to_str(self: Point) -> string => "Point"
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the struct's DefTarget
+        let path = ItemPath::new(module_path, vec!["Point".into()]);
+        let target = def_for_path(&db, path).expect("struct should be found");
+
+        let result = impls_for_type(&db, target);
+
+        assert!(result.inherent.is_empty());
+        assert_eq!(result.trait_impls.len(), 1);
+    }
+
+    #[test]
+    fn impls_for_type_finds_both_inherent_and_trait_impls() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait ToStr['T] {
+    fn to_str(self: 'T) -> string
+}
+
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn new(x: int, y: int): Point => Point { x, y }
+}
+
+impl ToStr[Point] {
+    fn to_str(self: Point) -> string => "Point"
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let path = ItemPath::new(module_path, vec!["Point".into()]);
+        let target = def_for_path(&db, path).expect("struct should be found");
+
+        let result = impls_for_type(&db, target);
+
+        assert_eq!(result.inherent.len(), 1);
+        assert_eq!(result.trait_impls.len(), 1);
     }
 }

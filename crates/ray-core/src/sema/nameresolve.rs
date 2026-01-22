@@ -75,6 +75,17 @@ pub fn resolve_names_in_file(
                             }
                         }
                     }
+                } else if let Decl::Impl(imp) = &decl.value {
+                    // Resolve type references in impl block
+                    // For `impl ToStr[Point]`, resolve the trait type (ToStr)
+                    resolve_impl_type_refs(
+                        imp,
+                        imports,
+                        module_exports,
+                        sibling_exports,
+                        &import_exports,
+                        &mut resolutions,
+                    );
                 }
             }
             WalkItem::Func(func) => {
@@ -203,6 +214,101 @@ fn lookup_def(
         .get(name)
         .or_else(|| sibling_exports.get(name))
         .cloned()
+}
+
+/// Resolve type references in an impl block.
+///
+/// For `impl ToStr[Point]`, this resolves:
+/// - The trait type `ToStr` (first synthetic_id)
+/// - The implementing type `Point` (second synthetic_id, if present)
+///
+/// For `impl object Point`, there's no trait to resolve.
+fn resolve_impl_type_refs(
+    imp: &Impl,
+    imports: &HashMap<String, ModulePath>,
+    module_exports: &HashMap<String, DefTarget>,
+    sibling_exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    // Get the synthetic IDs for this impl's type
+    let synth_ids = imp.ty.synthetic_ids();
+
+    // For trait impls like `impl ToStr[Point]`:
+    // - imp.is_object is false
+    // - imp.ty is Ty::Proj(trait_path, [implementing_type, ...])
+    // - synth_ids[0] is the NodeId for the trait type (ToStr)
+    //
+    // For inherent impls like `impl object Point`:
+    // - imp.is_object is true
+    // - imp.ty is the implementing type directly
+    // - synth_ids[0] is the NodeId for the implementing type
+    if !imp.is_object {
+        if let Ty::Proj(trait_path, _) = &*imp.ty {
+            // Get the trait name from the path
+            if let Some(trait_name) = trait_path.name() {
+                // Try to resolve the trait
+                let resolution = resolve_type_name(
+                    &trait_name,
+                    trait_path,
+                    imports,
+                    module_exports,
+                    sibling_exports,
+                    import_exports,
+                );
+
+                if let Some(target) = resolution {
+                    if let Some(node_id) = synth_ids.first() {
+                        resolutions.insert(*node_id, Resolution::Def(target));
+                    }
+                }
+            }
+        }
+    }
+
+    // TODO: Also resolve the implementing type if needed
+}
+
+/// Resolve a type name to a DefTarget.
+///
+/// Checks in order:
+/// 1. Module exports (same module definitions)
+/// 2. Sibling exports (same module, different file)
+/// 3. Imported modules (qualified paths like `io::Foo` or selective imports)
+fn resolve_type_name(
+    name: &str,
+    path: &Path,
+    imports: &HashMap<String, ModulePath>,
+    module_exports: &HashMap<String, DefTarget>,
+    sibling_exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+) -> Option<DefTarget> {
+    let name_vec = path.to_name_vec();
+
+    // If it's a simple name (single segment), check module/sibling exports first
+    if name_vec.len() == 1 {
+        if let Some(target) = lookup_def(module_exports, sibling_exports, name) {
+            return Some(target);
+        }
+    }
+
+    // If it's a qualified path (multiple segments), try to resolve via imports
+    if name_vec.len() >= 2 {
+        let first_segment = &name_vec[0];
+        if imports.contains_key(first_segment) {
+            if let Some(imported_exports) = import_exports(first_segment) {
+                // For now, only handle two-segment paths like `io::Foo`
+                if name_vec.len() == 2 {
+                    let second_segment = &name_vec[1];
+                    if let Some(target) = imported_exports.get(second_segment) {
+                        return Some(target.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 // ============================================================================

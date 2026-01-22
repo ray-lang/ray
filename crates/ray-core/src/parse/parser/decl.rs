@@ -589,7 +589,7 @@ impl Parser<'_> {
             };
 
             let span = Span { start, end };
-            let name = imp.ty.get_path().to_short_name();
+            let name = imp.ty.get_path().with_names_only().to_short_name();
             let name_span = *imp.ty.span().unwrap();
             let node = parser.mk_decl(Decl::Impl(imp), span, ctx.path.clone());
             parser.defs.push(DefHeader {

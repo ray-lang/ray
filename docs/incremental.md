@@ -1232,8 +1232,8 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   ```rust
   #[derive(Clone, Serialize, Deserialize)]
   struct ImplsForType {
-      pub inherent: Vec<DefTarget>,     // impl Foo { ... }
-      pub trait_impls: Vec<DefTarget>,  // impl Trait for Foo { ... }
+      pub inherent: Vec<DefTarget>,     // impl object Foo { ... }
+      pub trait_impls: Vec<DefTarget>,  // impl Trait[Foo] { ... }
   }
   ```
 
