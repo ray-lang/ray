@@ -3988,11 +3988,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: Handle all transformations
 
-- [ ] Compound assignment desugaring (`x += 1` → `x = x + 1`)
-- [ ] Curly shorthand expansion (`Point { x }` → `Point { x: x }`)
-- [ ] Curly field reordering (match struct definition order)
-- [ ] Function-to-closure conversion (if needed at this stage)
-- [ ] **Validate**: Unit tests for each transformation
+- [x] Compound assignment desugaring (`x += 1` → `x = x + 1`)
+- [x] Curly shorthand expansion (`Point { x }` → `Point { x: x }`)
+- [x] Curly field reordering (match struct definition order)
+- [x] Function-to-closure conversion (if needed at this stage)
+- [x] **Validate**: Unit tests for each transformation
 
 ---
 
@@ -4019,7 +4019,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: def_deps query
 
-- [ ] Define `def_deps(DefId)` query:
+- [x] Define `def_deps(DefId)` query:
   ```rust
   #[query]
   fn def_deps(db: &Database, def_id: DefId) -> Vec<DefId> {
@@ -4033,8 +4033,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
           .collect()
   }
   ```
-- [ ] Wire up to `def_deps` function from Phase 0.D
-- [ ] **Validate**: Unit test for function with various dependencies
+- [x] Wire up to `def_deps` function from Phase 0.D
+- [x] **Validate**: Unit test for function with various dependencies
 
 ##### Step 2: binding_graph query
 

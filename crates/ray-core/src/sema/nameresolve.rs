@@ -168,6 +168,20 @@ pub fn resolve_names_in_file(
                             }
                         }
                     }
+                    Expr::Curly(curly) => {
+                        // Resolve the struct type name for curly expressions like `Point { x, y }`
+                        // The resolution is stored on the Curly expression's NodeId
+                        if let Some(parsed_path) = &curly.lhs {
+                            if let Some(name_str) = parsed_path.name() {
+                                // Look up the struct in module exports
+                                if let Some(target) =
+                                    lookup_def(module_exports, sibling_exports, &name_str)
+                                {
+                                    resolutions.insert(expr.id, Resolution::Def(target));
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1387,5 +1401,59 @@ mod tests {
 
         // Unknown name should not be in the resolution map
         assert!(!resolutions.contains_key(&body_name.id));
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_curly_struct_type() {
+        // fn f() { Point { x: 1 } }  where Point is a struct export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        use crate::ast::{Curly, CurlyElement};
+        use ray_shared::span::{Source, parsed::Parsed};
+
+        // Create curly expression: Point { x: 1 }
+        let field_name = Name::new("x");
+        let field_value = Node::new(Expr::Name(Name::new("dummy")));
+        let curly_elem = Node::new(CurlyElement::Labeled(field_name, field_value));
+        let curly_expr = Node::new(Expr::Curly(Curly {
+            lhs: Some(Parsed::new(Path::from("Point"), Source::default())),
+            elements: vec![curly_elem],
+            curly_span: ray_shared::span::Span::default(),
+            ty: TyScheme::default(),
+        }));
+        let curly_id = curly_expr.id;
+
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![curly_expr],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+
+        // Point is exported from the module
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut module_exports = HashMap::new();
+        module_exports.insert(
+            "Point".to_string(),
+            DefTarget::Workspace(point_def_id),
+        );
+        let sibling_exports = HashMap::new();
+
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+
+        // Curly expression should be resolved to the Point struct
+        assert!(
+            resolutions.contains_key(&curly_id),
+            "Curly expression should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&curly_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Curly should resolve to Point struct"
+        );
     }
 }

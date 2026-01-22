@@ -653,12 +653,14 @@ fn main() {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
+        // Use proper module path structure for resolution to work
         let module_path = ModulePath::from("test");
-        let file_id = workspace.add_file(FilePath::from("test.ray"), module_path.to_path());
+        let file_id =
+            workspace.add_file(FilePath::from("test/mod.ray"), module_path.clone().to_path());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // Fields in wrong order should be reordered
+        // Fields in wrong order (y, x) should be reordered to match struct (x, y)
         FileSource::new(
             &db,
             file_id,
@@ -674,28 +676,50 @@ fn main() {
 
         let result = file_ast(&db, file_id);
 
-        // Note: Field reordering requires successful struct_def lookup.
-        // If the resolution works, fields should be reordered.
-        // If not, we at least shouldn't error.
-
-        // For now, just verify no transformation errors
-        // (there might be other errors if resolution doesn't work in test setup)
-        let transformation_errors: Vec<_> = result
-            .errors
-            .iter()
-            .filter(|e| e.context.as_deref() == Some("lower curly struct"))
-            .collect();
-
-        // If struct resolution works, there should be no curly-related errors
-        // If it doesn't work, we still don't crash
+        // Should have no errors
         assert!(
-            transformation_errors.is_empty()
-                || result
-                    .errors
-                    .iter()
-                    .any(|e| e.msg.contains("does not have field")),
-            "Unexpected transformation errors: {:?}",
-            transformation_errors
+            result.errors.is_empty(),
+            "Expected no errors, got: {:?}",
+            result.errors
         );
+
+        // Find the curly expression and verify fields are reordered
+        let func = result
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match &d.value {
+                Decl::Func(f) if f.sig.path.name() == Some("main".to_string()) => Some(f),
+                _ => None,
+            })
+            .expect("should have main function");
+
+        let body = func.body.as_ref().expect("function should have body");
+        if let Expr::Block(block) = &body.value {
+            if let Some(stmt) = block.stmts.first() {
+                if let Expr::Assign(assign) = &stmt.value {
+                    if let Expr::Curly(curly) = &assign.rhs.value {
+                        // After reordering, fields should be in struct definition order: x, y
+                        assert_eq!(curly.elements.len(), 2, "Should have 2 fields");
+
+                        // Extract field names
+                        let field_names: Vec<String> = curly
+                            .elements
+                            .iter()
+                            .filter_map(|elem| match &elem.value {
+                                CurlyElement::Labeled(name, _) => name.path.name(),
+                                CurlyElement::Name(name) => name.path.name(),
+                            })
+                            .collect();
+
+                        assert_eq!(
+                            field_names,
+                            vec!["x".to_string(), "y".to_string()],
+                            "Fields should be reordered to match struct definition order (x, y)"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
