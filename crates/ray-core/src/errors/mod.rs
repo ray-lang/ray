@@ -43,7 +43,7 @@ impl fmt::Display for RayErrorKind {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RayError {
     pub msg: String,
     pub src: Vec<Source>,

@@ -336,23 +336,39 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
     let name_str = ident.to_string();
     let fields = &s.fields;
 
-    let Some(field) = fields.iter().next() else {
-        return syn::Error::new(s.span(), "#[input] struct must have one field")
-            .to_compile_error()
-            .into();
-    };
-
-    if fields.iter().count() != 1 {
-        return syn::Error::new(s.span(), "#[input] struct must have exactly one field")
+    if fields.is_empty() {
+        return syn::Error::new(s.span(), "#[input] struct must have at least one field")
             .to_compile_error()
             .into();
     }
 
-    let value_ty = field.ty.clone();
-    let (get_ident, set_ident) = match &field.ident {
-        Some(ident) => (ident.clone(), format_ident!("set_{}", ident)),
-        None => (format_ident!("value"), format_ident!("set_value")),
+    // Collect field information
+    let mut field_names: Vec<Ident> = Vec::new();
+    let mut field_types: Vec<Type> = Vec::new();
+    let is_tuple_struct = fields.iter().next().map(|f| f.ident.is_none()).unwrap_or(false);
+
+    for (i, field) in fields.iter().enumerate() {
+        let name = field
+            .ident
+            .clone()
+            .unwrap_or_else(|| format_ident!("field_{}", i));
+        field_names.push(name);
+        field_types.push(field.ty.clone());
+    }
+
+    // Constructor expression for `new` method
+    let ctor_expr = if is_tuple_struct {
+        quote! { #ident(#(#field_names),*) }
+    } else {
+        quote! { #ident { #(#field_names),* } }
     };
+
+    // Parameters for `new` method
+    let new_params: Vec<_> = field_names
+        .iter()
+        .zip(field_types.iter())
+        .map(|(name, ty)| quote! { #name: #ty })
+        .collect();
 
     let (key_ty, fingerprint_path) = match parse_input_args(attr, s.span(), true) {
         Ok(result) => result,
@@ -378,16 +394,17 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
         }
     };
 
+    // For self-keyed inputs (no key override), generate value/set_value accessors
     let accessors = if has_key_override {
         quote! {}
     } else {
         quote! {
             impl #ident {
-                #vis fn #get_ident(&self, db: &Database) -> #value_ty {
+                #vis fn value(&self, db: &Database) -> #ident {
                     db.get_input::<#ident>(self.clone())
                 }
 
-                #vis fn #set_ident(&self, db: &Database, value: #value_ty) {
+                #vis fn set_value(&self, db: &Database, value: #ident) {
                     db.set_input::<#ident>(self.clone(), value);
                 }
             }
@@ -399,7 +416,7 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
 
         impl Input for #ident {
             type Key = #key_ty;
-            type Value = #value_ty;
+            type Value = #ident;
 
             const NAME: &'static str = #name_str;
 
@@ -407,8 +424,8 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
         }
 
         impl #ident {
-            #vis fn new(db: &Database, key: #key_ty, value: #value_ty) {
-                db.set_input::<#ident>(key, value);
+            #vis fn new(db: &Database, key: #key_ty, #(#new_params),*) {
+                db.set_input::<#ident>(key, #ctor_expr);
             }
         }
 

@@ -1161,10 +1161,14 @@ dependencies = [
 name = "ray-frontend"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "log",
+ "ray-core",
  "ray-query-macros",
  "ray-shared",
+ "ray-typing",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

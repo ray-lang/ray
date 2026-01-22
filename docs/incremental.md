@@ -3627,36 +3627,36 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: Define input types
 
-- [ ] Define `FileSource` input:
+- [x] Define `FileSource` input:
   ```rust
   #[input(key = "FileId")]
   pub struct FileSource(pub String);  // file contents
   ```
-- [ ] Define `WorkspaceSnapshot` input (or computed from file system):
+- [x] Define `WorkspaceSnapshot` input (or computed from file system):
   ```rust
   pub struct WorkspaceSnapshot {
       pub modules: HashMap<ModulePath, ModuleInfo>,
       pub files: HashMap<FileId, FileInfo>,
   }
   ```
-- [ ] **Validate**: Can create `Database` and set inputs
+- [x] **Validate**: Can create `Database` and set inputs
 
 ##### Step 2: Workspace discovery
 
-- [ ] Implement `WorkspaceSnapshot::from_directory(path)` for CLI
-- [ ] Implement `WorkspaceSnapshot::with_overlay(overlay)` for LSP
-- [ ] Map file paths to `FileId`s (stable across session)
-- [ ] Map directories to `ModulePath`s
-- [ ] **Validate**: Discover files in test project, verify module structure
+- [x] Implement `WorkspaceSnapshot::from_directory(path)` for CLI
+- [x] Implement `WorkspaceSnapshot::with_overlay(overlay)` for LSP
+- [x] Map file paths to `FileId`s (stable across session)
+- [x] Map directories to `ModulePath`s
+- [x] **Validate**: Discover files in test project, verify module structure
 
 ##### Step 3: Library data loading
 
-- [ ] Define `LibraryData` input:
+- [x] Define `LibraryData` input:
   ```rust
   #[input(key = "ModulePath")]
   pub struct LibraryData { /* schemes, structs, traits, impls, operators */ }
   ```
-- [ ] Implement library loading with schema variable remapping:
+- [x] Implement library loading with schema variable remapping:
   ```rust
   fn load_library(path: &FilePath, allocator: &mut SchemaVarAllocator) -> LibraryData {
       let raw = RayLib::load(path);
@@ -3667,8 +3667,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       raw
   }
   ```
-- [ ] Reserve schema var ID range to avoid collisions with workspace type inference
-- [ ] **Validate**: Load library, verify scheme vars don't collide with workspace vars
+- [x] Reserve schema var ID range to avoid collisions with workspace type inference
+- [x] **Validate**: Load library, verify scheme vars don't collide with workspace vars
 
 ---
 
@@ -3676,7 +3676,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: Define ParseResult
 
-- [ ] Create `ParseResult` struct (if not already):
+- [x] Create `ParseResult` struct (if not already):
   ```rust
   pub struct ParseResult {
       pub ast: File,
@@ -3685,11 +3685,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
       pub errors: Vec<RayError>,
   }
   ```
-- [ ] **Validate**: Existing parser returns this structure
+- [x] **Validate**: Existing parser returns this structure
 
 ##### Step 2: Implement parse query
 
-- [ ] Define `parse(FileId)` query:
+- [x] Define `parse(FileId)` query:
   ```rust
   #[query]
   fn parse(db: &Database, file_id: FileId) -> ParseResult {
@@ -3698,12 +3698,12 @@ This is the largest migration. Do it incrementally, running tests after each ste
       Parser::parse(file_id, source, file_info.options(), &mut SourceMap::new())
   }
   ```
-- [ ] Ensure `DefId` assignment is deterministic (same source → same DefIds)
-- [ ] **Validate**: Parse test file via query, compare to direct parser call
+- [x] Ensure `DefId` assignment is deterministic (same source → same DefIds)
+- [x] **Validate**: Parse test file via query, compare to direct parser call
 
 ##### Step 3: Implement file_imports query
 
-- [ ] Define `file_imports(FileId)` query:
+- [x] Define `file_imports(FileId)` query:
   ```rust
   #[query]
   fn file_imports(db: &Database, file_id: FileId) -> Vec<ImportStatement> {
@@ -3711,12 +3711,12 @@ This is the largest migration. Do it incrementally, running tests after each ste
       extract_imports(&parse_result.ast)
   }
   ```
-- [ ] Extract import statements from AST
-- [ ] **Validate**: Unit test with file containing imports
+- [x] Extract import statements from AST
+- [x] **Validate**: Unit test with file containing imports
 
 ##### Step 4: Implement file_exports query
 
-- [ ] Define `file_exports(FileId)` query:
+- [x] Define `file_exports(FileId)` query:
   ```rust
   #[query]
   fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedItem> {
@@ -3724,8 +3724,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       extract_exports(&parse_result.ast, &parse_result.defs)
   }
   ```
-- [ ] Extract top-level definitions and their visibility
-- [ ] **Validate**: Unit test with file containing various declarations
+- [x] Extract top-level definitions and their visibility
+- [x] **Validate**: Unit test with file containing various declarations
 
 ---
 
@@ -3751,7 +3751,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: resolved_imports query
 
-- [ ] Define `resolved_imports(FileId)` query:
+- [x] Define `resolved_imports(FileId)` query:
   ```rust
   #[query]
   fn resolved_imports(db: &Database, file_id: FileId) -> HashMap<String, Result<ModulePath, ImportError>> {
@@ -3760,15 +3760,15 @@ This is the largest migration. Do it incrementally, running tests after each ste
       resolve_imports(&imports, &workspace)
   }
   ```
-- [ ] Implement `resolve_imports` function:
+- [x] Implement `resolve_imports` function:
   - Map import paths to `ModulePath`s
   - Check workspace for module existence
   - Return `ImportError` for unknown modules
-- [ ] **Validate**: Unit test with valid and invalid imports
+- [x] **Validate**: Unit test with valid and invalid imports
 
 ##### Step 2: module_def_index query
 
-- [ ] Define `module_def_index(ModulePath)` query:
+- [x] Define `module_def_index(ModulePath)` query:
   ```rust
   #[query]
   fn module_def_index(db: &Database, module: ModulePath) -> HashMap<String, Result<ExportedItem, NameCollision>> {
@@ -3782,8 +3782,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       index
   }
   ```
-- [ ] Implement collision detection (same name in multiple files)
-- [ ] **Validate**: Unit test with module containing multiple files
+- [x] Implement collision detection (same name in multiple files)
+- [x] **Validate**: Unit test with module containing multiple files
 
 ---
 
@@ -3791,7 +3791,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: name_resolutions query
 
-- [ ] Define `name_resolutions(FileId)` query:
+- [x] Define `name_resolutions(FileId)` query:
   ```rust
   #[query]
   fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resolution> {
@@ -3804,15 +3804,15 @@ This is the largest migration. Do it incrementally, running tests after each ste
       resolve_names_in_file(&parse_result.ast, &imports, &module_exports, &sibling_exports)
   }
   ```
-- [ ] Wire up to `resolve_names_in_file` from Phase 0.C
-- [ ] **Validate**: Unit test resolving local, sibling, and imported names
+- [x] Wire up to `resolve_names_in_file` from Phase 0.C
+- [x] **Validate**: Unit test resolving local, sibling, and imported names
 
 ##### Step 2: Handle library references
 
-- [ ] Extend `Resolution::Def(DefTarget)` to include library targets
-- [ ] Load library exports from `LibraryData` input
-- [ ] Resolve library references in `resolve_names_in_file`
-- [ ] **Validate**: Unit test with `use core::...` import
+- [x] Extend `Resolution::Def(DefTarget)` to include library targets
+- [x] Load library exports from `LibraryData` input
+- [x] Resolve library references in `resolve_names_in_file`
+- [x] **Validate**: Unit test with `import core::...` import
 
 ---
 

@@ -350,6 +350,7 @@ mod tests {
     struct IntKey(u64);
 
     #[allow(dead_code)]
+    #[derive(Clone, Hash)]
     #[input(key = "IntKey")]
     struct IntInput(u64);
 
@@ -362,7 +363,7 @@ mod tests {
         const NAME: &'static str = "ReadInt";
 
         fn compute(db: &Database, key: Self::Key) -> Self::Value {
-            db.get_input::<IntInput>(key)
+            db.get_input::<IntInput>(key).0
         }
     }
 
@@ -435,7 +436,7 @@ mod tests {
 
     #[query]
     fn read_int_query(db: &Database, key: IntKey) -> u64 {
-        db.get_input::<IntInput>(key)
+        db.get_input::<IntInput>(key).0
     }
 
     #[query]
@@ -528,8 +529,50 @@ mod tests {
 
         let input = PlainInput(0);
 
-        input.set_value(&db, 12);
+        input.set_value(&db, PlainInput(12));
         let value = input.value(&db);
-        assert_eq!(value, 12);
+        assert_eq!(value, PlainInput(12));
+    }
+
+    #[test]
+    fn multi_field_input_works() {
+        let db = Database::new();
+
+        #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+        struct MultiKey(u64);
+
+        #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+        #[input(key = "MultiKey")]
+        struct MultiFieldInput {
+            name: String,
+            count: u64,
+        }
+
+        let key = MultiKey(1);
+        MultiFieldInput::new(&db, key.clone(), "hello".to_string(), 42);
+
+        let retrieved = db.get_input::<MultiFieldInput>(key);
+        assert_eq!(retrieved.name, "hello");
+        assert_eq!(retrieved.count, 42);
+    }
+
+    #[test]
+    fn multi_field_tuple_input_works() {
+        let db = Database::new();
+
+        #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+        struct TupleKey(u64);
+
+        #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+        #[input(key = "TupleKey")]
+        struct MultiTupleInput(String, u64, bool);
+
+        let key = TupleKey(1);
+        MultiTupleInput::new(&db, key.clone(), "test".to_string(), 100, true);
+
+        let retrieved = db.get_input::<MultiTupleInput>(key);
+        assert_eq!(retrieved.0, "test");
+        assert_eq!(retrieved.1, 100);
+        assert_eq!(retrieved.2, true);
     }
 }

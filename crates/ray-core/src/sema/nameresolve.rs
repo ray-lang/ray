@@ -5,7 +5,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::Path,
+    pathlib::{ModulePath, Path},
     resolution::{DefTarget, Resolution},
     span::{Sourced, parsed::Parsed},
     ty::Ty,
@@ -27,11 +27,20 @@ use crate::{
 ///
 /// This is a pure function that walks the AST read-only and returns a mapping
 /// from NodeIds to their resolutions without mutating the input.
+///
+/// Parameters:
+/// - `ast`: The parsed file AST
+/// - `imports`: Map from import alias to module path. For `import std::io`,
+///   the key is "io" and the value is the module path.
+/// - `module_exports`: Exports from the current file's module (same-module definitions)
+/// - `sibling_exports`: Exports from sibling files in the same module
+/// - `import_exports`: Callback to get exports for an imported module by alias
 pub fn resolve_names_in_file(
     ast: &File,
-    _imports: &HashMap<String, Path>,
+    imports: &HashMap<String, ModulePath>,
     module_exports: &HashMap<String, DefTarget>,
     sibling_exports: &HashMap<String, DefTarget>,
+    import_exports: impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
 ) -> HashMap<NodeId, Resolution> {
     let mut resolutions = HashMap::new();
     let mut local_scopes: Vec<HashMap<String, LocalBindingId>> = vec![HashMap::new()];
@@ -111,6 +120,24 @@ pub fn resolve_names_in_file(
                             });
                         if let Some(res) = resolution {
                             resolutions.insert(expr.id, res);
+                        }
+                    }
+                    Expr::Path(path) if path.len() >= 2 => {
+                        // Qualified path like `io::read` or `std::io::read`
+                        // Try to resolve via imports first
+                        let name_vec = path.to_name_vec();
+                        let first_segment = name_vec.first().cloned().unwrap_or_default();
+                        if imports.contains_key(&first_segment) {
+                            // Look up the exports for this import alias
+                            if let Some(imported_exports) = import_exports(&first_segment) {
+                                // For now, only handle two-segment paths like `io::read`
+                                if path.len() == 2 {
+                                    let second_segment = name_vec.get(1).cloned().unwrap_or_default();
+                                    if let Some(target) = imported_exports.get(&second_segment) {
+                                        resolutions.insert(expr.id, Resolution::Def(target.clone()));
+                                    }
+                                }
+                            }
                         }
                     }
                     Expr::Closure(closure) => {
@@ -970,7 +997,7 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Parameter should be resolved
         assert!(resolutions.contains_key(&param.id));
@@ -1006,7 +1033,7 @@ mod tests {
         module_exports.insert("foo".to_string(), DefTarget::Workspace(foo_def_id));
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to the module export
         assert!(resolutions.contains_key(&body_name.id));
@@ -1034,7 +1061,7 @@ mod tests {
         let bar_def_id = DefId::new(FileId(0), 2);
         sibling_exports.insert("bar".to_string(), DefTarget::Workspace(bar_def_id));
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to the sibling export
         assert!(resolutions.contains_key(&body_name.id));
@@ -1067,7 +1094,7 @@ mod tests {
         module_exports.insert("x".to_string(), DefTarget::Workspace(x_def_id));
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to local, not module export
         assert!(resolutions.contains_key(&body_name.id));
@@ -1104,7 +1131,7 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // The pattern node should have a resolution
         let pattern_paths = local_pattern.paths();
@@ -1144,7 +1171,7 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Closure arg should be resolved
         assert!(resolutions.contains_key(&closure_arg.id));
@@ -1182,7 +1209,7 @@ mod tests {
         let sibling_def_id = DefId::new(FileId(0), 2);
         sibling_exports.insert("shared".to_string(), DefTarget::Workspace(sibling_def_id));
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to module export, not sibling
         assert!(resolutions.contains_key(&body_name.id));
@@ -1210,7 +1237,7 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports);
+        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Unknown name should not be in the resolution map
         assert!(!resolutions.contains_key(&body_name.id));

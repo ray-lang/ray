@@ -32,16 +32,19 @@ pub struct NodeIdGuard {
 
 impl Drop for NodeIdGuard {
     fn drop(&mut self) {
-        let mut lock = CURRENT_DEF_ID.lock().unwrap();
+        let mut lock = CURRENT_DEF_ID.lock().unwrap_or_else(|e| e.into_inner());
         *lock = self.prev_def_id;
     }
 }
 
 impl NodeId {
     pub fn new() -> Self {
-        let owner = CURRENT_DEF_ID.lock().unwrap().unwrap();
+        let owner = CURRENT_DEF_ID
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .expect("NodeId::new() called outside of enter_def scope");
         let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut counters = counters.lock().unwrap();
+        let mut counters = counters.lock().unwrap_or_else(|e| e.into_inner());
 
         let counter = counters.entry(owner).or_insert(1);
         let index = *counter;
@@ -51,11 +54,17 @@ impl NodeId {
     }
 
     pub fn enter_def(def_id: DefId) -> NodeIdGuard {
-        let prev_def_id = CURRENT_DEF_ID.lock().unwrap().replace(def_id);
+        let prev_def_id = CURRENT_DEF_ID
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(def_id);
 
         // Reset counter for this DefId to get deterministic NodeIds on re-parse
         let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
-        counters.lock().unwrap().insert(def_id, 1);
+        counters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(def_id, 1);
 
         NodeIdGuard { prev_def_id }
     }

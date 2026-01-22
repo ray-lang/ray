@@ -1,0 +1,122 @@
+//! Module path type for the incremental compiler.
+//!
+//! A `ModulePath` identifies a module (directory or single-file module) in the workspace.
+//! It is distinct from `Path` which can include type arguments and other path parts.
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+use super::Path;
+
+/// A module path identifying a module in the workspace.
+///
+/// Module paths correspond to directories or single-file modules.
+/// They are used as keys in WorkspaceSnapshot.modules and for library lookup.
+///
+/// Examples: `core`, `std::io`, `myproject::utils`
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ModulePath(Vec<String>);
+
+impl ModulePath {
+    /// Create a new module path from a vector of segments.
+    pub fn new(segments: Vec<String>) -> Self {
+        Self(segments)
+    }
+
+    /// Create an empty module path (root).
+    pub fn root() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Get the segments of the module path.
+    pub fn segments(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Get the short name (last segment) of the module path.
+    pub fn short_name(&self) -> String {
+        self.0.last().cloned().unwrap_or_default()
+    }
+
+    /// Check if this module path is empty (root).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Get the number of segments in the module path.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Convert to a `Path` (for compatibility with existing code).
+    pub fn to_path(&self) -> Path {
+        Path::from(self.0.join("::").as_str())
+    }
+}
+
+impl From<&str> for ModulePath {
+    fn from(s: &str) -> Self {
+        if s.is_empty() {
+            Self(Vec::new())
+        } else {
+            Self(s.split("::").map(String::from).collect())
+        }
+    }
+}
+
+impl From<String> for ModulePath {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<&Path> for ModulePath {
+    fn from(path: &Path) -> Self {
+        Self(path.to_name_vec())
+    }
+}
+
+impl From<Path> for ModulePath {
+    fn from(path: Path) -> Self {
+        Self::from(&path)
+    }
+}
+
+impl fmt::Display for ModulePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.join("::"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_path_from_str() {
+        let path = ModulePath::from("std::io");
+        assert_eq!(path.segments(), &["std", "io"]);
+        assert_eq!(path.short_name(), "io");
+    }
+
+    #[test]
+    fn module_path_empty() {
+        let path = ModulePath::from("");
+        assert!(path.is_empty());
+        assert_eq!(path.len(), 0);
+    }
+
+    #[test]
+    fn module_path_display() {
+        let path = ModulePath::from("std::io");
+        assert_eq!(path.to_string(), "std::io");
+    }
+
+    #[test]
+    fn module_path_from_path() {
+        let path = Path::from("std::io");
+        let module_path = ModulePath::from(&path);
+        assert_eq!(module_path.segments(), &["std", "io"]);
+    }
+}

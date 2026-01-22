@@ -1,0 +1,5 @@
+[env]
+# Run tests single-threaded to avoid race conditions with global NodeId state.
+# The parser uses global CURRENT_DEF_ID to track which definition is being parsed,
+# which doesn't work with parallel test execution.
+RUST_TEST_THREADS = "1"

@@ -327,6 +327,29 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Parse source code and return complete parse result including AST, defs, and source map.
+    pub fn parse_to_result(
+        file_id: FileId,
+        src: &str,
+        options: ParseOptions,
+    ) -> (Option<File>, Vec<DefHeader>, SourceMap, Vec<RayError>) {
+        let mut srcmap = SourceMap::new();
+        let mut parser = Parser::new(file_id, src, options, &mut srcmap);
+        match parser.parse_into_file() {
+            Ok(file) => {
+                let errors = mem::take(&mut parser.errors);
+                let defs = mem::take(&mut parser.defs);
+                (Some(file), defs, srcmap, errors)
+            }
+            Err(err) => {
+                let mut errors = mem::take(&mut parser.errors);
+                errors.insert(0, err);
+                let defs = mem::take(&mut parser.defs);
+                (None, defs, srcmap, errors)
+            }
+        }
+    }
+
     fn get_src(options: &ParseOptions) -> ParseResult<String> {
         if options.use_stdin && options.filepath == options.original_filepath {
             // the original_filepath is the one coming from stdin

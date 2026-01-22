@@ -5,6 +5,7 @@ use ray_shared::{
 
 use crate::ast::{Decl, Expr, Import, Node};
 
+#[derive(Clone)]
 pub struct File {
     pub path: Path,
     pub stmts: Vec<Node<Expr>>,
