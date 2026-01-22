@@ -170,3 +170,24 @@ pub fn normalize_curly(
 
     Ok((curly, srcmap))
 }
+
+/// Expand curly shorthand without field reordering: `Point { x }` -> `Point { x: x }`
+///
+/// This is used when we can't look up the struct definition to reorder fields,
+/// but still need to expand shorthand for downstream passes (e.g., type checking).
+pub fn expand_curly_shorthand(curly: &mut Curly, srcmap: &mut SourceMap, def_id: DefId) {
+    let _guard = NodeId::enter_def(def_id);
+
+    for elem in &mut curly.elements {
+        if let CurlyElement::Name(name) = &elem.value {
+            let src = srcmap.get(elem);
+            // Inner expression gets the original element's ID (semantic content)
+            let name_expr = Node::with_id(elem.id, Expr::Name(name.clone()));
+            srcmap.set_src(&name_expr, src.clone());
+            // Wrapper element gets a fresh ID
+            elem.id = NodeId::new();
+            srcmap.mark_synthetic(elem.id);
+            elem.value = CurlyElement::Labeled(name.clone(), name_expr);
+        }
+    }
+}

@@ -65,8 +65,11 @@ pub struct ImplDef {
     pub target: DefTarget,
     /// Type parameters for the impl.
     pub type_params: Vec<TyVar>,
-    /// The type being implemented.
+    /// The type being implemented (as a Ty for display/inspection).
     pub implementing_type: Ty,
+    /// The resolved target of the implementing type (for identity comparison).
+    /// This is `None` for primitive types or unresolved types.
+    pub implementing_type_target: Option<DefTarget>,
     /// The trait being implemented, if this is a trait impl.
     pub trait_ref: Option<DefTarget>,
     /// Method names defined in this impl.
@@ -309,6 +312,26 @@ fn resolve_type_to_def_target(db: &Database, ty: &Ty) -> Option<DefTarget> {
     def_for_path(db, item_path)
 }
 
+/// Resolve a Parsed<Ty> to its DefTarget using name resolutions.
+///
+/// This uses the synthetic_ids stored in the Parsed<Ty> to look up
+/// the actual resolved definition. Returns `None` for primitive types
+/// or if the type couldn't be resolved.
+fn resolve_parsed_ty_to_def_target(
+    ty: &ray_shared::span::parsed::Parsed<Ty>,
+    resolutions: &std::collections::HashMap<ray_shared::node_id::NodeId, Resolution>,
+) -> Option<DefTarget> {
+    // The Parsed<Ty>'s synthetic_ids contain the NodeId(s) for the type reference
+    let synth_ids = ty.synthetic_ids();
+    synth_ids
+        .first()
+        .and_then(|node_id| resolutions.get(node_id))
+        .and_then(|res| match res {
+            Resolution::Def(target) => Some(target.clone()),
+            _ => None,
+        })
+}
+
 /// Extract method names from trait field declarations.
 fn extract_trait_method_names(fields: &[Node<Decl>]) -> Vec<String> {
     fields
@@ -373,11 +396,15 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     // Handle the two forms of impl:
     // 1. `impl object Point { ... }` - inherent impl, is_object=true
     // 2. `impl ToStr[Point] { ... }` - trait impl, is_object=false
-    let (implementing_type, trait_ref, type_params) = if im.is_object {
+    let (implementing_type, implementing_type_target, trait_ref, type_params) = if im.is_object {
         // Inherent impl: the implementing type is im.ty directly
         let impl_ty = (*im.ty).clone();
         let ty_params = im.ty.type_params();
-        (impl_ty, None, ty_params)
+
+        // Resolve the implementing type using synthetic_ids on im.ty (the Parsed<Ty>)
+        let impl_type_target = resolve_parsed_ty_to_def_target(&im.ty, &resolutions);
+
+        (impl_ty, impl_type_target, None, ty_params)
     } else {
         // Trait impl: im.ty is Ty::Proj(trait_path, [implementing_type, ...])
         match &*im.ty {
@@ -387,6 +414,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
 
                 // Resolve the trait using synthetic_ids and name_resolutions
                 // synthetic_ids[0] is the NodeId for the trait type (e.g., ToStr)
+                // synthetic_ids[1] is the NodeId for the implementing type
                 let synth_ids = im.ty.synthetic_ids();
                 let trait_target = synth_ids
                     .first()
@@ -396,14 +424,24 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
                         _ => None,
                     });
 
+                // Resolve the implementing type (second synthetic_id)
+                let impl_type_target = synth_ids
+                    .get(1)
+                    .and_then(|node_id| resolutions.get(node_id))
+                    .and_then(|res| match res {
+                        Resolution::Def(target) => Some(target.clone()),
+                        _ => None,
+                    });
+
                 let ty_params = impl_ty.type_params();
-                (impl_ty, trait_target, ty_params)
+                (impl_ty, impl_type_target, trait_target, ty_params)
             }
             _ => {
                 // Fallback: treat as inherent
                 let impl_ty = (*im.ty).clone();
                 let ty_params = im.ty.type_params();
-                (impl_ty, None, ty_params)
+                let impl_type_target = resolve_parsed_ty_to_def_target(&im.ty, &resolutions);
+                (impl_ty, impl_type_target, None, ty_params)
             }
         }
     };
@@ -415,6 +453,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
         target: DefTarget::Workspace(def_id),
         type_params,
         implementing_type,
+        implementing_type_target,
         trait_ref,
         methods,
     })
@@ -541,6 +580,36 @@ pub fn impls_in_module(db: &Database, module_path: ModulePath) -> Vec<DefId> {
 }
 
 // ============================================================================
+// traits_in_module query
+// ============================================================================
+
+/// Collect all trait DefIds from a module.
+///
+/// Iterates through all files in the module and collects DefIds for all
+/// `DefKind::Trait` definitions.
+#[query]
+pub fn traits_in_module(db: &Database, module_path: ModulePath) -> Vec<DefId> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    let file_ids = match workspace.module_info(&module_path) {
+        Some(info) => info.files.clone(),
+        None => return Vec::new(),
+    };
+
+    let mut traits = Vec::new();
+    for file_id in file_ids {
+        let parse_result = parse_file(db, file_id);
+        for def_header in &parse_result.defs {
+            if matches!(def_header.kind, DefKind::Trait) {
+                traits.push(def_header.def_id);
+            }
+        }
+    }
+
+    traits
+}
+
+// ============================================================================
 // impls_for_type query
 // ============================================================================
 
@@ -588,8 +657,17 @@ fn collect_workspace_impls_for_type(
             // Get the impl definition
             let impl_target = DefTarget::Workspace(impl_id);
             if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
-                // Check if this impl's implementing_type matches the target
-                if type_matches_target(&impl_definition.implementing_type, type_target, db) {
+                // Check if this impl's implementing_type matches the target.
+                // Prefer using the resolved implementing_type_target for exact identity matching.
+                let matches = match &impl_definition.implementing_type_target {
+                    Some(impl_type_target) => impl_type_target == type_target,
+                    None => {
+                        // Fallback to name-based matching for primitive types or unresolved cases
+                        type_matches_target(&impl_definition.implementing_type, type_target, db)
+                    }
+                };
+
+                if matches {
                     if impl_definition.trait_ref.is_some() {
                         result.trait_impls.push(impl_target);
                     } else {
@@ -612,8 +690,17 @@ fn collect_library_impls_for_type(
     for (_lib_path, lib_data) in &libraries.libraries {
         // Iterate over impls with their LibraryDefId keys
         for (lib_def_id, lib_impl) in &lib_data.impls {
-            // Check if this impl's implementing_type matches the target
-            if type_matches_target(&lib_impl.implementing_type, type_target, db) {
+            // Check if this impl's implementing_type matches the target.
+            // Prefer using the resolved implementing_type_target for exact identity matching.
+            let matches = match &lib_impl.implementing_type_target {
+                Some(impl_type_target) => impl_type_target == type_target,
+                None => {
+                    // Fallback to name-based matching for primitive types or unresolved cases
+                    type_matches_target(&lib_impl.implementing_type, type_target, db)
+                }
+            };
+
+            if matches {
                 let impl_target = DefTarget::Library(lib_def_id.clone());
                 if lib_impl.trait_ref.is_some() {
                     result.trait_impls.push(impl_target);
@@ -742,7 +829,8 @@ mod tests {
         queries::{
             defs::{
                 FieldDef, StructDef, TraitDef, def_for_path, impl_def, impls_for_trait,
-                impls_for_type, impls_in_module, struct_def, trait_def, type_alias,
+                impls_for_type, impls_in_module, struct_def, trait_def, traits_in_module,
+                type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
             workspace::{FileSource, WorkspaceSnapshot},
@@ -1329,6 +1417,64 @@ impl object Point {
         assert!(impls.is_empty());
     }
 
+    // traits_in_module tests
+
+    #[test]
+    fn traits_in_module_finds_trait_definitions() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Eq['a] {
+    fn eq(self: 'a, other: 'a) -> bool
+}
+
+trait Ord['a] {
+    fn cmp(self: 'a, other: 'a) -> int
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let traits = traits_in_module(&db, module_path);
+
+        assert_eq!(traits.len(), 2);
+    }
+
+    #[test]
+    fn traits_in_module_returns_empty_for_no_traits() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+
+        let traits = traits_in_module(&db, module_path);
+
+        assert!(traits.is_empty());
+    }
+
+    #[test]
+    fn traits_in_module_returns_empty_for_unknown_module() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let traits = traits_in_module(&db, ModulePath::from("unknown"));
+
+        assert!(traits.is_empty());
+    }
+
     // impls_for_type tests
 
     #[test]
@@ -1588,5 +1734,447 @@ impl ToStr[Point] {
 
         // Should only find the trait impl, not the inherent impl
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn impls_for_type_distinguishes_same_named_types_in_different_modules() {
+        // This test verifies that types with the same name in different modules
+        // are correctly distinguished. Previously, type matching was by name only,
+        // which would incorrectly match moduleA::Point with moduleB::Point.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+
+        // Module A with struct Point and an impl
+        let module_a = ModulePath::from("module_a");
+        let file_a = workspace.add_file(FilePath::from("module_a/mod.ray"), module_a.clone());
+
+        // Module B with struct Point (same name, different module) and NO impl
+        let module_b = ModulePath::from("module_b");
+        let file_b = workspace.add_file(FilePath::from("module_b/mod.ray"), module_b.clone());
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Module A has Point and an impl for it
+        let source_a = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn origin(): Point => Point { x: 0, y: 0 }
+}
+"#;
+        FileSource::new(&db, file_a, source_a.to_string());
+
+        // Module B also has Point but NO impl
+        let source_b = r#"
+struct Point { a: string, b: string }
+"#;
+        FileSource::new(&db, file_b, source_b.to_string());
+
+        // Get DefTargets for both Points
+        let point_a_path = ItemPath::new(module_a, vec!["Point".into()]);
+        let point_a_target = def_for_path(&db, point_a_path).expect("module_a::Point should exist");
+
+        let point_b_path = ItemPath::new(module_b, vec!["Point".into()]);
+        let point_b_target = def_for_path(&db, point_b_path).expect("module_b::Point should exist");
+
+        // Verify they are different targets
+        assert_ne!(
+            point_a_target, point_b_target,
+            "Points should be different DefTargets"
+        );
+
+        // impls_for_type on module_a::Point should find the impl
+        let impls_a = impls_for_type(&db, point_a_target);
+        assert_eq!(
+            impls_a.inherent.len(),
+            1,
+            "module_a::Point should have 1 inherent impl"
+        );
+
+        // impls_for_type on module_b::Point should NOT find any impls
+        // (the bug would cause this to incorrectly find module_a's impl because
+        // it was matching by name "Point" only)
+        let impls_b = impls_for_type(&db, point_b_target);
+        assert_eq!(
+            impls_b.inherent.len(),
+            0,
+            "module_b::Point should have NO impls - the impl belongs to module_a::Point only"
+        );
+    }
+
+    #[test]
+    fn impls_for_trait_distinguishes_same_named_traits_in_different_modules() {
+        // This test verifies that traits with the same name in different modules
+        // are correctly distinguished when looking up impls.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+
+        // Module A with trait Show and an impl
+        let module_a = ModulePath::from("module_a");
+        let file_a = workspace.add_file(FilePath::from("module_a/mod.ray"), module_a.clone());
+
+        // Module B with trait Show (same name, different module) and NO impl
+        let module_b = ModulePath::from("module_b");
+        let file_b = workspace.add_file(FilePath::from("module_b/mod.ray"), module_b.clone());
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Module A has trait Show and a type with an impl for it
+        let source_a = r#"
+trait Show['a] {
+    fn show(self: 'a) -> string
+}
+
+struct Foo { x: int }
+
+impl Show[Foo] {
+    fn show(self: Foo) -> string => "Foo"
+}
+"#;
+        FileSource::new(&db, file_a, source_a.to_string());
+
+        // Module B has trait Show but NO impl
+        let source_b = r#"
+trait Show['a] {
+    fn show(self: 'a) -> string
+}
+"#;
+        FileSource::new(&db, file_b, source_b.to_string());
+
+        // Get DefTargets for both Show traits
+        let show_a_path = ItemPath::new(module_a, vec!["Show".into()]);
+        let show_a_target = def_for_path(&db, show_a_path).expect("module_a::Show should exist");
+
+        let show_b_path = ItemPath::new(module_b, vec!["Show".into()]);
+        let show_b_target = def_for_path(&db, show_b_path).expect("module_b::Show should exist");
+
+        // Verify they are different targets
+        assert_ne!(
+            show_a_target, show_b_target,
+            "Traits should be different DefTargets"
+        );
+
+        // impls_for_trait on module_a::Show should find the impl
+        let impls_a = impls_for_trait(&db, show_a_target);
+        assert_eq!(
+            impls_a.len(),
+            1,
+            "module_a::Show should have 1 impl"
+        );
+
+        // impls_for_trait on module_b::Show should NOT find any impls
+        let impls_b = impls_for_trait(&db, show_b_target);
+        assert_eq!(
+            impls_b.len(),
+            0,
+            "module_b::Show should have NO impls - the impl is for module_a::Show"
+        );
+    }
+
+    #[test]
+    fn cross_module_trait_impl_resolves_correctly() {
+        // This test verifies that a trait impl in module B for a trait defined in module A
+        // is correctly associated with the trait from module A.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+
+        // Module A defines the trait
+        let module_a = ModulePath::from("module_a");
+        let file_a = workspace.add_file(FilePath::from("module_a/mod.ray"), module_a.clone());
+
+        // Module B defines a type and implements the trait from module A
+        let module_b = ModulePath::from("module_b");
+        let file_b = workspace.add_file(FilePath::from("module_b/mod.ray"), module_b.clone());
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Module A defines trait Display
+        let source_a = r#"
+trait Display['a] {
+    fn display(self: 'a) -> string
+}
+"#;
+        FileSource::new(&db, file_a, source_a.to_string());
+
+        // Module B imports Display from module_a and implements it
+        let source_b = r#"
+import module_a with Display
+
+struct Bar { value: int }
+
+impl Display[Bar] {
+    fn display(self: Bar) -> string => "Bar"
+}
+"#;
+        FileSource::new(&db, file_b, source_b.to_string());
+
+        // Get the trait's DefTarget from module_a
+        let display_path = ItemPath::new(module_a, vec!["Display".into()]);
+        let display_target =
+            def_for_path(&db, display_path).expect("module_a::Display should exist");
+
+        // impls_for_trait on module_a::Display should find the impl from module_b
+        let impls = impls_for_trait(&db, display_target);
+        assert_eq!(
+            impls.len(),
+            1,
+            "module_a::Display should have 1 impl (from module_b)"
+        );
+
+        // Also verify that impls_for_type works correctly
+        let bar_path = ItemPath::new(module_b, vec!["Bar".into()]);
+        let bar_target = def_for_path(&db, bar_path).expect("module_b::Bar should exist");
+
+        let bar_impls = impls_for_type(&db, bar_target);
+        assert_eq!(
+            bar_impls.trait_impls.len(),
+            1,
+            "Bar should have 1 trait impl"
+        );
+    }
+
+    #[test]
+    fn cross_module_impl_for_external_type() {
+        // This test verifies that a trait and impl in module A for a type defined in module B
+        // is correctly associated with the type from module B.
+        // Scenario: Trait in A, impl in A, type in B
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+
+        // Module B defines the type (declared first so A can import it)
+        let module_b = ModulePath::from("module_b");
+        let file_b = workspace.add_file(FilePath::from("module_b/mod.ray"), module_b.clone());
+
+        // Module A defines the trait and impl for module_b's type
+        let module_a = ModulePath::from("module_a");
+        let file_a = workspace.add_file(FilePath::from("module_a/mod.ray"), module_a.clone());
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Module B defines struct Foo
+        let source_b = r#"
+struct Foo { value: int }
+"#;
+        FileSource::new(&db, file_b, source_b.to_string());
+
+        // Module A defines trait and impl for Foo (imported from B)
+        let source_a = r#"
+import module_b with Foo
+
+trait Stringify['a] {
+    fn stringify(self: 'a) -> string
+}
+
+impl Stringify[Foo] {
+    fn stringify(self: Foo) -> string => "Foo"
+}
+"#;
+        FileSource::new(&db, file_a, source_a.to_string());
+
+        // Get the trait's DefTarget from module_a
+        let stringify_path = ItemPath::new(module_a, vec!["Stringify".into()]);
+        let stringify_target =
+            def_for_path(&db, stringify_path).expect("module_a::Stringify should exist");
+
+        // impls_for_trait on module_a::Stringify should find the impl
+        let impls = impls_for_trait(&db, stringify_target);
+        assert_eq!(impls.len(), 1, "module_a::Stringify should have 1 impl");
+
+        // Get the type's DefTarget from module_b
+        let foo_path = ItemPath::new(module_b, vec!["Foo".into()]);
+        let foo_target = def_for_path(&db, foo_path).expect("module_b::Foo should exist");
+
+        // impls_for_type on module_b::Foo should find the impl from module_a
+        let foo_impls = impls_for_type(&db, foo_target);
+        assert_eq!(
+            foo_impls.trait_impls.len(),
+            1,
+            "module_b::Foo should have 1 trait impl (from module_a)"
+        );
+    }
+
+    // ========================================================================
+    // Library-workspace cross-module tests
+    // ========================================================================
+
+    #[test]
+    fn workspace_impl_for_library_trait() {
+        // This test verifies that a workspace type can implement a trait from a library.
+        // Scenario: Trait in library, type and impl in workspace
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with a trait (core::fmt::Display)
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::fmt"));
+
+        // Create LibraryDefId for the Display trait
+        let display_def_id = LibraryDefId {
+            module: ModulePath::from("core::fmt"),
+            index: 0,
+        };
+        let display_path = ItemPath {
+            module: ModulePath::from("core::fmt"),
+            item: vec!["Display".to_string()],
+        };
+
+        // Add to names index
+        core_lib
+            .names
+            .insert(display_path.clone(), display_def_id.clone());
+
+        // Add trait definition
+        core_lib.traits.insert(
+            display_def_id.clone(),
+            TraitDef {
+                target: DefTarget::Library(display_def_id.clone()),
+                name: "Display".to_string(),
+                type_params: vec![],
+                super_traits: vec![],
+                methods: vec!["fmt".to_string()],
+            },
+        );
+        libraries.add(ModulePath::from("core"), core_lib);
+        LoadedLibraries::new(&db, (), libraries.libraries);
+
+        // Workspace imports Display and implements it for a local type
+        let source = r#"
+import core::fmt with Display
+
+struct Point { x: int, y: int }
+
+impl Display[Point] {
+    fn fmt(self: Point) -> string => "Point"
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the library trait's DefTarget
+        let library_trait_target = DefTarget::Library(display_def_id);
+
+        // impls_for_trait on the library trait should find the workspace impl
+        let impls = impls_for_trait(&db, library_trait_target);
+        assert_eq!(
+            impls.len(),
+            1,
+            "Library trait core::fmt::Display should have 1 workspace impl"
+        );
+
+        // The impl should be a workspace impl
+        assert!(
+            matches!(impls[0], DefTarget::Workspace(_)),
+            "The impl should be from the workspace, not the library"
+        );
+
+        // Also verify impls_for_type works
+        let point_path = ItemPath::new(module_path, vec!["Point".into()]);
+        let point_target = def_for_path(&db, point_path).expect("Point should exist");
+
+        let point_impls = impls_for_type(&db, point_target);
+        assert_eq!(
+            point_impls.trait_impls.len(),
+            1,
+            "Point should have 1 trait impl"
+        );
+    }
+
+    #[test]
+    fn workspace_impl_for_library_type() {
+        // This test verifies that a workspace trait can be implemented for a library type.
+        // Scenario: Trait and impl in workspace, type in library
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with a struct (core::option::Option)
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::option"));
+
+        // Create LibraryDefId for the Option struct
+        let option_def_id = LibraryDefId {
+            module: ModulePath::from("core::option"),
+            index: 0,
+        };
+        let option_path = ItemPath {
+            module: ModulePath::from("core::option"),
+            item: vec!["Option".to_string()],
+        };
+
+        // Add to names index
+        core_lib
+            .names
+            .insert(option_path.clone(), option_def_id.clone());
+
+        // Add struct definition
+        core_lib.structs.insert(
+            option_def_id.clone(),
+            StructDef {
+                target: DefTarget::Library(option_def_id.clone()),
+                name: "Option".to_string(),
+                type_params: vec![],
+                fields: vec![],
+            },
+        );
+        libraries.add(ModulePath::from("core"), core_lib);
+        LoadedLibraries::new(&db, (), libraries.libraries);
+
+        // Workspace defines a trait and implements it for the library type
+        let source = r#"
+import core::option with Option
+
+trait Stringify['a] {
+    fn stringify(self: 'a) -> string
+}
+
+impl Stringify[Option] {
+    fn stringify(self: Option) -> string => "Option"
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the library type's DefTarget
+        let library_type_target = DefTarget::Library(option_def_id);
+
+        // impls_for_type on the library type should find the workspace impl
+        let impls = impls_for_type(&db, library_type_target);
+        assert_eq!(
+            impls.trait_impls.len(),
+            1,
+            "Library type core::option::Option should have 1 workspace trait impl"
+        );
+
+        // The impl should be a workspace impl
+        assert!(
+            matches!(impls.trait_impls[0], DefTarget::Workspace(_)),
+            "The impl should be from the workspace, not the library"
+        );
+
+        // Also verify impls_for_trait works
+        let stringify_path = ItemPath::new(module_path, vec!["Stringify".into()]);
+        let stringify_target = def_for_path(&db, stringify_path).expect("Stringify should exist");
+
+        let trait_impls = impls_for_trait(&db, stringify_target);
+        assert_eq!(
+            trait_impls.len(),
+            1,
+            "Stringify trait should have 1 impl"
+        );
     }
 }

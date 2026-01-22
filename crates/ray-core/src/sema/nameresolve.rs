@@ -238,16 +238,37 @@ fn resolve_impl_type_refs(
     // - imp.is_object is false
     // - imp.ty is Ty::Proj(trait_path, [implementing_type, ...])
     // - synth_ids[0] is the NodeId for the trait type (ToStr)
+    // - synth_ids[1] is the NodeId for the implementing type (Point)
     //
     // For inherent impls like `impl object Point`:
     // - imp.is_object is true
     // - imp.ty is the implementing type directly
     // - synth_ids[0] is the NodeId for the implementing type
-    if !imp.is_object {
-        if let Ty::Proj(trait_path, _) = &*imp.ty {
-            // Get the trait name from the path
+    if imp.is_object {
+        // Inherent impl: resolve the implementing type directly
+        // imp.ty is something like Ty::Const(Point) or Ty::Proj(Point, [...])
+        let implementing_type_path = imp.ty.get_path();
+        if let Some(type_name) = implementing_type_path.name() {
+            let resolution = resolve_type_name(
+                &type_name,
+                &implementing_type_path,
+                imports,
+                module_exports,
+                sibling_exports,
+                import_exports,
+            );
+
+            if let Some(target) = resolution {
+                if let Some(node_id) = synth_ids.first() {
+                    resolutions.insert(*node_id, Resolution::Def(target));
+                }
+            }
+        }
+    } else {
+        // Trait impl: resolve both the trait and the implementing type
+        if let Ty::Proj(trait_path, args) = &*imp.ty {
+            // Resolve the trait (first synthetic_id)
             if let Some(trait_name) = trait_path.name() {
-                // Try to resolve the trait
                 let resolution = resolve_type_name(
                     &trait_name,
                     trait_path,
@@ -263,10 +284,29 @@ fn resolve_impl_type_refs(
                     }
                 }
             }
+
+            // Resolve the implementing type (second synthetic_id, from first type arg)
+            if let Some(implementing_ty) = args.first() {
+                let implementing_type_path = implementing_ty.get_path();
+                if let Some(type_name) = implementing_type_path.name() {
+                    let resolution = resolve_type_name(
+                        &type_name,
+                        &implementing_type_path,
+                        imports,
+                        module_exports,
+                        sibling_exports,
+                        import_exports,
+                    );
+
+                    if let Some(target) = resolution {
+                        if let Some(node_id) = synth_ids.get(1) {
+                            resolutions.insert(*node_id, Resolution::Def(target));
+                        }
+                    }
+                }
+            }
         }
     }
-
-    // TODO: Also resolve the implementing type if needed
 }
 
 /// Resolve a type name to a DefTarget.

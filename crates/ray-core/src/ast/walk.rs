@@ -4,7 +4,7 @@ use crate::ast::{
     expr::{Assign, Block, Call, Closure, For, Func, If, Loop, Sequence, While},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum WalkItem<'a> {
     Module(&'a Module<(), Decl>),
     Decl(&'a Node<Decl>),
@@ -25,18 +25,18 @@ pub enum WalkScopeKind {
     Closure,
 }
 
-pub struct ModuleWalk<'a> {
-    stack: Vec<StackEntry<'a>>,
+pub struct ModuleWalk<T> {
+    stack: Vec<StackEntry<T>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum StackEntry<'a> {
-    EnterNode(WalkItem<'a>),
-    VisitNode(WalkItem<'a>),
+#[derive(Debug)]
+enum StackEntry<T> {
+    EnterNode(T),
+    VisitNode(T),
     ExitScope(WalkScopeKind),
 }
 
-impl<'a> Iterator for ModuleWalk<'a> {
+impl<'a> Iterator for ModuleWalk<WalkItem<'a>> {
     type Item = WalkItem<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -63,19 +63,19 @@ impl<'a> Iterator for ModuleWalk<'a> {
     }
 }
 
-pub fn walk_module(module: &Module<(), Decl>) -> ModuleWalk<'_> {
+pub fn walk_module(module: &Module<(), Decl>) -> ModuleWalk<WalkItem<'_>> {
     ModuleWalk {
         stack: vec![StackEntry::EnterNode(WalkItem::Module(module))],
     }
 }
 
-pub fn walk_decl(decl: &Node<Decl>) -> ModuleWalk<'_> {
+pub fn walk_decl(decl: &Node<Decl>) -> ModuleWalk<WalkItem<'_>> {
     ModuleWalk {
         stack: vec![StackEntry::EnterNode(WalkItem::Decl(decl))],
     }
 }
 
-pub fn walk_file(file: &File) -> ModuleWalk<'_> {
+pub fn walk_file(file: &File) -> ModuleWalk<WalkItem<'_>> {
     let mut stack = Vec::new();
     for stmt in file.stmts.iter().rev() {
         stack.push(StackEntry::EnterNode(WalkItem::Expr(stmt)));
@@ -86,7 +86,7 @@ pub fn walk_file(file: &File) -> ModuleWalk<'_> {
     ModuleWalk { stack }
 }
 
-fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
+fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
     match item {
         WalkItem::Module(module) => {
             for decl in module.decls.iter().rev() {
@@ -178,27 +178,28 @@ fn push_children<'a>(walk: &mut ModuleWalk<'a>, item: &WalkItem<'a>) {
     }
 }
 
-fn push_scoped_access<'a>(walk: &mut ModuleWalk<'a>, scoped_access: &'a ScopedAccess) {
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Expr(scoped_access.lhs.as_ref())));
+fn push_scoped_access<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, scoped_access: &'a ScopedAccess) {
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        scoped_access.lhs.as_ref(),
+    )));
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Name(&scoped_access.rhs)));
 }
 
-fn push_assign<'a>(walk: &mut ModuleWalk<'a>, assign: &'a Assign) {
+fn push_assign<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, assign: &'a Assign) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Pattern(&assign.lhs)));
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(assign.rhs.as_ref())));
 }
 
-fn push_block<'a>(walk: &mut ModuleWalk<'a>, block: &'a Block) {
+fn push_block<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, block: &'a Block) {
     for stmt in block.stmts.iter().rev() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(stmt)));
     }
 }
 
-fn push_call<'a>(walk: &mut ModuleWalk<'a>, call: &'a Call) {
+fn push_call<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, call: &'a Call) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(call.callee.as_ref())));
     for arg in call.args.items.iter().rev() {
@@ -206,7 +207,7 @@ fn push_call<'a>(walk: &mut ModuleWalk<'a>, call: &'a Call) {
     }
 }
 
-fn push_closure<'a>(walk: &mut ModuleWalk<'a>, closure: &'a Closure) {
+fn push_closure<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, closure: &'a Closure) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(closure.body.as_ref())));
     for arg in closure.args.items.iter().rev() {
@@ -214,13 +215,13 @@ fn push_closure<'a>(walk: &mut ModuleWalk<'a>, closure: &'a Closure) {
     }
 }
 
-fn push_func<'a>(walk: &mut ModuleWalk<'a>, func: &'a Func) {
+fn push_func<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, func: &'a Func) {
     if let Some(body) = func.body.as_ref() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(body)));
     }
 }
 
-fn push_for<'a>(walk: &mut ModuleWalk<'a>, for_expr: &'a For) {
+fn push_for<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, for_expr: &'a For) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Pattern(&for_expr.pat)));
     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
@@ -231,7 +232,7 @@ fn push_for<'a>(walk: &mut ModuleWalk<'a>, for_expr: &'a For) {
     )));
 }
 
-fn push_if<'a>(walk: &mut ModuleWalk<'a>, if_expr: &'a If) {
+fn push_if<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, if_expr: &'a If) {
     if let Some(els) = if_expr.els.as_ref() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(els)));
     }
@@ -241,19 +242,19 @@ fn push_if<'a>(walk: &mut ModuleWalk<'a>, if_expr: &'a If) {
         .push(StackEntry::EnterNode(WalkItem::Expr(if_expr.cond.as_ref())));
 }
 
-fn push_loop<'a>(walk: &mut ModuleWalk<'a>, loop_expr: &'a Loop) {
+fn push_loop<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, loop_expr: &'a Loop) {
     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
         loop_expr.body.as_ref(),
     )));
 }
 
-fn push_sequence<'a>(walk: &mut ModuleWalk<'a>, sequence: &'a Sequence) {
+fn push_sequence<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, sequence: &'a Sequence) {
     for item in sequence.items.iter().rev() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(item)));
     }
 }
 
-fn push_while<'a>(walk: &mut ModuleWalk<'a>, while_expr: &'a While) {
+fn push_while<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, while_expr: &'a While) {
     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
         while_expr.body.as_ref(),
     )));
@@ -262,7 +263,7 @@ fn push_while<'a>(walk: &mut ModuleWalk<'a>, while_expr: &'a While) {
     )));
 }
 
-fn push_pattern<'a>(walk: &mut ModuleWalk<'a>, pattern: &'a Pattern) {
+fn push_pattern<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, pattern: &'a Pattern) {
     match pattern {
         Pattern::Sequence(seq) | Pattern::Tuple(seq) => {
             for pat in seq.iter().rev() {
@@ -292,33 +293,34 @@ fn push_pattern<'a>(walk: &mut ModuleWalk<'a>, pattern: &'a Pattern) {
     }
 }
 
-fn push_bin_op<'a>(walk: &mut ModuleWalk<'a>, bin_op: &'a BinOp) {
+fn push_bin_op<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, bin_op: &'a BinOp) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&bin_op.rhs)));
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&bin_op.lhs)));
 }
 
-fn push_cast<'a>(walk: &mut ModuleWalk<'a>, cast: &'a Cast) {
+fn push_cast<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, cast: &'a Cast) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&cast.lhs)));
 }
 
-fn push_curly<'a>(walk: &mut ModuleWalk<'a>, curly: &'a Curly) {
+fn push_curly<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, curly: &'a Curly) {
     for elem in curly.elements.iter().rev() {
         walk.stack
             .push(StackEntry::EnterNode(WalkItem::CurlyElement(elem)));
     }
 }
 
-fn push_dict<'a>(walk: &mut ModuleWalk<'a>, dict: &'a Dict) {
+fn push_dict<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, dict: &'a Dict) {
     for (key, value) in dict.entries.iter().rev() {
-        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(value)));
+        walk.stack
+            .push(StackEntry::EnterNode(WalkItem::Expr(value)));
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(key)));
     }
 }
 
-fn push_curly_element<'a>(walk: &mut ModuleWalk<'a>, element: &'a CurlyElement) {
+fn push_curly_element<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, element: &'a CurlyElement) {
     match element {
         CurlyElement::Name(_) => {}
         CurlyElement::Labeled(_, node) => {
@@ -327,53 +329,53 @@ fn push_curly_element<'a>(walk: &mut ModuleWalk<'a>, element: &'a CurlyElement) 
     }
 }
 
-fn push_dot<'a>(walk: &mut ModuleWalk<'a>, dot: &'a Dot) {
+fn push_dot<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, dot: &'a Dot) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Name(&dot.rhs)));
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&dot.lhs)));
 }
 
-fn push_index<'a>(walk: &mut ModuleWalk<'a>, index: &'a Index) {
+fn push_index<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, index: &'a Index) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&index.index)));
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&index.lhs)));
 }
 
-fn push_list<'a>(walk: &mut ModuleWalk<'a>, list: &'a List) {
+fn push_list<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, list: &'a List) {
     for elem in list.items.iter().rev() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(elem)));
     }
 }
 
-fn push_set<'a>(walk: &mut ModuleWalk<'a>, set: &'a Set) {
+fn push_set<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, set: &'a Set) {
     for item in set.items.iter().rev() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(item)));
     }
 }
 
-fn push_new<'a>(walk: &mut ModuleWalk<'a>, new: &'a New) {
+fn push_new<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, new: &'a New) {
     if let Some(count) = &new.count {
         walk.stack
             .push(StackEntry::EnterNode(WalkItem::Expr(&count)));
     }
 }
 
-fn push_range<'a>(walk: &mut ModuleWalk<'a>, range: &'a Range) {
+fn push_range<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, range: &'a Range) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&range.end)));
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&range.start)));
 }
 
-fn push_tuple<'a>(walk: &mut ModuleWalk<'a>, tuple: &'a Tuple) {
+fn push_tuple<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, tuple: &'a Tuple) {
     for elem in tuple.seq.items.iter().rev() {
         walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(elem)));
     }
 }
 
-fn push_unary_op<'a>(walk: &mut ModuleWalk<'a>, unary_op: &'a UnaryOp) {
+fn push_unary_op<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, unary_op: &'a UnaryOp) {
     walk.stack
         .push(StackEntry::EnterNode(WalkItem::Expr(&unary_op.expr)));
 }

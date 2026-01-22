@@ -3915,7 +3915,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: impls_in_module query
 
-- [ ] Define `impls_in_module(ModulePath)` query:
+- [x] Define `impls_in_module(ModulePath)` query:
   ```rust
   fn impls_in_module(db: &Database, module: ModulePath) -> Vec<DefId> {
       let workspace = db.get_input::<WorkspaceSnapshot>();
@@ -3932,11 +3932,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
       impls
   }
   ```
-- [ ] **Validate**: Unit test listing impls in a module
+- [x] **Validate**: Unit test listing impls in a module
 
 ##### Step 4: traits_in_module query
 
-- [ ] Define `traits_in_module(ModulePath)` query:
+- [x] Define `traits_in_module(ModulePath)` query:
   ```rust
   fn traits_in_module(db: &Database, module: ModulePath) -> Vec<DefId> {
       let workspace = db.get_input::<WorkspaceSnapshot>();
@@ -3953,7 +3953,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       traits
   }
   ```
-- [ ] **Validate**: Unit test listing traits in a module
+- [x] **Validate**: Unit test listing traits in a module
 
 ---
 
@@ -3961,7 +3961,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: file_ast query
 
-- [ ] Define `file_ast(FileId)` query:
+- [x] Define `file_ast(FileId)` query:
   ```rust
   #[query]
   fn file_ast(db: &Database, file_id: FileId) -> FileAst {
@@ -3983,8 +3983,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       FileAst { ast, resolutions, defs: parse_result.defs }
   }
   ```
-- [ ] Wire up to transform helpers from Phase 0.B.2
-- [ ] **Validate**: Compare output to legacy lowered AST
+- [x] Wire up to transform helpers from Phase 0.B.2
+- [x] **Validate**: Compare output to legacy lowered AST
 
 ##### Step 2: Handle all transformations
 
