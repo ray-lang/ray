@@ -3909,9 +3909,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: impls_for_trait query
 
-- [ ] Define `impls_for_trait(DefTarget)` query
-- [ ] Find all impls of a given trait
-- [ ] **Validate**: Unit test finding impls of a trait
+- [x] Define `impls_for_trait(DefTarget)` query
+- [x] Find all impls of a given trait
+- [x] **Validate**: Unit test finding impls of a trait
 
 ##### Step 3: impls_in_module query
 

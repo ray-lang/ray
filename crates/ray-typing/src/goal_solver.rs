@@ -1224,7 +1224,7 @@ fn receiver_subst_from_recv_ty(recv_ty: &Ty, subject_ty: &Ty) -> Option<Subst> {
 }
 
 fn receiver_subst_for_trait(trait_ty: &TraitTy, subject_ty: &Ty) -> Option<Subst> {
-    let Some(recv_ty) = trait_ty.ty.get_ty_param_at(0) else {
+    let Some(recv_ty) = trait_ty.ty.type_argument_at(0) else {
         return Some(Subst::new());
     };
     receiver_subst_from_recv_ty(recv_ty, subject_ty)

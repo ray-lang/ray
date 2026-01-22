@@ -686,7 +686,7 @@ impl TraitTy {
 
     pub fn create_method_path(&self, method_name: &str, receiver_ty: Option<&Ty>) -> Path {
         let mut method_path = self.path.clone();
-        let mut type_args = self.ty.get_ty_params();
+        let mut type_args = self.ty.type_arguments();
         if !type_args.is_empty() {
             if let Some(receiver_ty) = receiver_ty {
                 if !type_args.is_empty() {

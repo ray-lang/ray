@@ -2594,7 +2594,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 let capacity = (item_count * 3) as u64;
 
                 // allocate memory for the values
-                let el_ty = ty.mono().get_ty_param_at(0).unwrap();
+                let el_ty = ty.mono().type_argument_at(0).unwrap();
                 let values_loc = ctx.local(Ty::ref_of(el_ty.clone()).into());
                 let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));
                 ctx.set_local(values_loc, values_ptr.into());
@@ -2706,10 +2706,10 @@ impl LirGen<GenResult> for Node<Expr> {
                 let dict_mono = ty.mono().clone();
                 let dict_base = dict_mono.get_path().without_type_args();
                 let key_mono = dict_mono
-                    .get_ty_param_at(0)
+                    .type_argument_at(0)
                     .unwrap_or_else(|| panic!("expected dict to have key type param: {}", ty));
                 let value_mono = dict_mono
-                    .get_ty_param_at(1)
+                    .type_argument_at(1)
                     .unwrap_or_else(|| panic!("expected dict to have value type param: {}", ty));
 
                 // tmp = dict.with_capacity(item_count)
@@ -3220,7 +3220,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 let set_mono = ty.mono().clone();
                 let set_base = set_mono.get_path().without_type_args();
                 let elem_mono = set_mono
-                    .get_ty_param_at(0)
+                    .type_argument_at(0)
                     .unwrap_or_else(|| panic!("expected set to have element type param: {}", ty));
 
                 // tmp = set.with_capacity(item_count)

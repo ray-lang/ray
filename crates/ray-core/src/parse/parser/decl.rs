@@ -175,7 +175,10 @@ impl Parser<'_> {
         let extern_span = self.expect_keyword(TokenKind::Extern, ctx)?;
         let start = extern_span.start;
         // parse_extern_fn_sig already wraps in Extern, so return directly
-        if matches!(self.must_peek_kind()?, TokenKind::Fn | TokenKind::Modifier(_)) {
+        if matches!(
+            self.must_peek_kind()?,
+            TokenKind::Fn | TokenKind::Modifier(_)
+        ) {
             return self.parse_extern_fn_sig(start, None, ctx);
         }
         let decl = match self.must_peek_kind()? {
@@ -558,7 +561,7 @@ impl Parser<'_> {
 
             let (funcs, externs, consts) = if !is_extern {
                 let impl_path = if !is_object {
-                    ty.get_ty_param_at(0).unwrap_or(&Ty::Never).get_path()
+                    ty.type_argument_at(0).unwrap_or(&Ty::Never).get_path()
                 } else {
                     ty.get_path()
                 };

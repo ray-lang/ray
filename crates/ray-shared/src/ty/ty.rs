@@ -544,7 +544,15 @@ impl Ty {
         }
     }
 
-    pub fn get_ty_params(&self) -> Vec<&Ty> {
+    /// Returns all type arguments as references.
+    ///
+    /// For compound types, returns references to their inner types:
+    /// - `Array[T]`, `Ref[T]`, `RawPtr[T]` → `[T]`
+    /// - `Tuple[A, B]`, `Proj[A, B]` → `[A, B]`
+    /// - Primitive types → `[]`
+    ///
+    /// See also [`type_params`](Self::type_params) which filters to only type variables.
+    pub fn type_arguments(&self) -> Vec<&Ty> {
         match self {
             Ty::Array(t, _) | Ty::Ref(t) | Ty::RawPtr(t) => vec![t.as_ref()],
             Ty::Tuple(t) | Ty::Proj(_, t) => t.iter().collect(),
@@ -552,7 +560,36 @@ impl Ty {
         }
     }
 
-    pub fn get_ty_param_at(&self, idx: usize) -> Option<&Ty> {
+    /// Returns only type variable arguments (filters out concrete types).
+    ///
+    /// For `Proj` types like `Eq['a, int]`, returns only the type variable arguments `['a]`.
+    /// For a bare `Var` type, returns that variable in a vec.
+    /// For other types, returns an empty vec.
+    ///
+    /// See also [`type_arguments`](Self::type_arguments) which returns all type arguments.
+    pub fn type_params(&self) -> Vec<TyVar> {
+        match self {
+            Ty::Proj(_, args) => args
+                .iter()
+                .filter_map(|t| {
+                    if let Ty::Var(var) = t {
+                        Some(var.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            Ty::Var(var) => vec![var.clone()],
+            _ => vec![],
+        }
+    }
+
+    /// Returns the type argument at the given index, if it exists.
+    ///
+    /// For single-argument types (`Array`, `Ref`, `RawPtr`), only index 0 is valid.
+    /// For multi-argument types (`Tuple`, `Proj`), returns the argument at that position.
+    /// Returns `None` for types without arguments or invalid indices.
+    pub fn type_argument_at(&self, idx: usize) -> Option<&Ty> {
         match self {
             Ty::Array(t, _) => {
                 if idx != 0 {
@@ -580,7 +617,11 @@ impl Ty {
         }
     }
 
-    pub fn set_ty_param_at(&mut self, idx: usize, tp: Ty) {
+    /// Sets the type argument at the given index.
+    ///
+    /// # Panics
+    /// Panics if the index is out of bounds or the type has no arguments.
+    pub fn set_type_argument_at(&mut self, idx: usize, tp: Ty) {
         match self {
             Ty::Array(t, _) => {
                 if idx != 0 {
@@ -612,9 +653,13 @@ impl Ty {
         }
     }
 
+    /// Returns the first type argument.
+    ///
+    /// # Panics
+    /// Panics if the type has no arguments.
     #[inline(always)]
-    pub fn first_ty_param(&self) -> &Ty {
-        self.get_ty_param_at(0).unwrap()
+    pub fn first_type_argument(&self) -> &Ty {
+        self.type_argument_at(0).unwrap()
     }
 
     pub fn try_borrow_fn(&self) -> Result<(&Vec<Ty>, &Ty), String> {

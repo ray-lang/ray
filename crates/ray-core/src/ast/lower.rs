@@ -642,7 +642,7 @@ impl LowerAST for Sourced<'_, Impl> {
         // get the type parameter of the original trait
         let mut trait_ty_params = vec![];
         if let Some(trait_ty) = &trait_ty {
-            let orig_trait_tps = trait_ty.ty.get_ty_params();
+            let orig_trait_tps = trait_ty.ty.type_arguments();
             for ty in orig_trait_tps {
                 let Ty::Var(v) = ty else {
                     return Err(RayError {
@@ -1547,7 +1547,7 @@ pub fn predicate_from_ast_ty(
 
     let mut trait_ty = trait_ty.ty.clone();
     let ty_param_vars = trait_ty
-        .get_ty_params()
+        .type_arguments()
         .iter()
         .map(|ty| variant!(ty, if Ty::Var(v)))
         .cloned()
