@@ -3,9 +3,9 @@
 use ray_core::ast::Decl;
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, DefKind},
+    def::{DefId, DefKind, LibraryDefId},
     pathlib::{ItemPath, ModulePath},
-    resolution::DefTarget,
+    resolution::{DefTarget, Resolution},
     ty::{Ty, TyVar},
 };
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     queries::{
         exports::{ExportedItem, module_def_index},
-        libraries::{LibraryData, LoadedLibraries, library_data},
+        libraries::{LoadedLibraries, library_data},
         parse::parse_file,
+        resolve::name_resolutions,
         workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
@@ -136,35 +137,9 @@ fn exported_item_to_def_target(item: &ExportedItem) -> Option<DefTarget> {
 fn lookup_in_library(db: &Database, path: &ItemPath) -> Option<DefTarget> {
     let lib_data = library_data(db, path.module.clone())?;
 
-    if contains_item(&lib_data, path) {
-        Some(DefTarget::Library(path.clone()))
-    } else {
-        None
-    }
-}
-
-/// Check if a library contains the given item path.
-fn contains_item(lib_data: &LibraryData, path: &ItemPath) -> bool {
-    // Check if it's a scheme (function)
-    if lib_data.schemes.contains_key(path) {
-        return true;
-    }
-
-    // Check if it's a struct
-    for lib_struct in &lib_data.structs {
-        if &lib_struct.path == path {
-            return true;
-        }
-    }
-
-    // Check if it's a trait
-    for lib_trait in &lib_data.traits {
-        if &lib_trait.path == path {
-            return true;
-        }
-    }
-
-    false
+    // Use the names index to look up the LibraryDefId for this path
+    let lib_def_id = lib_data.lookup(path)?;
+    Some(DefTarget::Library(lib_def_id))
 }
 
 /// Look up a struct definition by its DefTarget.
@@ -177,7 +152,7 @@ fn contains_item(lib_data: &LibraryData, path: &ItemPath) -> bool {
 pub fn struct_def(db: &Database, target: DefTarget) -> Option<StructDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_struct(db, def_id),
-        DefTarget::Library(path) => extract_library_struct(db, &path),
+        DefTarget::Library(lib_def_id) => extract_library_struct(db, &lib_def_id),
     }
 }
 
@@ -252,29 +227,11 @@ fn extract_fields(fields: &Option<Vec<ray_core::ast::Node<ray_core::ast::Name>>>
 }
 
 /// Extract a struct definition from library data.
-fn extract_library_struct(db: &Database, path: &ItemPath) -> Option<StructDef> {
-    let lib_data = library_data(db, path.module.clone())?;
+fn extract_library_struct(db: &Database, lib_def_id: &LibraryDefId) -> Option<StructDef> {
+    let lib_data = library_data(db, lib_def_id.module.clone())?;
 
-    // Find the struct in the library
-    for lib_struct in &lib_data.structs {
-        if &lib_struct.path == path {
-            return Some(StructDef {
-                target: DefTarget::Library(path.clone()),
-                name: path.item_name().unwrap_or_default().to_string(),
-                type_params: lib_struct.type_params.clone(),
-                fields: lib_struct
-                    .fields
-                    .iter()
-                    .map(|(name, ty)| FieldDef {
-                        name: name.clone(),
-                        ty: ty.clone(),
-                    })
-                    .collect(),
-            });
-        }
-    }
-
-    None
+    // Look up the struct directly by LibraryDefId
+    lib_data.structs.get(lib_def_id).cloned()
 }
 
 // ============================================================================
@@ -291,7 +248,7 @@ fn extract_library_struct(db: &Database, path: &ItemPath) -> Option<StructDef> {
 pub fn trait_def(db: &Database, target: DefTarget) -> Option<TraitDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_trait(db, def_id),
-        DefTarget::Library(path) => extract_library_trait(db, &path),
+        DefTarget::Library(lib_def_id) => extract_library_trait(db, &lib_def_id),
     }
 }
 
@@ -383,29 +340,11 @@ fn extract_trait_method_names(fields: &[ray_core::ast::Node<Decl>]) -> Vec<Strin
 }
 
 /// Extract a trait definition from library data.
-fn extract_library_trait(db: &Database, path: &ItemPath) -> Option<TraitDef> {
-    let lib_data = library_data(db, path.module.clone())?;
+fn extract_library_trait(db: &Database, lib_def_id: &LibraryDefId) -> Option<TraitDef> {
+    let lib_data = library_data(db, lib_def_id.module.clone())?;
 
-    for lib_trait in &lib_data.traits {
-        if &lib_trait.path == path {
-            // Convert super_trait ItemPaths to DefTargets
-            let super_traits = lib_trait
-                .super_traits
-                .iter()
-                .map(|st| DefTarget::Library(st.clone()))
-                .collect();
-
-            return Some(TraitDef {
-                target: DefTarget::Library(path.clone()),
-                name: path.item_name().unwrap_or_default().to_string(),
-                type_params: lib_trait.type_params.clone(),
-                super_traits,
-                methods: lib_trait.methods.clone(),
-            });
-        }
-    }
-
-    None
+    // Look up the trait directly by LibraryDefId
+    lib_data.traits.get(lib_def_id).cloned()
 }
 
 // ============================================================================
@@ -422,15 +361,12 @@ fn extract_library_trait(db: &Database, path: &ItemPath) -> Option<TraitDef> {
 pub fn impl_def(db: &Database, target: DefTarget) -> Option<ImplDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_impl(db, def_id),
-        DefTarget::Library(path) => extract_library_impl(db, &path),
+        DefTarget::Library(lib_def_id) => extract_library_impl(db, &lib_def_id),
     }
 }
 
 /// Extract an impl definition from the workspace AST.
 fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
-    use crate::queries::resolve::name_resolutions;
-    use ray_shared::resolution::Resolution;
-
     let parse_result = parse_file(db, def_id.file);
     let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
@@ -526,20 +462,11 @@ fn extract_impl_method_names(im: &ray_core::ast::Impl) -> Vec<String> {
 }
 
 /// Extract an impl definition from library data.
-fn extract_library_impl(db: &Database, path: &ItemPath) -> Option<ImplDef> {
-    let lib_data = library_data(db, path.module.clone())?;
+fn extract_library_impl(db: &Database, lib_def_id: &LibraryDefId) -> Option<ImplDef> {
+    let lib_data = library_data(db, lib_def_id.module.clone())?;
 
-    // Library impls don't have a direct path lookup like structs/traits
-    // They're typically looked up by the implementing type
-    // For now, we'll iterate through impls looking for a match
-    for lib_impl in &lib_data.impls {
-        // Library impls don't have a path field, so this query doesn't
-        // make sense for library impls in the same way.
-        // Return None for now - library impl lookup should use a different mechanism
-        let _ = lib_impl;
-    }
-
-    None
+    // Look up the impl directly by LibraryDefId
+    lib_data.impls.get(lib_def_id).cloned()
 }
 
 // ============================================================================
@@ -696,19 +623,21 @@ fn collect_workspace_impls_for_type(
 fn collect_library_impls_for_type(
     db: &Database,
     type_target: &DefTarget,
-    _result: &mut ImplsForType,
+    result: &mut ImplsForType,
 ) {
     let libraries = db.get_input::<LoadedLibraries>(());
 
     for (_lib_path, lib_data) in &libraries.libraries {
-        for lib_impl in &lib_data.impls {
-            // Check if this impl's self_ty matches the target
-            if type_matches_target(&lib_impl.self_ty, type_target, db) {
-                // Library impls don't have a DefTarget path directly,
-                // but we can identify them by the implementing type + trait
-                // For now, we skip library impls since they don't have DefTarget paths
-                // TODO: Consider how to represent library impl DefTargets
-                let _ = lib_impl;
+        // Iterate over impls with their LibraryDefId keys
+        for (lib_def_id, lib_impl) in &lib_data.impls {
+            // Check if this impl's implementing_type matches the target
+            if type_matches_target(&lib_impl.implementing_type, type_target, db) {
+                let impl_target = DefTarget::Library(lib_def_id.clone());
+                if lib_impl.trait_ref.is_some() {
+                    result.trait_impls.push(impl_target);
+                } else {
+                    result.inherent.push(impl_target);
+                }
             }
         }
     }
@@ -733,17 +662,17 @@ fn type_matches_target(ty: &Ty, target: &DefTarget, db: &Database) -> bool {
             }
             false
         }
-        DefTarget::Library(path) => {
-            // For library targets, try to resolve the type path
-            let type_path = match ty {
-                Ty::Const(p) => p.clone(),
-                Ty::Proj(p, _) => p.clone(),
-                _ => return false,
-            };
-
-            // Compare paths
-            let item_path = ItemPath::from(&type_path);
-            &item_path == path
+        DefTarget::Library(lib_def_id) => {
+            // For library targets, we need to look up the definition name
+            if let Some(lib_data) = library_data(db, lib_def_id.module.clone()) {
+                // Find the name in the library's names index (reverse lookup)
+                for (item_path, def_id) in &lib_data.names {
+                    if def_id == lib_def_id {
+                        return item_path.item_name() == Some(type_name.as_str());
+                    }
+                }
+            }
+            false
         }
     }
 }
@@ -751,18 +680,20 @@ fn type_matches_target(ty: &Ty, target: &DefTarget, db: &Database) -> bool {
 #[cfg(test)]
 mod tests {
     use ray_shared::{
+        def::LibraryDefId,
         pathlib::{FilePath, ItemPath, ModulePath},
         resolution::DefTarget,
         ty::Ty,
     };
+    use ray_typing::types::TyScheme;
 
     use crate::{
         queries::{
             defs::{
-                def_for_path, impl_def, impls_for_type, impls_in_module, struct_def, trait_def,
-                type_alias,
+                FieldDef, StructDef, TraitDef, def_for_path, impl_def, impls_for_type,
+                impls_in_module, struct_def, trait_def, type_alias,
             },
-            libraries::{LibraryData, LibraryScheme, LibraryStruct, LibraryTrait, LoadedLibraries},
+            libraries::{LibraryData, LoadedLibraries},
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -834,14 +765,28 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
+
+        // Create a LibraryDefId for the function
+        let read_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let read_path = ItemPath {
+            module: ModulePath::from("core::io"),
+            item: vec!["read".to_string()],
+        };
+
+        // Add to the names index
+        core_lib
+            .names
+            .insert(read_path.clone(), read_def_id.clone());
+
+        // Add the scheme
         core_lib.schemes.insert(
-            ItemPath {
-                module: ModulePath::from("core::io"),
-                item: vec!["read".to_string()],
-            },
-            LibraryScheme {
+            read_def_id.clone(),
+            TyScheme {
                 vars: vec![],
-                predicates: vec![],
+                qualifiers: vec![],
                 ty: Ty::unit(),
             },
         );
@@ -853,8 +798,9 @@ mod tests {
 
         assert!(result.is_some());
         match result.unwrap() {
-            DefTarget::Library(path) => {
-                assert_eq!(path.to_string(), "core::io::read");
+            DefTarget::Library(lib_def_id) => {
+                assert_eq!(lib_def_id.module.to_string(), "core::io");
+                assert_eq!(lib_def_id.index, 0);
             }
             _ => panic!("Expected Library target"),
         }
@@ -1013,24 +959,45 @@ impl object List {
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::option"));
-        core_lib.structs.push(LibraryStruct {
-            path: ItemPath {
-                module: ModulePath::from("core::option"),
-                item: vec!["Option".to_string()],
+
+        // Create LibraryDefId and ItemPath for the struct
+        let option_def_id = LibraryDefId {
+            module: ModulePath::from("core::option"),
+            index: 0,
+        };
+        let option_path = ItemPath {
+            module: ModulePath::from("core::option"),
+            item: vec!["Option".to_string()],
+        };
+
+        // Add to names index
+        core_lib
+            .names
+            .insert(option_path.clone(), option_def_id.clone());
+
+        // Add struct definition using the spec types
+        core_lib.structs.insert(
+            option_def_id.clone(),
+            StructDef {
+                target: DefTarget::Library(option_def_id.clone()),
+                name: "Option".to_string(),
+                type_params: vec![],
+                fields: vec![
+                    FieldDef {
+                        name: "some".to_string(),
+                        ty: Ty::bool(),
+                    },
+                    FieldDef {
+                        name: "value".to_string(),
+                        ty: Ty::Any,
+                    },
+                ],
             },
-            type_params: vec![],
-            fields: vec![
-                ("some".to_string(), Ty::bool()),
-                ("value".to_string(), Ty::Any),
-            ],
-        });
+        );
         libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
 
-        let target = DefTarget::Library(ItemPath {
-            module: ModulePath::from("core::option"),
-            item: vec!["Option".to_string()],
-        });
+        let target = DefTarget::Library(option_def_id);
 
         let result = struct_def(&db, target);
 
@@ -1050,9 +1017,10 @@ impl object List {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        let target = DefTarget::Library(ItemPath {
+        // Use a LibraryDefId that doesn't exist
+        let target = DefTarget::Library(LibraryDefId {
             module: ModulePath::from("unknown"),
-            item: vec!["Unknown".to_string()],
+            index: 0,
         });
 
         let result = struct_def(&db, target);
@@ -1101,22 +1069,35 @@ trait Eq['T] {
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::cmp"));
-        core_lib.traits.push(LibraryTrait {
-            path: ItemPath {
-                module: ModulePath::from("core::cmp"),
-                item: vec!["Ord".to_string()],
+
+        // Create LibraryDefId and ItemPath for the trait
+        let ord_def_id = LibraryDefId {
+            module: ModulePath::from("core::cmp"),
+            index: 0,
+        };
+        let ord_path = ItemPath {
+            module: ModulePath::from("core::cmp"),
+            item: vec!["Ord".to_string()],
+        };
+
+        // Add to names index
+        core_lib.names.insert(ord_path.clone(), ord_def_id.clone());
+
+        // Add trait definition using the spec types
+        core_lib.traits.insert(
+            ord_def_id.clone(),
+            TraitDef {
+                target: DefTarget::Library(ord_def_id.clone()),
+                name: "Ord".to_string(),
+                type_params: vec![],
+                super_traits: vec![],
+                methods: vec!["cmp".to_string(), "lt".to_string()],
             },
-            type_params: vec![],
-            super_traits: vec![],
-            methods: vec!["cmp".to_string(), "lt".to_string()],
-        });
+        );
         libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
 
-        let target = DefTarget::Library(ItemPath {
-            module: ModulePath::from("core::cmp"),
-            item: vec!["Ord".to_string()],
-        });
+        let target = DefTarget::Library(ord_def_id);
 
         let result = trait_def(&db, target);
 

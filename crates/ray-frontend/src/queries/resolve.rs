@@ -154,13 +154,13 @@ fn get_library_exports(
         None => return result,
     };
 
-    // Collect exports from the library's schemes
-    // The scheme paths are full paths like "core::io::read", we need to filter
+    // Collect exports from the library's names index
+    // The item paths are full paths like "core::io::read", we need to filter
     // for paths that start with the module_path
     let module_prefix = module_path.to_string();
 
-    for (scheme_path, _scheme) in &lib_data.schemes {
-        let path_str = scheme_path.to_string();
+    for (item_path, lib_def_id) in &lib_data.names {
+        let path_str = item_path.to_string();
         // Check if this path belongs to the imported module
         if path_str.starts_with(&module_prefix) {
             // Extract the name: for "core::io::read" with module "core::io", name is "read"
@@ -168,33 +168,7 @@ fn get_library_exports(
             if let Some(name) = suffix.strip_prefix("::") {
                 // Only direct children (no more :: in the name)
                 if !name.contains("::") {
-                    result.insert(name.to_string(), DefTarget::Library(scheme_path.clone()));
-                }
-            }
-        }
-    }
-
-    // Also collect struct exports
-    for lib_struct in &lib_data.structs {
-        let path_str = lib_struct.path.to_string();
-        if path_str.starts_with(&module_prefix) {
-            let suffix = &path_str[module_prefix.len()..];
-            if let Some(name) = suffix.strip_prefix("::") {
-                if !name.contains("::") {
-                    result.insert(name.to_string(), DefTarget::Library(lib_struct.path.clone()));
-                }
-            }
-        }
-    }
-
-    // Also collect trait exports
-    for lib_trait in &lib_data.traits {
-        let path_str = lib_trait.path.to_string();
-        if path_str.starts_with(&module_prefix) {
-            let suffix = &path_str[module_prefix.len()..];
-            if let Some(name) = suffix.strip_prefix("::") {
-                if !name.contains("::") {
-                    result.insert(name.to_string(), DefTarget::Library(lib_trait.path.clone()));
+                    result.insert(name.to_string(), DefTarget::Library(lib_def_id.clone()));
                 }
             }
         }
@@ -249,13 +223,16 @@ fn compute_sibling_exports(
 #[cfg(test)]
 mod tests {
     use ray_shared::{
+        def::LibraryDefId,
         pathlib::{FilePath, ItemPath, ModulePath, Path},
         resolution::{DefTarget, Resolution},
+        ty::Ty,
     };
+    use ray_typing::types::TyScheme;
 
     use crate::{
         queries::{
-            libraries::LoadedLibraries,
+            libraries::{LibraryData, LoadedLibraries},
             resolve::name_resolutions,
             workspace::{FileSource, WorkspaceSnapshot},
         },
@@ -588,9 +565,6 @@ mod tests {
 
     #[test]
     fn name_resolutions_resolves_library_import_qualified() {
-        use crate::queries::libraries::{LibraryData, LibraryScheme};
-        use ray_shared::ty::Ty;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -601,15 +575,26 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
+
+        // Create a LibraryDefId for the read function
+        let read_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let read_path = ItemPath {
+            module: ModulePath::from("core::io"),
+            item: vec!["read".to_string()],
+        };
+
+        // Add the name -> def_id mapping
+        core_lib.names.insert(read_path, read_def_id.clone());
+
         // Add a scheme for core::io::read
         core_lib.schemes.insert(
-            ItemPath {
-                module: ModulePath::from("core::io"),
-                item: vec!["read".to_string()],
-            },
-            LibraryScheme {
+            read_def_id,
+            TyScheme {
                 vars: vec![],
-                predicates: vec![],
+                qualifiers: vec![],
                 ty: Ty::unit(),
             },
         );
@@ -628,13 +613,7 @@ mod tests {
         // Should have a Def resolution for io::read() pointing to a Library target
         let library_resolutions: Vec<_> = resolutions
             .values()
-            .filter(|res| {
-                matches!(
-                    res,
-                    Resolution::Def(DefTarget::Library(path))
-                    if path.to_string() == "core::io::read"
-                )
-            })
+            .filter(|res| matches!(res, Resolution::Def(DefTarget::Library(_))))
             .collect();
 
         assert_eq!(
@@ -646,9 +625,6 @@ mod tests {
 
     #[test]
     fn name_resolutions_resolves_library_selective_import() {
-        use crate::queries::libraries::{LibraryData, LibraryScheme};
-        use ray_shared::ty::Ty;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -659,25 +635,43 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
+
+        // Create LibraryDefIds for read and write
+        let read_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let write_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 1,
+        };
+        let read_path = ItemPath {
+            module: ModulePath::from("core::io"),
+            item: vec!["read".to_string()],
+        };
+        let write_path = ItemPath {
+            module: ModulePath::from("core::io"),
+            item: vec!["write".to_string()],
+        };
+
+        // Add name -> def_id mappings
+        core_lib.names.insert(read_path, read_def_id.clone());
+        core_lib.names.insert(write_path, write_def_id.clone());
+
+        // Add schemes
         core_lib.schemes.insert(
-            ItemPath {
-                module: ModulePath::from("core::io"),
-                item: vec!["read".to_string()],
-            },
-            LibraryScheme {
+            read_def_id,
+            TyScheme {
                 vars: vec![],
-                predicates: vec![],
+                qualifiers: vec![],
                 ty: Ty::unit(),
             },
         );
         core_lib.schemes.insert(
-            ItemPath {
-                module: ModulePath::from("core::io"),
-                item: vec!["write".to_string()],
-            },
-            LibraryScheme {
+            write_def_id,
+            TyScheme {
                 vars: vec![],
-                predicates: vec![],
+                qualifiers: vec![],
                 ty: Ty::unit(),
             },
         );

@@ -1,5 +1,7 @@
 //! Semantic token support for `ray-lsp`.
 
+use std::fmt::Write as _;
+
 use ray_core::ide::semantic_tokens::{
     self as semantic, SemanticToken as RayToken, SemanticTokenKind as RayKind,
     SemanticTokenModifier as RayModifier,
@@ -363,7 +365,6 @@ pub fn pretty_dump(data: &[SemanticToken], source: &str, legend: &SemanticTokens
             .take(tok.length as usize)
             .collect::<String>();
 
-        use std::fmt::Write as _;
         let _ = writeln!(
             &mut out,
             "L{}:{} len={} type={} mods={} text=\"{}\"",

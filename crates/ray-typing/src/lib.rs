@@ -1140,7 +1140,13 @@ fn solve_groups(
 ) -> BindingGroupResult {
     let mut errors = vec![];
     for group in groups.iter() {
-        errors.extend(solve_single_group(input, group, ctx, global_env, pretty_subst));
+        errors.extend(solve_single_group(
+            input,
+            group,
+            ctx,
+            global_env,
+            pretty_subst,
+        ));
     }
     BindingGroupResult { errors }
 }
@@ -1543,16 +1549,30 @@ fn collect_predicate_vars(pred: &Predicate) -> HashSet<TyVar> {
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::def::DefId;
-    use ray_shared::file_id::FileId;
-    use ray_shared::local_binding::LocalBindingId;
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-    use super::*;
-    use crate::binding_groups::{BindingGraph, BindingGroup};
-    use crate::context::{AssignLhs, ExprKind, LhsPattern, Pattern};
-    use crate::types::{ImplKind, ImplTy, TraitTy, TyScheme};
-    use crate::{BindingKind, BindingRecord, ExprRecord};
-    use std::collections::HashMap;
+    use ray_shared::{
+        collections::namecontext::NameContext,
+        def::DefId,
+        file_id::FileId,
+        local_binding::LocalBindingId,
+        node_id::NodeId,
+        pathlib::Path,
+        ty::{SchemaVarAllocator, Ty},
+    };
+
+    use crate::{
+        BindingKind, BindingRecord, ExprRecord, PatternKind, PatternRecord, SolverEnv,
+        TypeCheckInput, TypecheckOptions,
+        binding_groups::{BindingGraph, BindingGroup},
+        constraint_tree::{build_constraint_tree_for_group, walk_tree},
+        context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
+        env::GlobalEnv,
+        solve_bindings, solve_groups,
+        tyctx::TyCtx,
+        typecheck,
+        types::{ImplKind, ImplTy, Subst, TraitTy, TyScheme},
+    };
 
     fn make_single_binding_module(
         def_id: DefId,

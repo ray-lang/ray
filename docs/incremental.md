@@ -756,29 +756,34 @@ The source text of a file. Keyed by `FileId` (not FilePath), returns the file's 
 ```rust
 #[input(key = "ModulePath")]
 struct LibraryData {
-    /// Type schemes for all exported definitions, keyed by ItemPath
-    pub schemes: HashMap<ItemPath, TyScheme>,
+    /// Name lookup index: maps ItemPath -> LibraryDefId for named definitions
+    /// (structs, traits, functions, type aliases). Impls are not in this index
+    /// since they don't have names.
+    pub names: HashMap<ItemPath, LibraryDefId>,
+
+    /// Type schemes for all exported definitions, keyed by LibraryDefId
+    pub schemes: HashMap<LibraryDefId, TyScheme>,
 
     /// Struct definitions
-    pub structs: HashMap<ItemPath, StructDef>,
+    pub structs: HashMap<LibraryDefId, StructDef>,
 
     /// Trait definitions
-    pub traits: HashMap<ItemPath, TraitDef>,
+    pub traits: HashMap<LibraryDefId, TraitDef>,
 
-    /// Impl definitions
-    pub impls: HashMap<ItemPath, ImplDef>,
+    /// Impl definitions (includes both named and anonymous impls)
+    pub impls: HashMap<LibraryDefId, ImplDef>,
 
-    /// Index: type -> impls for that type (for impls_for_type query)
-    pub impls_by_type: HashMap<ItemPath, Vec<ItemPath>>,
+    /// Index: type path -> impls for that type (for impls_for_type query)
+    pub impls_by_type: HashMap<ItemPath, Vec<LibraryDefId>>,
 
-    /// Index: trait -> impls of that trait (for impls_for_trait query)
-    pub impls_by_trait: HashMap<ItemPath, Vec<ItemPath>>,
+    /// Index: trait path -> impls of that trait (for impls_for_trait query)
+    pub impls_by_trait: HashMap<ItemPath, Vec<LibraryDefId>>,
 
     /// Operator tables (infix and prefix)
     pub operators: OperatorIndex,
 
     /// IDE metadata for hover/go-to-definition
-    pub definitions: HashMap<ItemPath, DefinitionRecord>,
+    pub definitions: HashMap<LibraryDefId, DefinitionRecord>,
 
     /// Source spans for error messages pointing into library code
     pub source_map: SourceMap,
@@ -789,8 +794,9 @@ struct LibraryData {
 ```
 
 Precompiled library data from a `.raylib` file. Keyed by `ModulePath`. Provides efficient lookup for queries that need library information:
-- `def_scheme(DefTarget::External(path))` → `lib.schemes.get(path)`
-- `struct_def(DefTarget::External(path))` → `lib.structs.get(path)`
+- `def_for_path(path)` → `lib.names.get(path)` to get `LibraryDefId`
+- `def_scheme(DefTarget::Library(lib_def_id))` → `lib.schemes.get(lib_def_id)`
+- `struct_def(DefTarget::Library(lib_def_id))` → `lib.structs.get(lib_def_id)`
 - `impls_for_type(target)` → `lib.impls_by_type.get(type_path)`
 
 **Schema variable remapping**: When a `.raylib` file is loaded, schema variables are remapped to avoid collisions with the workspace's `SchemaVarAllocator`. The loader:
@@ -1058,12 +1064,25 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
   }
 
   /// Reference to a definition, either in the current workspace or external library.
-  #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+  #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
   enum DefTarget {
       /// Definition in current workspace
       Workspace(DefId),
-      /// Definition from external library
-      External(ItemPath),
+      /// Definition from external library (uses structural ID, not name)
+      Library(LibraryDefId),
+  }
+
+  /// Identifies a definition in a compiled library.
+  ///
+  /// Like DefId for workspace, LibraryDefId is structural: it identifies a
+  /// definition by its location (module + index), not by name. This allows
+  /// anonymous definitions like impls to have stable identities.
+  #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+  struct LibraryDefId {
+      /// The module containing this definition
+      pub module: ModulePath,
+      /// Index of this definition within the module
+      pub index: u32,
   }
   ```
 
@@ -1102,7 +1121,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
   - For workspace paths: `module_def_index(item_path.module)`, `parse(parent_def.file)` for method lookup
   - For library paths: `library_data(item_path.module)`
 
-  **Semantics**: Looks up a definition by fully-qualified path. Returns `DefTarget::Workspace(DefId)` for workspace definitions or `DefTarget::External(ItemPath)` for library definitions. Used for:
+  **Semantics**: Looks up a definition by fully-qualified path. Returns `DefTarget::Workspace(DefId)` for workspace definitions or `DefTarget::Library(LibraryDefId)` for library definitions. Used for:
   - Qualified references like `core::int::add`
   - Method lookup like `List::push`
 
@@ -1149,7 +1168,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Dependencies**:
   - For `DefTarget::Workspace(def_id)`: `parse(def_id.file)`, `name_resolutions(def_id.file)`
-  - For `DefTarget::External(item_path)`: `library_data(item_path.module)`
+  - For `DefTarget::Library(lib_def_id)`: `library_data(lib_def_id.module)`
 
   **Semantics**: Returns definition details for the given target. For workspace definitions, extracts from the indexed AST. For library definitions, looks up in `LibraryData`.
 
@@ -1257,7 +1276,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Note**: This query is workspace-only. Library definitions are already typechecked and don't participate in binding analysis.
 
-  **Error handling**: References to `Resolution::Error` or `Resolution::Local` are skipped. References to `DefTarget::External` are skipped (library calls don't create binding edges). Only `DefTarget::Workspace` creates edges, and only for DefIds in the same module.
+  **Error handling**: References to `Resolution::Error` or `Resolution::Local` are skipped. References to `DefTarget::Library` are skipped (library calls don't create binding edges). Only `DefTarget::Workspace` creates edges, and only for DefIds in the same module.
 
   **Legacy component integration**: This is the "Phase A" extraction from `ray-core/src/passes/binding.rs`. The legacy `run_binding_pass` walks the entire merged module; this query walks only nodes within a single definition.
 
@@ -1475,7 +1494,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Dependencies**:
   - For `DefTarget::Workspace(def_id)`: `binding_group_for_def(def_id)`, `typecheck_group(BindingGroupId)` for the resulting group
-  - For `DefTarget::External(item_path)`: `library_data(item_path.module)`
+  - For `DefTarget::Library(lib_def_id)`: `library_data(lib_def_id.module)`
 
   **Semantics**: Returns the type scheme for a definition. For workspace definitions, this is either the declared scheme (annotated) or inferred scheme (unannotated). For library definitions, returns the precomputed scheme from `LibraryData`.
 
@@ -1487,7 +1506,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   |--------|-----|
   | `tcx.schemes.get(&path)` | `def_scheme(DefTarget::Workspace(def_id))` |
   | `tcx.all_schemes.get(&path)` | Same query (no public/private distinction needed) |
-  | `lib.schemes.get(&path)` | `def_scheme(DefTarget::External(item_path))` |
+  | `lib.schemes.get(&path)` | `def_scheme(DefTarget::Library(lib_def_id))` |
 
   For workspace definitions, this query is a thin wrapper: look up the binding group, invoke `typecheck_group`, extract the scheme. The actual scheme computation happens in `typecheck_group`.
 
@@ -1596,13 +1615,13 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
 - `def_name(DefTarget)` → `String`
 
-  **Dependencies**: For `Workspace(DefId)`: `parse(def_id.file)`. For `External(ItemPath)`: `library_data`.
+  **Dependencies**: For `Workspace(DefId)`: `parse(def_id.file)`. For `Library(LibraryDefId)`: `library_data`.
 
   **Semantics**: Convenience query returning the simple name of a definition (e.g., `push` for a method, `List` for a struct). Works for both workspace and library definitions.
 
 - `def_path(DefTarget)` → `ItemPath`
 
-  **Dependencies**: For `Workspace(DefId)`: `parse(def_id.file)`, `module_for_file(def_id.file)`. For `External(ItemPath)`: returns the path directly.
+  **Dependencies**: For `Workspace(DefId)`: `parse(def_id.file)`, `module_for_file(def_id.file)`. For `Library(LibraryDefId)`: `library_data(lib_def_id.module)` to look up the name in the definitions table.
 
   **Semantics**: Convenience query constructing the fully-qualified path for a definition by combining the module path with the definition's name (and parent type/trait for methods).
 
@@ -1751,7 +1770,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   - Inherent methods (from `impl Type { ... }` blocks)
   - Trait methods (from `impl Trait for Type { ... }` blocks)
 
-  Methods are returned as (name, DefTarget) pairs. For trait methods, the DefTarget points to the impl method (not the trait signature). Methods from library types return `DefTarget::External`.
+  Methods are returned as (name, DefTarget) pairs. For trait methods, the DefTarget points to the impl method (not the trait signature). Methods from library types return `DefTarget::Library`.
 
   **Error handling**: Returns empty vec if the type has no methods or if the type is `Ty::Error`.
 
@@ -1822,7 +1841,7 @@ Builtins are well-known types that the compiler needs to reference for language 
 
   **Dependencies**: `def_for_path(ItemPath)` for the builtin's expected path
 
-  **Semantics**: Looks up well-known types by name. Returns `DefTarget` since builtins are typically from the core library (`DefTarget::External`). The lookup uses a fixed mapping from builtin name to expected module path:
+  **Semantics**: Looks up well-known types by name. Returns `DefTarget` since builtins are typically from the core library (`DefTarget::Library`). The lookup uses a fixed mapping from builtin name to expected module path:
   - `"string"` → `def_for_path("core::string::string")`
   - `"Index"` → `def_for_path("core::ops::Index")`
   - `"Iterator"` → `def_for_path("core::iter::Iterator")`
@@ -3187,7 +3206,7 @@ These extractions have no dependencies on each other and can be done in any orde
 
   pub enum DefTarget {
       Workspace(DefId),         // Definition in this workspace
-      Library { lib: ModulePath, path: ItemPath },  // From .raylib
+      Library(LibraryDefId),    // From .raylib (structural ID)
   }
   ```
 - [x] Add `LocalBindingId` to `ray-shared/src/lib.rs`:
@@ -3842,9 +3861,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
               let parse_result = parse(db, def_id.file);
               extract_struct_def(&parse_result.ast, def_id)
           }
-          DefTarget::Library { lib, path } => {
-              let lib_data = db.get_input::<LibraryData>(lib);
-              lib_data.struct_defs.get(&path).cloned()
+          DefTarget::Library(lib_def_id) => {
+              let lib_data = library_data(db, lib_def_id.module)?;
+              lib_data.structs.get(&lib_def_id).cloned()
           }
       }
   }
@@ -3876,7 +3895,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: impls_for_type query
 
-- [ ] Define `impls_for_type(DefTarget)` query:
+- [x] Define `impls_for_type(DefTarget)` query:
   ```rust
   #[query]
   fn impls_for_type(db: &Database, type_target: DefTarget) -> ImplsForType {
@@ -3885,8 +3904,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       // Return grouped by trait (inherent vs trait impls)
   }
   ```
-- [ ] Index impls by target type
-- [ ] **Validate**: Unit test finding impls for a struct
+- [x] Index impls by target type
+- [x] **Validate**: Unit test finding impls for a struct
 
 ##### Step 2: impls_for_trait query
 
@@ -4175,9 +4194,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
               let result = typecheck_group(db, group_id);
               result.schemes.get(&def_id).cloned()
           }
-          DefTarget::Library { lib, path } => {
-              let lib_data = db.get_input::<LibraryData>(lib);
-              lib_data.schemes.get(&path).cloned()
+          DefTarget::Library(lib_def_id) => {
+              let lib_data = library_data(db, lib_def_id.module)?;
+              lib_data.schemes.get(&lib_def_id).cloned()
           }
       }
   }

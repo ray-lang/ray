@@ -1277,17 +1277,25 @@ fn is_supported_guard_pattern(pat: &Node<AstPattern>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ast::{Block, Boxed, Func, Literal};
-    use crate::passes::FrontendPassManager;
-    use crate::sourcemap::SourceMap;
-    use ray_shared::def::DefId;
-    use ray_shared::file_id::FileId;
-    use ray_shared::node_id::{NodeId, NodeIdGuard};
-    use ray_shared::pathlib::{FilePath, Path as RayPath};
-    use ray_shared::resolution::Resolution;
-    use ray_shared::span::{Source as RaySource, Span};
-    use ray_typing::env::GlobalEnv;
+    use std::{collections::HashMap, rc::Rc};
+
+    use ray_shared::{
+        collections::namecontext::NameContext,
+        def::DefId,
+        file_id::FileId,
+        node_id::{NodeId, NodeIdGuard},
+        pathlib::{FilePath, Path as RayPath},
+        resolution::Resolution,
+        span::{Source as RaySource, Span},
+    };
+    use ray_typing::{TypecheckOptions, context::ExprKind, env::GlobalEnv, tyctx::TyCtx};
+
+    use crate::{
+        ast::{Block, Boxed, Decl, Expr, Func, Literal, Module, Node},
+        passes::{FrontendPassManager, deps::build_binding_graph},
+        sourcemap::SourceMap,
+        typing::{build_def_binding_records, collect_def_ids, lower_module},
+    };
 
     /// Set up a DefId context for tests that create nodes.
     fn test_def_context() -> NodeIdGuard {

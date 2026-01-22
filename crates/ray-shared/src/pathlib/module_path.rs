@@ -15,7 +15,7 @@ use super::Path;
 /// They are used as keys in WorkspaceSnapshot.modules and for library lookup.
 ///
 /// Examples: `core`, `std::io`, `myproject::utils`
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ModulePath(Vec<String>);
 
 impl ModulePath {
@@ -91,7 +91,7 @@ impl fmt::Display for ModulePath {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::pathlib::{ModulePath, Path};
 
     #[test]
     fn module_path_from_str() {

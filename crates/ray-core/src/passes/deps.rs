@@ -47,11 +47,11 @@ mod tests {
     use std::collections::HashMap;
 
     use ray_shared::{
-        def::DefId,
+        def::{DefId, LibraryDefId},
         file_id::FileId,
         local_binding::LocalBindingId,
         node_id::NodeId,
-        pathlib::{ItemPath, ModulePath},
+        pathlib::ModulePath,
         resolution::{DefTarget, Resolution},
     };
     use ray_typing::binding_groups::{BindingId, LegacyBindingGraph};
@@ -125,9 +125,9 @@ mod tests {
         let mut resolutions = HashMap::new();
         resolutions.insert(
             node1,
-            Resolution::Def(DefTarget::Library(ItemPath {
+            Resolution::Def(DefTarget::Library(LibraryDefId {
                 module: ModulePath::from("io"),
-                item: vec!["print".to_string()],
+                index: 0,
             })),
         );
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     hash::{Hash, Hasher},
     io,
@@ -7,87 +7,97 @@ use std::{
 
 use ray_query_macros::{input, query};
 use ray_shared::{
+    def::LibraryDefId,
     pathlib::{FilePath, ItemPath, ModulePath},
+    resolution::DefTarget,
     ty::{SCHEMA_PREFIX, SchemaVarAllocator, Ty, TyVar},
 };
-use ray_typing::types::{Subst, Substitutable};
+use ray_typing::{
+    constraints::Predicate,
+    types::{Subst, Substitutable, TyScheme},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::query::{Database, Input, Query};
+use crate::{
+    queries::defs::{ImplDef, StructDef, TraitDef},
+    query::{Database, Input, Query},
+};
 
 /// Data extracted from a compiled library (.raylib file).
 ///
 /// This contains the type schemes, structs, traits, impls, and operators
 /// exported by the library. Schema variables are remapped during loading
 /// to avoid collisions with workspace type inference variables.
+///
+/// Unlike the old design that keyed everything by ItemPath, this uses
+/// LibraryDefId (module + index) as the primary key. This allows anonymous
+/// definitions like impls to have stable identities.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LibraryData {
-    /// Type schemes for exported definitions, keyed by path.
-    pub schemes: HashMap<ItemPath, LibraryScheme>,
-    /// Struct definitions exported by the library.
-    pub structs: Vec<LibraryStruct>,
-    /// Trait definitions exported by the library.
-    pub traits: Vec<LibraryTrait>,
-    /// Impl blocks exported by the library.
-    pub impls: Vec<LibraryImpl>,
+    /// Name lookup index: maps ItemPath -> LibraryDefId for named definitions.
+    /// Impls are not in this index since they don't have names.
+    pub names: HashMap<ItemPath, LibraryDefId>,
+
+    /// Type schemes for all exported definitions, keyed by LibraryDefId.
+    pub schemes: HashMap<LibraryDefId, TyScheme>,
+
+    /// Struct definitions, keyed by LibraryDefId.
+    pub structs: HashMap<LibraryDefId, StructDef>,
+
+    /// Trait definitions, keyed by LibraryDefId.
+    pub traits: HashMap<LibraryDefId, TraitDef>,
+
+    /// Impl definitions (both inherent and trait impls), keyed by LibraryDefId.
+    pub impls: HashMap<LibraryDefId, ImplDef>,
+
+    /// Index: type path -> impls for that type (for impls_for_type query).
+    pub impls_by_type: HashMap<ItemPath, Vec<LibraryDefId>>,
+
+    /// Index: trait path -> impls of that trait (for impls_for_trait query).
+    pub impls_by_trait: HashMap<ItemPath, Vec<LibraryDefId>>,
+
     /// Operator definitions exported by the library.
-    pub operators: Vec<LibraryOperator>,
+    pub operators: OperatorIndex,
+
     /// Module paths contained in this library.
     pub modules: Vec<ModulePath>,
 }
 
-/// A type scheme from a library.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LibraryScheme {
-    /// The quantified type variables.
-    pub vars: Vec<TyVar>,
-    /// Predicates/constraints on the scheme.
-    pub predicates: Vec<Ty>,
-    /// The body type.
-    pub ty: Ty,
+impl LibraryData {
+    /// Look up a LibraryDefId by ItemPath.
+    pub fn lookup(&self, path: &ItemPath) -> Option<LibraryDefId> {
+        self.names.get(path).cloned()
+    }
+
+    /// Check if a library contains the given item path.
+    pub fn contains_item(&self, path: &ItemPath) -> bool {
+        self.names.contains_key(path)
+    }
 }
 
-/// A struct definition from a library.
+/// Operator index mapping operator symbols to their definitions.
+pub type OperatorIndex = HashMap<String, OperatorEntry>;
+
+/// An operator entry from a library.
+///
+/// Links an operator symbol to the trait and method that define it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LibraryStruct {
-    pub path: ItemPath,
-    pub type_params: Vec<TyVar>,
-    pub fields: Vec<(String, Ty)>,
+pub struct OperatorEntry {
+    /// The trait that defines this operator.
+    pub trait_def: DefTarget,
+    /// The method within the trait that implements this operator.
+    pub method_def: DefTarget,
+    /// Whether this is a prefix (unary) or infix (binary) operator.
+    pub arity: OperatorArity,
 }
 
-/// A trait definition from a library.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LibraryTrait {
-    pub path: ItemPath,
-    pub type_params: Vec<TyVar>,
-    pub super_traits: Vec<ItemPath>,
-    pub methods: Vec<String>,
-}
-
-/// An impl block from a library.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LibraryImpl {
-    pub trait_path: Option<ItemPath>,
-    pub self_ty: Ty,
-    pub type_params: Vec<TyVar>,
-    pub predicates: Vec<Ty>,
-    pub methods: Vec<String>,
-}
-
-/// An operator definition from a library.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LibraryOperator {
-    pub name: String,
-    pub precedence: u8,
-    pub associativity: Associativity,
-}
-
-/// Operator associativity.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Associativity {
-    Left,
-    Right,
-    None,
+/// Operator arity (unary vs binary).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OperatorArity {
+    /// Unary prefix operator: -x, !x
+    Prefix,
+    /// Binary infix operator: a + b, a * b
+    Infix,
 }
 
 /// Collection of loaded libraries, keyed by library path.
@@ -258,23 +268,23 @@ fn find_max_schema_var_id(data: &LibraryData) -> u32 {
             }
         }
         max_id = max_id.max(find_max_in_ty(&scheme.ty));
-        for pred in &scheme.predicates {
-            max_id = max_id.max(find_max_in_ty(pred));
+        for qual in &scheme.qualifiers {
+            max_id = max_id.max(find_max_in_predicate(qual));
         }
     }
 
-    for s in &data.structs {
+    for s in data.structs.values() {
         for var in &s.type_params {
             if let Some(id) = parse_schema_var_id(var) {
                 max_id = max_id.max(id + 1);
             }
         }
-        for (_, ty) in &s.fields {
-            max_id = max_id.max(find_max_in_ty(ty));
+        for field in &s.fields {
+            max_id = max_id.max(find_max_in_ty(&field.ty));
         }
     }
 
-    for t in &data.traits {
+    for t in data.traits.values() {
         for var in &t.type_params {
             if let Some(id) = parse_schema_var_id(var) {
                 max_id = max_id.max(id + 1);
@@ -282,16 +292,13 @@ fn find_max_schema_var_id(data: &LibraryData) -> u32 {
         }
     }
 
-    for imp in &data.impls {
+    for imp in data.impls.values() {
         for var in &imp.type_params {
             if let Some(id) = parse_schema_var_id(var) {
                 max_id = max_id.max(id + 1);
             }
         }
-        max_id = max_id.max(find_max_in_ty(&imp.self_ty));
-        for pred in &imp.predicates {
-            max_id = max_id.max(find_max_in_ty(pred));
-        }
+        max_id = max_id.max(find_max_in_ty(&imp.implementing_type));
     }
 
     max_id
@@ -303,6 +310,21 @@ fn find_max_in_ty(ty: &Ty) -> u32 {
 
     for var in ty.free_vars() {
         if let Some(id) = parse_schema_var_id(var) {
+            max_id = max_id.max(id + 1);
+        }
+    }
+
+    max_id
+}
+
+/// Find the maximum schema variable ID in a predicate.
+fn find_max_in_predicate(pred: &Predicate) -> u32 {
+    let mut free_vars = HashSet::new();
+    pred.free_ty_vars(&mut free_vars);
+
+    let mut max_id: u32 = 0;
+    for var in free_vars {
+        if let Some(id) = parse_schema_var_id(&var) {
             max_id = max_id.max(id + 1);
         }
     }
@@ -340,24 +362,23 @@ fn remap_library_type_vars(data: &mut LibraryData, offset: u32) {
     for scheme in data.schemes.values_mut() {
         scheme.vars.apply_subst(&subst);
         scheme.ty.apply_subst(&subst);
-        scheme.predicates.apply_subst(&subst);
+        scheme.qualifiers.apply_subst(&subst);
     }
 
-    for s in &mut data.structs {
+    for s in data.structs.values_mut() {
         s.type_params.apply_subst(&subst);
-        for (_, ty) in &mut s.fields {
-            ty.apply_subst(&subst);
+        for field in &mut s.fields {
+            field.ty.apply_subst(&subst);
         }
     }
 
-    for t in &mut data.traits {
+    for t in data.traits.values_mut() {
         t.type_params.apply_subst(&subst);
     }
 
-    for imp in &mut data.impls {
+    for imp in data.impls.values_mut() {
         imp.type_params.apply_subst(&subst);
-        imp.self_ty.apply_subst(&subst);
-        imp.predicates.apply_subst(&subst);
+        imp.implementing_type.apply_subst(&subst);
     }
 }
 
@@ -371,34 +392,31 @@ fn build_offset_subst(data: &LibraryData, offset: u32) -> Subst {
             add_var_to_subst(&mut subst, var, offset);
         }
         collect_vars_from_ty(&mut subst, &scheme.ty, offset);
-        for pred in &scheme.predicates {
-            collect_vars_from_ty(&mut subst, pred, offset);
+        for qual in &scheme.qualifiers {
+            collect_vars_from_predicate(&mut subst, qual, offset);
         }
     }
 
-    for s in &data.structs {
+    for s in data.structs.values() {
         for var in &s.type_params {
             add_var_to_subst(&mut subst, var, offset);
         }
-        for (_, ty) in &s.fields {
-            collect_vars_from_ty(&mut subst, ty, offset);
+        for field in &s.fields {
+            collect_vars_from_ty(&mut subst, &field.ty, offset);
         }
     }
 
-    for t in &data.traits {
+    for t in data.traits.values() {
         for var in &t.type_params {
             add_var_to_subst(&mut subst, var, offset);
         }
     }
 
-    for imp in &data.impls {
+    for imp in data.impls.values() {
         for var in &imp.type_params {
             add_var_to_subst(&mut subst, var, offset);
         }
-        collect_vars_from_ty(&mut subst, &imp.self_ty, offset);
-        for pred in &imp.predicates {
-            collect_vars_from_ty(&mut subst, pred, offset);
-        }
+        collect_vars_from_ty(&mut subst, &imp.implementing_type, offset);
     }
 
     subst
@@ -420,16 +438,28 @@ fn collect_vars_from_ty(subst: &mut Subst, ty: &Ty, offset: u32) {
     }
 }
 
+/// Collect schema variables from a predicate and add their mappings to the substitution.
+fn collect_vars_from_predicate(subst: &mut Subst, pred: &Predicate, offset: u32) {
+    let mut free_vars = HashSet::new();
+    pred.free_ty_vars(&mut free_vars);
+
+    for var in free_vars {
+        add_var_to_subst(subst, &var, offset);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ray_shared::{
-        pathlib::{ItemPath, ModulePath},
+        def::LibraryDefId,
+        pathlib::ModulePath,
         ty::{SchemaVarAllocator, Ty, TyVar},
     };
+    use ray_typing::types::TyScheme;
 
     use crate::queries::libraries::{
-        LibraryData, LibraryScheme, find_max_schema_var_id, parse_schema_var_id,
-        remap_library_type_vars, reserve_schema_var_range,
+        LibraryData, find_max_schema_var_id, parse_schema_var_id, remap_library_type_vars,
+        reserve_schema_var_range,
     };
 
     #[test]
@@ -470,14 +500,15 @@ mod tests {
     #[test]
     fn find_max_schema_var_id_with_schemes() {
         let mut data = LibraryData::default();
+        let lib_def_id = LibraryDefId {
+            module: ModulePath::from("test"),
+            index: 0,
+        };
         data.schemes.insert(
-            ItemPath {
-                module: ModulePath::from("test"),
-                item: vec!["foo".to_string()],
-            },
-            LibraryScheme {
+            lib_def_id,
+            TyScheme {
                 vars: vec![TyVar::new("?s0"), TyVar::new("?s5")],
-                predicates: vec![],
+                qualifiers: vec![],
                 ty: Ty::unit(),
             },
         );
@@ -488,27 +519,22 @@ mod tests {
     #[test]
     fn remap_library_type_vars_updates_all_vars() {
         let mut data = LibraryData::default();
+        let lib_def_id = LibraryDefId {
+            module: ModulePath::from("test"),
+            index: 0,
+        };
         data.schemes.insert(
-            ItemPath {
-                module: ModulePath::from("test"),
-                item: vec!["foo".to_string()],
-            },
-            LibraryScheme {
+            lib_def_id.clone(),
+            TyScheme {
                 vars: vec![TyVar::new("?s0"), TyVar::new("?s1")],
-                predicates: vec![],
+                qualifiers: vec![],
                 ty: Ty::Var(TyVar::new("?s0")),
             },
         );
 
         remap_library_type_vars(&mut data, 10);
 
-        let scheme = data
-            .schemes
-            .get(&ItemPath {
-                module: ModulePath::from("test"),
-                item: vec!["foo".to_string()],
-            })
-            .unwrap();
+        let scheme = data.schemes.get(&lib_def_id).unwrap();
         assert_eq!(scheme.vars[0].path().name(), Some("?s10".to_string()));
         assert_eq!(scheme.vars[1].path().name(), Some("?s11".to_string()));
 

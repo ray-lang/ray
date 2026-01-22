@@ -282,6 +282,10 @@ impl Input for WorkspaceSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -365,9 +369,6 @@ mod tests {
 
     #[test]
     fn from_directory_discovers_files() {
-        use std::fs;
-        use tempfile::tempdir;
-
         let dir = tempdir().unwrap();
         let root = dir.path();
 

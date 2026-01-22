@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{file_id::FileId, node_id::NodeId, span::Span};
+use crate::{file_id::FileId, node_id::NodeId, pathlib::ModulePath, span::Span};
 
 /// Identifies a top-level definition in the program.
 ///
@@ -27,6 +27,14 @@ impl DefId {
     pub fn new(file: FileId, index: u32) -> DefId {
         DefId { file, index }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LibraryDefId {
+    /// The module containing this definition.
+    pub module: ModulePath,
+    /// Index of this definition with the library module.
+    pub index: u32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

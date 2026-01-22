@@ -271,7 +271,9 @@ impl<T: Copy + Eq + std::hash::Hash + Ord> BindingGraph<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::BTreeSet;
+
+    use crate::binding_groups::{BindingGraph, BindingGroup, BindingId};
 
     fn bid(n: u64) -> BindingId {
         BindingId(n)
