@@ -73,8 +73,13 @@ fn resolve_imports(
                 let path = &path_node.value;
                 let alias = path.to_short_name();
                 let module_path = ModulePath::from(path);
-                let resolution = resolve_module_path(&module_path, workspace, libraries)
-                    .map(|mp| ResolvedImport { module_path: mp, names: None });
+                let resolution =
+                    resolve_module_path(&module_path, workspace, libraries).map(|mp| {
+                        ResolvedImport {
+                            module_path: mp,
+                            names: None,
+                        }
+                    });
                 result.insert(alias, resolution);
             }
             ImportKind::Names(path_node, names) => {
@@ -84,8 +89,13 @@ fn resolve_imports(
                 let alias = path.to_short_name();
                 let module_path = ModulePath::from(path);
                 let name_strings: Vec<String> = names.iter().map(|n| n.to_string()).collect();
-                let resolution = resolve_module_path(&module_path, workspace, libraries)
-                    .map(|mp| ResolvedImport { module_path: mp, names: Some(name_strings) });
+                let resolution =
+                    resolve_module_path(&module_path, workspace, libraries).map(|mp| {
+                        ResolvedImport {
+                            module_path: mp,
+                            names: Some(name_strings),
+                        }
+                    });
                 result.insert(alias, resolution);
             }
             ImportKind::CImport(name, _) => {
@@ -104,13 +114,13 @@ fn resolve_module_path(
     workspace: &WorkspaceSnapshot,
     libraries: &LoadedLibraries,
 ) -> Result<ModulePath, ImportError> {
-    // Check if the module exists in the workspace (convert to Path for lookup)
-    if workspace.module_info(&module_path.to_path()).is_some() {
+    // Check if the module exists in the workspace
+    if workspace.module_info(module_path).is_some() {
         return Ok(module_path.clone());
     }
 
     // Check if the module exists in loaded libraries
-    if libraries.has_module(&module_path.to_path()) {
+    if libraries.has_module(&module_path) {
         return Ok(module_path.clone());
     }
 
@@ -120,11 +130,11 @@ fn resolve_module_path(
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::pathlib::FilePath;
+    use ray_shared::pathlib::{FilePath, ModulePath};
 
     use crate::{
         queries::{
-            imports::{file_imports, resolved_imports, ImportError},
+            imports::{ImportError, file_imports, resolved_imports},
             libraries::LoadedLibraries,
             workspace::{FileSource, WorkspaceSnapshot},
         },
@@ -141,10 +151,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
 
@@ -158,10 +165,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "import std::io\nfn main() {}".to_string());
 
@@ -175,10 +179,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -196,10 +197,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -217,10 +215,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
@@ -236,15 +231,10 @@ mod tests {
 
         let mut workspace = WorkspaceSnapshot::new();
         // Create a module "utils" with a file
-        let utils_file = workspace.add_file(
-            FilePath::from("utils/mod.ray"),
-            ray_shared::pathlib::Path::from("utils"),
-        );
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
         // Create the main file that imports utils
-        let file_id = workspace.add_file(
-            FilePath::from("main.ray"),
-            ray_shared::pathlib::Path::from("main"),
-        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
@@ -265,10 +255,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "import nonexistent".to_string());
@@ -291,12 +278,9 @@ mod tests {
         // Create a nested module "std::io"
         let io_file = workspace.add_file(
             FilePath::from("std/io/mod.ray"),
-            ray_shared::pathlib::Path::from("std::io"),
+            ModulePath::from("std::io"),
         );
-        let file_id = workspace.add_file(
-            FilePath::from("main.ray"),
-            ray_shared::pathlib::Path::from("main"),
-        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
@@ -320,12 +304,9 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let io_file = workspace.add_file(
             FilePath::from("std/io/mod.ray"),
-            ray_shared::pathlib::Path::from("std::io"),
+            ModulePath::from("std::io"),
         );
-        let file_id = workspace.add_file(
-            FilePath::from("main.ray"),
-            ray_shared::pathlib::Path::from("main"),
-        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
@@ -339,7 +320,10 @@ mod tests {
         assert!(io_result.is_ok());
         let resolved = io_result.as_ref().unwrap();
         assert_eq!(resolved.module_path.to_string(), "std::io");
-        assert_eq!(resolved.names, Some(vec!["File".to_string(), "Read".to_string()]));
+        assert_eq!(
+            resolved.names,
+            Some(vec!["File".to_string(), "Read".to_string()])
+        );
     }
 
     #[test]
@@ -349,16 +333,13 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let io_file = workspace.add_file(
             FilePath::from("std/io/mod.ray"),
-            ray_shared::pathlib::Path::from("std::io"),
+            ModulePath::from("std::io"),
         );
         let collections_file = workspace.add_file(
             FilePath::from("std/collections/mod.ray"),
-            ray_shared::pathlib::Path::from("std::collections"),
+            ModulePath::from("std::collections"),
         );
-        let file_id = workspace.add_file(
-            FilePath::from("main.ray"),
-            ray_shared::pathlib::Path::from("main"),
-        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
@@ -381,17 +362,14 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("main.ray"),
-            ray_shared::pathlib::Path::from("main"),
-        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
 
         // Set up a library with core::io module
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = crate::queries::libraries::LibraryData::default();
-        core_lib.modules.push(ray_shared::pathlib::Path::from("core::io"));
-        libraries.add(ray_shared::pathlib::Path::from("core"), core_lib);
+        core_lib.modules.push(ModulePath::from("core::io"));
+        libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
 
         FileSource::new(&db, file_id, "import core::io".to_string());
@@ -410,16 +388,13 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("main.ray"),
-            ray_shared::pathlib::Path::from("main"),
-        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
 
         // Set up a library with core as the root
         let mut libraries = LoadedLibraries::default();
         let core_lib = crate::queries::libraries::LibraryData::default();
-        libraries.add(ray_shared::pathlib::Path::from("core"), core_lib);
+        libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
 
         FileSource::new(&db, file_id, "import core".to_string());

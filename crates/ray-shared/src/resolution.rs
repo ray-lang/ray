@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{def::DefId, local_binding::LocalBindingId, pathlib::Path};
+use crate::{def::DefId, local_binding::LocalBindingId, pathlib::ItemPath};
 
 /// The result of resolving a name reference in the AST.
 ///
@@ -22,10 +22,5 @@ pub enum DefTarget {
     /// Definition in this workspace, identified by DefId.
     Workspace(DefId),
     /// Definition from a compiled library (.raylib).
-    Library {
-        /// Module path of the library.
-        lib: Path,
-        /// Path to the item within the library.
-        path: Path,
-    },
+    Library(ItemPath),
 }

@@ -1,7 +1,4 @@
-use crate::{
-    pathlib::Path,
-    ty::{Ty, TyVar},
-};
+use crate::{pathlib::Path, ty::Ty};
 
 pub struct TyParser<'a> {
     src: &'a str,

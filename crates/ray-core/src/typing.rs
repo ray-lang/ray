@@ -958,7 +958,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Def(DefTarget::Workspace(def_id)) => {
                         ctx.record_expr(node, ExprKind::DefRef(*def_id))
                     }
-                    Resolution::Def(DefTarget::Library { .. }) => {
+                    Resolution::Def(DefTarget::Library(_)) => {
                         // External references (from libraries) - emit Missing for now
                         // TODO: Handle library references properly once we have DefId for externals
                         ctx.record_expr(node, ExprKind::Missing)
@@ -992,7 +992,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Def(DefTarget::Workspace(def_id)) => {
                         ctx.record_expr(node, ExprKind::DefRef(*def_id))
                     }
-                    Resolution::Def(DefTarget::Library { .. }) => {
+                    Resolution::Def(DefTarget::Library(_)) => {
                         // External references (from libraries)
                         // TODO: Handle library references properly
                         ctx.record_expr(node, ExprKind::Missing)

@@ -8,7 +8,7 @@ use ray_shared::{
     def::{DefId, DefKind},
     file_id::FileId,
     local_binding::LocalBindingId,
-    pathlib::Path,
+    pathlib::ModulePath,
 };
 use serde::{Deserialize, Serialize};
 
@@ -117,7 +117,7 @@ pub struct NameCollision {
 #[query]
 pub fn module_def_index(
     db: &Database,
-    module_path: Path,
+    module_path: ModulePath,
 ) -> HashMap<String, Result<ExportedItem, NameCollision>> {
     let workspace = db.get_input::<WorkspaceSnapshot>(());
 
@@ -165,11 +165,11 @@ fn merge_exports(
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::pathlib::FilePath;
+    use ray_shared::pathlib::{FilePath, ModulePath};
 
     use crate::{
         queries::{
-            exports::{file_exports, module_def_index, ExportedItem},
+            exports::{ExportedItem, file_exports, module_def_index},
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -259,7 +259,11 @@ mod tests {
             ray_shared::pathlib::Path::from("test"),
         );
         db.set_input::<WorkspaceSnapshot>((), workspace);
-        FileSource::new(&db, file_id, "trait Foo['a] { fn bar(self: 'a) -> int }".to_string());
+        FileSource::new(
+            &db,
+            file_id,
+            "trait Foo['a] { fn bar(self: 'a) -> int }".to_string(),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -337,7 +341,7 @@ mod tests {
         let workspace = WorkspaceSnapshot::new();
         db.set_input::<WorkspaceSnapshot>((), workspace);
 
-        let index = module_def_index(&db, ray_shared::pathlib::Path::from("unknown"));
+        let index = module_def_index(&db, ModulePath::from("unknown"));
 
         assert!(index.is_empty());
     }
@@ -352,7 +356,7 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nstruct Bar {}".to_string());
 
-        let index = module_def_index(&db, module_path);
+        let index = module_def_index(&db, ModulePath::from(module_path));
 
         assert_eq!(index.len(), 2);
         assert!(index.get("foo").unwrap().is_ok());
@@ -371,7 +375,7 @@ mod tests {
         FileSource::new(&db, file1, "fn foo() {}".to_string());
         FileSource::new(&db, file2, "fn bar() {}".to_string());
 
-        let index = module_def_index(&db, module_path);
+        let index = module_def_index(&db, ModulePath::from(module_path));
 
         assert_eq!(index.len(), 2);
         assert!(index.get("foo").unwrap().is_ok());
@@ -391,7 +395,7 @@ mod tests {
         FileSource::new(&db, file1, "fn helper() {}".to_string());
         FileSource::new(&db, file2, "fn helper() {}".to_string());
 
-        let index = module_def_index(&db, module_path);
+        let index = module_def_index(&db, ModulePath::from(module_path));
 
         assert_eq!(index.len(), 1);
         let result = index.get("helper").unwrap();
@@ -416,7 +420,7 @@ mod tests {
         FileSource::new(&db, file2, "x = 2".to_string());
         FileSource::new(&db, file3, "x = 3".to_string());
 
-        let index = module_def_index(&db, module_path);
+        let index = module_def_index(&db, ModulePath::from(module_path));
 
         assert_eq!(index.len(), 1);
         let collision = index.get("x").unwrap().as_ref().unwrap_err();
@@ -436,7 +440,7 @@ mod tests {
         FileSource::new(&db, file1, "fn foo() {}\nfn helper() {}".to_string());
         FileSource::new(&db, file2, "fn bar() {}\nfn helper() {}".to_string());
 
-        let index = module_def_index(&db, module_path);
+        let index = module_def_index(&db, ModulePath::from(module_path));
 
         assert_eq!(index.len(), 3);
         assert!(index.get("foo").unwrap().is_ok());

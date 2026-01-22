@@ -4,7 +4,7 @@ use std::io;
 
 use ray_query_macros::input;
 use ray_shared::file_id::FileId;
-use ray_shared::pathlib::{FilePath, Path};
+use ray_shared::pathlib::{FilePath, ModulePath};
 
 use crate::query::{Database, Input};
 
@@ -23,14 +23,14 @@ pub struct FileInfo {
     /// The file system path to this file.
     pub path: FilePath,
     /// The module path this file belongs to.
-    pub module_path: Path,
+    pub module_path: ModulePath,
 }
 
 /// Information about a module in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleInfo {
     /// The module's logical path (e.g., `foo::bar`).
-    pub path: Path,
+    pub path: ModulePath,
     /// Files that belong to this module.
     pub files: Vec<FileId>,
     /// Whether this is the root module of a package.
@@ -45,7 +45,7 @@ pub struct ModuleInfo {
 #[derive(Clone, Debug, Default)]
 pub struct WorkspaceSnapshot {
     /// Module path -> module information.
-    pub modules: HashMap<Path, ModuleInfo>,
+    pub modules: HashMap<ModulePath, ModuleInfo>,
     /// File ID -> file information.
     pub files: HashMap<FileId, FileInfo>,
     /// File path -> File ID (for reverse lookup).
@@ -74,7 +74,8 @@ impl WorkspaceSnapshot {
     }
 
     /// Register a file in the workspace.
-    pub fn add_file(&mut self, path: FilePath, module_path: Path) -> FileId {
+    pub fn add_file(&mut self, path: FilePath, module_path: impl Into<ModulePath>) -> FileId {
+        let module_path = module_path.into();
         let id = self.get_or_create_file_id(path.clone());
         self.files.insert(
             id,
@@ -85,11 +86,14 @@ impl WorkspaceSnapshot {
         );
 
         // Add to module's file list
-        let module = self.modules.entry(module_path.clone()).or_insert_with(|| ModuleInfo {
-            path: module_path,
-            files: Vec::new(),
-            is_root: false,
-        });
+        let module = self
+            .modules
+            .entry(module_path.clone())
+            .or_insert_with(|| ModuleInfo {
+                path: module_path,
+                files: Vec::new(),
+                is_root: false,
+            });
         if !module.files.contains(&id) {
             module.files.push(id);
         }
@@ -103,7 +107,7 @@ impl WorkspaceSnapshot {
     }
 
     /// Get a module's information by its path.
-    pub fn module_info(&self, path: &Path) -> Option<&ModuleInfo> {
+    pub fn module_info(&self, path: &ModulePath) -> Option<&ModuleInfo> {
         self.modules.get(path)
     }
 
@@ -126,11 +130,11 @@ impl WorkspaceSnapshot {
         let root = root.canonicalize().unwrap_or_else(|_| root.clone());
 
         if root.is_dir() {
-            let root_module = Path::from(root.file_name());
+            let root_module = ModulePath::from(root.file_name().as_str());
             snapshot.discover_directory(&root, &root_module, true)?;
         } else if root.has_extension("ray") {
             // Single file: use file stem as module path
-            let module_path = Path::from(root.file_stem());
+            let module_path = ModulePath::from(root.file_stem().as_str());
             snapshot.add_file(root.clone(), module_path.clone());
             if let Some(module) = snapshot.modules.get_mut(&module_path) {
                 module.is_root = true;
@@ -155,7 +159,7 @@ impl WorkspaceSnapshot {
             if !snapshot.path_to_id.contains_key(path) {
                 // Infer module path from file path
                 // For now, use the file stem as a simple heuristic
-                let module_path = Path::from(path.file_stem());
+                let module_path = ModulePath::from(path.file_stem().as_str());
                 snapshot.add_file(path.clone(), module_path);
             }
         }
@@ -167,7 +171,7 @@ impl WorkspaceSnapshot {
     fn discover_directory(
         &mut self,
         dir: &FilePath,
-        module_path: &Path,
+        module_path: &ModulePath,
         is_root: bool,
     ) -> io::Result<()> {
         // Check if this is a valid module directory
@@ -197,7 +201,9 @@ impl WorkspaceSnapshot {
         for subdir in subdirs {
             if is_dir_module(&subdir) {
                 let submodule_name = subdir.file_name();
-                let submodule_path = module_path.append(&submodule_name);
+                let mut segments = module_path.segments().to_vec();
+                segments.push(submodule_name);
+                let submodule_path = ModulePath::new(segments);
                 self.discover_directory(&subdir, &submodule_path, false)?;
             }
         }
@@ -211,7 +217,7 @@ impl WorkspaceSnapshot {
     }
 
     /// Get all module paths in the workspace.
-    pub fn all_module_paths(&self) -> impl Iterator<Item = &Path> + '_ {
+    pub fn all_module_paths(&self) -> impl Iterator<Item = &ModulePath> + '_ {
         self.modules.keys()
     }
 }
@@ -283,7 +289,7 @@ mod tests {
         let mut snapshot = WorkspaceSnapshot::new();
 
         let file_path = FilePath::from("src/main.ray");
-        let module_path = Path::from("main");
+        let module_path = ModulePath::from("main");
 
         let id = snapshot.add_file(file_path.clone(), module_path.clone());
 
@@ -298,7 +304,7 @@ mod tests {
         let mut snapshot = WorkspaceSnapshot::new();
 
         let file_path = FilePath::from("src/main.ray");
-        let module_path = Path::from("main");
+        let module_path = ModulePath::from("main");
 
         let id1 = snapshot.add_file(file_path.clone(), module_path.clone());
         let id2 = snapshot.add_file(file_path.clone(), module_path.clone());
@@ -310,7 +316,7 @@ mod tests {
     fn workspace_snapshot_tracks_module_files() {
         let mut snapshot = WorkspaceSnapshot::new();
 
-        let module_path = Path::from("mymodule");
+        let module_path = ModulePath::from("mymodule");
         let file1 = FilePath::from("src/mymodule/a.ray");
         let file2 = FilePath::from("src/mymodule/b.ray");
 
@@ -386,18 +392,27 @@ mod tests {
         assert_eq!(snapshot.files.len(), 3);
 
         // Should have two modules: mymodule and mymodule::sub
-        assert!(snapshot.modules.contains_key(&Path::from("mymodule")));
-        assert!(snapshot.modules.contains_key(&Path::from("mymodule::sub")));
+        assert!(snapshot.modules.contains_key(&ModulePath::from("mymodule")));
+        assert!(
+            snapshot
+                .modules
+                .contains_key(&ModulePath::from("mymodule::sub"))
+        );
 
         // Root module should be marked
-        assert!(snapshot.module_info(&Path::from("mymodule")).unwrap().is_root);
+        assert!(
+            snapshot
+                .module_info(&ModulePath::from("mymodule"))
+                .unwrap()
+                .is_root
+        );
     }
 
     #[test]
     fn with_overlay_adds_new_files() {
         let mut snapshot = WorkspaceSnapshot::new();
         let existing_path = FilePath::from("src/existing.ray");
-        snapshot.add_file(existing_path.clone(), Path::from("existing"));
+        snapshot.add_file(existing_path.clone(), ModulePath::from("existing"));
 
         let mut overlay = HashMap::new();
         let new_path = FilePath::from("src/new.ray");
@@ -416,7 +431,7 @@ mod tests {
     fn with_overlay_preserves_existing_file_ids() {
         let mut snapshot = WorkspaceSnapshot::new();
         let path = FilePath::from("src/test.ray");
-        let original_id = snapshot.add_file(path.clone(), Path::from("test"));
+        let original_id = snapshot.add_file(path.clone(), ModulePath::from("test"));
 
         let mut overlay = HashMap::new();
         overlay.insert(path.clone(), "modified content".to_string());
@@ -430,8 +445,8 @@ mod tests {
     #[test]
     fn all_file_ids_returns_all_files() {
         let mut snapshot = WorkspaceSnapshot::new();
-        let id1 = snapshot.add_file(FilePath::from("a.ray"), Path::from("a"));
-        let id2 = snapshot.add_file(FilePath::from("b.ray"), Path::from("b"));
+        let id1 = snapshot.add_file(FilePath::from("a.ray"), ModulePath::from("a"));
+        let id2 = snapshot.add_file(FilePath::from("b.ray"), ModulePath::from("b"));
 
         let all_ids: Vec<_> = snapshot.all_file_ids().collect();
         assert_eq!(all_ids.len(), 2);
@@ -442,12 +457,12 @@ mod tests {
     #[test]
     fn all_module_paths_returns_all_modules() {
         let mut snapshot = WorkspaceSnapshot::new();
-        snapshot.add_file(FilePath::from("a.ray"), Path::from("mod_a"));
-        snapshot.add_file(FilePath::from("b.ray"), Path::from("mod_b"));
+        snapshot.add_file(FilePath::from("a.ray"), ModulePath::from("mod_a"));
+        snapshot.add_file(FilePath::from("b.ray"), ModulePath::from("mod_b"));
 
         let all_paths: Vec<_> = snapshot.all_module_paths().collect();
         assert_eq!(all_paths.len(), 2);
-        assert!(all_paths.contains(&&Path::from("mod_a")));
-        assert!(all_paths.contains(&&Path::from("mod_b")));
+        assert!(all_paths.contains(&&ModulePath::from("mod_a")));
+        assert!(all_paths.contains(&&ModulePath::from("mod_b")));
     }
 }

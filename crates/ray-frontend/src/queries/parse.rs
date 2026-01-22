@@ -30,7 +30,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
     let file_info = workspace.file_info(file_id).expect("file not in workspace");
 
     let options = ParseOptions {
-        module_path: file_info.module_path.clone(),
+        module_path: file_info.module_path.to_path(),
         filepath: file_info.path.clone(),
         original_filepath: file_info.path.clone(),
         use_stdin: false,
@@ -40,7 +40,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
 
     ParseResult {
         ast: ast.unwrap_or_else(|| File {
-            path: file_info.module_path.clone(),
+            path: file_info.module_path.to_path(),
             stmts: vec![],
             decls: vec![],
             imports: vec![],

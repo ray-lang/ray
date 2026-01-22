@@ -5,15 +5,15 @@ use std::{
     io,
 };
 
-use ray_query_macros::input;
+use ray_query_macros::{input, query};
 use ray_shared::{
-    pathlib::{FilePath, Path},
+    pathlib::{FilePath, ItemPath, ModulePath},
     ty::{SCHEMA_PREFIX, SchemaVarAllocator, Ty, TyVar},
 };
 use ray_typing::types::{Subst, Substitutable};
 use serde::{Deserialize, Serialize};
 
-use crate::query::{Database, Input};
+use crate::query::{Database, Input, Query};
 
 /// Data extracted from a compiled library (.raylib file).
 ///
@@ -23,7 +23,7 @@ use crate::query::{Database, Input};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LibraryData {
     /// Type schemes for exported definitions, keyed by path.
-    pub schemes: HashMap<Path, LibraryScheme>,
+    pub schemes: HashMap<ItemPath, LibraryScheme>,
     /// Struct definitions exported by the library.
     pub structs: Vec<LibraryStruct>,
     /// Trait definitions exported by the library.
@@ -33,7 +33,7 @@ pub struct LibraryData {
     /// Operator definitions exported by the library.
     pub operators: Vec<LibraryOperator>,
     /// Module paths contained in this library.
-    pub modules: Vec<Path>,
+    pub modules: Vec<ModulePath>,
 }
 
 /// A type scheme from a library.
@@ -50,7 +50,7 @@ pub struct LibraryScheme {
 /// A struct definition from a library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryStruct {
-    pub path: Path,
+    pub path: ItemPath,
     pub type_params: Vec<TyVar>,
     pub fields: Vec<(String, Ty)>,
 }
@@ -58,19 +58,20 @@ pub struct LibraryStruct {
 /// A trait definition from a library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryTrait {
-    pub path: Path,
+    pub path: ItemPath,
     pub type_params: Vec<TyVar>,
-    pub methods: Vec<Path>,
+    pub super_traits: Vec<ItemPath>,
+    pub methods: Vec<String>,
 }
 
 /// An impl block from a library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryImpl {
-    pub trait_path: Option<Path>,
+    pub trait_path: Option<ItemPath>,
     pub self_ty: Ty,
     pub type_params: Vec<TyVar>,
     pub predicates: Vec<Ty>,
-    pub methods: Vec<Path>,
+    pub methods: Vec<String>,
 }
 
 /// An operator definition from a library.
@@ -97,7 +98,7 @@ pub enum Associativity {
 #[derive(Clone, Debug, Default)]
 pub struct LoadedLibraries {
     /// Library data keyed by the library's module path (e.g., "core", "std").
-    pub libraries: HashMap<Path, LibraryData>,
+    pub libraries: HashMap<ModulePath, LibraryData>,
 }
 
 impl Hash for LoadedLibraries {
@@ -113,12 +114,12 @@ impl Hash for LoadedLibraries {
 
 impl LoadedLibraries {
     /// Add a library to the collection.
-    pub fn add(&mut self, lib_path: Path, data: LibraryData) {
+    pub fn add(&mut self, lib_path: ModulePath, data: LibraryData) {
         self.libraries.insert(lib_path, data);
     }
 
     /// Get a library by its path.
-    pub fn get(&self, lib_path: &Path) -> Option<&LibraryData> {
+    pub fn get(&self, lib_path: &ModulePath) -> Option<&LibraryData> {
         self.libraries.get(lib_path)
     }
 
@@ -127,7 +128,7 @@ impl LoadedLibraries {
     /// This checks if the module path is either:
     /// - The library root (e.g., "core")
     /// - A submodule within a library (e.g., "core::io")
-    pub fn has_module(&self, module_path: &Path) -> bool {
+    pub fn has_module(&self, module_path: &ModulePath) -> bool {
         // Check if it's an exact library root match
         if self.libraries.contains_key(module_path) {
             return true;
@@ -152,7 +153,7 @@ impl LoadedLibraries {
     /// Find which library contains a given module path.
     ///
     /// Returns the library root path (e.g., "core") for a module like "core::io".
-    pub fn library_for_module(&self, module_path: &Path) -> Option<&Path> {
+    pub fn library_for_module(&self, module_path: &ModulePath) -> Option<&ModulePath> {
         // First check exact match (module_path is a library root)
         if self.libraries.contains_key(module_path) {
             // Return the key from the map, not the input
@@ -182,11 +183,37 @@ impl LoadedLibraries {
     }
 
     /// Get all module paths in the loaded libraries.
-    pub fn all_module_paths(&self) -> impl Iterator<Item = &Path> {
+    pub fn all_module_paths(&self) -> impl Iterator<Item = &ModulePath> {
         self.libraries.iter().flat_map(|(lib_path, lib_data)| {
             std::iter::once(lib_path).chain(lib_data.modules.iter())
         })
     }
+}
+
+/// Look up library data for a module path.
+///
+/// Given a module path like `core::io`, finds which library contains it
+/// and returns the library's data. For library roots like `core`, returns
+/// the library data directly.
+///
+/// This is the primary query interface for accessing library data.
+/// The `LoadedLibraries` input stores all libraries; this query provides
+/// convenient per-module access.
+#[query]
+pub fn library_data(db: &Database, module_path: ModulePath) -> Option<LibraryData> {
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let lib_path = libraries.library_for_module(&module_path)?;
+    libraries.get(lib_path).cloned()
+}
+
+/// Find the library root path for a module path.
+///
+/// Given a module path like `core::io`, returns the library root `core`.
+/// Returns `None` if the module path doesn't belong to any loaded library.
+#[query]
+pub fn library_root(db: &Database, module_path: ModulePath) -> Option<ModulePath> {
+    let libraries = db.get_input::<LoadedLibraries>(());
+    libraries.library_for_module(&module_path).cloned()
 }
 
 /// Load a library from a .raylib file, remapping schema variables to avoid
@@ -396,7 +423,7 @@ fn collect_vars_from_ty(subst: &mut Subst, ty: &Ty, offset: u32) {
 #[cfg(test)]
 mod tests {
     use ray_shared::{
-        pathlib::Path,
+        pathlib::{ItemPath, ModulePath},
         ty::{SchemaVarAllocator, Ty, TyVar},
     };
 
@@ -444,7 +471,10 @@ mod tests {
     fn find_max_schema_var_id_with_schemes() {
         let mut data = LibraryData::default();
         data.schemes.insert(
-            Path::from("test"),
+            ItemPath {
+                module: ModulePath::from("test"),
+                item: vec!["foo".to_string()],
+            },
             LibraryScheme {
                 vars: vec![TyVar::new("?s0"), TyVar::new("?s5")],
                 predicates: vec![],
@@ -459,7 +489,10 @@ mod tests {
     fn remap_library_type_vars_updates_all_vars() {
         let mut data = LibraryData::default();
         data.schemes.insert(
-            Path::from("test"),
+            ItemPath {
+                module: ModulePath::from("test"),
+                item: vec!["foo".to_string()],
+            },
             LibraryScheme {
                 vars: vec![TyVar::new("?s0"), TyVar::new("?s1")],
                 predicates: vec![],
@@ -469,7 +502,13 @@ mod tests {
 
         remap_library_type_vars(&mut data, 10);
 
-        let scheme = data.schemes.get(&Path::from("test")).unwrap();
+        let scheme = data
+            .schemes
+            .get(&ItemPath {
+                module: ModulePath::from("test"),
+                item: vec!["foo".to_string()],
+            })
+            .unwrap();
         assert_eq!(scheme.vars[0].path().name(), Some("?s10".to_string()));
         assert_eq!(scheme.vars[1].path().name(), Some("?s11".to_string()));
 

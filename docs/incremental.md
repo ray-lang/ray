@@ -1161,7 +1161,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   struct StructDef {
       pub target: DefTarget,
       pub name: String,
-      pub type_params: Vec<TypeParam>,
+      pub type_params: Vec<TyVar>,
       pub fields: Vec<FieldDef>,
   }
 
@@ -1175,7 +1175,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   struct TraitDef {
       pub target: DefTarget,
       pub name: String,
-      pub type_params: Vec<TypeParam>,
+      pub type_params: Vec<TyVar>,
       pub super_traits: Vec<DefTarget>,
       pub methods: Vec<DefTarget>,
   }
@@ -1183,7 +1183,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   #[derive(Clone, Serialize, Deserialize)]
   struct ImplDef {
       pub target: DefTarget,
-      pub type_params: Vec<TypeParam>,
+      pub type_params: Vec<TyVar>,
       pub implementing_type: Ty,
       pub trait_ref: Option<DefTarget>,
       pub methods: Vec<DefTarget>,
@@ -1193,7 +1193,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   struct TypeAliasDef {
       pub target: DefTarget,
       pub name: String,
-      pub type_params: Vec<TypeParam>,
+      pub type_params: Vec<TyVar>,
       pub aliased_type: Ty,
   }
   ```
@@ -3820,7 +3820,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: def_for_path query
 
-- [ ] Define `def_for_path(ItemPath)` query:
+- [x] Define `def_for_path(ItemPath)` query:
   ```rust
   #[query]
   fn def_for_path(db: &Database, path: ItemPath) -> Option<DefTarget> {
@@ -3828,12 +3828,12 @@ This is the largest migration. Do it incrementally, running tests after each ste
       module_index.get(&path.item_name())?.ok().map(|e| e.target)
   }
   ```
-- [ ] Handle nested paths (e.g., `List::push`)
-- [ ] **Validate**: Unit test looking up various paths
+- [x] Handle nested paths (e.g., `List::push`)
+- [x] **Validate**: Unit test looking up various paths
 
 ##### Step 2: struct_def query
 
-- [ ] Define `struct_def(DefTarget)` query:
+- [x] Define `struct_def(DefTarget)` query:
   ```rust
   #[query]
   fn struct_def(db: &Database, target: DefTarget) -> Option<StructDef> {
@@ -3849,26 +3849,26 @@ This is the largest migration. Do it incrementally, running tests after each ste
       }
   }
   ```
-- [ ] Extract struct fields, generics, visibility
-- [ ] **Validate**: Unit test for workspace and library structs
+- [x] Extract struct fields, generics, visibility
+- [x] **Validate**: Unit test for workspace and library structs
 
 ##### Step 3: trait_def query
 
-- [ ] Define `trait_def(DefTarget)` query (similar pattern to struct_def)
-- [ ] Extract trait methods, associated types, supertraits
-- [ ] **Validate**: Unit test for traits
+- [x] Define `trait_def(DefTarget)` query (similar pattern to struct_def)
+- [x] Extract trait methods, associated types, supertraits
+- [x] **Validate**: Unit test for traits
 
 ##### Step 4: impl_def query
 
-- [ ] Define `impl_def(DefTarget)` query
-- [ ] Extract impl target type, trait (if any), methods
-- [ ] **Validate**: Unit test for impl blocks
+- [x] Define `impl_def(DefTarget)` query
+- [x] Extract impl target type, trait (if any), methods
+- [x] **Validate**: Unit test for impl blocks
 
 ##### Step 5: type_alias query
 
-- [ ] Define `type_alias(DefTarget)` query
-- [ ] Extract alias target type and generics
-- [ ] **Validate**: Unit test for type aliases
+- [x] Define `type_alias(DefTarget)` query
+- [x] Extract alias target type and generics
+- [x] **Validate**: Unit test for type aliases
 
 ---
 

@@ -51,7 +51,7 @@ mod tests {
         file_id::FileId,
         local_binding::LocalBindingId,
         node_id::NodeId,
-        pathlib::Path,
+        pathlib::{ItemPath, ModulePath},
         resolution::{DefTarget, Resolution},
     };
     use ray_typing::binding_groups::{BindingId, LegacyBindingGraph};
@@ -125,10 +125,10 @@ mod tests {
         let mut resolutions = HashMap::new();
         resolutions.insert(
             node1,
-            Resolution::Def(DefTarget::Library {
-                lib: Path::from("std"),
-                path: Path::from("io::print"),
-            }),
+            Resolution::Def(DefTarget::Library(ItemPath {
+                module: ModulePath::from("io"),
+                item: vec!["print".to_string()],
+            })),
         );
 
         // Library targets should be ignored

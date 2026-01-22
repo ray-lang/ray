@@ -7,7 +7,7 @@ use ray_query_macros::query;
 use ray_shared::{
     file_id::FileId,
     node_id::NodeId,
-    pathlib::{ModulePath, Path},
+    pathlib::ModulePath,
     resolution::{DefTarget, Resolution},
 };
 
@@ -73,15 +73,14 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
                     let module_path = &resolved_import.module_path;
 
                     // Check if this is a library import or workspace import
-                    let imported_exports =
-                        if libraries.library_for_module(&module_path.to_path()).is_some() {
-                            // Library import - get exports from library
-                            get_library_exports(&libraries, module_path)
-                        } else {
-                            // Workspace import
-                            let imported_module_index = module_def_index(db, module_path.to_path());
-                            convert_to_def_targets(&imported_module_index)
-                        };
+                    let imported_exports = if libraries.library_for_module(&module_path).is_some() {
+                        // Library import - get exports from library
+                        get_library_exports(&libraries, module_path)
+                    } else {
+                        // Workspace import
+                        let imported_module_index = module_def_index(db, module_path.clone());
+                        convert_to_def_targets(&imported_module_index)
+                    };
 
                     for name in names {
                         if let Some(target) = imported_exports.get(name) {
@@ -100,12 +99,12 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
         let module_path = imports_map.get(alias)?;
 
         // Check if this is a library import or workspace import
-        if libraries.library_for_module(&module_path.to_path()).is_some() {
+        if libraries.library_for_module(&module_path).is_some() {
             // Library import - get exports from library
             Some(get_library_exports(&libraries, module_path))
         } else {
             // Workspace import
-            let imported_module_index = module_def_index(db, module_path.to_path());
+            let imported_module_index = module_def_index(db, module_path.clone());
             Some(convert_to_def_targets(&imported_module_index))
         }
     };
@@ -144,7 +143,7 @@ fn get_library_exports(
     let mut result = HashMap::new();
 
     // Find which library contains this module
-    let lib_path = match libraries.library_for_module(&module_path.to_path()) {
+    let lib_path = match libraries.library_for_module(&module_path) {
         Some(path) => path.clone(),
         None => return result,
     };
@@ -169,13 +168,7 @@ fn get_library_exports(
             if let Some(name) = suffix.strip_prefix("::") {
                 // Only direct children (no more :: in the name)
                 if !name.contains("::") {
-                    result.insert(
-                        name.to_string(),
-                        DefTarget::Library {
-                            lib: lib_path.clone(),
-                            path: scheme_path.clone(),
-                        },
-                    );
+                    result.insert(name.to_string(), DefTarget::Library(scheme_path.clone()));
                 }
             }
         }
@@ -188,13 +181,7 @@ fn get_library_exports(
             let suffix = &path_str[module_prefix.len()..];
             if let Some(name) = suffix.strip_prefix("::") {
                 if !name.contains("::") {
-                    result.insert(
-                        name.to_string(),
-                        DefTarget::Library {
-                            lib: lib_path.clone(),
-                            path: lib_struct.path.clone(),
-                        },
-                    );
+                    result.insert(name.to_string(), DefTarget::Library(lib_struct.path.clone()));
                 }
             }
         }
@@ -207,13 +194,7 @@ fn get_library_exports(
             let suffix = &path_str[module_prefix.len()..];
             if let Some(name) = suffix.strip_prefix("::") {
                 if !name.contains("::") {
-                    result.insert(
-                        name.to_string(),
-                        DefTarget::Library {
-                            lib: lib_path.clone(),
-                            path: lib_trait.path.clone(),
-                        },
-                    );
+                    result.insert(name.to_string(), DefTarget::Library(lib_trait.path.clone()));
                 }
             }
         }
@@ -241,7 +222,7 @@ fn exported_item_to_def_target(item: &ExportedItem) -> Option<DefTarget> {
 fn compute_sibling_exports(
     db: &Database,
     file_id: FileId,
-    module_path: &Path,
+    module_path: &ModulePath,
     workspace: &WorkspaceSnapshot,
 ) -> HashMap<String, DefTarget> {
     let mut sibling_exports = HashMap::new();
@@ -268,7 +249,7 @@ fn compute_sibling_exports(
 #[cfg(test)]
 mod tests {
     use ray_shared::{
-        pathlib::{FilePath, Path},
+        pathlib::{FilePath, ItemPath, ModulePath, Path},
         resolution::{DefTarget, Resolution},
     };
 
@@ -619,17 +600,20 @@ mod tests {
         // Set up a library with core::io module containing a "read" function
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
-        core_lib.modules.push(Path::from("core::io"));
+        core_lib.modules.push(ModulePath::from("core::io"));
         // Add a scheme for core::io::read
         core_lib.schemes.insert(
-            Path::from("core::io::read"),
+            ItemPath {
+                module: ModulePath::from("core::io"),
+                item: vec!["read".to_string()],
+            },
             LibraryScheme {
                 vars: vec![],
                 predicates: vec![],
                 ty: Ty::unit(),
             },
         );
-        libraries.add(Path::from("core"), core_lib);
+        libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
 
         // Import core::io and use qualified access: io::read()
@@ -647,8 +631,8 @@ mod tests {
             .filter(|res| {
                 matches!(
                     res,
-                    Resolution::Def(DefTarget::Library { lib, path })
-                    if lib.to_string() == "core" && path.to_string() == "core::io::read"
+                    Resolution::Def(DefTarget::Library(path))
+                    if path.to_string() == "core::io::read"
                 )
             })
             .collect();
@@ -674,9 +658,12 @@ mod tests {
         // Set up a library with core::io module containing "read" and "write" functions
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
-        core_lib.modules.push(Path::from("core::io"));
+        core_lib.modules.push(ModulePath::from("core::io"));
         core_lib.schemes.insert(
-            Path::from("core::io::read"),
+            ItemPath {
+                module: ModulePath::from("core::io"),
+                item: vec!["read".to_string()],
+            },
             LibraryScheme {
                 vars: vec![],
                 predicates: vec![],
@@ -684,14 +671,17 @@ mod tests {
             },
         );
         core_lib.schemes.insert(
-            Path::from("core::io::write"),
+            ItemPath {
+                module: ModulePath::from("core::io"),
+                item: vec!["write".to_string()],
+            },
             LibraryScheme {
                 vars: vec![],
                 predicates: vec![],
                 ty: Ty::unit(),
             },
         );
-        libraries.add(Path::from("core"), core_lib);
+        libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
 
         // Selective import: only "read" should be available unqualified
@@ -706,7 +696,7 @@ mod tests {
         // Count library resolutions - should be 1 (only read), not 2 (write should be unresolved)
         let library_count = resolutions
             .values()
-            .filter(|res| matches!(res, Resolution::Def(DefTarget::Library { .. })))
+            .filter(|res| matches!(res, Resolution::Def(DefTarget::Library(_))))
             .count();
 
         assert_eq!(

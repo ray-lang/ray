@@ -1,3 +1,4 @@
+pub mod defs;
 pub mod exports;
 pub mod imports;
 pub mod libraries;
