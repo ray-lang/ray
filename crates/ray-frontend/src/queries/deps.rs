@@ -182,6 +182,21 @@ pub fn binding_groups(db: &Database, module: ModulePath) -> BindingGroupsResult 
     BindingGroupsResult { group_ids, members }
 }
 
+/// Get the members of a binding group.
+///
+/// Returns the DefIds belonging to the specified binding group. For singleton
+/// groups (annotated definitions with no unannotated dependencies), returns
+/// a single DefId.
+#[query]
+pub fn binding_group_members(db: &Database, group_id: BindingGroupId) -> Vec<DefId> {
+    let result = binding_groups(db, group_id.module.clone());
+    result
+        .members
+        .get(group_id.index as usize)
+        .cloned()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -190,7 +205,7 @@ mod tests {
 
     use crate::{
         queries::{
-            deps::{binding_graph, binding_groups, def_deps, BindingGroupId},
+            deps::{binding_graph, binding_group_members, binding_groups, def_deps, BindingGroupId},
             libraries::LoadedLibraries,
             parse::parse_file,
             workspace::{FileSource, WorkspaceSnapshot},
@@ -1124,5 +1139,169 @@ fn caller() -> int { helper(42) }
 
         assert_eq!(set.len(), 2);
         assert!(set.contains(&BindingGroupId { module, index: 0 }));
+    }
+
+    // ==================== binding_group_members tests ====================
+
+    #[test]
+    fn binding_group_members_returns_members_for_valid_group() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn foo() -> int { 1 }
+fn bar() -> int { 2 }
+"#
+            .to_string(),
+        );
+
+        let groups_result = binding_groups(&db, module_path.clone());
+
+        // Query each group's members
+        for (i, group_id) in groups_result.group_ids.iter().enumerate() {
+            let members = binding_group_members(&db, group_id.clone());
+            assert_eq!(
+                members, groups_result.members[i],
+                "binding_group_members should return same members as BindingGroupsResult"
+            );
+        }
+    }
+
+    #[test]
+    fn binding_group_members_returns_singleton_for_annotated_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn annotated() -> int { 42 }
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let annotated_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "annotated")
+            .expect("should find annotated");
+
+        let groups_result = binding_groups(&db, module_path.clone());
+        assert_eq!(groups_result.group_ids.len(), 1);
+
+        let members = binding_group_members(&db, groups_result.group_ids[0].clone());
+        assert_eq!(members.len(), 1, "Annotated function should be singleton");
+        assert_eq!(members[0], annotated_def.def_id);
+    }
+
+    #[test]
+    fn binding_group_members_returns_multiple_for_mutual_recursion() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn is_even(n) {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n) {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let is_even_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_even")
+            .expect("should find is_even");
+        let is_odd_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_odd")
+            .expect("should find is_odd");
+
+        let groups_result = binding_groups(&db, module_path.clone());
+        assert_eq!(groups_result.group_ids.len(), 1, "Should have 1 group for mutual recursion");
+
+        let members = binding_group_members(&db, groups_result.group_ids[0].clone());
+        assert_eq!(members.len(), 2, "Group should have 2 members");
+        assert!(members.contains(&is_even_def.def_id));
+        assert!(members.contains(&is_odd_def.def_id));
+    }
+
+    #[test]
+    fn binding_group_members_returns_empty_for_invalid_index() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "fn foo() -> int { 1 }".to_string());
+
+        // Create a group ID with an invalid index
+        let invalid_group_id = BindingGroupId {
+            module: module_path,
+            index: 999,
+        };
+
+        let members = binding_group_members(&db, invalid_group_id);
+        assert!(members.is_empty(), "Invalid index should return empty vec");
+    }
+
+    #[test]
+    fn binding_group_members_returns_empty_for_unknown_module() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        let group_id = BindingGroupId {
+            module: ModulePath::from("nonexistent"),
+            index: 0,
+        };
+
+        let members = binding_group_members(&db, group_id);
+        assert!(members.is_empty(), "Unknown module should return empty vec");
     }
 }
