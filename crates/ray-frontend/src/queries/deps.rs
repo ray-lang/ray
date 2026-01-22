@@ -13,6 +13,34 @@ use crate::{
     query::{Database, Query},
 };
 
+/// Identifies a binding group within a module.
+///
+/// Using a compact ID rather than Vec<DefId> as the query key ensures that:
+/// - The key is hashable and cheap to compare
+/// - The query system can efficiently track dependencies
+///
+/// Note: BindingGroupId is stable within a given `binding_groups(module)` result,
+/// but the index may change if the binding graph changes (e.g., due to edits
+/// that add/remove definitions or change dependencies).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BindingGroupId {
+    pub module: ModulePath,
+    pub index: u32, // SCC index in topological order
+}
+
+/// Result of computing binding groups for a module.
+///
+/// Contains both the group IDs and the actual members, allowing
+/// `binding_group_members` to do a direct lookup by index.
+#[derive(Clone, Debug)]
+pub struct BindingGroupsResult {
+    /// Group IDs in topological order (dependencies before dependents).
+    pub group_ids: Vec<BindingGroupId>,
+    /// Members of each group, indexed by group index.
+    /// `members[i]` contains the DefIds for `group_ids[i]`.
+    pub members: Vec<Vec<DefId>>,
+}
+
 /// Extract the definition dependencies for a single definition.
 ///
 /// Returns the list of workspace DefIds that this definition references.
@@ -129,15 +157,40 @@ pub fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
     graph
 }
 
+/// Compute binding groups for a module.
+///
+/// Binding groups are the strongly connected components (SCCs) of the binding graph.
+/// Definitions within the same SCC must be type-inferred together because they may
+/// reference each other.
+///
+/// Returns group IDs in topological order: dependencies come before dependents.
+/// Every definition in the module appears in exactly one group.
+#[query]
+pub fn binding_groups(db: &Database, module: ModulePath) -> BindingGroupsResult {
+    let graph = binding_graph(db, module.clone());
+    let sccs = graph.compute_binding_groups(); // Tarjan's algorithm
+
+    let group_ids: Vec<BindingGroupId> = (0..sccs.len())
+        .map(|idx| BindingGroupId {
+            module: module.clone(),
+            index: idx as u32,
+        })
+        .collect();
+
+    let members: Vec<Vec<DefId>> = sccs.into_iter().map(|group| group.bindings).collect();
+
+    BindingGroupsResult { group_ids, members }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use ray_shared::pathlib::{FilePath, ModulePath};
 
     use crate::{
         queries::{
-            deps::{binding_graph, def_deps},
+            deps::{binding_graph, binding_groups, def_deps, BindingGroupId},
             libraries::LoadedLibraries,
             parse::parse_file,
             workspace::{FileSource, WorkspaceSnapshot},
@@ -798,5 +851,278 @@ fn is_odd(n) {
         let graph = binding_graph(&db, ModulePath::from("nonexistent"));
 
         assert!(graph.edges.is_empty(), "Unknown module should have empty graph");
+    }
+
+    // ==================== binding_groups tests ====================
+
+    #[test]
+    fn binding_groups_returns_correct_group_ids() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two independent annotated functions -> two singleton groups
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn foo() -> int { 1 }
+fn bar() -> int { 2 }
+"#
+            .to_string(),
+        );
+
+        let result = binding_groups(&db, module_path.clone());
+
+        // Should have 2 groups
+        assert_eq!(result.group_ids.len(), 2, "Should have 2 binding groups");
+        assert_eq!(result.members.len(), 2, "Should have 2 member lists");
+
+        // All group IDs should have correct module
+        for group_id in &result.group_ids {
+            assert_eq!(group_id.module, module_path);
+        }
+
+        // Indices should be sequential
+        for (i, group_id) in result.group_ids.iter().enumerate() {
+            assert_eq!(group_id.index, i as u32);
+        }
+    }
+
+    #[test]
+    fn binding_groups_singleton_for_annotated_functions() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two annotated functions that call each other
+        // Since both are annotated, no inference edges -> each is a singleton
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn foo() -> int { bar() }
+fn bar() -> int { foo() }
+"#
+            .to_string(),
+        );
+
+        let result = binding_groups(&db, module_path);
+
+        // Each function should be in its own group (singleton SCCs)
+        assert_eq!(result.group_ids.len(), 2, "Should have 2 singleton groups");
+        for members in &result.members {
+            assert_eq!(members.len(), 1, "Each group should have 1 member");
+        }
+    }
+
+    #[test]
+    fn binding_groups_mutual_recursion_same_group() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Mutually recursive unannotated functions
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn is_even(n) {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n) {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let is_even_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_even")
+            .expect("should find is_even");
+        let is_odd_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_odd")
+            .expect("should find is_odd");
+
+        let result = binding_groups(&db, module_path);
+
+        // Should have exactly 1 group with both functions
+        assert_eq!(result.group_ids.len(), 1, "Should have 1 group for mutual recursion");
+        assert_eq!(result.members.len(), 1);
+
+        let members = &result.members[0];
+        assert_eq!(members.len(), 2, "Group should have 2 members");
+        assert!(members.contains(&is_even_def.def_id));
+        assert!(members.contains(&is_odd_def.def_id));
+    }
+
+    #[test]
+    fn binding_groups_topological_order() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // caller depends on helper (unannotated), helper has no deps
+        // Topological order: helper's group before caller's group
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn helper(x) { x }
+
+fn caller(y) { helper(y) }
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let helper_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "helper")
+            .expect("should find helper");
+        let caller_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "caller")
+            .expect("should find caller");
+
+        let result = binding_groups(&db, module_path);
+
+        // Find which group each def is in
+        let helper_group_idx = result
+            .members
+            .iter()
+            .position(|m| m.contains(&helper_def.def_id))
+            .expect("helper should be in a group");
+        let caller_group_idx = result
+            .members
+            .iter()
+            .position(|m| m.contains(&caller_def.def_id))
+            .expect("caller should be in a group");
+
+        // Dependencies come before dependents in topological order
+        assert!(
+            helper_group_idx < caller_group_idx,
+            "helper's group (idx {}) should come before caller's group (idx {})",
+            helper_group_idx,
+            caller_group_idx
+        );
+    }
+
+    #[test]
+    fn binding_groups_every_def_in_exactly_one_group() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Point { x: int, y: int }
+fn make_point() -> Point { Point { x: 1, y: 2 } }
+fn helper(x) { x }
+fn caller() -> int { helper(42) }
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let result = binding_groups(&db, module_path);
+
+        // Flatten all members
+        let all_members: Vec<_> = result.members.iter().flatten().copied().collect();
+
+        // Every def from parse should appear exactly once
+        for def_header in &parse_result.defs {
+            let count = all_members
+                .iter()
+                .filter(|&&id| id == def_header.def_id)
+                .count();
+            assert_eq!(
+                count, 1,
+                "Def {} should appear exactly once, but appeared {} times",
+                def_header.name, count
+            );
+        }
+
+        // Total members should equal total defs
+        assert_eq!(
+            all_members.len(),
+            parse_result.defs.len(),
+            "Total members should equal total defs"
+        );
+    }
+
+    #[test]
+    fn binding_groups_returns_empty_for_unknown_module() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        let result = binding_groups(&db, ModulePath::from("nonexistent"));
+
+        assert!(result.group_ids.is_empty());
+        assert!(result.members.is_empty());
+    }
+
+    #[test]
+    fn binding_groups_group_id_can_be_used_as_key() {
+        // Test that BindingGroupId is usable as a HashMap key
+        let module = ModulePath::from("test");
+        let id1 = BindingGroupId { module: module.clone(), index: 0 };
+        let id2 = BindingGroupId { module: module.clone(), index: 1 };
+        let id1_copy = BindingGroupId { module: module.clone(), index: 0 };
+
+        let mut set = HashSet::new();
+        set.insert(id1);
+        set.insert(id2);
+        set.insert(id1_copy); // Should not add duplicate
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&BindingGroupId { module, index: 0 }));
     }
 }

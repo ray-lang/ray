@@ -4065,7 +4065,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: binding_groups query
 
-- [ ] Define `binding_groups(ModulePath)` query:
+- [x] Define `binding_groups(ModulePath)` query:
   ```rust
   #[query]
   fn binding_groups(db: &Database, module: ModulePath) -> Vec<BindingGroupId> {
@@ -4077,9 +4077,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
           .collect()
   }
   ```
-- [ ] Define `BindingGroupId` struct: `{ module: ModulePath, index: u32 }`
-- [ ] Store SCC results for lookup by other queries
-- [ ] **Validate**: Unit test verifying SCC computation matches legacy
+- [x] Define `BindingGroupId` struct: `{ module: ModulePath, index: u32 }`
+- [x] Store SCC results for lookup by other queries
+- [x] **Validate**: Unit test verifying SCC computation matches legacy
 
 ##### Step 4: binding_group_members query
 
