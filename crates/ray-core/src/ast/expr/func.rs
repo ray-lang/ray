@@ -118,6 +118,36 @@ impl Func {
             body: Some(Box::new(body)),
         }
     }
+
+    pub fn to_sig_status(&self) -> SignatureStatus {
+        // Check if all parameters have type annotations
+        let all_params_annotated = self.sig.params.iter().all(|p| p.value.ty().is_some());
+        if !all_params_annotated {
+            return SignatureStatus::Unannotated;
+        }
+
+        // All params are annotated, check return type
+        if self.sig.ret_ty.is_some() {
+            return SignatureStatus::FullyAnnotated;
+        }
+
+        // Check if body is an arrow expression (not a block)
+        // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided (annotated)
+        // Block body: fn foo(x: int) { x + 1 } -> Unannotated (missing return type is an error)
+        let body_is_block = self
+            .body
+            .as_ref()
+            .map(|b| matches!(b.value, Expr::Block(_)))
+            .unwrap_or(true); // No body = treat as block (unannotated)
+
+        if body_is_block {
+            // Block body without return type annotation is unannotated
+            SignatureStatus::Unannotated
+        } else {
+            // Arrow body (=>) - return type inferred from expression
+            SignatureStatus::ReturnElided
+        }
+    }
 }
 
 impl std::fmt::Display for FuncSig {
@@ -352,21 +382,5 @@ impl FuncSig {
 
         log::debug!("ty = {}", scheme);
         Ok(scheme)
-    }
-
-    pub fn to_sig_status(&self) -> SignatureStatus {
-        // Check if all parameters have type annotations
-        let all_params_annotated = self.params.iter().all(|p| p.value.ty().is_some());
-        if !all_params_annotated {
-            return SignatureStatus::Unannotated;
-        }
-
-        // All params are annotated, check return type
-        if self.ret_ty.is_some() {
-            SignatureStatus::FullyAnnotated
-        } else {
-            // Parameters annotated but return type elided (inferred from => body)
-            SignatureStatus::ReturnElided
-        }
     }
 }

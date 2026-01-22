@@ -152,7 +152,7 @@ impl Parser<'_> {
                     let (f, span) = parser.parse_fn(false, ctx)?;
                     let name = f.sig.path.to_short_name();
                     let name_span = parser.srcmap.get(&f.sig.path).span.unwrap();
-                    let signature = f.sig.to_sig_status();
+                    let signature = f.to_sig_status();
                     let node = parser.mk_decl(Decl::Func(f), span, ctx.path.clone());
                     parser.defs.push(DefHeader {
                         def_id,

@@ -1,11 +1,15 @@
+use std::collections::HashMap;
+
 use ray_query_macros::query;
 use ray_shared::{
-    def::DefId,
+    def::{DefHeader, DefId, DefKind, SignatureStatus},
+    pathlib::ModulePath,
     resolution::{DefTarget, Resolution},
 };
+use ray_typing::binding_groups::BindingGraph;
 
 use crate::{
-    queries::resolve,
+    queries::{parse::parse_file, resolve, workspace::WorkspaceSnapshot},
     query::{Database, Query},
 };
 
@@ -29,6 +33,102 @@ pub fn def_deps(db: &Database, def_id: DefId) -> Vec<DefId> {
         .collect()
 }
 
+/// Determines whether a definition is "unannotated" for binding graph purposes.
+///
+/// All definitions go through type inference - there are no exceptions. This function
+/// determines whether edges TO this definition should be included in the binding graph.
+///
+/// Edges to unannotated definitions are included because the caller and callee must be
+/// inferred *together* (potentially in the same SCC). Edges to annotated definitions
+/// are omitted because the callee's type is already known - there's no need to infer
+/// them together.
+///
+/// Unannotated definitions:
+/// - `DefKind::FileMain`: Top-level expressions
+/// - `DefKind::Function { signature: Unannotated }`: Missing parameter/return annotations
+/// - `DefKind::Binding { annotated: false, .. }`: Unannotated let binding
+/// - `DefKind::AssociatedConst { annotated: false }`: Unannotated associated const
+///
+/// Annotated definitions (edges omitted):
+/// - Structs, traits, impls, type aliases (always have explicit types)
+/// - Methods (always have explicit signature from trait or explicit)
+/// - Functions with `FullyAnnotated` or `ReturnElided` signature status
+fn is_unannotated(kind: DefKind) -> bool {
+    match kind {
+        DefKind::FileMain => true,
+        // Only Unannotated functions create inference edges
+        // FullyAnnotated and ReturnElided are both considered "annotated"
+        DefKind::Function { signature } => signature == SignatureStatus::Unannotated,
+        DefKind::Binding { annotated, .. } => !annotated,
+        DefKind::AssociatedConst { annotated } => !annotated,
+        // These definitions have explicit types - edges to them are omitted
+        DefKind::Method | DefKind::Struct | DefKind::Trait | DefKind::Impl | DefKind::TypeAlias => {
+            false
+        }
+    }
+}
+
+/// Build the binding graph for a module.
+///
+/// The binding graph determines which definitions must be type-inferred *together*
+/// (in the same SCC). All definitions go through type inference - there are no
+/// exceptions. The graph determines grouping, not whether inference happens.
+///
+/// An edge A → B is included only if B is unannotated. Edges to annotated
+/// definitions are omitted because their types are already known - there's no
+/// need to infer A and B together.
+///
+/// All definitions in the module are nodes in the graph, but only edges
+/// to unannotated definitions are included. This means annotated definitions
+/// that only reference other annotated definitions become singleton SCCs.
+#[query]
+pub fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let module_info = match workspace.module_info(&module) {
+        Some(info) => info,
+        None => return BindingGraph::new(),
+    };
+
+    // Collect all def headers from all files in the module
+    // Build a lookup map for filtering edges
+    let mut def_kinds: HashMap<DefId, DefKind> = HashMap::new();
+    let mut all_defs: Vec<DefHeader> = Vec::new();
+
+    for &file_id in &module_info.files {
+        let parse_result = parse_file(db, file_id);
+        for def_header in parse_result.defs {
+            def_kinds.insert(def_header.def_id, def_header.kind);
+            all_defs.push(def_header);
+        }
+    }
+
+    // Build the binding graph with filtered edges
+    let mut graph = BindingGraph::new();
+
+    for def_header in &all_defs {
+        // Add the definition as a node (even if it has no edges)
+        graph.add_binding(def_header.def_id);
+
+        // Get raw dependencies
+        let deps = def_deps(db, def_header.def_id);
+
+        // Filter edges: only include edges to unannotated definitions
+        // Edges to annotated defs are omitted - their types are already known
+        for dep in deps {
+            if let Some(&dep_kind) = def_kinds.get(&dep) {
+                if is_unannotated(dep_kind) {
+                    graph.add_edge(def_header.def_id, dep);
+                }
+            }
+            // Note: If dep is not in def_kinds, it's a cross-module reference.
+            // Cross-module references are excluded from the binding graph
+            // since they don't participate in the same SCC computation.
+        }
+    }
+
+    graph
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -37,7 +137,7 @@ mod tests {
 
     use crate::{
         queries::{
-            deps::def_deps,
+            deps::{binding_graph, def_deps},
             libraries::LoadedLibraries,
             parse::parse_file,
             workspace::{FileSource, WorkspaceSnapshot},
@@ -314,5 +414,389 @@ fn identity(x: int) -> int {
             deps.is_empty(),
             "Parameter references should not create dependencies"
         );
+    }
+
+    // ==================== binding_graph tests ====================
+
+    #[test]
+    fn binding_graph_includes_all_defs_as_nodes() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn foo() -> int { 1 }
+fn bar() -> int { 2 }
+"#
+            .to_string(),
+        );
+
+        let graph = binding_graph(&db, module_path);
+
+        // Both functions should be nodes in the graph
+        assert_eq!(graph.edges.len(), 2, "Should have 2 nodes in graph");
+    }
+
+    #[test]
+    fn binding_graph_includes_edge_to_unannotated_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // caller calls helper, which has an unannotated parameter (truly unannotated)
+        // Note: fn helper() { 42 } would be ReturnElided (params vacuously annotated),
+        // but fn helper(x) { x } has an unannotated param so is Unannotated
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn helper(x) {
+    x
+}
+
+fn caller() -> int {
+    helper(42)
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let helper_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "helper")
+            .expect("should find helper");
+        let caller_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "caller")
+            .expect("should find caller");
+
+        let graph = binding_graph(&db, module_path);
+
+        // caller -> helper edge should exist (helper is truly unannotated)
+        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        assert!(
+            caller_edges.contains(&helper_def.def_id),
+            "caller should have edge to unannotated helper"
+        );
+    }
+
+    #[test]
+    fn binding_graph_excludes_edge_to_annotated_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // caller calls helper, which IS fully annotated
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn helper() -> int {
+    42
+}
+
+fn caller() -> int {
+    helper()
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let helper_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "helper")
+            .expect("should find helper");
+        let caller_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "caller")
+            .expect("should find caller");
+
+        let graph = binding_graph(&db, module_path);
+
+        // caller -> helper edge should NOT exist (helper is fully annotated)
+        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        assert!(
+            !caller_edges.contains(&helper_def.def_id),
+            "caller should NOT have edge to annotated helper"
+        );
+
+        // Both should still be nodes
+        assert!(graph.edges.contains_key(&helper_def.def_id));
+        assert!(graph.edges.contains_key(&caller_def.def_id));
+    }
+
+    #[test]
+    fn binding_graph_excludes_edge_to_arrow_body_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // helper uses arrow body (=>) - this is ReturnElided status (annotated)
+        // ReturnElided is considered "annotated" - no edge should exist
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn helper() => 42
+
+fn caller() -> int {
+    helper()
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let helper_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "helper")
+            .expect("should find helper");
+        let caller_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "caller")
+            .expect("should find caller");
+
+        let graph = binding_graph(&db, module_path);
+
+        // caller -> helper edge should NOT exist (arrow body = ReturnElided = annotated)
+        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        assert!(
+            !caller_edges.contains(&helper_def.def_id),
+            "caller should NOT have edge to arrow-body helper (ReturnElided)"
+        );
+    }
+
+    #[test]
+    fn binding_graph_includes_edge_to_block_body_missing_return() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // helper uses block body {} without return annotation - this is Unannotated
+        // (params are vacuously annotated, but missing return type with block = unannotated)
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn helper() {
+    42
+}
+
+fn caller() -> int {
+    helper()
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let helper_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "helper")
+            .expect("should find helper");
+        let caller_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "caller")
+            .expect("should find caller");
+
+        let graph = binding_graph(&db, module_path);
+
+        // caller -> helper edge SHOULD exist (block body without return = Unannotated)
+        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        assert!(
+            caller_edges.contains(&helper_def.def_id),
+            "caller should have edge to block-body helper without return annotation (Unannotated)"
+        );
+    }
+
+    #[test]
+    fn binding_graph_excludes_edge_to_struct() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // make_point references Point struct
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Point { x: int, y: int }
+
+fn make_point() {
+    p = Point { x: 1, y: 2 }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let point_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "Point")
+            .expect("should find Point");
+        let make_point_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "make_point")
+            .expect("should find make_point");
+
+        let graph = binding_graph(&db, module_path);
+
+        // make_point -> Point edge should NOT exist (structs are never inference targets)
+        let make_point_edges = graph
+            .edges
+            .get(&make_point_def.def_id)
+            .expect("make_point in graph");
+        assert!(
+            !make_point_edges.contains(&point_def.def_id),
+            "make_point should NOT have edge to struct Point"
+        );
+    }
+
+    #[test]
+    fn binding_graph_mutual_recursion_forms_scc() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // is_even and is_odd are mutually recursive and unannotated
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn is_even(n) {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n) {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let is_even_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_even")
+            .expect("should find is_even");
+        let is_odd_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "is_odd")
+            .expect("should find is_odd");
+
+        let graph = binding_graph(&db, module_path);
+
+        // Both should have edges to each other (mutual recursion between unannotated functions)
+        let is_even_edges = graph
+            .edges
+            .get(&is_even_def.def_id)
+            .expect("is_even in graph");
+        let is_odd_edges = graph
+            .edges
+            .get(&is_odd_def.def_id)
+            .expect("is_odd in graph");
+
+        assert!(
+            is_even_edges.contains(&is_odd_def.def_id),
+            "is_even should have edge to is_odd"
+        );
+        assert!(
+            is_odd_edges.contains(&is_even_def.def_id),
+            "is_odd should have edge to is_even"
+        );
+
+        // Compute SCCs - they should be in the same group
+        let groups = graph.compute_binding_groups();
+        let is_even_group = groups
+            .iter()
+            .position(|g| g.bindings.contains(&is_even_def.def_id))
+            .expect("is_even in some group");
+        let is_odd_group = groups
+            .iter()
+            .position(|g| g.bindings.contains(&is_odd_def.def_id))
+            .expect("is_odd in some group");
+
+        assert_eq!(
+            is_even_group, is_odd_group,
+            "is_even and is_odd should be in the same SCC"
+        );
+    }
+
+    #[test]
+    fn binding_graph_returns_empty_for_unknown_module() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        let graph = binding_graph(&db, ModulePath::from("nonexistent"));
+
+        assert!(graph.edges.is_empty(), "Unknown module should have empty graph");
     }
 }

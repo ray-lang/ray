@@ -4038,7 +4038,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: binding_graph query
 
-- [ ] Define `binding_graph(ModulePath)` query:
+- [x] Define `binding_graph(ModulePath)` query:
   ```rust
   #[query]
   fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
@@ -4060,8 +4060,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       graph
   }
   ```
-- [ ] Implement inference-edge filtering (edges to annotated defs don't create inference deps)
-- [ ] **Validate**: Unit test comparing to legacy binding graph
+- [x] Implement inference-edge filtering (edges to annotated defs don't create inference deps)
+- [x] **Validate**: Unit test comparing to legacy binding graph
 
 ##### Step 3: binding_groups query
 

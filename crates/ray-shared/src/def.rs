@@ -61,7 +61,7 @@ pub enum DefKind {
     TypeAlias,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignatureStatus {
     FullyAnnotated, // All parameter and return types explicit
     ReturnElided,   // Parameters annotated, return type inferred from => body
