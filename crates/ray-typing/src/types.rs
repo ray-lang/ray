@@ -50,6 +50,15 @@ impl FromIterator<(TyVar, Ty)> for Subst {
     }
 }
 
+impl<'a> From<&'a HashMap<TyVar, TyVar>> for Subst {
+    fn from(value: &'a HashMap<TyVar, TyVar>) -> Self {
+        value
+            .iter()
+            .map(|(a, b)| (a.clone(), Ty::Var(b.clone())))
+            .collect()
+    }
+}
+
 impl std::fmt::Display for Subst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.is_empty() {

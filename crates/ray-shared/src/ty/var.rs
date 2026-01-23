@@ -1,3 +1,8 @@
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
+
 use serde::{Deserialize, Serialize};
 
 use crate::pathlib::Path;
@@ -9,18 +14,47 @@ pub const SKOLEM_PREFIX: &'static str = "?k";
 ///
 /// Both the frontend lowering context and the solver need to mint fresh
 /// schema variables, so we keep the allocator tiny and share it via `Rc`.
+///
+/// For incremental compilation, use `with_def_scope` to create an allocator
+/// that produces deterministic variable names scoped to a specific definition.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SchemaVarAllocator {
     next_id: u32,
+    /// Optional prefix for scoped allocation (e.g., "?s:abc123:" for DefId-scoped vars)
+    #[serde(default)]
+    prefix: Option<String>,
 }
 
 impl SchemaVarAllocator {
     pub fn new() -> Self {
-        SchemaVarAllocator { next_id: 0 }
+        SchemaVarAllocator {
+            next_id: 0,
+            prefix: None,
+        }
+    }
+
+    /// Create an allocator scoped to a specific DefId.
+    ///
+    /// Produces deterministic variable names like `?s:{hex_hash}:{index}` where
+    /// the hex hash is derived from the DefId. This ensures uniqueness across
+    /// definitions without requiring global mutable state.
+    pub fn with_def_scope(def_id: crate::def::DefId) -> Self {
+        let mut hasher = DefaultHasher::new();
+        def_id.hash(&mut hasher);
+        let hash = hasher.finish();
+        let prefix = format!("{}:{:x}:", SCHEMA_PREFIX, hash);
+        SchemaVarAllocator {
+            next_id: 0,
+            prefix: Some(prefix),
+        }
     }
 
     pub fn alloc(&mut self) -> TyVar {
-        let name = format!("{}{}", SCHEMA_PREFIX, self.next_id);
+        let name = if let Some(ref prefix) = self.prefix {
+            format!("{}{}", prefix, self.next_id)
+        } else {
+            format!("{}{}", SCHEMA_PREFIX, self.next_id)
+        };
         self.next_id += 1;
         TyVar::new(name)
     }

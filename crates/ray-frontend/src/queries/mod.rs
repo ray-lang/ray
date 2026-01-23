@@ -7,4 +7,6 @@ pub mod libraries;
 pub mod parse;
 pub mod resolve;
 pub mod transform;
+pub mod types;
+pub mod validation;
 pub mod workspace;

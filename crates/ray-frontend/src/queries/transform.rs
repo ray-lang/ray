@@ -8,21 +8,26 @@ use std::collections::HashMap;
 
 use ray_core::{
     ast::{
-        CurlyElement, Decl, Expr, File, Node,
+        CurlyElement, Decl, Expr, File, FnParam, FuncSig, Node, Trait,
         transform::{
             convert_func_to_closure, desugar_compound_assignment, expand_curly_shorthand,
             normalize_curly,
         },
     },
-    errors::RayError,
+    errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
 use ray_shared::{
     def::DefHeader,
     file_id::FileId,
+    node_id::NodeId,
+    pathlib::FilePath,
     resolution::{DefTarget, Resolution},
+    span::{Source, parsed::Parsed},
+    ty::Ty,
 };
+use ray_typing::types::TyScheme;
 
 use crate::{
     queries::{defs::struct_def, parse::parse_file, resolve::name_resolutions},
@@ -86,6 +91,7 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
         errors: &mut errors,
         resolutions: &resolutions,
         struct_field_lookup: &struct_field_lookup,
+        filepath: &ast.filepath,
     };
 
     // Transform declarations
@@ -113,8 +119,9 @@ where
 {
     source_map: &'a mut SourceMap,
     errors: &'a mut Vec<RayError>,
-    resolutions: &'a HashMap<ray_shared::node_id::NodeId, Resolution>,
+    resolutions: &'a HashMap<NodeId, Resolution>,
     struct_field_lookup: &'a F,
+    filepath: &'a FilePath,
 }
 
 /// Transform a declaration node.
@@ -139,6 +146,9 @@ where
             }
         }
         Decl::Trait(tr) => {
+            // Annotate self parameters with the trait's type
+            annotate_trait_self_params(tr, ctx.source_map);
+
             // Transform default method implementations in traits
             for field in &mut tr.fields {
                 if let Decl::Func(func) = &mut field.value {
@@ -234,8 +244,23 @@ where
                     }
                 }
                 None => {
-                    // Can't look up struct definition; still expand shorthand
-                    // (missing struct will be caught during type checking)
+                    // Can't look up struct definition - emit error if name couldn't be resolved
+                    if def_target.is_none() {
+                        // Name wasn't resolved at all - struct type is undefined
+                        if let Some(lhs) = &curly.lhs {
+                            ctx.errors.push(RayError {
+                                msg: format!("struct type `{}` is undefined", lhs),
+                                src: vec![Source {
+                                    span: lhs.span().copied(),
+                                    filepath: ctx.filepath.clone(),
+                                    ..Default::default()
+                                }],
+                                kind: RayErrorKind::Type,
+                                context: Some("struct construction".to_string()),
+                            });
+                        }
+                    }
+                    // Still expand shorthand for downstream passes
                     expand_curly_shorthand(curly, ctx.source_map, def_id);
                 }
             }
@@ -411,6 +436,70 @@ where
         | Expr::Path(_)
         | Expr::Pattern(_)
         | Expr::Type(_) => {}
+    }
+}
+
+/// Annotate trait method self parameters with the trait's type.
+///
+/// For trait methods, if the first parameter is named `self` without a type
+/// annotation, we fill in the trait's self type. This is a syntactic
+/// transformation that allows users to write `self` without an explicit type.
+fn annotate_trait_self_params(tr: &mut Trait, srcmap: &mut SourceMap) {
+    let self_ty = tr.ty.clone_value();
+
+    for field in &mut tr.fields {
+        match &mut field.value {
+            Decl::FnSig(sig) => {
+                annotate_self_param_if_missing(sig, &self_ty, srcmap);
+            }
+            Decl::Func(func) => {
+                annotate_self_param_if_missing(&mut func.sig, &self_ty, srcmap);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Annotate a function signature's first parameter with a type if it's named
+/// `self` and missing an annotation.
+fn annotate_self_param_if_missing(sig: &mut FuncSig, self_ty: &Ty, srcmap: &SourceMap) {
+    let Some(first) = sig.params.first_mut() else {
+        return;
+    };
+
+    // Only annotate if the first param is named `self`
+    if !first.value.name().is_self() {
+        return;
+    }
+
+    // Skip if already annotated
+    if first.value.ty().is_some() {
+        return;
+    }
+
+    // Create a Parsed<TyScheme> with the trait's self type
+    let param_span = srcmap.span_of(first);
+    let ty_scheme = TyScheme::from_mono(self_ty.clone());
+    let parsed_ty = Parsed::new(
+        ty_scheme,
+        Source {
+            span: Some(param_span),
+            filepath: FilePath::default(),
+            ..Default::default()
+        },
+    );
+
+    // Apply the annotation
+    match &mut first.value {
+        FnParam::Name(name) => {
+            name.ty = Some(parsed_ty);
+        }
+        FnParam::Missing { placeholder, .. } => {
+            placeholder.ty = Some(parsed_ty);
+        }
+        FnParam::DefaultValue(_, _) => {
+            // Default values on self parameters are not typical, skip
+        }
     }
 }
 
@@ -655,8 +744,10 @@ fn main() {
         let mut workspace = WorkspaceSnapshot::new();
         // Use proper module path structure for resolution to work
         let module_path = ModulePath::from("test");
-        let file_id =
-            workspace.add_file(FilePath::from("test/mod.ray"), module_path.clone().to_path());
+        let file_id = workspace.add_file(
+            FilePath::from("test/mod.ray"),
+            module_path.clone().to_path(),
+        );
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
@@ -721,5 +812,133 @@ fn main() {
                 }
             }
         }
+    }
+
+    // Note: The parser currently requires all trait method parameters to have
+    // explicit type annotations, including `self`. If a future parser change
+    // allows unannotated self parameters (e.g., `fn eq(self, other: 'a)`),
+    // the `annotate_trait_self_params` transformation will automatically
+    // fill in the trait's type for the self parameter.
+
+    #[test]
+    fn file_ast_preserves_explicit_self_annotation() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Trait method with explicitly annotated self parameter
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+trait Eq['a] {
+    fn eq(self: 'a, other: 'a) -> bool
+}
+"#
+            .to_string(),
+        );
+
+        let result = file_ast(&db, file_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, got: {:?}",
+            result.errors
+        );
+
+        // Find the trait
+        let tr = result
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match &d.value {
+                Decl::Trait(t) => Some(t),
+                _ => None,
+            })
+            .expect("should have trait");
+
+        // Find the eq method
+        let eq_sig = tr
+            .fields
+            .iter()
+            .find_map(|f| match &f.value {
+                Decl::FnSig(sig) if sig.path.name() == Some("eq".to_string()) => Some(sig),
+                _ => None,
+            })
+            .expect("should have eq method");
+
+        // First param should still have its original annotation
+        let first_param = eq_sig.params.first().expect("should have first param");
+        assert!(
+            first_param.value.ty().is_some(),
+            "Self parameter should have type annotation"
+        );
+    }
+
+    #[test]
+    fn file_ast_error_for_undefined_struct() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Use an undefined struct type
+        let source = r#"fn foo() { p = UndefinedStruct { x: 1 } }"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let result = file_ast(&db, file_id);
+
+        // Should have an error for undefined struct
+        assert!(
+            !result.errors.is_empty(),
+            "Expected error for undefined struct type"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.msg.contains("undefined") || e.msg.contains("not defined")),
+            "Error message should mention undefined: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn file_ast_no_error_for_defined_struct() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Define and use a struct
+        let source = r#"
+struct Point { x: int, y: int }
+fn foo() { p = Point { x: 1, y: 2 } }
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let result = file_ast(&db, file_id);
+
+        // Should have no struct-related errors
+        let struct_errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.msg.contains("struct") || e.msg.contains("undefined"))
+            .collect();
+        assert!(
+            struct_errors.is_empty(),
+            "Expected no struct-related errors, got: {:?}",
+            struct_errors
+        );
     }
 }

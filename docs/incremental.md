@@ -1190,13 +1190,29 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub ty: Ty,
   }
 
+  /// Information about a method in a trait or impl.
+  #[derive(Clone, Serialize, Deserialize)]
+  struct MethodInfo {
+      pub name: String,
+      pub is_static: bool,
+      pub recv_mode: ReceiverMode,
+  }
+
+  /// Receiver mode for methods.
+  #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+  enum ReceiverMode {
+      None,   // Static method, no receiver
+      Value,  // Value receiver (self: T)
+      Ptr,    // Pointer receiver (self: *T)
+  }
+
   #[derive(Clone, Serialize, Deserialize)]
   struct TraitDef {
       pub target: DefTarget,
       pub name: String,
       pub type_params: Vec<TyVar>,
       pub super_traits: Vec<DefTarget>,
-      pub methods: Vec<DefTarget>,
+      pub methods: Vec<MethodInfo>,
   }
 
   #[derive(Clone, Serialize, Deserialize)]
@@ -1204,8 +1220,9 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub target: DefTarget,
       pub type_params: Vec<TyVar>,
       pub implementing_type: Ty,
+      pub implementing_type_target: Option<DefTarget>,
       pub trait_ref: Option<DefTarget>,
-      pub methods: Vec<DefTarget>,
+      pub methods: Vec<MethodInfo>,
   }
 
   #[derive(Clone, Serialize, Deserialize)]
@@ -1418,12 +1435,10 @@ These queries take `DefTarget` to handle both workspace and library definitions 
       pub var_map: HashMap<TyVar, TyVar>,
       /// Reverse: schema var -> user type var (for pretty printing)
       pub reverse_map: HashMap<TyVar, TyVar>,
-      /// Mapped types by NodeId (type annotations in the definition)
-      pub types: HashMap<NodeId, Ty>,
-      /// Mapped signature scheme (if the definition is annotated)
-      pub signature: Option<TyScheme>,
   }
   ```
+
+  Note: The query only produces the variable mappings. Mapped types and schemes are computed by the `annotated_scheme(DefId)` query, which uses `mapped_def_types` for the variable mappings.
 
   **Legacy component integration**: Extracts and refactors `TyCtx::map_vars` from `ray-typing/src/tyctx.rs`.
 
@@ -1445,6 +1460,66 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   ```
 
   The `prev_mappings` parameter ensures consistent mapping when processing related types (e.g., a function's parameter and return types share the same `'a`).
+
+- `def_signature_status(DefId)` → `SignatureStatus`
+
+  **Dependencies**: `file_ast(def_id.file)`
+
+  **Semantics**: Determines the annotation status of a definition's signature. This helps downstream queries decide whether type inference is needed or if the declared types can be used directly.
+
+  **Definitions**:
+  ```rust
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  pub enum SignatureStatus {
+      FullyAnnotated, // All parameter and return types explicit
+      ReturnElided,   // Parameters annotated, return type inferred from => body
+      Unannotated,    // Missing parameter or return type annotations
+  }
+  ```
+
+  **Return values by definition kind**:
+  - `Func`: Checks if all params have annotations and return type presence/body style
+  - `FnSig`: Checks if all params and return type are annotated
+  - `Struct`, `Trait`, `Impl`, `TypeAlias`: Always `FullyAnnotated`
+  - `Name`, `Mutable`, `Declare`: `FullyAnnotated` if type annotation present, else `Unannotated`
+
+- `annotated_scheme(DefId)` → `Option<TyScheme>`
+
+  **Dependencies**: `file_ast(def_id.file)`, `mapped_def_types(def_id)`, `def_signature_status(def_id)`
+
+  **Semantics**: Computes the type scheme for an annotated definition. Returns `None` if the definition is `Unannotated` and requires type inference. For `FullyAnnotated` definitions, returns the scheme built from the explicit type annotations. For `ReturnElided` definitions, returns a scheme with a placeholder return type.
+
+  **Key logic**:
+  - Extracts parameter types, return type, and qualifiers from the AST
+  - Applies the `var_map` from `mapped_def_types` to convert user type variables to schema variables
+  - Builds `Ty::Func(param_tys, ret_ty)` and wraps in `TyScheme`
+  - For `ReturnElided`, uses `Ty::ret_placeholder(scope)` for return type
+
+  **Error handling**: Returns `None` for unannotated definitions (they need inference).
+
+- `validate_def(DefId)` → `Vec<RayError>`
+
+  **Dependencies**: `file_ast(def_id.file)`, `impl_def(DefTarget)` (if validating an impl), `trait_def(DefTarget)` (if impl references a trait)
+
+  **Semantics**: Validates a definition for semantic errors that don't require full type inference. This catches errors early, before typechecking begins, providing faster feedback to users.
+
+  **Validations performed**:
+  1. **Annotation policy**: "cannot infer type of only some parameters" - Either all non-self parameters must have type annotations, or none do. Partial annotation is an error.
+  2. **Return type requirement**: Functions with annotated parameters and block bodies must have an explicit return type. Arrow body functions (`=>`) can elide the return type.
+  3. **Impl completeness**: For trait impls, validates that all required methods are implemented.
+  4. **Extraneous methods**: For trait impls, validates that no methods are present that don't exist on the trait.
+  5. **Type argument arity**: For trait impls, validates that the impl provides the correct number of type arguments for the trait.
+  6. **Qualifier existence**: Validates that all traits referenced in `where` clauses actually exist and are traits (not structs or other types).
+  7. **Trait method annotation**: Trait method signatures must have type annotations for all non-self parameters.
+  8. **Mutability checking**: "cannot assign to immutable identifier" - Validates that assignments are only made to mutable bindings. Tracks variable mutability through scopes including closures and nested functions.
+
+  **Error handling**: Returns a list of validation errors. An empty list indicates the definition passed all validations. Validation errors don't prevent downstream queries from running, but typechecking may produce additional errors.
+
+  **Legacy component integration**: Consolidates several validation functions from `ray-core/src/ast/lower.rs`:
+  - `enforce_method_annotation_policy()` → annotation policy validation
+  - Impl completeness checks in `lower_impl()` → impl completeness validation
+  - Type arg arity checks in `lower_impl()` → type argument arity validation
+  - Assignment mutability checks in `lower_assign()` → mutability checking
 
 - `typecheck_group(BindingGroupId)` → `TypecheckResult`
 
@@ -2912,16 +2987,21 @@ The legacy `AstLowerCtx` in `ray-core/src/ast/lower.rs` performs several transfo
 2. **Function literal to closure**: `Expr::Func` → `Expr::Closure`
 3. **Curly shorthand expansion**: `Point { x }` → `Point { x: x }`
 4. **Curly field ordering**: Reorder fields to match struct definition
+5. **Trait self-param annotation**: If a trait method's first parameter is named `self` without a type annotation, the trait's receiver type is filled in. (Note: The current parser requires explicit type annotations, so this transformation is prepared for future parser changes that allow unannotated `self` parameters.)
 
 **Handled by other queries:**
 
-5. **Type variable resolution (`map_vars`)**: Handled by `mapped_def_types(DefId)` query. User type variables like `'a` are mapped to unique schema variables before typechecking.
+6. **Type variable resolution (`map_vars`)**: Handled by `mapped_def_types(DefId)` query. User type variables like `'a` are mapped to unique schema variables before typechecking.
 
-6. **FQN resolution for types**: Handled by `name_resolutions(FileId)`. Type references are resolved like any other name.
+7. **FQN resolution for types**: Handled by `name_resolutions(FileId)`. Type references are resolved like any other name.
 
-7. **Signature scheme construction (`fresh_scheme`)**: Part of `def_scheme(DefId)` for annotated functions.
+8. **Signature scheme construction (`fresh_scheme`)**: Handled by `annotated_scheme(DefId)` for annotated functions. For unannotated functions, schemes are inferred by `typecheck_group(BindingGroupId)`.
 
-8. **Trait/Impl registration**: Replaced by queries `struct_def`, `trait_def`, `impl_def`, `operator_index`.
+9. **Trait/Impl registration**: Replaced by queries `struct_def`, `trait_def`, `impl_def`, `operator_index`.
+
+10. **Annotation policy validation**: Handled by `validate_def(DefId)` query. Validates that functions either have all parameters annotated or none annotated (no partial annotation), and that annotated functions with block bodies have explicit return types.
+
+11. **Impl completeness validation**: Handled by `validate_def(DefId)` query. Validates that trait impls implement all required methods and don't have extraneous methods.
 
 #### Components Requiring Significant Rework
 
@@ -4128,26 +4208,87 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: mapped_def_types query
 
-- [ ] Define `mapped_def_types(DefId)` query:
+- [x] Define `mapped_def_types(DefId)` query:
   ```rust
   #[query]
   fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
       let file_ast = file_ast(db, def_id.file);
-      let def_header = find_def_header(&file_ast.defs, def_id);
-      let type_annotations = extract_type_annotations(&file_ast.ast, def_id);
+      let def_ast = find_def_ast(&file_ast.ast, def_id);
 
       let mut allocator = SchemaVarAllocator::new();
-      let (mapped_types, fwd_map, rev_map) = map_vars(
-          &type_annotations,
-          &mut allocator,
-          &HashMap::new(),  // No previous mappings for fresh def
-      );
+      let mut state = MappingState::new();
+      map_decl_vars(def_ast, &mut state, &mut allocator);
 
-      MappedDefTypes { mapped_types, var_mappings: fwd_map, allocator }
+      MappedDefTypes {
+          var_map: state.forward_map,
+          reverse_map: state.reverse_map,
+      }
   }
   ```
-- [ ] Wire up to `map_vars` from Phase 0.B.1
-- [ ] **Validate**: Unit test for function with type parameters
+- [x] Wire up to `map_vars` from Phase 0.B.1
+- [x] **Validate**: Unit test for function with type parameters
+
+##### Step 4: def_signature_status query
+
+- [x] Define `def_signature_status(DefId)` query:
+  ```rust
+  #[query]
+  fn def_signature_status(db: &Database, def_id: DefId) -> SignatureStatus {
+      let file_result = file_ast(db, def_id.file);
+      let def_ast = find_def_ast(&file_result.ast, def_id);
+      // Match on Decl type and compute status from signature
+  }
+  ```
+- [x] Returns `FullyAnnotated`, `ReturnElided`, or `Unannotated`
+- [x] **Validate**: Unit tests for each status type
+
+##### Step 5: annotated_scheme query
+
+- [x] Define `annotated_scheme(DefId)` query:
+  ```rust
+  #[query]
+  fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
+      let status = def_signature_status(db, def_id);
+      if status == SignatureStatus::Unannotated {
+          return None;
+      }
+      let mapping = mapped_def_types(db, def_id);
+      let file_result = file_ast(db, def_id.file);
+      let def_ast = find_def_ast(&file_result.ast, def_id);
+      compute_scheme(def_ast, &mapping, status)
+  }
+  ```
+- [x] Computes TyScheme from annotations + mapping state
+- [x] Returns None for unannotated definitions
+- [x] Handles ReturnElided with ret_placeholder
+- [x] **Validate**: Unit tests for annotated, unannotated, and generic functions
+
+##### Step 6: validate_def query
+
+- [x] Define `validate_def(DefId)` query:
+  ```rust
+  #[query]
+  fn validate_def(db: &Database, def_id: DefId) -> Vec<RayError> {
+      let file_result = file_ast(db, def_id.file);
+      let def_ast = find_def_ast(&file_result.ast, def_id);
+      let mut errors = Vec::new();
+
+      // Validation checks:
+      validate_annotation_policy(...);     // partial annotation error
+      validate_qualifiers(...);            // undefined trait in where clause
+      validate_impl_completeness(...);     // missing required methods
+      validate_mutability(...);            // assignment to immutable
+
+      errors
+  }
+  ```
+- [x] Annotation policy: "cannot infer type of only some parameters"
+- [x] Impl completeness: "impl X is missing required method Y"
+- [x] Extraneous methods: "method X does not exist on trait Y"
+- [x] Qualifier existence: "trait X is not defined"
+- [x] Type arg arity: validates impl type arguments match definition
+- [x] Mutability checking: "cannot assign to immutable identifier"
+- [x] **Validate**: Unit tests for each validation type
 
 ---
 
@@ -4259,12 +4400,20 @@ This is the largest migration. Do it incrementally, running tests after each ste
       let parse_result = parse(db, file_id);
       errors.extend(parse_result.errors.clone());
 
+      // Collect transform errors (struct field validation, etc.)
+      let file_ast = file_ast(db, file_id);
+      errors.extend(file_ast.errors.clone());
+
       // Collect name resolution errors
       let resolutions = name_resolutions(db, file_id);
       errors.extend(collect_resolution_errors(&resolutions));
 
+      // Collect validation errors (annotation policy, impl completeness, etc.)
+      for def_header in &file_ast.defs {
+          errors.extend(validate_def(db, def_header.def_id));
+      }
+
       // Collect type errors (triggers typechecking)
-      let file_ast = file_ast(db, file_id);
       for def_header in &file_ast.defs {
           let group_id = binding_group_for_def(db, def_header.def_id);
           let typecheck_result = typecheck_group(db, group_id);

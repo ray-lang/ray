@@ -1,6 +1,6 @@
 //! Definition lookup queries for the incremental compiler.
 
-use ray_core::ast::{Decl, Node};
+use ray_core::ast::{Decl, Modifier, Node};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind, LibraryDefId},
@@ -8,6 +8,7 @@ use ray_shared::{
     resolution::{DefTarget, Resolution},
     ty::{Ty, TyVar},
 };
+use ray_typing::types::ReceiverMode;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -43,6 +44,17 @@ pub struct FieldDef {
     pub ty: Ty,
 }
 
+/// Information about a method in a trait or impl.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodInfo {
+    /// The name of the method.
+    pub name: String,
+    /// Whether the method is static (no receiver).
+    pub is_static: bool,
+    /// The receiver mode for the method.
+    pub recv_mode: ReceiverMode,
+}
+
 /// A trait definition extracted from either workspace or library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraitDef {
@@ -54,8 +66,8 @@ pub struct TraitDef {
     pub type_params: Vec<TyVar>,
     /// Super traits that this trait extends.
     pub super_traits: Vec<DefTarget>,
-    /// Method names declared in this trait.
-    pub methods: Vec<String>,
+    /// Methods declared in this trait.
+    pub methods: Vec<MethodInfo>,
 }
 
 /// An impl definition extracted from either workspace or library.
@@ -72,8 +84,8 @@ pub struct ImplDef {
     pub implementing_type_target: Option<DefTarget>,
     /// The trait being implemented, if this is a trait impl.
     pub trait_ref: Option<DefTarget>,
-    /// Method names defined in this impl.
-    pub methods: Vec<String>,
+    /// Methods defined in this impl.
+    pub methods: Vec<MethodInfo>,
 }
 
 /// A type alias definition extracted from either workspace or library.
@@ -282,8 +294,8 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
                     .into_iter()
                     .collect();
 
-                // Extract method names from trait fields (which are FnSig decls)
-                let methods = extract_trait_method_names(&tr.fields);
+                // Extract method info from trait fields (which are FnSig decls)
+                let methods = extract_trait_methods(&tr.fields);
 
                 return Some(TraitDef {
                     target: DefTarget::Workspace(def_id),
@@ -332,16 +344,58 @@ fn resolve_parsed_ty_to_def_target(
         })
 }
 
-/// Extract method names from trait field declarations.
-fn extract_trait_method_names(fields: &[Node<Decl>]) -> Vec<String> {
+/// Extract method info from trait field declarations.
+fn extract_trait_methods(fields: &[Node<Decl>]) -> Vec<MethodInfo> {
     fields
         .iter()
         .filter_map(|decl| match &**decl {
-            Decl::FnSig(sig) => sig.path.name(),
-            Decl::Func(f) => f.sig.path.name(),
+            Decl::FnSig(sig) => {
+                let name = sig.path.name()?;
+                let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
+                let recv_mode = compute_receiver_mode(sig, is_static);
+                Some(MethodInfo {
+                    name,
+                    is_static,
+                    recv_mode,
+                })
+            }
+            Decl::Func(f) => {
+                let name = f.sig.path.name()?;
+                let is_static = f
+                    .sig
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, Modifier::Static));
+                let recv_mode = compute_receiver_mode(&f.sig, is_static);
+                Some(MethodInfo {
+                    name,
+                    is_static,
+                    recv_mode,
+                })
+            }
             _ => None,
         })
         .collect()
+}
+
+/// Compute the receiver mode from a function signature.
+fn compute_receiver_mode(sig: &ray_core::ast::FuncSig, is_static: bool) -> ReceiverMode {
+    if is_static || sig.params.is_empty() {
+        return ReceiverMode::None;
+    }
+
+    // Check the first parameter's type
+    // FnParam::ty() already returns the mono type
+    let first_param = &sig.params[0];
+    if let Some(ty) = first_param.value.ty() {
+        match ty {
+            Ty::Ref(_) => ReceiverMode::Ptr,
+            _ => ReceiverMode::Value,
+        }
+    } else {
+        // No type annotation - assume value receiver
+        ReceiverMode::Value
+    }
 }
 
 /// Extract a trait definition from library data.
@@ -446,8 +500,8 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
         }
     };
 
-    // Extract method names
-    let methods = extract_impl_method_names(im);
+    // Extract method info
+    let methods = extract_impl_methods(im);
 
     Some(ImplDef {
         target: DefTarget::Workspace(def_id),
@@ -459,22 +513,46 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     })
 }
 
-/// Extract method names from an impl block.
-fn extract_impl_method_names(im: &ray_core::ast::Impl) -> Vec<String> {
+/// Extract method info from an impl block.
+fn extract_impl_methods(im: &ray_core::ast::Impl) -> Vec<MethodInfo> {
     let mut methods = Vec::new();
 
     if let Some(funcs) = &im.funcs {
         for func in funcs {
             if let Some(name) = func.sig.path.name() {
-                methods.push(name);
+                let is_static = func
+                    .sig
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, Modifier::Static));
+                let recv_mode = compute_receiver_mode(&func.sig, is_static);
+                methods.push(MethodInfo {
+                    name,
+                    is_static,
+                    recv_mode,
+                });
             }
         }
     }
 
     if let Some(externs) = &im.externs {
-        for ext in externs {
-            if let Some(name) = ext.get_name() {
-                methods.push(name);
+        for ext_node in externs {
+            if let Decl::Extern(ext) = &ext_node.value {
+                if let Some(name) = ext.decl().get_name() {
+                    // Extern methods - check the inner FnSig
+                    let inner_decl = ext.decl_node();
+                    let (is_static, recv_mode) = if let Decl::FnSig(sig) = &inner_decl.value {
+                        let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
+                        (is_static, compute_receiver_mode(sig, is_static))
+                    } else {
+                        (false, ReceiverMode::Value)
+                    };
+                    methods.push(MethodInfo {
+                        name,
+                        is_static,
+                        recv_mode,
+                    });
+                }
             }
         }
     }
@@ -823,12 +901,12 @@ mod tests {
         resolution::DefTarget,
         ty::Ty,
     };
-    use ray_typing::types::TyScheme;
+    use ray_typing::types::{ReceiverMode, TyScheme};
 
     use crate::{
         queries::{
             defs::{
-                FieldDef, StructDef, TraitDef, def_for_path, impl_def, impls_for_trait,
+                FieldDef, MethodInfo, StructDef, TraitDef, def_for_path, impl_def, impls_for_trait,
                 impls_for_type, impls_in_module, struct_def, trait_def, traits_in_module,
                 type_alias,
             },
@@ -1195,7 +1273,9 @@ trait Eq['a] {
         assert_eq!(trait_def.name, "Eq");
         assert_eq!(trait_def.type_params.len(), 1);
         assert_eq!(trait_def.methods.len(), 1);
-        assert_eq!(trait_def.methods[0], "eq");
+        assert_eq!(trait_def.methods[0].name, "eq");
+        assert!(!trait_def.methods[0].is_static);
+        assert_eq!(trait_def.methods[0].recv_mode, ReceiverMode::Value);
     }
 
     #[test]
@@ -1230,7 +1310,18 @@ trait Eq['a] {
                 name: "Ord".to_string(),
                 type_params: vec![],
                 super_traits: vec![],
-                methods: vec!["cmp".to_string(), "lt".to_string()],
+                methods: vec![
+                    MethodInfo {
+                        name: "cmp".to_string(),
+                        is_static: false,
+                        recv_mode: ReceiverMode::Value,
+                    },
+                    MethodInfo {
+                        name: "lt".to_string(),
+                        is_static: false,
+                        recv_mode: ReceiverMode::Value,
+                    },
+                ],
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
@@ -1244,8 +1335,8 @@ trait Eq['a] {
         let trait_def = result.unwrap();
         assert_eq!(trait_def.name, "Ord");
         assert_eq!(trait_def.methods.len(), 2);
-        assert_eq!(trait_def.methods[0], "cmp");
-        assert_eq!(trait_def.methods[1], "lt");
+        assert_eq!(trait_def.methods[0].name, "cmp");
+        assert_eq!(trait_def.methods[1].name, "lt");
     }
 
     #[test]
@@ -1860,11 +1951,7 @@ trait Show['a] {
 
         // impls_for_trait on module_a::Show should find the impl
         let impls_a = impls_for_trait(&db, show_a_target);
-        assert_eq!(
-            impls_a.len(),
-            1,
-            "module_a::Show should have 1 impl"
-        );
+        assert_eq!(impls_a.len(), 1, "module_a::Show should have 1 impl");
 
         // impls_for_trait on module_b::Show should NOT find any impls
         let impls_b = impls_for_trait(&db, show_b_target);
@@ -2044,7 +2131,11 @@ impl Stringify[Foo] {
                 name: "Display".to_string(),
                 type_params: vec![],
                 super_traits: vec![],
-                methods: vec!["fmt".to_string()],
+                methods: vec![MethodInfo {
+                    name: "fmt".to_string(),
+                    is_static: false,
+                    recv_mode: ReceiverMode::Value,
+                }],
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
@@ -2171,10 +2262,6 @@ impl Stringify[Option] {
         let stringify_target = def_for_path(&db, stringify_path).expect("Stringify should exist");
 
         let trait_impls = impls_for_trait(&db, stringify_target);
-        assert_eq!(
-            trait_impls.len(),
-            1,
-            "Stringify trait should have 1 impl"
-        );
+        assert_eq!(trait_impls.len(), 1, "Stringify trait should have 1 impl");
     }
 }
