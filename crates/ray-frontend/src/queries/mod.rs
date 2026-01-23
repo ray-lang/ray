@@ -1,3 +1,4 @@
+pub mod closures;
 pub mod defs;
 pub mod deps;
 pub mod exports;

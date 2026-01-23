@@ -4099,7 +4099,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: closures_in_def query
 
-- [ ] Define `closures_in_def(DefId)` query:
+- [x] Define `closures_in_def(DefId)` query:
   ```rust
   #[query]
   fn closures_in_def(db: &Database, def_id: DefId) -> Vec<ClosureInfo> {
@@ -4110,8 +4110,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       closure::closures_in_def(def_id, def_ast, &resolutions)
   }
   ```
-- [ ] Wire up to `closures_in_def` from Phase 0.C.5
-- [ ] **Validate**: Unit test for function with closures capturing locals
+- [x] Wire up to `closures_in_def` from Phase 0.C.5
+- [x] **Validate**: Unit test for function with closures capturing locals
 
 ##### Step 2: closure_info query
 
