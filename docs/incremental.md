@@ -4115,7 +4115,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: closure_info query
 
-- [ ] Define `closure_info(NodeId)` query as lookup into `closures_in_def`:
+- [x] Define `closure_info(NodeId)` query as lookup into `closures_in_def`:
   ```rust
   #[query]
   fn closure_info(db: &Database, closure_node: NodeId) -> Option<ClosureInfo> {
@@ -4124,7 +4124,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       closures.into_iter().find(|c| c.closure_expr == closure_node)
   }
   ```
-- [ ] **Validate**: Unit test for closure_info lookup
+- [x] **Validate**: Unit test for closure_info lookup
 
 ##### Step 3: mapped_def_types query
 

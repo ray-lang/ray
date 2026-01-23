@@ -52,6 +52,27 @@ pub fn closures_in_def(db: &Database, def_id: DefId) -> Vec<ClosureInfo> {
     closure::closures_in_def(def_id, def_ast, &resolutions_map)
 }
 
+/// Look up closure information for a specific closure expression.
+///
+/// Given a NodeId for a closure expression, returns the `ClosureInfo` for that
+/// closure, including its captured variables.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `closure_node` - The NodeId of the closure expression
+///
+/// # Returns
+///
+/// `Some(ClosureInfo)` if the NodeId corresponds to a closure expression within
+/// its owning definition, `None` otherwise.
+#[query]
+pub fn closure_info(db: &Database, closure_node: NodeId) -> Option<ClosureInfo> {
+    let def_id = closure_node.owner;
+    let closures = closures_in_def(db, def_id);
+    closures.into_iter().find(|c| c.closure_expr == closure_node)
+}
+
 /// Find a declaration AST node by its root NodeId.
 ///
 /// Searches through declarations to find the one matching the given NodeId.
@@ -93,9 +114,11 @@ fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>
 mod tests {
     use ray_shared::pathlib::{FilePath, ModulePath};
 
+    use ray_shared::{def::DefId, node_id::NodeId};
+
     use crate::{
         queries::{
-            closures::closures_in_def,
+            closures::{closure_info, closures_in_def},
             libraries::LoadedLibraries,
             parse::parse_file,
             workspace::{FileSource, WorkspaceSnapshot},
@@ -303,5 +326,104 @@ fn simple(x: int) -> int { x + 1 }
         let closures = closures_in_def(&db, fake_def_id);
 
         assert!(closures.is_empty(), "Unknown def should return empty vec");
+    }
+
+    #[test]
+    fn closure_info_returns_info_for_valid_closure_node() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with a closure
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+fn outer() {
+    x = 42
+    f = () => x + 1
+    f()
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let outer_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "outer")
+            .expect("should find outer function");
+
+        // First get the closure via closures_in_def to get its NodeId
+        let closures = closures_in_def(&db, outer_def.def_id);
+        assert_eq!(closures.len(), 1, "Should find 1 closure");
+
+        let closure_node_id = closures[0].closure_expr;
+
+        // Now look up via closure_info
+        let info = closure_info(&db, closure_node_id);
+        assert!(info.is_some(), "closure_info should return Some for valid closure");
+
+        let info = info.unwrap();
+        assert_eq!(info.closure_expr, closure_node_id);
+        assert_eq!(info.parent_def, outer_def.def_id);
+        assert!(!info.captures.is_empty(), "Closure should capture x");
+    }
+
+    #[test]
+    fn closure_info_returns_none_for_non_closure_node() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "fn foo() {}".to_string());
+
+        // Create a fake NodeId that doesn't correspond to a closure
+        let fake_def_id = DefId {
+            file: file_id,
+            index: 0,
+        };
+        let fake_node_id = NodeId {
+            owner: fake_def_id,
+            index: 9999,
+        };
+
+        let info = closure_info(&db, fake_node_id);
+        assert!(info.is_none(), "closure_info should return None for non-closure node");
+    }
+
+    #[test]
+    fn closure_info_returns_none_for_unknown_owner() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "fn foo() {}".to_string());
+
+        // Create a NodeId with a non-existent owner DefId
+        let fake_def_id = DefId {
+            file: file_id,
+            index: 999,
+        };
+        let fake_node_id = NodeId {
+            owner: fake_def_id,
+            index: 1,
+        };
+
+        let info = closure_info(&db, fake_node_id);
+        assert!(info.is_none(), "closure_info should return None for unknown owner");
     }
 }
