@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use ray_shared::ty::Ty;
+use ray_shared::{pathlib::ItemPath, ty::Ty};
 
 use crate::{
     constraint_tree::ConstraintNode,
@@ -22,7 +22,7 @@ use crate::{
         ResolveCallConstraint,
     },
     context::{ImplFailure, InstanceFailure, InstanceFailureStatus, SolverContext},
-    env::GlobalEnv,
+    env::TypecheckEnv,
     impl_match::{
         ImplHeadMatch, collect_discarded_trial_metas, collect_meta_roots, commit_trial_subst,
         instantiate_impl_predicates, match_impl_head,
@@ -57,7 +57,6 @@ struct InstanceSolveResult {
 fn solve_constraint(
     constraint: &Constraint,
     givens_with_subst: &[Constraint],
-    global_env: &GlobalEnv,
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> SolveOutcome {
@@ -68,8 +67,7 @@ fn solve_constraint(
     }
 
     // Next, try to solve via instance resolution.
-    let instance_result =
-        solve_with_instances(constraint, givens_with_subst, global_env, subst, ctx);
+    let instance_result = solve_with_instances(constraint, givens_with_subst, subst, ctx);
     match instance_result.status {
         InstanceSolveStatus::Solved => {
             return SolveOutcome::Solved;
@@ -82,7 +80,7 @@ fn solve_constraint(
 
     // Then try HasField / Recv using the global metadata and auto-ref/deref.
     if let ConstraintKind::HasField(_) = &constraint.kind {
-        if solve_has_field(constraint, global_env, subst, ctx) {
+        if solve_has_field(constraint, subst, ctx) {
             return SolveOutcome::Solved;
         }
     }
@@ -94,7 +92,7 @@ fn solve_constraint(
     }
 
     if let ConstraintKind::ResolveCall(_) = &constraint.kind {
-        return solve_resolve_call(constraint, givens_with_subst, global_env, subst, ctx);
+        return solve_resolve_call(constraint, givens_with_subst, subst, ctx);
     }
 
     // Finally, treat syntactic matches against givens as solved.
@@ -128,7 +126,6 @@ pub struct ConstraintSolveResult {
 
 pub fn solve_goals(
     root: &mut ConstraintNode,
-    global_env: &GlobalEnv,
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> GoalSolveResult {
@@ -139,7 +136,7 @@ pub fn solve_goals(
     root.apply_subst(subst);
 
     // Solve predicates bottom-up, propagating unsolved wanteds upward.
-    let residual = solve_node(root, &Vec::new(), global_env, subst, ctx);
+    let residual = solve_node(root, &Vec::new(), subst, ctx);
 
     // Apply any new equalities discovered during goal solving to the tree as
     // well, so downstream consumers see fully simplified constraints.
@@ -157,11 +154,10 @@ pub fn solve_goals(
 pub fn solve_constraints(
     wanteds: &[Constraint],
     givens: &[Constraint],
-    global_env: &GlobalEnv,
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> ConstraintSolveResult {
-    let base_givens = expand_givens_with_super_traits(givens, global_env);
+    let base_givens = expand_givens_with_super_traits(givens, ctx.env());
     // Run predicate solving to a local fixpoint as required by the
     // entailment rules (docs/type-system.md Section 7): newly discovered
     // equalities from solved predicates may enable additional wanteds
@@ -189,7 +185,7 @@ pub fn solve_constraints(
                 continue;
             }
 
-            match solve_constraint(&constraint, &givens_with_subst, global_env, subst, ctx) {
+            match solve_constraint(&constraint, &givens_with_subst, subst, ctx) {
                 SolveOutcome::Solved => {
                     solved.push(constraint);
                     progress = true;
@@ -257,8 +253,8 @@ pub fn solve_constraints(
 
 fn class_predicate_from_ty(ty: &Ty) -> Option<ClassPredicate> {
     match ty {
-        Ty::Proj(path, args) => Some(ClassPredicate::new(path.to_string(), args.clone())),
-        Ty::Const(path) => Some(ClassPredicate::new(path.to_string(), Vec::new())),
+        Ty::Proj(path, args) => Some(ClassPredicate::new(path.clone(), args.clone())),
+        Ty::Const(path) => Some(ClassPredicate::new(path.clone(), Vec::new())),
         _ => None,
     }
 }
@@ -266,9 +262,9 @@ fn class_predicate_from_ty(ty: &Ty) -> Option<ClassPredicate> {
 fn instantiate_super_trait_constraints(
     cp: &ClassPredicate,
     info: &TypeSystemInfo,
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
 ) -> Vec<Constraint> {
-    let trait_ty = match global_env.get_trait(&cp.name) {
+    let trait_ty = match env.trait_def(&cp.path) {
         Some(t) => t,
         None => return Vec::new(),
     };
@@ -301,13 +297,13 @@ fn instantiate_super_trait_constraints(
 
 fn expand_givens_with_super_traits(
     givens: &[Constraint],
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
 ) -> Vec<Constraint> {
     let mut result = givens.to_vec();
     let mut idx = 0;
     while idx < result.len() {
         if let ConstraintKind::Class(cp) = &result[idx].kind {
-            let supers = instantiate_super_trait_constraints(cp, &result[idx].info, global_env);
+            let supers = instantiate_super_trait_constraints(cp, &result[idx].info, env);
             for sup in supers {
                 if !result.iter().any(|existing| existing.kind == sup.kind) {
                     result.push(sup);
@@ -324,7 +320,6 @@ fn expand_givens_with_super_traits(
 fn solve_node(
     node: &ConstraintNode,
     inherited_givens: &Vec<Constraint>,
-    global_env: &GlobalEnv,
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> Vec<Constraint> {
@@ -333,13 +328,13 @@ fn solve_node(
     combined_givens.extend(node.givens.clone());
 
     // Solve this node's wanteds against the combined givens.
-    let batch = solve_constraints(&node.wanteds, &combined_givens, global_env, subst, ctx);
+    let batch = solve_constraints(&node.wanteds, &combined_givens, subst, ctx);
     combined_givens.extend(batch.solved.iter().cloned());
     let mut propagated = batch.unsolved;
 
     // Recurse into children, letting them inherit the combined givens.
     for child in &node.children {
-        let child_unsolved = solve_node(child, &combined_givens, global_env, subst, ctx);
+        let child_unsolved = solve_node(child, &combined_givens, subst, ctx);
         propagated.extend(child_unsolved);
     }
 
@@ -375,7 +370,7 @@ fn solve_with_givens(wanted: &Constraint, givens: &[Constraint], subst: &mut Sub
             continue;
         };
 
-        if wp.name != gp.name || wp.args.len() != gp.args.len() {
+        if wp.path != gp.path || wp.args.len() != gp.args.len() {
             continue;
         }
 
@@ -435,7 +430,6 @@ fn solve_with_givens(wanted: &Constraint, givens: &[Constraint], subst: &mut Sub
 fn solve_with_instances(
     wanted: &Constraint,
     givens: &[Constraint],
-    global_env: &GlobalEnv,
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> InstanceSolveResult {
@@ -495,8 +489,8 @@ fn solve_with_instances(
     let mut failures: Vec<ImplFailure> = Vec::new();
     let mut saw_head_match = false;
 
-    for impl_ty in global_env.impls_for_trait(&wp.name) {
-        let Some(head) = match_impl_head(wp, impl_ty, subst, ctx, &wanted.info) else {
+    for impl_ty in ctx.env().impls_for_trait(&wp.path) {
+        let Some(head) = match_impl_head(wp, &impl_ty, subst, ctx, &wanted.info) else {
             continue;
         };
 
@@ -519,26 +513,20 @@ fn solve_with_instances(
             // be instantiated to the same fresh metas as the impl head
             // (base_ty/ty_args) before we can attempt to solve them.
             let instantiated_preds =
-                instantiate_impl_predicates(impl_ty, &schema_subst, &trial_subst);
+                instantiate_impl_predicates(&impl_ty, &schema_subst, &trial_subst);
 
             let instantiated_constraints = instantiated_preds
                 .into_iter()
                 .map(|p| Constraint::from_predicate(p, wanted.info.clone()))
                 .collect::<Vec<_>>();
 
-            let batch = solve_constraints(
-                &instantiated_constraints,
-                givens,
-                global_env,
-                &mut trial_subst,
-                ctx,
-            );
+            let batch = solve_constraints(&instantiated_constraints, givens, &mut trial_subst, ctx);
             if !batch.unsolved.is_empty() {
                 let mut args = Vec::with_capacity(1 + ty_args_head.len());
                 args.push(base_ty_head.clone());
                 args.extend(ty_args_head.iter().cloned());
                 failures.push(ImplFailure {
-                    impl_head: ClassPredicate::new(wp.name.clone(), args),
+                    impl_head: ClassPredicate::new(wp.path.clone(), args),
                     unsatisfied: batch.unsolved,
                 });
                 ctx.reuse_metas(trial_metas);
@@ -564,7 +552,7 @@ fn solve_with_instances(
             // Reuse only discarded trial metas; kept trial metas effectively
             // become part of global inference state because they are reachable
             // from pre-existing metas or residual obligations.
-            let meta_roots = collect_meta_roots(wp, givens, impl_ty, &trial_subst);
+            let meta_roots = collect_meta_roots(wp, givens, &impl_ty, &trial_subst);
             let discard_trial_metas =
                 collect_discarded_trial_metas(&meta_roots, &trial_metas, &trial_subst);
             let commit_subst = commit_trial_subst(&meta_roots, &trial_subst, subst);
@@ -602,12 +590,7 @@ fn solve_with_instances(
 /// has the named field and unifies the wanted field type with the declared
 /// field type. For now this ignores type parameters on the struct; it simply
 /// uses the mono field type from the StructTy.
-fn solve_has_field(
-    wanted: &Constraint,
-    global_env: &GlobalEnv,
-    subst: &mut Subst,
-    ctx: &mut SolverContext,
-) -> bool {
+fn solve_has_field(wanted: &Constraint, subst: &mut Subst, ctx: &mut SolverContext) -> bool {
     let hp = match &wanted.kind {
         ConstraintKind::HasField(hp) => hp,
         _ => return false,
@@ -624,14 +607,14 @@ fn solve_has_field(
         other => other.clone(),
     };
 
-    let struct_name = match &record_ty {
-        Ty::Const(p) | Ty::Proj(p, _) => p.to_string(),
+    let struct_path = match &record_ty {
+        Ty::Const(p) | Ty::Proj(p, _) => p,
         _ => {
             return false;
         }
     };
 
-    let struct_ty = match global_env.get_struct(&struct_name) {
+    let struct_ty = match ctx.env().struct_def(struct_path) {
         Some(s) => s,
         None => {
             return false;
@@ -759,7 +742,6 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
 fn solve_resolve_call(
     wanted: &Constraint,
     givens: &[Constraint],
-    global_env: &GlobalEnv,
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> SolveOutcome {
@@ -793,7 +775,6 @@ fn solve_resolve_call(
                 call,
                 wanted,
                 givens,
-                global_env,
                 subst,
                 ctx,
                 subject_ty: &subject_ty,
@@ -828,11 +809,11 @@ fn solve_resolve_call(
                 maybe_subject_fqn
             );
             let chosen = match choose_method(
-                maybe_subject_fqn.as_deref(),
+                maybe_subject_fqn.as_ref(),
                 &call.method_name,
                 StaticRequirement::NonStatic,
                 givens,
-                global_env,
+                ctx.env(),
             ) {
                 Some(chosen) => chosen,
                 None => return SolveOutcome::Unsolved,
@@ -844,7 +825,6 @@ fn solve_resolve_call(
                 call,
                 wanted,
                 givens,
-                global_env,
                 subst,
                 ctx,
                 subject_ty: &subject_ty,
@@ -875,15 +855,15 @@ struct InherentMethod {
 }
 
 #[derive(Clone, Debug)]
-struct TraitMethod<'a> {
-    trait_ty: &'a TraitTy,
-    field: &'a TraitField,
+struct TraitMethod {
+    trait_ty: TraitTy,
+    field: TraitField,
 }
 
 #[derive(Debug)]
-enum ChosenMethod<'a> {
+enum ChosenMethod {
     Inherent(InherentMethod),
-    Trait(TraitMethod<'a>),
+    Trait(TraitMethod),
 }
 
 #[allow(dead_code)]
@@ -894,15 +874,15 @@ enum StaticRequirement {
     Either,
 }
 
-fn subject_fqn(subject_ty: &Ty) -> Option<String> {
+fn subject_fqn(subject_ty: &Ty) -> Option<ItemPath> {
     let mut ty = subject_ty.clone();
     loop {
         match ty {
             Ty::Ref(inner) | Ty::RawPtr(inner) => {
                 ty = (*inner).clone();
             }
-            Ty::Const(p) => return Some(p.to_string()),
-            Ty::Proj(p, _) => return Some(p.to_string()),
+            Ty::Const(p) => return Some(p),
+            Ty::Proj(p, _) => return Some(p),
             Ty::Var(v) if v.is_meta() => return None,
             _ => return None,
         }
@@ -910,12 +890,12 @@ fn subject_fqn(subject_ty: &Ty) -> Option<String> {
 }
 
 fn find_unique_inherent_method(
-    global_env: &GlobalEnv,
-    recv_fqn: &str,
+    env: &dyn TypecheckEnv,
+    recv_fqn: &ItemPath,
     method_name: &str,
     required_is_static: StaticRequirement,
 ) -> Option<InherentMethod> {
-    let impls = global_env.inherent_impls.get(recv_fqn)?;
+    let impls = env.inherent_impls(recv_fqn);
     log::debug!(
         "[find_unique_inherent_method] recv_fqn = {}, impls = {:?}",
         recv_fqn,
@@ -923,10 +903,7 @@ fn find_unique_inherent_method(
     );
     let mut matches: Vec<InherentMethod> = Vec::new();
 
-    for idx in impls {
-        let Some(impl_ty) = global_env.resolve_impl_from_index(idx) else {
-            continue;
-        };
+    for impl_ty in impls {
         let recv_ty = match &impl_ty.kind {
             ImplKind::Inherent { recv_ty } => recv_ty.clone(),
             _ => continue,
@@ -975,7 +952,7 @@ fn solve_scoped_call(
         &ctx_bundle.call.method_name,
         required_is_static,
         ctx_bundle.givens,
-        ctx_bundle.global_env,
+        ctx_bundle.ctx.env(),
     )?;
     log::debug!(
         "[solve_scoped_call] chosen = {:?}, subject_ty = {}, recv_subst = {:?}",
@@ -1012,7 +989,7 @@ fn solve_scoped_call(
             )
         }
         ChosenMethod::Trait(method) => {
-            let trait_subst = receiver_subst_for_trait(method.trait_ty, ctx_bundle.subject_ty)?;
+            let trait_subst = receiver_subst_for_trait(&method.trait_ty, ctx_bundle.subject_ty)?;
             log::debug!(
                 "[solve_scoped_call] trait recv_ty = {}, trait_subst = {}",
                 method.trait_ty.ty,
@@ -1048,47 +1025,36 @@ struct ResolveCallContext<'a, 'ctx> {
     call: &'a ResolveCallConstraint,
     wanted: &'a Constraint,
     givens: &'a [Constraint],
-    global_env: &'a GlobalEnv,
     subst: &'a Subst,
     ctx: &'a mut SolverContext<'ctx>,
     subject_ty: &'a Ty,
-    subject_fqn: Option<&'a String>,
+    subject_fqn: Option<&'a ItemPath>,
     receiver_subst: Option<&'a Subst>,
 }
 
 fn choose_method<'a>(
-    subject_fqn: Option<&str>,
+    subject_fqn: Option<&ItemPath>,
     method_name: &str,
     required_is_static: StaticRequirement,
     givens: &[Constraint],
-    global_env: &'a GlobalEnv,
-) -> Option<ChosenMethod<'a>> {
+    env: &'a dyn TypecheckEnv,
+) -> Option<ChosenMethod> {
     let inherent = subject_fqn.and_then(|subject_fqn| {
-        find_unique_inherent_method(global_env, subject_fqn, method_name, required_is_static)
+        find_unique_inherent_method(env, subject_fqn, method_name, required_is_static)
     });
 
     let trait_method = subject_fqn
         .and_then(|subject_fqn| {
-            find_unique_trait_method_for_recv(
-                global_env,
-                subject_fqn,
-                method_name,
-                required_is_static,
-            )
+            find_unique_trait_method_for_recv(env, subject_fqn, method_name, required_is_static)
         })
         .or_else(|| {
             // Prefer trait methods that are in-scope via givens (including
             // expanded supertraits). This supports generic receiver method calls
             // like `key: 'k` under `where Hash['k]` without requiring a headed
             // subject type.
-            find_unique_trait_method_from_givens(
-                givens,
-                global_env,
-                method_name,
-                required_is_static,
-            )
+            find_unique_trait_method_from_givens(givens, env, method_name, required_is_static)
         })
-        .or_else(|| find_unique_trait_method(global_env, method_name, required_is_static));
+        .or_else(|| find_unique_trait_method(env, method_name, required_is_static));
 
     match (inherent, trait_method) {
         (Some(inherent), None) => Some(ChosenMethod::Inherent(inherent)),
@@ -1098,19 +1064,22 @@ fn choose_method<'a>(
 }
 
 fn find_unique_trait_method<'a>(
-    global_env: &'a GlobalEnv,
+    env: &'a dyn TypecheckEnv,
     method_name: &str,
     required_is_static: StaticRequirement,
-) -> Option<TraitMethod<'a>> {
-    let mut matches: Vec<TraitMethod<'a>> = Vec::new();
-    for trait_ty in global_env.traits.values() {
+) -> Option<TraitMethod> {
+    let mut matches: Vec<TraitMethod> = Vec::new();
+    for trait_ty in env.all_traits() {
         if let Some(field) = trait_ty.get_field(method_name) {
             match required_is_static {
                 StaticRequirement::Static if !field.is_static => continue,
                 StaticRequirement::NonStatic if field.is_static => continue,
                 _ => {}
             }
-            matches.push(TraitMethod { trait_ty, field });
+            matches.push(TraitMethod {
+                trait_ty: trait_ty.clone(),
+                field: field.clone(),
+            });
         }
     }
     if matches.len() == 1 {
@@ -1122,25 +1091,25 @@ fn find_unique_trait_method<'a>(
 
 fn find_unique_trait_method_from_givens<'a>(
     givens: &[Constraint],
-    global_env: &'a GlobalEnv,
+    env: &'a dyn TypecheckEnv,
     method_name: &str,
     required_is_static: StaticRequirement,
-) -> Option<TraitMethod<'a>> {
+) -> Option<TraitMethod> {
     let mut seen_trait_names: HashSet<&str> = HashSet::new();
-    let mut matches: Vec<TraitMethod<'a>> = Vec::new();
+    let mut matches: Vec<TraitMethod> = Vec::new();
 
     for given in givens {
         let ConstraintKind::Class(cp) = &given.kind else {
             continue;
         };
-        if !seen_trait_names.insert(cp.name.as_str()) {
+        if !seen_trait_names.insert(cp.path.as_str()) {
             continue;
         }
 
-        let Some(trait_ty) = global_env.get_trait(&cp.name) else {
+        let Some(trait_ty) = env.trait_def(&cp.path) else {
             continue;
         };
-        let Some(field) = trait_ty.get_field(method_name) else {
+        let Some(field) = trait_ty.get_field(method_name).cloned() else {
             continue;
         };
         match required_is_static {
@@ -1159,27 +1128,24 @@ fn find_unique_trait_method_from_givens<'a>(
 }
 
 fn find_unique_trait_method_for_recv<'a>(
-    global_env: &'a GlobalEnv,
-    recv_fqn: &str,
+    env: &'a dyn TypecheckEnv,
+    recv_fqn: &ItemPath,
     method_name: &str,
     required_is_static: StaticRequirement,
-) -> Option<TraitMethod<'a>> {
-    let impls = global_env.impls_by_recv.get(recv_fqn)?;
-    let mut seen_traits: HashSet<&str> = HashSet::new();
-    let mut matches: Vec<TraitMethod<'a>> = Vec::new();
+) -> Option<TraitMethod> {
+    let impls = env.impls_for_recv(recv_fqn);
+    let mut seen_traits: HashSet<ItemPath> = HashSet::new();
+    let mut matches: Vec<TraitMethod> = Vec::new();
 
-    for idx in impls {
-        let Some(impl_ty) = global_env.resolve_impl_from_index(idx) else {
-            continue;
-        };
+    for impl_ty in impls {
         let ImplKind::Trait { trait_ty, .. } = &impl_ty.kind else {
             continue;
         };
-        let trait_name = match trait_ty {
-            Ty::Const(p) | Ty::Proj(p, _) => p.as_str(),
+        let trait_path = match trait_ty {
+            Ty::Const(p) | Ty::Proj(p, _) => p,
             _ => continue,
         };
-        if !seen_traits.insert(trait_name) {
+        if !seen_traits.insert(trait_path.clone()) {
             continue;
         }
 
@@ -1191,10 +1157,10 @@ fn find_unique_trait_method_for_recv<'a>(
             continue;
         }
 
-        let Some(trait_ty) = global_env.get_trait(trait_name) else {
+        let Some(trait_ty) = env.trait_def(&trait_path) else {
             continue;
         };
-        let Some(field) = trait_ty.get_field(method_name) else {
+        let Some(field) = trait_ty.get_field(method_name).cloned() else {
             continue;
         };
         match required_is_static {
@@ -1320,7 +1286,7 @@ fn solve_chosen_method_call(
         }
 
         emitted.push(Constraint::class(
-            trait_ty.path.to_string(),
+            &trait_ty.path,
             trait_args,
             ctx_bundle.wanted.info.clone(),
         ));
@@ -1345,7 +1311,7 @@ fn solve_chosen_method_call(
 }
 
 fn solve_with_chosen_method(
-    chosen: &ChosenMethod<'_>,
+    chosen: &ChosenMethod,
     receiver_subst: Option<&Subst>,
     ctx_bundle: &mut ResolveCallContext<'_, '_>,
     trial_subst: &mut Subst,
@@ -1365,7 +1331,7 @@ fn solve_with_chosen_method(
             receiver_subst,
             method.field.is_static,
             method.field.recv_mode,
-            Some((method.trait_ty, method.field)),
+            Some((&method.trait_ty, &method.field)),
             ctx_bundle,
             trial_subst,
         ),
@@ -1377,8 +1343,7 @@ mod tests {
     use std::{collections::HashSet, rc::Rc};
 
     use ray_shared::{
-        collections::namecontext::NameContext,
-        pathlib::Path,
+        pathlib::{ItemPath, Path},
         ty::{Ty, TyVar},
     };
 
@@ -1387,9 +1352,9 @@ mod tests {
             ClassPredicate, Constraint, ConstraintKind, Predicate, RecvKind, ResolveCallConstraint,
         },
         context::SolverContext,
-        env::GlobalEnv,
         goal_solver::InstanceSolveStatus,
         info::TypeSystemInfo,
+        mocks::MockTypecheckEnv,
         types::{
             FieldKind, ImplKind, ImplTy, ReceiverMode, Subst, Substitutable as _, TraitField,
             TraitTy, TyScheme,
@@ -1400,10 +1365,10 @@ mod tests {
 
     #[test]
     fn solve_with_instances_instantiates_schema_vars_and_does_not_leak_trial_metas() {
-        let mut global_env = GlobalEnv::new();
-        // Global env with one impl:
+        // Mock env with one impl:
         // impl Add[rawptr['a], uint, rawptr['a]]
-        global_env.add_impl(ImplTy {
+        let mut typecheck_env = MockTypecheckEnv::new();
+        typecheck_env.add_impl(ImplTy {
             kind: ImplKind::Trait {
                 base_ty: Ty::rawptr(Ty::var("?s0")),
                 trait_ty: Ty::proj("Add", vec![Ty::var("?s0"), Ty::var("?s1"), Ty::var("?s2")]),
@@ -1413,8 +1378,7 @@ mod tests {
             fields: vec![],
         });
 
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
         let mut subst = Subst::new();
 
         // Old metas (these are allowed to remain in the final substitution)
@@ -1424,7 +1388,7 @@ mod tests {
         // Wanted: Add[rawptr[T], ?t0, ?t1]
         let wanted = Constraint::from_predicate(
             Predicate::Class(ClassPredicate::new(
-                "Add".to_string(),
+                "Add",
                 vec![
                     Ty::rawptr(Ty::con("T")),
                     Ty::Var(t0.clone()),
@@ -1438,7 +1402,7 @@ mod tests {
         let givens: Vec<Constraint> = vec![];
 
         // Act
-        let result = solve_with_instances(&wanted, &givens, &global_env, &mut subst, &mut ctx);
+        let result = solve_with_instances(&wanted, &givens, &mut subst, &mut ctx);
 
         // Assert
         assert_eq!(result.status, InstanceSolveStatus::Solved);
@@ -1466,10 +1430,10 @@ mod tests {
 
     #[test]
     fn solve_with_instances_returns_false_on_ambiguous_uint_vs_int_impls() {
-        let mut global_env = GlobalEnv::new();
+        let mut typecheck_env = MockTypecheckEnv::new();
 
         // impl Add[rawptr['a], uint, rawptr['a]]
-        global_env.add_impl(ImplTy {
+        typecheck_env.add_impl(ImplTy {
             kind: ImplKind::Trait {
                 base_ty: Ty::rawptr(Ty::var("?s0")),
                 trait_ty: Ty::proj("Add", vec![Ty::var("?s0"), Ty::var("?s1"), Ty::var("?s2")]),
@@ -1480,7 +1444,7 @@ mod tests {
         });
 
         // impl Add[rawptr['a], int, rawptr['a]]
-        global_env.add_impl(ImplTy {
+        typecheck_env.add_impl(ImplTy {
             kind: ImplKind::Trait {
                 base_ty: Ty::rawptr(Ty::var("?s0")),
                 trait_ty: Ty::proj("Add", vec![Ty::var("?s0"), Ty::var("?s1"), Ty::var("?s2")]),
@@ -1490,8 +1454,7 @@ mod tests {
             fields: vec![],
         });
 
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
         let mut subst = Subst::new();
 
         let t0 = ctx.fresh_meta().as_tyvar();
@@ -1499,7 +1462,7 @@ mod tests {
 
         let wanted = Constraint::from_predicate(
             Predicate::Class(ClassPredicate::new(
-                "Add".to_string(),
+                "Add",
                 vec![
                     Ty::rawptr(Ty::con("T")),
                     Ty::Var(t0.clone()),
@@ -1511,7 +1474,7 @@ mod tests {
 
         let givens: Vec<Constraint> = vec![];
 
-        let result = solve_with_instances(&wanted, &givens, &global_env, &mut subst, &mut ctx);
+        let result = solve_with_instances(&wanted, &givens, &mut subst, &mut ctx);
         assert_ne!(result.status, InstanceSolveStatus::Solved);
 
         // Ensure we did not commit any bindings on ambiguity.
@@ -1521,10 +1484,10 @@ mod tests {
 
     #[test]
     fn solve_with_instances_does_not_guess_for_unbound_meta_receiver() {
-        let mut global_env = GlobalEnv::new();
+        let mut typecheck_env = MockTypecheckEnv::new();
 
         // impl Int[int]
-        global_env.add_impl(ImplTy {
+        typecheck_env.add_impl(ImplTy {
             kind: ImplKind::Trait {
                 base_ty: Ty::int(),
                 trait_ty: Ty::proj("Int", vec![Ty::int()]),
@@ -1534,22 +1497,18 @@ mod tests {
             fields: vec![],
         });
 
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
         let mut subst = Subst::new();
 
         let t0 = ctx.fresh_meta().as_tyvar();
         let wanted = Constraint::from_predicate(
-            Predicate::Class(ClassPredicate::new(
-                "Int".to_string(),
-                vec![Ty::Var(t0.clone())],
-            )),
+            Predicate::Class(ClassPredicate::new("Int", vec![Ty::Var(t0.clone())])),
             TypeSystemInfo::default(),
         );
 
         let givens: Vec<Constraint> = vec![];
 
-        let result = solve_with_instances(&wanted, &givens, &global_env, &mut subst, &mut ctx);
+        let result = solve_with_instances(&wanted, &givens, &mut subst, &mut ctx);
         assert_ne!(result.status, InstanceSolveStatus::Solved);
         assert!(subst.get(&t0).is_none());
     }
@@ -1590,7 +1549,7 @@ mod tests {
         let t0 = TyVar::new("?t0");
         let wanted = Constraint::from_predicate(
             Predicate::Class(ClassPredicate::new(
-                "Div".to_string(),
+                "Div",
                 vec![
                     Ty::Var(k0.clone()),
                     Ty::Var(t0.clone()),
@@ -1602,7 +1561,7 @@ mod tests {
 
         let given = Constraint::from_predicate(
             Predicate::Class(ClassPredicate::new(
-                "Div".to_string(),
+                "Div",
                 vec![
                     Ty::Var(k0.clone()),
                     Ty::Var(k0.clone()),
@@ -1623,15 +1582,12 @@ mod tests {
         let k0 = TyVar::new("?k0");
         let t0 = TyVar::new("?t0");
         let wanted = Constraint::from_predicate(
-            Predicate::Class(ClassPredicate::new(
-                "Int".to_string(),
-                vec![Ty::Var(t0.clone())],
-            )),
+            Predicate::Class(ClassPredicate::new("Int", vec![Ty::Var(t0.clone())])),
             TypeSystemInfo::default(),
         );
 
         let given = Constraint::from_predicate(
-            Predicate::Class(ClassPredicate::new("Int".to_string(), vec![Ty::Var(k0)])),
+            Predicate::Class(ClassPredicate::new("Int", vec![Ty::Var(k0)])),
             TypeSystemInfo::default(),
         );
 
@@ -1641,14 +1597,14 @@ mod tests {
 
     #[test]
     fn resolve_call_instance_can_use_given_trait_method_with_schema_receiver() {
-        let mut global_env = GlobalEnv::new();
+        let mut typecheck_env = MockTypecheckEnv::new();
 
         let a = TyVar::from("?s0");
-        global_env.traits.insert(
-            "Hash".to_string(),
+        typecheck_env.add_trait(
+            ItemPath::from("Hash"),
             TraitTy {
                 path: Path::from("Hash"),
-                ty: Ty::Proj(Path::from("Hash").into(), vec![Ty::Var(a.clone())]),
+                ty: Ty::Proj(ItemPath::from("Hash"), vec![Ty::Var(a.clone())]),
                 super_traits: vec![],
                 fields: vec![TraitField {
                     name: "hash".to_string(),
@@ -1665,8 +1621,7 @@ mod tests {
             },
         );
 
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
         let mut subst = Subst::new();
 
         let k = TyVar::from("?s1");
@@ -1683,12 +1638,12 @@ mod tests {
         };
 
         let givens = vec![Constraint::class(
-            "Hash".to_string(),
+            "Hash",
             vec![subject_ty],
             TypeSystemInfo::default(),
         )];
 
-        let res = solve_constraints(&[wanted], &givens, &global_env, &mut subst, &mut ctx);
+        let res = solve_constraints(&[wanted], &givens, &mut subst, &mut ctx);
         assert!(res.unsolved.is_empty());
     }
 }

@@ -1037,12 +1037,12 @@ pub struct Program {
     pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
     pub poly_fn_map: HashMap<Path, usize>,
-    /// Side table of available impls keyed by trait FQN (string form).
+    /// Side table of available impls keyed by trait FQN.
     ///
     /// This is populated from the typing context and extended across linked
     /// libraries. The monomorphizer uses it to validate impl-qualifiers when
     /// selecting between overlapping polymorphic impl bodies.
-    pub impls_by_trait: BTreeMap<String, Vec<ImplTy>>,
+    pub impls_by_trait: BTreeMap<ItemPath, Vec<ImplTy>>,
     pub start_idx: i64,       // index in Funcs for _start
     pub module_main_idx: i64, // index in Funcs for module main
     pub user_main_idx: i64,   // index in Funcs for user main

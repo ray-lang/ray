@@ -588,36 +588,38 @@ impl<'a> GenCtx<'a> {
 
     pub fn call_from_op(
         &mut self,
-        operator_id: NodeId,
-        args: &[&Node<Expr>],
-        tcx: &TyCtx,
+        _operator_id: NodeId,
+        _args: &[&Node<Expr>],
+        _tcx: &TyCtx,
     ) -> RayResult<GenResult> {
-        let resolved = tcx
-            .call_resolution(operator_id)
-            .unwrap_or_else(|| panic!("missing call resolution for operator {:?}", operator_id));
+        todo!("FIXME: this uses legacy code that needs to change")
 
-        let mut call_args: Vec<lir::Variable> = Vec::with_capacity(args.len());
-        for arg in args {
-            let arg_ty = tcx.ty_of(arg.id);
-            let arg_val = arg.lir_gen(self, tcx)?;
-            call_args.push(self.value_to_local_or_unit(arg_val, arg_ty));
-        }
+        // let resolved = tcx
+        //     .call_resolution(operator_id)
+        //     .unwrap_or_else(|| panic!("missing call resolution for operator {:?}", operator_id));
 
-        let fn_name = if self.is_extern(&resolved.base_fqn) {
-            self.extern_link_name(&resolved.base_fqn)
-                .unwrap_or_else(|| resolved.base_fqn.clone())
-        } else {
-            sema::fn_name(&resolved.base_fqn, &resolved.callee_ty)
-        };
+        // let mut call_args: Vec<lir::Variable> = Vec::with_capacity(args.len());
+        // for arg in args {
+        //     let arg_ty = tcx.ty_of(arg.id);
+        //     let arg_val = arg.lir_gen(self, tcx)?;
+        //     call_args.push(self.value_to_local_or_unit(arg_val, arg_ty));
+        // }
 
-        self.add_sym(fn_name.clone());
-        Ok(lir::Call::new(
-            fn_name,
-            call_args,
-            resolved.callee_ty.clone(),
-            Some(resolved.poly_callee_ty.clone()),
-        )
-        .into())
+        // let fn_name = if self.is_extern(&resolved.base_fqn) {
+        //     self.extern_link_name(&resolved.base_fqn)
+        //         .unwrap_or_else(|| resolved.base_fqn.clone())
+        // } else {
+        //     sema::fn_name(&resolved.base_fqn, &resolved.callee_ty)
+        // };
+
+        // self.add_sym(fn_name.clone());
+        // Ok(lir::Call::new(
+        //     fn_name,
+        //     call_args,
+        //     resolved.callee_ty.clone(),
+        //     Some(resolved.poly_callee_ty.clone()),
+        // )
+        // .into())
     }
 
     #[allow(dead_code)]
@@ -1233,53 +1235,57 @@ impl<'a> GenCtx<'a> {
 
     fn emit_resolved_direct_call(
         &mut self,
-        resolved: &CallResolution,
-        call_args: Vec<lir::Variable>,
-        src: &Source,
+        _resolved: &CallResolution,
+        _call_args: Vec<lir::Variable>,
+        _src: &Source,
     ) -> RayResult<GenResult> {
-        let fn_name = if self.is_extern(&resolved.base_fqn) {
-            self.extern_link_name(&resolved.base_fqn)
-                .unwrap_or_else(|| resolved.base_fqn.clone())
-        } else {
-            sema::fn_name(&resolved.base_fqn, &resolved.callee_ty)
-        };
+        todo!("FIXME: this uses legacy code that needs to change")
 
-        log::debug!("add sym: {}", fn_name);
-        self.add_sym(fn_name.clone());
-        let mut call = lir::Call::new(
-            fn_name,
-            call_args,
-            resolved.callee_ty.clone(),
-            Some(resolved.poly_callee_ty.clone()),
-        );
-        call.source = Some(src.clone());
-        Ok(call.into())
+        // let fn_name = if self.is_extern(&resolved.base_fqn) {
+        //     self.extern_link_name(&resolved.base_fqn)
+        //         .unwrap_or_else(|| resolved.base_fqn.clone())
+        // } else {
+        //     sema::fn_name(&resolved.base_fqn, &resolved.callee_ty)
+        // };
+
+        // log::debug!("add sym: {}", fn_name);
+        // self.add_sym(fn_name.clone());
+        // let mut call = lir::Call::new(
+        //     fn_name,
+        //     call_args,
+        //     resolved.callee_ty.clone(),
+        //     Some(resolved.poly_callee_ty.clone()),
+        // );
+        // call.source = Some(src.clone());
+        // Ok(call.into())
     }
 
     fn resolve_trait_method_direct_call(
         &self,
-        trait_fqn: &ItemPath,
-        method_name: &str,
-        callee_ty: TyScheme,
-        tcx: &TyCtx,
+        _trait_fqn: &ItemPath,
+        _method_name: &str,
+        _callee_ty: TyScheme,
+        _tcx: &TyCtx,
     ) -> Option<CallResolution> {
-        let trait_ty = tcx.get_trait_ty(trait_fqn)?;
-        let method_name = method_name.to_string();
-        let trait_field = trait_ty.get_field(&method_name)?;
+        todo!("FIXME: this uses legacy code that needs to change")
 
-        let poly_callee_ty = trait_field.ty.clone();
-        let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
-            Ok((_, subst)) => subst,
-            Err(_) => Subst::new(),
-        };
+        // let trait_ty = tcx.get_trait_ty(trait_fqn)?;
+        // let method_name = method_name.to_string();
+        // let trait_field = trait_ty.get_field(&method_name)?;
 
-        let base_fqn = trait_ty.path.append(&method_name);
-        Some(CallResolution {
-            base_fqn,
-            poly_callee_ty,
-            callee_ty,
-            subst,
-        })
+        // let poly_callee_ty = trait_field.ty.clone();
+        // let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
+        //     Ok((_, subst)) => subst,
+        //     Err(_) => Subst::new(),
+        // };
+
+        // let base_fqn = trait_ty.path.append(&method_name);
+        // Some(CallResolution {
+        //     base_fqn,
+        //     poly_callee_ty,
+        //     callee_ty,
+        //     subst,
+        // })
     }
 
     fn emit_trait_method_call_with_recv_local(
@@ -1535,19 +1541,18 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    fn recv_mode_for_base(&self, tcx: &TyCtx, base: &Path) -> ReceiverMode {
-        log::debug!("[recv_mode_for_base] func_fqn = {}", base);
-        let norm_base = base.with_names_only();
-        let Some(method_name) = norm_base.name() else {
-            log::debug!("[recv_mode_for_base] missing method name: {}", norm_base);
+    fn recv_mode_for_base(&self, tcx: &TyCtx, path: &ItemPath) -> ReceiverMode {
+        log::debug!("[recv_mode_for_base] func_fqn = {}", path);
+        let Some(method_name) = path.item_name() else {
+            log::debug!("[recv_mode_for_base] missing method name: {}", path);
             return ReceiverMode::None;
         };
 
-        if let Some(trait_fqn) = tcx.resolve_trait_from_path(&norm_base) {
+        if let Some(trait_fqn) = tcx.resolve_trait_from_path(&path) {
             let Some(field) = tcx.get_trait_field(&trait_fqn, &method_name) else {
                 log::debug!(
                     "[recv_mode_for_base] could not resolve trait field {} for trait: {}",
-                    base,
+                    path,
                     trait_fqn,
                 );
                 return ReceiverMode::None;
@@ -1557,14 +1562,13 @@ impl<'a> GenCtx<'a> {
             return field.recv_mode;
         }
 
-        let recv_fqn = norm_base.parent();
-        if recv_fqn.is_empty() {
+        let Some(recv_fqn) = path.parent_item().filter(|path| !path.is_empty()) else {
             log::debug!(
                 "[recv_mode_for_base] could not derive receiver fqn from path: {}",
-                norm_base
+                path
             );
             return ReceiverMode::None;
-        }
+        };
 
         let Some((_, field)) = tcx.resolve_inherent_method(&recv_fqn, &method_name) else {
             log::debug!(
@@ -2269,133 +2273,135 @@ impl LirGen<GenResult> for BinOp {
 }
 
 impl LirGen<GenResult> for (&Call, &Source) {
-    fn lir_gen(&self, ctx: &mut GenCtx<'_>, tcx: &TyCtx) -> RayResult<GenResult> {
-        let &(call, src) = self;
-        let callee_is_direct_fn = call
-            .callee
-            .path()
-            .and_then(|path| ctx.maybe_direct_function(call.callee.id, path, tcx))
-            .is_some();
+    fn lir_gen(&self, _ctx: &mut GenCtx<'_>, _tcx: &TyCtx) -> RayResult<GenResult> {
+        todo!("FIXME: this uses legacy code that needs to change")
 
-        let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
-        let mut base = if let Expr::Dot(dot) = &call.callee.value {
-            let self_ty = tcx.ty_of(dot.lhs.id);
-            log::debug!("[Call::lir_gen] type of {}: {}", dot.lhs, self_ty);
-            arg_exprs.push((dot.lhs.as_ref(), self_ty));
-            Some(dot.rhs.path.clone())
-        } else if let Expr::ScopedAccess(scoped_access) = &call.callee.value {
-            if let Expr::Type(ty) = &scoped_access.lhs.value {
-                let base = ty.value().mono().get_path().without_type_args();
-                let member = scoped_access
-                    .rhs
-                    .value
-                    .path
-                    .name()
-                    .unwrap_or_else(|| scoped_access.rhs.value.to_string());
-                Some(base.append(member))
-            } else {
-                None
-            }
-        } else if callee_is_direct_fn {
-            call.callee.path().cloned()
-        } else {
-            None
-        };
+        // let &(call, src) = self;
+        // let callee_is_direct_fn = call
+        //     .callee
+        //     .path()
+        //     .and_then(|path| ctx.maybe_direct_function(call.callee.id, path, tcx))
+        //     .is_some();
 
-        let resolved = tcx.call_resolution(call.callee.id).cloned();
-        let fn_ty = if let Some(resolved) = &resolved {
-            base = Some(resolved.base_fqn.clone());
-            resolved.callee_ty.clone()
-        } else {
-            TyScheme::from_mono(
-                tcx.get_ty(call.callee.id)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "missing mono type for call callee {} ({:#x})",
-                            call.callee, call.callee.id
-                        )
-                    })
-                    .clone(),
-            )
-        };
+        // let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
+        // let mut base = if let Expr::Dot(dot) = &call.callee.value {
+        //     let self_ty = tcx.ty_of(dot.lhs.id);
+        //     log::debug!("[Call::lir_gen] type of {}: {}", dot.lhs, self_ty);
+        //     arg_exprs.push((dot.lhs.as_ref(), self_ty));
+        //     Some(dot.rhs.path.clone())
+        // } else if let Expr::ScopedAccess(scoped_access) = &call.callee.value {
+        //     if let Expr::Type(ty) = &scoped_access.lhs.value {
+        //         let base = ty.value().mono().get_path().without_type_args();
+        //         let member = scoped_access
+        //             .rhs
+        //             .value
+        //             .path
+        //             .name()
+        //             .unwrap_or_else(|| scoped_access.rhs.value.to_string());
+        //         Some(base.append(member))
+        //     } else {
+        //         None
+        //     }
+        // } else if callee_is_direct_fn {
+        //     call.callee.path().cloned()
+        // } else {
+        //     None
+        // };
 
-        log::debug!("[lir_gen] scheme for call {}: {}", call, fn_ty);
-        log::debug!(
-            "call: callee id={:#x} function type = {}",
-            call.callee.id,
-            fn_ty
-        );
+        // let resolved = tcx.call_resolution(call.callee.id).cloned();
+        // let fn_ty = if let Some(resolved) = &resolved {
+        //     base = Some(resolved.base_fqn.clone());
+        //     resolved.callee_ty.clone()
+        // } else {
+        //     TyScheme::from_mono(
+        //         tcx.get_ty(call.callee.id)
+        //             .unwrap_or_else(|| {
+        //                 panic!(
+        //                     "missing mono type for call callee {} ({:#x})",
+        //                     call.callee, call.callee.id
+        //                 )
+        //             })
+        //             .clone(),
+        //     )
+        // };
 
-        let mut evaluated_callee: Option<lir::Value> = None;
-        if base.is_none() {
-            let value = call.callee.lir_gen(ctx, tcx)?;
-            evaluated_callee = Some(value);
-        }
+        // log::debug!("[lir_gen] scheme for call {}: {}", call, fn_ty);
+        // log::debug!(
+        //     "call: callee id={:#x} function type = {}",
+        //     call.callee.id,
+        //     fn_ty
+        // );
 
-        for arg in call.args.items.iter() {
-            arg_exprs.push((arg, ctx.ty_of(tcx, arg.id)));
-        }
+        // let mut evaluated_callee: Option<lir::Value> = None;
+        // if base.is_none() {
+        //     let value = call.callee.lir_gen(ctx, tcx)?;
+        //     evaluated_callee = Some(value);
+        // }
 
-        let original_poly_ty = resolved
-            .as_ref()
-            .map(|resolved| resolved.poly_callee_ty.clone())
-            .or_else(|| tcx.get_poly_ty(call.callee.id).cloned());
+        // for arg in call.args.items.iter() {
+        //     arg_exprs.push((arg, ctx.ty_of(tcx, arg.id)));
+        // }
 
-        // Snapshot instantiated parameter types of the callee after substitution.
-        let param_monos = match fn_ty.mono() {
-            Ty::Func(params, _) => params.clone(),
-            _ => Vec::new(),
-        };
+        // let original_poly_ty = resolved
+        //     .as_ref()
+        //     .map(|resolved| resolved.poly_callee_ty.clone())
+        //     .or_else(|| tcx.get_poly_ty(call.callee.id).cloned());
 
-        let recv_mode = base
-            .as_ref()
-            .map(|base| ctx.recv_mode_for_base(tcx, base))
-            .unwrap_or_default();
+        // // Snapshot instantiated parameter types of the callee after substitution.
+        // let param_monos = match fn_ty.mono() {
+        //     Ty::Func(params, _) => params.clone(),
+        //     _ => Vec::new(),
+        // };
 
-        let fn_name = if resolved.is_none() {
-            base.clone().map(|base| {
-                log::debug!("base_name: {}", base);
-                if ctx.is_extern(&base) {
-                    ctx.extern_link_name(&base).unwrap_or(base)
-                } else {
-                    sema::fn_name(&base, &fn_ty)
-                }
-            })
-        } else {
-            None
-        };
+        // let recv_mode = base
+        //     .as_ref()
+        //     .map(|base| ctx.recv_mode_for_base(tcx, base))
+        //     .unwrap_or_default();
 
-        let is_method_call = matches!(&call.callee.value, Expr::Dot(_));
-        let call_args =
-            ctx.build_call_args(tcx, is_method_call, recv_mode, arg_exprs, &param_monos)?;
+        // let fn_name = if resolved.is_none() {
+        //     base.clone().map(|base| {
+        //         log::debug!("base_name: {}", base);
+        //         if ctx.is_extern(&base) {
+        //             ctx.extern_link_name(&base).unwrap_or(base)
+        //         } else {
+        //             sema::fn_name(&base, &fn_ty)
+        //         }
+        //     })
+        // } else {
+        //     None
+        // };
 
-        if let Some(resolved) = &resolved {
-            return ctx.emit_resolved_direct_call(resolved, call_args, src);
-        }
+        // let is_method_call = matches!(&call.callee.value, Expr::Dot(_));
+        // let call_args =
+        //     ctx.build_call_args(tcx, is_method_call, recv_mode, arg_exprs, &param_monos)?;
 
-        if let Some(fn_name) = fn_name {
-            log::debug!("poly_ty: {:?}", original_poly_ty);
-            ctx.emit_named_direct_call(
-                fn_name,
-                call_args,
-                fn_ty.clone(),
-                original_poly_ty.clone(),
-                src,
-            )
-        } else {
-            let callee_val = evaluated_callee
-                .take()
-                .map(Ok)
-                .unwrap_or_else(|| call.callee.lir_gen(ctx, tcx))?;
-            ctx.emit_fnhandle_call(
-                tcx,
-                call.callee.id,
-                callee_val,
-                call_args,
-                original_poly_ty,
-                src,
-            )
-        }
+        // if let Some(resolved) = &resolved {
+        //     return ctx.emit_resolved_direct_call(resolved, call_args, src);
+        // }
+
+        // if let Some(fn_name) = fn_name {
+        //     log::debug!("poly_ty: {:?}", original_poly_ty);
+        //     ctx.emit_named_direct_call(
+        //         fn_name,
+        //         call_args,
+        //         fn_ty.clone(),
+        //         original_poly_ty.clone(),
+        //         src,
+        //     )
+        // } else {
+        //     let callee_val = evaluated_callee
+        //         .take()
+        //         .map(Ok)
+        //         .unwrap_or_else(|| call.callee.lir_gen(ctx, tcx))?;
+        //     ctx.emit_fnhandle_call(
+        //         tcx,
+        //         call.callee.id,
+        //         callee_val,
+        //         call_args,
+        //         original_poly_ty,
+        //         src,
+        //     )
+        // }
     }
 }
 

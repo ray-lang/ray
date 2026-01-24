@@ -6,7 +6,7 @@ use std::{
 
 use itertools::Itertools as _;
 use ray_shared::{
-    pathlib::Path,
+    pathlib::{ItemPath, Path},
     ty::{Ty, TyVar},
     utils::join,
 };
@@ -78,7 +78,7 @@ pub struct Monomorphizer<'p> {
     name_set: HashSet<Path>,
     poly_fn_map: HashMap<Path, Node<lir::Func>>, // polymorphic functions
     poly_groups: HashMap<Path, Vec<Path>>,       // names-only -> candidate poly function names
-    impls_by_trait: BTreeMap<String, Vec<ImplTy>>,
+    impls_by_trait: BTreeMap<ItemPath, Vec<ImplTy>>,
     trait_member_set: HashSet<Path>,
     poly_mono_fn_idx: HashMap<Path, Vec<(Path, Ty)>>, // a mapping of polymorphic functions to monomorphizations
     mono_poly_fn_idx: HashMap<Path, Path>, // a mapping of monomorphic functions to their polymorphic counterpart
@@ -180,7 +180,7 @@ impl<'p> Monomorphizer<'p> {
         meta_alloc: &mut MonoMetaAllocator,
         visiting: &mut HashSet<ClassPredicate>,
     ) -> bool {
-        for impl_ty in self.impls_by_trait.get(&pred.name).into_iter().flatten() {
+        for impl_ty in self.impls_by_trait.get(&pred.path).into_iter().flatten() {
             let Some(head) = match_impl_head(pred, impl_ty, subst, meta_alloc, &Default::default())
             else {
                 log::debug!(

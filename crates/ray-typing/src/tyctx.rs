@@ -17,12 +17,11 @@ use crate::{
         ImplField, ImplTy, NominalKind, StructTy, Subst, Substitutable, TraitField, TraitTy,
         TyScheme,
     },
-    unify::mgu,
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CallResolution {
-    pub base_fqn: Path,
+    pub base_fqn: ItemPath,
     pub poly_callee_ty: TyScheme,
     pub callee_ty: TyScheme,
     pub subst: Subst,
@@ -296,14 +295,16 @@ impl TyCtx {
         todo!("is_scheme_var is not yet implemented for v2 TyCtx");
     }
 
-    pub fn resolve_trait_from_path(&self, path: &Path) -> Option<ItemPath> {
-        let parent = path.parent();
-        let key = parent.to_string();
-        if self.global_env.traits.contains_key(&key) {
-            Some(ItemPath::from(&parent))
-        } else {
-            None
-        }
+    pub fn resolve_trait_from_path(&self, _path: &ItemPath) -> Option<ItemPath> {
+        unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
+
+        // let parent = path.parent();
+        // let key = parent.to_string();
+        // if self.global_env.traits.contains_key(&key) {
+        //     Some(ItemPath::from(&parent))
+        // } else {
+        //     None
+        // }
     }
 
     pub fn lookup_infix_op(&self, name: &String) -> Option<&(Path, Path)> {
@@ -381,102 +382,104 @@ impl TyCtx {
     /// That is the form most useful for symbol/IDE indexing.
     pub fn resolve_method_impl_fqn(
         &self,
-        mut func_fqn: Path,
-        call_resolution_id: NodeId,
-        callee_id: NodeId,
-        arg_ids: &[NodeId],
-    ) -> Path {
-        // If constraint solving recorded a more precise method FQN for this
-        // call site (e.g., from trait resolution), prefer that.
-        if let Some(resolved) = self.call_resolution(call_resolution_id) {
-            log::debug!(
-                "[TyCtx::resolve_method_impl_fqn] resolved call: {} -> {}",
-                func_fqn,
-                resolved.base_fqn
-            );
-            func_fqn = resolved.base_fqn.clone();
-        }
+        _func_fqn: ItemPath,
+        _call_resolution_id: NodeId,
+        _callee_id: NodeId,
+        _arg_ids: &[NodeId],
+    ) -> ItemPath {
+        unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
 
-        log::debug!(
-            "[TyCtx::resolve_method_impl_fqn] initial func_fqn = {}",
-            func_fqn
-        );
+        // // If constraint solving recorded a more precise method FQN for this
+        // // call site (e.g., from trait resolution), prefer that.
+        // if let Some(resolved) = self.call_resolution(call_resolution_id) {
+        //     log::debug!(
+        //         "[TyCtx::resolve_method_impl_fqn] resolved call: {} -> {}",
+        //         func_fqn,
+        //         resolved.base_fqn
+        //     );
+        //     func_fqn = resolved.base_fqn.clone();
+        // }
 
-        // Reconstruct the substitution that `Call::lir_gen` derives from the
-        // callee and argument types by re-running the same type-level logic
-        // here in the type context, using only ids and `TyCtx` queries.
-        //
-        // This intentionally mirrors:
-        //
-        //   let callee_scheme = tcx.ty_of(call.callee.id);
-        //   let mut fn_ty = tcx.instantiate_scheme(callee_scheme.clone());
-        //   ...
-        //   let subst = fn_ty.instantiate_fn_with_args(instantiated_poly_ty.as_mut(), &mut arg_tys);
-        //
-        let callee_scheme = self.ty_of(callee_id);
-        let mut fn_ty = self.instantiate_scheme(callee_scheme.clone());
+        // log::debug!(
+        //     "[TyCtx::resolve_method_impl_fqn] initial func_fqn = {}",
+        //     func_fqn
+        // );
 
-        let mut arg_tys: Vec<TyScheme> = arg_ids.iter().map(|id| self.ty_of(*id)).collect();
+        // // Reconstruct the substitution that `Call::lir_gen` derives from the
+        // // callee and argument types by re-running the same type-level logic
+        // // here in the type context, using only ids and `TyCtx` queries.
+        // //
+        // // This intentionally mirrors:
+        // //
+        // //   let callee_scheme = tcx.ty_of(call.callee.id);
+        // //   let mut fn_ty = tcx.instantiate_scheme(callee_scheme.clone());
+        // //   ...
+        // //   let subst = fn_ty.instantiate_fn_with_args(instantiated_poly_ty.as_mut(), &mut arg_tys);
+        // //
+        // let callee_scheme = self.ty_of(callee_id);
+        // let mut fn_ty = self.instantiate_scheme(callee_scheme.clone());
 
-        let original_poly_ty = self.get_poly_ty(callee_id).cloned();
-        let mut instantiated_poly_ty = original_poly_ty
-            .clone()
-            .map(|ty| self.instantiate_scheme(ty));
+        // let mut arg_tys: Vec<TyScheme> = arg_ids.iter().map(|id| self.ty_of(*id)).collect();
 
-        let subst = fn_ty.instantiate_fn_with_args(instantiated_poly_ty.as_mut(), &mut arg_tys);
-        log::debug!(
-            "[TyCtx::resolve_method_impl_fqn] subst from args = {}",
-            subst
-        );
+        // let original_poly_ty = self.get_poly_ty(callee_id).cloned();
+        // let mut instantiated_poly_ty = original_poly_ty
+        //     .clone()
+        //     .map(|ty| self.instantiate_scheme(ty));
 
-        if !subst.is_empty() {
-            func_fqn.apply_subst(&subst);
-            log::debug!(
-                "[TyCtx::resolve_method_impl_fqn] after arg subst: {}",
-                func_fqn
-            );
-        }
+        // let subst = fn_ty.instantiate_fn_with_args(instantiated_poly_ty.as_mut(), &mut arg_tys);
+        // log::debug!(
+        //     "[TyCtx::resolve_method_impl_fqn] subst from args = {}",
+        //     subst
+        // );
 
-        // Next, mirror the trait-based refinement used in `Call::lir_gen`:
-        //  - Normalize to a trait path.
-        //  - Find the corresponding trait field.
-        //  - If we have an instantiated polymorphic type for the call, unify
-        //    it with the trait field's type to refine the substitution and
-        //    apply that to the method FQN.
-        let norm_func_fqn = func_fqn.with_names_only();
-        let trait_fqn = self.resolve_trait_from_path(&norm_func_fqn);
-        let field = trait_fqn
-            .as_ref()
-            .and_then(|trait_fqn| self.get_trait_field(trait_fqn, &func_fqn.name().unwrap()));
+        // if !subst.is_empty() {
+        //     func_fqn.apply_subst(&subst);
+        //     log::debug!(
+        //         "[TyCtx::resolve_method_impl_fqn] after arg subst: {}",
+        //         func_fqn
+        //     );
+        // }
 
-        log::debug!(
-            "[TyCtx::resolve_method_impl_fqn] trait_fqn={:?} field={:?}",
-            trait_fqn,
-            field.as_ref().map(|f| &f.name)
-        );
+        // // Next, mirror the trait-based refinement used in `Call::lir_gen`:
+        // //  - Normalize to a trait path.
+        // //  - Find the corresponding trait field.
+        // //  - If we have an instantiated polymorphic type for the call, unify
+        // //    it with the trait field's type to refine the substitution and
+        // //    apply that to the method FQN.
+        // let norm_func_fqn = func_fqn.with_names_only();
+        // let trait_fqn = self.resolve_trait_from_path(&norm_func_fqn);
+        // let field = trait_fqn
+        //     .as_ref()
+        //     .and_then(|trait_fqn| self.get_trait_field(trait_fqn, &func_fqn.name().unwrap()));
 
-        if let (Some(inst_ty), Some(field)) = (instantiated_poly_ty.as_ref(), field) {
-            let trait_fn_ty = &field.ty;
-            log::debug!(
-                "[TyCtx::resolve_method_impl_fqn] inst_ty: {}, trait_fn_ty: {}",
-                inst_ty,
-                trait_fn_ty
-            );
+        // log::debug!(
+        //     "[TyCtx::resolve_method_impl_fqn] trait_fqn={:?} field={:?}",
+        //     trait_fqn,
+        //     field.as_ref().map(|f| &f.name)
+        // );
 
-            if let Ok((_, trait_subst)) = mgu(trait_fn_ty.mono(), inst_ty.mono()) {
-                log::debug!(
-                    "[TyCtx::resolve_method_impl_fqn] trait_subst: {}",
-                    trait_subst
-                );
-                func_fqn.apply_subst(&trait_subst);
-                log::debug!(
-                    "[TyCtx::resolve_method_impl_fqn] after trait subst: {}",
-                    func_fqn
-                );
-            }
-        }
+        // if let (Some(inst_ty), Some(field)) = (instantiated_poly_ty.as_ref(), field) {
+        //     let trait_fn_ty = &field.ty;
+        //     log::debug!(
+        //         "[TyCtx::resolve_method_impl_fqn] inst_ty: {}, trait_fn_ty: {}",
+        //         inst_ty,
+        //         trait_fn_ty
+        //     );
 
-        func_fqn
+        //     if let Ok((_, trait_subst)) = mgu(trait_fn_ty.mono(), inst_ty.mono()) {
+        //         log::debug!(
+        //             "[TyCtx::resolve_method_impl_fqn] trait_subst: {}",
+        //             trait_subst
+        //         );
+        //         func_fqn.apply_subst(&trait_subst);
+        //         log::debug!(
+        //             "[TyCtx::resolve_method_impl_fqn] after trait subst: {}",
+        //             func_fqn
+        //         );
+        //     }
+        // }
+
+        // func_fqn
     }
 
     pub fn get_trait_ty(&self, path: &ItemPath) -> Option<&TraitTy> {
@@ -486,7 +489,8 @@ impl TyCtx {
 
     pub fn get_super_traits_from_ty(&self, ty: &Ty) -> Option<&Vec<Ty>> {
         let fqn = ty.item_path()?;
-        self.get_trait_ty(fqn).map(|trait_ty| &trait_ty.super_traits)
+        self.get_trait_ty(fqn)
+            .map(|trait_ty| &trait_ty.super_traits)
     }
 
     pub fn get_trait_field(&self, trait_fqn: &ItemPath, field_name: &str) -> Option<&TraitField> {
@@ -551,7 +555,7 @@ impl TyCtx {
 
     pub fn resolve_inherent_method(
         &self,
-        recv_fqn: &Path,
+        recv_fqn: &ItemPath,
         method_name: &str,
     ) -> Option<(&ImplTy, &ImplField)> {
         let recv_key = recv_fqn.to_string();

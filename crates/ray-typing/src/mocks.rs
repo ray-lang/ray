@@ -1,0 +1,104 @@
+use std::collections::HashMap;
+
+use ray_shared::{def::DefId, pathlib::ItemPath};
+
+use crate::{
+    env::TypecheckEnv,
+    types::{ImplKind, ImplTy, StructTy, TraitTy, TyScheme},
+};
+
+#[derive(Default)]
+pub struct MockTypecheckEnv {
+    pub structs: HashMap<ItemPath, StructTy>,
+    pub traits: HashMap<ItemPath, TraitTy>,
+    pub impls: Vec<ImplTy>,
+}
+
+impl MockTypecheckEnv {
+    pub fn new() -> MockTypecheckEnv {
+        MockTypecheckEnv::default()
+    }
+
+    pub fn add_struct(&mut self, path: ItemPath, struct_ty: StructTy) {
+        self.structs.insert(path, struct_ty);
+    }
+
+    pub fn add_trait(&mut self, path: ItemPath, trait_ty: TraitTy) {
+        self.traits.insert(path, trait_ty);
+    }
+
+    pub fn add_impl(&mut self, impl_ty: ImplTy) {
+        self.impls.push(impl_ty);
+    }
+}
+
+impl TypecheckEnv for MockTypecheckEnv {
+    fn struct_def(&self, path: &ItemPath) -> Option<StructTy> {
+        self.structs.get(path).cloned()
+    }
+
+    fn trait_def(&self, path: &ItemPath) -> Option<TraitTy> {
+        self.traits.get(path).cloned()
+    }
+
+    fn all_traits(&self) -> Vec<TraitTy> {
+        self.traits.values().cloned().collect()
+    }
+
+    fn impls_for_trait(&self, trait_path: &ItemPath) -> Vec<ImplTy> {
+        self.impls
+            .iter()
+            .filter(|impl_ty| match &impl_ty.kind {
+                ImplKind::Trait { trait_ty, .. } => {
+                    trait_ty.item_path().map(|p| p == trait_path).unwrap_or(false)
+                }
+                ImplKind::Inherent { .. } => false,
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn inherent_impls(&self, type_path: &ItemPath) -> Vec<ImplTy> {
+        self.impls
+            .iter()
+            .filter(|impl_ty| match &impl_ty.kind {
+                ImplKind::Inherent { recv_ty } => {
+                    recv_ty.item_path().map(|p| p == type_path).unwrap_or(false)
+                }
+                ImplKind::Trait { .. } => false,
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn impls_for_recv(&self, recv_path: &ItemPath) -> Vec<ImplTy> {
+        self.impls
+            .iter()
+            .filter(|impl_ty| match &impl_ty.kind {
+                ImplKind::Inherent { recv_ty } => {
+                    recv_ty.item_path().map(|p| p == recv_path).unwrap_or(false)
+                }
+                ImplKind::Trait { base_ty, .. } => {
+                    base_ty.item_path().map(|p| p == recv_path).unwrap_or(false)
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn external_scheme(&self, _def_id: DefId) -> Option<TyScheme> {
+        None
+    }
+
+    fn resolve_builtin(&self, name: &str) -> ItemPath {
+        ItemPath::from(format!("core::{}", name).as_str())
+    }
+
+    fn infix_op(&self, _symbol: &str) -> Option<(ItemPath, ItemPath)> {
+        None
+    }
+
+    fn prefix_op(&self, _symbol: &str) -> Option<(ItemPath, ItemPath)> {
+        None
+    }
+}

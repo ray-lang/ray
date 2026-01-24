@@ -266,15 +266,16 @@ fn records_call_resolution_for_unary_ops() {
     let (_, result, tcx) = typecheck_src("records_call_resolution_for_unary_ops", src);
     assert_typechecks("records_call_resolution_for_unary_ops", &result);
 
-    let expected = Path::from("records_call_resolution_for_unary_ops::Neg::-");
-    assert!(
-        tcx.call_resolutions()
-            .values()
-            .any(|resolution| resolution.base_fqn.with_names_only() == expected),
-        "expected a call resolution for unary - via {}, got: {:?}",
-        expected,
-        tcx.call_resolutions()
-    );
+    todo!("FIXME: this uses legacy code that needs to change")
+    // let expected = Path::from("records_call_resolution_for_unary_ops::Neg::-");
+    // assert!(
+    //     tcx.call_resolutions()
+    //         .values()
+    //         .any(|resolution| resolution.base_fqn.with_names_only() == expected),
+    //     "expected a call resolution for unary - via {}, got: {:?}",
+    //     expected,
+    //     tcx.call_resolutions()
+    // );
 }
 
 #[test]
@@ -291,8 +292,8 @@ fn typechecks_generic_id_with_class_constraint() {
     let vars = vec![ty_var.clone()];
     let body = Ty::Var(ty_var.clone());
     let expected_ty = Ty::func(vec![body.clone()], body.clone());
-    let trait_name = module_path.append("Int").to_string();
-    let expected_preds = vec![Predicate::class(trait_name, vec![body])];
+    let trait_path = ItemPath::new(module_path.clone(), vec!["Int".into()]);
+    let expected_preds = vec![Predicate::class(trait_path, vec![body])];
     assert_scheme_eq(
         &tcx,
         &module_path,
@@ -739,8 +740,8 @@ fn poly() {
     let ty_b = Ty::Var(var_b);
     let ty_c = Ty::Var(var_c);
     let expected_ty = Ty::func(vec![ty_b.clone()], ty_c.clone());
-    let add_trait = module_path.append("Add").to_string();
-    let int_trait = module_path.append("Int").to_string();
+    let add_trait = ItemPath::new(module_path.clone(), vec!["Add".into()]);
+    let int_trait = ItemPath::new(module_path.clone(), vec!["Int".into()]);
     let expected_predicates = vec![
         Predicate::class(int_trait, vec![ty_a.clone()]),
         Predicate::class(add_trait, vec![ty_b, ty_a, ty_c]),
@@ -818,9 +819,9 @@ fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
     let var_a = TyVar::new("?s0");
     let ty_a = Ty::Var(var_a.clone());
     let abs_ty = Ty::func(vec![ty_a.clone()], ty_a.clone());
-    let int_trait = module_path.append("Int").to_string();
-    let lt_trait = module_path.append("Lt").to_string();
-    let neg_trait = module_path.append("Neg").to_string();
+    let int_trait = ItemPath::new(module_path.clone(), vec!["Int".into()]);
+    let lt_trait = ItemPath::new(module_path.clone(), vec!["Lt".into()]);
+    let neg_trait = ItemPath::new(module_path.clone(), vec!["Neg".into()]);
     let predicates = vec![
         Predicate::class(int_trait, vec![ty_a.clone()]),
         Predicate::class(lt_trait, vec![ty_a.clone(), ty_a.clone()]),

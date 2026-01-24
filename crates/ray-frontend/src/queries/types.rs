@@ -302,14 +302,8 @@ fn compute_func_scheme(
 /// Convert a type to a predicate (for where clauses).
 fn ty_to_predicate(ty: &Ty) -> Option<Predicate> {
     match ty {
-        Ty::Proj(path, args) => {
-            let name = path.to_string();
-            Some(Predicate::class(name, args.clone()))
-        }
-        Ty::Const(path) => {
-            let name = path.to_string();
-            Some(Predicate::class(name, vec![]))
-        }
+        Ty::Proj(path, args) => Some(Predicate::class(path.clone(), args.clone())),
+        Ty::Const(path) => Some(Predicate::class(path.clone(), vec![])),
         _ => None,
     }
 }

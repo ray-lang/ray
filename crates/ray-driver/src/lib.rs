@@ -477,46 +477,48 @@ fn collect_types(frontend: &FrontendResult) -> Vec<TypeInfo> {
     types
 }
 
-fn collect_definitions(frontend: &FrontendResult) -> Vec<DefinitionInfo> {
-    let mut definitions = Vec::new();
-    let mut seen_usage_ids = HashSet::new();
+fn collect_definitions(_frontend: &FrontendResult) -> Vec<DefinitionInfo> {
+    todo!("FIXME: this uses legacy code that needs to change")
 
-    // Prefer specialized call resolutions (e.g., trait method dispatch) before generic name matches.
-    for (usage_id, resolution) in frontend.tcx.call_resolutions() {
-        push_definition_entry(
-            frontend,
-            &mut definitions,
-            &mut seen_usage_ids,
-            *usage_id,
-            &resolution.base_fqn,
-        );
-    }
+    // let mut definitions = Vec::new();
+    // let mut seen_usage_ids = HashSet::new();
 
-    let mut name_refs = Vec::new();
-    for decl in &frontend.module.decls {
-        collect_decl_name_refs(decl, &mut name_refs);
-    }
+    // // Prefer specialized call resolutions (e.g., trait method dispatch) before generic name matches.
+    // for (usage_id, resolution) in frontend.tcx.call_resolutions() {
+    //     push_definition_entry(
+    //         frontend,
+    //         &mut definitions,
+    //         &mut seen_usage_ids,
+    //         *usage_id,
+    //         &resolution.base_fqn,
+    //     );
+    // }
 
-    for (usage_id, path) in name_refs {
-        push_definition_entry(
-            frontend,
-            &mut definitions,
-            &mut seen_usage_ids,
-            usage_id,
-            &path,
-        );
-    }
+    // let mut name_refs = Vec::new();
+    // for decl in &frontend.module.decls {
+    //     collect_decl_name_refs(decl, &mut name_refs);
+    // }
 
-    definitions.sort_by(|a, b| {
-        a.usage_filepath
-            .cmp(&b.usage_filepath)
-            .then_with(|| compare_span(a.usage_span, b.usage_span))
-            .then_with(|| a.usage_id.cmp(&b.usage_id))
-    });
+    // for (usage_id, path) in name_refs {
+    //     push_definition_entry(
+    //         frontend,
+    //         &mut definitions,
+    //         &mut seen_usage_ids,
+    //         usage_id,
+    //         &path,
+    //     );
+    // }
 
-    log::debug!("collected {} definition entries", definitions.len());
+    // definitions.sort_by(|a, b| {
+    //     a.usage_filepath
+    //         .cmp(&b.usage_filepath)
+    //         .then_with(|| compare_span(a.usage_span, b.usage_span))
+    //         .then_with(|| a.usage_id.cmp(&b.usage_id))
+    // });
 
-    definitions
+    // log::debug!("collected {} definition entries", definitions.len());
+
+    // definitions
 }
 
 fn push_definition_entry(

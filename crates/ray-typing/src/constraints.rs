@@ -3,7 +3,12 @@
 
 use std::collections::HashSet;
 
-use ray_shared::{def::DefId, local_binding::LocalBindingId, ty::{Ty, TyVar}};
+use ray_shared::{
+    def::DefId,
+    local_binding::LocalBindingId,
+    pathlib::ItemPath,
+    ty::{Ty, TyVar},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,15 +19,14 @@ use crate::{
 // Class predicates: trait-like constraints C[Recv, A1, ..., An].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClassPredicate {
-    // For now, we use a simple path-like name; this can be refined later.
-    pub name: String,
+    pub path: ItemPath,
     pub args: Vec<Ty>,
 }
 
 impl ClassPredicate {
-    pub fn new(name: impl Into<String>, args: Vec<Ty>) -> Self {
+    pub fn new(path: impl Into<ItemPath>, args: Vec<Ty>) -> Self {
         ClassPredicate {
-            name: name.into(),
+            path: path.into(),
             args,
         }
     }
@@ -242,9 +246,9 @@ pub enum Predicate {
 }
 
 impl Predicate {
-    pub fn class(name: impl Into<String>, args: Vec<Ty>) -> Predicate {
+    pub fn class(path: impl Into<ItemPath>, args: Vec<Ty>) -> Predicate {
         Predicate::Class(ClassPredicate {
-            name: name.into(),
+            path: path.into(),
             args,
         })
     }
@@ -303,7 +307,7 @@ impl Constraint {
         }
     }
 
-    pub fn class(name: impl Into<String>, args: Vec<Ty>, info: TypeSystemInfo) -> Self {
+    pub fn class(name: impl Into<ItemPath>, args: Vec<Ty>, info: TypeSystemInfo) -> Self {
         Constraint {
             kind: ConstraintKind::Class(ClassPredicate::new(name, args)),
             info,
@@ -524,7 +528,7 @@ impl std::fmt::Display for ClassPredicate {
             .map(|t| t.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        write!(f, "{}[{}]", self.name, args)
+        write!(f, "{}[{}]", self.path, args)
     }
 }
 

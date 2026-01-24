@@ -9,6 +9,7 @@ pub mod generalize;
 pub mod goal_solver;
 pub mod impl_match;
 pub mod info;
+pub mod mocks;
 pub mod path;
 pub mod term_solver;
 pub mod tyctx;
@@ -24,13 +25,13 @@ use ray_shared::binding_target::BindingTarget;
 use ray_shared::def::DefId;
 use ray_shared::local_binding::LocalBindingId;
 use ray_shared::{
-    collections::namecontext::NameContext,
     node_id::NodeId,
     pathlib::Path,
     span::Source,
     ty::{SchemaVarAllocator, Ty, TyVar},
 };
 
+use crate::env::TypecheckEnv;
 use crate::{
     binding_groups::{BindingGraph, BindingGroup, BindingId},
     constraint_tree::{
@@ -39,7 +40,6 @@ use crate::{
     constraints::{CallKind, Constraint, ConstraintKind, InstantiateTarget, Predicate},
     context::{ExprKind, InstanceFailureStatus, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
-    env::GlobalEnv,
     generalize::generalize_group,
     info::{Info, TypeSystemInfo},
     tyctx::TyCtx,
@@ -662,7 +662,7 @@ impl TypeError {
                         &mut msg,
                         &format!(
                             "type `{}` in this signature\n  {}\ndoes not implement trait `{}`{}",
-                            recv, scheme, class.name, suffix
+                            recv, scheme, class.path, suffix
                         ),
                     );
                     consumed.push(pred_idx);
@@ -793,12 +793,12 @@ pub fn typecheck(
     input: &TypeCheckInput,
     _options: TypecheckOptions,
     tcx: &mut TyCtx,
-    ncx: &NameContext,
+    env: &dyn TypecheckEnv,
 ) -> TypeCheckResult {
     // Shared type context checking pass. This will accumulate information
     // across binding groups. Seed any pre-existing binding schemes from
     // the frontend (e.g. annotated function types).
-    let mut ctx = SolverContext::new(input.schema_allocator.clone(), ncx, &tcx.global_env);
+    let mut ctx = SolverContext::new(input.schema_allocator.clone(), env);
     log::debug!(
         "[typecheck] schema variable start: ?s{}",
         ctx.schema_allocator_mut().curr_id()
@@ -813,13 +813,8 @@ pub fn typecheck(
     let groups = input.binding_groups();
 
     let pretty_subst = tcx.inverted_var_subst();
-    let BindingGroupResult { errors } = solve_groups(
-        input,
-        groups,
-        &mut ctx,
-        &tcx.global_env,
-        Some(&pretty_subst),
-    );
+    let BindingGroupResult { errors } =
+        solve_groups(input, groups, &mut ctx, env, Some(&pretty_subst));
 
     let binding_schemes = mem::take(&mut ctx.binding_schemes);
     let node_tys = mem::take(&mut ctx.expr_types);
@@ -1020,10 +1015,9 @@ pub fn typecheck_group<'a>(
     input: &TypeCheckInput,
     group: &BindingGroup<DefId>,
     external_schemes: impl Fn(DefId) -> Option<TyScheme> + 'a,
-    ncx: &'a NameContext,
-    global_env: &'a GlobalEnv,
+    env: &'a dyn TypecheckEnv,
 ) -> TypeCheckResult {
-    let mut ctx = SolverContext::new(input.schema_allocator.clone(), ncx, global_env);
+    let mut ctx = SolverContext::new(input.schema_allocator.clone(), env);
 
     // Set up external scheme lookup callback
     ctx.set_external_schemes(external_schemes);
@@ -1038,7 +1032,7 @@ pub fn typecheck_group<'a>(
         }
     }
 
-    let errors = solve_single_group(input, group, &mut ctx, global_env, None);
+    let errors = solve_single_group(input, group, &mut ctx, env, None);
 
     // Extract results
     let mut schemes = HashMap::new();
@@ -1062,7 +1056,7 @@ fn solve_single_group(
     input: &TypeCheckInput,
     group: &BindingGroup<DefId>,
     ctx: &mut SolverContext,
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
     pretty_subst: Option<&Subst>,
 ) -> Vec<TypeError> {
     let mut errors = vec![];
@@ -1086,15 +1080,14 @@ fn solve_single_group(
         }
     });
 
-    let env = SolverEnv::default();
+    let solve_env = SolverEnv::default();
     let mut subst = Subst::new();
     let residuals = solve_bindings(
         input,
         &mut root,
         &group.bindings,
         ctx,
-        &env,
-        global_env,
+        &solve_env,
         &mut subst,
         &mut errors,
     );
@@ -1102,7 +1095,7 @@ fn solve_single_group(
         subst: defaulted_subst,
         residuals,
         log,
-    } = apply_defaulting(input, ctx, group, global_env, residuals, &subst);
+    } = apply_defaulting(input, ctx, group, env, residuals, &subst);
     subst = defaulted_subst;
     ctx.apply_subst(&subst);
     push_defaulting_outcome_errors(
@@ -1117,7 +1110,7 @@ fn solve_single_group(
     // becomes `Int[int]`). Re-run goal solving after defaulting so that
     // newly-concrete predicates can be discharged by instances.
     let post_defaulting =
-        goal_solver::solve_constraints(&residuals, &env.givens, global_env, &mut subst, ctx);
+        goal_solver::solve_constraints(&residuals, &solve_env.givens, &mut subst, ctx);
     ctx.apply_subst(&subst);
     log::debug!("[typecheck_group] subst: {:#}", subst);
     check_residuals_and_emit_errors(
@@ -1135,18 +1128,12 @@ fn solve_groups(
     input: &TypeCheckInput,
     groups: Vec<BindingGroup<DefId>>,
     ctx: &mut SolverContext,
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
     pretty_subst: Option<&Subst>,
 ) -> BindingGroupResult {
     let mut errors = vec![];
     for group in groups.iter() {
-        errors.extend(solve_single_group(
-            input,
-            group,
-            ctx,
-            global_env,
-            pretty_subst,
-        ));
+        errors.extend(solve_single_group(input, group, ctx, env, pretty_subst));
     }
     BindingGroupResult { errors }
 }
@@ -1156,13 +1143,12 @@ fn solve_bindings(
     root: &mut ConstraintNode,
     bindings: &[DefId],
     ctx: &mut SolverContext,
-    env: &SolverEnv,
-    global_env: &GlobalEnv,
+    solve_env: &SolverEnv,
     subst: &mut Subst,
     errors: &mut Vec<TypeError>,
 ) -> Vec<Constraint> {
-    let residuals = solve_node(module, root, ctx, env, global_env, subst, errors);
-    let gen_result = generalize_group(module, ctx, bindings, &env.metas, residuals, subst);
+    let residuals = solve_node(module, root, ctx, solve_env, subst, errors);
+    let gen_result = generalize_group(module, ctx, bindings, &solve_env.metas, residuals, subst);
     for meta in gen_result.closing_subst.keys() {
         ctx.generalized_metas.insert(meta.clone());
     }
@@ -1185,12 +1171,11 @@ fn solve_local_bindings(
     root: &mut ConstraintNode,
     bindings: &[LocalBindingId],
     ctx: &mut SolverContext,
-    env: &SolverEnv,
-    global_env: &GlobalEnv,
+    solve_env: &SolverEnv,
     subst: &mut Subst,
     errors: &mut Vec<TypeError>,
 ) -> Vec<Constraint> {
-    let residuals = solve_node(module, root, ctx, env, global_env, subst, errors);
+    let residuals = solve_node(module, root, ctx, solve_env, subst, errors);
     // Local bindings get mono schemes - no generalization
     for local_id in bindings {
         if let Some(scheme) = ctx.binding_schemes.get(&(*local_id).into()) {
@@ -1207,14 +1192,13 @@ fn solve_node(
     module: &TypeCheckInput,
     node: &mut ConstraintNode,
     ctx: &mut SolverContext,
-    env: &SolverEnv,
-    global_env: &GlobalEnv,
+    solve_env: &SolverEnv,
     subst: &mut Subst,
     errors: &mut Vec<TypeError>,
 ) -> Vec<Constraint> {
-    let mut env = env.clone();
-    env.givens.extend(node.givens.iter().cloned());
-    env.metas.extend(node.metas.iter().cloned());
+    let mut solve_env = solve_env.clone();
+    solve_env.givens.extend(node.givens.iter().cloned());
+    solve_env.metas.extend(node.metas.iter().cloned());
 
     let new_constraints = instantiate_wanteds_into_equalities(&mut node.wanteds, ctx);
     node.wanteds.extend(new_constraints);
@@ -1227,10 +1211,9 @@ fn solve_node(
     errors.extend(term_result.errors);
     node.apply_subst(subst);
 
-    let goal_result =
-        goal_solver::solve_constraints(&node.wanteds, &env.givens, global_env, subst, ctx);
+    let goal_result = goal_solver::solve_constraints(&node.wanteds, &solve_env.givens, subst, ctx);
     let mut residuals = goal_result.unsolved;
-    env.givens.extend(goal_result.solved);
+    solve_env.givens.extend(goal_result.solved);
 
     for binding_node in &mut node.binding_nodes {
         let child_residuals = solve_local_bindings(
@@ -1238,8 +1221,7 @@ fn solve_node(
             &mut binding_node.root,
             &binding_node.bindings,
             ctx,
-            &env,
-            global_env,
+            &solve_env,
             subst,
             errors,
         );
@@ -1248,12 +1230,11 @@ fn solve_node(
     }
 
     for child in &mut node.children {
-        let child_residuals = solve_node(module, child, ctx, &env, global_env, subst, errors);
+        let child_residuals = solve_node(module, child, ctx, &solve_env, subst, errors);
         residuals.extend(child_residuals);
     }
 
-    let goal_result =
-        goal_solver::solve_constraints(&residuals, &env.givens, global_env, subst, ctx);
+    let goal_result = goal_solver::solve_constraints(&residuals, &solve_env.givens, subst, ctx);
     goal_result.unsolved
 }
 
@@ -1370,7 +1351,7 @@ fn check_residuals_and_emit_errors(
                     let subject_fqn = loop {
                         match ty {
                             Ty::Ref(inner) | Ty::RawPtr(inner) => ty = (*inner).clone(),
-                            Ty::Const(p) | Ty::Proj(p, _) => break Some(p.to_string()),
+                            Ty::Const(p) | Ty::Proj(p, _) => break Some(p),
                             Ty::Var(v) if v.is_meta() => break None,
                             _ => break None,
                         }
@@ -1378,7 +1359,7 @@ fn check_residuals_and_emit_errors(
 
                     if let Some(subject_fqn) = subject_fqn {
                         let mut inherent_candidates = Vec::new();
-                        for impl_ty in ctx.global_env().inherent_impls_for_key(&subject_fqn) {
+                        for impl_ty in ctx.env().inherent_impls(&subject_fqn) {
                             for field in &impl_ty.fields {
                                 let Some(name) = field.path.name() else {
                                     continue;
@@ -1391,7 +1372,7 @@ fn check_residuals_and_emit_errors(
                         }
 
                         let mut trait_candidates = Vec::new();
-                        for trait_ty in ctx.global_env().traits.values() {
+                        for trait_ty in ctx.env().all_traits() {
                             if let Some(field) = trait_ty.get_field(&resolve_call.method_name) {
                                 if field.is_static {
                                     continue;
@@ -1552,12 +1533,11 @@ mod tests {
     use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
     use ray_shared::{
-        collections::namecontext::NameContext,
         def::DefId,
         file_id::FileId,
         local_binding::LocalBindingId,
         node_id::NodeId,
-        pathlib::Path,
+        pathlib::{ItemPath, Path},
         ty::{SchemaVarAllocator, Ty},
     };
 
@@ -1568,6 +1548,7 @@ mod tests {
         constraint_tree::{build_constraint_tree_for_group, walk_tree},
         context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
         env::GlobalEnv,
+        mocks::MockTypecheckEnv,
         solve_bindings, solve_groups,
         tyctx::TyCtx,
         typecheck,
@@ -1626,12 +1607,12 @@ mod tests {
         );
 
         let module = make_single_binding_module(def_id, expr_id, kinds);
-        let ncx = NameContext::new();
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
+        let typecheck_env = MockTypecheckEnv::new();
+        let result = typecheck(&module, options, &mut ty_ctx, &typecheck_env);
         assert!(result.errors.is_empty());
     }
 
@@ -1655,12 +1636,13 @@ mod tests {
         );
 
         let module = make_single_binding_module(def_id, expr_id, kinds);
-        let ncx = NameContext::new();
+
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
+        let typecheck_env = MockTypecheckEnv::new();
+        let result = typecheck(&module, options, &mut ty_ctx, &typecheck_env);
         assert!(result.errors.is_empty());
     }
 
@@ -1689,12 +1671,13 @@ mod tests {
         );
 
         let module = make_single_binding_module(def_id, expr_id, kinds);
-        let ncx = NameContext::new();
+
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
+        let typecheck_env = MockTypecheckEnv::new();
+        let result = typecheck(&module, options, &mut ty_ctx, &typecheck_env);
         assert!(result.errors.is_empty());
     }
 
@@ -1710,12 +1693,13 @@ mod tests {
         kinds.insert(loop_expr, ExprKind::Loop { body: break_expr });
 
         let module = make_single_binding_module(def_id, loop_expr, kinds);
-        let ncx = NameContext::new();
+
         let global_env = GlobalEnv::new();
         let mut ty_ctx = TyCtx::new(global_env);
         let options = TypecheckOptions::default();
 
-        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
+        let typecheck_env = MockTypecheckEnv::new();
+        let result = typecheck(&module, options, &mut ty_ctx, &typecheck_env);
         assert!(result.errors.is_empty());
     }
 
@@ -1738,8 +1722,7 @@ mod tests {
 
         let module = make_single_binding_module(def_id, expr_id, kinds);
 
-        // Build a GlobalEnv with a struct A { x: bool } so HasField can succeed.
-        let mut global_env = GlobalEnv::new();
+        // Build a MockTypecheckEnv with a struct A { x: bool } so HasField can succeed.
         let struct_path = ray_shared::pathlib::Path::from("A");
         let bool_scheme = TyScheme::from_mono(Ty::bool());
         let struct_ty = crate::types::StructTy {
@@ -1748,14 +1731,14 @@ mod tests {
             ty: TyScheme::from_mono(Ty::Const(struct_path.clone().into())),
             fields: vec![("x".to_string(), bool_scheme)],
         };
-        global_env
-            .structs
-            .insert(struct_path.to_string(), struct_ty);
+
+        let mut typecheck_env = MockTypecheckEnv::new();
+        typecheck_env.add_struct(ItemPath::from("A"), struct_ty);
 
         let options = TypecheckOptions::default();
-        let ncx = NameContext::new();
-        let mut ty_ctx = TyCtx::new(global_env);
-        let result = typecheck(&module, options, &mut ty_ctx, &ncx);
+
+        let mut ty_ctx = TyCtx::new(GlobalEnv::new());
+        let result = typecheck(&module, options, &mut ty_ctx, &typecheck_env);
 
         assert!(result.errors.is_empty());
     }
@@ -1769,10 +1752,9 @@ mod tests {
         kinds.insert(root_expr, ExprKind::LiteralIntSized(Ty::u32()));
 
         let mut subst = Subst::new();
-        let global_env = GlobalEnv::new();
-        let env = SolverEnv::default();
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let solve_env = SolverEnv::default();
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let module = make_single_binding_module(def_id, root_expr, kinds);
 
@@ -1790,8 +1772,7 @@ mod tests {
             &mut root,
             &[def_id],
             &mut ctx,
-            &env,
-            &global_env,
+            &solve_env,
             &mut subst,
             &mut errors,
         );
@@ -1823,10 +1804,9 @@ mod tests {
         );
 
         let mut subst = Subst::new();
-        let global_env = GlobalEnv::new();
         let env = SolverEnv::default();
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let module = make_single_binding_module(def_id, root_expr, kinds);
 
@@ -1845,7 +1825,6 @@ mod tests {
             &[def_id],
             &mut ctx,
             &env,
-            &global_env,
             &mut subst,
             &mut errors,
         );
@@ -2073,10 +2052,10 @@ mod tests {
         };
 
         let mut subst = Subst::new();
-        let global_env = GlobalEnv::new();
         let env = SolverEnv::default();
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let mut root = build_constraint_tree_for_group(&module, &mut ctx, &group);
         walk_tree(&root, &mut |item| println!("{}", item));
@@ -2088,7 +2067,6 @@ mod tests {
             &[main_def],
             &mut ctx,
             &env,
-            &global_env,
             &mut subst,
             &mut errors,
         );
@@ -2189,17 +2167,14 @@ mod tests {
             bindings: vec![malloc_def, main_def],
         }];
 
-        let mut global_env = GlobalEnv::new();
-        global_env
-            .traits
-            .insert("core::Int".to_string(), int_trait_ty);
-        global_env.add_impl(uint_int_impl);
+        let mut typecheck_env = MockTypecheckEnv::new();
+        typecheck_env.add_trait(ItemPath::from("core::Int"), int_trait_ty);
+        typecheck_env.add_impl(uint_int_impl);
 
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
         ctx.binding_schemes.insert(malloc_def.into(), malloc_scheme);
 
-        let result = solve_groups(&module, groups, &mut ctx, &global_env, None);
+        let result = solve_groups(&module, groups, &mut ctx, &typecheck_env, None);
         assert!(
             result.errors.is_empty(),
             "expected no errors, got: {:?}",
@@ -2292,9 +2267,9 @@ mod tests {
         let module =
             make_multi_binding_module_with_patterns(binding_records, kinds, pattern_records);
 
-        // GlobalEnv: core::Int has a default type of `uint`, and there is an impl
+        // MockTypecheckEnv: core::Int has a default type of `uint`, and there is an impl
         // Int[uint]. This should allow defaulting to pick `uint` for the literal.
-        let mut global_env = GlobalEnv::new();
+        let mut typecheck_env = MockTypecheckEnv::new();
 
         let int_trait_ty = TraitTy {
             path: Path::from("core::Int"),
@@ -2303,9 +2278,7 @@ mod tests {
             fields: vec![],
             default_ty: Some(Ty::uint()),
         };
-        global_env
-            .traits
-            .insert("core::Int".to_string(), int_trait_ty);
+        typecheck_env.add_trait(ItemPath::from("core::Int"), int_trait_ty);
 
         let uint_int_impl = ImplTy {
             kind: ImplKind::Trait {
@@ -2316,7 +2289,7 @@ mod tests {
             predicates: vec![],
             fields: vec![],
         };
-        global_env.add_impl(uint_int_impl);
+        typecheck_env.add_impl(uint_int_impl);
 
         // Solve only the top-level group containing `main`. Local bindings are
         // solved via binding nodes under `main`.
@@ -2324,10 +2297,9 @@ mod tests {
             bindings: vec![main_def],
         }];
 
-        let ncx = NameContext::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
-        let result = solve_groups(&module, groups, &mut ctx, &global_env, None);
+        let result = solve_groups(&module, groups, &mut ctx, &typecheck_env, None);
         assert!(
             result.errors.is_empty(),
             "expected no errors, got: {:?}",

@@ -2,12 +2,71 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use ray_shared::{pathlib::Path, ty::Ty};
+use ray_shared::{
+    def::DefId,
+    pathlib::{ItemPath, Path},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ImplField, ImplKind, ImplTy, StructTy, Subst, Substitutable, TraitField, TraitTy,
+    ImplField, ImplTy, StructTy, Subst, Substitutable, TraitField, TraitTy, TyScheme,
 };
+
+/// Environment trait for typechecking that abstracts over definition lookups.
+///
+/// This trait allows the typechecker to be decoupled from the query system.
+/// The query layer implements this trait to provide definition lookups via queries,
+/// while the typechecker core only depends on these abstract methods.
+///
+/// The typechecker extracts `ItemPath` from `Ty` using `ty.item_path()` before
+/// calling these methods. The implementing layer then converts `ItemPath` to
+/// `DefTarget` internally for efficient lookups.
+pub trait TypecheckEnv {
+    /// Look up a struct definition by its path.
+    fn struct_def(&self, path: &ItemPath) -> Option<StructTy>;
+
+    /// Look up a trait definition by its path.
+    fn trait_def(&self, path: &ItemPath) -> Option<TraitTy>;
+
+    /// Find all trait definitions in the environment.
+    fn all_traits(&self) -> Vec<TraitTy>;
+
+    /// Get all implementations of a trait.
+    fn impls_for_trait(&self, trait_path: &ItemPath) -> Vec<ImplTy>;
+
+    /// Get all inherent implementations for a type.
+    fn inherent_impls(&self, type_path: &ItemPath) -> Vec<ImplTy>;
+
+    /// Get all implementations for a given receiver type.
+    fn impls_for_recv(&self, recv_path: &ItemPath) -> Vec<ImplTy>;
+
+    /// Look up the type scheme for a definition outside the current binding group.
+    ///
+    /// This is used for cross-group dependencies during typechecking.
+    fn external_scheme(&self, def_id: DefId) -> Option<TyScheme>;
+
+    /// Resolve a builtin type name to its definition path.
+    ///
+    /// This performs name resolution in the current context for builtin types
+    /// like `list`, `dict`, `set`, `range`, and builtin traits like `Index`,
+    /// `Deref`, `Hash`, `Eq`, `Iterable`, `Iter`.
+    ///
+    /// Primitives (int, float, bool) are handled separately as they're built
+    /// into `Ty` directly.
+    ///
+    /// If the name cannot be resolved, defaults to `core::{name}`.
+    fn resolve_builtin(&self, name: &str) -> ItemPath;
+
+    /// Look up the trait and method paths for an infix operator symbol.
+    ///
+    /// Returns `(trait_path, method_path)` for operators like `+`, `-`, `*`, etc.
+    fn infix_op(&self, symbol: &str) -> Option<(ItemPath, ItemPath)>;
+
+    /// Look up the trait and method paths for a prefix operator symbol.
+    ///
+    /// Returns `(trait_path, method_path)` for operators like `-` (negation), `!`, etc.
+    fn prefix_op(&self, symbol: &str) -> Option<(ItemPath, ItemPath)>;
+}
 
 #[derive(
     Clone, Copy, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
@@ -25,7 +84,7 @@ pub struct GlobalEnv {
     pub structs: HashMap<String, StructTy>,
     pub traits: HashMap<String, TraitTy>,
     pub impls: Vec<ImplTy>,
-    pub impls_by_trait: BTreeMap<String, Vec<ImplIndex>>,
+    pub impls_by_trait: BTreeMap<ItemPath, Vec<ImplIndex>>,
     pub impls_by_recv: BTreeMap<String, Vec<ImplIndex>>,
     pub inherent_impls: BTreeMap<String, Vec<ImplIndex>>,
     /// Mapping from binary operator symbols (e.g. "+") to the name of the
@@ -58,12 +117,14 @@ impl GlobalEnv {
         self.impls.get_mut(idx.as_usize())
     }
 
-    pub fn impls_for_trait(&self, trait_name: &str) -> impl Iterator<Item = &ImplTy> {
-        self.impls_by_trait
-            .get(trait_name)
-            .into_iter()
-            .flatten()
-            .flat_map(|idx| self.resolve_impl_from_index(idx))
+    pub fn impls_for_trait(&self, _trait_name: &str) -> Vec<&ImplTy> {
+        unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
+
+        // self.impls_by_trait
+        //     .get(trait_name)
+        //     .into_iter()
+        //     .flatten()
+        //     .flat_map(|idx| self.resolve_impl_from_index(idx))
     }
 
     pub fn inherent_impls_for_key(&self, key: &str) -> impl Iterator<Item = &ImplTy> {
@@ -74,39 +135,41 @@ impl GlobalEnv {
             .flat_map(|idx| self.resolve_impl_from_index(idx))
     }
 
-    pub fn add_impl(&mut self, impl_ty: ImplTy) {
-        match &impl_ty.kind {
-            ImplKind::Inherent { recv_ty } => {
-                let fqn = match recv_ty {
-                    Ty::Const(p) | Ty::Proj(p, _) => p.to_string(),
-                    _ => return,
-                };
+    pub fn add_impl(&mut self, _impl_ty: ImplTy) {
+        unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
 
-                let idx = ImplIndex(self.impls.len());
-                self.impls.push(impl_ty);
-                self.inherent_impls.entry(fqn).or_default().push(idx)
-            }
-            ImplKind::Trait {
-                trait_ty, base_ty, ..
-            } => {
-                let trait_name = match trait_ty {
-                    Ty::Const(p) | Ty::Proj(p, _) => p.to_string(),
-                    _ => return,
-                };
+        // match &impl_ty.kind {
+        //     ImplKind::Inherent { recv_ty } => {
+        //         let fqn = match recv_ty {
+        //             Ty::Const(p) | Ty::Proj(p, _) => p.to_string(),
+        //             _ => return,
+        //         };
 
-                log::debug!(
-                    "[add_impl] trait_name = {}, impl_ty = {:?}",
-                    trait_name,
-                    impl_ty
-                );
+        //         let idx = ImplIndex(self.impls.len());
+        //         self.impls.push(impl_ty);
+        //         self.inherent_impls.entry(fqn).or_default().push(idx)
+        //     }
+        //     ImplKind::Trait {
+        //         trait_ty, base_ty, ..
+        //     } => {
+        //         let trait_name = match trait_ty {
+        //             Ty::Const(p) | Ty::Proj(p, _) => p.to_string(),
+        //             _ => return,
+        //         };
 
-                let recv_name = base_ty.get_path().to_string();
-                let idx = ImplIndex(self.impls.len());
-                self.impls.push(impl_ty);
-                self.impls_by_trait.entry(trait_name).or_default().push(idx);
-                self.impls_by_recv.entry(recv_name).or_default().push(idx);
-            }
-        }
+        //         log::debug!(
+        //             "[add_impl] trait_name = {}, impl_ty = {:?}",
+        //             trait_name,
+        //             impl_ty
+        //         );
+
+        //         let recv_name = base_ty.get_path().to_string();
+        //         let idx = ImplIndex(self.impls.len());
+        //         self.impls.push(impl_ty);
+        //         self.impls_by_trait.entry(trait_name).or_default().push(idx);
+        //         self.impls_by_recv.entry(recv_name).or_default().push(idx);
+        //     }
+        // }
     }
 
     /// Register a binary operator symbol and its trait name.

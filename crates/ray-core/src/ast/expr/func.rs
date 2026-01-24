@@ -275,14 +275,13 @@ impl FuncSig {
         let mut qualifiers = vec![];
         if self.qualifiers.len() != 0 {
             for q in self.qualifiers.iter() {
-                // let q = q.clone_value();
-                let (fqn, ty_args) = match q.value() {
-                    Ty::Proj(name, args) => (name, args.clone()),
-                    Ty::Const(name) => (name, vec![]),
+                let (path, ty_args) = match q.value() {
+                    Ty::Proj(name, args) => (name.clone(), args.clone()),
+                    Ty::Const(name) => (name.clone(), vec![]),
                     _ => continue,
                 };
 
-                qualifiers.push(Predicate::class(fqn.to_string(), ty_args));
+                qualifiers.push(Predicate::class(path, ty_args));
             }
         }
 

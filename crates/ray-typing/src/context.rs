@@ -7,10 +7,10 @@ use std::rc::Rc;
 
 use crate::constraint_tree::SkolemizedAnnotation;
 use crate::constraints::{ClassPredicate, Constraint, Predicate};
-use crate::env::GlobalEnv;
+use crate::env::TypecheckEnv;
 use crate::info::TypeSystemInfo;
 use crate::types::{Subst, Substitutable, TyScheme};
-use ray_shared::collections::namecontext::NameContext;
+use ray_shared::pathlib::ItemPath;
 use ray_shared::ty::{SKOLEM_PREFIX, SchemaVarAllocator, Ty, TyVar};
 use ray_shared::{
     binding_target::BindingTarget, def::DefId, local_binding::LocalBindingId, node_id::NodeId,
@@ -179,8 +179,8 @@ pub enum ExprKind {
     /// trait `OpTrait[Left, Right, Result]` (docs/type-system.md,
     /// "Operators"). `trait_name` is the name of that trait (e.g. "Add").
     BinaryOp {
-        trait_fqn: Path,
-        method_fqn: Path,
+        trait_fqn: ItemPath,
+        method_fqn: ItemPath,
         lhs: NodeId,
         rhs: NodeId,
         operator: NodeId,
@@ -196,8 +196,8 @@ pub enum ExprKind {
     /// Unary operator application `op e`, typed via a unary operator
     /// trait `UnaryOpTrait[Arg, Result]` (e.g. "Neg").
     UnaryOp {
-        trait_fqn: Path,
-        method_fqn: Path,
+        trait_fqn: ItemPath,
+        method_fqn: ItemPath,
         operator: NodeId,
         expr: NodeId,
     },
@@ -270,7 +270,10 @@ pub enum AssignLhs {
     /// Index assignment `container[index] = rhs`, which uses the
     /// `Index[Container, Elem, Index]` trait as described in
     /// docs/type-system.md A.8.
-    Index { container: LocalBindingId, index: NodeId },
+    Index {
+        container: LocalBindingId,
+        index: NodeId,
+    },
     /// Error placeholder produced from a `Missing` pattern on the left-hand
     /// side. This allows type checking to continue for the right-hand side
     /// and surrounding expression without introducing bindings or additional
@@ -300,8 +303,17 @@ pub struct SolverContext<'a> {
     /// Skolemized schemes associated with bindings.
     pub skolemized_schemes: HashMap<BindingTarget, SkolemizedAnnotation>,
 
+    /// Meta variables that were intentionally generalized into a `forall`
+    /// during `generalize_group`. These should not be treated as "unsolved"
+    /// leaks when checking expression types post-solve.
+    pub generalized_metas: HashSet<TyVar>,
+
+    /// Failed class predicate attempts (e.g. impl head matched, but predicates failed).
+    pub predicate_failures: Vec<PredicateFailure>,
+
     /// Counter used to generate fresh meta type variables for expressions.
     next_meta_id: u32,
+
     /// Reusable fresh metas variables.
     reusable_metas: Vec<TyVar>,
 
@@ -318,24 +330,22 @@ pub struct SolverContext<'a> {
     /// Unique id counter for skolem variables introduced while checking
     /// annotated bindings.
     next_skolem_id: u32,
+
     /// Per-binding list of skolems currently in scope.
     binding_skolems: HashMap<BindingTarget, Vec<TyVar>>,
+
     /// Metadata for each skolem variable.
     skolem_metadata: HashMap<TyVar, SkolemMetadata>,
+
     /// Predicates required by annotated bindings (after skolemization).
     binding_required_preds: HashMap<BindingTarget, Vec<Predicate>>,
+
     /// Shared allocator for schema variables.
     schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
-    /// Name context containing resolved FQNs
-    ncx: &'a NameContext,
-    /// Global env
-    global_env: &'a GlobalEnv,
-    /// Meta variables that were intentionally generalized into a `forall`
-    /// during `generalize_group`. These should not be treated as "unsolved"
-    /// leaks when checking expression types post-solve.
-    pub generalized_metas: HashSet<TyVar>,
-    /// Failed class predicate attempts (e.g. impl head matched, but predicates failed).
-    pub predicate_failures: Vec<PredicateFailure>,
+
+    /// External typecheck environment
+    env: &'a dyn TypecheckEnv,
+
     /// Optional callback for looking up external schemes (e.g., from previously-checked
     /// binding groups in incremental compilation).
     external_schemes: Option<Box<dyn Fn(DefId) -> Option<TyScheme> + 'a>>,
@@ -359,8 +369,7 @@ impl<'a> MetaAllocator for SolverContext<'a> {
 impl<'a> SolverContext<'a> {
     pub fn new(
         schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
-        ncx: &'a NameContext,
-        global_env: &'a GlobalEnv,
+        env: &'a dyn TypecheckEnv,
     ) -> Self {
         SolverContext {
             expr_types: HashMap::new(),
@@ -376,8 +385,7 @@ impl<'a> SolverContext<'a> {
             skolem_metadata: HashMap::new(),
             binding_required_preds: HashMap::new(),
             schema_allocator,
-            ncx,
-            global_env,
+            env,
             generalized_metas: HashSet::new(),
             predicate_failures: Vec::new(),
             external_schemes: None,
@@ -567,7 +575,11 @@ impl<'a> SolverContext<'a> {
     }
 
     /// Record that a binding's annotation required a predicate.
-    pub fn record_required_predicate(&mut self, target: impl Into<BindingTarget>, predicate: Predicate) {
+    pub fn record_required_predicate(
+        &mut self,
+        target: impl Into<BindingTarget>,
+        predicate: Predicate,
+    ) {
         self.binding_required_preds
             .entry(target.into())
             .or_default()
@@ -589,12 +601,8 @@ impl<'a> SolverContext<'a> {
         self.schema_allocator.borrow_mut().alloc()
     }
 
-    pub fn ncx(&self) -> &NameContext {
-        self.ncx
-    }
-
-    pub fn global_env(&self) -> &GlobalEnv {
-        self.global_env
+    pub fn env(&self) -> &dyn TypecheckEnv {
+        self.env
     }
 
     /// Set the external schemes callback for looking up schemes from

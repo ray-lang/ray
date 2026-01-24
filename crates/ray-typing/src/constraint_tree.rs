@@ -8,6 +8,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
+    pathlib::ItemPath,
     ty::{Ty, TyVar},
     utils::{join, map_join},
 };
@@ -626,12 +627,9 @@ fn generate_constraints_for_expr(
                     expr,
                     expr_ty
                 );
-                let trait_fqn = ctx.ncx().builtin_ty("Int");
-                node.wanteds.push(Constraint::class(
-                    trait_fqn.to_string(),
-                    vec![expr_ty],
-                    info,
-                ));
+                let trait_path = ctx.env().resolve_builtin("Int");
+                node.wanteds
+                    .push(Constraint::class(trait_path, vec![expr_ty], info));
             }
             ExprKind::LiteralIntSized(int_ty) => {
                 // Sized integer literals (e.g. `1u32`) rely on surrounding
@@ -645,12 +643,9 @@ fn generate_constraints_for_expr(
             ExprKind::LiteralFloat => {
                 // For unsuffixed floating-point literals, generate a
                 // `Float[T]` class predicate (see "Float literals").
-                let trait_fqn = ctx.ncx().builtin_ty("Float");
-                node.wanteds.push(Constraint::class(
-                    trait_fqn.to_string(),
-                    vec![expr_ty],
-                    info,
-                ));
+                let trait_path = ctx.env().resolve_builtin("Float");
+                node.wanteds
+                    .push(Constraint::class(trait_path, vec![expr_ty], info));
             }
             ExprKind::LiteralFloatSized => {
                 // Sized floating-point literals (e.g. `1.0f64`) rely on
@@ -775,8 +770,8 @@ fn generate_constraints_for_expr(
                 //
                 // The goal solver, using the nominal StructTy metadata,
                 // relates these to the declared field types.
-                let struct_ty = if let Some(struct_decl) = ctx.global_env().get_struct(struct_name)
-                {
+                let struct_path = ItemPath::from(struct_name.as_str());
+                let struct_ty = if let Some(struct_decl) = ctx.env().struct_def(&struct_path) {
                     let mut struct_scheme = struct_decl.ty.clone();
                     let mut subst = Subst::new();
                     for var in struct_scheme.vars.iter() {
@@ -785,7 +780,7 @@ fn generate_constraints_for_expr(
                     struct_scheme.apply_subst(&subst);
                     struct_scheme.mono().clone()
                 } else {
-                    Ty::Const(struct_name.as_str().into())
+                    Ty::Const(struct_path)
                 };
 
                 // Tie the expression's type to the nominal struct type.
@@ -857,7 +852,8 @@ fn generate_constraints_for_expr(
                     node.wanteds
                         .push(Constraint::eq(item_ty, elem_ty.clone(), info.clone()));
                 }
-                let list_ty = Ty::proj(ctx.ncx().builtin_ty("list"), vec![elem_ty]);
+                let list_path = ctx.env().resolve_builtin("list");
+                let list_ty = Ty::proj(list_path, vec![elem_ty]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, list_ty, info.clone()));
             }
@@ -879,20 +875,20 @@ fn generate_constraints_for_expr(
                     ));
                 }
 
-                let dict_ty =
-                    Ty::proj(ctx.ncx().builtin_ty("dict"), vec![key_ty.clone(), value_ty]);
+                let dict_path = ctx.env().resolve_builtin("dict");
+                let dict_ty = Ty::proj(dict_path, vec![key_ty.clone(), value_ty]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, dict_ty, info.clone()));
 
-                let hash_trait_fqn = ctx.ncx().builtin_ty("Hash");
+                let hash_trait_fqn = ctx.env().resolve_builtin("Hash");
                 node.wanteds.push(Constraint::class(
-                    hash_trait_fqn.to_string(),
+                    hash_trait_fqn,
                     vec![key_ty.clone()],
                     info.clone(),
                 ));
-                let eq_trait_fqn = ctx.ncx().builtin_ty("Eq");
+                let eq_trait_fqn = ctx.env().resolve_builtin("Eq");
                 node.wanteds.push(Constraint::class(
-                    eq_trait_fqn.to_string(),
+                    eq_trait_fqn,
                     vec![key_ty.clone(), key_ty],
                     info,
                 ));
@@ -907,19 +903,19 @@ fn generate_constraints_for_expr(
                         .push(Constraint::eq(item_ty, elem_ty.clone(), info.clone()));
                 }
 
-                let set_ty = Ty::proj(ctx.ncx().builtin_ty("set"), vec![elem_ty.clone()]);
+                let set_ty = Ty::proj(ctx.env().resolve_builtin("set"), vec![elem_ty.clone()]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, set_ty, info.clone()));
 
-                let hash_trait_fqn = ctx.ncx().builtin_ty("Hash");
+                let hash_trait_fqn = ctx.env().resolve_builtin("Hash");
                 node.wanteds.push(Constraint::class(
-                    hash_trait_fqn.to_string(),
+                    hash_trait_fqn,
                     vec![elem_ty.clone()],
                     info.clone(),
                 ));
-                let eq_trait_fqn = ctx.ncx().builtin_ty("Eq");
+                let eq_trait_fqn = ctx.env().resolve_builtin("Eq");
                 node.wanteds.push(Constraint::class(
-                    eq_trait_fqn.to_string(),
+                    eq_trait_fqn,
                     vec![elem_ty.clone(), elem_ty],
                     info,
                 ));
@@ -946,7 +942,7 @@ fn generate_constraints_for_expr(
                 let elem_ty = ctx.fresh_meta();
 
                 // expr_ty == range[Tel]
-                let range_fqn = ctx.ncx().builtin_ty("range");
+                let range_fqn = ctx.env().resolve_builtin("range");
                 let range_ty = Ty::proj(range_fqn, vec![elem_ty.clone()]);
                 node.wanteds
                     .push(Constraint::eq(expr_ty.clone(), range_ty, info.clone()));
@@ -966,9 +962,9 @@ fn generate_constraints_for_expr(
                 // core library instances, without unifying the pointer
                 // constructors.
                 let inner_ty = ctx.expr_ty_or_fresh(*inner);
-                let deref_trait_fqn = ctx.ncx().builtin_ty("Deref");
+                let deref_trait_fqn = ctx.env().resolve_builtin("Deref");
                 node.wanteds.push(Constraint::class(
-                    deref_trait_fqn.to_string(),
+                    deref_trait_fqn,
                     vec![inner_ty, expr_ty.clone()],
                     info.clone(),
                 ));
@@ -1012,9 +1008,9 @@ fn generate_constraints_for_expr(
                     info.clone(),
                 ));
 
-                let index_fqn = ctx.ncx().builtin_ty("Index");
+                let index_fqn = ctx.env().resolve_builtin("Index");
                 node.wanteds.push(Constraint::class(
-                    index_fqn.to_string(),
+                    index_fqn,
                     vec![container_ty, elem_ty, index_ty],
                     info.clone(),
                 ));
@@ -1041,8 +1037,7 @@ fn generate_constraints_for_expr(
                 let mut args = vec![lhs_ty, rhs_ty];
 
                 // Look up declared arity of the trait, if available.
-                let trait_name = trait_fqn.to_string();
-                if let Some(trait_decl) = ctx.global_env().get_trait(&trait_name).cloned() {
+                if let Some(trait_decl) = ctx.env().trait_def(trait_fqn) {
                     let arity = trait_decl.ty.arity();
 
                     // For operator traits we use the *last* type parameter as the result.
@@ -1055,8 +1050,8 @@ fn generate_constraints_for_expr(
                         }
                     }
 
-                    let field_name = method_fqn.to_short_name();
-                    if let Some(field) = trait_decl.get_field(&field_name) {
+                    let field_name = method_fqn.as_str();
+                    if let Some(field) = trait_decl.get_field(field_name) {
                         if let Some((_, _, _, ret_ty)) = field.ty.try_borrow_fn() {
                             if !ret_ty.is_tyvar() {
                                 node.wanteds.push(Constraint::eq(
@@ -1100,8 +1095,7 @@ fn generate_constraints_for_expr(
                 let mut args = vec![arg_ty];
 
                 // Look up declared arity of the trait, if available.
-                let trait_name = trait_fqn.to_string();
-                if let Some(trait_decl) = ctx.global_env().get_trait(&trait_name).cloned() {
+                if let Some(trait_decl) = ctx.env().trait_def(trait_fqn) {
                     let arity = trait_decl.ty.arity();
 
                     // For operator traits we use the *last* type parameter as the result.
@@ -1114,8 +1108,8 @@ fn generate_constraints_for_expr(
                         }
                     }
 
-                    let field_name = method_fqn.to_short_name();
-                    if let Some(field) = trait_decl.get_field(&field_name) {
+                    let field_name = method_fqn.as_str();
+                    if let Some(field) = trait_decl.get_field(field_name) {
                         if let Some((_, _, _, ret_ty)) = field.ty.try_borrow_fn() {
                             if !ret_ty.is_tyvar() {
                                 node.wanteds.push(Constraint::eq(
@@ -1311,9 +1305,9 @@ fn generate_constraints_for_expr(
                         let elem_ty = ctx.fresh_meta();
                         ctx.expr_types.insert(*lhs_pattern, elem_ty.clone());
 
-                        let index_fqn = ctx.ncx().builtin_ty("Index");
+                        let index_fqn = ctx.env().resolve_builtin("Index");
                         node.wanteds.push(Constraint::class(
-                            index_fqn.to_string(),
+                            index_fqn,
                             vec![container_ty, elem_ty.clone(), index_ty],
                             info.clone(),
                         ));
@@ -1338,7 +1332,7 @@ fn generate_constraints_for_expr(
                         let cell_ty = ctx.fresh_meta();
                         ctx.expr_types.insert(*lhs_pattern, cell_ty.clone());
                         node.wanteds.push(Constraint::class(
-                            ctx.ncx().builtin_ty("Deref").to_string(),
+                            ctx.env().resolve_builtin("Deref"),
                             vec![ptr_ty, cell_ty.clone()],
                             info.clone(),
                         ));
@@ -1601,19 +1595,19 @@ fn generate_constraints_for_expr(
                 let it_ty = ctx.fresh_meta();
                 let elem_ty = ctx.fresh_meta();
 
-                let iterable_trait_fqn = ctx.ncx().builtin_ty("Iterable");
-                let iter_trait_fqn = ctx.ncx().builtin_ty("Iter");
+                let iterable_trait_fqn = ctx.env().resolve_builtin("Iterable");
+                let iter_trait_fqn = ctx.env().resolve_builtin("Iter");
 
                 // Iterable[Te, It, Elem]
                 node.wanteds.push(Constraint::class(
-                    iterable_trait_fqn.to_string(),
+                    iterable_trait_fqn,
                     vec![iter_ty, it_ty.clone(), elem_ty.clone()],
                     info.clone(),
                 ));
 
                 // Iter[It, Elem]
                 node.wanteds.push(Constraint::class(
-                    iter_trait_fqn.to_string(),
+                    iter_trait_fqn,
                     vec![it_ty, elem_ty.clone()],
                     info.clone(),
                 ));
@@ -1810,7 +1804,6 @@ mod tests {
     use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
     use ray_shared::{
-        collections::namecontext::NameContext,
         def::DefId,
         file_id::FileId,
         local_binding::LocalBindingId,
@@ -1824,7 +1817,7 @@ mod tests {
         constraint_tree::{ConstraintNode, build_constraint_tree_for_group, walk_tree},
         constraints::ConstraintKind,
         context::{ExprKind, Pattern, SolverContext},
-        env::GlobalEnv,
+        mocks::MockTypecheckEnv,
         types::TyScheme,
     };
 
@@ -1920,9 +1913,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -1948,9 +1940,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -1974,9 +1965,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2002,9 +1992,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2027,9 +2016,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2053,9 +2041,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let scheme_ty = Ty::int();
         ctx.binding_schemes.insert(
@@ -2094,9 +2081,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2140,9 +2126,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2179,9 +2164,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2222,9 +2206,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2252,9 +2235,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2280,9 +2262,8 @@ mod tests {
 
         let input = make_input(def_id, loop_expr, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2323,9 +2304,8 @@ mod tests {
         );
 
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         ctx.binding_schemes.insert(
             def_id.into(),
@@ -2373,9 +2353,8 @@ mod tests {
 
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
-        let ncx = NameContext::new();
-        let global_env = GlobalEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &ncx, &global_env);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);

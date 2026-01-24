@@ -4619,7 +4619,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 4: builtin_ty query
 
-- [ ] Define `builtin_ty(name)` query:
+- [x] Define `builtin_ty(name)` query:
   ```rust
   #[query]
   fn builtin_ty(db: &Database, name: &str) -> Option<DefTarget> {
@@ -4634,8 +4634,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       def_for_path(db, path)
   }
   ```
-- [ ] Add builtin name → path mappings for all well-known types
-- [ ] **Validate**: Unit test looking up `string`, `Iterator`
+- [x] Add builtin name → path mappings for all well-known types
+- [x] **Validate**: Unit test looking up `string`, `Iterator`
 
 ---
 

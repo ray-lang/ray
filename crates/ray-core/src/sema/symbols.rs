@@ -189,26 +189,28 @@ impl<'a> SymbolBuildContext<'a> {
         }
     }
 
-    fn record_call(&mut self, call: &Call) {
-        let call_id = call.call_resolution_id();
-        if let Some(resolved) = self.tcx.call_resolution(call_id) {
-            let trait_path = &resolved.base_fqn;
-            // Always record a reference to the (possibly polymorphic) trait method.
-            self.record_reference(call_id, trait_path);
+    fn record_call(&mut self, _call: &Call) {
+        todo!("FIXME: this uses legacy code that needs to change")
 
-            // Also record a reference to the fully-instantiated impl FQN by
-            // mirroring the method resolution logic used in LIR generation.
-            let callee_expr_id = call.callee.id;
-            let arg_ids: Vec<NodeId> = call.args.items.iter().map(|arg| arg.id).collect();
-            let impl_path = self.tcx.resolve_method_impl_fqn(
-                trait_path.clone(),
-                call_id,
-                callee_expr_id,
-                &arg_ids,
-            );
+        // let call_id = call.call_resolution_id();
+        // if let Some(resolved) = self.tcx.call_resolution(call_id) {
+        //     let trait_path = &resolved.base_fqn;
+        //     // Always record a reference to the (possibly polymorphic) trait method.
+        //     self.record_reference(call_id, &trait_path.to_path());
 
-            self.record_reference(call_id, &impl_path);
-        }
+        //     // Also record a reference to the fully-instantiated impl FQN by
+        //     // mirroring the method resolution logic used in LIR generation.
+        //     let callee_expr_id = call.callee.id;
+        //     let arg_ids: Vec<NodeId> = call.args.items.iter().map(|arg| arg.id).collect();
+        //     let impl_path = self.tcx.resolve_method_impl_fqn(
+        //         trait_path.clone(),
+        //         call_id,
+        //         callee_expr_id,
+        //         &arg_ids,
+        //     );
+
+        //     self.record_reference(call_id, &impl_path);
+        // }
     }
 
     fn record_dot(&mut self, dot: &Dot) {

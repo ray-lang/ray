@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ray_shared::{
-    collections::namecontext::NameContext,
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
@@ -13,16 +12,12 @@ use ray_shared::{
 };
 use ray_typing::{
     BindingKind, BindingRecord, ExprRecord, NodeBinding, PatternKind, PatternRecord,
-    TypeCheckInput, TypeCheckResult, TypeError, TypecheckOptions,
+    TypeCheckInput, TypeError,
     binding_groups::{BindingGraph, BindingId},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern},
     env::GlobalEnv,
     info::TypeSystemInfo,
-    tyctx::TyCtx,
-    typecheck,
 };
-
-use crate::passes::deps::build_binding_graph;
 
 use crate::{
     ast::{
@@ -32,42 +27,6 @@ use crate::{
     passes::binding::BindingPassOutput,
     sourcemap::SourceMap,
 };
-
-/// Convert a parsed Ray module into the type system's `ModuleInput`
-/// and run the typechecker on it.
-pub fn typecheck_module(
-    module: &Module<(), Decl>,
-    srcmap: &SourceMap,
-    tcx: &mut TyCtx,
-    ncx: &NameContext,
-    options: TypecheckOptions,
-    binding_output: &BindingPassOutput,
-    resolutions: &HashMap<NodeId, Resolution>,
-) -> TypeCheckResult {
-    // Build DefId-keyed structures.
-    let all_defs = collect_def_ids(module);
-    let def_bindings = build_binding_graph(&all_defs, resolutions);
-    let def_binding_records = build_def_binding_records(binding_output);
-
-    let schema_allocator = tcx.schema_allocator();
-    let input = lower_module(
-        module,
-        srcmap,
-        &tcx.global_env,
-        binding_output,
-        resolutions,
-        def_bindings,
-        def_binding_records,
-        schema_allocator,
-    );
-    let mut result = typecheck(&input, options, tcx, ncx);
-    if !input.lowering_errors.is_empty() {
-        let mut errors = input.lowering_errors.clone();
-        errors.extend(result.errors);
-        result.errors = errors;
-    }
-    result
-}
 
 struct TyLowerCtx<'a> {
     srcmap: &'a SourceMap,
@@ -681,41 +640,43 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             )
         }
         Expr::BinOp(binop) => {
-            let lhs = lower_expr(ctx, &binop.lhs);
-            let rhs = lower_expr(ctx, &binop.rhs);
-            let op_sym = binop.op.to_string();
-            if let Some((method_fqn, trait_fqn)) = ctx.env.lookup_infix_op(&op_sym) {
-                let result_id = ctx.expr_id(node);
-                let args = vec![lhs, rhs];
-                let operator_id = ctx.record_expr(
-                    &binop.op,
-                    ExprKind::OpFunc {
-                        trait_name: trait_fqn.to_string(),
-                        args,
-                        result: result_id,
-                    },
-                );
-                ctx.record_expr(
-                    node,
-                    ExprKind::BinaryOp {
-                        trait_fqn: trait_fqn.clone(),
-                        method_fqn: method_fqn.clone(),
-                        lhs,
-                        rhs,
-                        operator: operator_id,
-                    },
-                )
-            } else {
-                ctx.emit_error(
-                    node,
-                    format!(
-                        "unsupported binary operator `{}` ({})",
-                        op_sym,
-                        binop.op.value.as_str()
-                    ),
-                );
-                ctx.record_expr(node, ExprKind::Missing)
-            }
+            todo!("FIXME: this uses legacy code that needs to change")
+
+            // let lhs = lower_expr(ctx, &binop.lhs);
+            // let rhs = lower_expr(ctx, &binop.rhs);
+            // let op_sym = binop.op.to_string();
+            // if let Some((method_fqn, trait_fqn)) = ctx.env.lookup_infix_op(&op_sym) {
+            //     let result_id = ctx.expr_id(node);
+            //     let args = vec![lhs, rhs];
+            //     let operator_id = ctx.record_expr(
+            //         &binop.op,
+            //         ExprKind::OpFunc {
+            //             trait_name: trait_fqn.to_string(),
+            //             args,
+            //             result: result_id,
+            //         },
+            //     );
+            //     ctx.record_expr(
+            //         node,
+            //         ExprKind::BinaryOp {
+            //             trait_fqn: trait_fqn.clone(),
+            //             method_fqn: method_fqn.clone(),
+            //             lhs,
+            //             rhs,
+            //             operator: operator_id,
+            //         },
+            //     )
+            // } else {
+            //     ctx.emit_error(
+            //         node,
+            //         format!(
+            //             "unsupported binary operator `{}` ({})",
+            //             op_sym,
+            //             binop.op.value.as_str()
+            //         ),
+            //     );
+            //     ctx.record_expr(node, ExprKind::Missing)
+            // }
         }
         Expr::Block(block) => {
             if block.stmts.is_empty() {
@@ -1133,37 +1094,39 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             ctx.record_expr(node, ExprKind::Wrapper { expr })
         }
         Expr::UnaryOp(unary) => {
-            let expr = lower_expr(ctx, &unary.expr);
-            let op_sym = unary.op.to_string();
-            if let Some((method_fqn, trait_fqn)) = ctx.env.lookup_prefix_op(&op_sym) {
-                let result_id = ctx.expr_id(node);
-                let operator_id = ctx.record_expr(
-                    &unary.op,
-                    ExprKind::OpFunc {
-                        trait_name: trait_fqn.to_string(),
-                        args: vec![expr],
-                        result: result_id,
-                    },
-                );
-                ctx.record_expr(
-                    node,
-                    ExprKind::UnaryOp {
-                        trait_fqn: trait_fqn.clone(),
-                        method_fqn: method_fqn.clone(),
-                        operator: operator_id,
-                        expr,
-                    },
-                )
-            } else {
-                ctx.emit_error(
-                    node,
-                    format!(
-                        "unsupported unary operator `{}`; missing trait implementation",
-                        op_sym
-                    ),
-                );
-                ctx.record_expr(node, ExprKind::Missing)
-            }
+            todo!("FIXME: this uses legacy code that needs to change")
+
+            // let expr = lower_expr(ctx, &unary.expr);
+            // let op_sym = unary.op.to_string();
+            // if let Some((method_fqn, trait_fqn)) = ctx.env.lookup_prefix_op(&op_sym) {
+            //     let result_id = ctx.expr_id(node);
+            //     let operator_id = ctx.record_expr(
+            //         &unary.op,
+            //         ExprKind::OpFunc {
+            //             trait_name: trait_fqn.to_string(),
+            //             args: vec![expr],
+            //             result: result_id,
+            //         },
+            //     );
+            //     ctx.record_expr(
+            //         node,
+            //         ExprKind::UnaryOp {
+            //             trait_fqn: trait_fqn.clone(),
+            //             method_fqn: method_fqn.clone(),
+            //             operator: operator_id,
+            //             expr,
+            //         },
+            //     )
+            // } else {
+            //     ctx.emit_error(
+            //         node,
+            //         format!(
+            //             "unsupported unary operator `{}`; missing trait implementation",
+            //             op_sym
+            //         ),
+            //     );
+            //     ctx.record_expr(node, ExprKind::Missing)
+            // }
         }
         Expr::Unsafe(inner) => lower_expr(ctx, inner),
         Expr::While(whileexpr) => {
@@ -1399,8 +1362,6 @@ mod tests {
     #[test]
     fn typecheck_simple_bool_function_with_new_typechecker() {
         let _guard = test_def_context();
-        // Use typecheck_module to run the full typechecking pipeline over the same
-        // minimal function and assert that it yields no type errors.
 
         let func_path = Node::new(RayPath::from("g"));
         let func_body_expr = Node::new(Expr::Literal(Literal::Bool(true)));

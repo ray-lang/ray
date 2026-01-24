@@ -21,7 +21,7 @@ use crate::{
     binding_groups::BindingGroup,
     constraints::{Constraint, ConstraintKind},
     context::{ExprKind, SolverContext},
-    env::GlobalEnv,
+    env::TypecheckEnv,
     goal_solver::solve_constraints,
     types::{Subst, Substitutable as _},
     unify::unify,
@@ -80,7 +80,7 @@ pub fn apply_defaulting(
     module: &TypeCheckInput,
     ctx: &mut SolverContext,
     group: &BindingGroup<DefId>,
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
     residuals: Vec<Constraint>,
     subst: &Subst,
 ) -> DefaultingResult {
@@ -89,7 +89,7 @@ pub fn apply_defaulting(
 
     // Find defaultable type-variable classes α that appear as
     // receivers in residual class predicates from traits with defaults.
-    let defaultable_classes = find_defaultable_classes(&residuals, global_env, &current_subst);
+    let defaultable_classes = find_defaultable_classes(&residuals, env, &current_subst);
     log::debug!(
         "[apply_defaulting] defaultable_classes = {{ {} }}",
         join(&defaultable_classes, ", ")
@@ -145,7 +145,7 @@ pub fn apply_defaulting(
         // constraint so we can reuse its TypeSystemInfo when unifying.
         let mut candidates_by_var = Vec::new();
         for var in &cluster_vars {
-            let candidates = default_candidates_for(var, &preds_cluster, global_env);
+            let candidates = default_candidates_for(var, &preds_cluster, env);
             if candidates.is_empty() {
                 log::debug!(
                     "[apply_defaulting] no default candidates: alpha = {}, predicates = [{}]",
@@ -166,7 +166,7 @@ pub fn apply_defaulting(
         let (viable, blocking_preds) = collect_cluster_viable_defaults(
             &candidates_by_var,
             &preds_cluster,
-            global_env,
+            env,
             &current_subst,
             ctx,
         );
@@ -261,7 +261,7 @@ pub fn apply_defaulting(
 /// trait defaults.
 fn find_defaultable_classes(
     residuals: &[Constraint],
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
     subst: &Subst,
 ) -> HashSet<TyVar> {
     let mut defaultable = HashSet::new();
@@ -273,7 +273,7 @@ fn find_defaultable_classes(
             }
 
             // Trait must have a default(T).
-            let trait_ty = match global_env.get_trait(&cp.name) {
+            let trait_ty = match env.trait_def(&cp.path) {
                 Some(t) => t,
                 None => continue,
             };
@@ -387,7 +387,7 @@ fn defaultable_vars_in_constraint(
 fn default_candidates_for(
     alpha: &TyVar,
     preds_alpha: &[Constraint],
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
 ) -> Vec<(Ty, Constraint)> {
     let mut candidates = Vec::new();
 
@@ -411,7 +411,7 @@ fn default_candidates_for(
         }
 
         // Trait must have a default(T).
-        let trait_ty = match global_env.get_trait(&cp.name) {
+        let trait_ty = match env.trait_def(&cp.path) {
             Some(t) => t,
             None => continue,
         };
@@ -493,12 +493,11 @@ fn is_syntactic_value_expr(module: &TypeCheckInput, expr: NodeId) -> bool {
 /// using a local goal-solver run.
 fn solve_predicates_for_class(
     preds: &[Constraint],
-    global_env: &GlobalEnv,
     subst: &Subst,
     ctx: &mut SolverContext,
 ) -> Result<Subst, Vec<Constraint>> {
     let mut subst = subst.clone();
-    let batch = solve_constraints(preds, &[], global_env, &mut subst, ctx);
+    let batch = solve_constraints(preds, &[], &mut subst, ctx);
     if batch.unsolved.is_empty() {
         Ok(subst)
     } else {
@@ -509,7 +508,7 @@ fn solve_predicates_for_class(
 fn collect_cluster_viable_defaults(
     candidates_by_var: &[(TyVar, Vec<(Ty, Constraint)>)],
     preds_cluster: &[Constraint],
-    global_env: &GlobalEnv,
+    env: &dyn TypecheckEnv,
     subst: &Subst,
     ctx: &mut SolverContext,
 ) -> (Vec<(Vec<(TyVar, Ty)>, Subst)>, Option<Vec<Constraint>>) {
@@ -521,7 +520,7 @@ fn collect_cluster_viable_defaults(
         idx: usize,
         candidates_by_var: &[(TyVar, Vec<(Ty, Constraint)>)],
         preds_cluster: &[Constraint],
-        global_env: &GlobalEnv,
+        env: &dyn TypecheckEnv,
         ctx: &mut SolverContext,
         current_subst: &Subst,
         assignments: &mut Vec<(TyVar, Ty)>,
@@ -531,7 +530,7 @@ fn collect_cluster_viable_defaults(
         if idx == candidates_by_var.len() {
             // Only check satisfiability after assigning defaults for every
             // meta in the cluster.
-            match solve_predicates_for_class(preds_cluster, global_env, current_subst, ctx) {
+            match solve_predicates_for_class(preds_cluster, current_subst, ctx) {
                 Ok(new_subst) => {
                     viable.push((assignments.clone(), new_subst));
                 }
@@ -557,7 +556,7 @@ fn collect_cluster_viable_defaults(
                 idx + 1,
                 candidates_by_var,
                 preds_cluster,
-                global_env,
+                env,
                 ctx,
                 &subst_try,
                 assignments,
@@ -572,7 +571,7 @@ fn collect_cluster_viable_defaults(
         0,
         candidates_by_var,
         preds_cluster,
-        global_env,
+        env,
         ctx,
         subst,
         &mut assignments,

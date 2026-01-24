@@ -139,6 +139,11 @@ impl ItemPath {
             item: parent_items,
         })
     }
+
+    /// Check if the path is empty
+    pub fn is_empty(&self) -> bool {
+        self.module.is_empty() && self.item.is_empty()
+    }
 }
 
 #[cfg(test)]

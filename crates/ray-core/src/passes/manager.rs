@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, resolution::Resolution};
-use ray_typing::{TypeCheckInput, TypeCheckResult, TypecheckOptions, tyctx::TyCtx, typecheck};
+use ray_typing::{
+    TypeCheckInput, TypeCheckResult, TypecheckOptions, mocks::MockTypecheckEnv, tyctx::TyCtx,
+    typecheck,
+};
 
 use crate::{
     ast::{Decl, Module},
@@ -115,7 +118,8 @@ impl<'a> FrontendPassManager<'a> {
                 .as_ref()
                 .expect("lowered module input should exist");
 
-            let mut result = typecheck(input, options, self.tcx, ncx);
+            let typecheck_env = MockTypecheckEnv::new();
+            let mut result = typecheck(input, options, self.tcx, &typecheck_env);
             if !input.lowering_errors.is_empty() {
                 let mut errors = input.lowering_errors.clone();
                 errors.extend(result.errors);
