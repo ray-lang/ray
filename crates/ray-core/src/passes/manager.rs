@@ -16,7 +16,7 @@ use crate::{
         extern_bindings,
     },
     sourcemap::SourceMap,
-    typing::{build_def_binding_records, collect_def_ids, lower_module},
+    typing::{build_def_binding_records, build_typecheck_input, collect_def_ids},
 };
 
 /// Simple orchestration helper for frontend passes. It runs binding analysis,
@@ -102,10 +102,12 @@ impl<'a> FrontendPassManager<'a> {
             let def_binding_records = build_def_binding_records(binding_output);
 
             let schema_allocator = self.tcx.schema_allocator();
-            let input = lower_module(
-                self.module,
+            let typecheck_env = MockTypecheckEnv::new();
+            let input = build_typecheck_input(
+                &self.module.decls,
+                &[],
                 self.srcmap,
-                &self.tcx.global_env,
+                &typecheck_env,
                 binding_output,
                 self.resolutions,
                 def_bindings,
@@ -118,7 +120,6 @@ impl<'a> FrontendPassManager<'a> {
                 .as_ref()
                 .expect("lowered module input should exist");
 
-            let typecheck_env = MockTypecheckEnv::new();
             let mut result = typecheck(input, options, self.tcx, &typecheck_env);
             if !input.lowering_errors.is_empty() {
                 let mut errors = input.lowering_errors.clone();
