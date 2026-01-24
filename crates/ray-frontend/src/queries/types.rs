@@ -303,11 +303,11 @@ fn compute_func_scheme(
 fn ty_to_predicate(ty: &Ty) -> Option<Predicate> {
     match ty {
         Ty::Proj(path, args) => {
-            let name = path.without_type_args().to_string();
+            let name = path.to_string();
             Some(Predicate::class(name, args.clone()))
         }
         Ty::Const(path) => {
-            let name = path.without_type_args().to_string();
+            let name = path.to_string();
             Some(Predicate::class(name, vec![]))
         }
         _ => None,

@@ -6,25 +6,19 @@ use std::{
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
-    pathlib::{FilePath, Path},
+    pathlib::{FilePath, ItemPath, Path},
     span::{Source, Sourced, parsed::Parsed},
     ty::{Ty, TyVar},
-    utils::join,
 };
 use ray_typing::{
-    TypeError,
     constraints::Predicate,
-    info::TypeSystemInfo,
     tyctx::TyCtx,
-    types::{
-        FieldKind, ImplField, ImplKind, ImplTy, ReceiverMode, StructTy, Subst, Substitutable as _,
-        TraitField, TraitTy, TyScheme,
-    },
+    types::{StructTy, TyScheme},
 };
 
 use crate::sourcemap::SourceMap;
 use crate::{
-    ast::{self, Impl, TraitDirectiveKind},
+    ast::{self, Impl},
     errors::{RayError, RayErrorKind, RayResult},
 };
 
@@ -429,462 +423,466 @@ impl LowerAST for Sourced<'_, Struct> {
 impl LowerAST for Sourced<'_, Trait> {
     type Output = ();
 
-    fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
-        let (tr, src) = self.unpack_mut();
-        let trait_fqn = &src.path;
-        let ty_span = *tr.ty.span().unwrap();
-        let scopes = ctx.get_scopes(src);
-        tr.ty.resolve_fqns(scopes, ctx.ncx);
+    fn lower(&mut self, _ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
+        unreachable!("legacy code should not be called")
 
-        let (_, mut ty_params) = match tr.ty.deref() {
-            Ty::Proj(n, tp) => (n.name(), tp.clone()),
-            t @ _ => {
-                return Err(RayError {
-                    msg: format!("expected trait type name with parameters but found `{}`", t),
-                    src: vec![src.respan(ty_span)],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower trait".to_string()),
-                });
-            }
-        };
+        // let (tr, src) = self.unpack_mut();
+        // let trait_fqn = &src.path;
+        // let ty_span = *tr.ty.span().unwrap();
+        // let scopes = ctx.get_scopes(src);
+        // tr.ty.resolve_fqns(scopes, ctx.ncx);
 
-        let fqn = trait_fqn.to_string();
-        let mut trait_tcx = ctx.tcx.clone();
-        ty_params.iter_mut().for_each(|t| trait_tcx.map_vars(t));
+        // let mut ty_params = match tr.ty.deref() {
+        //     Ty::Proj(_, tp) => tp.clone(),
+        //     t @ _ => {
+        //         return Err(RayError {
+        //             msg: format!("expected trait type name with parameters but found `{}`", t),
+        //             src: vec![src.respan(ty_span)],
+        //             kind: RayErrorKind::Type,
+        //             context: Some("lower trait".to_string()),
+        //         });
+        //     }
+        // };
 
-        if ty_params.is_empty() {
-            return Err(RayError {
-                msg: format!("expected a type parameter but found none"),
-                src: vec![src.respan(ty_span)],
-                kind: RayErrorKind::Type,
-                context: Some("lower trait".to_string()),
-            });
-        }
+        // let fqn = trait_fqn.to_string();
+        // let mut trait_tcx = ctx.tcx.clone();
+        // ty_params.iter_mut().for_each(|t| trait_tcx.map_vars(t));
 
-        let tp = &ty_params[0];
-        if !matches!(tp, Ty::Var(_)) {
-            return Err(RayError {
-                msg: format!("expected a type parameter but found {}", tp),
-                src: vec![src.respan(ty_span)],
-                kind: RayErrorKind::Type,
-                context: Some("lower trait".to_string()),
-            });
-        }
+        // if ty_params.is_empty() {
+        //     return Err(RayError {
+        //         msg: format!("expected a type parameter but found none"),
+        //         src: vec![src.respan(ty_span)],
+        //         kind: RayErrorKind::Type,
+        //         context: Some("lower trait".to_string()),
+        //     });
+        // }
 
-        let trait_ty = Ty::with_tys(&fqn, ty_params.clone());
+        // let tp = &ty_params[0];
+        // if !matches!(tp, Ty::Var(_)) {
+        //     return Err(RayError {
+        //         msg: format!("expected a type parameter but found {}", tp),
+        //         src: vec![src.respan(ty_span)],
+        //         kind: RayErrorKind::Type,
+        //         context: Some("lower trait".to_string()),
+        //     });
+        // }
 
-        let mut fields: Vec<TraitField> = vec![];
-        for func in tr.fields.iter_mut() {
-            let sig = variant!(func.deref_mut(), if Decl::FnSig(sig));
-            let func_name = match sig.path.name() {
-                Some(n) => n,
-                _ => {
-                    return Err(RayError {
-                        msg: format!("trait method on `{}` does not have a name", tr.ty),
-                        src: vec![src.respan(sig.span)],
-                        kind: RayErrorKind::Type,
-                        context: Some("lower trait func".to_string()),
-                    });
-                }
-            };
+        // let trait_ty = Ty::with_tys(&fqn, ty_params.clone());
 
-            let mut fn_tcx = trait_tcx.clone();
-            let scopes = ctx.get_scopes(src);
-            sig.resolve_signature(scopes, ctx.ncx)?;
+        // let mut fields: Vec<TraitField> = vec![];
+        // for func in tr.fields.iter_mut() {
+        //     let sig = variant!(func.deref_mut(), if Decl::FnSig(sig));
+        //     let func_name = match sig.path.name() {
+        //         Some(n) => n,
+        //         _ => {
+        //             return Err(RayError {
+        //                 msg: format!("trait method on `{}` does not have a name", tr.ty),
+        //                 src: vec![src.respan(sig.span)],
+        //                 kind: RayErrorKind::Type,
+        //                 context: Some("lower trait func".to_string()),
+        //             });
+        //         }
+        //     };
 
-            // Trait methods follow the same "no unannotated methods" policy as impl
-            // methods, except that `self` may omit a type annotation. For trait
-            // declarations, an unannotated `self` defaults to the trait's first
-            // type parameter (the receiver).
-            annotate_trait_self_param_if_missing(sig, tp, src, &ctx.srcmap);
-            enforce_method_annotation_policy(sig, &None, src, &ctx.srcmap, "lower trait func")?;
+        //     let mut fn_tcx = trait_tcx.clone();
+        //     let scopes = ctx.get_scopes(src);
+        //     sig.resolve_signature(scopes, ctx.ncx)?;
 
-            sig.fresh_scheme(trait_fqn, &src.filepath, &mut fn_tcx, &ctx.srcmap)?;
+        //     // Trait methods follow the same "no unannotated methods" policy as impl
+        //     // methods, except that `self` may omit a type annotation. For trait
+        //     // declarations, an unannotated `self` defaults to the trait's first
+        //     // type parameter (the receiver).
+        //     annotate_trait_self_param_if_missing(sig, tp, src, &ctx.srcmap);
+        //     enforce_method_annotation_policy(sig, &None, src, &ctx.srcmap, "lower trait func")?;
 
-            // add the trait type to the qualifiers
-            let scheme = sig.ty.as_mut().unwrap();
-            scheme.qualifiers_mut().insert(
-                0,
-                Predicate::class(trait_fqn.without_type_args().to_string(), ty_params.clone()),
-            );
+        //     sig.fresh_scheme(trait_fqn, &src.filepath, &mut fn_tcx, &ctx.srcmap)?;
 
-            log::debug!("trait func scheme = {:?}", scheme);
+        //     // add the trait type to the qualifiers
+        //     let scheme = sig.ty.as_mut().unwrap();
+        //     scheme.qualifiers_mut().insert(
+        //         0,
+        //         Predicate::class(trait_fqn.without_type_args().to_string(), ty_params.clone()),
+        //     );
 
-            // Borrow the function type to inspect its parameters, but immediately
-            // clone the parameter list so we can later mutate the scheme safely.
-            let param_tys = match scheme.mono().try_borrow_fn() {
-                Ok((p, _)) => p,
-                Err(err) => return Err(TypeError::message(err, TypeSystemInfo::new()).into()),
-            };
-            let param_tys = param_tys.clone();
-            let func_fqn = trait_fqn
-                .append_type_args(ty_params.iter())
-                .append(&func_name);
-            log::debug!("add fqn: {} => {}", func_name, func_fqn);
+        //     log::debug!("trait func scheme = {:?}", scheme);
 
-            if param_tys.len() == 2 && ast::InfixOp::is(&func_name) {
-                ctx.tcx
-                    .add_infix_op(func_name.clone(), func_fqn.clone(), trait_fqn.clone());
-            } else if param_tys.len() == 1 && ast::PrefixOp::is(&func_name) {
-                ctx.tcx
-                    .add_prefix_op(func_name.clone(), func_fqn.clone(), trait_fqn.clone());
-            } else {
-                log::debug!("add name in scope: {} => {}", func_name, trait_fqn);
-                let scope = trait_fqn.to_name_vec();
-                ctx.ncx
-                    .nametree_mut()
-                    .add_name_in_scope(&scope, func_name.clone())
-            }
+        //     // Borrow the function type to inspect its parameters, but immediately
+        //     // clone the parameter list so we can later mutate the scheme safely.
+        //     let param_tys = match scheme.mono().try_borrow_fn() {
+        //         Ok((p, _)) => p,
+        //         Err(err) => return Err(TypeError::message(err, TypeSystemInfo::new()).into()),
+        //     };
+        //     let param_tys = param_tys.clone();
+        //     let func_fqn = trait_fqn
+        //         .append_type_args(ty_params.iter())
+        //         .append(&func_name);
+        //     log::debug!("add fqn: {} => {}", func_name, func_fqn);
 
-            // Determine whether this method is static. Non-static methods are
-            // considered receiver methods at the call site, but we no longer
-            // bake any Recv predicates into their type schemes here.
-            let is_static = sig
-                .modifiers
-                .iter()
-                .any(|m| matches!(m, ast::Modifier::Static));
+        //     if param_tys.len() == 2 && ast::InfixOp::is(&func_name) {
+        //         ctx.tcx
+        //             .add_infix_op(func_name.clone(), func_fqn.clone(), trait_fqn.clone());
+        //     } else if param_tys.len() == 1 && ast::PrefixOp::is(&func_name) {
+        //         ctx.tcx
+        //             .add_prefix_op(func_name.clone(), func_fqn.clone(), trait_fqn.clone());
+        //     } else {
+        //         log::debug!("add name in scope: {} => {}", func_name, trait_fqn);
+        //         let scope = trait_fqn.to_name_vec();
+        //         ctx.ncx
+        //             .nametree_mut()
+        //             .add_name_in_scope(&scope, func_name.clone())
+        //     }
 
-            let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
+        //     // Determine whether this method is static. Non-static methods are
+        //     // considered receiver methods at the call site, but we no longer
+        //     // bake any Recv predicates into their type schemes here.
+        //     let is_static = sig
+        //         .modifiers
+        //         .iter()
+        //         .any(|m| matches!(m, ast::Modifier::Static));
 
-            fields.push(TraitField {
-                kind: FieldKind::Method,
-                name: func_name.clone(),
-                ty: scheme.clone(),
-                recv_mode,
-                is_static,
-            });
+        //     let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
 
-            sig.path.value = func_fqn;
-        }
+        //     fields.push(TraitField {
+        //         kind: FieldKind::Method,
+        //         name: func_name.clone(),
+        //         ty: scheme.clone(),
+        //         recv_mode,
+        //         is_static,
+        //     });
 
-        let scopes = ctx.get_scopes(src);
-        let super_trait = if let Some(ty) = &tr.super_trait {
-            let (mut ty, src, _) = ty.clone().take();
-            if !matches!(ty, Ty::Proj(_, _)) {
-                return Err(RayError {
-                    msg: format!("expected super trait of form T[..], but found {}", ty),
-                    src: vec![src],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower trait".to_string()),
-                });
-            }
+        //     sig.path.value = func_fqn;
+        // }
 
-            ty.resolve_fqns(scopes, ctx.ncx);
-            Some(ty)
-        } else {
-            None
-        };
+        // let scopes = ctx.get_scopes(src);
+        // let super_trait = if let Some(ty) = &tr.super_trait {
+        //     let (mut ty, src, _) = ty.clone().take();
+        //     if !matches!(ty, Ty::Proj(_, _)) {
+        //         return Err(RayError {
+        //             msg: format!("expected super trait of form T[..], but found {}", ty),
+        //             src: vec![src],
+        //             kind: RayErrorKind::Type,
+        //             context: Some("lower trait".to_string()),
+        //         });
+        //     }
 
-        let default_ty = tr
-            .directives
-            .iter()
-            .find_map(|directive| match directive.kind {
-                TraitDirectiveKind::Default => {
-                    directive.args.first().map(|arg| arg.value().clone())
-                }
-            });
+        //     ty.resolve_fqns(scopes, ctx.ncx);
+        //     Some(ty)
+        // } else {
+        //     None
+        // };
 
-        let fqn = trait_fqn.to_name_vec();
-        ctx.ncx.nametree_mut().add_full_name(&fqn);
-        ctx.tcx.add_trait_ty(TraitTy {
-            path: trait_fqn.clone(),
-            ty: trait_ty,
-            super_traits: super_trait.map(|s| vec![s]).unwrap_or_default(),
-            fields,
-            default_ty,
-        });
+        // let default_ty = tr
+        //     .directives
+        //     .iter()
+        //     .find_map(|directive| match directive.kind {
+        //         TraitDirectiveKind::Default => {
+        //             directive.args.first().map(|arg| arg.value().clone())
+        //         }
+        //     });
 
-        Ok(())
+        // let fqn = trait_fqn.to_name_vec();
+        // ctx.ncx.nametree_mut().add_full_name(&fqn);
+        // ctx.tcx.add_trait_ty(TraitTy {
+        //     path: trait_fqn.clone(),
+        //     ty: trait_ty,
+        //     super_traits: super_trait.map(|s| vec![s]).unwrap_or_default(),
+        //     fields,
+        //     default_ty,
+        // });
+
+        // Ok(())
     }
 }
 
 impl LowerAST for Sourced<'_, Impl> {
     type Output = ();
 
-    fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
-        let (imp, src) = self.unpack_mut();
-        ctx.resolve_fqn_for_parsed_ty(&mut imp.ty);
+    fn lower(&mut self, _ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
+        unreachable!("legacy code should not be called")
 
-        let (trait_fqn, orig_ty_args) = match imp.ty.deref() {
-            Ty::Proj(path, ty_params) => (path, ty_params.clone()),
-            t => {
-                return Err(RayError {
-                    msg: format!(
-                        "`{}` is not a valid {}",
-                        t,
-                        if imp.is_object { "object" } else { "trait" }
-                    ),
-                    src: vec![src.respan(*imp.ty.span().unwrap())],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower trait impl".to_string()),
-                });
-            }
-        };
+        // let (imp, src) = self.unpack_mut();
+        // ctx.resolve_fqn_for_parsed_ty(&mut imp.ty);
 
-        // lookup the trait in the context
-        log::debug!("found fqn: {}", trait_fqn);
-        let trait_ty = if !imp.is_object {
-            match ctx.tcx.get_trait_ty(&trait_fqn) {
-                Some(t) => Some(t.clone()),
-                _ => {
-                    return Err(RayError {
-                        msg: format!("trait `{}` is not defined", trait_fqn),
-                        src: vec![src.respan(*imp.ty.span().unwrap())],
-                        kind: RayErrorKind::Type,
-                        context: Some("lower trait impl".to_string()),
-                    });
-                }
-            }
-        } else {
-            None
-        };
+        // let (trait_fqn, orig_ty_args) = match imp.ty.deref() {
+        //     Ty::Proj(path, ty_params) => (path, ty_params.clone()),
+        //     t => {
+        //         return Err(RayError {
+        //             msg: format!(
+        //                 "`{}` is not a valid {}",
+        //                 t,
+        //                 if imp.is_object { "object" } else { "trait" }
+        //             ),
+        //             src: vec![src.respan(*imp.ty.span().unwrap())],
+        //             kind: RayErrorKind::Type,
+        //             context: Some("lower trait impl".to_string()),
+        //         });
+        //     }
+        // };
 
-        // get the type parameter of the original trait
-        let mut trait_ty_params = vec![];
-        if let Some(trait_ty) = &trait_ty {
-            let orig_trait_tps = trait_ty.ty.type_arguments();
-            for ty in orig_trait_tps {
-                let Ty::Var(v) = ty else {
-                    return Err(RayError {
-                        msg: str!("expected a type parameter for trait"),
-                        src: vec![src.respan(*imp.ty.span().unwrap())],
-                        kind: RayErrorKind::Type,
-                        context: Some("lower trait impl".to_string()),
-                    });
-                };
+        // // lookup the trait in the context
+        // log::debug!("found fqn: {}", trait_fqn);
+        // let trait_ty = if !imp.is_object {
+        //     match ctx.tcx.get_trait_ty(&trait_fqn) {
+        //         Some(t) => Some(t.clone()),
+        //         _ => {
+        //             return Err(RayError {
+        //                 msg: format!("trait `{}` is not defined", trait_fqn),
+        //                 src: vec![src.respan(*imp.ty.span().unwrap())],
+        //                 kind: RayErrorKind::Type,
+        //                 context: Some("lower trait impl".to_string()),
+        //             });
+        //         }
+        //     }
+        // } else {
+        //     None
+        // };
 
-                trait_ty_params.push(v.clone());
-            }
-        }
+        // // get the type parameter of the original trait
+        // let mut trait_ty_params = vec![];
+        // if let Some(trait_ty) = &trait_ty {
+        //     let orig_trait_tps = trait_ty.ty.type_arguments();
+        //     for ty in orig_trait_tps {
+        //         let Ty::Var(v) = ty else {
+        //             return Err(RayError {
+        //                 msg: str!("expected a type parameter for trait"),
+        //                 src: vec![src.respan(*imp.ty.span().unwrap())],
+        //                 kind: RayErrorKind::Type,
+        //                 context: Some("lower trait impl".to_string()),
+        //             });
+        //         };
 
-        let impl_scope = if imp.is_object {
-            imp.ty.get_path()
-        } else {
-            orig_ty_args[0].get_path()
-        };
-        log::debug!("impl fqn: {}", impl_scope);
-        let mut impl_tcx = ctx.tcx.clone();
-        let mut impl_set = HashMap::new();
-        let mut impl_srcs = HashMap::new();
+        //         trait_ty_params.push(v.clone());
+        //     }
+        // }
 
-        let mut ty_args = orig_ty_args.clone();
-        ty_args.iter_mut().for_each(|t| impl_tcx.map_vars(t));
+        // let impl_scope = if imp.is_object {
+        //     imp.ty.get_path()
+        // } else {
+        //     orig_ty_args[0].get_path()
+        // };
+        // log::debug!("impl fqn: {}", impl_scope);
+        // let mut impl_tcx = ctx.tcx.clone();
+        // let mut impl_set = HashMap::new();
+        // let mut impl_srcs = HashMap::new();
 
-        let mut trait_arg_subst = Subst::new();
-        for (ty_param, ty_arg) in trait_ty_params.iter().zip(&ty_args) {
-            trait_arg_subst.insert(ty_param.clone(), ty_arg.clone());
-        }
+        // let mut ty_args = orig_ty_args.clone();
+        // ty_args.iter_mut().for_each(|t| impl_tcx.map_vars(t));
 
-        // resolve any qualifiers
-        for qualifier in &mut imp.qualifiers {
-            ctx.resolve_fqn_for_parsed_ty(qualifier);
-        }
-        let impl_qualifiers = imp.qualifiers.clone();
+        // let mut trait_arg_subst = Subst::new();
+        // for (ty_param, ty_arg) in trait_ty_params.iter().zip(&ty_args) {
+        //     trait_arg_subst.insert(ty_param.clone(), ty_arg.clone());
+        // }
 
-        // consts have to be first in case they're used inside of functions
-        if let Some(consts) = &mut imp.consts {
-            for const_node in consts {
-                const_node.lower(ctx)?;
-                let path = const_node.lhs.path_mut().unwrap();
-                let name = path.name().unwrap();
-                *path = impl_scope.append(&name);
-                ctx.ncx.nametree_mut().add_full_name(&path.to_name_vec());
-            }
-        }
+        // // resolve any qualifiers
+        // for qualifier in &mut imp.qualifiers {
+        //     ctx.resolve_fqn_for_parsed_ty(qualifier);
+        // }
+        // let impl_qualifiers = imp.qualifiers.clone();
 
-        let mut fields = vec![];
-        if let Some(funcs) = &mut imp.funcs {
-            for func in funcs {
-                func.sig.qualifiers.extend(impl_qualifiers.iter().cloned());
+        // // consts have to be first in case they're used inside of functions
+        // if let Some(consts) = &mut imp.consts {
+        //     for const_node in consts {
+        //         const_node.lower(ctx)?;
+        //         let path = const_node.lhs.path_mut().unwrap();
+        //         let name = path.name().unwrap();
+        //         *path = impl_scope.append(&name);
+        //         ctx.ncx.nametree_mut().add_full_name(&path.to_name_vec());
+        //     }
+        // }
 
-                let func_name = match func.sig.path.name() {
-                    Some(n) => n,
-                    _ => {
-                        return Err(RayError {
-                            msg: format!("trait function on `{}` does not have a name", trait_fqn),
-                            src: vec![src.respan(func.sig.span)],
-                            kind: RayErrorKind::Type,
-                            context: Some("lower trait func".to_string()),
-                        });
-                    }
-                };
+        // let mut fields = vec![];
+        // if let Some(funcs) = &mut imp.funcs {
+        //     for func in funcs {
+        //         func.sig.qualifiers.extend(impl_qualifiers.iter().cloned());
 
-                // make this a fully-qualified name
-                func.sig.path.value = if imp.is_object {
-                    trait_fqn.append(&func_name)
-                } else {
-                    trait_fqn
-                        .append_type_args(ty_args.iter())
-                        .append(&func_name)
-                };
-                log::debug!("func fqn: {}", func.sig.path);
-                ctx.ncx
-                    .nametree_mut()
-                    .add_full_name(&func.sig.path.to_name_vec());
+        //         let func_name = match func.sig.path.name() {
+        //             Some(n) => n,
+        //             _ => {
+        //                 return Err(RayError {
+        //                     msg: format!("trait function on `{}` does not have a name", trait_fqn),
+        //                     src: vec![src.respan(func.sig.span)],
+        //                     kind: RayErrorKind::Type,
+        //                     context: Some("lower trait func".to_string()),
+        //                 });
+        //             }
+        //         };
 
-                enforce_method_annotation_policy(
-                    &func.sig,
-                    &func.body,
-                    src,
-                    &ctx.srcmap,
-                    "lower trait impl",
-                )?;
+        //         // make this a fully-qualified name
+        //         func.sig.path.value = if imp.is_object {
+        //             trait_fqn.append(&func_name)
+        //         } else {
+        //             trait_fqn
+        //                 .append_type_args(ty_args.iter())
+        //                 .append(&func_name)
+        //         };
+        //         log::debug!("func fqn: {}", func.sig.path);
+        //         ctx.ncx
+        //             .nametree_mut()
+        //             .add_full_name(&func.sig.path.to_name_vec());
 
-                if let Some(field) = trait_ty.as_ref().and_then(|tr| tr.get_field(&func_name)) {
-                    let mut scheme = field.ty.clone();
-                    scheme.apply_subst(&trait_arg_subst);
+        //         enforce_method_annotation_policy(
+        //             &func.sig,
+        //             &func.body,
+        //             src,
+        //             &ctx.srcmap,
+        //             "lower trait impl",
+        //         )?;
 
-                    if let Some(self_ty) = scheme
-                        .ty
-                        .try_borrow_fn()
-                        .ok()
-                        .and_then(|(params, _)| params.first())
-                    {
-                        annotate_trait_self_param_if_missing(
-                            &mut func.sig,
-                            self_ty,
-                            src,
-                            &ctx.srcmap,
-                        );
-                    }
-                }
+        //         if let Some(field) = trait_ty.as_ref().and_then(|tr| tr.get_field(&func_name)) {
+        //             let mut scheme = field.ty.clone();
+        //             scheme.apply_subst(&trait_arg_subst);
 
-                let src = ctx.srcmap.get(&func);
-                let fn_tcx = impl_tcx.clone();
-                ctx.with_tcx(fn_tcx, |ctx| Sourced(&mut func.value, &src).lower(ctx))?;
+        //             if let Some(self_ty) = scheme
+        //                 .ty
+        //                 .try_borrow_fn()
+        //                 .ok()
+        //                 .and_then(|(params, _)| params.first())
+        //             {
+        //                 annotate_trait_self_param_if_missing(
+        //                     &mut func.sig,
+        //                     self_ty,
+        //                     src,
+        //                     &ctx.srcmap,
+        //                 );
+        //             }
+        //         }
 
-                let func_src = ctx.srcmap.get(func);
-                let sig_src = func_src.respan(func.sig.span);
-                let is_static = func
-                    .sig
-                    .modifiers
-                    .iter()
-                    .any(|m| matches!(m, ast::Modifier::Static));
+        //         let src = ctx.srcmap.get(&func);
+        //         let fn_tcx = impl_tcx.clone();
+        //         ctx.with_tcx(fn_tcx, |ctx| Sourced(&mut func.value, &src).lower(ctx))?;
 
-                let param_tys = func
-                    .sig
-                    .ty
-                    .as_ref()
-                    .and_then(|ty| ty.try_borrow_fn())
-                    .map(|(_, _, params, _)| &params[..])
-                    .expect("parameter types for impl method");
+        //         let func_src = ctx.srcmap.get(func);
+        //         let sig_src = func_src.respan(func.sig.span);
+        //         let is_static = func
+        //             .sig
+        //             .modifiers
+        //             .iter()
+        //             .any(|m| matches!(m, ast::Modifier::Static));
 
-                let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
-                log::debug!(
-                    "[Impl::lower] sig.path = {}, param_tys = [{}], is_static = {}, recv_mode = {:?}",
-                    func.sig.path.value,
-                    join(param_tys, ", "),
-                    is_static,
-                    recv_mode
-                );
-                if imp.is_object {
-                    fields.push(ImplField {
-                        kind: FieldKind::Method,
-                        path: func.sig.path.value.clone(),
-                        scheme: func.sig.ty.clone(),
-                        src: sig_src,
-                        recv_mode,
-                        is_static,
-                    });
-                } else {
-                    impl_srcs.insert(func_name.clone(), sig_src);
-                    impl_set.insert(
-                        func_name,
-                        Some((
-                            func.sig.path.value.clone(),
-                            func.sig.ty.clone(),
-                            recv_mode,
-                            is_static,
-                        )),
-                    );
-                }
-            }
-        }
+        //         let param_tys = func
+        //             .sig
+        //             .ty
+        //             .as_ref()
+        //             .and_then(|ty| ty.try_borrow_fn())
+        //             .map(|(_, _, params, _)| &params[..])
+        //             .expect("parameter types for impl method");
 
-        if let Some(ext) = &mut imp.externs {
-            for e in ext {
-                let name = e.get_name().unwrap();
-                let src = ctx.srcmap.get(e);
-                impl_srcs.insert(name.clone(), src);
-                impl_set.insert(name, None);
-                e.lower(ctx)?;
-            }
-        }
+        //         let recv_mode = ReceiverMode::from_signature(&param_tys, is_static);
+        //         log::debug!(
+        //             "[Impl::lower] sig.path = {}, param_tys = [{}], is_static = {}, recv_mode = {:?}",
+        //             func.sig.path.value,
+        //             join(param_tys, ", "),
+        //             is_static,
+        //             recv_mode
+        //         );
+        //         if imp.is_object {
+        //             fields.push(ImplField {
+        //                 kind: FieldKind::Method,
+        //                 path: func.sig.path.value.clone(),
+        //                 scheme: func.sig.ty.clone(),
+        //                 src: sig_src,
+        //                 recv_mode,
+        //                 is_static,
+        //             });
+        //         } else {
+        //             impl_srcs.insert(func_name.clone(), sig_src);
+        //             impl_set.insert(
+        //                 func_name,
+        //                 Some((
+        //                     func.sig.path.value.clone(),
+        //                     func.sig.ty.clone(),
+        //                     recv_mode,
+        //                     is_static,
+        //                 )),
+        //             );
+        //         }
+        //     }
+        // }
 
-        // make sure that everything has been implemented
-        if let Some(trait_ty) = &trait_ty {
-            for field in trait_ty.fields.iter() {
-                let n = &field.name;
-                let Some(def) = impl_set.get(n) else {
-                    return Err(RayError {
-                        msg: format!("trait implementation is missing for field `{}`", n),
-                        src: vec![src.respan(*imp.ty.span().unwrap())],
-                        kind: RayErrorKind::Type,
-                        context: Some("lower trait impl".to_string()),
-                    });
-                };
+        // if let Some(ext) = &mut imp.externs {
+        //     for e in ext {
+        //         let name = e.get_name().unwrap();
+        //         let src = ctx.srcmap.get(e);
+        //         impl_srcs.insert(name.clone(), src);
+        //         impl_set.insert(name, None);
+        //         e.lower(ctx)?;
+        //     }
+        // }
 
-                if let Some((path, scheme, recv_mode, is_static)) = def {
-                    log::debug!("[Impl::lower] field path={}, scheme={:?}", path, scheme);
-                    let src = impl_srcs.get(n).cloned().unwrap_or_else(|| src.clone());
-                    fields.push(ImplField {
-                        kind: field.kind,
-                        path: path.clone(),
-                        scheme: scheme.clone(),
-                        src,
-                        recv_mode: *recv_mode,
-                        is_static: *is_static,
-                    });
-                }
-            }
-        }
+        // // make sure that everything has been implemented
+        // if let Some(trait_ty) = &trait_ty {
+        //     for field in trait_ty.fields.iter() {
+        //         let n = &field.name;
+        //         let Some(def) = impl_set.get(n) else {
+        //             return Err(RayError {
+        //                 msg: format!("trait implementation is missing for field `{}`", n),
+        //                 src: vec![src.respan(*imp.ty.span().unwrap())],
+        //                 kind: RayErrorKind::Type,
+        //                 context: Some("lower trait impl".to_string()),
+        //             });
+        //         };
 
-        if !imp.is_object && trait_ty_params.len() != ty_args.len() {
-            return Err(RayError {
-                msg: format!(
-                    "trait expected {} type argument(s) but found {}",
-                    trait_ty_params.len(),
-                    ty_args.len()
-                ),
-                src: vec![src.respan(*imp.ty.span().unwrap())],
-                kind: RayErrorKind::Type,
-                context: Some("lower trait impl".to_string()),
-            });
-        }
+        //         if let Some((path, scheme, recv_mode, is_static)) = def {
+        //             log::debug!("[Impl::lower] field path={}, scheme={:?}", path, scheme);
+        //             let src = impl_srcs.get(n).cloned().unwrap_or_else(|| src.clone());
+        //             fields.push(ImplField {
+        //                 kind: field.kind,
+        //                 path: path.clone(),
+        //                 scheme: scheme.clone(),
+        //                 src,
+        //                 recv_mode: *recv_mode,
+        //                 is_static: *is_static,
+        //             });
+        //         }
+        //     }
+        // }
 
-        let mut predicates = vec![];
-        for q in imp.qualifiers.iter() {
-            predicates.push(predicate_from_ast_ty(
-                &q,
-                &impl_scope,
-                &src.filepath,
-                &mut impl_tcx,
-            )?);
-        }
+        // if !imp.is_object && trait_ty_params.len() != ty_args.len() {
+        //     return Err(RayError {
+        //         msg: format!(
+        //             "trait expected {} type argument(s) but found {}",
+        //             trait_ty_params.len(),
+        //             ty_args.len()
+        //         ),
+        //         src: vec![src.respan(*imp.ty.span().unwrap())],
+        //         kind: RayErrorKind::Type,
+        //         context: Some("lower trait impl".to_string()),
+        //     });
+        // }
 
-        let kind = if let Some(trait_ty) = &trait_ty {
-            let mut trait_ty = trait_ty.ty.clone();
-            trait_ty.apply_subst(&trait_arg_subst);
-            let base_ty = ty_args[0].clone();
+        // let mut predicates = vec![];
+        // for q in imp.qualifiers.iter() {
+        //     predicates.push(predicate_from_ast_ty(
+        //         &q,
+        //         &impl_scope,
+        //         &src.filepath,
+        //         &mut impl_tcx,
+        //     )?);
+        // }
 
-            ImplKind::Trait {
-                base_ty,
-                trait_ty,
-                ty_args: ty_args[1..].to_vec(),
-            }
-        } else {
-            let mut recv_ty = imp.ty.deref().clone();
-            impl_tcx.map_vars(&mut recv_ty);
-            ImplKind::Inherent { recv_ty }
-        };
+        // let kind = if let Some(trait_ty) = &trait_ty {
+        //     let mut trait_ty = trait_ty.ty.clone();
+        //     trait_ty.apply_subst(&trait_arg_subst);
+        //     let base_ty = ty_args[0].clone();
 
-        let impl_ty = ImplTy {
-            kind,
-            predicates,
-            fields,
-        };
-        ctx.tcx.add_impl(trait_fqn.clone(), impl_ty);
-        Ok(())
+        //     ImplKind::Trait {
+        //         base_ty,
+        //         trait_ty,
+        //         ty_args: ty_args[1..].to_vec(),
+        //     }
+        // } else {
+        //     let mut recv_ty = imp.ty.deref().clone();
+        //     impl_tcx.map_vars(&mut recv_ty);
+        //     ImplKind::Inherent { recv_ty }
+        // };
+
+        // let impl_ty = ImplTy {
+        //     kind,
+        //     predicates,
+        //     fields,
+        // };
+        // ctx.tcx.add_impl(trait_fqn.clone(), impl_ty);
+        // Ok(())
     }
 }
 
@@ -1272,7 +1270,7 @@ impl LowerAST for Sourced<'_, ast::Curly> {
         let (curly, src) = self.unpack_mut();
         curly.lhs = Some(Parsed::new(struct_fqn.clone(), lhs_src));
 
-        let struct_ty = match ctx.tcx.get_struct_ty(&struct_fqn) {
+        let struct_ty = match ctx.tcx.get_struct_ty(&ItemPath::from(&struct_fqn)) {
             Some(t) => t,
             _ => {
                 return Err(RayError {
@@ -1499,69 +1497,71 @@ impl LowerAST for Sourced<'_, ast::While> {
 }
 
 pub fn predicate_from_ast_ty(
-    q: &Parsed<Ty>,
-    scope: &Path,
-    filepath: &FilePath,
-    tcx: &mut TyCtx,
+    _q: &Parsed<Ty>,
+    _scope: &Path,
+    _filepath: &FilePath,
+    _tcx: &mut TyCtx,
 ) -> Result<Predicate, RayError> {
-    // resolve the type
-    let ty_span = *q.span().unwrap();
-    let q = q.clone_value();
-    let (fqn, mut ty_args) = match q {
-        Ty::Proj(path, args) => (path, args),
-        _ => {
-            return Err(RayError {
-                msg: str!("qualifier must be a trait type"),
-                src: vec![Source {
-                    span: Some(ty_span),
-                    filepath: filepath.clone(),
-                    path: scope.clone(),
-                    ..Default::default()
-                }],
-                kind: RayErrorKind::Type,
-                context: Some("lower predicate".to_string()),
-            });
-        }
-    };
+    unreachable!("legacy code should not be called")
 
-    for ty_arg in ty_args.iter_mut() {
-        tcx.map_vars(ty_arg);
-    }
+    // // resolve the type
+    // let ty_span = *q.span().unwrap();
+    // let q = q.clone_value();
+    // let (fqn, mut ty_args) = match q {
+    //     Ty::Proj(path, args) => (path, args),
+    //     _ => {
+    //         return Err(RayError {
+    //             msg: str!("qualifier must be a trait type"),
+    //             src: vec![Source {
+    //                 span: Some(ty_span),
+    //                 filepath: filepath.clone(),
+    //                 path: scope.clone(),
+    //                 ..Default::default()
+    //             }],
+    //             kind: RayErrorKind::Type,
+    //             context: Some("lower predicate".to_string()),
+    //         });
+    //     }
+    // };
 
-    log::debug!("converting from ast type: {}", fqn);
-    let trait_ty = match tcx.get_trait_ty(&fqn) {
-        Some(t) => t,
-        _ => {
-            return Err(RayError {
-                msg: format!("trait `{}` is not defined", fqn),
-                src: vec![Source {
-                    span: Some(ty_span),
-                    filepath: filepath.clone(),
-                    ..Default::default()
-                }],
-                kind: RayErrorKind::Type,
-                context: Some("lower predicate".to_string()),
-            });
-        }
-    };
+    // for ty_arg in ty_args.iter_mut() {
+    //     tcx.map_vars(ty_arg);
+    // }
 
-    let mut trait_ty = trait_ty.ty.clone();
-    let ty_param_vars = trait_ty
-        .type_arguments()
-        .iter()
-        .map(|ty| variant!(ty, if Ty::Var(v)))
-        .cloned()
-        .collect::<Vec<_>>();
+    // log::debug!("converting from ast type: {}", fqn);
+    // let trait_ty = match tcx.get_trait_ty(&fqn) {
+    //     Some(t) => t,
+    //     _ => {
+    //         return Err(RayError {
+    //             msg: format!("trait `{}` is not defined", fqn),
+    //             src: vec![Source {
+    //                 span: Some(ty_span),
+    //                 filepath: filepath.clone(),
+    //                 ..Default::default()
+    //             }],
+    //             kind: RayErrorKind::Type,
+    //             context: Some("lower predicate".to_string()),
+    //         });
+    //     }
+    // };
 
-    let mut sub = Subst::new();
-    for (v, t) in ty_param_vars.iter().zip(ty_args.iter()) {
-        sub.insert(v.clone(), t.clone());
-    }
+    // let mut trait_ty = trait_ty.ty.clone();
+    // let ty_param_vars = trait_ty
+    //     .type_arguments()
+    //     .iter()
+    //     .map(|ty| variant!(ty, if Ty::Var(v)))
+    //     .cloned()
+    //     .collect::<Vec<_>>();
 
-    trait_ty.apply_subst(&sub);
+    // let mut sub = Subst::new();
+    // for (v, t) in ty_param_vars.iter().zip(ty_args.iter()) {
+    //     sub.insert(v.clone(), t.clone());
+    // }
 
-    let fqn = trait_ty.get_path().without_type_args();
-    Ok(Predicate::class(fqn.to_string(), ty_args))
+    // trait_ty.apply_subst(&sub);
+
+    // let fqn = trait_ty.get_path().without_type_args();
+    // Ok(Predicate::class(fqn.to_string(), ty_args))
 }
 
 #[cfg(test)]

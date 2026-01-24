@@ -10,7 +10,7 @@ use petgraph::{
     visit::{Dfs, DfsEvent, EdgeRef, depth_first_search},
 };
 use ray_shared::{
-    pathlib::Path,
+    pathlib::{ItemPath, Path},
     span::Source,
     ty::Ty,
     utils::{join, map_join},
@@ -1047,7 +1047,7 @@ pub struct Program {
     pub module_main_idx: i64, // index in Funcs for module main
     pub user_main_idx: i64,   // index in Funcs for user main
     pub resolved_user_main: Option<Path>,
-    pub synthetic_structs: HashMap<Path, StructTy>,
+    pub synthetic_structs: HashMap<ItemPath, StructTy>,
 }
 
 impl Display for Program {

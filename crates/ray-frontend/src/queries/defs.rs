@@ -313,14 +313,12 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
 
 /// Resolve a type to a DefTarget by extracting its path and looking it up.
 fn resolve_type_to_def_target(db: &Database, ty: &Ty) -> Option<DefTarget> {
-    let path = match ty {
+    let item_path = match ty {
         Ty::Const(p) => p.clone(),
         Ty::Proj(p, _) => p.clone(),
         _ => return None,
     };
 
-    // Convert Path to ItemPath and look it up
-    let item_path = ItemPath::from(&path);
     def_for_path(db, item_path)
 }
 

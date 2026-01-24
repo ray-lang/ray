@@ -3,7 +3,7 @@ use ray_core::{
     sema::ModuleBuilder,
 };
 use ray_shared::{
-    pathlib::Path,
+    pathlib::{ItemPath, ModulePath, Path},
     ty::{Ty, TyVar},
     utils::join,
 };
@@ -531,7 +531,7 @@ fn typechecks_struct_literal_and_field_access() {
         typecheck_src("typechecks_struct_literal_and_field_access", src);
     assert_typechecks("typechecks_struct_literal_and_field_access", &result);
 
-    let pair_path = module_path.append("Pair");
+    let pair_path = ItemPath::new(ModulePath::from(&module_path), vec!["Pair".into()]);
     let pair_ty = Ty::Const(pair_path);
 
     let mk_pair_ty = Ty::func(vec![Ty::u32(), Ty::bool()], pair_ty.clone());

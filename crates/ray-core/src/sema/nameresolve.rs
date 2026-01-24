@@ -5,7 +5,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::{ModulePath, Path},
+    pathlib::{ItemPath, ModulePath, Path},
     resolution::{DefTarget, Resolution},
     span::{Sourced, parsed::Parsed},
     ty::Ty,
@@ -143,9 +143,11 @@ pub fn resolve_names_in_file(
                             if let Some(imported_exports) = import_exports(&first_segment) {
                                 // For now, only handle two-segment paths like `io::read`
                                 if path.len() == 2 {
-                                    let second_segment = name_vec.get(1).cloned().unwrap_or_default();
+                                    let second_segment =
+                                        name_vec.get(1).cloned().unwrap_or_default();
                                     if let Some(target) = imported_exports.get(&second_segment) {
-                                        resolutions.insert(expr.id, Resolution::Def(target.clone()));
+                                        resolutions
+                                            .insert(expr.id, Resolution::Def(target.clone()));
                                     }
                                 }
                             }
@@ -261,8 +263,8 @@ fn resolve_impl_type_refs(
     if imp.is_object {
         // Inherent impl: resolve the implementing type directly
         // imp.ty is something like Ty::Const(Point) or Ty::Proj(Point, [...])
-        let implementing_type_path = imp.ty.get_path();
-        if let Some(type_name) = implementing_type_path.name() {
+        let implementing_type_path: ItemPath = imp.ty.get_path().into();
+        if let Some(type_name) = implementing_type_path.item_name() {
             let resolution = resolve_type_name(
                 &type_name,
                 &implementing_type_path,
@@ -282,7 +284,7 @@ fn resolve_impl_type_refs(
         // Trait impl: resolve both the trait and the implementing type
         if let Ty::Proj(trait_path, args) = &*imp.ty {
             // Resolve the trait (first synthetic_id)
-            if let Some(trait_name) = trait_path.name() {
+            if let Some(trait_name) = trait_path.item_name() {
                 let resolution = resolve_type_name(
                     &trait_name,
                     trait_path,
@@ -301,8 +303,8 @@ fn resolve_impl_type_refs(
 
             // Resolve the implementing type (second synthetic_id, from first type arg)
             if let Some(implementing_ty) = args.first() {
-                let implementing_type_path = implementing_ty.get_path();
-                if let Some(type_name) = implementing_type_path.name() {
+                let implementing_type_path: ItemPath = implementing_ty.get_path().into();
+                if let Some(type_name) = implementing_type_path.item_name() {
                     let resolution = resolve_type_name(
                         &type_name,
                         &implementing_type_path,
@@ -331,13 +333,13 @@ fn resolve_impl_type_refs(
 /// 3. Imported modules (qualified paths like `io::Foo` or selective imports)
 fn resolve_type_name(
     name: &str,
-    path: &Path,
+    path: &ItemPath,
     imports: &HashMap<String, ModulePath>,
     module_exports: &HashMap<String, DefTarget>,
     sibling_exports: &HashMap<String, DefTarget>,
     import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
 ) -> Option<DefTarget> {
-    let name_vec = path.to_name_vec();
+    let name_vec = path.item_components();
 
     // If it's a simple name (single segment), check module/sibling exports first
     if name_vec.len() == 1 {
@@ -1157,7 +1159,8 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Parameter should be resolved
         assert!(resolutions.contains_key(&param.id));
@@ -1193,7 +1196,8 @@ mod tests {
         module_exports.insert("foo".to_string(), DefTarget::Workspace(foo_def_id));
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to the module export
         assert!(resolutions.contains_key(&body_name.id));
@@ -1221,7 +1225,8 @@ mod tests {
         let bar_def_id = DefId::new(FileId(0), 2);
         sibling_exports.insert("bar".to_string(), DefTarget::Workspace(bar_def_id));
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to the sibling export
         assert!(resolutions.contains_key(&body_name.id));
@@ -1254,7 +1259,8 @@ mod tests {
         module_exports.insert("x".to_string(), DefTarget::Workspace(x_def_id));
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to local, not module export
         assert!(resolutions.contains_key(&body_name.id));
@@ -1291,7 +1297,8 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // The pattern node should have a resolution
         let pattern_paths = local_pattern.paths();
@@ -1331,7 +1338,8 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Closure arg should be resolved
         assert!(resolutions.contains_key(&closure_arg.id));
@@ -1369,7 +1377,8 @@ mod tests {
         let sibling_def_id = DefId::new(FileId(0), 2);
         sibling_exports.insert("shared".to_string(), DefTarget::Workspace(sibling_def_id));
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Body name should resolve to module export, not sibling
         assert!(resolutions.contains_key(&body_name.id));
@@ -1397,7 +1406,8 @@ mod tests {
         let module_exports = HashMap::new();
         let sibling_exports = HashMap::new();
 
-        let resolutions = resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
+        let resolutions =
+            resolve_names_in_file(&file, &imports, &module_exports, &sibling_exports, |_| None);
 
         // Unknown name should not be in the resolution map
         assert!(!resolutions.contains_key(&body_name.id));
@@ -1436,10 +1446,7 @@ mod tests {
         // Point is exported from the module
         let point_def_id = DefId::new(FileId(0), 1);
         let mut module_exports = HashMap::new();
-        module_exports.insert(
-            "Point".to_string(),
-            DefTarget::Workspace(point_def_id),
-        );
+        module_exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
         let sibling_exports = HashMap::new();
 
         let resolutions =

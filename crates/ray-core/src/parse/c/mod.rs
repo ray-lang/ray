@@ -262,7 +262,7 @@ fn make_type(ty_specs: Vec<&TypeSpecifier>) -> Ty {
         ty
     } else {
         let k = ty_specs.iter().find_map(|t| match t {
-            TypeSpecifier::TypedefName(id) => Some(Ty::con(id.node.name.clone())),
+            TypeSpecifier::TypedefName(id) => Some(Ty::con(id.node.name.as_str())),
             TypeSpecifier::Struct(struct_ty) => match struct_ty.node.kind.node {
                 StructKind::Struct => {
                     let name = struct_ty
@@ -276,7 +276,7 @@ fn make_type(ty_specs: Vec<&TypeSpecifier>) -> Ty {
                         .declarations
                         .as_ref()
                         .map(|struct_decls| get_struct_fields(struct_decls, &mut ty_params));
-                    Some(Ty::proj(name, ty_params))
+                    Some(Ty::proj(name.as_str(), ty_params))
                 }
                 StructKind::Union => None,
             },

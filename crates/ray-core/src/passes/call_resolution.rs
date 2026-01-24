@@ -1,6 +1,11 @@
-use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::Path, ty::Ty};
+use ray_shared::{
+    collections::namecontext::NameContext,
+    node_id::NodeId,
+    pathlib::{ItemPath, Path},
+    ty::Ty,
+};
 use ray_typing::{
-    TypeCheckInput, PatternKind, PatternRecord,
+    PatternKind, PatternRecord, TypeCheckInput,
     context::{AssignLhs, ExprKind},
     tyctx::{CallResolution, TyCtx},
     types::{Subst, TyScheme},
@@ -58,7 +63,8 @@ fn resolve_op(operator_id: NodeId, trait_fqn: &Path, method_fqn: &Path, tcx: &mu
         return;
     }
 
-    let Some(trait_ty) = tcx.get_trait_ty(trait_fqn) else {
+    let trait_item_path = ItemPath::from(trait_fqn);
+    let Some(trait_ty) = tcx.get_trait_ty(&trait_item_path) else {
         return;
     };
 
@@ -173,7 +179,7 @@ fn resolve_index(
         return;
     }
 
-    let trait_fqn = ncx.builtin_ty("Index");
+    let trait_fqn = ItemPath::from(&ncx.builtin_ty("Index"));
     let Some(trait_ty) = tcx.get_trait_ty(&trait_fqn) else {
         return;
     };
@@ -225,7 +231,7 @@ fn resolve_index_set(
     }
 
     let trait_fqn = ncx.builtin_ty("Index");
-    let Some(trait_ty) = tcx.get_trait_ty(&trait_fqn) else {
+    let Some(trait_ty) = tcx.get_trait_ty(&ItemPath::from(trait_fqn)) else {
         return;
     };
 
@@ -314,7 +320,7 @@ fn resolve_index_pattern_get(
     }
 
     let trait_fqn = ncx.builtin_ty("Index");
-    let Some(trait_ty) = tcx.get_trait_ty(&trait_fqn) else {
+    let Some(trait_ty) = tcx.get_trait_ty(&ItemPath::from(&trait_fqn)) else {
         return;
     };
 

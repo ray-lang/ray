@@ -1745,7 +1745,7 @@ mod tests {
         let struct_ty = crate::types::StructTy {
             kind: crate::types::NominalKind::Struct,
             path: struct_path.clone(),
-            ty: TyScheme::from_mono(Ty::Const(struct_path.clone())),
+            ty: TyScheme::from_mono(Ty::Const(struct_path.clone().into())),
             fields: vec![("x".to_string(), bool_scheme)],
         };
         global_env

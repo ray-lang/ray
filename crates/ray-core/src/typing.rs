@@ -1187,7 +1187,7 @@ fn lower_literal(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>, lit: &Literal) -> 
                 } else {
                     format!("{}int", sign)
                 };
-                ExprKind::LiteralIntSized(Ty::con(ty))
+                ExprKind::LiteralIntSized(Ty::con(ty.as_str()))
             } else {
                 ExprKind::LiteralInt
             }

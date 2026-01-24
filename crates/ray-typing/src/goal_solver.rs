@@ -1648,7 +1648,7 @@ mod tests {
             "Hash".to_string(),
             TraitTy {
                 path: Path::from("Hash"),
-                ty: Ty::Proj(Path::from("Hash"), vec![Ty::Var(a.clone())]),
+                ty: Ty::Proj(Path::from("Hash").into(), vec![Ty::Var(a.clone())]),
                 super_traits: vec![],
                 fields: vec![TraitField {
                     name: "hash".to_string(),

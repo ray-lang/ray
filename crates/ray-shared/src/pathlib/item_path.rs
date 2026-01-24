@@ -14,7 +14,7 @@ use super::{ModulePath, Path};
 /// For nested items like `List::push`:
 /// - `module` would be `mymodule`
 /// - `item` would be `["List", "push"]`
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ItemPath {
     /// The module path containing this item.
     pub module: ModulePath,
@@ -47,6 +47,25 @@ impl From<&Path> for ItemPath {
             module: ModulePath::root(),
             item: vec![],
         })
+    }
+}
+
+impl From<&str> for ItemPath {
+    fn from(value: &str) -> Self {
+        let mut parts = value.split("::").collect::<Vec<_>>();
+        if parts.is_empty() {
+            return ItemPath::default();
+        }
+
+        if parts.len() == 1 {
+            return ItemPath::new(ModulePath::root(), vec![parts[0].into()]);
+        }
+
+        let last = parts.pop().unwrap();
+        ItemPath::new(
+            ModulePath::new(parts.into_iter().map(String::from).collect()),
+            vec![last.into()],
+        )
     }
 }
 
@@ -89,6 +108,11 @@ impl ItemPath {
     /// Get the final item name (last component).
     pub fn item_name(&self) -> Option<&str> {
         self.item.last().map(|s| s.as_str())
+    }
+
+    /// Get the final item name (last component) defaulting to "".
+    pub fn as_str(&self) -> &str {
+        self.item.last().map(|s| s.as_str()).unwrap_or_default()
     }
 
     /// Get all item name components.
@@ -159,10 +183,7 @@ mod tests {
     #[test]
     fn item_path_nested() {
         // For List::push in module mymodule
-        let item_path = ItemPath::new(
-            Path::from("mymodule"),
-            vec!["List".into(), "push".into()],
-        );
+        let item_path = ItemPath::new(Path::from("mymodule"), vec!["List".into(), "push".into()]);
 
         assert_eq!(item_path.to_string(), "mymodule::List::push");
         assert_eq!(item_path.to_path().to_string(), "mymodule::List::push");
@@ -172,10 +193,7 @@ mod tests {
 
     #[test]
     fn item_path_parent_item() {
-        let item_path = ItemPath::new(
-            Path::from("mymodule"),
-            vec!["List".into(), "push".into()],
-        );
+        let item_path = ItemPath::new(Path::from("mymodule"), vec!["List".into(), "push".into()]);
 
         let parent = item_path.parent_item().unwrap();
         assert_eq!(parent.to_string(), "mymodule::List");

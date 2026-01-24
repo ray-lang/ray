@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use ray_shared::pathlib::ItemPath;
 use ray_shared::{
     node_id::NodeId,
     pathlib::Path,
@@ -214,8 +215,8 @@ impl TyCtx {
     }
 
     pub fn nominal_kind(&self, ty: &Ty) -> Option<NominalKind> {
-        let fqn = ty.get_path().with_names_only();
-        self.get_struct_ty(&fqn).map(|s| s.kind)
+        let fqn = ty.item_path()?;
+        self.get_struct_ty(fqn).map(|s| s.kind)
     }
 
     pub fn is_struct(&self, ty: &Ty) -> bool {
@@ -295,11 +296,11 @@ impl TyCtx {
         todo!("is_scheme_var is not yet implemented for v2 TyCtx");
     }
 
-    pub fn resolve_trait_from_path(&self, path: &Path) -> Option<Path> {
+    pub fn resolve_trait_from_path(&self, path: &Path) -> Option<ItemPath> {
         let parent = path.parent();
         let key = parent.to_string();
         if self.global_env.traits.contains_key(&key) {
-            Some(parent)
+            Some(ItemPath::from(&parent))
         } else {
             None
         }
@@ -348,7 +349,7 @@ impl TyCtx {
         subst
     }
 
-    pub fn get_struct_ty(&self, fqn: &Path) -> Option<&StructTy> {
+    pub fn get_struct_ty(&self, fqn: &ItemPath) -> Option<&StructTy> {
         let key = fqn.to_string();
         self.global_env.structs.get(&key)
     }
@@ -478,21 +479,17 @@ impl TyCtx {
         func_fqn
     }
 
-    pub fn get_trait_ty(&self, path: &Path) -> Option<&TraitTy> {
+    pub fn get_trait_ty(&self, path: &ItemPath) -> Option<&TraitTy> {
         let key = path.to_string();
         self.global_env.traits.get(&key)
     }
 
     pub fn get_super_traits_from_ty(&self, ty: &Ty) -> Option<&Vec<Ty>> {
-        let fqn = match ty {
-            Ty::Proj(p, _) | Ty::Const(p) => p.clone(),
-            _ => return None,
-        };
-        self.get_trait_ty(&fqn)
-            .map(|trait_ty| &trait_ty.super_traits)
+        let fqn = ty.item_path()?;
+        self.get_trait_ty(fqn).map(|trait_ty| &trait_ty.super_traits)
     }
 
-    pub fn get_trait_field(&self, trait_fqn: &Path, field_name: &str) -> Option<&TraitField> {
+    pub fn get_trait_field(&self, trait_fqn: &ItemPath, field_name: &str) -> Option<&TraitField> {
         self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
             trait_ty
                 .fields
@@ -501,7 +498,7 @@ impl TyCtx {
         })
     }
 
-    pub fn get_trait_fn(&self, trait_fqn: &Path, fn_name: &String) -> Option<&TyScheme> {
+    pub fn get_trait_fn(&self, trait_fqn: &ItemPath, fn_name: &String) -> Option<&TyScheme> {
         self.get_trait_ty(trait_fqn).and_then(|trait_ty| {
             trait_ty
                 .fields
@@ -520,17 +517,19 @@ impl TyCtx {
         self.global_env.add_impl(impl_ty);
     }
 
-    pub fn get_impls_for_trait_fqn(&self, fqn: &Path) -> impl Iterator<Item = &ImplTy> {
-        let target = fqn.to_string();
-        self.global_env
-            .impls_by_trait
-            .get(&target)
-            .into_iter()
-            .flatten()
-            .flat_map(|idx| self.global_env.resolve_impl_from_index(idx))
+    pub fn get_impls_for_trait_fqn(&self, _fqn: &ItemPath) -> Vec<&ImplTy> {
+        unreachable!("legacy code should no longer be called")
+
+        // let target = fqn.to_string();
+        // self.global_env
+        //     .impls_by_trait
+        //     .get(&target)
+        //     .into_iter()
+        //     .flatten()
+        //     .flat_map(|idx| self.global_env.resolve_impl_from_index(idx))
     }
 
-    pub fn has_member(&self, fqn: &Path, member: &String) -> bool {
+    pub fn has_member(&self, fqn: &ItemPath, member: &String) -> bool {
         if let Some(struct_ty) = self.get_struct_ty(fqn) {
             struct_ty.fields.iter().any(|(f, _)| f == member)
         } else if let Some(trait_ty) = self.get_trait_ty(fqn) {

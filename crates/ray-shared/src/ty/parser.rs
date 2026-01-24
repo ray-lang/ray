@@ -320,12 +320,12 @@ mod tests {
         let ty = TyParser::parse("pkg::T").expect("could not parse `pkg::T`");
         let mut path = Path::new();
         path.append_mut("pkg").append_mut("T");
-        assert_eq!(ty, Ty::Const(path));
+        assert_eq!(ty, Ty::Const(path.into()));
 
         let ty = TyParser::parse("pkg::mod::T").expect("could not parse `pkg::mod::T`");
         let mut path = Path::new();
         path.append_mut("pkg").append_mut("mod").append_mut("T");
-        assert_eq!(ty, Ty::Const(path));
+        assert_eq!(ty, Ty::Const(path.into()));
     }
 
     #[test]
@@ -333,12 +333,12 @@ mod tests {
         let ty = TyParser::parse("*T").expect("could not parse `*T`");
         let mut path = Path::new();
         path.append_mut("T");
-        assert_eq!(ty, Ty::ref_of(Ty::Const(path)));
+        assert_eq!(ty, Ty::ref_of(Ty::Const(path.into())));
 
         let ty = TyParser::parse("*pkg::T").expect("could not parse `*pkg::T`");
         let mut path = Path::new();
         path.append_mut("pkg").append_mut("T");
-        assert_eq!(ty, Ty::ref_of(Ty::Const(path)));
+        assert_eq!(ty, Ty::ref_of(Ty::Const(path.into())));
     }
 
     #[test]

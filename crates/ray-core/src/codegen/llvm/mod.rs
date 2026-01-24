@@ -28,7 +28,7 @@ use llvm::{
 use rand::RngCore;
 use ray_shared::{
     optlevel::OptLevel,
-    pathlib::{FilePath, Path},
+    pathlib::{FilePath, ItemPath, Path, TypePath},
     ty::{Ty, TyVar},
     utils::map_join,
 };
@@ -263,7 +263,7 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     curr_ret_ty: Option<Ty>,
     fn_index: HashMap<Path, FunctionValue<'ctx>>,
     tcx: &'a TyCtx,
-    struct_types: HashMap<Path, StructType<'ctx>>,
+    struct_types: HashMap<TypePath, StructType<'ctx>>,
     data_addrs: HashMap<(Path, usize), GlobalValue<'ctx>>,
     globals: HashMap<(Path, usize), GlobalValue<'ctx>>,
     locals: HashMap<usize, PointerValue<'ctx>>,
@@ -272,7 +272,7 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     pointee_tys: HashMap<PointerValue<'ctx>, Ty>,
     sret_param: Option<PointerValue<'ctx>>,
     intrinsics: HashMap<Path, lir::IntrinsicKind>,
-    synthetic_structs: &'a HashMap<Path, StructTy>,
+    synthetic_structs: &'a HashMap<ItemPath, StructTy>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -282,7 +282,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         module: &'a llvm::module::Module<'ctx>,
         builder: &'a llvm::builder::Builder<'ctx>,
         tcx: &'a TyCtx,
-        synthetic_structs: &'a HashMap<Path, StructTy>,
+        synthetic_structs: &'a HashMap<ItemPath, StructTy>,
     ) -> Self {
         LLVMTarget::initialize_webassembly(&InitializationConfig::default());
 
@@ -404,21 +404,19 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         self.pointee_tys.insert(ptr, ty);
     }
 
-    fn lookup_struct_ty(&self, path: &Path) -> &StructTy {
-        let path = path.with_names_only();
-        if let Some(ty) = self.tcx.get_struct_ty(&path) {
+    fn lookup_struct_ty(&self, path: &ItemPath) -> &StructTy {
+        if let Some(ty) = self.tcx.get_struct_ty(path) {
             return ty;
         }
         self.synthetic_structs
-            .get(&path)
+            .get(path)
             .expect(&format!("could not find struct type: {}", path))
     }
 
-    fn lookup_struct_ty_instantiated(&self, def_path: &Path, args: &[Ty]) -> StructTy {
-        let def_path = def_path.with_names_only();
-        let mut struct_ty = if let Some(ty) = self.tcx.get_struct_ty(&def_path) {
+    fn lookup_struct_ty_instantiated(&self, def_path: &ItemPath, args: &[Ty]) -> StructTy {
+        let mut struct_ty = if let Some(ty) = self.tcx.get_struct_ty(def_path) {
             ty.clone()
-        } else if let Some(extra) = self.synthetic_structs.get(&def_path) {
+        } else if let Some(extra) = self.synthetic_structs.get(def_path) {
             extra.clone()
         } else {
             panic!("could not find struct type: {}", def_path);
@@ -451,8 +449,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             return true;
         }
 
-        let path = ty.get_path();
-        self.synthetic_structs.get(&path).is_some()
+        if let Some(path) = ty.item_path() {
+            self.synthetic_structs.get(path).is_some()
+        } else {
+            false
+        }
     }
 
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
@@ -464,11 +465,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 let struct_ty = self.lookup_struct_ty_instantiated(fqn, args);
                 struct_ty.field_tys()[index].mono().clone()
             }
-            ty => {
-                let fqn = ty.get_path();
-                let struct_ty = self.lookup_struct_ty_instantiated(&fqn, &[]);
+            Ty::Const(fqn) => {
+                let struct_ty = self.lookup_struct_ty_instantiated(fqn, &[]);
                 struct_ty.field_tys()[index].mono().clone()
             }
+            ty => panic!("get_element_ty: unexpected type {}", ty),
         }
     }
 
@@ -596,14 +597,13 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
             let llvm_struct = match &container_ty {
                 Ty::Proj(fqn, args) => self.get_struct_type(fqn, args),
-                _ => {
-                    let fqn = container_ty.get_path();
-                    self.get_struct_type(&fqn, &[])
-                }
+                Ty::Const(fqn) => self.get_struct_type(fqn, &[]),
+                _ => panic!("get_element_ptr: expected struct type, got {}", container_ty),
             };
+            let fqn_display = container_ty.item_path().map(|p| p.to_string()).unwrap_or_default();
             log::debug!(
                 "[get_element_ptr] struct GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
-                container_ty.get_path(),
+                fqn_display,
                 base_ptr.to_string(),
                 index,
                 llvm_struct.print_to_string().to_string()
@@ -758,8 +758,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
 
         // Nominal struct case: use `tcx` metadata to find the field index.
-        let lhs_fqn = lhs_ty.get_path().with_names_only();
-        let lhs_ty = self.lookup_struct_ty(&lhs_fqn);
+        let lhs_fqn = lhs_ty.item_path().expect("expected nominal type for field access");
+        let lhs_ty = self.lookup_struct_ty(lhs_fqn);
         let mut offset = 0;
         let mut found = false;
         for (name, _) in lhs_ty.fields.iter() {
@@ -811,7 +811,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             Ty::Proj(fqn, args) => {
                 // `nilable['a]` is represented as an Option-like aggregate:
                 // `{ i1 is_some, T payload }`, where `T` is the LLVM type for `'a`.
-                if let Some(name) = fqn.name() {
+                if let Some(name) = fqn.item_name() {
                     if name == "nilable" {
                         let payload_ty = args
                             .get(0)
@@ -830,17 +830,14 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                 // For all other projections, lower to the underlying type.
                 self.get_struct_type(fqn, args).as_basic_type_enum()
             }
-            Ty::Const(fqn) => match fqn.name().unwrap().as_str() {
+            Ty::Const(fqn) => match fqn.as_str() {
                 "bool" => self.lcx.bool_type().into(),
                 "i8" | "u8" => self.lcx.i8_type().into(),
                 "i16" | "u16" => self.lcx.i16_type().into(),
                 "i32" | "u32" | "char" => self.lcx.i32_type().into(),
                 "u64" | "i64" => self.lcx.i64_type().into(),
                 "int" | "uint" => self.ptr_type().into(),
-                _ => {
-                    let fqn = ty.get_path();
-                    self.get_struct_type(&fqn, &[]).as_basic_type_enum()
-                }
+                _ => self.get_struct_type(fqn, &[]).as_basic_type_enum(),
             },
         }
     }
@@ -1459,22 +1456,17 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         fn_val.add_attribute(AttributeLoc::Function, attribute);
     }
 
-    fn get_struct_type(&mut self, path: &Path, args: &[Ty]) -> StructType<'ctx> {
-        let key = if args.is_empty() {
-            path.clone()
-        } else {
-            path.without_type_args().append_type_args(args.iter())
-        };
+    fn get_struct_type(&mut self, path: &ItemPath, args: &[Ty]) -> StructType<'ctx> {
+        let key = TypePath::with_args(path.clone(), args.to_vec());
 
         if let Some(st) = self.struct_types.get(&key) {
             return st.clone();
         }
 
-        let opaque = self.lcx.opaque_struct_type(&key.to_string());
+        let opaque = self.lcx.opaque_struct_type(&key.to_mangled());
         self.struct_types.insert(key.clone(), opaque);
 
-        let def_path = key.with_names_only();
-        let struct_ty = self.lookup_struct_ty_instantiated(&def_path, args);
+        let struct_ty = self.lookup_struct_ty_instantiated(path, args);
 
         let field_types = struct_ty
             .fields
@@ -1941,7 +1933,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::Type(_) => todo!("codegen lir::Type: {}", self),
             lir::Value::Closure(closure) => {
                 let handle_ty = closure.handle.ty.mono().clone();
-                let path = closure.handle.path.clone();
+                let path = ItemPath::from(&closure.handle.path);
                 let llvm_struct = ctx.get_struct_type(&path, &[]);
                 let slot = ctx.alloca(&handle_ty)?;
 

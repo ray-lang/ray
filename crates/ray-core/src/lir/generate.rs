@@ -1,7 +1,11 @@
 use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
 
 use ray_shared::{
-    collections::namecontext::NameContext, node_id::NodeId, pathlib::Path, span::Source, ty::Ty,
+    collections::namecontext::NameContext,
+    node_id::NodeId,
+    pathlib::{ItemPath, ModulePath, Path},
+    span::Source,
+    ty::Ty,
 };
 use ray_typing::{
     BindingKind, BindingRecord, NodeBinding,
@@ -191,7 +195,7 @@ impl lir::Program {
             .chain(ctx.closure_value_types.values())
             .chain(ctx.fn_handle_types.values())
         {
-            synthetic_structs.insert(struct_ty.path.with_names_only(), struct_ty.clone());
+            synthetic_structs.insert(ItemPath::from(&struct_ty.path), struct_ty.clone());
         }
 
         drop(ctx);
@@ -308,7 +312,7 @@ pub struct GenCtx<'a> {
     closure_fn_types: HashMap<NodeId, TyScheme>,
     closure_funcs: HashMap<NodeId, Path>,
     fn_handle_types: HashMap<(Vec<Ty>, Ty), StructTy>,
-    fn_handle_path_types: HashMap<Path, StructTy>,
+    fn_handle_path_types: HashMap<ItemPath, StructTy>,
     fn_handle_wrappers: HashMap<(Path, Vec<Ty>, Ty), Path>,
 }
 
@@ -756,15 +760,17 @@ impl<'a> GenCtx<'a> {
 
         let code_ty = Ty::Func(abi_params, Box::new(ret.clone()));
 
-        let mut path = self.path();
-        path = path.append("__fn_handle");
-        path = path.append_func_type(params, ret);
+        let module_path = ModulePath::new(self.path().to_name_vec());
+        let path = ItemPath::new(
+            module_path,
+            vec!["__fn_handle".into(), sema::fn_ty(&params, &ret).into()],
+        );
 
         let ty = TyScheme::from_mono(Ty::Const(path.clone()));
 
         let struct_ty = StructTy {
             kind: NominalKind::Struct,
-            path: path.clone(),
+            path: path.to_path(),
             ty: ty.clone(),
             fields: vec![
                 // Code pointer has ABI fn(rawptr[u8], A..)->R
@@ -877,8 +883,11 @@ impl<'a> GenCtx<'a> {
             return existing.clone();
         }
 
-        let mut path = self.path();
-        path = path.append(format!("__closure_env_{:x}", closure_id));
+        let module_path = ModulePath::new(self.path().to_name_vec());
+        let path = ItemPath::new(
+            module_path,
+            vec![format!("__closure_env_{:x}", closure_id).into()],
+        );
 
         let fields = captures
             .iter()
@@ -888,7 +897,7 @@ impl<'a> GenCtx<'a> {
         let ty = TyScheme::from_mono(Ty::Const(path.clone()));
         let struct_ty = StructTy {
             kind: NominalKind::Struct,
-            path,
+            path: path.to_path(),
             ty,
             fields,
         };
@@ -1249,7 +1258,7 @@ impl<'a> GenCtx<'a> {
 
     fn resolve_trait_method_direct_call(
         &self,
-        trait_fqn: &Path,
+        trait_fqn: &ItemPath,
         method_name: &str,
         callee_ty: TyScheme,
         tcx: &TyCtx,
@@ -1276,7 +1285,7 @@ impl<'a> GenCtx<'a> {
     fn emit_trait_method_call_with_recv_local(
         &mut self,
         tcx: &TyCtx,
-        trait_fqn: &Path,
+        trait_fqn: &ItemPath,
         method_name: &str,
         recv_loc: usize,
         recv_scheme: TyScheme,
@@ -1404,7 +1413,7 @@ impl<'a> GenCtx<'a> {
 
     fn select_iterable_iterator_ty(
         &self,
-        iterable_trait_fqn: &Path,
+        iterable_trait_fqn: &ItemPath,
         container_ty: &Ty,
         elem_ty: &Ty,
         tcx: &TyCtx,
@@ -2878,8 +2887,8 @@ impl LirGen<GenResult> for Node<Expr> {
                     .get_or_set_local(iterable_val, iterable_scheme.clone())
                     .unwrap_or_else(|| panic!("expected non-unit iterable expression in `for`"));
 
-                let iterable_trait_fqn = ctx.ncx.builtin_ty("Iterable");
-                let iter_trait_fqn = ctx.ncx.builtin_ty("Iter");
+                let iterable_trait_fqn = ItemPath::from(&ctx.ncx.builtin_ty("Iterable"));
+                let iter_trait_fqn = ItemPath::from(&ctx.ncx.builtin_ty("Iter"));
 
                 let container_mono = iterable_scheme.mono().clone();
                 let elem_scheme = ctx.ty_of(tcx, for_loop.pat.id);

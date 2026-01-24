@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     collections::{namecontext::NameContext, nametree::Scope},
-    pathlib::Path,
+    pathlib::{ItemPath, Path, TypePath},
     ty::TyVar,
 };
 
@@ -14,7 +14,7 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Ty {
     // Primitive types (ints, bools, etc.).
-    Const(Path),
+    Const(ItemPath),
 
     // Type variables (rigid or meta, distinguished by naming convention or
     // auxiliary maps for now).
@@ -28,7 +28,7 @@ pub enum Ty {
     RawPtr(Box<Ty>),
 
     // Placeholder for other constructors: structs, traits, type constructors, etc.
-    Proj(Path, Vec<Ty>),
+    Proj(ItemPath, Vec<Ty>),
 
     // Product and array types.
     Tuple(Vec<Ty>),
@@ -186,18 +186,18 @@ impl Ty {
     }
 
     pub fn list(ty: Ty) -> Self {
-        Ty::Proj(Path::from("list"), vec![ty])
+        Ty::Proj(ItemPath::from("list"), vec![ty])
     }
 
     pub fn range(ty: Ty) -> Self {
-        Ty::Proj(Path::from("range"), vec![ty])
+        Ty::Proj(ItemPath::from("range"), vec![ty])
     }
 
-    pub fn con(path: impl Into<Path>) -> Self {
+    pub fn con(path: impl Into<ItemPath>) -> Self {
         Ty::Const(path.into())
     }
 
-    pub fn proj(path: impl Into<Path>, args: Vec<Ty>) -> Self {
+    pub fn proj(path: impl Into<ItemPath>, args: Vec<Ty>) -> Self {
         Ty::Proj(path.into(), args)
     }
 
@@ -292,11 +292,11 @@ impl Ty {
         }
     }
 
-    pub fn with_vars(name: impl Into<Path>, vars: &[TyVar]) -> Self {
+    pub fn with_vars(name: impl Into<ItemPath>, vars: &[TyVar]) -> Self {
         Ty::with_tys(name, vars.iter().map(|t| Ty::Var(t.clone())).collect())
     }
 
-    pub fn with_tys(name: impl Into<Path>, tys: Vec<Ty>) -> Self {
+    pub fn with_tys(name: impl Into<ItemPath>, tys: Vec<Ty>) -> Self {
         if tys.is_empty() {
             Ty::Const(name.into())
         } else {
@@ -345,15 +345,15 @@ impl Ty {
     }
 
     pub fn resolve_fqns(&mut self, scopes: &Vec<Scope>, ncx: &NameContext) {
-        fn resolve_fqn(path: &mut Path, scopes: &Vec<Scope>, ncx: &NameContext) {
-            let name = path.to_short_name();
+        fn resolve_fqn(path: &mut ItemPath, scopes: &Vec<Scope>, ncx: &NameContext) {
+            let name = path.item_name().unwrap().to_string();
             if Ty::is_builtin_name(&name) {
                 return;
             }
 
             if let Some(fqn) = ncx.resolve_name(scopes, &name) {
                 log::debug!("[resolve_fqns] resolved name: {} -> {:?}", name, fqn);
-                *path = fqn;
+                *path = fqn.into();
             } else {
                 log::debug!(
                     "[resolve_fqns] COULD NOT RESOLVE NAME {} in scopes = {:?}",
@@ -399,7 +399,7 @@ impl Ty {
 
     #[inline(always)]
     pub fn ty_type(ty: Ty) -> Ty {
-        Ty::Proj(str!("type").into(), vec![ty])
+        Ty::Proj("type".into(), vec![ty])
     }
 
     #[inline(always)]
@@ -418,33 +418,66 @@ impl Ty {
         }
     }
 
-    pub fn get_path(&self) -> Path {
+    /// Get the definition identity for lookups (nominal types only).
+    ///
+    /// Returns `Some(&ItemPath)` for `Const` and `Proj` types.
+    /// Returns `None` for structural types (Ref, RawPtr, Tuple, Array, Func, Var, etc.).
+    pub fn item_path(&self) -> Option<&ItemPath> {
         match self {
-            Ty::Never => Path::from("never"),
-            Ty::Any => Path::from("any"),
-            Ty::Var(v) => v.path().clone(),
-            Ty::Const(s) => Path::from(s.clone()),
-            Ty::Proj(base_path, params) => base_path.append_type_args(params.iter()),
-            Ty::Array(ty, size) => {
-                let base_path = Path::from("array");
-                base_path.append_array_type(ty.as_ref().clone(), *size)
-            }
-            Ty::Ref(ty) => {
-                let base_path = Path::from("ref");
-                base_path.append_type_args(std::iter::once(ty.as_ref()))
-            }
-            Ty::RawPtr(ty) => {
-                let base_path = Path::from("rawptr");
-                base_path.append_type_args(std::iter::once(ty.as_ref()))
-            }
-            Ty::Tuple(tys) => {
-                let base_path = Path::from("tuple");
-                base_path.append_type_args(tys.iter())
-            }
-            Ty::Func(_, _) => {
-                unimplemented!()
-            }
+            Ty::Const(p) | Ty::Proj(p, _) => Some(p),
+            _ => None,
         }
+    }
+
+    /// Get the instantiated type path for codegen.
+    ///
+    /// Returns `Some(TypePath)` for types that can be monomorphized:
+    /// - `Const` → `TypePath::Nominal { base, args: [] }`
+    /// - `Proj` → `TypePath::Nominal { base, args }`
+    /// - `Array` → `TypePath::Array { elem, size }`
+    /// - `Tuple` → `TypePath::Tuple(elems)`
+    ///
+    /// Returns `None` for structural pointer types (Ref, RawPtr), function types,
+    /// type variables, and special types (Any, Never).
+    pub fn type_path(&self) -> Option<TypePath> {
+        match self {
+            Ty::Const(p) => Some(TypePath::simple(p.clone())),
+            Ty::Proj(p, args) => Some(TypePath::with_args(p.clone(), args.clone())),
+            Ty::Array(elem, size) => Some(TypePath::array(elem.as_ref().clone(), *size)),
+            Ty::Tuple(elems) => Some(TypePath::tuple(elems.clone())),
+            _ => None,
+        }
+    }
+
+    #[deprecated(note = "use item_path() or type_path() instead")]
+    pub fn get_path(&self) -> Path {
+        unreachable!("legacy code should no longer be called")
+        // match self {
+        //     Ty::Never => Path::from("never"),
+        //     Ty::Any => Path::from("any"),
+        //     Ty::Var(v) => v.path().clone().into(),
+        //     Ty::Const(s) => s.clone(),
+        //     Ty::Proj(base_path, params) => base_path.append_type_args(params.iter()),
+        //     Ty::Array(ty, size) => {
+        //         let base_path = Path::from("array");
+        //         base_path.append_array_type(ty.as_ref().clone(), *size)
+        //     }
+        //     Ty::Ref(ty) => {
+        //         let base_path = Path::from("ref");
+        //         base_path.append_type_args(std::iter::once(ty.as_ref()))
+        //     }
+        //     Ty::RawPtr(ty) => {
+        //         let base_path = Path::from("rawptr");
+        //         base_path.append_type_args(std::iter::once(ty.as_ref()))
+        //     }
+        //     Ty::Tuple(tys) => {
+        //         let base_path = Path::from("tuple");
+        //         base_path.append_type_args(tys.iter())
+        //     }
+        //     Ty::Func(_, _) => {
+        //         unimplemented!()
+        //     }
+        // }
     }
 
     pub fn name(&self) -> String {
