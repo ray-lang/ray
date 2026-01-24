@@ -1,14 +1,18 @@
 //! Definition lookup queries for the incremental compiler.
 
-use ray_core::ast::{Decl, Modifier, Node};
+use std::collections::HashMap;
+
+use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node, TypeParams};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, DefKind, LibraryDefId},
+    def::{DefHeader, DefId, DefKind, LibraryDefId},
+    node_id::NodeId,
     pathlib::{ItemPath, ModulePath},
     resolution::{DefTarget, Resolution},
+    span::parsed::Parsed,
     ty::{Ty, TyVar},
 };
-use ray_typing::types::ReceiverMode;
+use ray_typing::types::{ReceiverMode, TyScheme};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -47,12 +51,16 @@ pub struct FieldDef {
 /// Information about a method in a trait or impl.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MethodInfo {
+    /// The definition target for this method (workspace or library).
+    pub target: DefTarget,
     /// The name of the method.
     pub name: String,
     /// Whether the method is static (no receiver).
     pub is_static: bool,
     /// The receiver mode for the method.
     pub recv_mode: ReceiverMode,
+    /// The type scheme of the method.
+    pub scheme: TyScheme,
 }
 
 /// A trait definition extracted from either workspace or library.
@@ -175,8 +183,6 @@ pub fn struct_def(db: &Database, target: DefTarget) -> Option<StructDef> {
 fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
     let parse_result = parse_file(db, def_id.file);
 
-    // Find the struct declaration by its DefId index.
-    // DefId index 0 is FileMain, so we need to find the matching def in defs.
     let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
     // Verify this is actually a struct
@@ -186,7 +192,7 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
 
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
-        if let Decl::Struct(st) = &**decl {
+        if let Decl::Struct(st) = &decl.value {
             // Match by name
             if st.path.name() == Some(def_header.name.clone()) {
                 return Some(StructDef {
@@ -203,14 +209,14 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
 }
 
 /// Extract type parameters from TypeParams.
-fn extract_type_params(ty_params: &Option<ray_core::ast::TypeParams>) -> Vec<TyVar> {
+fn extract_type_params(ty_params: &Option<TypeParams>) -> Vec<TyVar> {
     match ty_params {
         Some(params) => params
             .tys
             .iter()
             .filter_map(|parsed_ty| {
                 // Each type param should be a Ty::Var
-                if let Ty::Var(var) = &**parsed_ty {
+                if let Ty::Var(var) = parsed_ty.value() {
                     Some(var.clone())
                 } else {
                     None
@@ -222,7 +228,7 @@ fn extract_type_params(ty_params: &Option<ray_core::ast::TypeParams>) -> Vec<TyV
 }
 
 /// Extract fields from struct field declarations.
-fn extract_fields(fields: &Option<Vec<Node<ray_core::ast::Name>>>) -> Vec<FieldDef> {
+fn extract_fields(fields: &Option<Vec<Node<Name>>>) -> Vec<FieldDef> {
     match fields {
         Some(field_nodes) => field_nodes
             .iter()
@@ -279,7 +285,7 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
 
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
-        if let Decl::Trait(tr) = &**decl {
+        if let Decl::Trait(tr) = &decl.value {
             // Match by name - trait name comes from tr.ty which is the trait type like `Eq['a]`
             let trait_name = tr.ty.name();
             if trait_name == def_header.name {
@@ -295,7 +301,7 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
                     .collect();
 
                 // Extract method info from trait fields (which are FnSig decls)
-                let methods = extract_trait_methods(&tr.fields);
+                let methods = extract_trait_methods(&tr.fields, &parse_result.defs);
 
                 return Some(TraitDef {
                     target: DefTarget::Workspace(def_id),
@@ -328,8 +334,8 @@ fn resolve_type_to_def_target(db: &Database, ty: &Ty) -> Option<DefTarget> {
 /// the actual resolved definition. Returns `None` for primitive types
 /// or if the type couldn't be resolved.
 fn resolve_parsed_ty_to_def_target(
-    ty: &ray_shared::span::parsed::Parsed<Ty>,
-    resolutions: &std::collections::HashMap<ray_shared::node_id::NodeId, Resolution>,
+    ty: &Parsed<Ty>,
+    resolutions: &HashMap<NodeId, Resolution>,
 ) -> Option<DefTarget> {
     // The Parsed<Ty>'s synthetic_ids contain the NodeId(s) for the type reference
     let synth_ids = ty.synthetic_ids();
@@ -343,41 +349,57 @@ fn resolve_parsed_ty_to_def_target(
 }
 
 /// Extract method info from trait field declarations.
-fn extract_trait_methods(fields: &[Node<Decl>]) -> Vec<MethodInfo> {
+///
+/// Looks up the DefId for each method from the defs list by matching the node ID.
+fn extract_trait_methods(fields: &[Node<Decl>], defs: &[DefHeader]) -> Vec<MethodInfo> {
     fields
         .iter()
-        .filter_map(|decl| match &**decl {
-            Decl::FnSig(sig) => {
-                let name = sig.path.name()?;
-                let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
-                let recv_mode = compute_receiver_mode(sig, is_static);
-                Some(MethodInfo {
-                    name,
-                    is_static,
-                    recv_mode,
-                })
+        .filter_map(|decl| {
+            let def_id = defs
+                .iter()
+                .find(|h| h.root_node == decl.id)
+                .map(|h| h.def_id)?;
+            let target = DefTarget::Workspace(def_id);
+
+            match &decl.value {
+                Decl::FnSig(sig) => {
+                    let name = sig.path.name()?;
+                    let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
+                    let recv_mode = compute_receiver_mode(sig, is_static);
+                    let scheme = sig.extract_scheme(None);
+                    Some(MethodInfo {
+                        target,
+                        name,
+                        is_static,
+                        recv_mode,
+                        scheme,
+                    })
+                }
+                Decl::Func(f) => {
+                    let name = f.sig.path.name()?;
+                    let is_static = f
+                        .sig
+                        .modifiers
+                        .iter()
+                        .any(|m| matches!(m, Modifier::Static));
+                    let recv_mode = compute_receiver_mode(&f.sig, is_static);
+                    let scheme = f.sig.extract_scheme(None);
+                    Some(MethodInfo {
+                        target,
+                        name,
+                        is_static,
+                        recv_mode,
+                        scheme,
+                    })
+                }
+                _ => None,
             }
-            Decl::Func(f) => {
-                let name = f.sig.path.name()?;
-                let is_static = f
-                    .sig
-                    .modifiers
-                    .iter()
-                    .any(|m| matches!(m, Modifier::Static));
-                let recv_mode = compute_receiver_mode(&f.sig, is_static);
-                Some(MethodInfo {
-                    name,
-                    is_static,
-                    recv_mode,
-                })
-            }
-            _ => None,
         })
         .collect()
 }
 
 /// Compute the receiver mode from a function signature.
-fn compute_receiver_mode(sig: &ray_core::ast::FuncSig, is_static: bool) -> ReceiverMode {
+fn compute_receiver_mode(sig: &FuncSig, is_static: bool) -> ReceiverMode {
     if is_static || sig.params.is_empty() {
         return ReceiverMode::None;
     }
@@ -440,7 +462,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
         .decls
         .iter()
         .find(|decl| decl.id == def_header.root_node)
-        .and_then(|decl| match &**decl {
+        .and_then(|decl| match &decl.value {
             Decl::Impl(im) => Some(im),
             _ => None,
         })?;
@@ -499,7 +521,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     };
 
     // Extract method info
-    let methods = extract_impl_methods(im);
+    let methods = extract_impl_methods(im, &parse_result.defs);
 
     Some(ImplDef {
         target: DefTarget::Workspace(def_id),
@@ -512,11 +534,16 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
 }
 
 /// Extract method info from an impl block.
-fn extract_impl_methods(im: &ray_core::ast::Impl) -> Vec<MethodInfo> {
+fn extract_impl_methods(im: &Impl, defs: &[DefHeader]) -> Vec<MethodInfo> {
     let mut methods = Vec::new();
 
     if let Some(funcs) = &im.funcs {
         for func in funcs {
+            let def_id = match defs.iter().find(|h| h.root_node == func.id) {
+                Some(h) => h.def_id,
+                None => continue,
+            };
+            let target = DefTarget::Workspace(def_id);
             if let Some(name) = func.sig.path.name() {
                 let is_static = func
                     .sig
@@ -524,10 +551,13 @@ fn extract_impl_methods(im: &ray_core::ast::Impl) -> Vec<MethodInfo> {
                     .iter()
                     .any(|m| matches!(m, Modifier::Static));
                 let recv_mode = compute_receiver_mode(&func.sig, is_static);
+                let scheme = func.sig.extract_scheme(None);
                 methods.push(MethodInfo {
+                    target,
                     name,
                     is_static,
                     recv_mode,
+                    scheme,
                 });
             }
         }
@@ -535,20 +565,32 @@ fn extract_impl_methods(im: &ray_core::ast::Impl) -> Vec<MethodInfo> {
 
     if let Some(externs) = &im.externs {
         for ext_node in externs {
+            let def_id = match defs.iter().find(|h| h.root_node == ext_node.id) {
+                Some(h) => h.def_id,
+                None => continue,
+            };
+            let target = DefTarget::Workspace(def_id);
             if let Decl::Extern(ext) = &ext_node.value {
                 if let Some(name) = ext.decl().get_name() {
                     // Extern methods - check the inner FnSig
                     let inner_decl = ext.decl_node();
-                    let (is_static, recv_mode) = if let Decl::FnSig(sig) = &inner_decl.value {
+                    let (is_static, recv_mode, scheme) = if let Decl::FnSig(sig) = &inner_decl.value
+                    {
                         let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
-                        (is_static, compute_receiver_mode(sig, is_static))
+                        (
+                            is_static,
+                            compute_receiver_mode(sig, is_static),
+                            sig.extract_scheme(None),
+                        )
                     } else {
-                        (false, ReceiverMode::Value)
+                        (false, ReceiverMode::Value, TyScheme::from_mono(Ty::Any))
                     };
                     methods.push(MethodInfo {
+                        target,
                         name,
                         is_static,
                         recv_mode,
+                        scheme,
                     });
                 }
             }
@@ -599,7 +641,7 @@ fn extract_workspace_type_alias(db: &Database, def_id: DefId) -> Option<TypeAlia
 
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
-        if let Decl::TypeAlias(name_node, aliased_ty) = &**decl {
+        if let Decl::TypeAlias(name_node, aliased_ty) = &decl.value {
             // Match by name
             if name_node.path.name() == Some(def_header.name.clone()) {
                 // Extract type params from the name if present
@@ -1310,14 +1352,24 @@ trait Eq['a] {
                 super_traits: vec![],
                 methods: vec![
                     MethodInfo {
+                        target: DefTarget::Library(LibraryDefId {
+                            module: ModulePath::from("core::cmp"),
+                            index: 1,
+                        }),
                         name: "cmp".to_string(),
                         is_static: false,
                         recv_mode: ReceiverMode::Value,
+                        scheme: TyScheme::from_mono(Ty::Any),
                     },
                     MethodInfo {
+                        target: DefTarget::Library(LibraryDefId {
+                            module: ModulePath::from("core::cmp"),
+                            index: 2,
+                        }),
                         name: "lt".to_string(),
                         is_static: false,
                         recv_mode: ReceiverMode::Value,
+                        scheme: TyScheme::from_mono(Ty::Any),
                     },
                 ],
             },
@@ -2130,9 +2182,14 @@ impl Stringify[Foo] {
                 type_params: vec![],
                 super_traits: vec![],
                 methods: vec![MethodInfo {
+                    target: DefTarget::Library(LibraryDefId {
+                        module: ModulePath::from("core::fmt"),
+                        index: 1,
+                    }),
                     name: "fmt".to_string(),
                     is_static: false,
                     recv_mode: ReceiverMode::Value,
+                    scheme: TyScheme::from_mono(Ty::Any),
                 }],
             },
         );

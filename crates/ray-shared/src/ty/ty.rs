@@ -451,33 +451,32 @@ impl Ty {
 
     #[deprecated(note = "use item_path() or type_path() instead")]
     pub fn get_path(&self) -> Path {
-        unreachable!("legacy code should no longer be called")
-        // match self {
-        //     Ty::Never => Path::from("never"),
-        //     Ty::Any => Path::from("any"),
-        //     Ty::Var(v) => v.path().clone().into(),
-        //     Ty::Const(s) => s.clone(),
-        //     Ty::Proj(base_path, params) => base_path.append_type_args(params.iter()),
-        //     Ty::Array(ty, size) => {
-        //         let base_path = Path::from("array");
-        //         base_path.append_array_type(ty.as_ref().clone(), *size)
-        //     }
-        //     Ty::Ref(ty) => {
-        //         let base_path = Path::from("ref");
-        //         base_path.append_type_args(std::iter::once(ty.as_ref()))
-        //     }
-        //     Ty::RawPtr(ty) => {
-        //         let base_path = Path::from("rawptr");
-        //         base_path.append_type_args(std::iter::once(ty.as_ref()))
-        //     }
-        //     Ty::Tuple(tys) => {
-        //         let base_path = Path::from("tuple");
-        //         base_path.append_type_args(tys.iter())
-        //     }
-        //     Ty::Func(_, _) => {
-        //         unimplemented!()
-        //     }
-        // }
+        match self {
+            Ty::Never => Path::from("never"),
+            Ty::Any => Path::from("any"),
+            Ty::Var(v) => v.path().clone().into(),
+            Ty::Const(item_path) => item_path.to_path(),
+            Ty::Proj(item_path, params) => item_path.to_path().append_type_args(params.iter()),
+            Ty::Array(ty, size) => {
+                let base_path = Path::from("array");
+                base_path.append_array_type(ty.as_ref().clone(), *size)
+            }
+            Ty::Ref(ty) => {
+                let base_path = Path::from("ref");
+                base_path.append_type_args(std::iter::once(ty.as_ref()))
+            }
+            Ty::RawPtr(ty) => {
+                let base_path = Path::from("rawptr");
+                base_path.append_type_args(std::iter::once(ty.as_ref()))
+            }
+            Ty::Tuple(tys) => {
+                let base_path = Path::from("tuple");
+                base_path.append_type_args(tys.iter())
+            }
+            Ty::Func(_, _) => {
+                unimplemented!()
+            }
+        }
     }
 
     pub fn name(&self) -> String {

@@ -4555,7 +4555,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: operator_index query
 
-- [ ] Define `operator_index()` query:
+- [x] Define `operator_index()` query:
   ```rust
   #[query]
   fn operator_index(db: &Database) -> HashMap<String, OperatorEntry> {
@@ -4586,12 +4586,12 @@ This is the largest migration. Do it incrementally, running tests after each ste
       index
   }
   ```
-- [ ] Implement `is_operator_name` helper (non-alphanumeric method names)
-- [ ] **Validate**: Unit test finding `+`, `-`, etc. operators
+- [x] Implement `is_operator_name` helper (non-alphanumeric method names)
+- [x] **Validate**: Unit test finding `+`, `-`, etc. operators
 
 ##### Step 2: lookup_infix_op query
 
-- [ ] Define `lookup_infix_op(symbol)` query:
+- [x] Define `lookup_infix_op(symbol)` query:
   ```rust
   #[query]
   fn lookup_infix_op(db: &Database, symbol: &str) -> Option<OperatorEntry> {
@@ -4601,11 +4601,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
           .cloned()
   }
   ```
-- [ ] **Validate**: Unit test looking up `+`
+- [x] **Validate**: Unit test looking up `+`
 
 ##### Step 3: lookup_prefix_op query
 
-- [ ] Define `lookup_prefix_op(symbol)` query:
+- [x] Define `lookup_prefix_op(symbol)` query:
   ```rust
   #[query]
   fn lookup_prefix_op(db: &Database, symbol: &str) -> Option<OperatorEntry> {
@@ -4615,7 +4615,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
           .cloned()
   }
   ```
-- [ ] **Validate**: Unit test looking up `-` (unary negation)
+- [x] **Validate**: Unit test looking up `-` (unary negation)
 
 ##### Step 4: builtin_ty query
 

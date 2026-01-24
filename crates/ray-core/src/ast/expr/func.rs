@@ -4,15 +4,19 @@ use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     def::SignatureStatus,
     pathlib::{FilePath, Path},
-    span::{Source, Span, parsed::Parsed},
-    ty::Ty,
+    span::{Span, parsed::Parsed},
+    ty::{Ty, TyVar},
 };
-use ray_typing::{constraints::Predicate, tyctx::TyCtx, types::TyScheme};
+use ray_typing::{
+    constraints::Predicate,
+    tyctx::TyCtx,
+    types::{Subst, Substitutable, TyScheme},
+};
 
 use crate::sourcemap::SourceMap;
 use crate::{
     ast::{Expr, Missing, Modifier, Name, Node, TypeParams},
-    errors::{RayError, RayErrorKind},
+    errors::RayError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +229,68 @@ impl FuncSig {
             qual.resolve_fqns(scopes, ncx);
         }
         Ok(())
+    }
+
+    /// Extract a type scheme from a function signature.
+    ///
+    /// Builds a `TyScheme` from the signature's type parameters, qualifiers,
+    /// parameter types, and return type.
+    pub fn extract_scheme(&self, subst: Option<&Subst>) -> TyScheme {
+        // Extract type variables from type parameters
+        let vars: Vec<TyVar> = self
+            .ty_params
+            .as_ref()
+            .map(|tp| {
+                tp.tys
+                    .iter()
+                    .filter_map(|parsed_ty| {
+                        if let Ty::Var(v) = parsed_ty.value() {
+                            Some(v.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Extract parameter types
+        let param_tys: Vec<Ty> = self
+            .params
+            .iter()
+            .filter_map(|param| param.value.ty().cloned())
+            .collect();
+
+        // Extract return type, defaulting to unit/void
+        let ret_ty = self
+            .ret_ty
+            .as_ref()
+            .map(|parsed| parsed.deref().clone())
+            .unwrap_or(Ty::unit());
+
+        // Build the function type
+        let func_ty = Ty::Func(param_tys, Box::new(ret_ty));
+
+        // Extract qualifiers from the qualifiers into Predicates
+        let mut qualifiers = vec![];
+        if self.qualifiers.len() != 0 {
+            for q in self.qualifiers.iter() {
+                // let q = q.clone_value();
+                let (fqn, ty_args) = match q.value() {
+                    Ty::Proj(name, args) => (name, args.clone()),
+                    Ty::Const(name) => (name, vec![]),
+                    _ => continue,
+                };
+
+                qualifiers.push(Predicate::class(fqn.to_string(), ty_args));
+            }
+        }
+
+        let mut scheme = TyScheme::new(vars, qualifiers, func_ty);
+        if let Some(subst) = subst {
+            scheme.apply_subst(subst);
+        }
+        scheme
     }
 
     pub fn fresh_scheme(
