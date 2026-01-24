@@ -36,60 +36,20 @@ use crate::{
 pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resolution> {
     let parse_result = parse_file(db, file_id);
     let resolved = resolved_imports(db, file_id);
-    let workspace = db.get_input::<WorkspaceSnapshot>(());
     let libraries = db.get_input::<LoadedLibraries>(());
 
-    // Get file info to know which module this file belongs to
-    let file_info = match workspace.file_info(file_id) {
-        Some(info) => info,
-        None => return HashMap::new(),
-    };
+    // Get the combined unqualified exports (reuse file_scope query)
+    // This already includes module exports, sibling exports, and selective imports
+    // with correct priority (module > sibling > imports)
+    let combined_exports = file_scope(db, file_id);
 
-    // Get exports from the file's module (including this file's exports)
-    let module_index = module_def_index(db, file_info.module_path.clone());
-
-    // Convert module_index to HashMap<String, DefTarget> for resolve_names_in_file
-    let module_exports = convert_to_def_targets(&module_index);
-
-    // Compute sibling exports: exports from other files in the same module
-    let sibling_exports = compute_sibling_exports(db, file_id, &file_info.module_path, &workspace);
-
-    // Build imports map: alias -> module_path
+    // Build imports map: alias -> module_path (for qualified access like `io::read`)
     let mut imports_map: HashMap<String, ModulePath> = HashMap::new();
-
-    // Also build combined_exports for unqualified access
-    let mut combined_exports = module_exports;
-
     for (alias, import_result) in &resolved {
         if let Ok(resolved_import) = import_result {
-            match &resolved_import.names {
-                None => {
-                    // Plain import: `import utils` enables `utils::foo` (qualified access only)
-                    imports_map.insert(alias.clone(), resolved_import.module_path.clone());
-                }
-                Some(names) => {
-                    // Selective import: `import utils with foo` enables `foo` (unqualified only)
-                    // Does NOT enable `utils::foo`
-                    let module_path = &resolved_import.module_path;
-
-                    // Check if this is a library import or workspace import
-                    let imported_exports = if libraries.library_for_module(&module_path).is_some() {
-                        // Library import - get exports from library
-                        get_library_exports(&libraries, module_path)
-                    } else {
-                        // Workspace import
-                        let imported_module_index = module_def_index(db, module_path.clone());
-                        convert_to_def_targets(&imported_module_index)
-                    };
-
-                    for name in names {
-                        if let Some(target) = imported_exports.get(name) {
-                            combined_exports
-                                .entry(name.clone())
-                                .or_insert(target.clone());
-                        }
-                    }
-                }
+            if resolved_import.names.is_none() {
+                // Plain import: `import utils` enables `utils::foo` (qualified access only)
+                imports_map.insert(alias.clone(), resolved_import.module_path.clone());
             }
         }
     }
@@ -109,13 +69,82 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
         }
     };
 
-    resolve_names_in_file(
-        &parse_result.ast,
-        &imports_map,
-        &combined_exports,
-        &sibling_exports,
-        import_exports,
-    )
+    resolve_names_in_file(&parse_result.ast, &imports_map, &combined_exports, import_exports)
+}
+
+/// The top-level scope for a file: names that are visible without qualification.
+///
+/// This includes:
+/// - Module exports (same module)
+/// - Sibling file exports
+/// - Selective imports (`import foo with bar` makes `bar` visible)
+/// - Library exports from selective imports
+///
+/// This is cached as a query so that multiple lookups don't rebuild the scope.
+#[query]
+pub fn file_scope(db: &Database, file_id: FileId) -> HashMap<String, DefTarget> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let resolved = resolved_imports(db, file_id);
+
+    // Get file info to know which module this file belongs to
+    let file_info = match workspace.file_info(file_id) {
+        Some(info) => info,
+        None => return HashMap::new(),
+    };
+
+    // Get exports from the file's module
+    let module_index = module_def_index(db, file_info.module_path.clone());
+    let mut combined_exports = convert_to_def_targets(&module_index);
+
+    // Add sibling exports
+    let sibling_exports = compute_sibling_exports(db, file_id, &file_info.module_path, &workspace);
+    for (sibling_name, target) in sibling_exports {
+        combined_exports.entry(sibling_name).or_insert(target);
+    }
+
+    // Add selective imports
+    for (_alias, import_result) in &resolved {
+        if let Ok(resolved_import) = import_result {
+            if let Some(names) = &resolved_import.names {
+                let module_path = &resolved_import.module_path;
+
+                let imported_exports = if libraries.library_for_module(&module_path).is_some() {
+                    get_library_exports(&libraries, module_path)
+                } else {
+                    let imported_module_index = module_def_index(db, module_path.clone());
+                    convert_to_def_targets(&imported_module_index)
+                };
+
+                for imported_name in names {
+                    if let Some(target) = imported_exports.get(imported_name) {
+                        combined_exports
+                            .entry(imported_name.clone())
+                            .or_insert(target.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    combined_exports
+}
+
+/// Resolve a builtin name in the context of a file.
+///
+/// This performs name resolution for a single name, using the same scope
+/// that would be visible at the top level of the given file.
+///
+/// This is NOT hardcoded - it uses the normal name resolution rules.
+/// If a user defines their own `list` type and it's in scope, that's what
+/// they get. If they're using the standard library and have `list` imported,
+/// they get that.
+///
+/// Returns `None` if the name is not in scope.
+#[query]
+pub fn resolve_builtin(db: &Database, file_id: FileId, name: String) -> Option<DefTarget> {
+    let scope = file_scope(db, file_id);
+    scope.get(&name).cloned()
 }
 
 /// Convert module_def_index results to DefTarget map.
@@ -696,6 +725,170 @@ mod tests {
         assert_eq!(
             library_count, 1,
             "Selective library import should only bring 'read' into scope, not 'write'"
+        );
+    }
+
+    #[test]
+    fn resolve_builtin_finds_workspace_definition() {
+        use super::resolve_builtin;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Define a struct named "list"
+        FileSource::new(&db, file_id, "struct list { items: int }".to_string());
+
+        let result = resolve_builtin(&db, file_id, "list".to_string());
+        assert!(result.is_some(), "Should resolve 'list' to workspace definition");
+        assert!(
+            matches!(result, Some(DefTarget::Workspace(_))),
+            "Should be a workspace target"
+        );
+    }
+
+    #[test]
+    fn resolve_builtin_finds_library_import() {
+        use super::resolve_builtin;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with core::collections containing "list"
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::collections"));
+
+        let list_def_id = LibraryDefId {
+            module: ModulePath::from("core::collections"),
+            index: 0,
+        };
+        let list_path = ItemPath::new(ModulePath::from("core::collections"), vec!["list".into()]);
+        core_lib.names.insert(list_path, list_def_id.clone());
+        core_lib.schemes.insert(
+            list_def_id,
+            TyScheme {
+                vars: vec![],
+                qualifiers: vec![],
+                ty: Ty::unit(),
+            },
+        );
+        libraries.add(ModulePath::from("core"), core_lib);
+        LoadedLibraries::new(&db, (), libraries.libraries);
+
+        // Selective import: `import core::collections with list`
+        FileSource::new(
+            &db,
+            main_file,
+            "import core::collections with list\nfn main() {}".to_string(),
+        );
+
+        let result = resolve_builtin(&db, main_file, "list".to_string());
+        assert!(result.is_some(), "Should resolve 'list' from library import");
+        assert!(
+            matches!(result, Some(DefTarget::Library(_))),
+            "Should be a library target"
+        );
+    }
+
+    #[test]
+    fn resolve_builtin_returns_none_for_unimported_name() {
+        use super::resolve_builtin;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "fn main() {}".to_string());
+
+        let result = resolve_builtin(&db, file_id, "list".to_string());
+        assert!(result.is_none(), "Should return None for name not in scope");
+    }
+
+    #[test]
+    fn resolve_builtin_finds_sibling_export() {
+        use super::resolve_builtin;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        // Two files in the same module
+        let file1 = workspace.add_file(FilePath::from("mymodule/a.ray"), module_path.clone());
+        let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // file1 defines MyType
+        FileSource::new(&db, file1, "struct MyType {}".to_string());
+        // file2 can see MyType from sibling
+        FileSource::new(&db, file2, "fn use_it(x: MyType) {}".to_string());
+
+        // From file2's perspective, MyType should be resolvable
+        let result = resolve_builtin(&db, file2, "MyType".to_string());
+        assert!(result.is_some(), "Should resolve sibling export");
+        assert!(
+            matches!(result, Some(DefTarget::Workspace(_))),
+            "Should be a workspace target"
+        );
+    }
+
+    #[test]
+    fn resolve_builtin_workspace_shadows_library() {
+        use super::resolve_builtin;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with core::collections containing "list"
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::collections"));
+
+        let list_def_id = LibraryDefId {
+            module: ModulePath::from("core::collections"),
+            index: 0,
+        };
+        let list_path = ItemPath::new(ModulePath::from("core::collections"), vec!["list".into()]);
+        core_lib.names.insert(list_path, list_def_id.clone());
+        core_lib.schemes.insert(
+            list_def_id,
+            TyScheme {
+                vars: vec![],
+                qualifiers: vec![],
+                ty: Ty::unit(),
+            },
+        );
+        libraries.add(ModulePath::from("core"), core_lib);
+        LoadedLibraries::new(&db, (), libraries.libraries);
+
+        // Workspace defines its own "list", and also imports from library
+        FileSource::new(
+            &db,
+            file_id,
+            "import core::collections with list\nstruct list {}".to_string(),
+        );
+
+        let result = resolve_builtin(&db, file_id, "list".to_string());
+        assert!(result.is_some(), "Should resolve 'list'");
+        // Workspace definition should shadow library import
+        assert!(
+            matches!(result, Some(DefTarget::Workspace(_))),
+            "Workspace definition should shadow library import"
         );
     }
 }
