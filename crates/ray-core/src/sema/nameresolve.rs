@@ -75,6 +75,16 @@ pub fn resolve_names_in_file(
                             }
                         }
                     }
+                } else if let Decl::Struct(struct_decl) = &decl.value {
+                    // Resolve type references in struct field types
+                    resolve_struct_type_refs(
+                        decl.id.owner,
+                        struct_decl,
+                        imports,
+                        exports,
+                        &import_exports,
+                        &mut resolutions,
+                    );
                 } else if let Decl::Impl(imp) = &decl.value {
                     // Resolve type references in impl block
                     // For `impl ToStr[Point]`, resolve the trait type (ToStr)
@@ -210,6 +220,40 @@ fn lookup_local(scopes: &[HashMap<String, LocalBindingId>], name: &str) -> Optio
         }
     }
     None
+}
+
+/// Resolve type references in a struct definition.
+///
+/// For `struct Foo['a] { x: 'a, y: Bar }`, this resolves:
+/// - Type parameter `'a` in field `x` to TypeParam
+/// - Type `Bar` in field `y` to its definition
+fn resolve_struct_type_refs(
+    def_id: DefId,
+    struct_decl: &Struct,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    // Build type parameter scope from struct's type params
+    let ty_vars = extract_ty_vars_from_type_params(&struct_decl.ty_params);
+    let type_params = build_type_param_scope(def_id, &ty_vars);
+
+    // Resolve each field type
+    if let Some(fields) = &struct_decl.fields {
+        for field in fields {
+            if let Some(parsed_ty_scheme) = &field.value.ty {
+                collect_type_resolutions_from_scheme(
+                    parsed_ty_scheme,
+                    &type_params,
+                    imports,
+                    exports,
+                    import_exports,
+                    resolutions,
+                );
+            }
+        }
+    }
 }
 
 /// Resolve type references in an impl block.
@@ -1287,10 +1331,12 @@ mod tests {
     };
     use ray_typing::types::TyScheme;
 
+    use ray_typing::types::NominalKind;
+
     use crate::{
         ast::{
             Assign, Block, Closure as AstClosure, Decl, Expr, File, FnParam, Func, FuncSig,
-            Literal, Name, Node, Pattern as AstPattern, Sequence,
+            Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, TypeParams,
         },
         sema::{
             build_type_param_scope, collect_type_resolutions, resolve_func_sig,
@@ -2021,6 +2067,206 @@ mod tests {
             resolutions.get(&param_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
             "Parameter type should resolve to export"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with struct definitions
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_struct_field_type() {
+        // struct Foo { x: Bar }
+        // where Bar is a struct in exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a field with type annotation: x: Bar
+        let field_ty = Ty::con("Bar");
+        let field_node_id = NodeId::new();
+        let mut parsed_ty_scheme = Parsed::new(TyScheme::from(field_ty), Source::default());
+        parsed_ty_scheme.set_synthetic_ids(vec![field_node_id]);
+
+        let mut field_name = Name::new("x");
+        field_name.ty = Some(parsed_ty_scheme);
+        let field = Node::new(field_name);
+
+        // Create struct declaration
+        let struct_decl = Struct {
+            kind: NominalKind::Struct,
+            path: Node::new(Path::from("test::Foo")),
+            ty_params: None,
+            fields: Some(vec![field]),
+        };
+        let decl = Node::new(Decl::Struct(struct_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let bar_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Bar".to_string(), DefTarget::Workspace(bar_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Field type should resolve to Bar
+        assert_eq!(
+            resolutions.get(&field_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(bar_def_id))),
+            "Field type Bar should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_struct_field_with_type_param() {
+        // struct Foo['a] { x: 'a }
+        // Type parameter 'a should resolve to TypeParam
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a field with type annotation: x: 'a
+        let field_ty = Ty::var("'a");
+        let field_node_id = NodeId::new();
+        let mut parsed_ty_scheme = Parsed::new(TyScheme::from(field_ty), Source::default());
+        parsed_ty_scheme.set_synthetic_ids(vec![field_node_id]);
+
+        let mut field_name = Name::new("x");
+        field_name.ty = Some(parsed_ty_scheme);
+        let field = Node::new(field_name);
+
+        // Create type parameter 'a
+        let ty_param = Ty::var("'a");
+        let ty_param_parsed = Parsed::new(ty_param, Source::default());
+
+        // Create struct declaration with type parameter
+        let struct_decl = Struct {
+            kind: NominalKind::Struct,
+            path: Node::new(Path::from("test::Foo")),
+            ty_params: Some(TypeParams {
+                tys: vec![ty_param_parsed],
+                lb_span: Span::default(),
+                rb_span: Span::default(),
+            }),
+            fields: Some(vec![field]),
+        };
+        let decl = Node::new(Decl::Struct(struct_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Field type should resolve to TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&field_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Field type 'a should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_struct_generic_field_type() {
+        // struct Foo['a] { x: List['a] }
+        // List should resolve to export, 'a should resolve to TypeParam
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a field with type annotation: x: List['a]
+        let field_ty = Ty::proj("List", vec![Ty::var("'a")]);
+        let list_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_ty_scheme = Parsed::new(TyScheme::from(field_ty), Source::default());
+        parsed_ty_scheme.set_synthetic_ids(vec![list_node_id, a_node_id]);
+
+        let mut field_name = Name::new("x");
+        field_name.ty = Some(parsed_ty_scheme);
+        let field = Node::new(field_name);
+
+        // Create type parameter 'a
+        let ty_param = Ty::var("'a");
+        let ty_param_parsed = Parsed::new(ty_param, Source::default());
+
+        // Create struct declaration with type parameter
+        let struct_decl = Struct {
+            kind: NominalKind::Struct,
+            path: Node::new(Path::from("test::Foo")),
+            ty_params: Some(TypeParams {
+                tys: vec![ty_param_parsed],
+                lb_span: Span::default(),
+                rb_span: Span::default(),
+            }),
+            fields: Some(vec![field]),
+        };
+        let decl = Node::new(Decl::Struct(struct_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let list_def_id = DefId::new(FileId(0), 1);
+        exports.insert("List".to_string(), DefTarget::Workspace(list_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // List should resolve to export
+        assert_eq!(
+            resolutions.get(&list_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(list_def_id))),
+            "List should resolve to export"
+        );
+
+        // 'a should resolve to TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Type parameter 'a should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_struct_unresolved_field_type() {
+        // struct Foo { x: Unknown }
+        // Unknown is not in scope, should resolve to Error
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a field with type annotation: x: Unknown
+        let field_ty = Ty::con("Unknown");
+        let field_node_id = NodeId::new();
+        let mut parsed_ty_scheme = Parsed::new(TyScheme::from(field_ty), Source::default());
+        parsed_ty_scheme.set_synthetic_ids(vec![field_node_id]);
+
+        let mut field_name = Name::new("x");
+        field_name.ty = Some(parsed_ty_scheme);
+        let field = Node::new(field_name);
+
+        // Create struct declaration
+        let struct_decl = Struct {
+            kind: NominalKind::Struct,
+            path: Node::new(Path::from("test::Foo")),
+            ty_params: None,
+            fields: Some(vec![field]),
+        };
+        let decl = Node::new(Decl::Struct(struct_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new(); // Unknown is not in exports
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Field type should resolve to Error
+        assert_eq!(
+            resolutions.get(&field_node_id),
+            Some(&Resolution::Error),
+            "Unknown type should resolve to Error"
         );
     }
 }

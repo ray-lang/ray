@@ -5199,7 +5199,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
 ##### Step 1: Struct definitions
 
-- [ ] In `resolve_names_in_file`, add handling for struct definitions:
+- [x] In `resolve_names_in_file`, add handling for struct definitions:
   ```rust
   Decl::Struct(struct_decl) => {
       // Build type parameter scope
@@ -5220,7 +5220,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       }
   }
   ```
-- [ ] **Validate**: Unit test resolving struct field types
+- [x] **Validate**: Unit test resolving struct field types
 
 ##### Step 2: Trait definitions
 
