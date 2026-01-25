@@ -5224,7 +5224,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
 ##### Step 2: Trait definitions
 
-- [ ] Add handling for trait definitions:
+- [x] Add handling for trait definitions:
   ```rust
   Decl::Trait(trait_decl) => {
       let type_params = build_type_param_scope(def_id, &trait_decl.type_params);
@@ -5248,7 +5248,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       }
   }
   ```
-- [ ] **Validate**: Unit test resolving trait super traits and method signatures
+- [x] **Validate**: Unit test resolving trait super traits and method signatures
 
 ##### Step 3: Impl definitions
 

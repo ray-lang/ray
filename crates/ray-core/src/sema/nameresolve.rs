@@ -85,6 +85,16 @@ pub fn resolve_names_in_file(
                         &import_exports,
                         &mut resolutions,
                     );
+                } else if let Decl::Trait(trait_decl) = &decl.value {
+                    // Resolve type references in trait definition
+                    resolve_trait_type_refs(
+                        decl.id.owner,
+                        trait_decl,
+                        imports,
+                        exports,
+                        &import_exports,
+                        &mut resolutions,
+                    );
                 } else if let Decl::Impl(imp) = &decl.value {
                     // Resolve type references in impl block
                     // For `impl ToStr[Point]`, resolve the trait type (ToStr)
@@ -252,6 +262,53 @@ fn resolve_struct_type_refs(
                     resolutions,
                 );
             }
+        }
+    }
+}
+
+/// Resolve type references in a trait definition.
+///
+/// For `trait Eq['a] extends Hash['a] { fn eq(self, other: 'a): bool }`, this resolves:
+/// - Super trait `Hash['a]` type references
+/// - Method signature type references (parameters, return types, qualifiers)
+///
+/// Type parameters from the trait (e.g., `'a`) are in scope for all resolutions.
+fn resolve_trait_type_refs(
+    def_id: DefId,
+    trait_decl: &Trait,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    // Build type parameter scope from trait's type (e.g., Eq['a] -> {'a: TypeParamId})
+    let ty_vars = trait_decl.ty.value().type_params();
+    let type_params = build_type_param_scope(def_id, &ty_vars);
+
+    // Resolve super trait if present
+    if let Some(super_trait) = &trait_decl.super_trait {
+        collect_type_resolutions(
+            super_trait,
+            &type_params,
+            imports,
+            exports,
+            import_exports,
+            resolutions,
+        );
+    }
+
+    // Resolve method signatures
+    for field in &trait_decl.fields {
+        if let Decl::FnSig(sig) = &field.value {
+            resolve_func_sig(
+                field.id.owner,
+                sig,
+                &type_params, // Trait's type params are in scope
+                imports,
+                exports,
+                import_exports,
+                resolutions,
+            );
         }
     }
 }
@@ -1336,7 +1393,7 @@ mod tests {
     use crate::{
         ast::{
             Assign, Block, Closure as AstClosure, Decl, Expr, File, FnParam, Func, FuncSig,
-            Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, TypeParams,
+            Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, Trait, TypeParams,
         },
         sema::{
             build_type_param_scope, collect_type_resolutions, resolve_func_sig,
@@ -2267,6 +2324,252 @@ mod tests {
             resolutions.get(&field_node_id),
             Some(&Resolution::Error),
             "Unknown type should resolve to Error"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with trait definitions
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_trait_super_trait() {
+        // trait Eq['a] extends Hash['a]
+        // Hash should resolve to export, 'a should resolve to TypeParam
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create super trait type: Hash['a]
+        let super_trait_ty = Ty::proj("Hash", vec![Ty::var("'a")]);
+        let hash_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_super_trait = Parsed::new(super_trait_ty, Source::default());
+        parsed_super_trait.set_synthetic_ids(vec![hash_node_id, a_node_id]);
+
+        // Create trait type: Eq['a]
+        let trait_ty = Ty::proj("Eq", vec![Ty::var("'a")]);
+        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+
+        // Create trait declaration
+        let trait_decl = Trait {
+            path: Node::new(Path::from("test::Eq")),
+            ty: parsed_trait_ty,
+            fields: vec![],
+            super_trait: Some(parsed_super_trait),
+            directives: vec![],
+        };
+        let decl = Node::new(Decl::Trait(trait_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let hash_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Hash".to_string(), DefTarget::Workspace(hash_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Hash should resolve to export
+        assert_eq!(
+            resolutions.get(&hash_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(hash_def_id))),
+            "Super trait Hash should resolve to export"
+        );
+
+        // 'a in super trait should resolve to TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Type parameter 'a in super trait should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_trait_method_signature() {
+        // trait Eq['a] { fn eq(self, other: 'a): bool }
+        // 'a in method signature should resolve to trait's TypeParam
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create method parameter type: 'a
+        let param_ty = Ty::var("'a");
+        let param_node_id = NodeId::new();
+        let mut parsed_param_ty = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_param_ty.set_synthetic_ids(vec![param_node_id]);
+
+        // Create method parameter: other: 'a
+        let mut other_name = Name::new("other");
+        other_name.ty = Some(parsed_param_ty);
+        let other_param = Node::new(FnParam::Name(other_name));
+
+        // Create method signature
+        let method_sig = FuncSig {
+            path: Node::new(Path::from("test::Eq::eq")),
+            params: vec![other_param],
+            ty_params: None,
+            ret_ty: None,
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: true,
+            has_body: false,
+            span: Span::default(),
+        };
+        let method_decl = Node::new(Decl::FnSig(method_sig));
+
+        // Create trait type: Eq['a]
+        let trait_ty = Ty::proj("Eq", vec![Ty::var("'a")]);
+        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+
+        // Create trait declaration
+        let trait_decl = Trait {
+            path: Node::new(Path::from("test::Eq")),
+            ty: parsed_trait_ty,
+            fields: vec![method_decl],
+            super_trait: None,
+            directives: vec![],
+        };
+        let decl = Node::new(Decl::Trait(trait_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // 'a in method parameter should resolve to trait's TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&param_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Type parameter 'a in method signature should resolve to trait's TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_trait_method_return_type() {
+        // trait ToStr['a] { fn to_str(self): String }
+        // String should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create method return type: String
+        let ret_ty = Ty::con("String");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        // Create method signature with return type
+        let method_sig = FuncSig {
+            path: Node::new(Path::from("test::ToStr::to_str")),
+            params: vec![],
+            ty_params: None,
+            ret_ty: Some(parsed_ret_ty),
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: true,
+            has_body: false,
+            span: Span::default(),
+        };
+        let method_decl = Node::new(Decl::FnSig(method_sig));
+
+        // Create trait type: ToStr['a]
+        let trait_ty = Ty::proj("ToStr", vec![Ty::var("'a")]);
+        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+
+        // Create trait declaration
+        let trait_decl = Trait {
+            path: Node::new(Path::from("test::ToStr")),
+            ty: parsed_trait_ty,
+            fields: vec![method_decl],
+            super_trait: None,
+            directives: vec![],
+        };
+        let decl = Node::new(Decl::Trait(trait_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let string_def_id = DefId::new(FileId(0), 1);
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // String should resolve to export
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "Return type String should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_trait_no_type_params() {
+        // trait Empty { fn foo(self): Bar }
+        // Trait without type parameters should still resolve method types
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create method return type: Bar
+        let ret_ty = Ty::con("Bar");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        // Create method signature
+        let method_sig = FuncSig {
+            path: Node::new(Path::from("test::Empty::foo")),
+            params: vec![],
+            ty_params: None,
+            ret_ty: Some(parsed_ret_ty),
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: true,
+            has_body: false,
+            span: Span::default(),
+        };
+        let method_decl = Node::new(Decl::FnSig(method_sig));
+
+        // Create trait type: Empty (no type params - Ty::Const)
+        let trait_ty = Ty::con("Empty");
+        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+
+        // Create trait declaration
+        let trait_decl = Trait {
+            path: Node::new(Path::from("test::Empty")),
+            ty: parsed_trait_ty,
+            fields: vec![method_decl],
+            super_trait: None,
+            directives: vec![],
+        };
+        let decl = Node::new(Decl::Trait(trait_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let bar_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Bar".to_string(), DefTarget::Workspace(bar_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Bar should resolve to export
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(bar_def_id))),
+            "Return type Bar should resolve to export"
         );
     }
 }
