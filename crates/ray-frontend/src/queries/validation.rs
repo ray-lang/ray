@@ -485,7 +485,18 @@ fn validate_impl(
     };
 
     // Inherent impl - completeness check not needed
-    let Some(trait_target) = impl_definition.trait_ref.clone() else {
+    let Some(ref trait_ty) = impl_definition.trait_ty else {
+        return;
+    };
+
+    // Get the trait path from the trait type
+    let trait_path = match trait_ty {
+        Ty::Const(p) | Ty::Proj(p, _) => p.clone(),
+        _ => return,
+    };
+
+    // Look up the trait definition
+    let Some(trait_target) = def_for_path(db, trait_path) else {
         return;
     };
 
@@ -506,7 +517,7 @@ fn validate_impl(
             errors.push(RayError {
                 msg: format!(
                     "trait `{}` expected {} type argument(s) but found {}",
-                    trait_definition.name, expected_count, ty_args_count
+                    trait_definition.path.item_name().unwrap_or("?"), expected_count, ty_args_count
                 ),
                 src: vec![Source {
                     span: im.ty.span().copied(),
@@ -528,7 +539,7 @@ fn validate_impl(
             errors.push(RayError {
                 msg: format!(
                     "impl `{}` is missing required method `{}`",
-                    trait_definition.name, required_method.name
+                    trait_definition.path.item_name().unwrap_or("?"), required_method.name
                 ),
                 src: vec![Source {
                     span: Some(srcmap.span_of(decl)),
@@ -549,7 +560,7 @@ fn validate_impl(
             errors.push(RayError {
                 msg: format!(
                     "method `{}` does not exist on trait `{}`",
-                    impl_method.name, trait_definition.name
+                    impl_method.name, trait_definition.path.item_name().unwrap_or("?")
                 ),
                 src: vec![Source {
                     span: Some(srcmap.span_of(decl)),

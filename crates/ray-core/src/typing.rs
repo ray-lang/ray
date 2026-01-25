@@ -6,7 +6,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::Path,
+    pathlib::{ItemPath, Path},
     resolution::{DefTarget, Resolution},
     ty::{SchemaVarAllocator, Ty},
 };
@@ -758,8 +758,8 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         // We require a named struct on the LHS; unlabeled `{ ... }` forms
         // are left for future extension.
         Expr::Curly(curly) => {
-            let struct_name = if let Some(lhs) = &curly.lhs {
-                lhs.value().to_string()
+            let path = if let Some(lhs) = &curly.lhs {
+                ItemPath::from(lhs.value())
             } else {
                 todo!("lowering for anonymous `{{...}}` curly expressions into ExprKind")
             };
@@ -785,13 +785,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 }
             }
 
-            ctx.record_expr(
-                node,
-                ExprKind::StructLiteral {
-                    struct_name,
-                    fields,
-                },
-            )
+            ctx.record_expr(node, ExprKind::StructLiteral { path, fields })
         }
         Expr::Dict(dict) => {
             let mut entries = Vec::with_capacity(dict.entries.len());

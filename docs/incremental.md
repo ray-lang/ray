@@ -316,7 +316,7 @@ pub struct ItemPath {
 
 This distinction prevents confusion between "the module `core::fmt`" and "the item `core::fmt::Display`".
 
-**ItemPath canonicalization**: `def_for_path(ItemPath)` performs **syntactic canonicalization** only:
+**ItemPath canonicalization**: ItemPaths are normalized syntactically wherever they are constructed. `def_for_path(ItemPath)` applies this normalization to top-level item paths only.
 
 1. **Type arguments are stripped**: `List[int]::push` → `List::push`. Type arguments affect monomorphization, not identity.
 2. **Path syntax is normalized**: Consistent separator handling, whitespace normalization, etc.
@@ -326,7 +326,7 @@ This distinction prevents confusion between "the module `core::fmt`" and "the it
 | `List[int]::push` | `module::List::push` (type args stripped) |
 | `Iterable::next` | `module::Iterable::next` (preserved as-is) |
 
-**Type-directed method resolution** is NOT part of `def_for_path`. When calling `x.push()` where `x: List[int]`, determining which concrete impl method to call requires type information and happens in `call_resolution(NodeId)`, not in path lookup. See the Call Resolution queries for details.
+**Type-directed method resolution** is NOT part of `def_for_path`. Nested ItemPaths like `Type::method` are not resolved by `def_for_path`; they are handled by call resolution with type information. When calling `x.push()` where `x: List[int]`, determining which concrete impl method to call happens in `call_resolution(NodeId)`, not in path lookup. See the Call Resolution queries for details.
 
 #### II. Identity
 
@@ -1118,14 +1118,12 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
 - `def_for_path(ItemPath)` → `Option<DefTarget>`
 
   **Dependencies**:
-  - For workspace paths: `module_def_index(item_path.module)`, `parse(parent_def.file)` for method lookup
+  - For workspace paths: `module_def_index(item_path.module)`
   - For library paths: `library_data(item_path.module)`
 
-  **Semantics**: Looks up a definition by fully-qualified path. Returns `DefTarget::Workspace(DefId)` for workspace definitions or `DefTarget::Library(LibraryDefId)` for library definitions. Used for:
-  - Qualified references like `core::int::add`
-  - Method lookup like `List::push`
+  **Semantics**: Looks up a top-level definition by fully-qualified path. Returns `DefTarget::Workspace(DefId)` for workspace definitions or `DefTarget::Library(LibraryDefId)` for library definitions. Used for qualified references like `core::int::add`, `core::list`, `my_module::MyStruct`.
 
-  Performs syntactic canonicalization: strips type arguments (`List[int]::push` → `List::push`), normalizes path syntax.
+  Performs syntactic canonicalization: strips type arguments (`List[int]` → `List`), normalizes path syntax.
 
   **Error handling**: Returns `None` if the path doesn't exist. Does not report diagnostics - callers decide how to handle missing definitions.
 
@@ -1135,9 +1133,7 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
 
   **Semantics**: Aggregates exports from all files in a module into a single namespace. Each name maps to either a unique `ExportedItem` or a collision error. An `ExportedItem` is either a `DefId` (for functions, structs, etc.) or a `LocalBindingId` (for top-level assignments).
 
-  Method DefIds (both impl methods and trait methods) are **not** included. Methods are reachable only through:
-  - Qualified paths: `Type::method` via `def_for_path(ItemPath)`
-  - Call resolution: `x.method()` via `call_resolution(NodeId)` (type-directed)
+  Method DefIds (both impl methods and trait methods) are **not** included. Qualified method syntax (`Type::method`) and method calls (`x.method()`) are resolved by call resolution with type information, not by `def_for_path`.
 
   This reflects that methods are not "top-level names" in the module namespace - they're accessed through their parent type or trait.
 
@@ -1156,6 +1152,138 @@ These are direct lookups into the `WorkspaceSnapshot`, not computed queries:
       pub definitions: Vec<DefId>,
   }
   ```
+
+##### Type Resolution
+
+Type annotations in definitions contain type references that must be resolved to their target definitions. For example, in `fn foo(x: List[Int]) -> Option[String]`, the types `List`, `Int`, `Option`, and `String` are all references that need resolution.
+
+**Background: Parsed<Ty> and Synthetic IDs**
+
+During parsing, type annotations are wrapped in `Parsed<Ty>`, which carries:
+- The `Ty` value (the parsed type structure)
+- A `Source` span for error reporting
+- A `Vec<NodeId>` of **synthetic IDs** - one for each type reference in the annotation
+
+The synthetic IDs are created in a flattened, pre-order traversal of the type. For example:
+```
+fn foo(x: A[B, C[T, U]]) -> R
+```
+Produces synthetic IDs in this order for the parameter type:
+1. `A` (the outermost type constructor)
+2. `B` (first type argument)
+3. `C` (second type argument - also a constructor)
+4. `T` (first arg of C)
+5. `U` (second arg of C)
+
+And for the return type:
+6. `R`
+
+These synthetic IDs allow `name_resolutions` to provide resolution information for every type reference, using the same `HashMap<NodeId, Resolution>` mechanism used for expression names.
+
+**Scope of Type Resolution**
+
+Type resolution must handle all type annotations in definitions:
+
+| Definition Type | Type Annotations to Resolve |
+|----------------|----------------------------|
+| **Struct** | Field types |
+| **Trait** | Super traits, method parameter types, method return types |
+| **Impl** | Implementing type, trait reference (if trait impl), method parameter types, method return types |
+| **Function** | Parameter types, return type, where clause types |
+| **Type Alias** | The aliased type |
+| **Binding** | Type annotation (if present) |
+
+**How Type Resolution Works**
+
+Type resolution is part of `name_resolutions(FileId)`. When walking a definition's AST, the resolver:
+
+1. For each `Parsed<Ty>` annotation, retrieves its `synthetic_ids()`
+2. Flattens the type into a list of type references (matching the synthetic ID order)
+3. For each (type_reference, synthetic_id) pair:
+   - Resolves the type reference using the same scope rules as expression names
+   - Records `(synthetic_id, Resolution)` in the results map
+
+The resolution rules for types are:
+- **Simple names** (e.g., `Int`, `MyStruct`): Look up in imports, then module exports, then builtins
+- **Qualified paths** (e.g., `core::list::List`): Look up via `module_def_index`
+- **Type parameters** (e.g., `T` in `fn foo[T](x: T)`): Resolve to `Resolution::TypeParam`
+
+**Extended Resolution enum**
+
+```rust
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum Resolution {
+    /// A top-level definition (function, struct, trait, etc.)
+    Def(DefTarget),
+    /// A local binding (parameter, let-binding, etc.)
+    Local(LocalBindingId),
+    /// A type parameter in scope
+    TypeParam(TypeParamId),
+    /// Unresolved (name error)
+    Error,
+}
+
+/// Identifies a type parameter within a definition.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct TypeParamId {
+    /// The definition that declares this type parameter
+    pub owner: DefId,
+    /// Index of this type parameter in the definition's type parameter list
+    pub index: u32,
+}
+```
+
+**Consuming Resolved Types**
+
+Downstream queries (e.g., `struct_def`, `trait_def`, `impl_def`) use the resolved types when building their output. For a `Parsed<Ty>`:
+
+```rust
+fn resolve_parsed_ty(
+    parsed_ty: &Parsed<Ty>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,  // From mapped_def_types
+) -> Ty {
+    let synthetic_ids = parsed_ty.synthetic_ids();
+    let ty = parsed_ty.value();
+
+    // Walk ty and synthetic_ids in parallel:
+    // - Resolution::Def(target) → use target's ItemPath
+    // - Resolution::TypeParam(id) → look up var_map[id] to get schema var
+    resolve_ty_with_ids(ty, synthetic_ids, resolutions, var_map)
+}
+```
+
+The result is a `Ty` where:
+- Type references to definitions are fully qualified (for `Ty::Const` and `Ty::Proj`, the path contains the full `ItemPath`)
+- Type parameter references become `Ty::Var(schema_var)` using the mapping from `mapped_def_types`
+
+**Connection to mapped_def_types**
+
+The `mapped_def_types(DefId)` query allocates schema variables for type parameters and produces a `HashMap<TypeParamId, TyVar>` mapping. When `name_resolutions` produces `Resolution::TypeParam(id)` for a type reference, consumers use this mapping to convert to the appropriate schema variable:
+
+```
+Source: struct Foo[T] { x: T }
+                   │      │
+                   │      └── Resolution::TypeParam(TypeParamId { owner: Foo, index: 0 })
+                   │
+                   └── mapped_def_types allocates ?s0 for index 0
+
+Result: StructDef.fields[0].ty = Ty::Var("?s0")
+```
+
+This ensures type parameters in field types, method signatures, etc. use the same schema variables as the definition's type scheme.
+
+**Dependency Tracking**
+
+Type resolution creates dependencies on the modules containing the resolved types. For example, if `struct Foo { x: List[Int] }` resolves `List` to `core::list::List` and `Int` to `core::int::Int`, then `struct_def(Foo)` depends on:
+- `module_def_index("core::list")` (to verify `List` exists)
+- `module_def_index("core::int")` (to verify `Int` exists)
+
+This ensures that if `List` is renamed or moved, `struct_def(Foo)` will be recomputed.
+
+**Error Handling**
+
+Unresolved types produce `Resolution::Error` in the resolutions map. The resolved `Ty` uses an error placeholder (e.g., `Ty::Error` or `Ty::Const(ItemPath::error())`), and a diagnostic is emitted. Downstream queries can still proceed with partial information.
 
 ##### Type Definitions (DefTarget-keyed)
 
@@ -1628,6 +1756,24 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Error handling**: Panics if the NodeId doesn't exist (internal error).
 
+- `type_param_span(TypeParamId)` → `Span`
+
+  **Dependencies**: `file_ast(type_param_id.owner.file)`
+
+  **Semantics**: Returns the source span for a type parameter declaration. Used by diagnostics to point to where a type parameter was declared, especially when multiple type parameters have the same name in scope.
+
+  **Error handling**: Panics if the TypeParamId doesn't exist (internal error).
+
+  **Example usage in diagnostics**:
+  ```rust
+  // When formatting an error about type variable ?s0:
+  if let Some(origin) = mapped_types.origin_of(&ty_var) {
+      let span = type_param_span(origin);
+      let name = &mapped_types.reverse_map[&ty_var];
+      format!("type parameter `{}` (declared at {})", name, span)
+  }
+  ```
+
 - `file_of(NodeId)` → `FileId`
 
   **Semantics**: Extracts the FileId from a NodeId. This is a pure computation on the NodeId structure, not a query.
@@ -1985,6 +2131,32 @@ Different queries produce errors with appropriate kinds:
 - `resolved_imports` → `RayErrorKind::Import`
 - `name_resolutions` → `RayErrorKind::Name`
 - `typecheck_group` → `RayErrorKind::Type`
+
+#### Type Variable Display in Diagnostics
+
+When type errors involve schema variables (type variables from polymorphic definitions), the diagnostic needs to display user-friendly names and optionally trace variables back to their declaration site. The `MappedDefTypes` structure provides two maps and a helper method:
+
+1. **Forward resolution** (`var_map: HashMap<TypeParamId, TyVar>`): Used during type resolution to convert `Resolution::TypeParam(TypeParamId)` to the schema variable.
+
+2. **Display name** (`reverse_map: HashMap<TyVar, String>`): Used when displaying types to convert schema variables back to user-facing names. Example: `?s0` → `"T"`.
+
+3. **Origin tracing** (`origin_of(&TyVar) -> Option<TypeParamId>`): Derives the origin by inverting `var_map`. Used when a diagnostic needs to show *where* a type parameter was declared. Example workflow:
+   ```rust
+   // Given an error involving schema variable ?s0:
+   if let Some(type_param_id) = mapped_types.origin_of(&ty_var) {
+       let def_name = def_name(type_param_id.owner);  // → "foo"
+       let span = type_param_span(type_param_id);  // → line 5, col 8
+       // Produce: "type parameter `T` (from `foo` at line 5)"
+   }
+   ```
+
+**Use cases for origin tracing:**
+
+- **Shadowed type parameters**: When inner `T` shadows outer `T`, the error can clarify which `T` is meant
+- **Cross-definition errors**: When a method uses a struct's type parameter, the error can point to the struct's declaration
+- **Debugging inference**: During development, origin tracking helps understand where each variable came from
+
+The typechecker's error formatting code should use `reverse_map` by default for display, and optionally include origin information for ambiguous cases (e.g., when multiple type parameters have the same name in scope).
 
 #### Query Results with Errors
 
@@ -3927,7 +4099,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       module_index.get(&path.item_name())?.ok().map(|e| e.target)
   }
   ```
-- [x] Handle nested paths (e.g., `List::push`)
+- [x] Ignore nested paths (methods are resolved by call resolution, not `def_for_path`)
 - [x] **Validate**: Unit test looking up various paths
 
 ##### Step 2: struct_def query
@@ -4227,6 +4399,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
   ```
 - [x] Wire up to `map_vars` from Phase 0.B.1
 - [x] **Validate**: Unit test for function with type parameters
+
+**Note**: Phase A updates this query to use `TypeParamId` as the key instead of string names. See Phase A.4 for details on the updated `MappedDefTypes` structure and how it integrates with type resolution.
 
 ##### Step 4: def_signature_status query
 
@@ -4810,6 +4984,482 @@ Once all tests pass:
 - [ ] **Validate**: Full test suite passes with legacy code removed
 
 **Deliverable**: CLI and LSP fully migrated to query system. Current frontend can be removed.
+
+---
+
+### Phase A: Type Resolution in name_resolutions
+
+**Goal**: Extend `name_resolutions` to resolve type references in all definition types, not just expression names.
+
+**Depends on**: Phase 2.D complete (name_resolutions exists and resolves expression names)
+
+**Prerequisite for**: Phase 3.C (typechecking queries need resolved types in struct_def, trait_def, impl_def)
+
+---
+
+#### Background
+
+The current `name_resolutions` implementation resolves:
+- ✅ Expression names (variables, function calls)
+- ✅ Top-level impl types (trait name and implementing type)
+
+But it does NOT resolve:
+- ❌ Struct field types
+- ❌ Trait super traits
+- ❌ Trait/impl method parameter and return types
+- ❌ Function parameter and return types
+- ❌ Type alias definitions
+- ❌ Where clause types
+- ❌ Nested type arguments (e.g., in `impl Trait[Dict[K, V]]`, only the top-level types are resolved, not K and V)
+
+This phase completes type resolution so that downstream queries (`struct_def`, `trait_def`, `impl_def`, etc.) receive fully-resolved types.
+
+---
+
+#### A.1: Extend Resolution Enum
+
+##### Step 1: Add TypeParamId
+
+- [x] Define `TypeParamId` struct:
+  ```rust
+  #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+  struct TypeParamId {
+      /// The definition that declares this type parameter
+      pub owner: DefId,
+      /// Index of this type parameter in the definition's type parameter list
+      pub index: u32,
+  }
+  ```
+
+##### Step 2: Extend Resolution enum
+
+- [x] Extend `Resolution` enum:
+  ```rust
+  enum Resolution {
+      Def(DefTarget),
+      Local(LocalBindingId),
+      TypeParam(TypeParamId),  // NEW
+      Error,
+  }
+  ```
+- [x] **Validate**: Code compiles with new enum variant
+
+---
+
+#### A.2: Type Resolution Helpers
+
+##### Step 1: Fix Ty::flatten to include head types
+
+The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the refactor from `Ty::Proj(Box<Ty>, Vec<Ty>)` to `Ty::Proj(ItemPath, Vec<Ty>)`. This needs to be fixed to match synthetic ID ordering.
+
+- [ ] Update `Ty::flatten()` in `ray-shared/src/ty/ty.rs` to include self for `Ty::Proj`:
+  ```rust
+  Ty::Proj(_, items) => std::iter::once(self)
+      .chain(items.iter().flat_map(Ty::flatten))
+      .collect(),
+  ```
+- [ ] **Validate**: Verify `semantic_tokens.rs` still works correctly after fix
+
+##### Step 2: Implement resolve_parsed_ty helper
+
+- [ ] Create `resolve_parsed_ty` function:
+  ```rust
+  /// Resolves all type references in a Parsed<Ty> using its synthetic IDs.
+  ///
+  /// The synthetic_ids in Parsed<Ty> correspond 1:1 with the flattened type refs.
+  fn resolve_parsed_ty(
+      parsed_ty: &Parsed<Ty>,
+      type_params: &HashMap<String, TypeParamId>,  // In-scope type parameters
+      imports: &HashMap<String, ModulePath>,
+      exports: &HashMap<String, DefTarget>,
+      import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+      resolutions: &mut HashMap<NodeId, Resolution>,
+  ) {
+      let synthetic_ids = parsed_ty.synthetic_ids();
+      let ty_refs = parsed_ty.value().flatten();  // Uses existing Ty::flatten()
+
+      assert_eq!(
+          synthetic_ids.len(),
+          ty_refs.len(),
+          "Synthetic ID count must match flattened type ref count"
+      );
+
+      for (node_id, type_name) in synthetic_ids.iter().zip(ty_refs.iter()) {
+          let resolution = resolve_type_name(
+              type_name,
+              type_params,
+              imports,
+              exports,
+              import_exports,
+          );
+          resolutions.insert(*node_id, resolution);
+      }
+  }
+
+  fn resolve_type_name(
+      name: &str,
+      type_params: &HashMap<String, TypeParamId>,
+      imports: &HashMap<String, ModulePath>,
+      exports: &HashMap<String, DefTarget>,
+      import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+  ) -> Resolution {
+      // 1. Check if it's a type parameter in scope
+      if let Some(type_param_id) = type_params.get(name) {
+          return Resolution::TypeParam(*type_param_id);
+      }
+
+      // 2. Check imports
+      if let Some(module_path) = imports.get(name) {
+          if let Some(exports) = import_exports(&module_path.to_string()) {
+              if let Some(target) = exports.get(name) {
+                  return Resolution::Def(*target);
+              }
+          }
+      }
+
+      // 3. Check module exports (same-module definitions)
+      if let Some(target) = exports.get(name) {
+          return Resolution::Def(*target);
+      }
+
+      // 4. Check imported module exports (qualified imports)
+      for (alias, module_path) in imports {
+          if let Some(exports) = import_exports(&module_path.to_string()) {
+              if let Some(target) = exports.get(name) {
+                  return Resolution::Def(*target);
+              }
+          }
+      }
+
+      Resolution::Error
+  }
+  ```
+- [ ] **Validate**: Unit tests for resolve_parsed_ty
+
+##### Step 3: Implement build_type_param_scope helper
+
+- [ ] Implement `build_type_param_scope` helper:
+  ```rust
+  fn build_type_param_scope(owner: DefId, params: &[TypeParam]) -> HashMap<String, TypeParamId> {
+      params.iter().enumerate().map(|(idx, param)| {
+          (param.name.clone(), TypeParamId { owner, index: idx as u32 })
+      }).collect()
+  }
+  ```
+
+##### Step 4: Implement resolve_method_signature helper
+
+- [ ] Implement `resolve_method_signature` helper:
+  ```rust
+  fn resolve_method_signature(
+      method_def_id: DefId,
+      sig: &Signature,
+      parent_type_params: &HashMap<String, TypeParamId>,
+      imports: &HashMap<String, ModulePath>,
+      exports: &HashMap<String, DefTarget>,
+      import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+      resolutions: &mut HashMap<NodeId, Resolution>,
+  ) {
+      // Method may have its own type parameters
+      let mut type_params = parent_type_params.clone();
+      let method_params = build_type_param_scope(method_def_id, &sig.type_params);
+      type_params.extend(method_params);
+
+      // Resolve parameter types
+      for param in &sig.params {
+          if let Some(parsed_ty) = &param.ty {
+              resolve_parsed_ty(parsed_ty, &type_params, imports, exports, import_exports, resolutions);
+          }
+      }
+
+      // Resolve return type
+      if let Some(parsed_ty) = &sig.return_ty {
+          resolve_parsed_ty(parsed_ty, &type_params, imports, exports, import_exports, resolutions);
+      }
+
+      // Resolve where clause
+      for constraint in &sig.where_clause {
+          resolve_parsed_ty(&constraint.ty, &type_params, imports, exports, import_exports, resolutions);
+          resolve_parsed_ty(&constraint.bound, &type_params, imports, exports, import_exports, resolutions);
+      }
+  }
+  ```
+
+---
+
+#### A.3: Extend resolve_names_in_file
+
+##### Step 1: Struct definitions
+
+- [ ] In `resolve_names_in_file`, add handling for struct definitions:
+  ```rust
+  Decl::Struct(struct_decl) => {
+      // Build type parameter scope
+      let type_params = build_type_param_scope(def_id, &struct_decl.type_params);
+
+      // Resolve each field type
+      for field in &struct_decl.fields {
+          if let Some(parsed_ty) = &field.ty {
+              resolve_parsed_ty(
+                  parsed_ty,
+                  &type_params,
+                  imports,
+                  exports,
+                  import_exports,
+                  resolutions,
+              );
+          }
+      }
+  }
+  ```
+- [ ] **Validate**: Unit test resolving struct field types
+
+##### Step 2: Trait definitions
+
+- [ ] Add handling for trait definitions:
+  ```rust
+  Decl::Trait(trait_decl) => {
+      let type_params = build_type_param_scope(def_id, &trait_decl.type_params);
+
+      // Resolve super traits
+      for super_trait in &trait_decl.super_traits {
+          resolve_parsed_ty(super_trait, &type_params, imports, exports, import_exports, resolutions);
+      }
+
+      // Resolve method signatures
+      for method in &trait_decl.methods {
+          resolve_method_signature(
+              method.def_id,
+              &method.sig,
+              &type_params,  // Trait's type params are in scope
+              imports,
+              exports,
+              import_exports,
+              resolutions,
+          );
+      }
+  }
+  ```
+- [ ] **Validate**: Unit test resolving trait super traits and method signatures
+
+##### Step 3: Impl definitions
+
+- [ ] Add handling for impl definitions:
+  ```rust
+  Decl::Impl(impl_decl) => {
+      let type_params = build_type_param_scope(def_id, &impl_decl.type_params);
+
+      // Resolve implementing type (ALL nested type args, not just top-level)
+      resolve_parsed_ty(&impl_decl.implementing_type, &type_params, imports, exports, import_exports, resolutions);
+
+      // Resolve trait reference if present
+      if let Some(trait_ref) = &impl_decl.trait_ref {
+          resolve_parsed_ty(trait_ref, &type_params, imports, exports, import_exports, resolutions);
+      }
+
+      // Resolve method signatures
+      for method in &impl_decl.methods {
+          resolve_method_signature(
+              method.def_id,
+              &method.sig,
+              &type_params,
+              imports,
+              exports,
+              import_exports,
+              resolutions,
+          );
+      }
+  }
+  ```
+- [ ] **Validate**: Unit test resolving impl with nested type args (e.g., `impl Trait[Dict[K, V]]`)
+
+##### Step 4: Function definitions
+
+- [ ] Add handling for function definitions:
+  ```rust
+  Decl::Func(func_decl) => {
+      let type_params = build_type_param_scope(def_id, &func_decl.type_params);
+
+      resolve_method_signature(
+          def_id,
+          &func_decl.sig,
+          &type_params,
+          imports,
+          exports,
+          import_exports,
+          resolutions,
+      );
+  }
+  ```
+- [ ] **Validate**: Unit test resolving function parameter and return types
+
+##### Step 5: Type aliases
+
+- [ ] Add handling for type alias definitions:
+  ```rust
+  Decl::TypeAlias(alias_decl) => {
+      let type_params = build_type_param_scope(def_id, &alias_decl.type_params);
+
+      resolve_parsed_ty(
+          &alias_decl.aliased_type,
+          &type_params,
+          imports,
+          exports,
+          import_exports,
+          resolutions,
+      );
+  }
+  ```
+- [ ] **Validate**: Unit test resolving type alias
+
+##### Step 6: Annotated bindings
+
+- [ ] Add handling for bindings with type annotations:
+  ```rust
+  Decl::Binding(binding_decl) => {
+      if let Some(parsed_ty) = &binding_decl.ty {
+          // Bindings don't have type parameters
+          let type_params = HashMap::new();
+          resolve_parsed_ty(
+              parsed_ty,
+              &type_params,
+              imports,
+              exports,
+              import_exports,
+              resolutions,
+          );
+      }
+      // Continue with expression resolution...
+  }
+  ```
+- [ ] **Validate**: Unit test resolving annotated binding
+
+---
+
+#### A.4: Update mapped_def_types to use TypeParamId
+
+The `mapped_def_types` query must be updated to produce a mapping from `TypeParamId` to schema variables, rather than from strings to schema variables. This enables downstream code to use the resolutions from `name_resolutions` to look up the correct schema variable.
+
+##### Step 1: Update MappedDefTypes structure
+
+- [ ] Change `MappedDefTypes` to use `TypeParamId` as key:
+  ```rust
+  struct MappedDefTypes {
+      /// Maps type parameter IDs to schema variables
+      /// TypeParamId { owner: struct_id, index: 0 } → TyVar("?s0")
+      var_map: HashMap<TypeParamId, TyVar>,
+
+      /// Reverse map for display (schema var → user name)
+      /// TyVar("?s0") → "T"
+      reverse_map: HashMap<TyVar, String>,
+  }
+
+  impl MappedDefTypes {
+      /// Get the origin TypeParamId for a schema variable.
+      /// Used by diagnostics to trace a variable back to its declaration site.
+      /// O(n) where n is the number of type parameters (typically 1-3).
+      fn origin_of(&self, var: &TyVar) -> Option<TypeParamId> {
+          self.var_map.iter()
+              .find(|(_, v)| *v == var)
+              .map(|(id, _)| id.clone())
+      }
+  }
+  ```
+
+**Origin tracing for diagnostics:**
+
+The `reverse_map` provides the user-facing name ("T") but not the location. When a diagnostic says "expected T but found Int", we need to tell the user *which* T - especially in cases like:
+
+```ray
+struct Outer[T] {
+    fn inner[T](x: T) -> T { ... }  // Different T!
+}
+```
+
+With `origin_of()`, diagnostics can:
+1. Call `origin_of(&ty_var)` → `TypeParamId { owner: inner_def_id, index: 0 }`
+2. Use `type_param_span(type_param_id)` to get the source location
+3. Produce: "expected `T` (type parameter from `inner` at line 2) but found `Int`"
+
+Since `var_map` is immutable after construction and type parameter lists are small (typically 1-3), the O(n) linear scan is negligible for diagnostic formatting.
+
+##### Step 2: Update mapped_def_types query
+
+- [ ] Modify `mapped_def_types` to build both maps:
+  ```rust
+  #[query]
+  fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
+      let file_ast = file_ast(db, def_id.file);
+      let def_ast = find_def_ast(&file_ast.ast, def_id);
+      let allocator = db.get_input::<SchemaVarAllocator>(());
+
+      let mut var_map = HashMap::new();
+      let mut reverse_map = HashMap::new();
+
+      // Extract type parameters from definition
+      let type_params = extract_type_params(def_ast);
+
+      for (index, param_name) in type_params.iter().enumerate() {
+          let schema_var = allocator.alloc();
+          let type_param_id = TypeParamId {
+              owner: def_id,
+              index: index as u32,
+          };
+
+          var_map.insert(type_param_id, schema_var.clone());
+          reverse_map.insert(schema_var, param_name.clone());
+      }
+
+      MappedDefTypes { var_map, reverse_map }
+  }
+  ```
+- [ ] **Validate**: Unit test verifying TypeParamId-based mapping and origin tracing via `origin_of()`
+
+##### Step 3: Update consumers of mapped_def_types
+
+Consumers that previously looked up by string name now look up by `TypeParamId`:
+
+- [ ] Update `annotated_scheme` to use `TypeParamId` lookups
+- [ ] Update `struct_def`, `trait_def`, `impl_def` to resolve type param references:
+  ```rust
+  // When building a Ty from a Parsed<Ty>, use resolutions to find TypeParamIds
+  fn resolve_ty_with_mapping(
+      parsed_ty: &Parsed<Ty>,
+      resolutions: &HashMap<NodeId, Resolution>,
+      var_map: &HashMap<TypeParamId, TyVar>,
+  ) -> Ty {
+      // Walk the Ty and its synthetic IDs together
+      // For each Resolution::TypeParam(id), look up var_map[id] to get the schema var
+      // For each Resolution::Def(target), use the target's ItemPath
+  }
+  ```
+- [ ] **Validate**: End-to-end test with generic struct field types
+
+**Why TypeParamId is more robust than string keys:**
+
+1. **Handles shadowing**: In `trait Foo[T] { fn bar[T](x: T) }`, the inner `T` shadows the outer. With `TypeParamId`, we correctly distinguish `TypeParamId { owner: Foo, index: 0 }` from `TypeParamId { owner: bar, index: 0 }`.
+
+2. **Handles nested scopes**: Methods inherit parent type parameters. The resolution `Resolution::TypeParam(id)` tells us exactly which definition's type parameter is being referenced.
+
+3. **No string comparison**: Looking up by `TypeParamId` is a direct hash lookup, not string matching.
+
+---
+
+#### A.5: Validation
+
+- [ ] **Unit tests**: Each definition type has resolution tests
+- [ ] **Integration test**: Resolve all types in a complex file with structs, traits, impls
+- [ ] **Comparison test**: Verify that all synthetic IDs from Parsed<Ty> get resolutions
+- [ ] **Error test**: Verify unresolved types produce Resolution::Error with diagnostics
+- [ ] **Type param test**: Verify type parameters resolve to TypeParam, not Error
+- [ ] **Mapping test**: Verify `mapped_def_types` produces correct `TypeParamId → TyVar` mapping
+- [ ] **Origin tracing test**: Verify `origin_of()` allows tracing a schema variable back to its `TypeParamId`
+- [ ] **Shadowing test**: Verify shadowed type parameters (e.g., `trait Foo[T] { fn bar[T](...) }`) correctly map to distinct `TypeParamId`s with correct origins
+- [ ] **Integration test**: Verify `struct_def` correctly resolves generic field types using the new mapping
+
+**Deliverable**: `name_resolutions(FileId)` returns complete resolution information for all type references in all definitions. `mapped_def_types` produces `TypeParamId`-keyed mappings with forward lookup for resolution, reverse lookup for display, and `origin_of()` for diagnostic tracing. Downstream queries (`struct_def`, `trait_def`, `impl_def`) use resolutions + mappings to produce fully-qualified types with schema variables.
+
+---
 
 ## 6. Future Considerations
 

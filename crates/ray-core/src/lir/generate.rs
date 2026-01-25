@@ -12,7 +12,7 @@ use ray_typing::{
     binding_groups::BindingId,
     tyctx::{CallResolution, TyCtx},
     types::{ImplKind, NominalKind, ReceiverMode, StructTy, Subst, Substitutable, TyScheme},
-    unify::{match_ty, mgu},
+    unify::match_ty,
 };
 
 use crate::{
@@ -195,7 +195,7 @@ impl lir::Program {
             .chain(ctx.closure_value_types.values())
             .chain(ctx.fn_handle_types.values())
         {
-            synthetic_structs.insert(ItemPath::from(&struct_ty.path), struct_ty.clone());
+            synthetic_structs.insert(struct_ty.path.clone(), struct_ty.clone());
         }
 
         drop(ctx);
@@ -772,7 +772,7 @@ impl<'a> GenCtx<'a> {
 
         let struct_ty = StructTy {
             kind: NominalKind::Struct,
-            path: path.to_path(),
+            path: path.clone(),
             ty: ty.clone(),
             fields: vec![
                 // Code pointer has ABI fn(rawptr[u8], A..)->R
@@ -899,7 +899,7 @@ impl<'a> GenCtx<'a> {
         let ty = TyScheme::from_mono(Ty::Const(path.clone()));
         let struct_ty = StructTy {
             kind: NominalKind::Struct,
-            path: path.to_path(),
+            path: path.clone(),
             ty,
             fields,
         };
@@ -2605,68 +2605,70 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Load::new(src, lir::Size::zero())
             }
             Expr::List(list) => {
-                let item_count = list.items.len();
-                let capacity = (item_count * 3) as u64;
+                todo!("FIXME: this uses legacy code that needs to change")
 
-                // allocate memory for the values
-                let el_ty = ty.mono().type_argument_at(0).unwrap();
-                let values_loc = ctx.local(Ty::ref_of(el_ty.clone()).into());
-                let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));
-                ctx.set_local(values_loc, values_ptr.into());
+                // let item_count = list.items.len();
+                // let capacity = (item_count * 3) as u64;
 
-                let mut offset: usize = 0;
-                for item in list.items.iter() {
-                    let item_val = item.lir_gen(ctx, tcx)?;
-                    let item_ty = ctx.ty_of(tcx, item.id);
-                    if let Some(item_loc) = ctx.get_or_set_local(item_val, item_ty) {
-                        ctx.push(lir::Store::new(
-                            lir::Variable::Local(values_loc),
-                            lir::Variable::Local(item_loc).into(),
-                            offset,
-                        ));
-                    }
+                // // allocate memory for the values
+                // let el_ty = ty.mono().type_argument_at(0).unwrap();
+                // let values_loc = ctx.local(Ty::ref_of(el_ty.clone()).into());
+                // let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));
+                // ctx.set_local(values_loc, values_ptr.into());
 
-                    offset += 1;
-                }
+                // let mut offset: usize = 0;
+                // for item in list.items.iter() {
+                //     let item_val = item.lir_gen(ctx, tcx)?;
+                //     let item_ty = ctx.ty_of(tcx, item.id);
+                //     if let Some(item_loc) = ctx.get_or_set_local(item_val, item_ty) {
+                //         ctx.push(lir::Store::new(
+                //             lir::Variable::Local(values_loc),
+                //             lir::Variable::Local(item_loc).into(),
+                //             offset,
+                //         ));
+                //     }
 
-                let list_loc = ctx.local(ty.clone());
-                let list_fqn = ctx.ncx.builtin_ty("list");
-                ctx.push(lir::Inst::StructInit(
-                    lir::Variable::Local(list_loc),
-                    StructTy {
-                        kind: NominalKind::Struct,
-                        path: list_fqn.clone(),
-                        ty: Ty::proj(list_fqn, vec![el_ty.clone()]).into(),
-                        fields: vec![
-                            ("values".to_string(), Ty::ref_of(el_ty.clone()).into()),
-                            ("len".to_string(), Ty::uint().into()),
-                            ("capacity".to_string(), Ty::uint().into()),
-                        ],
-                    },
-                ));
+                //     offset += 1;
+                // }
 
-                // store the values ptr
-                ctx.push(lir::SetField::new(
-                    lir::Variable::Local(list_loc),
-                    str!("values"),
-                    lir::Variable::Local(values_loc).into(),
-                ));
+                // let list_loc = ctx.local(ty.clone());
+                // let list_fqn = ctx.ncx.builtin_ty("list");
+                // ctx.push(lir::Inst::StructInit(
+                //     lir::Variable::Local(list_loc),
+                //     StructTy {
+                //         kind: NominalKind::Struct,
+                //         path: list_fqn.clone(),
+                //         ty: Ty::proj(list_fqn, vec![el_ty.clone()]).into(),
+                //         fields: vec![
+                //             ("values".to_string(), Ty::ref_of(el_ty.clone()).into()),
+                //             ("len".to_string(), Ty::uint().into()),
+                //             ("capacity".to_string(), Ty::uint().into()),
+                //         ],
+                //     },
+                // ));
 
-                // store the length
-                ctx.push(lir::SetField::new(
-                    lir::Variable::Local(list_loc),
-                    str!("len"),
-                    lir::Atom::uptr(item_count as u64).into(),
-                ));
+                // // store the values ptr
+                // ctx.push(lir::SetField::new(
+                //     lir::Variable::Local(list_loc),
+                //     str!("values"),
+                //     lir::Variable::Local(values_loc).into(),
+                // ));
 
-                // store the capacity
-                ctx.push(lir::SetField::new(
-                    lir::Variable::Local(list_loc),
-                    str!("capacity"),
-                    lir::Atom::uptr(capacity as u64).into(),
-                ));
+                // // store the length
+                // ctx.push(lir::SetField::new(
+                //     lir::Variable::Local(list_loc),
+                //     str!("len"),
+                //     lir::Atom::uptr(item_count as u64).into(),
+                // ));
 
-                lir::Variable::Local(list_loc).into()
+                // // store the capacity
+                // ctx.push(lir::SetField::new(
+                //     lir::Variable::Local(list_loc),
+                //     str!("capacity"),
+                //     lir::Atom::uptr(capacity as u64).into(),
+                // ));
+
+                // lir::Variable::Local(list_loc).into()
             }
             Expr::Curly(curly) => {
                 let loc = ctx.local(ty.clone());
@@ -2685,7 +2687,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     lir::Variable::Local(loc),
                     StructTy {
                         kind,
-                        path: ty.mono().get_path(),
+                        path: ty.mono().item_path().cloned().unwrap(),
                         ty: ty.clone(),
                         fields,
                     },

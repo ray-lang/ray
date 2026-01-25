@@ -909,7 +909,7 @@ fn find_unique_inherent_method(
             _ => continue,
         };
         for field in &impl_ty.fields {
-            let Some(name) = field.path.name() else {
+            let Some(name) = field.path.item_name() else {
                 continue;
             };
             if name != method_name {
@@ -1152,7 +1152,7 @@ fn find_unique_trait_method_for_recv<'a>(
         if !impl_ty
             .fields
             .iter()
-            .any(|field| field.path.name().as_ref() == Some(&method_name.to_string()))
+            .any(|field| field.path.item_name() == Some(&method_name.to_string()))
         {
             continue;
         }
@@ -1286,7 +1286,7 @@ fn solve_chosen_method_call(
         }
 
         emitted.push(Constraint::class(
-            &trait_ty.path,
+            trait_ty.path.clone(),
             trait_args,
             ctx_bundle.wanted.info.clone(),
         ));
@@ -1603,7 +1603,7 @@ mod tests {
         typecheck_env.add_trait(
             ItemPath::from("Hash"),
             TraitTy {
-                path: Path::from("Hash"),
+                path: ItemPath::from("Hash"),
                 ty: Ty::Proj(ItemPath::from("Hash"), vec![Ty::Var(a.clone())]),
                 super_traits: vec![],
                 fields: vec![TraitField {

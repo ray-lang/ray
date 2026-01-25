@@ -81,7 +81,7 @@ pub enum ExprKind {
     Type { ty: Ty },
     /// Struct construction `A { x: e1, y: e2 }`.
     StructLiteral {
-        struct_name: String,
+        path: ItemPath,
         fields: Vec<(String, NodeId)>,
     },
     /// Anonymous function expression `fn(p1, ..., pn) { body }`.

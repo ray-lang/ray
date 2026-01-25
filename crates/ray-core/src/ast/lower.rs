@@ -362,61 +362,63 @@ impl LowerAST for Sourced<'_, Extern> {
 impl LowerAST for Sourced<'_, Struct> {
     type Output = ();
 
-    fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<()> {
-        let (st, src) = self.unpack_mut();
-        let name = st.path.name().unwrap();
-        let struct_path = if Ty::is_builtin_name(&name) {
-            Path::from(name)
-        } else {
-            st.path.value.clone()
-        };
+    fn lower(&mut self, _ctx: &mut AstLowerCtx) -> RayResult<()> {
+        unreachable!("legacy code should not be called")
 
-        let mut struct_tcx = ctx.tcx.clone();
-        let scopes = ctx.get_scopes(src);
-        let ty_vars = map_ty_vars(
-            st.ty_params.as_mut(),
-            scopes,
-            &src.filepath,
-            &src.src_module,
-            ctx.ncx,
-            &mut struct_tcx,
-        )?;
+        // let (st, src) = self.unpack_mut();
+        // let name = st.path.name().unwrap();
+        // let struct_path = if Ty::is_builtin_name(&name) {
+        //     Path::from(name)
+        // } else {
+        //     st.path.value.clone()
+        // };
 
-        let fields = ctx.with_tcx(struct_tcx, |ctx| {
-            let mut fields = vec![];
-            if let Some(struct_fields) = &mut st.fields {
-                for field in struct_fields.iter_mut() {
-                    let ty = if let Some(ty) = &mut field.ty {
-                        let scopes = ctx.get_scopes(src);
-                        ty.resolve_fqns(scopes, ctx.ncx);
-                        ctx.tcx.map_vars(ty.mono_mut());
-                        ty.clone_value()
-                    } else {
-                        let src = ctx.srcmap.get(field);
-                        return Err(RayError {
-                            msg: format!("struct field on `{}` does not have a type", st.path),
-                            src: vec![src],
-                            kind: RayErrorKind::Type,
-                            context: Some("lower struct field".to_string()),
-                        });
-                    };
+        // let mut struct_tcx = ctx.tcx.clone();
+        // let scopes = ctx.get_scopes(src);
+        // let ty_vars = map_ty_vars(
+        //     st.ty_params.as_mut(),
+        //     scopes,
+        //     &src.filepath,
+        //     &src.src_module,
+        //     ctx.ncx,
+        //     &mut struct_tcx,
+        // )?;
 
-                    fields.push((field.path.to_string(), ty));
-                }
-            }
+        // let fields = ctx.with_tcx(struct_tcx, |ctx| {
+        //     let mut fields = vec![];
+        //     if let Some(struct_fields) = &mut st.fields {
+        //         for field in struct_fields.iter_mut() {
+        //             let ty = if let Some(ty) = &mut field.ty {
+        //                 let scopes = ctx.get_scopes(src);
+        //                 ty.resolve_fqns(scopes, ctx.ncx);
+        //                 ctx.tcx.map_vars(ty.mono_mut());
+        //                 ty.clone_value()
+        //             } else {
+        //                 let src = ctx.srcmap.get(field);
+        //                 return Err(RayError {
+        //                     msg: format!("struct field on `{}` does not have a type", st.path),
+        //                     src: vec![src],
+        //                     kind: RayErrorKind::Type,
+        //                     context: Some("lower struct field".to_string()),
+        //                 });
+        //             };
 
-            Ok(fields)
-        })?;
+        //             fields.push((field.path.to_string(), ty));
+        //         }
+        //     }
 
-        let ty = Ty::with_vars(&struct_path, &ty_vars);
-        let struct_ty = TyScheme::new(ty_vars, vec![], ty);
-        ctx.tcx.add_struct_ty(StructTy {
-            kind: st.kind,
-            path: struct_path,
-            ty: struct_ty,
-            fields,
-        });
-        Ok(())
+        //     Ok(fields)
+        // })?;
+
+        // let ty = Ty::with_vars(&struct_path, &ty_vars);
+        // let struct_ty = TyScheme::new(ty_vars, vec![], ty);
+        // ctx.tcx.add_struct_ty(StructTy {
+        //     kind: st.kind,
+        //     path: struct_path,
+        //     ty: struct_ty,
+        //     fields,
+        // });
+        // Ok(())
     }
 }
 
@@ -1242,93 +1244,95 @@ impl LowerAST for Sourced<'_, ast::Curly> {
     type Output = ();
 
     fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<Self::Output> {
-        if self.lhs.is_none() {
-            unimplemented!("anon struct construction: {}", self.value())
-        }
+        unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
 
-        let (curly, src) = self.unpack();
-        let (lhs, lhs_src, _) = curly.lhs.as_ref().unwrap().clone().take();
-        let lhs_span = lhs_src.span.unwrap();
-        let scopes = ctx.scope_map.get(self.src_module()).unwrap();
-        let name = lhs.name().unwrap();
-        let struct_fqn = if Ty::is_builtin_name(&name) {
-            Path::from(name)
-        } else {
-            match ctx.ncx.resolve_name(scopes, &name) {
-                Some(fqn) => fqn.clone(),
-                _ => {
-                    return Err(RayError {
-                        msg: format!("struct type `{}` is undefined", lhs),
-                        src: vec![src.respan(lhs_span)],
-                        kind: RayErrorKind::Type,
-                        context: Some("lower curly struct".to_string()),
-                    });
-                }
-            }
-        };
+        // if self.lhs.is_none() {
+        //     unimplemented!("anon struct construction: {}", self.value())
+        // }
 
-        let (curly, src) = self.unpack_mut();
-        curly.lhs = Some(Parsed::new(struct_fqn.clone(), lhs_src));
+        // let (curly, src) = self.unpack();
+        // let (lhs, lhs_src, _) = curly.lhs.as_ref().unwrap().clone().take();
+        // let lhs_span = lhs_src.span.unwrap();
+        // let scopes = ctx.scope_map.get(self.src_module()).unwrap();
+        // let name = lhs.name().unwrap();
+        // let struct_fqn = if Ty::is_builtin_name(&name) {
+        //     Path::from(name)
+        // } else {
+        //     match ctx.ncx.resolve_name(scopes, &name) {
+        //         Some(fqn) => fqn.clone(),
+        //         _ => {
+        //             return Err(RayError {
+        //                 msg: format!("struct type `{}` is undefined", lhs),
+        //                 src: vec![src.respan(lhs_span)],
+        //                 kind: RayErrorKind::Type,
+        //                 context: Some("lower curly struct".to_string()),
+        //             });
+        //         }
+        //     }
+        // };
 
-        let struct_ty = match ctx.tcx.get_struct_ty(&ItemPath::from(&struct_fqn)) {
-            Some(t) => t,
-            _ => {
-                return Err(RayError {
-                    msg: format!("struct type `{}` is undefined", lhs),
-                    src: vec![src.respan(lhs_span)],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower curly struct".to_string()),
-                });
-            }
-        };
+        // let (curly, src) = self.unpack_mut();
+        // curly.lhs = Some(Parsed::new(struct_fqn.clone(), lhs_src));
 
-        curly.ty = struct_ty.ty.clone();
-        log::debug!("lower Curly: set ty for {:?} to {}", struct_fqn, curly.ty);
+        // let struct_ty = match ctx.tcx.get_struct_ty(&ItemPath::from(&struct_fqn)) {
+        //     Some(t) => t,
+        //     _ => {
+        //         return Err(RayError {
+        //             msg: format!("struct type `{}` is undefined", lhs),
+        //             src: vec![src.respan(lhs_span)],
+        //             kind: RayErrorKind::Type,
+        //             context: Some("lower curly struct".to_string()),
+        //         });
+        //     }
+        // };
 
-        let mut idx = HashMap::new();
-        for (i, (f, _)) in struct_ty.fields.iter().enumerate() {
-            idx.insert(f.clone(), i);
-        }
+        // curly.ty = struct_ty.ty.clone();
+        // log::debug!("lower Curly: set ty for {:?} to {}", struct_fqn, curly.ty);
 
-        let mut param_map = vec![];
-        for el in curly.elements.drain(..) {
-            let el_span = ctx.srcmap.span_of(&el);
-            let (name, name_span, el) = match el.value {
-                ast::CurlyElement::Name(n) => {
-                    (n.clone(), el_span, Node::with_id(el.id, Expr::Name(n)))
-                }
-                ast::CurlyElement::Labeled(n, mut ex) => {
-                    ex.lower(ctx)?;
-                    (n, el_span, ex)
-                }
-            };
+        // let mut idx = HashMap::new();
+        // for (i, (f, _)) in struct_ty.fields.iter().enumerate() {
+        //     idx.insert(f.clone(), i);
+        // }
 
-            let field_name = name.path.name().unwrap();
-            if let Some(i) = idx.get(&field_name) {
-                param_map.push((*i, name.clone(), el));
-            } else {
-                return Err(RayError {
-                    msg: format!("struct `{}` does not have field `{}`", lhs, name),
-                    src: vec![src.respan(name_span)],
-                    kind: RayErrorKind::Type,
-                    context: Some("lower curly struct".to_string()),
-                });
-            }
-        }
+        // let mut param_map = vec![];
+        // for el in curly.elements.drain(..) {
+        //     let el_span = ctx.srcmap.span_of(&el);
+        //     let (name, name_span, el) = match el.value {
+        //         ast::CurlyElement::Name(n) => {
+        //             (n.clone(), el_span, Node::with_id(el.id, Expr::Name(n)))
+        //         }
+        //         ast::CurlyElement::Labeled(n, mut ex) => {
+        //             ex.lower(ctx)?;
+        //             (n, el_span, ex)
+        //         }
+        //     };
 
-        param_map.sort_by_key(|(i, ..)| *i);
+        //     let field_name = name.path.name().unwrap();
+        //     if let Some(i) = idx.get(&field_name) {
+        //         param_map.push((*i, name.clone(), el));
+        //     } else {
+        //         return Err(RayError {
+        //             msg: format!("struct `{}` does not have field `{}`", lhs, name),
+        //             src: vec![src.respan(name_span)],
+        //             kind: RayErrorKind::Type,
+        //             context: Some("lower curly struct".to_string()),
+        //         });
+        //     }
+        // }
 
-        let mut elements = vec![];
-        for (_, n, el) in param_map.into_iter() {
-            let src = ctx.srcmap.get(&el);
-            let node = Node::new(ast::CurlyElement::Labeled(n, el));
-            ctx.srcmap.set_src(&node, src);
-            ctx.srcmap.mark_synthetic(node.id);
-            elements.push(node);
-        }
+        // param_map.sort_by_key(|(i, ..)| *i);
 
-        curly.elements = elements;
-        Ok(())
+        // let mut elements = vec![];
+        // for (_, n, el) in param_map.into_iter() {
+        //     let src = ctx.srcmap.get(&el);
+        //     let node = Node::new(ast::CurlyElement::Labeled(n, el));
+        //     ctx.srcmap.set_src(&node, src);
+        //     ctx.srcmap.mark_synthetic(node.id);
+        //     elements.push(node);
+        // }
+
+        // curly.elements = elements;
+        // Ok(())
     }
 }
 
@@ -1562,128 +1566,4 @@ pub fn predicate_from_ast_ty(
 
     // let fqn = trait_ty.get_path().without_type_args();
     // Ok(Predicate::class(fqn.to_string(), ty_args))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use ray_shared::{
-        collections::namecontext::NameContext,
-        def::DefId,
-        file_id::FileId,
-        node_id::NodeId,
-        pathlib::{FilePath, Path},
-        span::{Pos, Source, Sourced, Span, parsed::Parsed},
-        ty::Ty,
-    };
-
-    use crate::ast::{AstLowerCtx, Curly, CurlyElement, LowerAST, Name, Node};
-    use crate::sourcemap::SourceMap;
-    use ray_typing::{
-        env::GlobalEnv,
-        tyctx::TyCtx,
-        types::{NominalKind, StructTy, TyScheme},
-    };
-
-    fn mkspan(sline: usize, scol: usize, eline: usize, ecol: usize) -> Span {
-        Span {
-            start: Pos {
-                lineno: sline,
-                col: scol,
-                offset: 0,
-            },
-            end: Pos {
-                lineno: eline,
-                col: ecol,
-                offset: 0,
-            },
-        }
-    }
-
-    #[test]
-    fn lowers_curly_labels() {
-        // Set up DefId context for node creation
-        let def_id = DefId::new(FileId(0), 0);
-        let _guard = NodeId::enter_def(def_id);
-
-        let filepath = FilePath::from("test.ray");
-        let src_module = Path::from("test");
-        let mksrc = |span| Source::new(filepath.clone(), span, Path::new(), src_module.clone());
-
-        let global_env = GlobalEnv::new();
-        let mut tcx = TyCtx::new(global_env);
-        let mut srcmap = SourceMap::new();
-        let mut ncx = NameContext::new();
-        let mut errors = vec![];
-        let mut scope_map = HashMap::new();
-        scope_map.insert(src_module.clone(), vec![]);
-
-        let mut ctx =
-            AstLowerCtx::new(&mut srcmap, &mut scope_map, &mut tcx, &mut ncx, &mut errors);
-        ctx.tcx.add_struct_ty(StructTy {
-            kind: NominalKind::Struct,
-            path: Path::from("string"),
-            fields: vec![
-                (
-                    "raw_ptr".to_string(),
-                    TyScheme::from_mono(Ty::ref_of(Ty::u8())),
-                ),
-                ("len".to_string(), TyScheme::from_mono(Ty::uint())),
-            ],
-            ty: TyScheme::from_mono(Ty::string()),
-        });
-
-        // string
-        let parsed_ty_span = mkspan(0, 0, 0, 6);
-        let parsed_ty_src = mksrc(parsed_ty_span);
-        let parsed_ty = Parsed::new(Path::from("string"), parsed_ty_src);
-
-        // raw_ptr
-        let elem1 = Node::new(CurlyElement::Name(Name::new("raw_ptr")));
-        let elem1_span = mkspan(0, 9, 0, 16);
-        let elem1_src = mksrc(elem1_span);
-        ctx.srcmap.set_src(&elem1, elem1_src);
-
-        // len
-        let elem2 = Node::new(CurlyElement::Name(Name::new("len")));
-        let elem2_span = mkspan(0, 17, 0, 21);
-        let elem2_src = mksrc(elem2_span);
-        ctx.srcmap.set_src(&elem2, elem2_src);
-
-        let elements = vec![elem1, elem2];
-        let original_spans = elements
-            .iter()
-            .map(|el| ctx.srcmap.get(el).span.unwrap())
-            .collect::<Vec<_>>();
-
-        let mut curly_node = Node::new(Curly {
-            lhs: Some(parsed_ty),
-            elements,
-            curly_span: mkspan(0, 7, 0, 23),
-            ty: TyScheme::from_mono(Ty::string()),
-        });
-
-        // string { raw_ptr, len };
-        let span = mkspan(0, 0, 0, 23);
-        let curly_src = mksrc(span);
-        ctx.srcmap.set_src(&curly_node, curly_src.clone());
-
-        let mut sourced = Sourced(&mut curly_node.value, &curly_src);
-        let err = sourced.lower(&mut ctx).err();
-        assert!(err.is_none(), "expected no error, found {:?}", err);
-
-        let elements = &curly_node.value.elements;
-        assert!(elements.len() == 2);
-
-        for (elem, orig_span) in elements.iter().zip(original_spans.iter()) {
-            assert!(matches!(&elem.value, CurlyElement::Labeled(_, _)));
-            let src = ctx.srcmap.get(elem);
-            assert!(&src.span.unwrap() == orig_span);
-
-            let (_, elem_value) = variant!(&elem.value, if CurlyElement::Labeled(a, v));
-            let src = ctx.srcmap.get(elem_value);
-            assert!(&src.span.unwrap() == orig_span);
-        }
-    }
 }

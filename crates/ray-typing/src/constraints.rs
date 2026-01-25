@@ -307,9 +307,9 @@ impl Constraint {
         }
     }
 
-    pub fn class(name: impl Into<ItemPath>, args: Vec<Ty>, info: TypeSystemInfo) -> Self {
+    pub fn class(path: impl Into<ItemPath>, args: Vec<Ty>, info: TypeSystemInfo) -> Self {
         Constraint {
-            kind: ConstraintKind::Class(ClassPredicate::new(name, args)),
+            kind: ConstraintKind::Class(ClassPredicate::new(path, args)),
             info,
         }
     }

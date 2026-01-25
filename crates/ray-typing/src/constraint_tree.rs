@@ -757,10 +757,7 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::has_field(recv_ty, field.clone(), expr_ty, info));
             }
-            ExprKind::StructLiteral {
-                struct_name,
-                fields,
-            } => {
+            ExprKind::StructLiteral { path, fields } => {
                 // Struct construction `A { x: e1, ... }` is treated
                 // nominally as in Section 4.5:
                 //
@@ -770,8 +767,7 @@ fn generate_constraints_for_expr(
                 //
                 // The goal solver, using the nominal StructTy metadata,
                 // relates these to the declared field types.
-                let struct_path = ItemPath::from(struct_name.as_str());
-                let struct_ty = if let Some(struct_decl) = ctx.env().struct_def(&struct_path) {
+                let struct_ty = if let Some(struct_decl) = ctx.env().struct_def(path) {
                     let mut struct_scheme = struct_decl.ty.clone();
                     let mut subst = Subst::new();
                     for var in struct_scheme.vars.iter() {
@@ -780,7 +776,7 @@ fn generate_constraints_for_expr(
                     struct_scheme.apply_subst(&subst);
                     struct_scheme.mono().clone()
                 } else {
-                    Ty::Const(struct_path)
+                    Ty::Const(path.clone())
                 };
 
                 // Tie the expression's type to the nominal struct type.
@@ -2074,7 +2070,7 @@ mod tests {
         kinds.insert(
             expr_id,
             ExprKind::StructLiteral {
-                struct_name: "A".to_string(),
+                path: "A".into(),
                 fields: vec![("x".to_string(), field_expr)],
             },
         );
@@ -2112,7 +2108,7 @@ mod tests {
         kinds.insert(
             recv_expr,
             ExprKind::StructLiteral {
-                struct_name: "A".to_string(),
+                path: "A".into(),
                 fields: vec![],
             },
         );

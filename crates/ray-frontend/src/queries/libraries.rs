@@ -274,13 +274,21 @@ fn find_max_schema_var_id(data: &LibraryData) -> u32 {
     }
 
     for s in data.structs.values() {
-        for var in &s.type_params {
+        // Type params are now in the struct's TyScheme
+        for var in &s.ty.vars {
             if let Some(id) = parse_schema_var_id(var) {
                 max_id = max_id.max(id + 1);
             }
         }
+        max_id = max_id.max(find_max_in_ty(&s.ty.ty));
         for field in &s.fields {
-            max_id = max_id.max(find_max_in_ty(&field.ty));
+            // Field types are now TyScheme
+            for var in &field.ty.vars {
+                if let Some(id) = parse_schema_var_id(var) {
+                    max_id = max_id.max(id + 1);
+                }
+            }
+            max_id = max_id.max(find_max_in_ty(&field.ty.ty));
         }
     }
 
@@ -366,9 +374,15 @@ fn remap_library_type_vars(data: &mut LibraryData, offset: u32) {
     }
 
     for s in data.structs.values_mut() {
-        s.type_params.apply_subst(&subst);
+        // Apply subst to the struct's TyScheme
+        s.ty.vars.apply_subst(&subst);
+        s.ty.ty.apply_subst(&subst);
+        s.ty.qualifiers.apply_subst(&subst);
         for field in &mut s.fields {
-            field.ty.apply_subst(&subst);
+            // Field types are now TyScheme
+            field.ty.vars.apply_subst(&subst);
+            field.ty.ty.apply_subst(&subst);
+            field.ty.qualifiers.apply_subst(&subst);
         }
     }
 
@@ -398,11 +412,23 @@ fn build_offset_subst(data: &LibraryData, offset: u32) -> Subst {
     }
 
     for s in data.structs.values() {
-        for var in &s.type_params {
+        // Collect from struct's TyScheme
+        for var in &s.ty.vars {
             add_var_to_subst(&mut subst, var, offset);
         }
+        collect_vars_from_ty(&mut subst, &s.ty.ty, offset);
+        for qual in &s.ty.qualifiers {
+            collect_vars_from_predicate(&mut subst, qual, offset);
+        }
         for field in &s.fields {
-            collect_vars_from_ty(&mut subst, &field.ty, offset);
+            // Field types are now TyScheme
+            for var in &field.ty.vars {
+                add_var_to_subst(&mut subst, var, offset);
+            }
+            collect_vars_from_ty(&mut subst, &field.ty.ty, offset);
+            for qual in &field.ty.qualifiers {
+                collect_vars_from_predicate(&mut subst, qual, offset);
+            }
         }
     }
 

@@ -1361,7 +1361,7 @@ fn check_residuals_and_emit_errors(
                         let mut inherent_candidates = Vec::new();
                         for impl_ty in ctx.env().inherent_impls(&subject_fqn) {
                             for field in &impl_ty.fields {
-                                let Some(name) = field.path.name() else {
+                                let Some(name) = field.path.item_name() else {
                                     continue;
                                 };
                                 if name != resolve_call.method_name || field.is_static {
@@ -1552,7 +1552,7 @@ mod tests {
         solve_bindings, solve_groups,
         tyctx::TyCtx,
         typecheck,
-        types::{ImplKind, ImplTy, Subst, TraitTy, TyScheme},
+        types::{ImplKind, ImplTy, NominalKind, StructTy, Subst, TraitTy, TyScheme},
     };
 
     fn make_single_binding_module(
@@ -1715,7 +1715,7 @@ mod tests {
         kinds.insert(
             expr_id,
             ExprKind::StructLiteral {
-                struct_name: "A".to_string(),
+                path: "A".into(),
                 fields: vec![("x".to_string(), field_expr)],
             },
         );
@@ -1723,12 +1723,12 @@ mod tests {
         let module = make_single_binding_module(def_id, expr_id, kinds);
 
         // Build a MockTypecheckEnv with a struct A { x: bool } so HasField can succeed.
-        let struct_path = ray_shared::pathlib::Path::from("A");
+        let struct_path = ItemPath::from("A");
         let bool_scheme = TyScheme::from_mono(Ty::bool());
-        let struct_ty = crate::types::StructTy {
-            kind: crate::types::NominalKind::Struct,
+        let struct_ty = StructTy {
+            kind: NominalKind::Struct,
             path: struct_path.clone(),
-            ty: TyScheme::from_mono(Ty::Const(struct_path.clone().into())),
+            ty: TyScheme::from_mono(Ty::Const(struct_path.clone())),
             fields: vec![("x".to_string(), bool_scheme)],
         };
 
@@ -2109,7 +2109,7 @@ mod tests {
         };
 
         let int_trait_ty = TraitTy {
-            path: Path::from("core::Int"),
+            path: ItemPath::from("core::Int"),
             ty: Ty::proj("core::Int", vec![Ty::var("'a")]),
             super_traits: vec![],
             fields: vec![],
@@ -2272,7 +2272,7 @@ mod tests {
         let mut typecheck_env = MockTypecheckEnv::new();
 
         let int_trait_ty = TraitTy {
-            path: Path::from("core::Int"),
+            path: ItemPath::from("core::Int"),
             ty: Ty::proj("core::Int", vec![Ty::var("'a")]),
             super_traits: vec![],
             fields: vec![],

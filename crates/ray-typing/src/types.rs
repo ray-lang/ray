@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
-    pathlib::Path,
+    pathlib::ItemPath,
     span::Source,
     ty::{Ty, TyVar},
 };
@@ -451,7 +451,7 @@ impl std::fmt::Display for NominalKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructTy {
     pub kind: NominalKind,
-    pub path: Path,
+    pub path: ItemPath,
     pub ty: TyScheme,
     pub fields: Vec<(String, TyScheme)>,
 }
@@ -546,7 +546,7 @@ impl TraitField {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitTy {
-    pub path: Path,
+    pub path: ItemPath,
     pub ty: Ty,
     pub super_traits: Vec<Ty>,
     pub fields: Vec<TraitField>,
@@ -579,7 +579,7 @@ impl TraitTy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImplField {
     pub kind: FieldKind,
-    pub path: Path,
+    pub path: ItemPath,
     pub scheme: Option<TyScheme>,
     pub is_static: bool,
     pub recv_mode: ReceiverMode,
@@ -685,27 +685,6 @@ impl ReceiverMode {
             Ty::Ref(_) => ReceiverMode::Ptr,
             _ => ReceiverMode::Value,
         }
-    }
-}
-
-impl TraitTy {
-    pub fn field_tys(&self) -> Vec<TyScheme> {
-        todo!("TraitTy::field_tys is not yet implemented");
-    }
-
-    pub fn create_method_path(&self, method_name: &str, receiver_ty: Option<&Ty>) -> Path {
-        let mut method_path = self.path.clone();
-        let mut type_args = self.ty.type_arguments();
-        if !type_args.is_empty() {
-            if let Some(receiver_ty) = receiver_ty {
-                if !type_args.is_empty() {
-                    type_args[0] = receiver_ty;
-                }
-            }
-            method_path = method_path.append_type_args(type_args.into_iter());
-        }
-
-        method_path.append(method_name.to_string())
     }
 }
 

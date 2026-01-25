@@ -8,6 +8,7 @@ pub mod operators;
 pub mod parse;
 pub mod resolve;
 pub mod transform;
+pub mod typecheck;
 pub mod types;
 pub mod validation;
 pub mod workspace;

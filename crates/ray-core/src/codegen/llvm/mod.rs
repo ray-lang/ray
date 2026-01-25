@@ -598,9 +598,15 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             let llvm_struct = match &container_ty {
                 Ty::Proj(fqn, args) => self.get_struct_type(fqn, args),
                 Ty::Const(fqn) => self.get_struct_type(fqn, &[]),
-                _ => panic!("get_element_ptr: expected struct type, got {}", container_ty),
+                _ => panic!(
+                    "get_element_ptr: expected struct type, got {}",
+                    container_ty
+                ),
             };
-            let fqn_display = container_ty.item_path().map(|p| p.to_string()).unwrap_or_default();
+            let fqn_display = container_ty
+                .item_path()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
             log::debug!(
                 "[get_element_ptr] struct GEP: fqn={} base_ptr={} offset={} llvm_struct_ty={}",
                 fqn_display,
@@ -758,7 +764,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
 
         // Nominal struct case: use `tcx` metadata to find the field index.
-        let lhs_fqn = lhs_ty.item_path().expect("expected nominal type for field access");
+        let lhs_fqn = lhs_ty
+            .item_path()
+            .expect("expected nominal type for field access");
         let lhs_ty = self.lookup_struct_ty(lhs_fqn);
         let mut offset = 0;
         let mut found = false;
@@ -1933,8 +1941,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::Type(_) => todo!("codegen lir::Type: {}", self),
             lir::Value::Closure(closure) => {
                 let handle_ty = closure.handle.ty.mono().clone();
-                let path = ItemPath::from(&closure.handle.path);
-                let llvm_struct = ctx.get_struct_type(&path, &[]);
+                let llvm_struct = ctx.get_struct_type(&closure.handle.path, &[]);
                 let slot = ctx.alloca(&handle_ty)?;
 
                 let function = ctx.fn_index.get(&closure.fn_name).unwrap_or_else(|| {

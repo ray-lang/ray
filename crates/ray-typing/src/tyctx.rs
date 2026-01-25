@@ -562,8 +562,8 @@ impl TyCtx {
         self.global_env
             .inherent_impls_for_key(&recv_key)
             .find_map(|impl_ty| {
-                match impl_ty.fields.iter().find(|f| match f.path.name() {
-                    Some(name) if &name == method_name => true,
+                match impl_ty.fields.iter().find(|f| match f.path.item_name() {
+                    Some(name) if name == method_name => true,
                     _ => false,
                 }) {
                     Some(field) => Some((impl_ty, field)),

@@ -144,6 +144,19 @@ impl ItemPath {
     pub fn is_empty(&self) -> bool {
         self.module.is_empty() && self.item.is_empty()
     }
+
+    /// Create a new ItemPath with an additional item component appended.
+    ///
+    /// For example, if `self` is `mymodule::List` and we call `with_item("push")`,
+    /// the result is `mymodule::List::push`.
+    pub fn with_item(&self, name: &str) -> Self {
+        let mut item = self.item.clone();
+        item.push(name.to_string());
+        Self {
+            module: self.module.clone(),
+            item,
+        }
+    }
 }
 
 #[cfg(test)]

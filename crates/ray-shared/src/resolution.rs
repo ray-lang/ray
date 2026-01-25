@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{def::{DefId, LibraryDefId}, local_binding::LocalBindingId};
+use crate::{
+    def::{DefId, LibraryDefId},
+    local_binding::LocalBindingId,
+    type_param_id::TypeParamId,
+};
 
 /// The result of resolving a name reference in the AST.
 ///
@@ -12,6 +16,8 @@ pub enum Resolution {
     Def(DefTarget),
     /// Reference to a local binding (parameter, let-binding)
     Local(LocalBindingId),
+    /// A type parameter in scope
+    TypeParam(TypeParamId),
     /// Name could not be resolved (error case)
     Error,
 }

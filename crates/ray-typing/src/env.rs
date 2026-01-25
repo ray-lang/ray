@@ -236,11 +236,11 @@ impl GlobalEnv {
                     return None;
                 };
                 impl_ty.fields.iter().find_map(|field| {
-                    let Some(name) = field.path.name() else {
+                    let Some(name) = field.path.item_name() else {
                         return None;
                     };
 
-                    if &name == method_name {
+                    if name == method_name {
                         Some((impl_ty, field))
                     } else {
                         None
