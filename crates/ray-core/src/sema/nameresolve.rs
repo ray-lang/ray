@@ -75,6 +75,15 @@ pub fn resolve_names_in_file(
                             }
                         }
                     }
+                    // Resolve type references in function signature
+                    resolve_func_type_refs(
+                        decl.id.owner,
+                        func,
+                        imports,
+                        exports,
+                        &import_exports,
+                        &mut resolutions,
+                    );
                 } else if let Decl::Struct(struct_decl) = &decl.value {
                     // Resolve type references in struct field types
                     resolve_struct_type_refs(
@@ -97,8 +106,8 @@ pub fn resolve_names_in_file(
                     );
                 } else if let Decl::Impl(imp) = &decl.value {
                     // Resolve type references in impl block
-                    // For `impl ToStr[Point]`, resolve the trait type (ToStr)
                     resolve_impl_type_refs(
+                        decl.id.owner,
                         imp,
                         imports,
                         exports,
@@ -316,82 +325,93 @@ fn resolve_trait_type_refs(
 /// Resolve type references in an impl block.
 ///
 /// For `impl ToStr[Point]`, this resolves:
-/// - The trait type `ToStr` (first synthetic_id)
-/// - The implementing type `Point` (second synthetic_id, if present)
+/// - The trait type `ToStr`
+/// - The implementing type `Point`
+/// - All nested type arguments (e.g., `impl Trait[Dict[K, V]]` resolves K, V too)
+/// - Method signatures (parameters, return types, qualifiers)
 ///
-/// For `impl object Point`, there's no trait to resolve.
+/// For `impl object Point`, resolves the implementing type and methods.
 fn resolve_impl_type_refs(
+    def_id: DefId,
     imp: &Impl,
     imports: &HashMap<String, ModulePath>,
     exports: &HashMap<String, DefTarget>,
     import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
     resolutions: &mut HashMap<NodeId, Resolution>,
 ) {
-    // Get the synthetic IDs for this impl's type
-    let synth_ids = imp.ty.synthetic_ids();
+    // Build type parameter scope from impl's type (e.g., impl Eq['a] -> {'a: TypeParamId})
+    // For most impls like `impl ToStr[Point]`, there are no type params at impl level
+    let ty_vars = imp.ty.value().type_params();
+    let type_params = build_type_param_scope(def_id, &ty_vars);
 
-    // Impl blocks don't have type parameters in scope at the impl header level
-    // (type parameters are on the methods, not the impl itself)
-    let type_params = HashMap::new();
+    // Resolve the impl type (trait and implementing type) with ALL nested type args
+    // This handles cases like `impl Trait[Dict[K, V]]` where K, V need resolution
+    collect_type_resolutions(
+        &imp.ty,
+        &type_params,
+        imports,
+        exports,
+        import_exports,
+        resolutions,
+    );
 
-    // For trait impls like `impl ToStr[Point]`:
-    // - imp.is_object is false
-    // - imp.ty is Ty::Proj(trait_path, [implementing_type, ...])
-    // - synth_ids[0] is the NodeId for the trait type (ToStr)
-    // - synth_ids[1] is the NodeId for the implementing type (Point)
-    //
-    // For inherent impls like `impl object Point`:
-    // - imp.is_object is true
-    // - imp.ty is the implementing type directly
-    // - synth_ids[0] is the NodeId for the implementing type
-    if imp.is_object {
-        // Inherent impl: resolve the implementing type directly
-        // imp.ty is something like Ty::Const(Point) or Ty::Proj(Point, [...])
-        if let Some(type_name) = extract_type_name(&imp.ty) {
-            let resolution =
-                resolve_type_name(&type_name, &type_params, imports, exports, import_exports);
+    // Resolve qualifiers (where clause)
+    for qualifier in &imp.qualifiers {
+        collect_type_resolutions(
+            qualifier,
+            &type_params,
+            imports,
+            exports,
+            import_exports,
+            resolutions,
+        );
+    }
 
-            if !matches!(resolution, Resolution::Error) {
-                if let Some(node_id) = synth_ids.first() {
-                    resolutions.insert(*node_id, resolution);
-                }
-            }
-        }
-    } else {
-        // Trait impl: resolve both the trait and the implementing type
-        if let Ty::Proj(trait_path, args) = &*imp.ty {
-            // Resolve the trait (first synthetic_id)
-            if let Some(trait_name) = trait_path.item_name() {
-                let resolution =
-                    resolve_type_name(&trait_name, &type_params, imports, exports, import_exports);
-
-                if !matches!(resolution, Resolution::Error) {
-                    if let Some(node_id) = synth_ids.first() {
-                        resolutions.insert(*node_id, resolution);
-                    }
-                }
-            }
-
-            // Resolve the implementing type (second synthetic_id, from first type arg)
-            if let Some(implementing_ty) = args.first() {
-                if let Some(type_name) = extract_type_name(implementing_ty) {
-                    let resolution = resolve_type_name(
-                        &type_name,
-                        &type_params,
-                        imports,
-                        exports,
-                        import_exports,
-                    );
-
-                    if !matches!(resolution, Resolution::Error) {
-                        if let Some(node_id) = synth_ids.get(1) {
-                            resolutions.insert(*node_id, resolution);
-                        }
-                    }
-                }
-            }
+    // Resolve method signatures
+    if let Some(funcs) = &imp.funcs {
+        for func in funcs {
+            resolve_func_sig(
+                func.id.owner,
+                &func.value.sig,
+                &type_params, // Impl's type params are in scope for methods
+                imports,
+                exports,
+                import_exports,
+                resolutions,
+            );
         }
     }
+}
+
+/// Resolve type references in a top-level function definition.
+///
+/// For `fn foo['a](x: 'a, y: Bar): List['a]`, this resolves:
+/// - Type parameters to their TypeParamIds
+/// - Parameter types (e.g., `Bar` to its definition)
+/// - Return type (e.g., `List` to its definition)
+/// - Qualifier/where-clause types
+fn resolve_func_type_refs(
+    def_id: DefId,
+    func: &Func,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    // Build type parameter scope from function's type params
+    let ty_vars = extract_ty_vars_from_type_params(&func.sig.ty_params);
+    let type_params = build_type_param_scope(def_id, &ty_vars);
+
+    // Use resolve_func_sig to handle the signature resolution
+    resolve_func_sig(
+        def_id,
+        &func.sig,
+        &type_params,
+        imports,
+        exports,
+        import_exports,
+        resolutions,
+    );
 }
 
 /// Extract the type name from a Ty for name resolution.
@@ -1392,7 +1412,7 @@ mod tests {
 
     use crate::{
         ast::{
-            Assign, Block, Closure as AstClosure, Decl, Expr, File, FnParam, Func, FuncSig,
+            Assign, Block, Closure as AstClosure, Decl, Expr, File, FnParam, Func, FuncSig, Impl,
             Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, Trait, TypeParams,
         },
         sema::{
@@ -2570,6 +2590,464 @@ mod tests {
             resolutions.get(&ret_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(bar_def_id))),
             "Return type Bar should resolve to export"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with impl definitions
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_impl_trait_and_type() {
+        // impl ToStr[Point]
+        // ToStr and Point should resolve to exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create impl type: ToStr[Point]
+        let impl_ty = Ty::proj("ToStr", vec![Ty::con("Point")]);
+        let tostr_node_id = NodeId::new();
+        let point_node_id = NodeId::new();
+        let mut parsed_impl_ty = Parsed::new(impl_ty, Source::default());
+        parsed_impl_ty.set_synthetic_ids(vec![tostr_node_id, point_node_id]);
+
+        // Create impl declaration
+        let impl_decl = Impl {
+            ty: parsed_impl_ty,
+            qualifiers: vec![],
+            externs: None,
+            funcs: None,
+            consts: None,
+            is_object: false,
+        };
+        let decl = Node::new(Decl::Impl(impl_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let tostr_def_id = DefId::new(FileId(0), 1);
+        let point_def_id = DefId::new(FileId(0), 2);
+        exports.insert("ToStr".to_string(), DefTarget::Workspace(tostr_def_id));
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // ToStr should resolve to export
+        assert_eq!(
+            resolutions.get(&tostr_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(tostr_def_id))),
+            "Trait ToStr should resolve to export"
+        );
+
+        // Point should resolve to export
+        assert_eq!(
+            resolutions.get(&point_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Implementing type Point should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_impl_nested_type_args() {
+        // impl Trait[Dict[String, Int]]
+        // Trait, Dict, String, Int should all resolve
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create impl type: Trait[Dict[String, Int]]
+        let inner_ty = Ty::proj("Dict", vec![Ty::con("String"), Ty::con("Int")]);
+        let impl_ty = Ty::proj("Trait", vec![inner_ty]);
+        let trait_node_id = NodeId::new();
+        let dict_node_id = NodeId::new();
+        let string_node_id = NodeId::new();
+        let int_node_id = NodeId::new();
+        let mut parsed_impl_ty = Parsed::new(impl_ty, Source::default());
+        parsed_impl_ty.set_synthetic_ids(vec![trait_node_id, dict_node_id, string_node_id, int_node_id]);
+
+        // Create impl declaration
+        let impl_decl = Impl {
+            ty: parsed_impl_ty,
+            qualifiers: vec![],
+            externs: None,
+            funcs: None,
+            consts: None,
+            is_object: false,
+        };
+        let decl = Node::new(Decl::Impl(impl_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let trait_def_id = DefId::new(FileId(0), 1);
+        let dict_def_id = DefId::new(FileId(0), 2);
+        let string_def_id = DefId::new(FileId(0), 3);
+        let int_def_id = DefId::new(FileId(0), 4);
+        exports.insert("Trait".to_string(), DefTarget::Workspace(trait_def_id));
+        exports.insert("Dict".to_string(), DefTarget::Workspace(dict_def_id));
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // All types should resolve
+        assert_eq!(
+            resolutions.get(&trait_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(trait_def_id))),
+            "Trait should resolve to export"
+        );
+        assert_eq!(
+            resolutions.get(&dict_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(dict_def_id))),
+            "Dict should resolve to export"
+        );
+        assert_eq!(
+            resolutions.get(&string_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "String should resolve to export"
+        );
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Int should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_impl_method_signature() {
+        // impl ToStr[Point] { fn to_str(self): String }
+        // String in method return type should resolve
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create method return type: String
+        let ret_ty = Ty::con("String");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        // Create method signature
+        let method_sig = FuncSig {
+            path: Node::new(Path::from("test::ToStr::to_str")),
+            params: vec![],
+            ty_params: None,
+            ret_ty: Some(parsed_ret_ty),
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: true,
+            has_body: true,
+            span: Span::default(),
+        };
+        let method = Node::new(Func {
+            sig: method_sig,
+            body: None,
+        });
+
+        // Create impl type: ToStr[Point]
+        // Need synthetic IDs for the impl type even though we don't check them
+        let impl_ty = Ty::proj("ToStr", vec![Ty::con("Point")]);
+        let mut parsed_impl_ty = Parsed::new(impl_ty, Source::default());
+        parsed_impl_ty.set_synthetic_ids(vec![NodeId::new(), NodeId::new()]); // ToStr, Point
+
+        // Create impl declaration
+        let impl_decl = Impl {
+            ty: parsed_impl_ty,
+            qualifiers: vec![],
+            externs: None,
+            funcs: Some(vec![method]),
+            consts: None,
+            is_object: false,
+        };
+        let decl = Node::new(Decl::Impl(impl_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let string_def_id = DefId::new(FileId(0), 1);
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // String should resolve to export
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "Method return type String should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_object_impl() {
+        // impl object Point { fn foo(self): Bar }
+        // Point and Bar should resolve
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create method return type: Bar
+        let ret_ty = Ty::con("Bar");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        // Create method signature
+        let method_sig = FuncSig {
+            path: Node::new(Path::from("test::Point::foo")),
+            params: vec![],
+            ty_params: None,
+            ret_ty: Some(parsed_ret_ty),
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: true,
+            has_body: true,
+            span: Span::default(),
+        };
+        let method = Node::new(Func {
+            sig: method_sig,
+            body: None,
+        });
+
+        // Create impl type: Point (object impl)
+        let impl_ty = Ty::con("Point");
+        let point_node_id = NodeId::new();
+        let mut parsed_impl_ty = Parsed::new(impl_ty, Source::default());
+        parsed_impl_ty.set_synthetic_ids(vec![point_node_id]);
+
+        // Create impl declaration (object impl)
+        let impl_decl = Impl {
+            ty: parsed_impl_ty,
+            qualifiers: vec![],
+            externs: None,
+            funcs: Some(vec![method]),
+            consts: None,
+            is_object: true,
+        };
+        let decl = Node::new(Decl::Impl(impl_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let point_def_id = DefId::new(FileId(0), 1);
+        let bar_def_id = DefId::new(FileId(0), 2);
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+        exports.insert("Bar".to_string(), DefTarget::Workspace(bar_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Point should resolve to export
+        assert_eq!(
+            resolutions.get(&point_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Implementing type Point should resolve to export"
+        );
+
+        // Bar should resolve to export
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(bar_def_id))),
+            "Method return type Bar should resolve to export"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with function definitions
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_func_param_type() {
+        // fn foo(x: Point) {}
+        // Point in parameter type should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create parameter type: Point
+        let param_ty = Ty::con("Point");
+        let param_type_node_id = NodeId::new();
+        let mut parsed_param_ty = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_param_ty.set_synthetic_ids(vec![param_type_node_id]);
+
+        // Create parameter: x: Point
+        let mut x_name = Name::new("x");
+        x_name.ty = Some(parsed_param_ty);
+        let x_param = Node::new(FnParam::Name(x_name));
+
+        // Create function
+        let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
+        let mut func = Func::new(Node::new(Path::from("test::foo")), vec![x_param], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let point_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Point should resolve to export
+        assert_eq!(
+            resolutions.get(&param_type_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Parameter type Point should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_func_return_type() {
+        // fn foo(): String {}
+        // String in return type should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create return type: String
+        let ret_ty = Ty::con("String");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        // Create function with return type
+        let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
+        let mut func = Func::new(Node::new(Path::from("test::foo")), vec![], func_body);
+        func.sig.ret_ty = Some(parsed_ret_ty);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let string_def_id = DefId::new(FileId(0), 1);
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // String should resolve to export
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "Return type String should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_func_type_param() {
+        // fn foo['a](x: 'a): 'a {}
+        // 'a should resolve to TypeParam in both parameter and return type
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create parameter type: 'a
+        let param_ty = Ty::var("'a");
+        let param_type_node_id = NodeId::new();
+        let mut parsed_param_ty = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_param_ty.set_synthetic_ids(vec![param_type_node_id]);
+
+        // Create return type: 'a
+        let ret_ty = Ty::var("'a");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        // Create type parameter
+        let ty_param = Ty::var("'a");
+        let ty_param_parsed = Parsed::new(ty_param, Source::default());
+
+        // Create parameter: x: 'a
+        let mut x_name = Name::new("x");
+        x_name.ty = Some(parsed_param_ty);
+        let x_param = Node::new(FnParam::Name(x_name));
+
+        // Create function with type parameter
+        let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
+        let mut func = Func::new(Node::new(Path::from("test::foo")), vec![x_param], func_body);
+        func.sig.ty_params = Some(TypeParams {
+            tys: vec![ty_param_parsed],
+            lb_span: Span::default(),
+            rb_span: Span::default(),
+        });
+        func.sig.ret_ty = Some(parsed_ret_ty);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // 'a in parameter type should resolve to TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&param_type_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Parameter type 'a should resolve to TypeParam"
+        );
+
+        // 'a in return type should resolve to TypeParam
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Return type 'a should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_func_qualifier() {
+        // fn foo['a](x: 'a) where ToStr['a] {}
+        // ToStr and 'a in qualifier should resolve
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create qualifier type: ToStr['a]
+        let qualifier_ty = Ty::proj("ToStr", vec![Ty::var("'a")]);
+        let tostr_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_qualifier = Parsed::new(qualifier_ty, Source::default());
+        parsed_qualifier.set_synthetic_ids(vec![tostr_node_id, a_node_id]);
+
+        // Create type parameter
+        let ty_param = Ty::var("'a");
+        let ty_param_parsed = Parsed::new(ty_param, Source::default());
+
+        // Create function with qualifier
+        let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
+        let mut func = Func::new(Node::new(Path::from("test::foo")), vec![], func_body);
+        func.sig.ty_params = Some(TypeParams {
+            tys: vec![ty_param_parsed],
+            lb_span: Span::default(),
+            rb_span: Span::default(),
+        });
+        func.sig.qualifiers = vec![parsed_qualifier];
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let tostr_def_id = DefId::new(FileId(0), 1);
+        exports.insert("ToStr".to_string(), DefTarget::Workspace(tostr_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // ToStr should resolve to export
+        assert_eq!(
+            resolutions.get(&tostr_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(tostr_def_id))),
+            "Qualifier trait ToStr should resolve to export"
+        );
+
+        // 'a in qualifier should resolve to TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Type parameter 'a in qualifier should resolve to TypeParam"
         );
     }
 }

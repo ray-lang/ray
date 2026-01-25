@@ -5252,7 +5252,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
 ##### Step 3: Impl definitions
 
-- [ ] Add handling for impl definitions:
+- [x] Add handling for impl definitions:
   ```rust
   Decl::Impl(impl_decl) => {
       let type_params = build_type_param_scope(def_id, &impl_decl.type_params);
@@ -5279,11 +5279,11 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       }
   }
   ```
-- [ ] **Validate**: Unit test resolving impl with nested type args (e.g., `impl Trait[Dict[K, V]]`)
+- [x] **Validate**: Unit test resolving impl with nested type args (e.g., `impl Trait[Dict[K, V]]`)
 
 ##### Step 4: Function definitions
 
-- [ ] Add handling for function definitions:
+- [x] Add handling for function definitions:
   ```rust
   Decl::Func(func_decl) => {
       let type_params = build_type_param_scope(def_id, &func_decl.type_params);
@@ -5299,7 +5299,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       );
   }
   ```
-- [ ] **Validate**: Unit test resolving function parameter and return types
+- [x] **Validate**: Unit test resolving function parameter and return types
 
 ##### Step 5: Type aliases
 
