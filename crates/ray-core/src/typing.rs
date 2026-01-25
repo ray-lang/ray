@@ -915,9 +915,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                         ctx.record_expr(node, ExprKind::DefRef(*def_id))
                     }
                     Resolution::Def(DefTarget::Library(_)) => {
-                        // External references (from libraries) - emit Missing for now
-                        // TODO: Handle library references properly once we have DefId for externals
-                        ctx.record_expr(node, ExprKind::Missing)
+                        todo!("FIXME: name resolved to library reference")
+                    }
+                    Resolution::TypeParam(_) => {
+                        todo!("FIXME: name resolved to type param reference")
                     }
                     Resolution::Error => ctx.record_expr(node, ExprKind::Missing),
                 }
@@ -950,8 +951,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     }
                     Resolution::Def(DefTarget::Library(_)) => {
                         // External references (from libraries)
-                        // TODO: Handle library references properly
-                        ctx.record_expr(node, ExprKind::Missing)
+                        todo!("FIXME: path resolved to library reference")
+                    }
+                    Resolution::TypeParam(_) => {
+                        todo!("FIXME: path resolved to type parameter reference")
                     }
                     Resolution::Error => ctx.record_expr(node, ExprKind::Missing),
                 }

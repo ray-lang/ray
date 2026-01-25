@@ -744,7 +744,9 @@ impl Ty {
                 .chain(std::iter::once(ty.as_ref()))
                 .flat_map(Ty::flatten)
                 .collect(),
-            Ty::Proj(_, items) => items.iter().flat_map(Ty::flatten).collect(),
+            Ty::Proj(_, items) => std::iter::once(self)
+                .chain(items.iter().flat_map(Ty::flatten))
+                .collect(),
         }
     }
 

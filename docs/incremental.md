@@ -5052,17 +5052,17 @@ This phase completes type resolution so that downstream queries (`struct_def`, `
 
 The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the refactor from `Ty::Proj(Box<Ty>, Vec<Ty>)` to `Ty::Proj(ItemPath, Vec<Ty>)`. This needs to be fixed to match synthetic ID ordering.
 
-- [ ] Update `Ty::flatten()` in `ray-shared/src/ty/ty.rs` to include self for `Ty::Proj`:
+- [x] Update `Ty::flatten()` in `ray-shared/src/ty/ty.rs` to include self for `Ty::Proj`:
   ```rust
   Ty::Proj(_, items) => std::iter::once(self)
       .chain(items.iter().flat_map(Ty::flatten))
       .collect(),
   ```
-- [ ] **Validate**: Verify `semantic_tokens.rs` still works correctly after fix
+- [x] **Validate**: Verify `semantic_tokens.rs` still works correctly after fix
 
 ##### Step 2: Implement resolve_parsed_ty helper
 
-- [ ] Create `resolve_parsed_ty` function:
+- [x] Create `resolve_parsed_ty` function:
   ```rust
   /// Resolves all type references in a Parsed<Ty> using its synthetic IDs.
   ///
@@ -5134,7 +5134,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       Resolution::Error
   }
   ```
-- [ ] **Validate**: Unit tests for resolve_parsed_ty
+- [x] **Validate**: Unit tests for resolve_parsed_ty
 
 ##### Step 3: Implement build_type_param_scope helper
 

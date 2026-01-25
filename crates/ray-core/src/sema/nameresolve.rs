@@ -5,10 +5,11 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::{ItemPath, ModulePath, Path},
+    pathlib::{ModulePath, Path},
     resolution::{DefTarget, Resolution},
     span::{Sourced, parsed::Parsed},
     ty::Ty,
+    type_param_id::TypeParamId,
 };
 use ray_typing::types::TyScheme;
 
@@ -228,6 +229,10 @@ fn resolve_impl_type_refs(
     // Get the synthetic IDs for this impl's type
     let synth_ids = imp.ty.synthetic_ids();
 
+    // Impl blocks don't have type parameters in scope at the impl header level
+    // (type parameters are on the methods, not the impl itself)
+    let type_params = HashMap::new();
+
     // For trait impls like `impl ToStr[Point]`:
     // - imp.is_object is false
     // - imp.ty is Ty::Proj(trait_path, [implementing_type, ...])
@@ -241,19 +246,13 @@ fn resolve_impl_type_refs(
     if imp.is_object {
         // Inherent impl: resolve the implementing type directly
         // imp.ty is something like Ty::Const(Point) or Ty::Proj(Point, [...])
-        let implementing_type_path: ItemPath = imp.ty.get_path().into();
-        if let Some(type_name) = implementing_type_path.item_name() {
-            let resolution = resolve_type_name(
-                &type_name,
-                &implementing_type_path,
-                imports,
-                exports,
-                import_exports,
-            );
+        if let Some(type_name) = extract_type_name(&imp.ty) {
+            let resolution =
+                resolve_type_name(&type_name, &type_params, imports, exports, import_exports);
 
-            if let Some(target) = resolution {
+            if !matches!(resolution, Resolution::Error) {
                 if let Some(node_id) = synth_ids.first() {
-                    resolutions.insert(*node_id, Resolution::Def(target));
+                    resolutions.insert(*node_id, resolution);
                 }
             }
         }
@@ -262,36 +261,30 @@ fn resolve_impl_type_refs(
         if let Ty::Proj(trait_path, args) = &*imp.ty {
             // Resolve the trait (first synthetic_id)
             if let Some(trait_name) = trait_path.item_name() {
-                let resolution = resolve_type_name(
-                    &trait_name,
-                    trait_path,
-                    imports,
-                    exports,
-                    import_exports,
-                );
+                let resolution =
+                    resolve_type_name(&trait_name, &type_params, imports, exports, import_exports);
 
-                if let Some(target) = resolution {
+                if !matches!(resolution, Resolution::Error) {
                     if let Some(node_id) = synth_ids.first() {
-                        resolutions.insert(*node_id, Resolution::Def(target));
+                        resolutions.insert(*node_id, resolution);
                     }
                 }
             }
 
             // Resolve the implementing type (second synthetic_id, from first type arg)
             if let Some(implementing_ty) = args.first() {
-                let implementing_type_path: ItemPath = implementing_ty.get_path().into();
-                if let Some(type_name) = implementing_type_path.item_name() {
+                if let Some(type_name) = extract_type_name(implementing_ty) {
                     let resolution = resolve_type_name(
                         &type_name,
-                        &implementing_type_path,
+                        &type_params,
                         imports,
                         exports,
                         import_exports,
                     );
 
-                    if let Some(target) = resolution {
+                    if !matches!(resolution, Resolution::Error) {
                         if let Some(node_id) = synth_ids.get(1) {
-                            resolutions.insert(*node_id, Resolution::Def(target));
+                            resolutions.insert(*node_id, resolution);
                         }
                     }
                 }
@@ -300,44 +293,101 @@ fn resolve_impl_type_refs(
     }
 }
 
-/// Resolve a type name to a DefTarget.
+/// Extract the type name from a Ty for name resolution.
+///
+/// For Ty::Var, returns the variable name (e.g., "'a").
+/// For Ty::Const/Ty::Proj, returns the item name from the path.
+/// For structural types (Func, Ref, etc.), returns None.
+fn extract_type_name(ty: &Ty) -> Option<String> {
+    match ty {
+        Ty::Var(ty_var) => ty_var.path().name(),
+        _ => ty
+            .item_path()
+            .and_then(|p| p.item_name())
+            .map(|s| s.to_string()),
+    }
+}
+
+/// Resolve a type name to a Resolution.
 ///
 /// Checks in order:
-/// 1. Exports (combined module exports, sibling exports, and selective imports)
-/// 2. Imported modules (qualified paths like `io::Foo`)
+/// 1. Type parameters in scope (e.g., `'a`, `'b`)
+/// 2. Imports (direct imports)
+/// 3. Module exports (same-module definitions)
+/// 4. Imported module exports (qualified imports)
 fn resolve_type_name(
     name: &str,
-    path: &ItemPath,
+    type_params: &HashMap<String, TypeParamId>,
     imports: &HashMap<String, ModulePath>,
     exports: &HashMap<String, DefTarget>,
     import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-) -> Option<DefTarget> {
-    let name_vec = path.item_components();
-
-    // If it's a simple name (single segment), check exports first
-    if name_vec.len() == 1 {
-        if let Some(target) = exports.get(name) {
-            return Some(target.clone());
-        }
+) -> Resolution {
+    // 1. Check if it's a type parameter in scope
+    if let Some(type_param_id) = type_params.get(name) {
+        return Resolution::TypeParam(*type_param_id);
     }
 
-    // If it's a qualified path (multiple segments), try to resolve via imports
-    if name_vec.len() >= 2 {
-        let first_segment = &name_vec[0];
-        if imports.contains_key(first_segment) {
-            if let Some(imported_exports) = import_exports(first_segment) {
-                // For now, only handle two-segment paths like `io::Foo`
-                if name_vec.len() == 2 {
-                    let second_segment = &name_vec[1];
-                    if let Some(target) = imported_exports.get(second_segment) {
-                        return Some(target.clone());
-                    }
-                }
+    // 2. Check imports
+    if let Some(module_path) = imports.get(name) {
+        if let Some(exports) = import_exports(&module_path.to_string()) {
+            if let Some(target) = exports.get(name) {
+                return Resolution::Def(target.clone());
             }
         }
     }
 
-    None
+    // 3. Check module exports (same-module definitions)
+    if let Some(target) = exports.get(name) {
+        return Resolution::Def(target.clone());
+    }
+
+    // 4. Check imported module exports (qualified imports)
+    for (_alias, module_path) in imports {
+        if let Some(exports) = import_exports(&module_path.to_string()) {
+            if let Some(target) = exports.get(name) {
+                return Resolution::Def(target.clone());
+            }
+        }
+    }
+
+    Resolution::Error
+}
+
+/// Resolves all type references in a Parsed<Ty> using its synthetic IDs.
+///
+/// The synthetic_ids in Parsed<Ty> correspond 1:1 with the flattened type refs.
+/// For each type reference, we determine its resolution:
+/// - Ty::Var (type parameters like 'a): look up in type_params map
+/// - Ty::Const/Ty::Proj (nominal types): look up in imports/exports via resolve_type_name
+///
+/// The resolutions are inserted into the provided HashMap.
+pub fn resolve_parsed_ty(
+    parsed_ty: &Parsed<Ty>,
+    type_params: &HashMap<String, TypeParamId>,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    let synthetic_ids = parsed_ty.synthetic_ids();
+    let ty_refs = parsed_ty.value().flatten();
+
+    assert_eq!(
+        synthetic_ids.len(),
+        ty_refs.len(),
+        "Synthetic ID count must match flattened type ref count"
+    );
+
+    for (node_id, ty) in synthetic_ids.iter().zip(ty_refs.iter()) {
+        // Extract the type name from the Ty and resolve it
+        let resolution = if let Some(name) = extract_type_name(ty) {
+            resolve_type_name(&name, type_params, imports, exports, import_exports)
+        } else {
+            // Structural types (Func, Ref, etc.) don't need resolution themselves
+            Resolution::Error
+        };
+        resolutions.insert(*node_id, resolution);
+    }
 }
 
 // ============================================================================
@@ -1086,16 +1136,27 @@ impl NameResolve for Sourced<'_, While> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ast::{
-        Assign, Block, Closure as AstClosure, Decl, Expr, Func, Literal, Name, Node,
-        Pattern as AstPattern, Sequence,
+    use std::collections::HashMap;
+
+    use ray_shared::{
+        def::DefId,
+        file_id::FileId,
+        node_id::NodeId,
+        pathlib::{FilePath, Path},
+        resolution::{DefTarget, Resolution},
+        span::{Source, Span, parsed::Parsed},
+        ty::Ty,
+        type_param_id::TypeParamId,
     };
-    use ray_shared::def::DefId;
-    use ray_shared::file_id::FileId;
-    use ray_shared::node_id::NodeId;
-    use ray_shared::pathlib::{FilePath, Path};
-    use ray_shared::span::Span;
+    use ray_typing::types::TyScheme;
+
+    use crate::{
+        ast::{
+            Assign, Block, Closure as AstClosure, Decl, Expr, File, Func, Literal, Name, Node,
+            Pattern as AstPattern, Sequence,
+        },
+        sema::{resolve_names_in_file, resolve_parsed_ty},
+    };
 
     fn test_file(decls: Vec<Node<Decl>>, stmts: Vec<Node<Expr>>) -> File {
         File {
@@ -1355,7 +1416,7 @@ mod tests {
         let curly_expr = Node::new(Expr::Curly(Curly {
             lhs: Some(Parsed::new(Path::from("Point"), Source::default())),
             elements: vec![curly_elem],
-            curly_span: ray_shared::span::Span::default(),
+            curly_span: Span::default(),
             ty: TyScheme::default(),
         }));
         let curly_id = curly_expr.id;
@@ -1385,6 +1446,183 @@ mod tests {
             resolutions.get(&curly_id),
             Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
             "Curly should resolve to Point struct"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_parsed_ty
+    // =========================================================================
+
+    #[test]
+    fn resolve_parsed_ty_resolves_simple_type_to_export() {
+        // Type annotation: Point
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a Parsed<Ty> with a synthetic ID
+        let ty = Ty::con("Point");
+        let node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![node_id]);
+
+        // Set up exports
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let type_params = HashMap::new();
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_parsed_ty(
+            &parsed_ty,
+            &type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        assert_eq!(
+            resolutions.get(&node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Simple type should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_parsed_ty_resolves_generic_type_with_type_param() {
+        // Type annotation: List['a] where List is a struct and 'a is a type parameter
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create List['a] - the type variable is Ty::Var
+        let ty = Ty::proj("List", vec![Ty::var("'a")]);
+        let list_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![list_node_id, a_node_id]);
+
+        // Set up exports for List
+        let list_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("List".to_string(), DefTarget::Workspace(list_def_id));
+
+        // Set up type_params for 'a
+        let mut type_params = HashMap::new();
+        let a_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        type_params.insert("'a".to_string(), a_type_param_id);
+
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_parsed_ty(
+            &parsed_ty,
+            &type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        // List should be resolved to the export
+        assert_eq!(
+            resolutions.get(&list_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(list_def_id))),
+            "List should resolve to export"
+        );
+        // 'a should be resolved to the type parameter
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(a_type_param_id)),
+            "Type parameter 'a should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_parsed_ty_unresolved_returns_error() {
+        // Type annotation: Unknown (not in scope)
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let ty = Ty::con("Unknown");
+        let node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![node_id]);
+
+        let type_params = HashMap::new();
+        let exports = HashMap::new();
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_parsed_ty(
+            &parsed_ty,
+            &type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        assert_eq!(
+            resolutions.get(&node_id),
+            Some(&Resolution::Error),
+            "Unknown type should resolve to Error"
+        );
+    }
+
+    #[test]
+    fn resolve_parsed_ty_nested_generic_types() {
+        // Type annotation: Dict[String, Int] where Dict, String, Int are all structs
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let ty = Ty::proj("Dict", vec![Ty::con("String"), Ty::con("Int")]);
+        let dict_node_id = NodeId::new();
+        let string_node_id = NodeId::new();
+        let int_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![dict_node_id, string_node_id, int_node_id]);
+
+        // Set up exports
+        let dict_def_id = DefId::new(FileId(0), 1);
+        let string_def_id = DefId::new(FileId(0), 2);
+        let int_def_id = DefId::new(FileId(0), 3);
+        let mut exports = HashMap::new();
+        exports.insert("Dict".to_string(), DefTarget::Workspace(dict_def_id));
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let type_params = HashMap::new();
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_parsed_ty(
+            &parsed_ty,
+            &type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        assert_eq!(
+            resolutions.get(&dict_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(dict_def_id))),
+            "Dict should resolve to export"
+        );
+        assert_eq!(
+            resolutions.get(&string_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "String should resolve to export"
+        );
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Int should resolve to export"
         );
     }
 }
