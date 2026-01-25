@@ -114,6 +114,15 @@ pub fn resolve_names_in_file(
                         &import_exports,
                         &mut resolutions,
                     );
+                } else if let Decl::TypeAlias(_name, aliased_ty) = &decl.value {
+                    // Resolve type references in type alias
+                    resolve_type_alias_type_refs(
+                        aliased_ty,
+                        imports,
+                        exports,
+                        &import_exports,
+                        &mut resolutions,
+                    );
                 }
             }
             WalkItem::Func(func) => {
@@ -406,6 +415,36 @@ fn resolve_func_type_refs(
     resolve_func_sig(
         def_id,
         &func.sig,
+        &type_params,
+        imports,
+        exports,
+        import_exports,
+        resolutions,
+    );
+}
+
+/// Resolve type references in a type alias definition.
+///
+/// For `typealias MyList = List[Int]`, this resolves types in the aliased type
+/// (e.g., `List`, `Int`) to their definitions.
+///
+/// Note: typealias doesn't have type variables on the LHS. Any type variables
+/// in the aliased type (e.g., `'a` in `List['a]`) are free/unbound and will
+/// resolve to Error since there's no declaration site for them.
+fn resolve_type_alias_type_refs(
+    aliased_ty: &Parsed<Ty>,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    // Type aliases don't have bound type parameters - any type variables
+    // in the aliased type are free/unbound
+    let type_params = HashMap::new();
+
+    // Resolve the aliased type
+    collect_type_resolutions(
+        aliased_ty,
         &type_params,
         imports,
         exports,
@@ -3048,6 +3087,145 @@ mod tests {
             resolutions.get(&a_node_id),
             Some(&Resolution::TypeParam(expected_type_param_id)),
             "Type parameter 'a in qualifier should resolve to TypeParam"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with type alias definitions
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_type_alias_simple() {
+        // typealias MyInt = Int
+        // Int should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create aliased type: Int
+        let aliased_ty = Ty::con("Int");
+        let int_node_id = NodeId::new();
+        let mut parsed_aliased_ty = Parsed::new(aliased_ty, Source::default());
+        parsed_aliased_ty.set_synthetic_ids(vec![int_node_id]);
+
+        // Create type alias name
+        let name = Node::new(Name::new("MyInt"));
+
+        // Create type alias declaration
+        let decl = Node::new(Decl::TypeAlias(name, parsed_aliased_ty));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let int_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Int should resolve to export
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Aliased type Int should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_type_alias_generic() {
+        // typealias IntList = List[Int]
+        // List and Int should both resolve to exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create aliased type: List[Int]
+        let aliased_ty = Ty::proj("List", vec![Ty::con("Int")]);
+        let list_node_id = NodeId::new();
+        let int_node_id = NodeId::new();
+        let mut parsed_aliased_ty = Parsed::new(aliased_ty, Source::default());
+        parsed_aliased_ty.set_synthetic_ids(vec![list_node_id, int_node_id]);
+
+        // Create type alias name
+        let name = Node::new(Name::new("IntList"));
+
+        // Create type alias declaration
+        let decl = Node::new(Decl::TypeAlias(name, parsed_aliased_ty));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let list_def_id = DefId::new(FileId(0), 1);
+        let int_def_id = DefId::new(FileId(0), 2);
+        exports.insert("List".to_string(), DefTarget::Workspace(list_def_id));
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // List should resolve to export
+        assert_eq!(
+            resolutions.get(&list_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(list_def_id))),
+            "List should resolve to export"
+        );
+
+        // Int should resolve to export
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Int should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_type_alias_nested() {
+        // typealias StringIntDict = Dict[String, Int]
+        // Dict, String, and Int should all resolve to exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create aliased type: Dict[String, Int]
+        let aliased_ty = Ty::proj("Dict", vec![Ty::con("String"), Ty::con("Int")]);
+        let dict_node_id = NodeId::new();
+        let string_node_id = NodeId::new();
+        let int_node_id = NodeId::new();
+        let mut parsed_aliased_ty = Parsed::new(aliased_ty, Source::default());
+        parsed_aliased_ty.set_synthetic_ids(vec![dict_node_id, string_node_id, int_node_id]);
+
+        // Create type alias name
+        let name = Node::new(Name::new("StringIntDict"));
+
+        // Create type alias declaration
+        let decl = Node::new(Decl::TypeAlias(name, parsed_aliased_ty));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let dict_def_id = DefId::new(FileId(0), 1);
+        let string_def_id = DefId::new(FileId(0), 2);
+        let int_def_id = DefId::new(FileId(0), 3);
+        exports.insert("Dict".to_string(), DefTarget::Workspace(dict_def_id));
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Dict should resolve to export
+        assert_eq!(
+            resolutions.get(&dict_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(dict_def_id))),
+            "Dict should resolve to export"
+        );
+
+        // String should resolve to export
+        assert_eq!(
+            resolutions.get(&string_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "String should resolve to export"
+        );
+
+        // Int should resolve to export
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Int should resolve to export"
         );
     }
 }

@@ -5303,7 +5303,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
 ##### Step 5: Type aliases
 
-- [ ] Add handling for type alias definitions:
+- [x] Add handling for type alias definitions:
   ```rust
   Decl::TypeAlias(alias_decl) => {
       let type_params = build_type_param_scope(def_id, &alias_decl.type_params);
@@ -5318,7 +5318,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       );
   }
   ```
-- [ ] **Validate**: Unit test resolving type alias
+- [x] **Validate**: Unit test resolving type alias
 
 ##### Step 6: Annotated bindings
 
