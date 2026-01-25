@@ -123,6 +123,36 @@ pub fn resolve_names_in_file(
                         &import_exports,
                         &mut resolutions,
                     );
+                } else if let Decl::Mutable(name_node) | Decl::Name(name_node) = &decl.value {
+                    // Resolve type annotation in binding declaration (e.g., `x: Int` or `mut x: String`)
+                    if let Some(parsed_ty_scheme) = &name_node.value.ty {
+                        // Bindings don't have type parameters
+                        let type_params = HashMap::new();
+                        collect_type_resolutions_from_scheme(
+                            parsed_ty_scheme,
+                            &type_params,
+                            imports,
+                            exports,
+                            &import_exports,
+                            &mut resolutions,
+                        );
+                    }
+                } else if let Decl::Declare(assign) = &decl.value {
+                    // Resolve type annotation in assignment with declaration (e.g., `x: Int = 5`)
+                    if let Pattern::Name(name) = &assign.lhs.value {
+                        if let Some(parsed_ty_scheme) = &name.ty {
+                            // Bindings don't have type parameters
+                            let type_params = HashMap::new();
+                            collect_type_resolutions_from_scheme(
+                                parsed_ty_scheme,
+                                &type_params,
+                                imports,
+                                exports,
+                                &import_exports,
+                                &mut resolutions,
+                            );
+                        }
+                    }
                 }
             }
             WalkItem::Func(func) => {
@@ -3219,6 +3249,164 @@ mod tests {
             resolutions.get(&string_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
             "String should resolve to export"
+        );
+
+        // Int should resolve to export
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Int should resolve to export"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with annotated bindings
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_annotated_name_binding() {
+        // x: Point (immutable binding with type annotation)
+        // Point should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type annotation: Point
+        let ty = Ty::con("Point");
+        let point_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(TyScheme::from(ty), Source::default());
+        parsed_ty.set_synthetic_ids(vec![point_node_id]);
+
+        // Create name binding with type annotation
+        let name = Name::typed("x", parsed_ty);
+        let name_decl = Node::new(Decl::Name(Node::new(name)));
+
+        let file = test_file(vec![name_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let point_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Point should resolve to export
+        assert_eq!(
+            resolutions.get(&point_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Type annotation Point should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_annotated_mutable_binding() {
+        // mut x: String (mutable binding with type annotation)
+        // String should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type annotation: String
+        let ty = Ty::con("String");
+        let string_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(TyScheme::from(ty), Source::default());
+        parsed_ty.set_synthetic_ids(vec![string_node_id]);
+
+        // Create mutable binding with type annotation
+        let name = Name::typed("x", parsed_ty);
+        let mutable_decl = Node::new(Decl::Mutable(Node::new(name)));
+
+        let file = test_file(vec![mutable_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let string_def_id = DefId::new(FileId(0), 1);
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // String should resolve to export
+        assert_eq!(
+            resolutions.get(&string_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "Type annotation String should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_annotated_declare() {
+        // x: Int = 5 (declaration with type annotation)
+        // Int should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type annotation: Int
+        let ty = Ty::con("Int");
+        let int_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(TyScheme::from(ty), Source::default());
+        parsed_ty.set_synthetic_ids(vec![int_node_id]);
+
+        // Create name with type annotation
+        let name = Name::typed("x", parsed_ty);
+
+        // Create assignment: x: Int = true (using bool for simplicity)
+        let lhs = Node::new(AstPattern::Name(name));
+        let rhs = Node::new(Expr::Literal(Literal::Bool(true)));
+        let assign = Assign {
+            lhs,
+            rhs: Box::new(rhs),
+            is_mut: false,
+            mut_span: None,
+            op: crate::ast::InfixOp::Assign,
+            op_span: Span::new(),
+        };
+        let declare_decl = Node::new(Decl::Declare(assign));
+
+        let file = test_file(vec![declare_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let int_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Int should resolve to export
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "Type annotation Int should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_annotated_binding_generic() {
+        // x: List[Int] (binding with generic type annotation)
+        // List and Int should both resolve to exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type annotation: List[Int]
+        let ty = Ty::proj("List", vec![Ty::con("Int")]);
+        let list_node_id = NodeId::new();
+        let int_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(TyScheme::from(ty), Source::default());
+        parsed_ty.set_synthetic_ids(vec![list_node_id, int_node_id]);
+
+        // Create name binding with type annotation
+        let name = Name::typed("x", parsed_ty);
+        let name_decl = Node::new(Decl::Name(Node::new(name)));
+
+        let file = test_file(vec![name_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let list_def_id = DefId::new(FileId(0), 1);
+        let int_def_id = DefId::new(FileId(0), 2);
+        exports.insert("List".to_string(), DefTarget::Workspace(list_def_id));
+        exports.insert("Int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // List should resolve to export
+        assert_eq!(
+            resolutions.get(&list_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(list_def_id))),
+            "List should resolve to export"
         );
 
         // Int should resolve to export

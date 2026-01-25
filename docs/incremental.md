@@ -5322,7 +5322,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
 ##### Step 6: Annotated bindings
 
-- [ ] Add handling for bindings with type annotations:
+- [x] Add handling for bindings with type annotations:
   ```rust
   Decl::Binding(binding_decl) => {
       if let Some(parsed_ty) = &binding_decl.ty {
@@ -5340,7 +5340,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       // Continue with expression resolution...
   }
   ```
-- [ ] **Validate**: Unit test resolving annotated binding
+- [x] **Validate**: Unit test resolving annotated binding
 
 ---
 
