@@ -5147,13 +5147,13 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
   }
   ```
 
-##### Step 4: Implement resolve_method_signature helper
+##### Step 4: Implement resolve_func_sig helper
 
-- [ ] Implement `resolve_method_signature` helper:
+- [x] Implement `resolve_func_sig` helper:
   ```rust
-  fn resolve_method_signature(
+  fn resolve_func_sig(
       method_def_id: DefId,
-      sig: &Signature,
+      sig: &FuncSig,
       parent_type_params: &HashMap<String, TypeParamId>,
       imports: &HashMap<String, ModulePath>,
       exports: &HashMap<String, DefTarget>,
@@ -5173,12 +5173,12 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
       }
 
       // Resolve return type
-      if let Some(parsed_ty) = &sig.return_ty {
+      if let Some(parsed_ty) = &sig.ret_ty {
           resolve_parsed_ty(parsed_ty, &type_params, imports, exports, import_exports, resolutions);
       }
 
       // Resolve where clause
-      for constraint in &sig.where_clause {
+      for constraint in &sig.qualifiers {
           resolve_parsed_ty(&constraint.ty, &type_params, imports, exports, import_exports, resolutions);
           resolve_parsed_ty(&constraint.bound, &type_params, imports, exports, import_exports, resolutions);
       }
@@ -5228,7 +5228,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
       // Resolve method signatures
       for method in &trait_decl.methods {
-          resolve_method_signature(
+          resolve_func_sig(
               method.def_id,
               &method.sig,
               &type_params,  // Trait's type params are in scope
@@ -5259,7 +5259,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
       // Resolve method signatures
       for method in &impl_decl.methods {
-          resolve_method_signature(
+          resolve_func_sig(
               method.def_id,
               &method.sig,
               &type_params,
@@ -5280,7 +5280,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
   Decl::Func(func_decl) => {
       let type_params = build_type_param_scope(def_id, &func_decl.type_params);
 
-      resolve_method_signature(
+      resolve_func_sig(
           def_id,
           &func_decl.sig,
           &type_params,
@@ -5415,25 +5415,150 @@ Since `var_map` is immutable after construction and type parameter lists are sma
   ```
 - [ ] **Validate**: Unit test verifying TypeParamId-based mapping and origin tracing via `origin_of()`
 
-##### Step 3: Update consumers of mapped_def_types
+##### Step 3: Implement resolve_ty function
 
-Consumers that previously looked up by string name now look up by `TypeParamId`:
+The `resolve_ty` function transforms a `Parsed<Ty>` into a resolved `Ty` using name resolutions and type parameter mappings:
 
-- [ ] Update `annotated_scheme` to use `TypeParamId` lookups
-- [ ] Update `struct_def`, `trait_def`, `impl_def` to resolve type param references:
+- [ ] Implement `resolve_ty` function:
   ```rust
-  // When building a Ty from a Parsed<Ty>, use resolutions to find TypeParamIds
-  fn resolve_ty_with_mapping(
+  /// Transforms a Parsed<Ty> into a resolved Ty.
+  ///
+  /// This function:
+  /// 1. Qualifies paths: "Point" → "mymodule::Point" via Resolution::Def
+  /// 2. Substitutes type params: Ty::Var("'a") → Ty::Var(schema_var) via Resolution::TypeParam + var_map
+  ///
+  /// The caller is responsible for providing the combined var_map that includes
+  /// both parent type parameters (e.g., from impl) and own type parameters (e.g., from method).
+  fn resolve_ty(
       parsed_ty: &Parsed<Ty>,
+      resolutions: &HashMap<NodeId, Resolution>,
+      var_map: &HashMap<TypeParamId, TyVar>,  // Combined map provided by caller
+  ) -> Ty {
+      let synthetic_ids = parsed_ty.synthetic_ids();
+      let ty = parsed_ty.value();
+
+      transform_ty_with_resolutions(ty, &synthetic_ids, resolutions, var_map)
+  }
+
+  fn transform_ty_with_resolutions(
+      ty: &Ty,
+      synthetic_ids: &[NodeId],
       resolutions: &HashMap<NodeId, Resolution>,
       var_map: &HashMap<TypeParamId, TyVar>,
   ) -> Ty {
-      // Walk the Ty and its synthetic IDs together
-      // For each Resolution::TypeParam(id), look up var_map[id] to get the schema var
-      // For each Resolution::Def(target), use the target's ItemPath
+      // Implementation walks the Ty structure recursively, consuming synthetic_ids
+      // in the same order as Ty::flatten() produces them.
+      //
+      // For each type reference:
+      // - Resolution::Def(target) → use target's ItemPath to build qualified Ty
+      // - Resolution::TypeParam(id) → look up var_map[id] to get schema var
+      // - Resolution::Error → preserve original (error reported elsewhere)
+      match ty {
+          Ty::Const(path) => {
+              // Look up resolution for this type
+              if let Some(node_id) = synthetic_ids.first() {
+                  match resolutions.get(node_id) {
+                      Some(Resolution::Def(target)) => {
+                          Ty::Const(target.item_path())
+                      }
+                      Some(Resolution::TypeParam(id)) => {
+                          if let Some(schema_var) = var_map.get(id) {
+                              Ty::Var(schema_var.clone())
+                          } else {
+                              ty.clone() // Error: type param not in scope
+                          }
+                      }
+                      _ => ty.clone()
+                  }
+              } else {
+                  ty.clone()
+              }
+          }
+          Ty::Proj(path, args) => {
+              // First synthetic_id is for the base type, rest are for args
+              // ... similar logic for parameterized types
+          }
+          Ty::Var(ty_var) => {
+              // Type variables resolve via Resolution::TypeParam
+              if let Some(node_id) = synthetic_ids.first() {
+                  match resolutions.get(node_id) {
+                      Some(Resolution::TypeParam(id)) => {
+                          if let Some(schema_var) = var_map.get(id) {
+                              Ty::Var(schema_var.clone())
+                          } else {
+                              ty.clone()
+                          }
+                      }
+                      _ => ty.clone()
+                  }
+              } else {
+                  ty.clone()
+              }
+          }
+          // Structural types (Func, Ref, Tuple, etc.) recurse into components
+          _ => { /* ... */ }
+      }
   }
   ```
-- [ ] **Validate**: End-to-end test with generic struct field types
+- [ ] **Validate**: Unit tests for resolve_ty with various type structures
+
+##### Step 4: Var map inheritance for nested scopes
+
+When resolving types in method signatures, the caller must combine parent and method var_maps.
+The `mapped_def_types` query only returns mappings for a definition's **own** type parameters.
+The caller is responsible for combining maps when there's a parent-child relationship.
+
+**Example**: `impl List['a] { fn push(self: List['a], el: 'a) }`
+
+```rust
+// In impl_def query:
+let file_id = ...;
+let impl_def_id = ...;
+let resolutions = name_resolutions(db, file_id);
+
+// Impl's type params → schema vars
+let impl_var_map = mapped_def_types(db, impl_def_id);
+// impl_var_map = { TypeParamId(impl, 0) → $0 }
+
+for method in methods {
+    let method_def_id = ...;
+
+    // Method's own type params → schema vars (if any)
+    let method_var_map = mapped_def_types(db, method_def_id);
+    // method_var_map = {} (push has no own type params)
+
+    // Combine: impl's params + method's params
+    let mut combined_var_map = impl_var_map.var_map.clone();
+    combined_var_map.extend(method_var_map.var_map.clone());
+
+    // Resolve each type in signature using combined map
+    let resolved_self_ty = resolve_ty(&self_param.ty, &resolutions, &combined_var_map);
+    // 'a resolves to TypeParamId(impl, 0) via name_resolutions
+    // TypeParamId(impl, 0) maps to $0 via combined_var_map
+    // Result: List[$0]
+
+    let resolved_el_ty = resolve_ty(&el_param.ty, &resolutions, &combined_var_map);
+    // Result: $0
+
+    // Build scheme from resolved types
+    let scheme = TyScheme::new(
+        Ty::Func(vec![resolved_self_ty, resolved_el_ty], Box::new(Ty::unit())),
+        vec![$0],  // Quantified vars
+        vec![],    // Qualifiers
+    );
+}
+```
+
+**Why caller handles inheritance (not the query):**
+1. `mapped_def_types` is a pure function of a single definition - simpler and more cacheable
+2. The caller already knows the parent-child relationship (impl → method)
+3. No need for the query to track "parent def" relationships
+
+- [ ] Update `struct_def` to use `resolve_ty` for field types
+- [ ] Update `trait_def` to use `resolve_ty` for method signatures (combining trait + method var_maps)
+- [ ] Update `impl_def` to use `resolve_ty` for method signatures (combining impl + method var_maps)
+- [ ] Update `annotated_scheme` to use `resolve_ty`
+- [ ] **Validate**: End-to-end test with `impl List['a] { fn push(...) }` verifying inherited type params
 
 **Why TypeParamId is more robust than string keys:**
 
@@ -5457,7 +5582,7 @@ Consumers that previously looked up by string name now look up by `TypeParamId`:
 - [ ] **Shadowing test**: Verify shadowed type parameters (e.g., `trait Foo[T] { fn bar[T](...) }`) correctly map to distinct `TypeParamId`s with correct origins
 - [ ] **Integration test**: Verify `struct_def` correctly resolves generic field types using the new mapping
 
-**Deliverable**: `name_resolutions(FileId)` returns complete resolution information for all type references in all definitions. `mapped_def_types` produces `TypeParamId`-keyed mappings with forward lookup for resolution, reverse lookup for display, and `origin_of()` for diagnostic tracing. Downstream queries (`struct_def`, `trait_def`, `impl_def`) use resolutions + mappings to produce fully-qualified types with schema variables.
+**Deliverable**: `name_resolutions(FileId)` returns complete resolution information for all type references in all definitions. `mapped_def_types` produces `TypeParamId`-keyed mappings with forward lookup for resolution, reverse lookup for display, and `origin_of()` for diagnostic tracing. The `resolve_ty` function transforms `Parsed<Ty>` into resolved `Ty` using resolutions and var_maps. Downstream queries (`struct_def`, `trait_def`, `impl_def`) combine parent + own var_maps and call `resolve_ty` to produce fully-qualified types with schema variables.
 
 ---
 

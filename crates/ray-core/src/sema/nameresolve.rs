@@ -330,6 +330,121 @@ pub fn build_type_param_scope(owner: DefId, params: &[TyVar]) -> HashMap<String,
         .collect()
 }
 
+/// Extract type variables from TypeParams.
+///
+/// TypeParams contains `Vec<Parsed<Ty>>` where each Ty should be a `Ty::Var`.
+/// This extracts the TyVar from each.
+fn extract_ty_vars_from_type_params(ty_params: &Option<crate::ast::TypeParams>) -> Vec<TyVar> {
+    ty_params
+        .as_ref()
+        .map(|tp| {
+            tp.tys
+                .iter()
+                .filter_map(|parsed_ty| {
+                    if let Ty::Var(ty_var) = parsed_ty.value() {
+                        Some(ty_var.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Resolve type references in a function signature.
+///
+/// Resolves:
+/// - Parameter types (from `FnParam.parsed_ty()`)
+/// - Return type (`FuncSig.ret_ty`)
+/// - Qualifier/where-clause types (`FuncSig.qualifiers`)
+///
+/// The method's own type parameters are combined with parent type parameters
+/// to form the complete scope for resolution.
+pub fn resolve_func_sig(
+    method_def_id: DefId,
+    sig: &FuncSig,
+    parent_type_params: &HashMap<String, TypeParamId>,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    // Method may have its own type parameters
+    let mut type_params = parent_type_params.clone();
+    let method_ty_vars = extract_ty_vars_from_type_params(&sig.ty_params);
+    let method_params = build_type_param_scope(method_def_id, &method_ty_vars);
+    type_params.extend(method_params);
+
+    // Resolve parameter types
+    for param in &sig.params {
+        if let Some(parsed_ty_scheme) = param.value.parsed_ty() {
+            resolve_parsed_ty_scheme(
+                parsed_ty_scheme,
+                &type_params,
+                imports,
+                exports,
+                import_exports,
+                resolutions,
+            );
+        }
+    }
+
+    // Resolve return type
+    if let Some(parsed_ty) = &sig.ret_ty {
+        resolve_parsed_ty(
+            parsed_ty,
+            &type_params,
+            imports,
+            exports,
+            import_exports,
+            resolutions,
+        );
+    }
+
+    // Resolve where clause / qualifiers
+    for qualifier in &sig.qualifiers {
+        resolve_parsed_ty(
+            qualifier,
+            &type_params,
+            imports,
+            exports,
+            import_exports,
+            resolutions,
+        );
+    }
+}
+
+/// Resolves all type references in a Parsed<TyScheme> using its synthetic IDs.
+///
+/// Similar to resolve_parsed_ty but works with TyScheme which wraps a Ty.
+pub fn resolve_parsed_ty_scheme(
+    parsed_ty_scheme: &Parsed<TyScheme>,
+    type_params: &HashMap<String, TypeParamId>,
+    imports: &HashMap<String, ModulePath>,
+    exports: &HashMap<String, DefTarget>,
+    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    resolutions: &mut HashMap<NodeId, Resolution>,
+) {
+    let synthetic_ids = parsed_ty_scheme.synthetic_ids();
+    let ty_refs = parsed_ty_scheme.value().mono().flatten();
+
+    // The synthetic_ids should match the flattened type refs
+    // If they don't match, we skip resolution (this can happen for empty types)
+    if synthetic_ids.len() != ty_refs.len() {
+        return;
+    }
+
+    for (node_id, ty) in synthetic_ids.iter().zip(ty_refs.iter()) {
+        let resolution = if let Some(name) = extract_type_name(ty) {
+            resolve_type_name(&name, type_params, imports, exports, import_exports)
+        } else {
+            Resolution::Error
+        };
+        resolutions.insert(*node_id, resolution);
+    }
+}
+
 /// Resolve a type name to a Resolution.
 ///
 /// Checks in order:
@@ -1174,10 +1289,12 @@ mod tests {
 
     use crate::{
         ast::{
-            Assign, Block, Closure as AstClosure, Decl, Expr, File, Func, Literal, Name, Node,
-            Pattern as AstPattern, Sequence,
+            Assign, Block, Closure as AstClosure, Decl, Expr, File, FnParam, Func, FuncSig,
+            Literal, Name, Node, Pattern as AstPattern, Sequence,
         },
-        sema::{build_type_param_scope, resolve_names_in_file, resolve_parsed_ty},
+        sema::{
+            build_type_param_scope, resolve_func_sig, resolve_names_in_file, resolve_parsed_ty,
+        },
     };
 
     fn test_file(decls: Vec<Node<Decl>>, stmts: Vec<Node<Expr>>) -> File {
@@ -1721,5 +1838,188 @@ mod tests {
 
         assert_eq!(scope_1.get("'x").unwrap().owner, def_id_1);
         assert_eq!(scope_2.get("'x").unwrap().owner, def_id_2);
+    }
+
+    // =========================================================================
+    // Tests for resolve_func_sig
+    // =========================================================================
+
+    fn make_func_sig(path: &str) -> FuncSig {
+        FuncSig {
+            path: Node::new(Path::from(path)),
+            params: vec![],
+            ty_params: None,
+            ret_ty: None,
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: false,
+            has_body: true,
+            span: Span::default(),
+        }
+    }
+
+    #[test]
+    fn resolve_func_sig_empty_signature() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let sig = make_func_sig("test::f");
+        let parent_type_params = HashMap::new();
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_func_sig(
+            def_id,
+            &sig,
+            &parent_type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        // Empty signature should produce no resolutions
+        assert!(resolutions.is_empty());
+    }
+
+    #[test]
+    fn resolve_func_sig_resolves_return_type() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a return type: Point
+        let ret_ty = Ty::con("Point");
+        let ret_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![ret_node_id]);
+
+        let mut sig = make_func_sig("test::f");
+        sig.ret_ty = Some(parsed_ret_ty);
+
+        // Set up exports for Point
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let parent_type_params = HashMap::new();
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_func_sig(
+            def_id,
+            &sig,
+            &parent_type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        assert_eq!(
+            resolutions.get(&ret_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Return type should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_func_sig_resolves_qualifier() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a qualifier: ToStr['a]
+        let qualifier_ty = Ty::proj("ToStr", vec![Ty::var("'a")]);
+        let tostr_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_qualifier = Parsed::new(qualifier_ty, Source::default());
+        parsed_qualifier.set_synthetic_ids(vec![tostr_node_id, a_node_id]);
+
+        let mut sig = make_func_sig("test::f");
+        sig.qualifiers = vec![parsed_qualifier];
+
+        // Set up exports for ToStr
+        let tostr_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("ToStr".to_string(), DefTarget::Workspace(tostr_def_id));
+
+        // Set up parent type params for 'a
+        let mut parent_type_params = HashMap::new();
+        let a_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        parent_type_params.insert("'a".to_string(), a_type_param_id);
+
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_func_sig(
+            def_id,
+            &sig,
+            &parent_type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        assert_eq!(
+            resolutions.get(&tostr_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(tostr_def_id))),
+            "Qualifier trait should resolve to export"
+        );
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(a_type_param_id)),
+            "Type parameter in qualifier should resolve to parent type param"
+        );
+    }
+
+    #[test]
+    fn resolve_func_sig_resolves_param_type() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create a parameter with type annotation: x: Point
+        let param_ty = Ty::con("Point");
+        let param_node_id = NodeId::new();
+        let mut parsed_ty_scheme = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_ty_scheme.set_synthetic_ids(vec![param_node_id]);
+
+        let mut name = Name::new("x");
+        name.ty = Some(parsed_ty_scheme);
+        let param = Node::new(FnParam::Name(name));
+
+        let mut sig = make_func_sig("test::f");
+        sig.params = vec![param];
+
+        // Set up exports for Point
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let parent_type_params = HashMap::new();
+        let imports = HashMap::new();
+        let mut resolutions = HashMap::new();
+
+        resolve_func_sig(
+            def_id,
+            &sig,
+            &parent_type_params,
+            &imports,
+            &exports,
+            &|_| None,
+            &mut resolutions,
+        );
+
+        assert_eq!(
+            resolutions.get(&param_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Parameter type should resolve to export"
+        );
     }
 }
