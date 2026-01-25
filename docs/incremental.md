@@ -5138,7 +5138,7 @@ The existing `Ty::flatten()` no longer includes the head of `Ty::Proj` after the
 
 ##### Step 3: Implement build_type_param_scope helper
 
-- [ ] Implement `build_type_param_scope` helper:
+- [x] Implement `build_type_param_scope` helper:
   ```rust
   fn build_type_param_scope(owner: DefId, params: &[TypeParam]) -> HashMap<String, TypeParamId> {
       params.iter().enumerate().map(|(idx, param)| {

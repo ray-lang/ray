@@ -8,7 +8,7 @@ use ray_shared::{
     pathlib::{ModulePath, Path},
     resolution::{DefTarget, Resolution},
     span::{Sourced, parsed::Parsed},
-    ty::Ty,
+    ty::{Ty, TyVar},
     type_param_id::TypeParamId,
 };
 use ray_typing::types::TyScheme;
@@ -306,6 +306,28 @@ fn extract_type_name(ty: &Ty) -> Option<String> {
             .and_then(|p| p.item_name())
             .map(|s| s.to_string()),
     }
+}
+
+/// Build a type parameter scope from a list of type variables.
+///
+/// Maps each type variable name (e.g., "'a", "'b") to a TypeParamId
+/// with the given owner DefId and sequential indices.
+pub fn build_type_param_scope(owner: DefId, params: &[TyVar]) -> HashMap<String, TypeParamId> {
+    params
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, ty_var)| {
+            ty_var.path().name().map(|name| {
+                (
+                    name,
+                    TypeParamId {
+                        owner,
+                        index: idx as u32,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// Resolve a type name to a Resolution.
@@ -1145,7 +1167,7 @@ mod tests {
         pathlib::{FilePath, Path},
         resolution::{DefTarget, Resolution},
         span::{Source, Span, parsed::Parsed},
-        ty::Ty,
+        ty::{Ty, TyVar},
         type_param_id::TypeParamId,
     };
     use ray_typing::types::TyScheme;
@@ -1155,7 +1177,7 @@ mod tests {
             Assign, Block, Closure as AstClosure, Decl, Expr, File, Func, Literal, Name, Node,
             Pattern as AstPattern, Sequence,
         },
-        sema::{resolve_names_in_file, resolve_parsed_ty},
+        sema::{build_type_param_scope, resolve_names_in_file, resolve_parsed_ty},
     };
 
     fn test_file(decls: Vec<Node<Decl>>, stmts: Vec<Node<Expr>>) -> File {
@@ -1624,5 +1646,80 @@ mod tests {
             Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
             "Int should resolve to export"
         );
+    }
+
+    // =========================================================================
+    // Tests for build_type_param_scope
+    // =========================================================================
+
+    #[test]
+    fn build_type_param_scope_empty_params() {
+        let def_id = DefId::new(FileId(0), 0);
+        let params: Vec<TyVar> = vec![];
+
+        let scope = build_type_param_scope(def_id, &params);
+
+        assert!(scope.is_empty(), "Empty params should produce empty scope");
+    }
+
+    #[test]
+    fn build_type_param_scope_single_param() {
+        let def_id = DefId::new(FileId(0), 0);
+        let params = vec![TyVar::new("'a")];
+
+        let scope = build_type_param_scope(def_id, &params);
+
+        assert_eq!(scope.len(), 1);
+        assert_eq!(
+            scope.get("'a"),
+            Some(&TypeParamId {
+                owner: def_id,
+                index: 0
+            })
+        );
+    }
+
+    #[test]
+    fn build_type_param_scope_multiple_params() {
+        let def_id = DefId::new(FileId(0), 0);
+        let params = vec![TyVar::new("'a"), TyVar::new("'b"), TyVar::new("'c")];
+
+        let scope = build_type_param_scope(def_id, &params);
+
+        assert_eq!(scope.len(), 3);
+        assert_eq!(
+            scope.get("'a"),
+            Some(&TypeParamId {
+                owner: def_id,
+                index: 0
+            })
+        );
+        assert_eq!(
+            scope.get("'b"),
+            Some(&TypeParamId {
+                owner: def_id,
+                index: 1
+            })
+        );
+        assert_eq!(
+            scope.get("'c"),
+            Some(&TypeParamId {
+                owner: def_id,
+                index: 2
+            })
+        );
+    }
+
+    #[test]
+    fn build_type_param_scope_preserves_owner() {
+        let def_id_1 = DefId::new(FileId(0), 1);
+        let def_id_2 = DefId::new(FileId(1), 2);
+        let params = vec![TyVar::new("'x")];
+
+        let scope_1 = build_type_param_scope(def_id_1, &params);
+        let scope_2 = build_type_param_scope(def_id_2, &params);
+
+        assert_eq!(scope_1.get("'x").unwrap().owner, def_id_1);
+        assert_eq!(scope_2.get("'x").unwrap().owner, def_id_2);
     }
 }
