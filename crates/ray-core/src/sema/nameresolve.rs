@@ -379,7 +379,7 @@ pub fn resolve_func_sig(
     // Resolve parameter types
     for param in &sig.params {
         if let Some(parsed_ty_scheme) = param.value.parsed_ty() {
-            resolve_parsed_ty_scheme(
+            collect_type_resolutions_from_scheme(
                 parsed_ty_scheme,
                 &type_params,
                 imports,
@@ -392,7 +392,7 @@ pub fn resolve_func_sig(
 
     // Resolve return type
     if let Some(parsed_ty) = &sig.ret_ty {
-        resolve_parsed_ty(
+        collect_type_resolutions(
             parsed_ty,
             &type_params,
             imports,
@@ -404,7 +404,7 @@ pub fn resolve_func_sig(
 
     // Resolve where clause / qualifiers
     for qualifier in &sig.qualifiers {
-        resolve_parsed_ty(
+        collect_type_resolutions(
             qualifier,
             &type_params,
             imports,
@@ -417,8 +417,8 @@ pub fn resolve_func_sig(
 
 /// Resolves all type references in a Parsed<TyScheme> using its synthetic IDs.
 ///
-/// Similar to resolve_parsed_ty but works with TyScheme which wraps a Ty.
-pub fn resolve_parsed_ty_scheme(
+/// Similar to collect_type_resolutions but works with TyScheme which wraps a Ty.
+pub fn collect_type_resolutions_from_scheme(
     parsed_ty_scheme: &Parsed<TyScheme>,
     type_params: &HashMap<String, TypeParamId>,
     imports: &HashMap<String, ModulePath>,
@@ -498,7 +498,7 @@ fn resolve_type_name(
 /// - Ty::Const/Ty::Proj (nominal types): look up in imports/exports via resolve_type_name
 ///
 /// The resolutions are inserted into the provided HashMap.
-pub fn resolve_parsed_ty(
+pub fn collect_type_resolutions(
     parsed_ty: &Parsed<Ty>,
     type_params: &HashMap<String, TypeParamId>,
     imports: &HashMap<String, ModulePath>,
@@ -1293,7 +1293,8 @@ mod tests {
             Literal, Name, Node, Pattern as AstPattern, Sequence,
         },
         sema::{
-            build_type_param_scope, resolve_func_sig, resolve_names_in_file, resolve_parsed_ty,
+            build_type_param_scope, collect_type_resolutions, resolve_func_sig,
+            resolve_names_in_file,
         },
     };
 
@@ -1589,11 +1590,11 @@ mod tests {
     }
 
     // =========================================================================
-    // Tests for resolve_parsed_ty
+    // Tests for collect_type_resolutions
     // =========================================================================
 
     #[test]
-    fn resolve_parsed_ty_resolves_simple_type_to_export() {
+    fn collect_type_resolutions_resolves_simple_type_to_export() {
         // Type annotation: Point
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -1613,7 +1614,7 @@ mod tests {
         let imports = HashMap::new();
         let mut resolutions = HashMap::new();
 
-        resolve_parsed_ty(
+        collect_type_resolutions(
             &parsed_ty,
             &type_params,
             &imports,
@@ -1630,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parsed_ty_resolves_generic_type_with_type_param() {
+    fn collect_type_resolutions_resolves_generic_type_with_type_param() {
         // Type annotation: List['a] where List is a struct and 'a is a type parameter
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -1658,7 +1659,7 @@ mod tests {
         let imports = HashMap::new();
         let mut resolutions = HashMap::new();
 
-        resolve_parsed_ty(
+        collect_type_resolutions(
             &parsed_ty,
             &type_params,
             &imports,
@@ -1682,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parsed_ty_unresolved_returns_error() {
+    fn collect_type_resolutions_unresolved_returns_error() {
         // Type annotation: Unknown (not in scope)
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -1697,7 +1698,7 @@ mod tests {
         let imports = HashMap::new();
         let mut resolutions = HashMap::new();
 
-        resolve_parsed_ty(
+        collect_type_resolutions(
             &parsed_ty,
             &type_params,
             &imports,
@@ -1714,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parsed_ty_nested_generic_types() {
+    fn collect_type_resolutions_nested_generic_types() {
         // Type annotation: Dict[String, Int] where Dict, String, Int are all structs
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -1739,7 +1740,7 @@ mod tests {
         let imports = HashMap::new();
         let mut resolutions = HashMap::new();
 
-        resolve_parsed_ty(
+        collect_type_resolutions(
             &parsed_ty,
             &type_params,
             &imports,
