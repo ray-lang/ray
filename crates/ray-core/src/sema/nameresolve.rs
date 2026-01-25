@@ -1,4 +1,5 @@
-use std::{collections::HashMap, ops::DerefMut};
+use std::collections::{HashMap, HashSet};
+use std::ops::DerefMut;
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
@@ -24,6 +25,68 @@ use crate::{
     sourcemap::SourceMap,
 };
 
+pub struct ResolveContext<'a> {
+    imports: &'a HashMap<String, ModulePath>,
+    exports: &'a HashMap<String, DefTarget>,
+    import_exports: &'a dyn Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    current_def: Option<DefId>,
+    local_counter: u32,
+    local_scopes: Vec<HashMap<String, LocalBindingId>>,
+    resolutions: HashMap<NodeId, Resolution>,
+    /// NodeIds of FnSig decls that have been resolved by their parent (trait/extern)
+    /// to avoid re-processing when walked as standalone items
+    resolved_fnsigs: HashSet<NodeId>,
+}
+
+impl<'a> ResolveContext<'a> {
+    fn new(
+        imports: &'a HashMap<String, ModulePath>,
+        exports: &'a HashMap<String, DefTarget>,
+        import_exports: &'a dyn Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    ) -> ResolveContext<'a> {
+        ResolveContext {
+            imports,
+            exports,
+            import_exports,
+            current_def: None,
+            local_counter: 0,
+            local_scopes: Vec::new(),
+            resolutions: HashMap::new(),
+            resolved_fnsigs: HashSet::new(),
+        }
+    }
+
+    fn lookup_local(&self, name: &str) -> Option<LocalBindingId> {
+        for scope in self.local_scopes.iter().rev() {
+            if let Some(&local_id) = scope.get(name) {
+                return Some(local_id);
+            }
+        }
+        None
+    }
+
+    fn bind_local(&mut self, node_id: NodeId, name: String) {
+        debug_assert!(self.current_def.is_some());
+        let Some(owner_def_id) = self.current_def else {
+            return;
+        };
+
+        let local_id = LocalBindingId::new(owner_def_id, self.local_counter);
+        self.local_counter += 1;
+        if let Some(scope) = self.local_scopes.last_mut() {
+            scope.insert(name, local_id);
+        }
+        self.resolutions
+            .insert(node_id, Resolution::Local(local_id));
+    }
+
+    fn bind_locals(&mut self, iter: impl Iterator<Item = (NodeId, String)>) {
+        for (node_id, name) in iter {
+            self.bind_local(node_id, name);
+        }
+    }
+}
+
 /// Resolve names in a file AST and return the resolution table.
 ///
 /// This is a pure function that walks the AST read-only and returns a mapping
@@ -42,156 +105,51 @@ pub fn resolve_names_in_file(
     exports: &HashMap<String, DefTarget>,
     import_exports: impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
 ) -> HashMap<NodeId, Resolution> {
-    let mut resolutions = HashMap::new();
-    let mut local_scopes: Vec<HashMap<String, LocalBindingId>> = vec![HashMap::new()];
-    let mut current_def: Option<DefId> = None;
-    let mut local_counter: u32 = 0;
+    let mut ctx = ResolveContext::new(imports, exports, &import_exports);
 
     for item in walk_file(ast) {
         match item {
             WalkItem::EnterScope(WalkScopeKind::Function) => {
-                local_scopes.push(HashMap::new());
+                ctx.local_scopes.push(HashMap::new());
             }
             WalkItem::EnterScope(WalkScopeKind::Closure | WalkScopeKind::Block) => {
-                local_scopes.push(HashMap::new());
+                ctx.local_scopes.push(HashMap::new());
             }
             WalkItem::ExitScope(_) => {
-                local_scopes.pop();
+                ctx.local_scopes.pop();
             }
             WalkItem::Decl(decl) => {
-                if let Decl::Func(func) = &decl.value {
-                    current_def = Some(decl.id.owner);
-                    local_counter = 0;
-                    // Bind function parameters
-                    for param in &func.sig.params {
-                        if let Some(name) = param.value.name().name() {
-                            if let Some(owner) = current_def {
-                                let local_id = LocalBindingId::new(owner, local_counter);
-                                local_counter += 1;
-                                if let Some(scope) = local_scopes.last_mut() {
-                                    scope.insert(name, local_id);
-                                }
-                                resolutions.insert(param.id, Resolution::Local(local_id));
-                            }
-                        }
-                    }
-                    // Resolve type references in function signature
-                    resolve_func_type_refs(
-                        decl.id.owner,
-                        func,
-                        imports,
-                        exports,
-                        &import_exports,
-                        &mut resolutions,
-                    );
-                } else if let Decl::Struct(struct_decl) = &decl.value {
-                    // Resolve type references in struct field types
-                    resolve_struct_type_refs(
-                        decl.id.owner,
-                        struct_decl,
-                        imports,
-                        exports,
-                        &import_exports,
-                        &mut resolutions,
-                    );
-                } else if let Decl::Trait(trait_decl) = &decl.value {
-                    // Resolve type references in trait definition
-                    resolve_trait_type_refs(
-                        decl.id.owner,
-                        trait_decl,
-                        imports,
-                        exports,
-                        &import_exports,
-                        &mut resolutions,
-                    );
-                } else if let Decl::Impl(imp) = &decl.value {
-                    // Resolve type references in impl block
-                    resolve_impl_type_refs(
-                        decl.id.owner,
-                        imp,
-                        imports,
-                        exports,
-                        &import_exports,
-                        &mut resolutions,
-                    );
-                } else if let Decl::TypeAlias(_name, aliased_ty) = &decl.value {
-                    // Resolve type references in type alias
-                    resolve_type_alias_type_refs(
-                        aliased_ty,
-                        imports,
-                        exports,
-                        &import_exports,
-                        &mut resolutions,
-                    );
-                } else if let Decl::Mutable(name_node) | Decl::Name(name_node) = &decl.value {
-                    // Resolve type annotation in binding declaration (e.g., `x: Int` or `mut x: String`)
-                    if let Some(parsed_ty_scheme) = &name_node.value.ty {
-                        // Bindings don't have type parameters
-                        let type_params = HashMap::new();
-                        collect_type_resolutions_from_scheme(
-                            parsed_ty_scheme,
-                            &type_params,
-                            imports,
-                            exports,
-                            &import_exports,
-                            &mut resolutions,
-                        );
-                    }
-                } else if let Decl::Declare(assign) = &decl.value {
-                    // Resolve type annotation in assignment with declaration (e.g., `x: Int = 5`)
-                    if let Pattern::Name(name) = &assign.lhs.value {
-                        if let Some(parsed_ty_scheme) = &name.ty {
-                            // Bindings don't have type parameters
-                            let type_params = HashMap::new();
-                            collect_type_resolutions_from_scheme(
-                                parsed_ty_scheme,
-                                &type_params,
-                                imports,
-                                exports,
-                                &import_exports,
-                                &mut resolutions,
-                            );
-                        }
-                    }
-                }
+                resolve_names_in_decl(decl, &mut ctx);
             }
             WalkItem::Func(func) => {
                 // This is emitted for impl methods
-                current_def = Some(func.id.owner);
-                local_counter = 0;
+                ctx.current_def = Some(func.id.owner);
+                ctx.local_counter = 0;
+
                 // Bind function parameters
-                for param in &func.sig.params {
-                    if let Some(name) = param.value.name().name() {
-                        if let Some(owner) = current_def {
-                            let local_id = LocalBindingId::new(owner, local_counter);
-                            local_counter += 1;
-                            if let Some(scope) = local_scopes.last_mut() {
-                                scope.insert(name, local_id);
-                            }
-                            resolutions.insert(param.id, Resolution::Local(local_id));
-                        }
-                    }
-                }
+                resolve_names_in_func_params(&func.sig, &mut ctx);
             }
             WalkItem::Expr(expr) => {
                 match &expr.value {
                     Expr::Name(name) => {
                         let name_str = name.path.name().unwrap_or_default();
                         // Check locals first
-                        let resolution = lookup_local(&local_scopes, &name_str)
+                        let resolution = ctx
+                            .lookup_local(&name_str)
                             .map(Resolution::Local)
                             .or_else(|| exports.get(&name_str).cloned().map(Resolution::Def));
                         if let Some(res) = resolution {
-                            resolutions.insert(expr.id, res);
+                            ctx.resolutions.insert(expr.id, res);
                         }
                     }
                     Expr::Path(path) if path.len() == 1 => {
                         let name_str = path.name().unwrap_or_default();
-                        let resolution = lookup_local(&local_scopes, &name_str)
+                        let resolution = ctx
+                            .lookup_local(&name_str)
                             .map(Resolution::Local)
                             .or_else(|| exports.get(&name_str).cloned().map(Resolution::Def));
                         if let Some(res) = resolution {
-                            resolutions.insert(expr.id, res);
+                            ctx.resolutions.insert(expr.id, res);
                         }
                     }
                     Expr::Path(path) if path.len() >= 2 => {
@@ -207,7 +165,7 @@ pub fn resolve_names_in_file(
                                     let second_segment =
                                         name_vec.get(1).cloned().unwrap_or_default();
                                     if let Some(target) = imported_exports.get(&second_segment) {
-                                        resolutions
+                                        ctx.resolutions
                                             .insert(expr.id, Resolution::Def(target.clone()));
                                     }
                                 }
@@ -216,20 +174,17 @@ pub fn resolve_names_in_file(
                     }
                     Expr::Closure(closure) => {
                         // Bind closure parameters
-                        for arg in &closure.args.items {
-                            if let Expr::Name(name) = &arg.value {
-                                if let Some(n) = name.path.name() {
-                                    if let Some(owner) = current_def {
-                                        let local_id = LocalBindingId::new(owner, local_counter);
-                                        local_counter += 1;
-                                        if let Some(scope) = local_scopes.last_mut() {
-                                            scope.insert(n, local_id);
-                                        }
-                                        resolutions.insert(arg.id, Resolution::Local(local_id));
-                                    }
-                                }
-                            }
-                        }
+                        ctx.bind_locals(closure.args.items.iter().filter_map(|arg| {
+                            let Expr::Name(name) = &arg.value else {
+                                return None;
+                            };
+
+                            let Some(name) = name.path.name() else {
+                                return None;
+                            };
+
+                            Some((arg.id, name))
+                        }));
                     }
                     Expr::Curly(curly) => {
                         // Resolve the struct type name for curly expressions like `Point { x, y }`
@@ -238,7 +193,7 @@ pub fn resolve_names_in_file(
                             if let Some(name_str) = parsed_path.name() {
                                 // Look up the struct in exports
                                 if let Some(target) = exports.get(&name_str).cloned() {
-                                    resolutions.insert(expr.id, Resolution::Def(target));
+                                    ctx.resolutions.insert(expr.id, Resolution::Def(target));
                                 }
                             }
                         }
@@ -248,36 +203,101 @@ pub fn resolve_names_in_file(
             }
             WalkItem::Pattern(pat) => {
                 // Handle assignment patterns that introduce new bindings
-                for node in pat.paths() {
+                ctx.bind_locals(pat.paths().into_iter().filter_map(|node| {
                     let (path, is_lvalue) = node.value;
-                    if !is_lvalue {
-                        if let Some(name) = path.name() {
-                            if let Some(owner) = current_def {
-                                let local_id = LocalBindingId::new(owner, local_counter);
-                                local_counter += 1;
-                                if let Some(scope) = local_scopes.last_mut() {
-                                    scope.insert(name, local_id);
-                                }
-                                resolutions.insert(node.id, Resolution::Local(local_id));
-                            }
-                        }
+                    if is_lvalue {
+                        return None;
                     }
-                }
+                    let Some(name) = path.name() else {
+                        return None;
+                    };
+
+                    Some((node.id, name))
+                }));
             }
             _ => {}
         }
     }
 
-    resolutions
+    ctx.resolutions
 }
 
-fn lookup_local(scopes: &[HashMap<String, LocalBindingId>], name: &str) -> Option<LocalBindingId> {
-    for scope in scopes.iter().rev() {
-        if let Some(&local_id) = scope.get(name) {
-            return Some(local_id);
+fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
+    match &decl.value {
+        Decl::Extern(_ext) => {
+            // The walker automatically visits the inner decl (ext.decl_node()),
+            // and FnSig handles its own type params via sig.ty_params, so we
+            // don't need to do anything special here.
+        }
+        Decl::Func(func) => {
+            ctx.current_def = Some(decl.id.owner);
+            ctx.local_counter = 0;
+
+            resolve_names_in_func_sig(decl.id.owner, &func.sig, ctx);
+        }
+        Decl::FnSig(sig) => {
+            // Skip if already resolved by parent (trait method or extern function)
+            // to avoid overwriting resolutions that were done with parent's type params
+            if ctx.resolved_fnsigs.contains(&decl.id) {
+                return;
+            }
+            ctx.current_def = Some(decl.id.owner);
+            ctx.local_counter = 0;
+            resolve_names_in_func_sig(decl.id.owner, sig, ctx);
+        }
+        Decl::Struct(struct_decl) => {
+            // Resolve type references in struct field types
+            resolve_struct_type_refs(decl.id.owner, struct_decl, ctx);
+        }
+        Decl::Trait(trait_decl) => {
+            // Resolve type references in trait definition
+            resolve_trait_type_refs(decl.id.owner, trait_decl, ctx);
+        }
+        Decl::Impl(imp) => {
+            // Resolve type references in impl block
+            resolve_impl_type_refs(decl.id.owner, imp, ctx);
+        }
+        Decl::TypeAlias(_name, aliased_ty) => {
+            // Resolve type references in type alias
+            resolve_type_alias_type_refs(aliased_ty, ctx);
+        }
+        Decl::Mutable(name_node) | Decl::Name(name_node) => {
+            // Resolve type annotation in binding declaration (e.g., `x: Int` or `mut x: String`)
+            if let Some(parsed_ty_scheme) = &name_node.value.ty {
+                // Bindings don't have type parameters
+                let type_params = HashMap::new();
+                collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
+            }
+        }
+        Decl::Declare(assign) => {
+            // Resolve type annotation in assignment with declaration (e.g., `x: Int = 5`)
+            if let Pattern::Name(name) = &assign.lhs.value {
+                if let Some(parsed_ty_scheme) = &name.ty {
+                    // Bindings don't have type parameters
+                    let type_params = HashMap::new();
+                    collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
+                }
+            }
         }
     }
-    None
+}
+
+fn resolve_names_in_func_sig(owner_def_id: DefId, sig: &FuncSig, ctx: &mut ResolveContext<'_>) {
+    // Bind function parameters
+    resolve_names_in_func_params(sig, ctx);
+
+    // Resolve type references in function signature
+    resolve_func_type_refs(owner_def_id, sig, ctx);
+}
+
+fn resolve_names_in_func_params(sig: &FuncSig, ctx: &mut ResolveContext<'_>) {
+    ctx.bind_locals(sig.params.iter().filter_map(|param| {
+        if let Some(name) = param.name().name() {
+            Some((param.id, name))
+        } else {
+            None
+        }
+    }))
 }
 
 /// Resolve type references in a struct definition.
@@ -285,14 +305,7 @@ fn lookup_local(scopes: &[HashMap<String, LocalBindingId>], name: &str) -> Optio
 /// For `struct Foo['a] { x: 'a, y: Bar }`, this resolves:
 /// - Type parameter `'a` in field `x` to TypeParam
 /// - Type `Bar` in field `y` to its definition
-fn resolve_struct_type_refs(
-    def_id: DefId,
-    struct_decl: &Struct,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
-) {
+fn resolve_struct_type_refs(def_id: DefId, struct_decl: &Struct, ctx: &mut ResolveContext<'_>) {
     // Build type parameter scope from struct's type params
     let ty_vars = extract_ty_vars_from_type_params(&struct_decl.ty_params);
     let type_params = build_type_param_scope(def_id, &ty_vars);
@@ -301,14 +314,7 @@ fn resolve_struct_type_refs(
     if let Some(fields) = &struct_decl.fields {
         for field in fields {
             if let Some(parsed_ty_scheme) = &field.value.ty {
-                collect_type_resolutions_from_scheme(
-                    parsed_ty_scheme,
-                    &type_params,
-                    imports,
-                    exports,
-                    import_exports,
-                    resolutions,
-                );
+                collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
             }
         }
     }
@@ -321,42 +327,28 @@ fn resolve_struct_type_refs(
 /// - Method signature type references (parameters, return types, qualifiers)
 ///
 /// Type parameters from the trait (e.g., `'a`) are in scope for all resolutions.
-fn resolve_trait_type_refs(
-    def_id: DefId,
-    trait_decl: &Trait,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
-) {
+fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveContext<'_>) {
     // Build type parameter scope from trait's type (e.g., Eq['a] -> {'a: TypeParamId})
     let ty_vars = trait_decl.ty.value().type_params();
     let type_params = build_type_param_scope(def_id, &ty_vars);
 
     // Resolve super trait if present
     if let Some(super_trait) = &trait_decl.super_trait {
-        collect_type_resolutions(
-            super_trait,
-            &type_params,
-            imports,
-            exports,
-            import_exports,
-            resolutions,
-        );
+        collect_type_resolutions(super_trait, &type_params, ctx);
     }
 
-    // Resolve method signatures
+    // Resolve method signatures and mark them as resolved so the walker
+    // doesn't re-process them without the trait's type params in scope
     for field in &trait_decl.fields {
         if let Decl::FnSig(sig) = &field.value {
             resolve_func_sig(
                 field.id.owner,
                 sig,
                 &type_params, // Trait's type params are in scope
-                imports,
-                exports,
-                import_exports,
-                resolutions,
+                ctx,
             );
+            // Mark this FnSig as already resolved
+            ctx.resolved_fnsigs.insert(field.id);
         }
     }
 }
@@ -370,14 +362,7 @@ fn resolve_trait_type_refs(
 /// - Method signatures (parameters, return types, qualifiers)
 ///
 /// For `impl object Point`, resolves the implementing type and methods.
-fn resolve_impl_type_refs(
-    def_id: DefId,
-    imp: &Impl,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
-) {
+fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_>) {
     // Build type parameter scope from impl's type (e.g., impl Eq['a] -> {'a: TypeParamId})
     // For most impls like `impl ToStr[Point]`, there are no type params at impl level
     let ty_vars = imp.ty.value().type_params();
@@ -385,25 +370,11 @@ fn resolve_impl_type_refs(
 
     // Resolve the impl type (trait and implementing type) with ALL nested type args
     // This handles cases like `impl Trait[Dict[K, V]]` where K, V need resolution
-    collect_type_resolutions(
-        &imp.ty,
-        &type_params,
-        imports,
-        exports,
-        import_exports,
-        resolutions,
-    );
+    collect_type_resolutions(&imp.ty, &type_params, ctx);
 
     // Resolve qualifiers (where clause)
     for qualifier in &imp.qualifiers {
-        collect_type_resolutions(
-            qualifier,
-            &type_params,
-            imports,
-            exports,
-            import_exports,
-            resolutions,
-        );
+        collect_type_resolutions(qualifier, &type_params, ctx);
     }
 
     // Resolve method signatures
@@ -413,10 +384,7 @@ fn resolve_impl_type_refs(
                 func.id.owner,
                 &func.value.sig,
                 &type_params, // Impl's type params are in scope for methods
-                imports,
-                exports,
-                import_exports,
-                resolutions,
+                ctx,
             );
         }
     }
@@ -429,28 +397,13 @@ fn resolve_impl_type_refs(
 /// - Parameter types (e.g., `Bar` to its definition)
 /// - Return type (e.g., `List` to its definition)
 /// - Qualifier/where-clause types
-fn resolve_func_type_refs(
-    def_id: DefId,
-    func: &Func,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
-) {
+fn resolve_func_type_refs(def_id: DefId, sig: &FuncSig, ctx: &mut ResolveContext<'_>) {
     // Build type parameter scope from function's type params
-    let ty_vars = extract_ty_vars_from_type_params(&func.sig.ty_params);
+    let ty_vars = extract_ty_vars_from_type_params(&sig.ty_params);
     let type_params = build_type_param_scope(def_id, &ty_vars);
 
     // Use resolve_func_sig to handle the signature resolution
-    resolve_func_sig(
-        def_id,
-        &func.sig,
-        &type_params,
-        imports,
-        exports,
-        import_exports,
-        resolutions,
-    );
+    resolve_func_sig(def_id, &sig, &type_params, ctx);
 }
 
 /// Resolve type references in a type alias definition.
@@ -461,26 +414,13 @@ fn resolve_func_type_refs(
 /// Note: typealias doesn't have type variables on the LHS. Any type variables
 /// in the aliased type (e.g., `'a` in `List['a]`) are free/unbound and will
 /// resolve to Error since there's no declaration site for them.
-fn resolve_type_alias_type_refs(
-    aliased_ty: &Parsed<Ty>,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
-) {
+fn resolve_type_alias_type_refs(aliased_ty: &Parsed<Ty>, ctx: &mut ResolveContext<'_>) {
     // Type aliases don't have bound type parameters - any type variables
     // in the aliased type are free/unbound
     let type_params = HashMap::new();
 
     // Resolve the aliased type
-    collect_type_resolutions(
-        aliased_ty,
-        &type_params,
-        imports,
-        exports,
-        import_exports,
-        resolutions,
-    );
+    collect_type_resolutions(aliased_ty, &type_params, ctx);
 }
 
 /// Extract the type name from a Ty for name resolution.
@@ -555,10 +495,7 @@ pub fn resolve_func_sig(
     method_def_id: DefId,
     sig: &FuncSig,
     parent_type_params: &HashMap<String, TypeParamId>,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
+    ctx: &mut ResolveContext<'_>,
 ) {
     // Method may have its own type parameters
     let mut type_params = parent_type_params.clone();
@@ -569,39 +506,18 @@ pub fn resolve_func_sig(
     // Resolve parameter types
     for param in &sig.params {
         if let Some(parsed_ty_scheme) = param.value.parsed_ty() {
-            collect_type_resolutions_from_scheme(
-                parsed_ty_scheme,
-                &type_params,
-                imports,
-                exports,
-                import_exports,
-                resolutions,
-            );
+            collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
         }
     }
 
     // Resolve return type
     if let Some(parsed_ty) = &sig.ret_ty {
-        collect_type_resolutions(
-            parsed_ty,
-            &type_params,
-            imports,
-            exports,
-            import_exports,
-            resolutions,
-        );
+        collect_type_resolutions(parsed_ty, &type_params, ctx);
     }
 
     // Resolve where clause / qualifiers
     for qualifier in &sig.qualifiers {
-        collect_type_resolutions(
-            qualifier,
-            &type_params,
-            imports,
-            exports,
-            import_exports,
-            resolutions,
-        );
+        collect_type_resolutions(qualifier, &type_params, ctx);
     }
 }
 
@@ -611,10 +527,7 @@ pub fn resolve_func_sig(
 pub fn collect_type_resolutions_from_scheme(
     parsed_ty_scheme: &Parsed<TyScheme>,
     type_params: &HashMap<String, TypeParamId>,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
+    ctx: &mut ResolveContext<'_>,
 ) {
     let synthetic_ids = parsed_ty_scheme.synthetic_ids();
     let ty_refs = parsed_ty_scheme.value().mono().flatten();
@@ -627,11 +540,11 @@ pub fn collect_type_resolutions_from_scheme(
 
     for (node_id, ty) in synthetic_ids.iter().zip(ty_refs.iter()) {
         let resolution = if let Some(name) = extract_type_name(ty) {
-            resolve_type_name(&name, type_params, imports, exports, import_exports)
+            resolve_type_name(&name, type_params, ctx)
         } else {
             Resolution::Error
         };
-        resolutions.insert(*node_id, resolution);
+        ctx.resolutions.insert(*node_id, resolution);
     }
 }
 
@@ -645,9 +558,7 @@ pub fn collect_type_resolutions_from_scheme(
 fn resolve_type_name(
     name: &str,
     type_params: &HashMap<String, TypeParamId>,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    ctx: &mut ResolveContext<'_>,
 ) -> Resolution {
     // 1. Check if it's a type parameter in scope
     if let Some(type_param_id) = type_params.get(name) {
@@ -655,8 +566,8 @@ fn resolve_type_name(
     }
 
     // 2. Check imports
-    if let Some(module_path) = imports.get(name) {
-        if let Some(exports) = import_exports(&module_path.to_string()) {
+    if let Some(module_path) = ctx.imports.get(name) {
+        if let Some(exports) = (ctx.import_exports)(&module_path.to_string()) {
             if let Some(target) = exports.get(name) {
                 return Resolution::Def(target.clone());
             }
@@ -664,13 +575,13 @@ fn resolve_type_name(
     }
 
     // 3. Check module exports (same-module definitions)
-    if let Some(target) = exports.get(name) {
+    if let Some(target) = ctx.exports.get(name) {
         return Resolution::Def(target.clone());
     }
 
     // 4. Check imported module exports (qualified imports)
-    for (_alias, module_path) in imports {
-        if let Some(exports) = import_exports(&module_path.to_string()) {
+    for (_alias, module_path) in ctx.imports {
+        if let Some(exports) = (ctx.import_exports)(&module_path.to_string()) {
             if let Some(target) = exports.get(name) {
                 return Resolution::Def(target.clone());
             }
@@ -691,10 +602,7 @@ fn resolve_type_name(
 pub fn collect_type_resolutions(
     parsed_ty: &Parsed<Ty>,
     type_params: &HashMap<String, TypeParamId>,
-    imports: &HashMap<String, ModulePath>,
-    exports: &HashMap<String, DefTarget>,
-    import_exports: &impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
-    resolutions: &mut HashMap<NodeId, Resolution>,
+    ctx: &mut ResolveContext<'_>,
 ) {
     let synthetic_ids = parsed_ty.synthetic_ids();
     let ty_refs = parsed_ty.value().flatten();
@@ -708,12 +616,12 @@ pub fn collect_type_resolutions(
     for (node_id, ty) in synthetic_ids.iter().zip(ty_refs.iter()) {
         // Extract the type name from the Ty and resolve it
         let resolution = if let Some(name) = extract_type_name(ty) {
-            resolve_type_name(&name, type_params, imports, exports, import_exports)
+            resolve_type_name(&name, type_params, ctx)
         } else {
             // Structural types (Func, Ref, etc.) don't need resolution themselves
             Resolution::Error
         };
-        resolutions.insert(*node_id, resolution);
+        ctx.resolutions.insert(*node_id, resolution);
     }
 }
 
@@ -721,7 +629,7 @@ pub fn collect_type_resolutions(
 // Legacy name resolution (mutating AST)
 // ============================================================================
 
-pub struct ResolveContext<'a> {
+pub struct LegacyResolveContext<'a> {
     ncx: &'a mut NameContext,
     srcmap: &'a SourceMap,
     scope_map: &'a HashMap<Path, Vec<Scope>>,
@@ -736,7 +644,7 @@ pub struct ResolveContext<'a> {
     resolutions: HashMap<NodeId, Resolution>,
 }
 
-impl<'a> ResolveContext<'a> {
+impl<'a> LegacyResolveContext<'a> {
     pub fn new(
         ncx: &'a mut NameContext,
         srcmap: &'a mut SourceMap,
@@ -870,11 +778,11 @@ impl<'a> ResolveContext<'a> {
 }
 
 pub trait NameResolve {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()>;
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()>;
 }
 
 impl NameResolve for Sourced<'_, Name> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let src = self.src();
         let name = self.path.to_string();
         let mut scopes = ctx.scope_map.get(self.src_module()).unwrap().clone();
@@ -904,7 +812,7 @@ impl NameResolve for Sourced<'_, Name> {
 }
 
 impl NameResolve for Sourced<'_, Path> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let mut scopes = ctx.scope_map.get(self.src_module()).unwrap().clone();
         for scope_path in ctx.scope_stack.iter() {
             scopes.push(Scope::from(scope_path.clone()));
@@ -937,7 +845,7 @@ impl NameResolve for Sourced<'_, Path> {
 }
 
 impl NameResolve for Node<Decl> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
         match &mut self.value {
             Decl::Extern(extern_) => Sourced(extern_, &src).resolve_names(ctx),
@@ -955,7 +863,7 @@ impl NameResolve for Node<Decl> {
 }
 
 impl NameResolve for Node<Expr> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
         let node_id = self.id;
 
@@ -989,7 +897,7 @@ impl NameResolve for Node<Expr> {
 }
 
 impl NameResolve for Node<FnParam> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
         match &mut self.value {
             FnParam::Name(name) => Sourced(name, &src).resolve_names(ctx),
@@ -1003,7 +911,7 @@ impl<T> NameResolve for Option<T>
 where
     T: NameResolve,
 {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         if let Some(value) = self {
             value.resolve_names(ctx)
         } else {
@@ -1016,7 +924,7 @@ impl<T> NameResolve for Box<T>
 where
     T: NameResolve,
 {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.as_mut().resolve_names(ctx)
     }
 }
@@ -1025,7 +933,7 @@ impl<T> NameResolve for Vec<T>
 where
     T: NameResolve,
 {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         for el in self {
             el.resolve_names(ctx)?;
         }
@@ -1035,7 +943,7 @@ where
 }
 
 impl NameResolve for Module<(), Decl> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         // resolve names in each declaration in the module
         self.decls.resolve_names(ctx)?;
 
@@ -1063,7 +971,7 @@ impl NameResolve for Module<(), Decl> {
 }
 
 impl NameResolve for Sourced<'_, Extern> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (ext, src) = self.unpack_mut();
         match ext.decl_mut() {
             Decl::Mutable(_) => todo!(),
@@ -1085,7 +993,7 @@ impl NameResolve for Sourced<'_, Extern> {
 }
 
 impl NameResolve for Sourced<'_, Func> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (func, src) = self.unpack_mut();
         // note: we're only processing the signature here and not the body
         Sourced(&mut func.sig, src).resolve_names(ctx)
@@ -1093,7 +1001,7 @@ impl NameResolve for Sourced<'_, Func> {
 }
 
 impl NameResolve for Sourced<'_, FuncSig> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (sig, _) = self.unpack_mut();
         ctx.add_path(&sig.path);
         Ok(())
@@ -1101,7 +1009,7 @@ impl NameResolve for Sourced<'_, FuncSig> {
 }
 
 impl NameResolve for Sourced<'_, Struct> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (st, _) = self.unpack_mut();
         let name = st.path.name().unwrap();
         if !Ty::is_builtin_name(&name) {
@@ -1113,7 +1021,7 @@ impl NameResolve for Sourced<'_, Struct> {
 }
 
 impl NameResolve for Sourced<'_, Trait> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (tr, src) = self.unpack_mut();
         let trait_fqn = &src.path;
         ctx.ncx
@@ -1125,7 +1033,7 @@ impl NameResolve for Sourced<'_, Trait> {
 }
 
 impl NameResolve for Sourced<'_, Impl> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (imp, src) = self.unpack_mut();
         if let Some(funcs) = &mut imp.funcs {
             for func in funcs {
@@ -1139,7 +1047,7 @@ impl NameResolve for Sourced<'_, Impl> {
 }
 
 impl NameResolve for Sourced<'_, Expr> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (expr, src) = self.unpack_mut();
         match expr {
             Expr::Assign(a) => Sourced(a, src).resolve_names(ctx),
@@ -1190,13 +1098,13 @@ impl NameResolve for Sourced<'_, Expr> {
 }
 
 impl NameResolve for Sourced<'_, ScopedAccess> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.lhs.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Assign> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (assign, src) = self.unpack_mut();
         for node in assign.lhs.paths_mut() {
             let (path, is_lvalue) = node.value;
@@ -1219,39 +1127,39 @@ impl NameResolve for Sourced<'_, Assign> {
 }
 
 impl NameResolve for Sourced<'_, BinOp> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.lhs.resolve_names(ctx)?;
         self.rhs.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Block> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.stmts.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Boxed> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.inner.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Call> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.callee.resolve_names(ctx)?;
         self.args.items.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Cast> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.lhs.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Closure> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (closure, src) = self.unpack_mut();
         let scope_suffix = format!("__closure_{:x}", closure.body.id);
         let closure_scope = src
@@ -1298,13 +1206,13 @@ impl NameResolve for Sourced<'_, Closure> {
 }
 
 impl NameResolve for Sourced<'_, Curly> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.elements.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Dict> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         for (key, value) in self.entries.iter_mut() {
             key.resolve_names(ctx)?;
             value.resolve_names(ctx)?;
@@ -1314,13 +1222,13 @@ impl NameResolve for Sourced<'_, Dict> {
 }
 
 impl NameResolve for Sourced<'_, Set> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.items.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Node<CurlyElement> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
         match &mut self.value {
             CurlyElement::Name(n) => Sourced(n, &src).resolve_names(ctx),
@@ -1330,19 +1238,19 @@ impl NameResolve for Node<CurlyElement> {
 }
 
 impl NameResolve for Sourced<'_, Deref> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.expr.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Dot> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.lhs.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, For> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.expr.resolve_names(ctx)?;
 
         let scope_suffix = format!("__for_{:x}", self.body.id);
@@ -1370,7 +1278,7 @@ impl NameResolve for Sourced<'_, For> {
 }
 
 impl NameResolve for Sourced<'_, If> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.cond.resolve_names(ctx)?;
         self.then.resolve_names(ctx)?;
         self.els.resolve_names(ctx)
@@ -1378,32 +1286,32 @@ impl NameResolve for Sourced<'_, If> {
 }
 
 impl NameResolve for Sourced<'_, Index> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.lhs.resolve_names(ctx)?;
         self.index.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, List> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.items.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Literal> {
-    fn resolve_names(&mut self, _: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, _: &mut LegacyResolveContext) -> RayResult<()> {
         Ok(())
     }
 }
 
 impl NameResolve for Sourced<'_, Loop> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.body.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, New> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         if let Some(count) = &mut self.count {
             count.resolve_names(ctx)?
         }
@@ -1412,50 +1320,50 @@ impl NameResolve for Sourced<'_, New> {
 }
 
 impl NameResolve for Sourced<'_, Pattern> {
-    fn resolve_names(&mut self, _: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, _: &mut LegacyResolveContext) -> RayResult<()> {
         Ok(())
     }
 }
 
 impl NameResolve for Sourced<'_, Range> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.start.resolve_names(ctx)?;
         self.end.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Ref> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.expr.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Sequence> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.items.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, Tuple> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.seq.items.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Parsed<TyScheme> {
-    fn resolve_names(&mut self, _: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, _: &mut LegacyResolveContext) -> RayResult<()> {
         Ok(())
     }
 }
 
 impl NameResolve for Sourced<'_, UnaryOp> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.expr.resolve_names(ctx)
     }
 }
 
 impl NameResolve for Sourced<'_, While> {
-    fn resolve_names(&mut self, ctx: &mut ResolveContext) -> RayResult<()> {
+    fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         self.cond.resolve_names(ctx)?;
         self.body.resolve_names(ctx)
     }
@@ -1481,12 +1389,12 @@ mod tests {
 
     use crate::{
         ast::{
-            Assign, Block, Closure as AstClosure, Decl, Expr, File, FnParam, Func, FuncSig, Impl,
-            Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, Trait, TypeParams,
+            Assign, Block, Closure as AstClosure, Decl, Expr, Extern, File, FnParam, Func, FuncSig,
+            Impl, Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, Trait, TypeParams,
         },
         sema::{
-            build_type_param_scope, collect_type_resolutions, resolve_func_sig,
-            resolve_names_in_file,
+            build_type_param_scope, collect_type_resolutions, nameresolve::ResolveContext,
+            resolve_func_sig, resolve_names_in_file,
         },
     };
 
@@ -1804,19 +1712,12 @@ mod tests {
 
         let type_params = HashMap::new();
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        collect_type_resolutions(
-            &parsed_ty,
-            &type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        collect_type_resolutions(&parsed_ty, &type_params, &mut ctx);
 
         assert_eq!(
-            resolutions.get(&node_id),
+            ctx.resolutions.get(&node_id),
             Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
             "Simple type should resolve to export"
         );
@@ -1849,26 +1750,19 @@ mod tests {
         type_params.insert("'a".to_string(), a_type_param_id);
 
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        collect_type_resolutions(
-            &parsed_ty,
-            &type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        collect_type_resolutions(&parsed_ty, &type_params, &mut ctx);
 
         // List should be resolved to the export
         assert_eq!(
-            resolutions.get(&list_node_id),
+            ctx.resolutions.get(&list_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(list_def_id))),
             "List should resolve to export"
         );
         // 'a should be resolved to the type parameter
         assert_eq!(
-            resolutions.get(&a_node_id),
+            ctx.resolutions.get(&a_node_id),
             Some(&Resolution::TypeParam(a_type_param_id)),
             "Type parameter 'a should resolve to TypeParam"
         );
@@ -1888,19 +1782,12 @@ mod tests {
         let type_params = HashMap::new();
         let exports = HashMap::new();
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        collect_type_resolutions(
-            &parsed_ty,
-            &type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        collect_type_resolutions(&parsed_ty, &type_params, &mut ctx);
 
         assert_eq!(
-            resolutions.get(&node_id),
+            ctx.resolutions.get(&node_id),
             Some(&Resolution::Error),
             "Unknown type should resolve to Error"
         );
@@ -1930,29 +1817,22 @@ mod tests {
 
         let type_params = HashMap::new();
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        collect_type_resolutions(
-            &parsed_ty,
-            &type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        collect_type_resolutions(&parsed_ty, &type_params, &mut ctx);
 
         assert_eq!(
-            resolutions.get(&dict_node_id),
+            ctx.resolutions.get(&dict_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(dict_def_id))),
             "Dict should resolve to export"
         );
         assert_eq!(
-            resolutions.get(&string_node_id),
+            ctx.resolutions.get(&string_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
             "String should resolve to export"
         );
         assert_eq!(
-            resolutions.get(&int_node_id),
+            ctx.resolutions.get(&int_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
             "Int should resolve to export"
         );
@@ -2063,20 +1943,12 @@ mod tests {
         let parent_type_params = HashMap::new();
         let imports = HashMap::new();
         let exports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(
-            def_id,
-            &sig,
-            &parent_type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
 
         // Empty signature should produce no resolutions
-        assert!(resolutions.is_empty());
+        assert!(ctx.resolutions.is_empty());
     }
 
     #[test]
@@ -2100,20 +1972,12 @@ mod tests {
 
         let parent_type_params = HashMap::new();
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(
-            def_id,
-            &sig,
-            &parent_type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
 
         assert_eq!(
-            resolutions.get(&ret_node_id),
+            ctx.resolutions.get(&ret_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
             "Return type should resolve to export"
         );
@@ -2148,25 +2012,17 @@ mod tests {
         parent_type_params.insert("'a".to_string(), a_type_param_id);
 
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(
-            def_id,
-            &sig,
-            &parent_type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
 
         assert_eq!(
-            resolutions.get(&tostr_node_id),
+            ctx.resolutions.get(&tostr_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(tostr_def_id))),
             "Qualifier trait should resolve to export"
         );
         assert_eq!(
-            resolutions.get(&a_node_id),
+            ctx.resolutions.get(&a_node_id),
             Some(&Resolution::TypeParam(a_type_param_id)),
             "Type parameter in qualifier should resolve to parent type param"
         );
@@ -2197,20 +2053,12 @@ mod tests {
 
         let parent_type_params = HashMap::new();
         let imports = HashMap::new();
-        let mut resolutions = HashMap::new();
+        let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(
-            def_id,
-            &sig,
-            &parent_type_params,
-            &imports,
-            &exports,
-            &|_| None,
-            &mut resolutions,
-        );
+        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
 
         assert_eq!(
-            resolutions.get(&param_node_id),
+            ctx.resolutions.get(&param_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
             "Parameter type should resolve to export"
         );
@@ -2731,7 +2579,12 @@ mod tests {
         let string_node_id = NodeId::new();
         let int_node_id = NodeId::new();
         let mut parsed_impl_ty = Parsed::new(impl_ty, Source::default());
-        parsed_impl_ty.set_synthetic_ids(vec![trait_node_id, dict_node_id, string_node_id, int_node_id]);
+        parsed_impl_ty.set_synthetic_ids(vec![
+            trait_node_id,
+            dict_node_id,
+            string_node_id,
+            int_node_id,
+        ]);
 
         // Create impl declaration
         let impl_decl = Impl {
@@ -2946,7 +2799,7 @@ mod tests {
 
         // Create function
         let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
-        let mut func = Func::new(Node::new(Path::from("test::foo")), vec![x_param], func_body);
+        let func = Func::new(Node::new(Path::from("test::foo")), vec![x_param], func_body);
         let decl = Node::new(Decl::Func(func));
 
         let file = test_file(vec![decl], vec![]);
@@ -3414,6 +3267,257 @@ mod tests {
             resolutions.get(&int_node_id),
             Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
             "Int should resolve to export"
+        );
+    }
+
+    // =========================================================================
+    // Tests for resolve_names_in_file with extern declarations
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_extern_fn_param_type() {
+        // extern fn read(fd: int, buf: String): int
+        // String should resolve to export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create parameter type: String
+        let param_ty = Ty::con("String");
+        let param_node_id = NodeId::new();
+        let mut parsed_param_ty = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_param_ty.set_synthetic_ids(vec![param_node_id]);
+
+        // Create parameter: buf: String
+        let mut buf_name = Name::new("buf");
+        buf_name.ty = Some(parsed_param_ty);
+        let buf_param = Node::new(FnParam::Name(buf_name));
+
+        // Create extern function signature
+        let sig = FuncSig {
+            path: Node::new(Path::from("read")),
+            params: vec![buf_param],
+            ty_params: None,
+            ret_ty: None,
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: false,
+            has_body: false,
+            span: Span::default(),
+        };
+        let fnsig_decl = Node::new(Decl::FnSig(sig));
+        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
+
+        let file = test_file(vec![extern_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let string_def_id = DefId::new(FileId(0), 1);
+        exports.insert("String".to_string(), DefTarget::Workspace(string_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // String should resolve to export
+        assert_eq!(
+            resolutions.get(&param_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(string_def_id))),
+            "Extern fn parameter type String should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_extern_fn_return_type() {
+        // extern fn malloc(size: int): RawPtr[u8]
+        // RawPtr and u8 should resolve to exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create return type: RawPtr[u8]
+        let ret_ty = Ty::proj("RawPtr", vec![Ty::con("u8")]);
+        let rawptr_node_id = NodeId::new();
+        let u8_node_id = NodeId::new();
+        let mut parsed_ret_ty = Parsed::new(ret_ty, Source::default());
+        parsed_ret_ty.set_synthetic_ids(vec![rawptr_node_id, u8_node_id]);
+
+        // Create extern function signature
+        let sig = FuncSig {
+            path: Node::new(Path::from("malloc")),
+            params: vec![],
+            ty_params: None,
+            ret_ty: Some(parsed_ret_ty),
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: false,
+            has_body: false,
+            span: Span::default(),
+        };
+        let fnsig_decl = Node::new(Decl::FnSig(sig));
+        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
+
+        let file = test_file(vec![extern_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let rawptr_def_id = DefId::new(FileId(0), 1);
+        let u8_def_id = DefId::new(FileId(0), 2);
+        exports.insert("RawPtr".to_string(), DefTarget::Workspace(rawptr_def_id));
+        exports.insert("u8".to_string(), DefTarget::Workspace(u8_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // RawPtr should resolve to export
+        assert_eq!(
+            resolutions.get(&rawptr_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(rawptr_def_id))),
+            "Extern fn return type RawPtr should resolve to export"
+        );
+
+        // u8 should resolve to export
+        assert_eq!(
+            resolutions.get(&u8_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(u8_def_id))),
+            "Extern fn return type u8 should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_extern_fn_generic() {
+        // extern fn qsort['a](arr: RawPtr['a], cmp: Fn['a, 'a, int]): ()
+        // Type params should resolve correctly
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type parameter 'a for the type_params
+        let ty_param_a = Ty::var("'a");
+        let mut parsed_ty_param = Parsed::new(ty_param_a, Source::default());
+        parsed_ty_param.set_synthetic_ids(vec![NodeId::new()]);
+
+        // Create parameter type: RawPtr['a]
+        let param_ty = Ty::proj("RawPtr", vec![Ty::var("'a")]);
+        let rawptr_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_param_ty = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_param_ty.set_synthetic_ids(vec![rawptr_node_id, a_node_id]);
+
+        // Create parameter: arr: RawPtr['a]
+        let mut arr_name = Name::new("arr");
+        arr_name.ty = Some(parsed_param_ty);
+        let arr_param = Node::new(FnParam::Name(arr_name));
+
+        // Create extern function signature with type params
+        let sig = FuncSig {
+            path: Node::new(Path::from("qsort")),
+            params: vec![arr_param],
+            ty_params: Some(TypeParams {
+                tys: vec![parsed_ty_param],
+                lb_span: Span::default(),
+                rb_span: Span::default(),
+            }),
+            ret_ty: None,
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: false,
+            has_body: false,
+            span: Span::default(),
+        };
+        let fnsig_decl = Node::new(Decl::FnSig(sig));
+        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
+
+        let file = test_file(vec![extern_decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let rawptr_def_id = DefId::new(FileId(0), 1);
+        exports.insert("RawPtr".to_string(), DefTarget::Workspace(rawptr_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // RawPtr should resolve to export
+        assert_eq!(
+            resolutions.get(&rawptr_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(rawptr_def_id))),
+            "Extern fn parameter type RawPtr should resolve to export"
+        );
+
+        // 'a should resolve to TypeParam
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Type parameter 'a in extern fn should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_extern_fn_not_double_resolved() {
+        // Verify that extern fn signatures are not resolved twice (once by Extern handler,
+        // once by walker visiting the inner FnSig)
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type parameter 'a
+        let ty_param_a = Ty::var("'a");
+        let mut parsed_ty_param = Parsed::new(ty_param_a, Source::default());
+        parsed_ty_param.set_synthetic_ids(vec![NodeId::new()]);
+
+        // Create parameter type that uses 'a
+        let param_ty = Ty::var("'a");
+        let a_node_id = NodeId::new();
+        let mut parsed_param_ty = Parsed::new(TyScheme::from(param_ty), Source::default());
+        parsed_param_ty.set_synthetic_ids(vec![a_node_id]);
+
+        // Create parameter: x: 'a
+        let mut x_name = Name::new("x");
+        x_name.ty = Some(parsed_param_ty);
+        let x_param = Node::new(FnParam::Name(x_name));
+
+        // Create extern function signature with type params
+        let sig = FuncSig {
+            path: Node::new(Path::from("identity")),
+            params: vec![x_param],
+            ty_params: Some(TypeParams {
+                tys: vec![parsed_ty_param],
+                lb_span: Span::default(),
+                rb_span: Span::default(),
+            }),
+            ret_ty: None,
+            ty: None,
+            modifiers: vec![],
+            qualifiers: vec![],
+            doc_comment: None,
+            is_anon: false,
+            is_method: false,
+            has_body: false,
+            span: Span::default(),
+        };
+        let fnsig_decl = Node::new(Decl::FnSig(sig));
+        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
+
+        let file = test_file(vec![extern_decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // 'a should resolve to TypeParam, not Error
+        // If it resolves to Error, that means the walker re-processed the FnSig
+        // without the type params from the extern fn's signature
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Type parameter 'a should resolve to TypeParam (not Error from double-resolution)"
         );
     }
 }

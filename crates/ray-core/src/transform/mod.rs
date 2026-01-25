@@ -13,7 +13,7 @@ use ray_typing::tyctx::TyCtx;
 use crate::{
     ast::{self, AstLowerCtx, Decl, Expr, Literal, LowerAST, Module, Node},
     errors::RayError,
-    sema::{NameResolve, ResolveContext},
+    sema::{LegacyResolveContext, NameResolve},
     sourcemap::SourceMap,
 };
 
@@ -69,7 +69,8 @@ impl ModuleCombiner {
         new_module.decls.sort();
 
         // process name resolution
-        let mut resolve_ctx = ResolveContext::new(&mut self.ncx, &mut srcmap, &self.scope_map);
+        let mut resolve_ctx =
+            LegacyResolveContext::new(&mut self.ncx, &mut srcmap, &self.scope_map);
         new_module.resolve_names(&mut resolve_ctx)?;
         let resolutions = resolve_ctx.into_resolutions();
 
