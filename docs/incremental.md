@@ -1676,9 +1676,85 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   - Type arg arity checks in `lower_impl()` → type argument arity validation
   - Assignment mutability checks in `lower_assign()` → mutability checking
 
+- `typecheck_def_input(DefId)` → `DefTypecheckInput`
+
+  **Dependencies**: `file_ast(def_id.file)`, `name_resolutions(def_id.file)`, `annotated_scheme(def_id)`, operator/builtin queries via `TypecheckEnv`
+
+  **Semantics**: Lowers a single definition's AST into the typechecker's IR (`ExprRecord`, `PatternRecord`, `BindingRecord`). This is the per-definition lowering step that converts frontend AST nodes into the simplified expression kinds used by the constraint generator.
+
+  **Key transformations**:
+  - `Expr::Name`/`Expr::Path` → `ExprKind::LocalRef(LocalBindingId)` or `ExprKind::DefRef(DefId)` based on `resolutions`
+  - `Expr::BinOp` → `ExprKind::BinaryOp` with trait/method paths from `TypecheckEnv::infix_op`
+  - `Expr::Curly` → `ExprKind::StructLiteral` with field names
+  - Pattern nodes → `PatternKind` variants
+
+  **Why per-definition granularity**: Lowering is self-contained per-definition—it only needs the definition's AST subtree, the `resolutions` map (keyed by `NodeId`), and `TypecheckEnv` for operator/builtin lookup. Per-definition caching means editing one function only re-lowers that function, not the entire binding group.
+
+  **Definitions**:
+  ```rust
+  #[derive(Clone)]
+  struct DefTypecheckInput {
+      /// The binding record for this definition (kind, scheme, body_expr, etc.)
+      pub binding_record: BindingRecord,
+      /// Expression records for all nodes owned by this definition
+      pub expr_records: HashMap<NodeId, ExprRecord>,
+      /// Pattern records for all pattern nodes owned by this definition
+      pub pattern_records: HashMap<NodeId, PatternRecord>,
+      /// Node-to-binding mappings for nodes in this definition
+      pub node_bindings: HashMap<NodeId, NodeBinding>,
+      /// Lowering errors (e.g., unsupported patterns)
+      pub lowering_errors: Vec<TypeError>,
+  }
+  ```
+
+  **Legacy component integration**: Refactors `build_typecheck_input` in `ray-core/src/typing.rs`. The legacy function lowers all declarations at once; this query lowers one definition at a time.
+
+- `typecheck_group_input(BindingGroupId)` → `TypeCheckInput`
+
+  **Dependencies**: `binding_group_members(BindingGroupId)`, `typecheck_def_input(DefId)` for each member, `binding_graph(module)` for the dependency graph
+
+  **Semantics**: Combines per-definition lowered inputs into a single `TypeCheckInput` suitable for the typechecker. This is a collection and merge step—the actual lowering work is done by `typecheck_def_input`.
+
+  **Implementation**:
+  ```rust
+  #[query]
+  fn typecheck_group_input(db: &Database, group_id: BindingGroupId) -> TypeCheckInput {
+      let members = binding_group_members(db, group_id);
+
+      let mut binding_records = HashMap::new();
+      let mut expr_records = HashMap::new();
+      let mut pattern_records = HashMap::new();
+      let mut node_bindings = HashMap::new();
+      let mut lowering_errors = Vec::new();
+
+      for def_id in &members {
+          let input = typecheck_def_input(db, *def_id);
+          binding_records.insert(*def_id, input.binding_record);
+          expr_records.extend(input.expr_records);
+          pattern_records.extend(input.pattern_records);
+          node_bindings.extend(input.node_bindings);
+          lowering_errors.extend(input.lowering_errors);
+      }
+
+      // Get binding graph for this module
+      let bindings = binding_graph(db, group_id.module.clone());
+
+      TypeCheckInput {
+          bindings,
+          binding_records,
+          node_bindings,
+          expr_records,
+          pattern_records,
+          lowering_errors,
+      }
+  }
+  ```
+
+  **Incrementality benefit**: When a single definition in a binding group changes, only its `typecheck_def_input` is recomputed. The merge step is cheap. This is better than re-lowering all members of the group.
+
 - `typecheck_group(BindingGroupId)` → `TypecheckResult`
 
-  **Dependencies**: `binding_group_members(BindingGroupId)`, `file_ast` for each member's file, `name_resolutions` for each member's file, `mapped_def_types(DefId)` for each member, `closure_info` for closures in the group, `def_scheme(DefTarget)` for dependencies outside the group
+  **Dependencies**: `typecheck_group_input(BindingGroupId)`, `def_scheme(DefTarget)` for dependencies outside the group, operator/builtin queries via `TypecheckEnv`
 
   **Semantics**: Typechecks all definitions in the binding group together. For unannotated definitions, infers type schemes. For annotated definitions, checks the body against the declared scheme. Produces type assignments for all NodeIds in the group's definitions.
 
@@ -4510,32 +4586,115 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 #### 3.C: Typechecking Queries
 
-##### Step 1: typecheck_group query
+##### Step 1: typecheck_def_input query (per-definition lowering)
+
+- [ ] Define `DefTypecheckInput` struct in `ray-frontend/src/queries/typecheck.rs`:
+  ```rust
+  #[derive(Clone)]
+  pub struct DefTypecheckInput {
+      pub binding_record: BindingRecord,
+      pub expr_records: HashMap<NodeId, ExprRecord>,
+      pub pattern_records: HashMap<NodeId, PatternRecord>,
+      pub node_bindings: HashMap<NodeId, NodeBinding>,
+      pub lowering_errors: Vec<TypeError>,
+  }
+  ```
+- [ ] Define `typecheck_def_input(DefId)` query:
+  ```rust
+  #[query]
+  fn typecheck_def_input(db: &Database, def_id: DefId) -> DefTypecheckInput {
+      let file_ast = file_ast(db, def_id.file);
+      let resolutions = name_resolutions(db, def_id.file);
+      let env = QueryEnv::new(db, def_id.file);
+
+      // Find the declaration node for this def_id
+      let decl = find_decl_for_def(&file_ast.ast, def_id);
+
+      // Lower the declaration to typechecker IR
+      lower_def_for_typecheck(
+          &decl,
+          &file_ast.source_map,
+          &env,
+          &resolutions,
+          def_id,
+      )
+  }
+  ```
+- [ ] Implement `lower_def_for_typecheck` by refactoring logic from `ray-core/src/typing.rs`:
+  - Extract single-definition lowering from `build_typecheck_input`
+  - Remove dependency on legacy `BindingPassOutput`
+  - Use `resolutions` map for `LocalBindingId` lookup (already transitioning to this)
+  - Use `TypecheckEnv` for operator/builtin resolution
+- [ ] **Validate**: Unit test lowering a simple function definition
+- [ ] **Validate**: Unit test lowering handles operators correctly via `TypecheckEnv`
+
+##### Step 2: typecheck_group_input query (combine per-def inputs)
+
+- [ ] Define `typecheck_group_input(BindingGroupId)` query:
+  ```rust
+  #[query]
+  fn typecheck_group_input(db: &Database, group_id: BindingGroupId) -> TypeCheckInput {
+      let members = binding_group_members(db, group_id);
+
+      let mut binding_records = HashMap::new();
+      let mut expr_records = HashMap::new();
+      let mut pattern_records = HashMap::new();
+      let mut node_bindings = HashMap::new();
+      let mut lowering_errors = Vec::new();
+
+      for def_id in &members {
+          let input = typecheck_def_input(db, *def_id);
+          binding_records.insert(*def_id, input.binding_record);
+          expr_records.extend(input.expr_records);
+          pattern_records.extend(input.pattern_records);
+          node_bindings.extend(input.node_bindings);
+          lowering_errors.extend(input.lowering_errors);
+      }
+
+      let bindings = binding_graph(db, group_id.module.clone());
+
+      TypeCheckInput {
+          bindings,
+          binding_records,
+          node_bindings,
+          expr_records,
+          pattern_records,
+          lowering_errors,
+      }
+  }
+  ```
+- [ ] **Validate**: Unit test combining inputs from multi-member binding group
+
+##### Step 3: typecheck_group query
 
 - [ ] Define `typecheck_group(BindingGroupId)` query:
   ```rust
   #[query]
   fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypecheckResult {
+      let input = typecheck_group_input(db, group_id);
       let members = binding_group_members(db, group_id);
 
-      // Build input for this group
-      let group_input = build_group_input(db, &members);
+      // Build BindingGroup struct for the typechecker
+      let group = BindingGroup { bindings: members.into_iter().collect() };
 
       // External scheme lookup via query
       let external_schemes = |def_id: DefId| -> Option<TyScheme> {
           def_scheme(db, DefTarget::Workspace(def_id))
       };
 
-      typecheck_group(&group_input, &external_schemes, &options)
+      // Use QueryEnv for TypecheckEnv (pick file from first member)
+      let file_id = members.first().map(|d| d.file).unwrap_or(FileId(0));
+      let env = QueryEnv::new(db, file_id);
+
+      ray_typing::typecheck_group(&input, &group, external_schemes, &env)
   }
   ```
-- [ ] Wire up to `typecheck_group` from Phase 0.G
-- [ ] Build `BindingGroupInput` from query results
+- [ ] Wire up to `typecheck_group` from `ray-typing` (Phase 0.G)
 - [ ] **Validate**: Unit test typechecking simple binding group
 
-##### Step 2: Handle group dependencies
+##### Step 4: Handle group dependencies
 
-- [ ] Ensure groups are typechecked in topological order (queries handle this naturally)
+- [ ] Ensure groups are typechecked in topological order (queries handle this naturally via `def_scheme` dependency)
 - [ ] Verify external scheme lookup works for cross-group references
 - [ ] **Cross-SCC local binding lookup**: When a definition references a local binding owned by another definition (e.g., `foo` references top-level `x` owned by FileMain), the topological ordering established by `def_deps` ensures the owner is typechecked first. The typechecker uses `inferred_local_type(LocalBindingId)` to retrieve the type.
 - [ ] **Validate**: Unit test with multi-group dependencies

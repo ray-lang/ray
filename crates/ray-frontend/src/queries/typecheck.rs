@@ -260,6 +260,11 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 }
 
 #[query]
+fn typecheck_def_input(db: &Database, def_id: DefId) -> TypeCheckInput {
+    todo!("typecheck_def_input")
+}
+
+#[query]
 pub fn typecheck_group_input(db: &Database, members: &Vec<DefId>) -> TypeCheckInput {
     todo!("typecheck_group_input")
 }

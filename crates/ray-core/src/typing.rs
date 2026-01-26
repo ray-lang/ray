@@ -1,6 +1,4 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use ray_shared::{
     def::DefId,
@@ -8,7 +6,7 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::{ItemPath, Path},
     resolution::{DefTarget, Resolution},
-    ty::{SchemaVarAllocator, Ty},
+    ty::Ty,
 };
 use ray_typing::{
     BindingKind, BindingRecord, ExprRecord, NodeBinding, PatternKind, PatternRecord,
