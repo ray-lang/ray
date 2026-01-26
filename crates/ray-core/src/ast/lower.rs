@@ -6,7 +6,7 @@ use std::{
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
-    pathlib::{FilePath, ItemPath, Path},
+    pathlib::{FilePath, Path},
     span::{Source, Sourced, parsed::Parsed},
     ty::{Ty, TyVar},
 };

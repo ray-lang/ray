@@ -126,7 +126,7 @@ impl Decl {
             Decl::Declare(_) => todo!("variable"),
             Decl::Func(_) => str!("function"),
             Decl::FnSig(_) => str!("function signature"),
-            Decl::Struct(st) => str!("struct"),
+            Decl::Struct(_) => str!("struct"),
             Decl::Trait(_) => str!("trait"),
             Decl::TypeAlias(_, _) => str!("type alias"),
             Decl::Impl(_) => str!("impl"),

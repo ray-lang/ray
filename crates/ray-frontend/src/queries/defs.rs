@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node, TypeParams};
+use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefHeader, DefId, DefKind, LibraryDefId},
@@ -10,7 +10,6 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::{ItemPath, ModulePath},
     resolution::{DefTarget, Resolution},
-    span::parsed::Parsed,
     ty::{Ty, TyVar},
     type_param_id::TypeParamId,
 };
@@ -192,7 +191,14 @@ fn lookup_in_library(db: &Database, path: &ItemPath) -> Option<DefTarget> {
 ///
 /// For workspace definitions, looks up the DefHeader to get the name and module.
 /// For library definitions, looks up in the LibraryData's reverse index.
-fn def_target_to_item_path(db: &Database, target: &DefTarget) -> ItemPath {
+///
+/// This is the canonical way to get the fully-qualified path for a definition.
+/// All code needing to convert DefTarget → ItemPath should use this query.
+///
+/// Returns `None` if the definition cannot be found (which indicates a bug in
+/// the system - a valid DefTarget should always resolve to a path).
+#[query]
+pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
     match target {
         DefTarget::Workspace(def_id) => {
             let workspace = db.get_input::<WorkspaceSnapshot>(());
@@ -203,27 +209,38 @@ fn def_target_to_item_path(db: &Database, target: &DefTarget) -> ItemPath {
                 .map(|info| info.module_path.clone())
                 .unwrap_or_else(ModulePath::root);
 
-            let name = parse_result
-                .defs
-                .iter()
-                .find(|h| h.def_id == *def_id)
-                .map(|h| h.name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
+            // Find the def header
+            let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
-            ItemPath::new(module_path, vec![name])
+            // Check if this def has a parent (i.e., it's a method in an impl/trait)
+            if let Some(parent_def_id) = def_header.parent {
+                // Look up the parent def to get its name (the type or trait name)
+                if let Some(parent_header) = parse_result
+                    .defs
+                    .iter()
+                    .find(|h| h.def_id == parent_def_id)
+                {
+                    // Build fully qualified path: module::ParentName::method_name
+                    return Some(ItemPath::new(
+                        module_path,
+                        vec![parent_header.name.clone(), def_header.name.clone()],
+                    ));
+                }
+            }
+
+            // Top-level def: module::name
+            Some(ItemPath::new(module_path, vec![def_header.name.clone()]))
         }
         DefTarget::Library(lib_def_id) => {
             // For library definitions, look up the path from library data
-            if let Some(lib_data) = library_data(db, lib_def_id.module.clone()) {
-                // Find the ItemPath that maps to this LibraryDefId
-                for (path, def_id) in &lib_data.names {
-                    if def_id == lib_def_id {
-                        return path.clone();
-                    }
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+            // Find the ItemPath that maps to this LibraryDefId
+            for (path, id) in &lib_data.names {
+                if *id == lib_def_id {
+                    return Some(path.clone());
                 }
             }
-            // Fallback - construct from module + index
-            ItemPath::new(lib_def_id.module.clone(), vec![format!("lib_{}", lib_def_id.index)])
+            None
         }
     }
 }
@@ -266,7 +283,9 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
     let resolutions = name_resolutions(db, def_id.file);
 
     // Create closure to convert DefTarget to ItemPath
-    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target);
+    let get_item_path = |target: &DefTarget| {
+        def_path(db, target.clone()).expect("DefTarget should have a valid path")
+    };
 
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
@@ -307,25 +326,6 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
     }
 
     None
-}
-
-/// Extract type parameters from TypeParams.
-fn extract_type_params(ty_params: &Option<TypeParams>) -> Vec<TyVar> {
-    match ty_params {
-        Some(params) => params
-            .tys
-            .iter()
-            .filter_map(|parsed_ty| {
-                // Each type param should be a Ty::Var
-                if let Ty::Var(var) = parsed_ty.value() {
-                    Some(var.clone())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        None => vec![],
-    }
 }
 
 /// Extract fields from struct field declarations with proper TyScheme quantification.
@@ -451,7 +451,9 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
     let resolutions = name_resolutions(db, def_id.file);
 
     // Create closure to convert DefTarget to ItemPath
-    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target);
+    let get_item_path = |target: &DefTarget| {
+        def_path(db, target.clone()).expect("DefTarget should have a valid path")
+    };
 
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
@@ -509,91 +511,6 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
     }
 
     None
-}
-
-/// Resolve a type to a DefTarget by extracting its path and looking it up.
-fn resolve_type_to_def_target(db: &Database, ty: &Ty) -> Option<DefTarget> {
-    let item_path = match ty {
-        Ty::Const(p) => p.clone(),
-        Ty::Proj(p, _) => p.clone(),
-        _ => return None,
-    };
-
-    def_for_path(db, item_path)
-}
-
-/// Resolve a Parsed<Ty> to its DefTarget using name resolutions.
-///
-/// This uses the synthetic_ids stored in the Parsed<Ty> to look up
-/// the actual resolved definition. Returns `None` for primitive types
-/// or if the type couldn't be resolved.
-fn resolve_parsed_ty_to_def_target(
-    ty: &Parsed<Ty>,
-    resolutions: &HashMap<NodeId, Resolution>,
-) -> Option<DefTarget> {
-    // The Parsed<Ty>'s synthetic_ids contain the NodeId(s) for the type reference
-    let synth_ids = ty.synthetic_ids();
-    synth_ids
-        .first()
-        .and_then(|node_id| resolutions.get(node_id))
-        .and_then(|res| match res {
-            Resolution::Def(target) => Some(target.clone()),
-            _ => None,
-        })
-}
-
-/// Extract method info from trait field declarations.
-///
-/// Looks up the DefId for each method from the defs list by matching the node ID.
-fn extract_trait_methods(fields: &[Node<Decl>], defs: &[DefHeader], parent_path: &ItemPath) -> Vec<MethodInfo> {
-    fields
-        .iter()
-        .filter_map(|decl| {
-            let def_id = defs
-                .iter()
-                .find(|h| h.root_node == decl.id)
-                .map(|h| h.def_id)?;
-            let target = DefTarget::Workspace(def_id);
-
-            match &decl.value {
-                Decl::FnSig(sig) => {
-                    let name = sig.path.name()?;
-                    let path = parent_path.with_item(&name);
-                    let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
-                    let recv_mode = compute_receiver_mode(sig, is_static);
-                    let scheme = sig.extract_scheme(None);
-                    Some(MethodInfo {
-                        target,
-                        path,
-                        name,
-                        is_static,
-                        recv_mode,
-                        scheme,
-                    })
-                }
-                Decl::Func(f) => {
-                    let name = f.sig.path.name()?;
-                    let path = parent_path.with_item(&name);
-                    let is_static = f
-                        .sig
-                        .modifiers
-                        .iter()
-                        .any(|m| matches!(m, Modifier::Static));
-                    let recv_mode = compute_receiver_mode(&f.sig, is_static);
-                    let scheme = f.sig.extract_scheme(None);
-                    Some(MethodInfo {
-                        target,
-                        path,
-                        name,
-                        is_static,
-                        recv_mode,
-                        scheme,
-                    })
-                }
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 /// Extract method info from trait field declarations with resolved types.
@@ -791,7 +708,9 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     let resolutions = name_resolutions(db, def_id.file);
 
     // Create closure to convert DefTarget to ItemPath
-    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target);
+    let get_item_path = |target: &DefTarget| {
+        def_path(db, target.clone()).expect("DefTarget should have a valid path")
+    };
 
     // Find the AST node using root_node from DefHeader
     let im = parse_result
@@ -1354,59 +1273,6 @@ fn path_for_target(target: &DefTarget, db: &Database) -> Option<ItemPath> {
                 .find(|(_, def_id)| *def_id == lib_def_id)
                 .map(|(item_path, _)| item_path.clone())
         }
-    }
-}
-/// Resolve a Parsed<Ty> using name resolutions, falling back to file scope lookup.
-///
-/// The first synthetic_id corresponds to the head type (e.g., `Stringify` in `Stringify[Foo]`).
-/// We use name resolution to resolve the head, and file scope for nested type args.
-fn resolve_parsed_ty(
-    db: &Database,
-    parsed_ty: &Parsed<Ty>,
-    resolutions: &HashMap<NodeId, Resolution>,
-    file_id: FileId,
-    module_path: &ModulePath,
-) -> Ty {
-    // The first synthetic_id corresponds to the head type
-    let head_resolved = parsed_ty
-        .synthetic_ids()
-        .first()
-        .and_then(|node_id| resolutions.get(node_id))
-        .and_then(|res| match res {
-            Resolution::Def(target) => path_for_target(target, db),
-            _ => None,
-        });
-
-    match &**parsed_ty {
-        Ty::Const(path) => {
-            // Use resolved path if available, otherwise use file scope
-            if let Some(resolved_path) = head_resolved {
-                Ty::Const(resolved_path)
-            } else {
-                resolve_ty_with_scope(db, parsed_ty, file_id, module_path)
-            }
-        }
-        Ty::Proj(path, args) => {
-            // Resolve head type
-            let resolved_head = head_resolved.unwrap_or_else(|| {
-                // Fallback: qualify with current module if local
-                if path.module.is_empty() {
-                    ItemPath::new(module_path.clone(), path.item.clone())
-                } else {
-                    path.clone()
-                }
-            });
-
-            // Resolve nested type args using file scope
-            let resolved_args: Vec<Ty> = args
-                .iter()
-                .map(|arg| resolve_ty_with_scope(db, arg, file_id, module_path))
-                .collect();
-
-            Ty::Proj(resolved_head, resolved_args)
-        }
-        // For other types, return as-is
-        other => other.clone(),
     }
 }
 

@@ -8,7 +8,6 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::ItemPath,
     ty::{Ty, TyVar},
     utils::{join, map_join},
 };

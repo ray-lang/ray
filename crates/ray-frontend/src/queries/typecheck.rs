@@ -9,7 +9,7 @@
 use ray_shared::{
     def::DefId,
     file_id::FileId,
-    pathlib::{ItemPath, ModulePath},
+    pathlib::ItemPath,
     resolution::DefTarget,
     span::Source,
     ty::Ty,
@@ -24,12 +24,11 @@ use ray_typing::{
 use crate::{
     queries::{
         defs::{
-            ImplDef, StructDef, TraitDef, def_for_path, impl_def, impls_for_trait, impls_for_type,
-            struct_def, trait_def, traits_in_module,
+            ImplDef, StructDef, TraitDef, def_for_path, def_path, impl_def, impls_for_trait,
+            impls_for_type, struct_def, trait_def, traits_in_module,
         },
-        libraries::{LoadedLibraries, library_data},
+        libraries::LoadedLibraries,
         operators::{lookup_infix_op, lookup_prefix_op},
-        parse,
         resolve::resolve_builtin,
         types::annotated_scheme,
         workspace::WorkspaceSnapshot,
@@ -55,16 +54,6 @@ impl<'db> QueryEnv<'db> {
     /// The file_id determines what imports are in scope for builtin resolution.
     pub fn new(db: &'db Database, file_id: FileId) -> Self {
         QueryEnv { db, file_id }
-    }
-
-    /// Build a Path for a workspace definition by looking up the module path and appending the name.
-    fn build_workspace_path(&self, def_id: DefId, name: &str) -> ItemPath {
-        let workspace = self.db.get_input::<WorkspaceSnapshot>(());
-        if let Some(file_info) = workspace.file_info(def_id.file) {
-            ItemPath::new(file_info.module_path.clone(), vec![name.into()])
-        } else {
-            ItemPath::new(ModulePath::root(), vec![name.into()])
-        }
     }
 
     /// Convert a defs::TraitDef to a ray_typing::types::TraitTy.
@@ -134,56 +123,6 @@ impl<'db> QueryEnv<'db> {
                 .iter()
                 .map(|f| (f.name.clone(), f.ty.clone()))
                 .collect(),
-        }
-    }
-}
-
-/// Helper to convert a DefTarget to an ItemPath.
-///
-/// For methods (defs with a parent), this builds a fully qualified path like
-/// `module::TypeName::method_name` by looking up the parent def.
-fn def_target_to_item_path(db: &Database, target: &DefTarget) -> Option<ItemPath> {
-    match target {
-        DefTarget::Workspace(def_id) => {
-            let workspace = db.get_input::<WorkspaceSnapshot>(());
-            let parse_result = parse::parse_file(db, def_id.file);
-
-            // Find the def header
-            let def_header = parse_result.defs.iter().find(|h| h.def_id == *def_id)?;
-
-            // Get the module path
-            let module_path = workspace
-                .file_info(def_id.file)
-                .map(|info| info.module_path.clone())
-                .unwrap_or_else(ModulePath::root);
-
-            // Check if this def has a parent (i.e., it's a method in an impl/trait)
-            if let Some(parent_def_id) = def_header.parent {
-                // Look up the parent def to get its name (the type or trait name)
-                let parent_header = parse_result
-                    .defs
-                    .iter()
-                    .find(|h| h.def_id == parent_def_id)?;
-
-                // Build fully qualified path: module::ParentName::method_name
-                Some(ItemPath::new(
-                    module_path,
-                    vec![parent_header.name.clone(), def_header.name.clone()],
-                ))
-            } else {
-                // Top-level def: module::name
-                Some(ItemPath::new(module_path, vec![def_header.name.clone()]))
-            }
-        }
-        DefTarget::Library(lib_def_id) => {
-            if let Some(lib_data) = library_data(db, lib_def_id.module.clone()) {
-                for (item_path, def) in &lib_data.names {
-                    if def == lib_def_id {
-                        return Some(item_path.clone());
-                    }
-                }
-            }
-            None
         }
     }
 }
@@ -291,13 +230,8 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
     fn resolve_builtin(&self, name: &str) -> ItemPath {
         // Try to resolve the builtin in the current file's scope
         match resolve_builtin(self.db, self.file_id, name.to_string()) {
-            Some(target) => {
-                // Convert DefTarget back to ItemPath
-                match def_target_to_item_path(self.db, &target) {
-                    Some(path) => path,
-                    None => ItemPath::from(format!("core::{}", name).as_str()),
-                }
-            }
+            Some(target) => def_path(self.db, target)
+                .expect("resolved builtin should have a valid path"),
             None => {
                 // Fall back to core::{name}
                 ItemPath::from(format!("core::{}", name).as_str())
@@ -309,8 +243,8 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
         let entry = lookup_infix_op(self.db, symbol.to_string())?;
 
         // Convert DefTargets to ItemPaths
-        let trait_path = def_target_to_item_path(self.db, &entry.trait_def)?;
-        let method_path = def_target_to_item_path(self.db, &entry.method_def)?;
+        let trait_path = def_path(self.db, entry.trait_def)?;
+        let method_path = def_path(self.db, entry.method_def)?;
 
         Some((trait_path, method_path))
     }
@@ -318,8 +252,8 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
     fn prefix_op(&self, symbol: &str) -> Option<(ItemPath, ItemPath)> {
         let entry = lookup_prefix_op(self.db, symbol.to_string())?;
 
-        let trait_path = def_target_to_item_path(self.db, &entry.trait_def)?;
-        let method_path = def_target_to_item_path(self.db, &entry.method_def)?;
+        let trait_path = def_path(self.db, entry.trait_def)?;
+        let method_path = def_path(self.db, entry.method_def)?;
 
         Some((trait_path, method_path))
     }
