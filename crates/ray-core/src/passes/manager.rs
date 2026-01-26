@@ -16,7 +16,7 @@ use crate::{
         extern_bindings,
     },
     sourcemap::SourceMap,
-    typing::{build_def_binding_records, build_typecheck_input, collect_def_ids},
+    typing::{build_typecheck_input, collect_def_ids},
 };
 
 /// Simple orchestration helper for frontend passes. It runs binding analysis,
@@ -99,7 +99,6 @@ impl<'a> FrontendPassManager<'a> {
             // Build DefId-keyed structures for the new typechecker.
             let all_defs = collect_def_ids(self.module);
             let def_bindings = build_binding_graph(&all_defs, self.resolutions);
-            let def_binding_records = build_def_binding_records(binding_output);
 
             let typecheck_env = MockTypecheckEnv::new();
             let input = build_typecheck_input(
@@ -110,7 +109,6 @@ impl<'a> FrontendPassManager<'a> {
                 binding_output,
                 self.resolutions,
                 def_bindings,
-                def_binding_records,
             );
             self.lowered_input = Some(input);
             let input = self

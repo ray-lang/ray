@@ -151,9 +151,10 @@ pub struct ExprRecord {
 #[derive(Clone, Debug)]
 pub struct TypeCheckInput {
     pub bindings: BindingGraph<DefId>,
-    /// Consolidated binding metadata keyed by `DefId`. This gradually
-    /// replaces the scattered binding_* maps as the pipeline is reworked.
-    pub binding_records: HashMap<DefId, BindingRecord>,
+    /// Mapping from DefId to the root NodeId of its body expression.
+    /// This replaces `BindingRecord.body_expr` - the actual expression
+    /// metadata is in `expr_records`.
+    pub def_nodes: HashMap<DefId, NodeId>,
     /// Mapping from frontend node ids to lowered binding ids.
     pub node_bindings: HashMap<NodeId, NodeBinding>,
     /// Consolidated expression metadata keyed by NodeId, replacing the
@@ -174,63 +175,31 @@ impl TypeCheckInput {
     /// - Return one `BindingGroup` per SCC, in a topologically sorted order
     ///   so groups can only depend on earlier groups.
     pub fn binding_groups(&self) -> Vec<BindingGroup<DefId>> {
-        let top_level: BTreeSet<DefId> = self
-            .binding_records
-            .iter()
-            .filter_map(|(def_id, rec)| (!rec.is_extern && rec.parent.is_none()).then_some(*def_id))
-            .collect();
-
+        // All definitions in def_nodes are top-level workspace definitions.
+        // External definitions (from libraries) are not included in TypeCheckInput.
+        let top_level: BTreeSet<DefId> = self.def_nodes.keys().copied().collect();
         self.bindings.compute_binding_groups_over(&top_level)
     }
 
-    /// Return the root expression for a given binding, if any. Prefer the
-    /// consolidated binding record and fall back to legacy state while the
-    /// lowering pipeline is migrating.
+    /// Return the root expression for a given binding, if any.
     pub fn binding_root_expr(&self, id: DefId) -> Option<NodeId> {
-        let record = self.binding_records.get(&id);
-        record.and_then(|record| record.body_expr)
+        self.def_nodes.get(&id).copied()
     }
 
-    /// Parent binding for the given def id, if any.
-    /// Note: During migration, parent field still uses BindingId.
-    pub fn binding_parent(&self, id: DefId) -> Option<BindingId> {
-        self.binding_records
-            .get(&id)
-            .and_then(|record| record.parent)
-    }
-
-    /// Collect all def ids whose parent matches the provided binding id.
-    /// Note: During migration, parent field still uses BindingId.
-    pub fn defs_with_parent(&self, parent: BindingId) -> Vec<DefId> {
-        self.binding_records
-            .iter()
-            .filter_map(|(id, record)| {
-                if record.parent == Some(parent) {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Determine the parent binding shared by all members of this group.
-    /// Note: During migration, parent field still uses BindingId.
-    pub fn group_parent(&self, group: &BindingGroup<DefId>) -> Option<BindingId> {
-        let mut parent: Option<BindingId> = None;
-        for def_id in &group.bindings {
-            let this_parent = self.binding_parent(*def_id);
-            match (parent, this_parent) {
-                (None, Some(p)) => parent = Some(p),
-                (Some(existing), Some(p)) if existing != p => {
-                    // Mixed-parent group; treat it as parentless.
-                    debug_assert!(false, "mixed-parent group");
-                    return None;
-                }
-                _ => {}
-            }
+    /// Get the function parameters for a binding, if it's a function.
+    /// Returns None for non-function bindings.
+    pub fn binding_params(&self, id: DefId) -> Option<&Vec<LocalBindingId>> {
+        let root = self.def_nodes.get(&id)?;
+        let record = self.expr_records.get(root)?;
+        match &record.kind {
+            ExprKind::Function { params, .. } => Some(params),
+            _ => None,
         }
-        parent
+    }
+
+    /// Check if a binding is a function.
+    pub fn is_function_binding(&self, id: DefId) -> bool {
+        self.binding_params(id).is_some()
     }
 
     /// Return the direct child expressions of the given expression.
@@ -795,15 +764,16 @@ pub fn typecheck(
 ) -> TypeCheckResult {
     // Shared type context checking pass. This will accumulate information
     // across binding groups. Seed any pre-existing binding schemes from
-    // the frontend (e.g. annotated function types).
+    // the environment (e.g. annotated function types).
     let mut schema_allocator = SchemaVarAllocator::new();
     let mut ctx = SolverContext::new(&mut schema_allocator, env);
     log::debug!(
         "[typecheck] schema variable start: ?s{}",
         ctx.schema_allocator_mut().curr_id()
     );
-    for (def_id, record) in input.binding_records.iter() {
-        if let Some(scheme) = &record.scheme {
+    // Seed annotated schemes from the environment
+    for def_id in input.def_nodes.keys() {
+        if let Some(scheme) = env.external_scheme(*def_id) {
             ctx.binding_schemes.insert((*def_id).into(), scheme.clone());
             ctx.explicitly_annotated.insert((*def_id).into());
         }
@@ -833,23 +803,18 @@ pub fn typecheck(
     // For now, skip this population step.
     let _ = &input.node_bindings;
 
+    // Note: Path-based scheme storage in TyCtx is legacy. In the incremental
+    // pipeline, schemes are stored by DefId in TypeCheckResult.
     tcx.schemes.clear();
     tcx.all_schemes.clear();
-    #[allow(unused_mut)] // TEMP
+
     let mut schemes = HashMap::new();
     let mut local_tys = HashMap::new();
     for (target, scheme) in binding_schemes.iter() {
         match target {
-            // Extract top-level definitions for path-based scheme storage
             BindingTarget::Def(def_id) => {
-                if let Some(record) = input.binding_records.get(def_id) {
-                    if let Some(path) = &record.path {
-                        tcx.all_schemes.insert(path.clone(), scheme.clone());
-                        if !record.is_extern && record.parent.is_none() {
-                            tcx.schemes.insert(path.clone(), scheme.clone());
-                        }
-                    }
-                }
+                // Store scheme by DefId in the result
+                schemes.insert(*def_id, scheme.clone());
             }
             // Extract local binding types (monomorphic, so take the body type)
             BindingTarget::Local(local_id) => {
@@ -1030,13 +995,12 @@ pub fn typecheck_group<'a>(
     // Set up external scheme lookup callback
     ctx.set_external_schemes(external_schemes);
 
-    // Seed context with annotated schemes for bindings in this group
+    // Seed context with annotated schemes for bindings in this group.
+    // Annotated schemes come from the environment (TypecheckEnv::external_scheme).
     for def_id in &group.bindings {
-        if let Some(record) = input.binding_records.get(def_id) {
-            if let Some(scheme) = &record.scheme {
-                ctx.binding_schemes.insert((*def_id).into(), scheme.clone());
-                ctx.explicitly_annotated.insert((*def_id).into());
-            }
+        if let Some(scheme) = env.external_scheme(*def_id) {
+            ctx.binding_schemes.insert((*def_id).into(), scheme.clone());
+            ctx.explicitly_annotated.insert((*def_id).into());
         }
     }
 
@@ -1447,12 +1411,9 @@ fn check_residuals_and_emit_errors(
                     continue;
                 }
                 CallKind::Scoped { def_id, .. } => {
-                    let binding_name = module
-                        .binding_records
-                        .get(def_id)
-                        .and_then(|rec| rec.path.as_ref())
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| def_id.to_string());
+                    // For error messages, use the def_id's string representation.
+                    // In the incremental pipeline, path lookup happens elsewhere.
+                    let binding_name = def_id.to_string();
                     let msg = format!(
                         "cannot resolve scoped call: `{}` on `{}` with signature: ({}) -> {}",
                         binding_name, resolve_call.subject_ty, args, ret_ty
@@ -1560,8 +1521,7 @@ mod tests {
     };
 
     use crate::{
-        BindingKind, BindingRecord, ExprRecord, PatternKind, PatternRecord, SolverEnv,
-        TypeCheckInput, TypecheckOptions,
+        ExprRecord, PatternKind, PatternRecord, SolverEnv, TypeCheckInput, TypecheckOptions,
         binding_groups::{BindingGraph, BindingGroup},
         constraint_tree::{build_constraint_tree_for_group, walk_tree},
         context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
@@ -1581,10 +1541,8 @@ mod tests {
         let mut graph = BindingGraph::<DefId>::new();
         graph.add_binding(def_id);
 
-        let mut binding_records = HashMap::new();
-        let mut record = BindingRecord::new(BindingKind::Value);
-        record.body_expr = Some(root_expr);
-        binding_records.insert(def_id, record);
+        let mut def_nodes = HashMap::new();
+        def_nodes.insert(def_id, root_expr);
 
         let expr_records = kinds
             .into_iter()
@@ -1593,7 +1551,7 @@ mod tests {
 
         TypeCheckInput {
             bindings: graph,
-            binding_records,
+            def_nodes,
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
@@ -1854,11 +1812,11 @@ mod tests {
     }
 
     fn make_multi_binding_module(
-        binding_records: HashMap<DefId, BindingRecord>,
+        def_nodes: HashMap<DefId, NodeId>,
         expr_kinds: HashMap<NodeId, ExprKind>,
     ) -> TypeCheckInput {
         let mut graph = BindingGraph::<DefId>::new();
-        for def_id in binding_records.keys() {
+        for def_id in def_nodes.keys() {
             graph.add_binding(*def_id);
         }
 
@@ -1869,7 +1827,7 @@ mod tests {
 
         TypeCheckInput {
             bindings: graph,
-            binding_records,
+            def_nodes,
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
@@ -1878,12 +1836,12 @@ mod tests {
     }
 
     fn make_multi_binding_module_with_patterns(
-        binding_records: HashMap<DefId, BindingRecord>,
+        def_nodes: HashMap<DefId, NodeId>,
         expr_kinds: HashMap<NodeId, ExprKind>,
         pattern_records: HashMap<NodeId, PatternRecord>,
     ) -> TypeCheckInput {
         let mut graph = BindingGraph::<DefId>::new();
-        for def_id in binding_records.keys() {
+        for def_id in def_nodes.keys() {
             graph.add_binding(*def_id);
         }
 
@@ -1894,7 +1852,7 @@ mod tests {
 
         TypeCheckInput {
             bindings: graph,
-            binding_records,
+            def_nodes,
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records,
@@ -1947,13 +1905,9 @@ mod tests {
         let assign_b = NodeId::new();
         let pat_b = NodeId::new();
 
-        // Build binding records - only top-level definitions go here now.
-        let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
-
-        // main is a top-level function binding.
-        let mut main_rec = BindingRecord::new(BindingKind::Function { params: vec![] });
-        main_rec.body_expr = Some(main_fn);
-        binding_records.insert(main_def, main_rec);
+        // Build def_nodes - maps DefId to root expression NodeId.
+        let mut def_nodes: HashMap<DefId, NodeId> = HashMap::new();
+        def_nodes.insert(main_def, main_fn);
 
         // Build expression kinds.
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
@@ -2060,7 +2014,7 @@ mod tests {
         );
 
         let module =
-            make_multi_binding_module_with_patterns(binding_records, kinds, pattern_records);
+            make_multi_binding_module_with_patterns(def_nodes, kinds, pattern_records);
 
         // Solve the top-level group containing only `main`. The local binding `id`
         // must be solved and generalized before its uses in later statements.
@@ -2144,20 +2098,10 @@ mod tests {
             fields: vec![],
         };
 
-        // Binding records - only top-level definitions
-        let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
-
-        // malloc is a value binding with an annotated scheme.
-        let mut malloc_rec = BindingRecord::new(BindingKind::Function {
-            params: vec![malloc_arg],
-        });
-        malloc_rec.scheme = Some(malloc_scheme.clone());
-        binding_records.insert(malloc_def, malloc_rec);
-
-        // main is a top-level function binding.
-        let mut main_rec = BindingRecord::new(BindingKind::Function { params: vec![] });
-        main_rec.body_expr = Some(main_fn);
-        binding_records.insert(main_def, main_rec);
+        // def_nodes - maps DefId to root expression NodeId
+        // Note: malloc is extern (no body), only main has a body
+        let mut def_nodes: HashMap<DefId, NodeId> = HashMap::new();
+        def_nodes.insert(main_def, main_fn);
 
         // Expressions
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
@@ -2180,18 +2124,20 @@ mod tests {
             },
         );
 
-        let module = make_multi_binding_module(binding_records, kinds);
+        let module = make_multi_binding_module(def_nodes, kinds);
+        // Only main is in the binding group - malloc is extern with a known scheme
         let groups = vec![BindingGroup {
-            bindings: vec![malloc_def, main_def],
+            bindings: vec![main_def],
         }];
 
         let mut typecheck_env = MockTypecheckEnv::new();
         typecheck_env.add_trait(ItemPath::from("core::Int"), int_trait_ty);
         typecheck_env.add_impl(uint_int_impl);
+        // Add malloc's scheme to the environment so external_scheme() can find it
+        typecheck_env.add_external_scheme(malloc_def, malloc_scheme.clone());
 
         let mut schema_allocator = SchemaVarAllocator::new();
         let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
-        ctx.binding_schemes.insert(malloc_def.into(), malloc_scheme);
 
         let result = solve_groups(&module, groups, &mut ctx, &typecheck_env, None);
         assert!(
@@ -2230,13 +2176,9 @@ mod tests {
         let lit_10 = NodeId::new();
         let unit_lit = NodeId::new();
 
-        // Build binding records - only top-level definitions.
-        let mut binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
-
-        // main is a top-level function binding.
-        let mut main_rec = BindingRecord::new(BindingKind::Function { params: vec![] });
-        main_rec.body_expr = Some(main_fn);
-        binding_records.insert(main_def, main_rec);
+        // Build def_nodes - maps DefId to root expression NodeId.
+        let mut def_nodes: HashMap<DefId, NodeId> = HashMap::new();
+        def_nodes.insert(main_def, main_fn);
 
         // Build expression kinds.
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
@@ -2284,7 +2226,7 @@ mod tests {
         );
 
         let module =
-            make_multi_binding_module_with_patterns(binding_records, kinds, pattern_records);
+            make_multi_binding_module_with_patterns(def_nodes, kinds, pattern_records);
 
         // MockTypecheckEnv: core::Int has a default type of `uint`, and there is an impl
         // Int[uint]. This should allow defaulting to pick `uint` for the literal.

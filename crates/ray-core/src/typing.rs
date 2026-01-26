@@ -9,8 +9,7 @@ use ray_shared::{
     ty::Ty,
 };
 use ray_typing::{
-    BindingKind, BindingRecord, ExprRecord, NodeBinding, PatternKind, PatternRecord,
-    TypeCheckInput, TypeError,
+    ExprRecord, NodeBinding, PatternKind, PatternRecord, TypeCheckInput, TypeError,
     binding_groups::{BindingGraph, BindingId},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern},
     env::TypecheckEnv,
@@ -18,10 +17,7 @@ use ray_typing::{
 };
 
 use crate::{
-    ast::{
-        CurlyElement, Decl, Expr, FnParam, Literal, Module, Node, Pattern as AstPattern,
-        RangeLimits,
-    },
+    ast::{CurlyElement, Decl, Expr, Literal, Module, Node, Pattern as AstPattern, RangeLimits},
     passes::binding::BindingPassOutput,
     sourcemap::SourceMap,
 };
@@ -30,10 +26,12 @@ struct TyLowerCtx<'a> {
     srcmap: &'a SourceMap,
     env: &'a dyn TypecheckEnv,
     resolutions: &'a HashMap<NodeId, Resolution>,
-    binding_records: HashMap<BindingId, BindingRecord>,
     node_bindings: HashMap<NodeId, NodeBinding>,
     expr_records: HashMap<NodeId, ExprRecord>,
     pattern_records: HashMap<NodeId, PatternRecord>,
+    /// Mapping from DefId to the root expression NodeId for each definition.
+    /// This is used by the typechecker to find the body expression for a binding.
+    def_nodes: HashMap<DefId, NodeId>,
     /// Mapping from fully-qualified value paths to their BindingId, used to
     /// lower Expr::Name / Expr::Path into ExprKind::Var, and later to
     /// reconstruct per-binding schemes keyed by their module path.
@@ -57,10 +55,10 @@ impl<'a> TyLowerCtx<'a> {
             srcmap,
             env,
             resolutions,
-            binding_records: binding_output.binding_records.clone(),
             node_bindings: binding_output.node_bindings.clone(),
             expr_records: HashMap::new(),
             pattern_records: HashMap::new(),
+            def_nodes: HashMap::new(),
             value_bindings: binding_output.value_bindings.clone(),
             local_scopes: vec![],
             loop_depth: 0,
@@ -133,16 +131,6 @@ impl<'a> TyLowerCtx<'a> {
         }
     }
 
-    fn note_binding_source(&mut self, binding: BindingId, node_id: NodeId) {
-        if let Some(src) = self.srcmap.get_by_id(node_id) {
-            self.binding_records
-                .entry(binding)
-                .or_insert_with(|| BindingRecord::new(BindingKind::Value))
-                .sources
-                .push(src);
-        }
-    }
-
     fn emit_error(&mut self, node: &Node<Expr>, msg: impl Into<String>) {
         let mut info = TypeSystemInfo::new();
         if let Some(src) = self.srcmap.get_by_id(node.id) {
@@ -199,24 +187,6 @@ pub fn collect_def_ids(module: &Module<(), Decl>) -> Vec<DefId> {
     all_defs
 }
 
-/// Build DefId-keyed binding records from the legacy BindingId-keyed records.
-pub fn build_def_binding_records(
-    binding_output: &BindingPassOutput,
-) -> HashMap<DefId, BindingRecord> {
-    let mut def_binding_records: HashMap<DefId, BindingRecord> = HashMap::new();
-    for (binding_id, record) in &binding_output.binding_records {
-        for (node_id, node_binding) in &binding_output.node_bindings {
-            if let NodeBinding::Def(bid) = node_binding {
-                if bid == binding_id {
-                    def_binding_records.insert(node_id.owner, record.clone());
-                    break;
-                }
-            }
-        }
-    }
-    def_binding_records
-}
-
 pub fn build_typecheck_input(
     decls: &[Node<Decl>],
     _top_level_stmts: &[Node<Expr>],
@@ -225,7 +195,6 @@ pub fn build_typecheck_input(
     binding_output: &BindingPassOutput,
     resolutions: &HashMap<NodeId, Resolution>,
     def_bindings: BindingGraph<DefId>,
-    def_binding_records: HashMap<DefId, BindingRecord>,
 ) -> TypeCheckInput {
     let mut ctx = TyLowerCtx::new(srcmap, env, binding_output, resolutions);
 
@@ -330,7 +299,7 @@ pub fn build_typecheck_input(
 
     TypeCheckInput {
         bindings: def_bindings,
-        binding_records: def_binding_records,
+        def_nodes: ctx.def_nodes,
         node_bindings: ctx.node_bindings,
         expr_records: ctx.expr_records,
         pattern_records: ctx.pattern_records,
@@ -344,26 +313,12 @@ fn lower_func_binding(
     sig: &crate::ast::FuncSig,
     body: &Node<Expr>,
 ) {
-    let binding_id = match ctx.node_bindings.get(&decl_id) {
-        Some(node_binding) => node_binding.binding(),
-        None => {
-            ctx.emit_missing_binding(decl_id, "function");
-            return;
-        }
-    };
+    if ctx.node_bindings.get(&decl_id).is_none() {
+        ctx.emit_missing_binding(decl_id, "function");
+        return;
+    }
 
     let mut param_bindings: Vec<LocalBindingId> = Vec::with_capacity(sig.params.len());
-
-    // If this function has an already-resolved type scheme on the v1 side,
-    // convert it into the new TyScheme and seed the binding schemes with it.
-    // This implements the "use function annotated type" rule: the annotated
-    // type constrains the body, and generalization will reproduce the same
-    // scheme (up to residual predicates).
-    if let Some(scheme) = &sig.ty {
-        if let Some(rec) = ctx.binding_records.get_mut(&binding_id) {
-            rec.scheme = Some(scheme.clone());
-        }
-    }
 
     // Each function body gets its own local scope for bindings introduced
     // by parameters, assignments, and other local-binding forms.
@@ -380,28 +335,7 @@ fn lower_func_binding(
                 continue;
             }
         };
-
-        // Also record in legacy binding system for backwards compatibility
-        match &param_node.value {
-            FnParam::Name(n) => {
-                let binding = ctx.binding_from_node_or_path(param_node.id, &n.path);
-                ctx.note_binding_source(binding, param_node.id);
-            }
-            FnParam::DefaultValue(p, _) => {
-                let binding = ctx.binding_from_node_or_path(param_node.id, p.name());
-                ctx.note_binding_source(binding, param_node.id);
-            }
-            FnParam::Missing { placeholder, .. } => {
-                let binding = ctx.binding_from_node_or_path(param_node.id, &placeholder.path);
-                ctx.note_binding_source(binding, param_node.id);
-            }
-        }
         param_bindings.push(local_id);
-    }
-    if let Some(rec) = ctx.binding_records.get_mut(&binding_id) {
-        rec.kind = BindingKind::Function {
-            params: param_bindings.clone(),
-        };
     }
     let body_expr_id = lower_expr(ctx, body);
     ctx.exit_scope();
@@ -417,13 +351,16 @@ fn lower_func_binding(
             source,
         },
     );
+
+    // Record the mapping from DefId to root expression NodeId
+    ctx.def_nodes.insert(decl_id.owner, decl_id);
 }
 
 fn lower_signature_binding(
     ctx: &mut TyLowerCtx<'_>,
     extern_decl_id: NodeId,
     sig_decl_id: NodeId,
-    sig: &crate::ast::FuncSig,
+    _sig: &crate::ast::FuncSig,
 ) {
     let binding_id = match ctx.node_bindings.get(&sig_decl_id) {
         Some(node_binding) => node_binding.binding(),
@@ -434,12 +371,6 @@ fn lower_signature_binding(
     };
     ctx.node_bindings
         .insert(extern_decl_id, NodeBinding::Def(binding_id));
-
-    if let Some(record) = ctx.binding_records.get_mut(&binding_id) {
-        if let Some(scheme) = &sig.ty {
-            record.scheme = Some(scheme.clone());
-        }
-    }
 }
 
 /// Lower an assignment left-hand-side pattern (docs/type-system.md A.7, A.8)
@@ -1251,7 +1182,7 @@ mod tests {
         ast::{Block, Boxed, Decl, Expr, Func, Literal, Module, Node},
         passes::{FrontendPassManager, deps::build_binding_graph},
         sourcemap::SourceMap,
-        typing::{build_def_binding_records, build_typecheck_input, collect_def_ids},
+        typing::{build_typecheck_input, collect_def_ids},
     };
 
     /// Set up a DefId context for tests that create nodes.
@@ -1312,7 +1243,6 @@ mod tests {
         let binding_output = pass_manager.binding_output().clone();
         let def_ids = collect_def_ids(&module);
         let def_bindings = build_binding_graph(&def_ids, &resolutions);
-        let def_binding_records = build_def_binding_records(&binding_output);
         let input = build_typecheck_input(
             &module.decls,
             &[],
@@ -1321,16 +1251,14 @@ mod tests {
             &binding_output,
             &resolutions,
             def_bindings,
-            def_binding_records,
         );
 
-        // There should be exactly one binding record with a body expression.
-        assert_eq!(input.binding_records.len(), 1);
-        let (&binding_id, record) = input.binding_records.iter().next().unwrap();
-        let root_expr = record.body_expr.expect("binding should have body expr");
+        // There should be exactly one def_node entry.
+        assert_eq!(input.def_nodes.len(), 1);
+        let (&def_id, &root_expr) = input.def_nodes.iter().next().unwrap();
 
         // The binding graph should know about this binding.
-        assert!(input.bindings.edges.contains_key(&binding_id));
+        assert!(input.bindings.edges.contains_key(&def_id));
 
         // The root expression should be a zero-arg function whose body is the bool literal.
         let kind = input.expr_kind(root_expr).unwrap();

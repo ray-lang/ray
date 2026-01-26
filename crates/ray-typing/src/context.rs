@@ -613,16 +613,21 @@ impl<'a> SolverContext<'a> {
 
     /// Lookup a scheme for a top-level definition.
     ///
-    /// First checks `binding_schemes`, then falls back to the external callback
-    /// if one is set.
+    /// Checks in order:
+    /// 1. `binding_schemes` (schemes from the current/previous binding groups)
+    /// 2. `external_schemes` callback (for incremental compilation)
+    /// 3. `env.external_scheme()` (for externally-defined schemes)
     pub fn lookup_def_scheme(&self, def_id: DefId) -> Option<TyScheme> {
         if let Some(scheme) = self.binding_schemes.get(&def_id.into()) {
             return Some(scheme.clone());
         }
         if let Some(callback) = &self.external_schemes {
-            return callback(def_id);
+            if let Some(scheme) = callback(def_id) {
+                return Some(scheme);
+            }
         }
-        None
+        // Fall back to the environment (e.g., for extern declarations)
+        self.env.external_scheme(def_id)
     }
 }
 

@@ -13,7 +13,7 @@ use ray_shared::{
 };
 
 use crate::{
-    BindingKind, BindingRecord, PatternKind, TypeCheckInput,
+    PatternKind, TypeCheckInput,
     binding_groups::BindingGroup,
     constraints::{Constraint, ConstraintKind, ResolveCallConstraint},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
@@ -413,14 +413,8 @@ pub fn generate_constraints_for_group(
     // expression scope via `generate_constraints_for_expr`.
     let mut next_id = 1;
     for binding_id in &group.bindings {
-        // The new lowering pipeline guarantees a binding record for every
-        // binding that participates in type checking. If it is missing we
-        // skip this binding rather than building an incomplete constraint
-        // tree.
-        let Some(record) = input.binding_records.get(binding_id) else {
-            continue;
-        };
-        let Some(expr_root) = record.body_expr else {
+        // Look up the root expression for this binding from def_nodes
+        let Some(expr_root) = input.def_nodes.get(binding_id).copied() else {
             continue;
         };
 
@@ -430,7 +424,14 @@ pub fn generate_constraints_for_group(
 
         // Build info anchored at the binding's root expression.
         let mut binding_info = TypeSystemInfo::new();
-        binding_info.source.extend(record.sources.clone());
+        if let Some(rec) = input.expr_records.get(&expr_root) {
+            if let Some(src) = &rec.source {
+                binding_info.with_src(src.clone());
+            }
+        }
+
+        // Get function params from the root ExprKind if it's a function
+        let params = input.binding_params(*binding_id);
 
         let BindingPreparation {
             binding_ty,
@@ -438,7 +439,7 @@ pub fn generate_constraints_for_group(
             givens,
             metas,
             skolem_subst,
-        } = prepare_binding_context(ctx, *binding_id, record, &mut binding_info);
+        } = prepare_binding_context(ctx, *binding_id, params, &mut binding_info);
         binding_node.metas.extend(metas);
         binding_node.givens.extend(givens);
 
@@ -492,10 +493,16 @@ pub struct BindingPreparation {
 /// - For annotated bindings, skolemize the scheme and record the givens.
 /// - For functions, seed parameter bindings and record the result type so
 ///   the caller can push it on the function-return stack.
+///
+/// # Arguments
+/// * `ctx` - The solver context
+/// * `def_id` - The definition being prepared
+/// * `params` - Function parameters if this is a function binding (from ExprKind::Function)
+/// * `binding_info` - Type system info for diagnostics
 pub fn prepare_binding_context(
     ctx: &mut SolverContext,
     def_id: DefId,
-    record: &BindingRecord,
+    params: Option<&Vec<LocalBindingId>>,
     binding_info: &mut TypeSystemInfo,
 ) -> BindingPreparation {
     // Following Section 4.3, introduce a mono type for the binding itself
@@ -524,8 +531,8 @@ pub fn prepare_binding_context(
 
     // Functions require special handling so that their parameter bindings
     // expose the correct types and the body can see the result meta.
-    let ret_ty = match &record.kind {
-        BindingKind::Function { params } => match &binding_ty {
+    let ret_ty = if let Some(params) = params {
+        match &binding_ty {
             Ty::Func(param_tys, ret) => {
                 // Annotated function: propagate the skolemized parameter
                 // types down into each parameter binding so references to
@@ -557,8 +564,9 @@ pub fn prepare_binding_context(
                     .insert(def_id.into(), TyScheme::from_mono(binding_ty.clone()));
                 Some(ret)
             }
-        },
-        _ => None,
+        }
+    } else {
+        None
     };
 
     BindingPreparation {
@@ -1807,7 +1815,7 @@ mod tests {
     };
 
     use crate::{
-        BindingKind, BindingRecord, ExprRecord, TypeCheckInput,
+        ExprRecord, TypeCheckInput,
         binding_groups::{BindingGraph, BindingGroup},
         constraint_tree::{ConstraintNode, build_constraint_tree_for_group, walk_tree},
         constraints::ConstraintKind,
@@ -1828,10 +1836,8 @@ mod tests {
         let mut graph = BindingGraph::<DefId>::new();
         graph.add_binding(def_id);
 
-        let mut binding_records = HashMap::new();
-        let mut record = BindingRecord::new(BindingKind::Value);
-        record.body_expr = Some(root_expr);
-        binding_records.insert(def_id, record);
+        let mut def_nodes = HashMap::new();
+        def_nodes.insert(def_id, root_expr);
 
         let expr_records = kinds
             .into_iter()
@@ -1840,7 +1846,7 @@ mod tests {
 
         TypeCheckInput {
             bindings: graph,
-            binding_records,
+            def_nodes,
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
@@ -1858,12 +1864,8 @@ mod tests {
         let mut graph = BindingGraph::<DefId>::new();
         graph.add_binding(def_id);
 
-        let mut binding_records = HashMap::new();
-        let mut record = BindingRecord::new(BindingKind::Function {
-            params: params.clone(),
-        });
-        record.body_expr = Some(func_expr);
-        binding_records.insert(def_id, record);
+        let mut def_nodes = HashMap::new();
+        def_nodes.insert(def_id, func_expr);
 
         let mut expr_records = HashMap::new();
         expr_records.insert(root_expr, ExprRecord { kind, source: None });
@@ -1880,7 +1882,7 @@ mod tests {
 
         TypeCheckInput {
             bindings: graph,
-            binding_records,
+            def_nodes,
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),

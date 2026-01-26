@@ -12,6 +12,7 @@ pub struct MockTypecheckEnv {
     pub structs: HashMap<ItemPath, StructTy>,
     pub traits: HashMap<ItemPath, TraitTy>,
     pub impls: Vec<ImplTy>,
+    pub external_schemes: HashMap<DefId, TyScheme>,
 }
 
 impl MockTypecheckEnv {
@@ -29,6 +30,10 @@ impl MockTypecheckEnv {
 
     pub fn add_impl(&mut self, impl_ty: ImplTy) {
         self.impls.push(impl_ty);
+    }
+
+    pub fn add_external_scheme(&mut self, def_id: DefId, scheme: TyScheme) {
+        self.external_schemes.insert(def_id, scheme);
     }
 }
 
@@ -86,8 +91,8 @@ impl TypecheckEnv for MockTypecheckEnv {
             .collect()
     }
 
-    fn external_scheme(&self, _def_id: DefId) -> Option<TyScheme> {
-        None
+    fn external_scheme(&self, def_id: DefId) -> Option<TyScheme> {
+        self.external_schemes.get(&def_id).cloned()
     }
 
     fn resolve_builtin(&self, name: &str) -> ItemPath {
