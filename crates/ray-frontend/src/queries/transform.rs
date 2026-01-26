@@ -9,10 +9,7 @@ use std::collections::HashMap;
 use ray_core::{
     ast::{
         CurlyElement, Decl, Expr, File, FnParam, FuncSig, Node, Trait,
-        transform::{
-            convert_func_to_closure, desugar_compound_assignment, expand_curly_shorthand,
-            normalize_curly,
-        },
+        transform::{convert_func_to_closure, desugar_compound_assignment, expand_curly_shorthand},
     },
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
@@ -23,14 +20,14 @@ use ray_shared::{
     file_id::FileId,
     node_id::NodeId,
     pathlib::FilePath,
-    resolution::{DefTarget, Resolution},
+    resolution::Resolution,
     span::{Source, parsed::Parsed},
     ty::Ty,
 };
 use ray_typing::types::TyScheme;
 
 use crate::{
-    queries::{defs::struct_def, parse::parse_file, resolve::name_resolutions},
+    queries::{parse::parse_file, resolve::name_resolutions},
     query::{Database, Query},
 };
 
@@ -58,8 +55,11 @@ pub struct FileAst {
 /// This query applies several transformations to the raw parsed AST:
 /// 1. Compound assignment desugaring: `x += 1` becomes `x = x + 1`
 /// 2. Curly shorthand expansion: `Point { x }` becomes `Point { x: x }`
-/// 3. Curly field ordering: Fields are reordered to match struct definition
-/// 4. Function literal to closure: Anonymous `fn` expressions become closures
+/// 3. Function literal to closure: Anonymous `fn` expressions become closures
+///
+/// Note: Field ordering and field existence validation are handled during
+/// typechecking, not here. This avoids a query cycle between file_ast and
+/// struct_def.
 ///
 /// Most downstream queries should depend on `file_ast`, not `parse_file`.
 /// Exceptions include `file_imports`, `file_exports`, and `name_resolutions`
@@ -73,24 +73,11 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
     let mut source_map = parse_result.source_map.clone();
     let mut errors = parse_result.errors.clone();
 
-    // Build a lookup function for struct field order
-    let struct_field_lookup = |def_target: &DefTarget| -> Option<HashMap<String, usize>> {
-        let struct_definition = struct_def(db, def_target.clone())?;
-        let field_index: HashMap<String, usize> = struct_definition
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (f.name.clone(), i))
-            .collect();
-        Some(field_index)
-    };
-
     // Create a context for transformations
     let mut ctx = TransformContext {
         source_map: &mut source_map,
         errors: &mut errors,
         resolutions: &resolutions,
-        struct_field_lookup: &struct_field_lookup,
         filepath: &ast.filepath,
     };
 
@@ -113,22 +100,15 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
 }
 
 /// Context for AST transformations.
-struct TransformContext<'a, F>
-where
-    F: Fn(&DefTarget) -> Option<HashMap<String, usize>>,
-{
+struct TransformContext<'a> {
     source_map: &'a mut SourceMap,
     errors: &'a mut Vec<RayError>,
     resolutions: &'a HashMap<NodeId, Resolution>,
-    struct_field_lookup: &'a F,
     filepath: &'a FilePath,
 }
 
 /// Transform a declaration node.
-fn transform_decl<F>(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_, F>)
-where
-    F: Fn(&DefTarget) -> Option<HashMap<String, usize>>,
-{
+fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
     match &mut decl.value {
         Decl::Func(func) => {
             if let Some(body) = &mut func.body {
@@ -185,10 +165,7 @@ where
 /// This uses the existing AST walker pattern but with mutation.
 /// For each expression, we first recurse into children, then apply
 /// transformations to the current node.
-fn transform_expr<F>(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_, F>)
-where
-    F: Fn(&DefTarget) -> Option<HashMap<String, usize>>,
-{
+fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
     // First, recursively transform child expressions
     transform_expr_children(expr, ctx);
 
@@ -212,58 +189,37 @@ where
             }
         }
         Expr::Curly(curly) => {
-            // Curly shorthand expansion and field reordering
-            // Skip if no struct type to look up
+            // Curly shorthand expansion: Point { x } -> Point { x: x }
+            // Field ordering and field existence validation are handled during
+            // typechecking, not here.
             if curly.lhs.is_none() {
                 return;
             }
 
             // Try to resolve the struct type using the node_id's resolution
-            let resolution = ctx.resolutions.get(&node_id);
-            let def_target = resolution.and_then(|res| match res {
-                Resolution::Def(target) => Some(target),
-                _ => None,
-            });
+            let is_resolved = ctx
+                .resolutions
+                .get(&node_id)
+                .is_some_and(|res| matches!(res, Resolution::Def(_)));
 
-            // Get field ordering from struct definition
-            let field_index = def_target.and_then(|target| (ctx.struct_field_lookup)(target));
-
-            match field_index {
-                Some(field_index) => {
-                    // Use normalize_curly which handles both shorthand expansion and field reordering
-                    match normalize_curly(curly, &src, &field_index, ctx.source_map, def_id) {
-                        Ok((new_curly, new_srcmap)) => {
-                            *curly = new_curly;
-                            *ctx.source_map = new_srcmap;
-                        }
-                        Err(err) => {
-                            // Normalization failed, but still expand shorthand
-                            expand_curly_shorthand(curly, ctx.source_map, def_id);
-                            ctx.errors.push(err);
-                        }
-                    }
-                }
-                None => {
-                    // Can't look up struct definition - emit error if name couldn't be resolved
-                    if def_target.is_none() {
-                        // Name wasn't resolved at all - struct type is undefined
-                        if let Some(lhs) = &curly.lhs {
-                            ctx.errors.push(RayError {
-                                msg: format!("struct type `{}` is undefined", lhs),
-                                src: vec![Source {
-                                    span: lhs.span().copied(),
-                                    filepath: ctx.filepath.clone(),
-                                    ..Default::default()
-                                }],
-                                kind: RayErrorKind::Type,
-                                context: Some("struct construction".to_string()),
-                            });
-                        }
-                    }
-                    // Still expand shorthand for downstream passes
-                    expand_curly_shorthand(curly, ctx.source_map, def_id);
+            // Emit error if struct type couldn't be resolved
+            if !is_resolved {
+                if let Some(lhs) = &curly.lhs {
+                    ctx.errors.push(RayError {
+                        msg: format!("struct type `{}` is undefined", lhs),
+                        src: vec![Source {
+                            span: lhs.span().copied(),
+                            filepath: ctx.filepath.clone(),
+                            ..Default::default()
+                        }],
+                        kind: RayErrorKind::Type,
+                        context: Some("struct construction".to_string()),
+                    });
                 }
             }
+
+            // Always expand shorthand for downstream passes (typechecker expects this)
+            expand_curly_shorthand(curly, ctx.source_map, def_id);
         }
         Expr::Func(func) => {
             // Function literal to closure conversion - only for anonymous functions
@@ -283,10 +239,7 @@ where
 }
 
 /// Recursively transform child expressions.
-fn transform_expr_children<F>(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_, F>)
-where
-    F: Fn(&DefTarget) -> Option<HashMap<String, usize>>,
-{
+fn transform_expr_children(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
     match &mut expr.value {
         Expr::BinOp(binop) => {
             transform_expr(&mut binop.lhs, ctx);
@@ -738,7 +691,7 @@ fn main() {
     }
 
     #[test]
-    fn file_ast_reorders_curly_fields() {
+    fn file_ast_preserves_curly_field_order() {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -751,7 +704,7 @@ fn main() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // Fields in wrong order (y, x) should be reordered to match struct (x, y)
+        // Fields in any order should be preserved (ordering is handled by typechecker)
         FileSource::new(
             &db,
             file_id,
@@ -774,7 +727,7 @@ fn main() {
             result.errors
         );
 
-        // Find the curly expression and verify fields are reordered
+        // Find the curly expression and verify fields are preserved in source order
         let func = result
             .ast
             .decls
@@ -790,7 +743,8 @@ fn main() {
             if let Some(stmt) = block.stmts.first() {
                 if let Expr::Assign(assign) = &stmt.value {
                     if let Expr::Curly(curly) = &assign.rhs.value {
-                        // After reordering, fields should be in struct definition order: x, y
+                        // Fields should be preserved in source order: y, x
+                        // (ordering/validation happens in typechecker, not file_ast)
                         assert_eq!(curly.elements.len(), 2, "Should have 2 fields");
 
                         // Extract field names
@@ -805,8 +759,8 @@ fn main() {
 
                         assert_eq!(
                             field_names,
-                            vec!["x".to_string(), "y".to_string()],
-                            "Fields should be reordered to match struct definition order (x, y)"
+                            vec!["y".to_string(), "x".to_string()],
+                            "Fields should be preserved in source order (y, x)"
                         );
                     }
                 }

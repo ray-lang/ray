@@ -12,6 +12,7 @@ use ray_shared::{
     resolution::{DefTarget, Resolution},
     span::parsed::Parsed,
     ty::{Ty, TyVar},
+    type_param_id::TypeParamId,
 };
 use ray_typing::types::{ReceiverMode, TyScheme};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ use crate::{
         libraries::{LoadedLibraries, library_data},
         parse::parse_file,
         resolve::{file_scope, name_resolutions},
+        types::{apply_type_resolutions, apply_type_resolutions_to_scheme, mapped_def_types},
         workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
@@ -186,6 +188,46 @@ fn lookup_in_library(db: &Database, path: &ItemPath) -> Option<DefTarget> {
     Some(DefTarget::Library(lib_def_id))
 }
 
+/// Convert a DefTarget to its ItemPath.
+///
+/// For workspace definitions, looks up the DefHeader to get the name and module.
+/// For library definitions, looks up in the LibraryData's reverse index.
+fn def_target_to_item_path(db: &Database, target: &DefTarget) -> ItemPath {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let workspace = db.get_input::<WorkspaceSnapshot>(());
+            let parse_result = parse_file(db, def_id.file);
+
+            let module_path = workspace
+                .file_info(def_id.file)
+                .map(|info| info.module_path.clone())
+                .unwrap_or_else(ModulePath::root);
+
+            let name = parse_result
+                .defs
+                .iter()
+                .find(|h| h.def_id == *def_id)
+                .map(|h| h.name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            ItemPath::new(module_path, vec![name])
+        }
+        DefTarget::Library(lib_def_id) => {
+            // For library definitions, look up the path from library data
+            if let Some(lib_data) = library_data(db, lib_def_id.module.clone()) {
+                // Find the ItemPath that maps to this LibraryDefId
+                for (path, def_id) in &lib_data.names {
+                    if def_id == lib_def_id {
+                        return path.clone();
+                    }
+                }
+            }
+            // Fallback - construct from module + index
+            ItemPath::new(lib_def_id.module.clone(), vec![format!("lib_{}", lib_def_id.index)])
+        }
+    }
+}
+
 /// Look up a struct definition by its DefTarget.
 ///
 /// For workspace definitions, extracts the struct from the parsed AST.
@@ -219,26 +261,40 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
         .unwrap_or_else(ModulePath::root);
     let path = ItemPath::new(module_path, vec![def_header.name.clone()]);
 
+    // Get type mappings and resolutions
+    let mapping = mapped_def_types(db, def_id);
+    let resolutions = name_resolutions(db, def_id.file);
+
+    // Create closure to convert DefTarget to ItemPath
+    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target);
+
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
         if let Decl::Struct(st) = &decl.value {
             // Match by name
             if st.path.name() == Some(def_header.name.clone()) {
-                let type_params = extract_type_params(&st.ty_params);
+                // Get schema vars from the mapping
+                let schema_vars: Vec<TyVar> = mapping.var_map.values().cloned().collect();
 
-                // Build the struct's own type: e.g., Box['a] for struct Box['a] { ... }
-                let struct_ty = if type_params.is_empty() {
+                // Build the struct's own type using schema vars: e.g., Box[?s0]
+                let struct_ty = if schema_vars.is_empty() {
                     Ty::Const(path.clone())
                 } else {
-                    let ty_args: Vec<Ty> = type_params.iter().map(|v| Ty::Var(v.clone())).collect();
+                    let ty_args: Vec<Ty> = schema_vars.iter().map(|v| Ty::Var(v.clone())).collect();
                     Ty::Proj(path.clone(), ty_args)
                 };
 
-                // Build the TyScheme for the struct (quantified over type params)
-                let ty = TyScheme::new(type_params.clone(), vec![], struct_ty);
+                // Build the TyScheme for the struct (quantified over schema vars)
+                let ty = TyScheme::new(schema_vars.clone(), vec![], struct_ty);
 
-                // Extract fields with proper TyScheme (quantified over struct's type params)
-                let fields = extract_struct_fields(&st.fields, &type_params);
+                // Extract fields with resolved types
+                let fields = extract_struct_fields_resolved(
+                    &st.fields,
+                    &schema_vars,
+                    &resolutions,
+                    &mapping.var_map,
+                    get_item_path,
+                );
 
                 return Some(StructDef {
                     target: DefTarget::Workspace(def_id),
@@ -277,6 +333,7 @@ fn extract_type_params(ty_params: &Option<TypeParams>) -> Vec<TyVar> {
 /// Each field's type is wrapped in a TyScheme that quantifies over the struct's type parameters.
 /// For example, for `struct Box['a] { value: 'a }`, the field `value` gets
 /// `TyScheme { vars: ['a], qualifiers: [], ty: 'a }`.
+#[allow(dead_code)]
 fn extract_struct_fields(fields: &Option<Vec<Node<Name>>>, type_params: &[TyVar]) -> Vec<StructField> {
     match fields {
         Some(field_nodes) => field_nodes
@@ -292,6 +349,51 @@ fn extract_struct_fields(fields: &Option<Vec<Node<Name>>>, type_params: &[TyVar]
 
                 // Wrap in TyScheme quantified over struct's type params
                 let ty = TyScheme::new(type_params.to_vec(), vec![], field_ty);
+
+                Some(StructField { name, ty })
+            })
+            .collect(),
+        None => vec![],
+    }
+}
+
+/// Extract fields from struct field declarations with resolved types.
+///
+/// This version uses `apply_type_resolutions_to_scheme` to:
+/// 1. Qualify paths: `Point` → `mymodule::Point`
+/// 2. Map type variables: `'a` → `?s0` (schema var)
+///
+/// Each field's type is wrapped in a TyScheme quantified over the struct's schema vars.
+fn extract_struct_fields_resolved<F>(
+    fields: &Option<Vec<Node<Name>>>,
+    schema_vars: &[TyVar],
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Vec<StructField>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    match fields {
+        Some(field_nodes) => field_nodes
+            .iter()
+            .filter_map(|field_node| {
+                let name = field_node.path.name()?;
+
+                // Apply resolutions to get the resolved field type
+                let field_ty = if let Some(parsed_scheme) = &field_node.ty {
+                    apply_type_resolutions_to_scheme(
+                        parsed_scheme,
+                        resolutions,
+                        var_map,
+                        get_item_path,
+                    )
+                } else {
+                    Ty::Never // Use Never as placeholder if no type annotation
+                };
+
+                // Wrap in TyScheme quantified over struct's schema vars
+                let ty = TyScheme::new(schema_vars.to_vec(), vec![], field_ty);
 
                 Some(StructField { name, ty })
             })
@@ -344,38 +446,60 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
         .unwrap_or_else(ModulePath::root);
     let path = ItemPath::new(module_path, vec![def_header.name.clone()]);
 
+    // Get type mappings and resolutions
+    let mapping = mapped_def_types(db, def_id);
+    let resolutions = name_resolutions(db, def_id.file);
+
+    // Create closure to convert DefTarget to ItemPath
+    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target);
+
     // Find the corresponding AST node in decls
     for decl in &parse_result.ast.decls {
         if let Decl::Trait(tr) = &decl.value {
             // Match by name - trait name comes from tr.ty which is the trait type like `Eq['a]`
             let trait_name = tr.ty.name();
             if trait_name == def_header.name {
-                // Extract type params from the trait type (e.g., `Eq['a]` -> ['a])
-                let type_params = tr.ty.type_params();
+                // Get schema vars from the mapping
+                let schema_vars: Vec<TyVar> = mapping.var_map.values().cloned().collect();
 
-                // Build the trait's own type: e.g., Eq['a] for trait Eq['a] { ... }
-                let ty = if type_params.is_empty() {
+                // Build the trait's own type using schema vars: e.g., Eq[?s0]
+                let ty = if schema_vars.is_empty() {
                     Ty::Const(path.clone())
                 } else {
-                    let ty_args: Vec<Ty> = type_params.iter().map(|v| Ty::Var(v.clone())).collect();
+                    let ty_args: Vec<Ty> = schema_vars.iter().map(|v| Ty::Var(v.clone())).collect();
                     Ty::Proj(path.clone(), ty_args)
                 };
 
-                // Get super traits as types (unwrap the Parsed<Ty> to get the inner Ty)
+                // Get super traits with resolved types
                 let super_traits: Vec<Ty> = tr
                     .super_trait
                     .iter()
-                    .map(|parsed_ty| parsed_ty.value().clone())
+                    .map(|parsed_ty| {
+                        apply_type_resolutions(
+                            parsed_ty,
+                            &resolutions,
+                            &mapping.var_map,
+                            get_item_path,
+                        )
+                    })
                     .collect();
 
-                // Extract method info from trait fields (which are FnSig decls)
-                let methods = extract_trait_methods(&tr.fields, &parse_result.defs, &path);
+                // Extract method info from trait fields with resolved types
+                let methods = extract_trait_methods_resolved(
+                    db,
+                    &tr.fields,
+                    &parse_result.defs,
+                    &path,
+                    &resolutions,
+                    &mapping.var_map,
+                    get_item_path,
+                );
 
                 return Some(TraitDef {
                     target: DefTarget::Workspace(def_id),
                     path,
                     ty,
-                    type_params,
+                    type_params: schema_vars,
                     super_traits,
                     methods,
                     default_ty: None,
@@ -472,6 +596,134 @@ fn extract_trait_methods(fields: &[Node<Decl>], defs: &[DefHeader], parent_path:
         .collect()
 }
 
+/// Extract method info from trait field declarations with resolved types.
+///
+/// This version combines the parent trait's var_map with each method's own var_map
+/// to properly resolve inherited type parameters.
+fn extract_trait_methods_resolved<F>(
+    db: &Database,
+    fields: &[Node<Decl>],
+    defs: &[DefHeader],
+    parent_path: &ItemPath,
+    resolutions: &HashMap<NodeId, Resolution>,
+    parent_var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Vec<MethodInfo>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    fields
+        .iter()
+        .filter_map(|decl| {
+            let def_id = defs
+                .iter()
+                .find(|h| h.root_node == decl.id)
+                .map(|h| h.def_id)?;
+            let target = DefTarget::Workspace(def_id);
+
+            // Get the method's own type mappings
+            let method_mapping = mapped_def_types(db, def_id);
+
+            // Combine parent var_map with method var_map
+            // Method's own type params take precedence (shadowing)
+            let mut combined_var_map = parent_var_map.clone();
+            combined_var_map.extend(method_mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
+
+            match &decl.value {
+                Decl::FnSig(sig) => {
+                    let name = sig.path.name()?;
+                    let path = parent_path.with_item(&name);
+                    let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
+                    let recv_mode = compute_receiver_mode(sig, is_static);
+
+                    // Extract scheme with resolved types
+                    let scheme = extract_method_scheme_resolved(
+                        sig,
+                        resolutions,
+                        &combined_var_map,
+                        get_item_path,
+                    );
+
+                    Some(MethodInfo {
+                        target,
+                        path,
+                        name,
+                        is_static,
+                        recv_mode,
+                        scheme,
+                    })
+                }
+                Decl::Func(f) => {
+                    let name = f.sig.path.name()?;
+                    let path = parent_path.with_item(&name);
+                    let is_static = f
+                        .sig
+                        .modifiers
+                        .iter()
+                        .any(|m| matches!(m, Modifier::Static));
+                    let recv_mode = compute_receiver_mode(&f.sig, is_static);
+
+                    // Extract scheme with resolved types
+                    let scheme = extract_method_scheme_resolved(
+                        &f.sig,
+                        resolutions,
+                        &combined_var_map,
+                        get_item_path,
+                    );
+
+                    Some(MethodInfo {
+                        target,
+                        path,
+                        name,
+                        is_static,
+                        recv_mode,
+                        scheme,
+                    })
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Extract a TyScheme from a function signature with resolved types.
+fn extract_method_scheme_resolved<F>(
+    sig: &FuncSig,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> TyScheme
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    // Extract parameter types with resolutions applied
+    let param_tys: Vec<Ty> = sig
+        .params
+        .iter()
+        .filter_map(|param| {
+            param.value.parsed_ty().map(|parsed_scheme| {
+                apply_type_resolutions_to_scheme(parsed_scheme, resolutions, var_map, get_item_path)
+            })
+        })
+        .collect();
+
+    // Extract return type with resolutions applied
+    let ret_ty = sig
+        .ret_ty
+        .as_ref()
+        .map(|parsed| apply_type_resolutions(parsed, resolutions, var_map, get_item_path))
+        .unwrap_or(Ty::unit());
+
+    // Build the function type
+    let func_ty = Ty::Func(param_tys, Box::new(ret_ty));
+
+    // Get schema vars from var_map (these are the quantified variables)
+    let schema_vars: Vec<TyVar> = var_map.values().cloned().collect();
+
+    // TODO: Handle qualifiers when we support where-clauses on methods
+    TyScheme::new(schema_vars, vec![], func_ty)
+}
+
 /// Compute the receiver mode from a function signature.
 fn compute_receiver_mode(sig: &FuncSig, is_static: bool) -> ReceiverMode {
     if is_static || sig.params.is_empty() {
@@ -534,8 +786,12 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
         .map(|info| info.module_path.clone())
         .unwrap_or_else(ModulePath::root);
 
-    // Get name resolutions for this file to resolve type references
+    // Get type mappings and resolutions
+    let mapping = mapped_def_types(db, def_id);
     let resolutions = name_resolutions(db, def_id.file);
+
+    // Create closure to convert DefTarget to ItemPath
+    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target);
 
     // Find the AST node using root_node from DefHeader
     let im = parse_result
@@ -548,34 +804,35 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
             _ => None,
         })?;
 
+    // Get schema vars from the mapping
+    let schema_vars: Vec<TyVar> = mapping.var_map.values().cloned().collect();
+
     // Handle the two forms of impl:
     // 1. `impl object Point { ... }` - inherent impl, is_object=true
     // 2. `impl ToStr[Point] { ... }` - trait impl, is_object=false
-    let (implementing_type, trait_ty, type_params) = if im.is_object {
+    let (implementing_type, trait_ty) = if im.is_object {
         // Inherent impl: the implementing type is im.ty directly
-        // Resolve using name resolutions, fallback to file scope lookup
-        let impl_ty = resolve_parsed_ty(db, &im.ty, &resolutions, def_id.file, &module_path);
-        let ty_params = im.ty.type_params();
-        (impl_ty, None, ty_params)
+        let impl_ty = apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
+        (impl_ty, None)
     } else {
         // Trait impl: im.ty is Ty::Proj(trait_path, [implementing_type, ...])
         // e.g., `impl Eq[Point]` -> trait_ty = Eq[Point], implementing_type = Point
         match &*im.ty {
             Ty::Proj(_trait_path, args) if !args.is_empty() => {
-                // First argument is the implementing type - use file scope lookup
+                // First argument is the implementing type
+                // Create a parsed view of just the first arg with its synthetic IDs
+                // For now, resolve the inner type directly
                 let impl_ty = resolve_ty_with_scope(db, &args[0], def_id.file, &module_path);
-                let ty_params = args[0].type_params();
 
-                // Resolve the full trait type using name resolutions
-                let trait_type = resolve_parsed_ty(db, &im.ty, &resolutions, def_id.file, &module_path);
+                // Resolve the full trait type using resolutions
+                let trait_type = apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
 
-                (impl_ty, Some(trait_type), ty_params)
+                (impl_ty, Some(trait_type))
             }
             _ => {
                 // Fallback: treat as inherent
-                let impl_ty = resolve_parsed_ty(db, &im.ty, &resolutions, def_id.file, &module_path);
-                let ty_params = im.ty.type_params();
-                (impl_ty, None, ty_params)
+                let impl_ty = apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
+                (impl_ty, None)
             }
         }
     };
@@ -584,12 +841,20 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     let impl_type_name = implementing_type.name();
     let impl_path = ItemPath::new(module_path, vec![impl_type_name]);
 
-    // Extract method info
-    let methods = extract_impl_methods(im, &parse_result.defs, &impl_path);
+    // Extract method info with resolved types
+    let methods = extract_impl_methods_resolved(
+        db,
+        im,
+        &parse_result.defs,
+        &impl_path,
+        &resolutions,
+        &mapping.var_map,
+        get_item_path,
+    );
 
     Some(ImplDef {
         target: DefTarget::Workspace(def_id),
-        type_params,
+        type_params: schema_vars,
         implementing_type,
         trait_ty,
         methods,
@@ -597,6 +862,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
 }
 
 /// Extract method info from an impl block.
+#[allow(dead_code)]
 fn extract_impl_methods(im: &Impl, defs: &[DefHeader], parent_path: &ItemPath) -> Vec<MethodInfo> {
     let mut methods = Vec::new();
 
@@ -647,6 +913,119 @@ fn extract_impl_methods(im: &Impl, defs: &[DefHeader], parent_path: &ItemPath) -
                             is_static,
                             compute_receiver_mode(sig, is_static),
                             sig.extract_scheme(None),
+                        )
+                    } else {
+                        (false, ReceiverMode::Value, TyScheme::from_mono(Ty::Any))
+                    };
+                    methods.push(MethodInfo {
+                        target,
+                        path,
+                        name,
+                        is_static,
+                        recv_mode,
+                        scheme,
+                    });
+                }
+            }
+        }
+    }
+
+    methods
+}
+
+/// Extract method info from an impl block with resolved types.
+///
+/// This version combines the parent impl's var_map with each method's own var_map
+/// to properly resolve inherited type parameters.
+fn extract_impl_methods_resolved<F>(
+    db: &Database,
+    im: &Impl,
+    defs: &[DefHeader],
+    parent_path: &ItemPath,
+    resolutions: &HashMap<NodeId, Resolution>,
+    parent_var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Vec<MethodInfo>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    let mut methods = Vec::new();
+
+    if let Some(funcs) = &im.funcs {
+        for func in funcs {
+            let def_id = match defs.iter().find(|h| h.root_node == func.id) {
+                Some(h) => h.def_id,
+                None => continue,
+            };
+            let target = DefTarget::Workspace(def_id);
+
+            // Get the method's own type mappings
+            let method_mapping = mapped_def_types(db, def_id);
+
+            // Combine parent var_map with method var_map
+            let mut combined_var_map = parent_var_map.clone();
+            combined_var_map.extend(method_mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
+
+            if let Some(name) = func.sig.path.name() {
+                let path = parent_path.with_item(&name);
+                let is_static = func
+                    .sig
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, Modifier::Static));
+                let recv_mode = compute_receiver_mode(&func.sig, is_static);
+
+                // Extract scheme with resolved types
+                let scheme = extract_method_scheme_resolved(
+                    &func.sig,
+                    resolutions,
+                    &combined_var_map,
+                    get_item_path,
+                );
+
+                methods.push(MethodInfo {
+                    target,
+                    path,
+                    name,
+                    is_static,
+                    recv_mode,
+                    scheme,
+                });
+            }
+        }
+    }
+
+    if let Some(externs) = &im.externs {
+        for ext_node in externs {
+            let def_id = match defs.iter().find(|h| h.root_node == ext_node.id) {
+                Some(h) => h.def_id,
+                None => continue,
+            };
+            let target = DefTarget::Workspace(def_id);
+
+            // Get the extern method's own type mappings
+            let method_mapping = mapped_def_types(db, def_id);
+
+            // Combine parent var_map with method var_map
+            let mut combined_var_map = parent_var_map.clone();
+            combined_var_map.extend(method_mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
+
+            if let Decl::Extern(ext) = &ext_node.value {
+                if let Some(name) = ext.decl().get_name() {
+                    let path = parent_path.with_item(&name);
+                    let inner_decl = ext.decl_node();
+                    let (is_static, recv_mode, scheme) = if let Decl::FnSig(sig) = &inner_decl.value
+                    {
+                        let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
+                        (
+                            is_static,
+                            compute_receiver_mode(sig, is_static),
+                            extract_method_scheme_resolved(
+                                sig,
+                                resolutions,
+                                &combined_var_map,
+                                get_item_path,
+                            ),
                         )
                     } else {
                         (false, ReceiverMode::Value, TyScheme::from_mono(Ty::Any))
@@ -2521,5 +2900,132 @@ impl Stringify[Option] {
 
         let trait_impls = impls_for_trait(&db, stringify_target);
         assert_eq!(trait_impls.len(), 1, "Stringify trait should have 1 impl");
+    }
+
+    #[test]
+    fn trait_method_inherits_parent_type_params() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Trait with type parameter and method that uses it
+        let source = r#"
+trait Container['a] {
+    fn get(self: 'a) -> int
+    fn with_item(self: 'a, item: 'a) -> 'a
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the trait definition
+        let path = ItemPath::new(module_path, vec!["Container".into()]);
+        let target = def_for_path(&db, path).expect("trait should be found");
+
+        let trait_def = trait_def(&db, target).expect("trait_def should succeed");
+
+        // Trait should have 1 type param
+        assert_eq!(
+            trait_def.type_params.len(),
+            1,
+            "Trait should have 1 type param"
+        );
+
+        // The type param should be a schema var (like ?s0), not a user var like 'a
+        let trait_type_param = &trait_def.type_params[0];
+        let type_param_name = trait_type_param.path().name().unwrap_or_default();
+        assert!(
+            type_param_name.starts_with("?s"),
+            "Trait type param should be a schema var, got: {}",
+            type_param_name
+        );
+
+        // Find the with_item method that uses 'a in its signature
+        let with_item_method = trait_def
+            .methods
+            .iter()
+            .find(|m| m.name == "with_item")
+            .expect("should find with_item method");
+
+        // Get the method's scheme
+        let scheme = &with_item_method.scheme;
+
+        // The method scheme should reference the same schema var as the trait
+        // with_item(self: 'a, item: 'a) -> 'a
+        // becomes something like: fn(?s0, ?s0) -> ?s0
+
+        // Check that the method's param types use schema vars
+        if let Ty::Func(params, ret) = &scheme.ty {
+            // Should have 2 params (self: 'a, item: 'a)
+            assert_eq!(params.len(), 2, "with_item should have 2 params");
+
+            // Both params should be the schema var
+            for (i, param) in params.iter().enumerate() {
+                if let Ty::Var(var) = param {
+                    let var_name = var.path().name().unwrap_or_default();
+                    assert!(
+                        var_name.starts_with("?s"),
+                        "Param {} should use schema var, got: {}",
+                        i,
+                        var_name
+                    );
+                } else {
+                    panic!("Param {} should be Ty::Var, got: {:?}", i, param);
+                }
+            }
+
+            // Return type should also be the schema var
+            if let Ty::Var(var) = ret.as_ref() {
+                let var_name = var.path().name().unwrap_or_default();
+                assert!(
+                    var_name.starts_with("?s"),
+                    "Return type should use schema var, got: {}",
+                    var_name
+                );
+            } else {
+                panic!("Return type should be Ty::Var, got: {:?}", ret);
+            }
+        } else {
+            panic!("Method scheme.ty should be Func, got: {:?}", scheme.ty);
+        }
+    }
+
+    #[test]
+    fn struct_fields_use_schema_vars() {
+        // Test that struct fields with type parameters are resolved to schema vars
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct Box['a] { value: 'a }
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Verify struct field types use schema vars
+        let struct_path = ItemPath::new(module_path, vec!["Box".into()]);
+        let struct_target = def_for_path(&db, struct_path).expect("struct should be found");
+        let struct_definition = struct_def(&db, struct_target).expect("struct_def should succeed");
+
+        // Struct should have 1 field with type being a schema var
+        assert_eq!(struct_definition.fields.len(), 1);
+        let field_ty = &struct_definition.fields[0].ty.ty;
+        if let Ty::Var(var) = field_ty {
+            let var_name = var.path().name().unwrap_or_default();
+            assert!(
+                var_name.starts_with("?s"),
+                "Struct field should use schema var, got: {}",
+                var_name
+            );
+        } else {
+            panic!("Struct field should be Ty::Var, got: {:?}", field_ty);
+        }
     }
 }

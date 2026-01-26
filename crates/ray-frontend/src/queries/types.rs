@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, Expr, Func, FuncSig, Impl, Node, Struct, Trait};
+use ray_core::ast::{Decl, Expr, Func, FuncSig, Node, TypeParams};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, SignatureStatus},
+    def::{DefId, DefKind, SignatureStatus},
     node_id::NodeId,
-    ty::{
-        SchemaVarAllocator, Ty, TyVar,
-        map_vars::{MapVars, MappingState},
-    },
+    pathlib::{ItemPath, ModulePath},
+    resolution::{DefTarget, Resolution},
+    span::parsed::Parsed,
+    ty::{SchemaVarAllocator, Ty, TyVar},
+    type_param_id::TypeParamId,
 };
 use ray_typing::{
     constraints::Predicate,
@@ -18,36 +19,247 @@ use ray_typing::{
 };
 
 use crate::{
-    queries::transform::file_ast,
+    queries::{
+        parse::parse_file,
+        resolve::name_resolutions,
+        transform::file_ast,
+        workspace::WorkspaceSnapshot,
+    },
     query::{Database, Query},
 };
 
 /// Result of mapping type variables in a definition's type annotations.
 ///
-/// Contains bidirectional mappings between user-written type variables (e.g., `'a`, `T`)
-/// and schema variables (e.g., `?s:hash:0`, `?s:hash:1`).
+/// Contains mappings from TypeParamId to schema variables and reverse mappings
+/// for display purposes.
 ///
 /// This is used by downstream queries like `annotated_scheme` to consistently
-/// map user type variables to schema variables for typechecking.
+/// map type parameters to schema variables for typechecking.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MappedDefTypes {
-    /// Forward mapping: user type variable -> schema variable
-    pub var_map: HashMap<TyVar, TyVar>,
-    /// Reverse mapping: schema variable -> user type variable (for pretty printing)
+    /// Maps type parameter IDs to schema variables.
+    /// TypeParamId { owner: struct_id, index: 0 } → TyVar("?s0")
+    pub var_map: HashMap<TypeParamId, TyVar>,
+
+    /// Reverse map for display (schema var → user var).
+    /// TyVar("?s0") → TyVar("T")
     pub reverse_map: HashMap<TyVar, TyVar>,
 }
 
 impl MappedDefTypes {
-    /// Convert the forward variable mapping of user type variables
-    /// to schema variables into a Subst map.
-    pub fn var_map_subst(&self) -> Subst {
-        Subst::from(&self.var_map)
+    /// Get the origin TypeParamId for a schema variable.
+    /// Used by diagnostics to trace a variable back to its declaration site.
+    /// O(n) where n is the number of type parameters (typically 1-3).
+    pub fn origin_of(&self, var: &TyVar) -> Option<TypeParamId> {
+        self.var_map
+            .iter()
+            .find(|(_, v)| *v == var)
+            .map(|(id, _)| *id)
     }
 
-    /// Convert the reverse variable mapping of schema variables to
-    /// user type variables into a Subst map.
-    pub fn reverse_map_subst(&self) -> Subst {
-        Subst::from(&self.reverse_map)
+    /// Build a Subst that maps user-written type variable names to schema vars.
+    ///
+    /// Uses the reverse_map (schema_var → user_var) to create a substitution
+    /// from user vars to schema variables: `'a → ?s0`.
+    pub fn user_to_schema_subst(&self) -> Subst {
+        let mut subst_map = HashMap::new();
+        for (schema_var, user_var) in &self.reverse_map {
+            subst_map.insert(user_var.clone(), schema_var.clone());
+        }
+        Subst::from(&subst_map)
+    }
+
+    /// Build a Subst that maps schema vars back to user-written type variable names.
+    ///
+    /// This is for pretty printing: `?s0 → 'a`.
+    pub fn schema_to_user_subst(&self) -> Subst {
+        let mut subst_map = HashMap::new();
+        for (schema_var, user_var) in &self.reverse_map {
+            subst_map.insert(schema_var.clone(), user_var.clone());
+        }
+        Subst::from(&subst_map)
+    }
+}
+
+/// Transforms a `Parsed<Ty>` into a resolved `Ty` by applying resolutions.
+///
+/// This is the "consumer" side of type resolution. It takes the resolutions
+/// collected by `resolve_names_in_file` (via the `name_resolutions` query) and uses them to:
+///
+/// 1. **Qualify paths**: `"Point"` → `"mymodule::Point"` via `Resolution::Def`
+/// 2. **Substitute type params**: `Ty::Var("'a")` → `Ty::Var(schema_var)` via `Resolution::TypeParam` + `var_map`
+///
+/// The caller is responsible for providing the combined `var_map` that includes
+/// both parent type parameters (e.g., from impl) and own type parameters (e.g., from method).
+///
+/// # Arguments
+///
+/// * `parsed_ty` - The parsed type with synthetic IDs corresponding to type references
+/// * `resolutions` - The resolution map from `name_resolutions` query
+/// * `var_map` - Combined mapping from `TypeParamId` to schema variables
+/// * `get_item_path` - Closure to convert a `DefTarget` to an `ItemPath`
+///
+/// # Returns
+///
+/// The resolved `Ty` with qualified paths and mapped type variables.
+pub fn apply_type_resolutions<F>(
+    parsed_ty: &Parsed<Ty>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Ty
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    let synthetic_ids = parsed_ty.synthetic_ids();
+    let ty = parsed_ty.value();
+
+    let mut id_iter = synthetic_ids.iter();
+    transform_ty_with_resolutions(ty, &mut id_iter, resolutions, var_map, get_item_path)
+}
+
+/// Apply type resolutions to the mono type inside a `Parsed<TyScheme>`.
+///
+/// This is a convenience wrapper for struct fields and other places where
+/// types are stored as `Parsed<TyScheme>` rather than `Parsed<Ty>`.
+///
+/// The synthetic IDs from the `Parsed<TyScheme>` correspond to type references
+/// in the inner `TyScheme.ty` field.
+pub fn apply_type_resolutions_to_scheme<F>(
+    parsed_scheme: &Parsed<ray_typing::types::TyScheme>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Ty
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    let synthetic_ids = parsed_scheme.synthetic_ids();
+    let ty = parsed_scheme.mono();
+
+    let mut id_iter = synthetic_ids.iter();
+    transform_ty_with_resolutions(ty, &mut id_iter, resolutions, var_map, get_item_path)
+}
+
+/// Recursively transforms a type, consuming synthetic IDs in the same order as `Ty::flatten()`.
+fn transform_ty_with_resolutions<'a, F>(
+    ty: &Ty,
+    id_iter: &mut impl Iterator<Item = &'a NodeId>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Ty
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    match ty {
+        // Ty::Const and Ty::Var both consume one synthetic ID
+        Ty::Const(original_path) => {
+            if let Some(node_id) = id_iter.next() {
+                match resolutions.get(node_id) {
+                    Some(Resolution::Def(target)) => {
+                        Ty::Const(get_item_path(target))
+                    }
+                    Some(Resolution::TypeParam(id)) => {
+                        // A type param was used where a constant type was expected
+                        // Map it to a schema variable
+                        if let Some(schema_var) = var_map.get(id) {
+                            Ty::Var(schema_var.clone())
+                        } else {
+                            // Type param not in scope - keep original (error reported elsewhere)
+                            ty.clone()
+                        }
+                    }
+                    Some(Resolution::Local(_)) | Some(Resolution::Error) | None => {
+                        // Keep original (error reported elsewhere or not resolvable)
+                        ty.clone()
+                    }
+                }
+            } else {
+                // No synthetic ID - keep original path
+                Ty::Const(original_path.clone())
+            }
+        }
+
+        Ty::Var(original_var) => {
+            if let Some(node_id) = id_iter.next() {
+                match resolutions.get(node_id) {
+                    Some(Resolution::TypeParam(id)) => {
+                        if let Some(schema_var) = var_map.get(id) {
+                            Ty::Var(schema_var.clone())
+                        } else {
+                            // Type param not in scope - keep original
+                            ty.clone()
+                        }
+                    }
+                    Some(Resolution::Def(target)) => {
+                        // A definition was used where a type variable was expected
+                        // This can happen with type aliases or when a type name looks like a var
+                        Ty::Const(get_item_path(target))
+                    }
+                    _ => ty.clone(),
+                }
+            } else {
+                // No synthetic ID - keep original
+                Ty::Var(original_var.clone())
+            }
+        }
+
+        Ty::Proj(original_path, args) => {
+            // First synthetic ID is for the base type
+            let resolved_path = if let Some(node_id) = id_iter.next() {
+                match resolutions.get(node_id) {
+                    Some(Resolution::Def(target)) => get_item_path(target),
+                    _ => original_path.clone(),
+                }
+            } else {
+                original_path.clone()
+            };
+
+            // Then transform each type argument (consuming their synthetic IDs)
+            let resolved_args: Vec<Ty> = args
+                .iter()
+                .map(|arg| transform_ty_with_resolutions(arg, id_iter, resolutions, var_map, get_item_path))
+                .collect();
+
+            Ty::Proj(resolved_path, resolved_args)
+        }
+
+        // Structural types: recurse into components
+        Ty::Func(params, ret) => {
+            let resolved_params: Vec<Ty> = params
+                .iter()
+                .map(|p| transform_ty_with_resolutions(p, id_iter, resolutions, var_map, get_item_path))
+                .collect();
+            let resolved_ret = transform_ty_with_resolutions(ret, id_iter, resolutions, var_map, get_item_path);
+            Ty::Func(resolved_params, Box::new(resolved_ret))
+        }
+
+        Ty::Tuple(elems) => {
+            let resolved_elems: Vec<Ty> = elems
+                .iter()
+                .map(|e| transform_ty_with_resolutions(e, id_iter, resolutions, var_map, get_item_path))
+                .collect();
+            Ty::Tuple(resolved_elems)
+        }
+
+        Ty::Ref(inner) => {
+            let resolved_inner = transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::Ref(Box::new(resolved_inner))
+        }
+
+        Ty::RawPtr(inner) => {
+            let resolved_inner = transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::RawPtr(Box::new(resolved_inner))
+        }
+
+        Ty::Array(inner, size) => {
+            let resolved_inner = transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::Array(Box::new(resolved_inner), *size)
+        }
+
+        // Terminal types with no type references
+        Ty::Never | Ty::Any => ty.clone(),
     }
 }
 
@@ -70,16 +282,18 @@ impl MappedDefTypes {
 /// - `types`: Mapped types indexed by their AST NodeId
 #[query]
 pub fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
-    let file_result = file_ast(db, def_id.file);
+    // Use parse_file instead of file_ast to avoid cycle:
+    // file_ast -> struct_def -> mapped_def_types -> file_ast
+    let parse_result = parse_file(db, def_id.file);
 
     // Find the DefHeader for this definition
-    let def_header = match file_result.defs.iter().find(|h| h.def_id == def_id) {
+    let def_header = match parse_result.defs.iter().find(|h| h.def_id == def_id) {
         Some(header) => header,
         None => return MappedDefTypes::default(),
     };
 
     // Find the AST node for this definition
-    let def_ast = match find_def_ast(&file_result.ast.decls, def_header.root_node) {
+    let def_ast = match find_def_ast(&parse_result.ast.decls, def_header.root_node) {
         Some(ast) => ast,
         None => return MappedDefTypes::default(),
     };
@@ -99,16 +313,17 @@ pub fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
 /// considered `FullyAnnotated` since they require explicit type information.
 #[query]
 pub fn def_signature_status(db: &Database, def_id: DefId) -> SignatureStatus {
-    let file_result = file_ast(db, def_id.file);
+    // Use parse_file to avoid cycle with file_ast
+    let parse_result = parse_file(db, def_id.file);
 
     // Find the DefHeader for this definition
-    let def_header = match file_result.defs.iter().find(|h| h.def_id == def_id) {
+    let def_header = match parse_result.defs.iter().find(|h| h.def_id == def_id) {
         Some(header) => header,
         None => return SignatureStatus::Unannotated,
     };
 
     // Find the AST node for this definition
-    let def_ast = match find_def_ast(&file_result.ast.decls, def_header.root_node) {
+    let def_ast = match find_def_ast(&parse_result.ast.decls, def_header.root_node) {
         Some(ast) => ast,
         None => return SignatureStatus::Unannotated,
     };
@@ -214,14 +429,30 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
 
     let file_result = file_ast(db, def_id.file);
     let mapping = mapped_def_types(db, def_id);
+    let resolutions = name_resolutions(db, def_id.file);
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
 
     // Find the DefHeader for this definition
     let def_header = file_result.defs.iter().find(|h| h.def_id == def_id)?;
 
+    // Get parent var_map if this is a nested definition (trait method, impl method)
+    let parent_var_map = get_parent_var_map(db, def_id, &file_result.defs);
+
+    // Combine parent var_map with own var_map
+    let mut combined_var_map = parent_var_map;
+    combined_var_map.extend(mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
+
+    // Create closure to convert DefTarget to ItemPath
+    let module_path = workspace
+        .file_info(def_id.file)
+        .map(|info| info.module_path.clone())
+        .unwrap_or_else(ModulePath::root);
+    let get_item_path = |target: &DefTarget| def_target_to_item_path(db, target, &module_path, &file_result.defs);
+
     // Find the AST node for this definition
     let def_ast = find_def_ast(&file_result.ast.decls, def_header.root_node)?;
 
-    compute_scheme(def_ast, &mapping, status)
+    compute_scheme_resolved(def_ast, &combined_var_map, &resolutions, get_item_path, status)
 }
 
 /// Compute the type scheme for a declaration with the given mapping state.
@@ -246,7 +477,7 @@ fn compute_func_scheme(
     mapping: &MappedDefTypes,
     status: SignatureStatus,
 ) -> Option<TyScheme> {
-    let var_map = mapping.var_map_subst();
+    let var_map = mapping.user_to_schema_subst();
 
     // Extract and map parameter types
     let mut param_tys = Vec::with_capacity(sig.params.len());
@@ -308,115 +539,324 @@ fn ty_to_predicate(ty: &Ty) -> Option<Predicate> {
     }
 }
 
-/// Extract type annotations from a declaration and build the type variable mappings.
+/// Get the parent definition's var_map for nested definitions.
+///
+/// For trait methods and impl methods, we need to include the parent's type parameters
+/// so that references to them can be resolved correctly.
+fn get_parent_var_map(
+    db: &Database,
+    def_id: DefId,
+    defs: &[ray_shared::def::DefHeader],
+) -> HashMap<TypeParamId, TyVar> {
+    // Find the DefHeader for this definition
+    let def_header = match defs.iter().find(|h| h.def_id == def_id) {
+        Some(h) => h,
+        None => return HashMap::new(),
+    };
+
+    // Check if this definition has a parent
+    let parent_def_id = match def_header.parent {
+        Some(parent_id) => parent_id,
+        None => return HashMap::new(),
+    };
+
+    // Get the parent's var_map
+    let parent_mapping = mapped_def_types(db, parent_def_id);
+    parent_mapping.var_map
+}
+
+/// Convert a DefTarget to its ItemPath.
+///
+/// This is used by apply_type_resolutions to qualify paths.
+fn def_target_to_item_path(
+    db: &Database,
+    target: &DefTarget,
+    module_path: &ModulePath,
+    defs: &[ray_shared::def::DefHeader],
+) -> ItemPath {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            // Find the DefHeader for this definition
+            let name = defs
+                .iter()
+                .find(|h| h.def_id == *def_id)
+                .map(|h| h.name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            ItemPath::new(module_path.clone(), vec![name])
+        }
+        DefTarget::Library(lib_def_id) => {
+            // For library definitions, use the library path
+            use crate::queries::libraries::library_data;
+            if let Some(lib_data) = library_data(db, lib_def_id.module.clone()) {
+                // Find the ItemPath that maps to this LibraryDefId
+                for (path, id) in &lib_data.names {
+                    if id == lib_def_id {
+                        return path.clone();
+                    }
+                }
+            }
+            // Fallback
+            ItemPath::new(lib_def_id.module.clone(), vec![format!("lib_{}", lib_def_id.index)])
+        }
+    }
+}
+
+/// Compute the type scheme for a declaration with resolved types.
+fn compute_scheme_resolved<F>(
+    decl: &Node<Decl>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    get_item_path: F,
+    status: SignatureStatus,
+) -> Option<TyScheme>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    match &decl.value {
+        Decl::Func(func) => compute_func_scheme_resolved(&func.sig, var_map, resolutions, get_item_path, status),
+        Decl::FnSig(sig) => compute_func_scheme_resolved(sig, var_map, resolutions, get_item_path, status),
+        Decl::Extern(ext) => compute_scheme_resolved(ext.decl_node(), var_map, resolutions, get_item_path, status),
+        // For non-function definitions, we don't compute schemes here
+        // (structs/traits/impls have their own type representations)
+        _ => None,
+    }
+}
+
+/// Compute the type scheme for a function signature with resolved types.
+fn compute_func_scheme_resolved<F>(
+    sig: &FuncSig,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    get_item_path: F,
+    status: SignatureStatus,
+) -> Option<TyScheme>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    // Extract and resolve parameter types
+    let mut param_tys = Vec::with_capacity(sig.params.len());
+    for param in &sig.params {
+        let ty = param.value.parsed_ty().map(|parsed_scheme| {
+            apply_type_resolutions_to_scheme(parsed_scheme, resolutions, var_map, get_item_path)
+        })?;
+        param_tys.push(ty);
+    }
+
+    // Extract and resolve return type
+    let ret_ty = if let Some(parsed_ty) = &sig.ret_ty {
+        apply_type_resolutions(parsed_ty, resolutions, var_map, get_item_path)
+    } else if status == SignatureStatus::ReturnElided {
+        // For arrow bodies, use a return placeholder
+        Ty::ret_placeholder(&sig.path.value)
+    } else {
+        // No return type annotation and not elided
+        Ty::unit()
+    };
+
+    // Build the function type
+    let func_ty = Ty::Func(param_tys, Box::new(ret_ty));
+
+    // Extract and resolve qualifiers (where clauses)
+    let mut predicates = Vec::with_capacity(sig.qualifiers.len());
+    for qual in &sig.qualifiers {
+        let qual_ty = apply_type_resolutions(qual, resolutions, var_map, get_item_path);
+        if let Some(pred) = ty_to_predicate(&qual_ty) {
+            predicates.push(pred);
+        }
+    }
+
+    // Collect type variables (schema vars) from the var_map
+    let mut vars: Vec<TyVar> = var_map.values().cloned().collect();
+    vars.sort();
+    vars.dedup();
+
+    // Build the scheme
+    let scheme = if vars.is_empty() && predicates.is_empty() {
+        TyScheme::from_mono(func_ty)
+    } else {
+        TyScheme::new(vars, predicates, func_ty)
+    };
+
+    Some(scheme)
+}
+
+/// Extract type parameters from a declaration and build the TypeParamId → schema var mappings.
+///
+/// Ray allows both explicit type parameters (e.g., `fn foo['a](...)`) and implicit ones
+/// where type variables are inferred from usage in the signature (e.g., `fn foo(x: 'a) -> 'a`).
+/// This function collects type variables from both sources.
 fn extract_and_map_types(def_id: DefId, decl: &Node<Decl>) -> MappedDefTypes {
     let mut allocator = SchemaVarAllocator::with_def_scope(def_id);
-    let mut state = MappingState::default();
 
+    // Extract type parameter names from the definition (both explicit and implicit)
+    let type_param_names = extract_type_param_names(decl);
+
+    let mut var_map = HashMap::new();
+    let mut reverse_map = HashMap::new();
+
+    for (index, param_name) in type_param_names.iter().enumerate() {
+        let schema_var = allocator.alloc();
+        let type_param_id = TypeParamId {
+            owner: def_id,
+            index: index as u32,
+        };
+
+        var_map.insert(type_param_id, schema_var.clone());
+        reverse_map.insert(schema_var, TyVar::new(param_name.clone()));
+    }
+
+    MappedDefTypes { var_map, reverse_map }
+}
+
+/// Extract type parameter names from a declaration.
+///
+/// Returns a list of unique type parameter names in discovery order.
+/// For functions, this includes both explicit type params (`fn foo['a]`) and
+/// implicit ones from the signature (`fn foo(x: 'a)`).
+fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
     match &decl.value {
-        Decl::Func(func) => {
-            map_func_sig_vars(&func.sig, &mut state, &mut allocator);
+        Decl::Func(func) => collect_func_type_params(func),
+        Decl::FnSig(sig) => collect_sig_type_params(sig),
+        Decl::Struct(st) => collect_struct_type_params(st),
+        Decl::Trait(tr) => extract_type_params_from_parsed_ty(&tr.ty),
+        Decl::Impl(im) => extract_type_params_from_parsed_ty(&im.ty),
+        Decl::TypeAlias(_name, _parsed_ty) => {
+            // Type aliases don't have their own type parameters
+            // (any type vars in the aliased type are free)
+            vec![]
         }
-        Decl::FnSig(sig) => {
-            map_func_sig_vars(sig, &mut state, &mut allocator);
-        }
-        Decl::Struct(st) => {
-            map_struct_vars(st, &mut state, &mut allocator);
-        }
-        Decl::Trait(tr) => {
-            map_trait_vars(tr, &mut state, &mut allocator);
-        }
-        Decl::TypeAlias(_name, parsed_ty) => {
-            let ty = parsed_ty.clone_value();
-            let (_, new_state) = ty.map_vars(&state, &mut allocator);
-            state = new_state;
-        }
-        Decl::Impl(im) => {
-            map_impl_vars(im, &mut state, &mut allocator);
-        }
-        Decl::Extern(ext) => {
-            // Extern wraps another declaration, recurse into it
-            return extract_and_map_types(def_id, ext.decl_node());
-        }
-        // Name, Mutable, Declare don't have type annotations that need mapping
-        Decl::Name(_) | Decl::Mutable(_) | Decl::Declare(_) => {}
-    }
-
-    MappedDefTypes {
-        var_map: state.forward_map,
-        reverse_map: state.reverse_map,
+        Decl::Extern(ext) => extract_type_param_names(ext.decl_node()),
+        Decl::Name(_) | Decl::Mutable(_) | Decl::Declare(_) => vec![],
     }
 }
 
-/// Map type variables in a function signature to schema variables.
-fn map_func_sig_vars(sig: &FuncSig, state: &mut MappingState, allocator: &mut SchemaVarAllocator) {
-    // Map parameter types
-    for param in &sig.params {
-        if let Some(ty) = param.value.ty() {
-            let (_, new_state) = ty.clone().map_vars(state, allocator);
-            *state = new_state;
-        }
-    }
-
-    // Map return type if present
-    if let Some(parsed_ty) = &sig.ret_ty {
-        if parsed_ty.span().is_some() {
-            let ty = parsed_ty.clone_value();
-            let (_, new_state) = ty.map_vars(state, allocator);
-            *state = new_state;
-        }
-    }
-
-    // Map qualifier types (where clauses)
-    for qual in &sig.qualifiers {
-        let ty = qual.clone_value();
-        let (_, new_state) = ty.map_vars(state, allocator);
-        *state = new_state;
-    }
+/// Collect type parameters from a function (explicit + implicit from signature).
+fn collect_func_type_params(func: &Func) -> Vec<String> {
+    collect_sig_type_params(&func.sig)
 }
 
-/// Map type variables in a struct definition to schema variables.
-fn map_struct_vars(st: &Struct, state: &mut MappingState, allocator: &mut SchemaVarAllocator) {
-    // Map field types
-    if let Some(fields) = &st.fields {
-        for field in fields {
-            if let Some(parsed_ty) = &field.value.ty {
-                let ty = parsed_ty.clone_value().mono().clone();
-                let (_, new_state) = ty.map_vars(state, allocator);
-                *state = new_state;
+/// Collect type parameters from a function signature.
+///
+/// First collects explicit type params from ty_params, then discovers
+/// implicit ones from parameter types, return type, and qualifiers.
+fn collect_sig_type_params(sig: &FuncSig) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut params = Vec::new();
+
+    // First, explicit type params (if any)
+    if let Some(tp) = &sig.ty_params {
+        for parsed_ty in &tp.tys {
+            if let Ty::Var(ty_var) = parsed_ty.value() {
+                if let Some(name) = ty_var.path().name() {
+                    if seen.insert(name.clone()) {
+                        params.push(name);
+                    }
+                }
             }
         }
     }
+
+    // Then, collect from parameter types
+    for param in &sig.params {
+        if let Some(ty) = param.value.ty() {
+            collect_type_vars_from_ty(ty, &mut seen, &mut params);
+        }
+    }
+
+    // Collect from return type
+    if let Some(parsed_ty) = &sig.ret_ty {
+        collect_type_vars_from_ty(parsed_ty.value(), &mut seen, &mut params);
+    }
+
+    // Collect from qualifiers
+    for qual in &sig.qualifiers {
+        collect_type_vars_from_ty(qual.value(), &mut seen, &mut params);
+    }
+
+    params
 }
 
-/// Map type variables in a trait definition to schema variables.
-fn map_trait_vars(tr: &Trait, state: &mut MappingState, allocator: &mut SchemaVarAllocator) {
-    // Map the trait's self type
-    let ty = tr.ty.clone_value();
-    let (_, new_state) = ty.map_vars(state, allocator);
-    *state = new_state;
+/// Collect type parameters from a struct definition.
+///
+/// Checks explicit ty_params and field types.
+fn collect_struct_type_params(st: &ray_core::ast::Struct) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut params = Vec::new();
 
-    // Map super trait if present
-    if let Some(super_trait) = &tr.super_trait {
-        let ty = super_trait.clone_value();
-        let (_, new_state) = ty.map_vars(state, allocator);
-        *state = new_state;
+    // Explicit type params
+    if let Some(tp) = &st.ty_params {
+        for parsed_ty in &tp.tys {
+            if let Ty::Var(ty_var) = parsed_ty.value() {
+                if let Some(name) = ty_var.path().name() {
+                    if seen.insert(name.clone()) {
+                        params.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    // Field types
+    if let Some(fields) = &st.fields {
+        for field in fields {
+            if let Some(parsed_ty) = &field.value.ty {
+                collect_type_vars_from_ty(parsed_ty.value().mono(), &mut seen, &mut params);
+            }
+        }
+    }
+
+    params
+}
+
+/// Recursively collect type variable names from a type.
+fn collect_type_vars_from_ty(
+    ty: &Ty,
+    seen: &mut std::collections::HashSet<String>,
+    params: &mut Vec<String>,
+) {
+    match ty {
+        Ty::Var(ty_var) => {
+            if let Some(name) = ty_var.path().name() {
+                // Only collect user type variables (starting with ')
+                if name.starts_with('\'') && seen.insert(name.clone()) {
+                    params.push(name);
+                }
+            }
+        }
+        Ty::Proj(_path, args) => {
+            for arg in args {
+                collect_type_vars_from_ty(arg, seen, params);
+            }
+        }
+        Ty::Func(param_tys, ret_ty) => {
+            for param_ty in param_tys {
+                collect_type_vars_from_ty(param_ty, seen, params);
+            }
+            collect_type_vars_from_ty(ret_ty, seen, params);
+        }
+        Ty::Tuple(tys) => {
+            for t in tys {
+                collect_type_vars_from_ty(t, seen, params);
+            }
+        }
+        Ty::Ref(inner) | Ty::RawPtr(inner) | Ty::Array(inner, _) => {
+            collect_type_vars_from_ty(inner, seen, params);
+        }
+        _ => {}
     }
 }
 
-/// Map type variables in an impl block to schema variables.
-fn map_impl_vars(im: &Impl, state: &mut MappingState, allocator: &mut SchemaVarAllocator) {
-    // Map the impl's target type
-    let ty = im.ty.clone_value();
-    let (_, new_state) = ty.map_vars(state, allocator);
-    *state = new_state;
-
-    // Map qualifier types
-    for qual in &im.qualifiers {
-        let ty = qual.clone_value();
-        let (_, new_state) = ty.map_vars(state, allocator);
-        *state = new_state;
-    }
+/// Extract type parameter names from a Parsed<Ty> (e.g., `Eq['a]` → `["'a"]`).
+fn extract_type_params_from_parsed_ty(
+    parsed_ty: &ray_shared::span::parsed::Parsed<Ty>,
+) -> Vec<String> {
+    parsed_ty
+        .value()
+        .type_params()
+        .iter()
+        .filter_map(|ty_var| ty_var.path().name())
+        .collect()
 }
 
 /// Find a declaration AST node by its root NodeId.
@@ -912,5 +1352,546 @@ mod tests {
             scheme.is_some(),
             "Should return a scheme for return-elided function"
         );
+    }
+
+    // Tests for TypeParamId-based mapping
+
+    #[test]
+    fn mapped_def_types_uses_type_param_id_as_key() {
+        use ray_shared::type_param_id::TypeParamId;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with two type parameters
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn pair(x: 'a, y: 'b) -> ('a, 'b) { (x, y) }"#.to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let pair_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "pair")
+            .expect("should find pair function");
+
+        let mapped = mapped_def_types(&db, pair_def.def_id);
+
+        // Should have two mappings with TypeParamId keys
+        assert_eq!(mapped.var_map.len(), 2, "Should have two type param mappings");
+
+        // Check that TypeParamIds have correct owner and indices
+        let type_param_0 = TypeParamId {
+            owner: pair_def.def_id,
+            index: 0,
+        };
+        let type_param_1 = TypeParamId {
+            owner: pair_def.def_id,
+            index: 1,
+        };
+
+        assert!(
+            mapped.var_map.contains_key(&type_param_0),
+            "Should have mapping for first type param"
+        );
+        assert!(
+            mapped.var_map.contains_key(&type_param_1),
+            "Should have mapping for second type param"
+        );
+    }
+
+    #[test]
+    fn mapped_def_types_origin_of_traces_back_to_type_param_id() {
+        use ray_shared::type_param_id::TypeParamId;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with type parameter
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn identity(x: 'a) -> 'a { x }"#.to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let identity_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "identity")
+            .expect("should find identity function");
+
+        let mapped = mapped_def_types(&db, identity_def.def_id);
+
+        // Get the schema var for 'a
+        let type_param_id = TypeParamId {
+            owner: identity_def.def_id,
+            index: 0,
+        };
+        let schema_var = mapped
+            .var_map
+            .get(&type_param_id)
+            .expect("Should have mapping for 'a");
+
+        // origin_of should trace back to the same TypeParamId
+        let origin = mapped
+            .origin_of(schema_var)
+            .expect("Should find origin for schema var");
+        assert_eq!(
+            origin, type_param_id,
+            "origin_of should return the correct TypeParamId"
+        );
+    }
+
+    #[test]
+    fn mapped_def_types_reverse_map_has_user_names() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with type parameter
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn identity(x: 'a) -> 'a { x }"#.to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let identity_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "identity")
+            .expect("should find identity function");
+
+        let mapped = mapped_def_types(&db, identity_def.def_id);
+
+        // reverse_map should have schema_var → user_var mapping
+        assert_eq!(
+            mapped.reverse_map.len(),
+            1,
+            "Should have one reverse mapping"
+        );
+
+        // The user var should be "'a"
+        let user_var = mapped.reverse_map.values().next().unwrap();
+        assert_eq!(user_var.to_string(), "'a", "User var should be 'a");
+    }
+
+    // Tests for apply_type_resolutions
+
+    mod apply_type_resolutions_tests {
+        use std::collections::HashMap;
+
+        use ray_shared::{
+            def::{DefId, LibraryDefId},
+            file_id::FileId,
+            node_id::NodeId,
+            pathlib::{ItemPath, ModulePath, Path},
+            resolution::{DefTarget, Resolution},
+            span::{parsed::Parsed, Source},
+            ty::{Ty, TyVar},
+            type_param_id::TypeParamId,
+        };
+
+        use crate::queries::types::apply_type_resolutions;
+
+        /// Create a test DefId for use in tests.
+        fn test_def_id() -> DefId {
+            DefId {
+                file: FileId::default(),
+                index: 0,
+            }
+        }
+
+        fn make_parsed_ty(ty: Ty, synthetic_ids: Vec<NodeId>) -> Parsed<Ty> {
+            let mut parsed = Parsed::new(ty, Source::default());
+            parsed.set_synthetic_ids(synthetic_ids);
+            parsed
+        }
+
+        fn dummy_item_path(target: &DefTarget) -> ItemPath {
+            match target {
+                DefTarget::Workspace(def_id) => {
+                    ItemPath::new(ModulePath::from("test"), vec![format!("def_{}", def_id.index)])
+                }
+                DefTarget::Library(lib_def_id) => {
+                    ItemPath::new(lib_def_id.module.clone(), vec![format!("lib_{}", lib_def_id.index)])
+                }
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_resolves_const_to_def() {
+            // Enter a def scope so NodeId::new() works
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Const("Point") with a Resolution::Def → should become Ty::Const(qualified_path)
+            let node_id = NodeId::new();
+            let original_path = ItemPath::from_path(&Path::from("Point")).unwrap();
+            let parsed_ty = make_parsed_ty(Ty::Const(original_path), vec![node_id]);
+
+            let def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 42,
+            };
+            let target = DefTarget::Workspace(def_id);
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(node_id, Resolution::Def(target.clone()));
+
+            let var_map = HashMap::new();
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            // Should be Ty::Const with the qualified path from dummy_item_path
+            match result {
+                Ty::Const(path) => {
+                    assert_eq!(path.to_string(), "test::def_42");
+                }
+                _ => panic!("Expected Ty::Const, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_resolves_var_to_schema_var() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Var("'a") with Resolution::TypeParam → should become Ty::Var(schema_var)
+            let node_id = NodeId::new();
+            let original_var = TyVar::new("'a".to_string());
+            let parsed_ty = make_parsed_ty(Ty::Var(original_var), vec![node_id]);
+
+            let def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 0,
+            };
+            let type_param_id = TypeParamId {
+                owner: def_id,
+                index: 0,
+            };
+            let schema_var = TyVar::new("?s0".to_string());
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(node_id, Resolution::TypeParam(type_param_id));
+
+            let mut var_map = HashMap::new();
+            var_map.insert(type_param_id, schema_var.clone());
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            // Should be Ty::Var with the schema var
+            match result {
+                Ty::Var(v) => {
+                    assert_eq!(v.to_string(), "?s0");
+                }
+                _ => panic!("Expected Ty::Var, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_preserves_unresolved_types() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Const without a resolution → should preserve original
+            let node_id = NodeId::new();
+            let original_path = ItemPath::from_path(&Path::from("UnknownType")).unwrap();
+            let parsed_ty = make_parsed_ty(Ty::Const(original_path.clone()), vec![node_id]);
+
+            let resolutions = HashMap::new(); // Empty - no resolution
+            let var_map = HashMap::new();
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            // Should preserve the original type
+            match result {
+                Ty::Const(path) => {
+                    assert_eq!(path.to_string(), "UnknownType");
+                }
+                _ => panic!("Expected Ty::Const, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_handles_proj_type() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Proj("List", ['a]) → should resolve base and args
+            let base_id = NodeId::new();
+            let arg_id = NodeId::new();
+
+            let original_path = ItemPath::from_path(&Path::from("List")).unwrap();
+            let arg_var = TyVar::new("'a".to_string());
+            let parsed_ty = make_parsed_ty(
+                Ty::Proj(original_path, vec![Ty::Var(arg_var)]),
+                vec![base_id, arg_id],
+            );
+
+            let def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 1,
+            };
+            let list_target = DefTarget::Workspace(def_id);
+
+            let type_param_id = TypeParamId {
+                owner: DefId {
+                    file: ray_shared::file_id::FileId::default(),
+                    index: 0,
+                },
+                index: 0,
+            };
+            let schema_var = TyVar::new("?s0".to_string());
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(base_id, Resolution::Def(list_target));
+            resolutions.insert(arg_id, Resolution::TypeParam(type_param_id));
+
+            let mut var_map = HashMap::new();
+            var_map.insert(type_param_id, schema_var);
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            // Should be Ty::Proj with resolved path and args
+            match result {
+                Ty::Proj(path, args) => {
+                    assert_eq!(path.to_string(), "test::def_1");
+                    assert_eq!(args.len(), 1);
+                    match &args[0] {
+                        Ty::Var(v) => assert_eq!(v.to_string(), "?s0"),
+                        _ => panic!("Expected Ty::Var for arg"),
+                    }
+                }
+                _ => panic!("Expected Ty::Proj, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_handles_func_type() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Func([param_ty], ret_ty) → should resolve each component
+            let param_id = NodeId::new();
+            let ret_id = NodeId::new();
+
+            let param_path = ItemPath::from_path(&Path::from("Int")).unwrap();
+            let ret_path = ItemPath::from_path(&Path::from("Bool")).unwrap();
+            let parsed_ty = make_parsed_ty(
+                Ty::Func(vec![Ty::Const(param_path)], Box::new(Ty::Const(ret_path))),
+                vec![param_id, ret_id],
+            );
+
+            let int_def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 10,
+            };
+            let bool_def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 20,
+            };
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(param_id, Resolution::Def(DefTarget::Workspace(int_def_id)));
+            resolutions.insert(ret_id, Resolution::Def(DefTarget::Workspace(bool_def_id)));
+
+            let var_map = HashMap::new();
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            match result {
+                Ty::Func(params, ret) => {
+                    assert_eq!(params.len(), 1);
+                    match &params[0] {
+                        Ty::Const(p) => assert_eq!(p.to_string(), "test::def_10"),
+                        _ => panic!("Expected Ty::Const for param"),
+                    }
+                    match ret.as_ref() {
+                        Ty::Const(p) => assert_eq!(p.to_string(), "test::def_20"),
+                        _ => panic!("Expected Ty::Const for ret"),
+                    }
+                }
+                _ => panic!("Expected Ty::Func, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_handles_tuple_type() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Tuple([elem1, elem2]) → should resolve each element
+            let elem1_id = NodeId::new();
+            let elem2_id = NodeId::new();
+
+            let elem1_path = ItemPath::from_path(&Path::from("Int")).unwrap();
+            let elem2_path = ItemPath::from_path(&Path::from("String")).unwrap();
+            let parsed_ty = make_parsed_ty(
+                Ty::Tuple(vec![Ty::Const(elem1_path), Ty::Const(elem2_path)]),
+                vec![elem1_id, elem2_id],
+            );
+
+            let int_def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 10,
+            };
+            let string_def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 20,
+            };
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(elem1_id, Resolution::Def(DefTarget::Workspace(int_def_id)));
+            resolutions.insert(elem2_id, Resolution::Def(DefTarget::Workspace(string_def_id)));
+
+            let var_map = HashMap::new();
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            match result {
+                Ty::Tuple(elems) => {
+                    assert_eq!(elems.len(), 2);
+                    match &elems[0] {
+                        Ty::Const(p) => assert_eq!(p.to_string(), "test::def_10"),
+                        _ => panic!("Expected Ty::Const for first elem"),
+                    }
+                    match &elems[1] {
+                        Ty::Const(p) => assert_eq!(p.to_string(), "test::def_20"),
+                        _ => panic!("Expected Ty::Const for second elem"),
+                    }
+                }
+                _ => panic!("Expected Ty::Tuple, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_handles_ref_type() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Ref(inner) → should resolve inner
+            let inner_id = NodeId::new();
+
+            let inner_path = ItemPath::from_path(&Path::from("Point")).unwrap();
+            let parsed_ty = make_parsed_ty(
+                Ty::Ref(Box::new(Ty::Const(inner_path))),
+                vec![inner_id],
+            );
+
+            let point_def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 5,
+            };
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(inner_id, Resolution::Def(DefTarget::Workspace(point_def_id)));
+
+            let var_map = HashMap::new();
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            match result {
+                Ty::Ref(inner) => {
+                    match inner.as_ref() {
+                        Ty::Const(p) => assert_eq!(p.to_string(), "test::def_5"),
+                        _ => panic!("Expected Ty::Const for inner"),
+                    }
+                }
+                _ => panic!("Expected Ty::Ref, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_handles_library_target() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Resolution::Def with DefTarget::Library → should use library path
+            let node_id = NodeId::new();
+            let original_path = ItemPath::from_path(&Path::from("List")).unwrap();
+            let parsed_ty = make_parsed_ty(Ty::Const(original_path), vec![node_id]);
+
+            let lib_def_id = LibraryDefId {
+                module: ModulePath::from("core::collections"),
+                index: 0,
+            };
+            let target = DefTarget::Library(lib_def_id);
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(node_id, Resolution::Def(target.clone()));
+
+            let var_map = HashMap::new();
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            match result {
+                Ty::Const(path) => {
+                    assert_eq!(path.to_string(), "core::collections::lib_0");
+                }
+                _ => panic!("Expected Ty::Const, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_handles_type_param_in_const_position() {
+            let _guard = NodeId::enter_def(test_def_id());
+
+            // Ty::Const but Resolution::TypeParam → becomes Ty::Var
+            let node_id = NodeId::new();
+            let original_path = ItemPath::from_path(&Path::from("T")).unwrap();
+            let parsed_ty = make_parsed_ty(Ty::Const(original_path), vec![node_id]);
+
+            let def_id = DefId {
+                file: ray_shared::file_id::FileId::default(),
+                index: 0,
+            };
+            let type_param_id = TypeParamId {
+                owner: def_id,
+                index: 0,
+            };
+            let schema_var = TyVar::new("?s0".to_string());
+
+            let mut resolutions = HashMap::new();
+            resolutions.insert(node_id, Resolution::TypeParam(type_param_id));
+
+            let mut var_map = HashMap::new();
+            var_map.insert(type_param_id, schema_var.clone());
+
+            let result = apply_type_resolutions(&parsed_ty, &resolutions, &var_map, dummy_item_path);
+
+            // Should be Ty::Var because it resolved to a type param
+            match result {
+                Ty::Var(v) => {
+                    assert_eq!(v.to_string(), "?s0");
+                }
+                _ => panic!("Expected Ty::Var, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn apply_type_resolutions_preserves_terminal_types() {
+            // Ty::Never and Ty::Any should be preserved
+            let parsed_never = make_parsed_ty(Ty::Never, vec![]);
+            let parsed_any = make_parsed_ty(Ty::Any, vec![]);
+
+            let resolutions = HashMap::new();
+            let var_map = HashMap::new();
+
+            let result_never = apply_type_resolutions(&parsed_never, &resolutions, &var_map, dummy_item_path);
+            let result_any = apply_type_resolutions(&parsed_any, &resolutions, &var_map, dummy_item_path);
+
+            assert_eq!(result_never, Ty::Never);
+            assert_eq!(result_any, Ty::Any);
+        }
     }
 }

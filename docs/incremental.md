@@ -1206,7 +1206,7 @@ Type resolution is part of `name_resolutions(FileId)`. When walking a definition
 The resolution rules for types are:
 - **Simple names** (e.g., `Int`, `MyStruct`): Look up in imports, then module exports, then builtins
 - **Qualified paths** (e.g., `core::list::List`): Look up via `module_def_index`
-- **Type parameters** (e.g., `T` in `fn foo[T](x: T)`): Resolve to `Resolution::TypeParam`
+- **Type parameters** (e.g., `'a` in `fn foo['a](x: 'a)`): Resolve to `Resolution::TypeParam`
 
 **Extended Resolution enum**
 
@@ -1262,11 +1262,11 @@ The result is a `Ty` where:
 The `mapped_def_types(DefId)` query allocates schema variables for type parameters and produces a `HashMap<TypeParamId, TyVar>` mapping. When `name_resolutions` produces `Resolution::TypeParam(id)` for a type reference, consumers use this mapping to convert to the appropriate schema variable:
 
 ```
-Source: struct Foo[T] { x: T }
-                   │      │
-                   │      └── Resolution::TypeParam(TypeParamId { owner: Foo, index: 0 })
-                   │
-                   └── mapped_def_types allocates ?s0 for index 0
+Source: struct Foo['a] { x: 'a }
+                    │        │
+                    │        └── Resolution::TypeParam(TypeParamId { owner: Foo, index: 0 })
+                    │
+                    └── mapped_def_types allocates ?s0 for index 0
 
 Result: StructDef.fields[0].ty = Ty::Var("?s0")
 ```
@@ -2138,7 +2138,7 @@ When type errors involve schema variables (type variables from polymorphic defin
 
 1. **Forward resolution** (`var_map: HashMap<TypeParamId, TyVar>`): Used during type resolution to convert `Resolution::TypeParam(TypeParamId)` to the schema variable.
 
-2. **Display name** (`reverse_map: HashMap<TyVar, String>`): Used when displaying types to convert schema variables back to user-facing names. Example: `?s0` → `"T"`.
+2. **Display name** (`reverse_map: HashMap<TyVar, String>`): Used when displaying types to convert schema variables back to user-facing names. Example: `?s0` → `"'a"`.
 
 3. **Origin tracing** (`origin_of(&TyVar) -> Option<TypeParamId>`): Derives the origin by inverting `var_map`. Used when a diagnostic needs to show *where* a type parameter was declared. Example workflow:
    ```rust
@@ -2146,13 +2146,13 @@ When type errors involve schema variables (type variables from polymorphic defin
    if let Some(type_param_id) = mapped_types.origin_of(&ty_var) {
        let def_name = def_name(type_param_id.owner);  // → "foo"
        let span = type_param_span(type_param_id);  // → line 5, col 8
-       // Produce: "type parameter `T` (from `foo` at line 5)"
+       // Produce: "type parameter `'a` (from `foo` at line 5)"
    }
    ```
 
 **Use cases for origin tracing:**
 
-- **Shadowed type parameters**: When inner `T` shadows outer `T`, the error can clarify which `T` is meant
+- **Shadowed type parameters**: When inner `'a` shadows outer `'a`, the error can clarify which `'a` is meant
 - **Cross-definition errors**: When a method uses a struct's type parameter, the error can point to the struct's declaration
 - **Debugging inference**: During development, origin tracking helps understand where each variable came from
 
@@ -5350,7 +5350,7 @@ The `mapped_def_types` query must be updated to produce a mapping from `TypePara
 
 ##### Step 1: Update MappedDefTypes structure
 
-- [ ] Change `MappedDefTypes` to use `TypeParamId` as key:
+- [x] Change `MappedDefTypes` to use `TypeParamId` as key:
   ```rust
   struct MappedDefTypes {
       /// Maps type parameter IDs to schema variables
@@ -5358,8 +5358,8 @@ The `mapped_def_types` query must be updated to produce a mapping from `TypePara
       var_map: HashMap<TypeParamId, TyVar>,
 
       /// Reverse map for display (schema var → user name)
-      /// TyVar("?s0") → "T"
-      reverse_map: HashMap<TyVar, String>,
+      /// TyVar("?s0") → TyVar("'a")
+      reverse_map: HashMap<TyVar, TyVar>,
   }
 
   impl MappedDefTypes {
@@ -5376,24 +5376,24 @@ The `mapped_def_types` query must be updated to produce a mapping from `TypePara
 
 **Origin tracing for diagnostics:**
 
-The `reverse_map` provides the user-facing name ("T") but not the location. When a diagnostic says "expected T but found Int", we need to tell the user *which* T - especially in cases like:
+The `reverse_map` provides the user-facing name ("'a") but not the location. When a diagnostic says "expected 'a but found Int", we need to tell the user *which* 'a - especially in cases like:
 
 ```ray
-struct Outer[T] {
-    fn inner[T](x: T) -> T { ... }  // Different T!
+struct Outer['a] {
+    fn inner['a](x: 'a) -> 'a { ... }  // Different 'a!
 }
 ```
 
 With `origin_of()`, diagnostics can:
 1. Call `origin_of(&ty_var)` → `TypeParamId { owner: inner_def_id, index: 0 }`
 2. Use `type_param_span(type_param_id)` to get the source location
-3. Produce: "expected `T` (type parameter from `inner` at line 2) but found `Int`"
+3. Produce: "expected `'a` (type parameter from `inner` at line 2) but found `Int`"
 
 Since `var_map` is immutable after construction and type parameter lists are small (typically 1-3), the O(n) linear scan is negligible for diagnostic formatting.
 
 ##### Step 2: Update mapped_def_types query
 
-- [ ] Modify `mapped_def_types` to build both maps:
+- [x] Modify `mapped_def_types` to build both maps:
   ```rust
   #[query]
   fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
@@ -5421,7 +5421,7 @@ Since `var_map` is immutable after construction and type parameter lists are sma
       MappedDefTypes { var_map, reverse_map }
   }
   ```
-- [ ] **Validate**: Unit test verifying TypeParamId-based mapping and origin tracing via `origin_of()`
+- [x] **Validate**: Unit test verifying TypeParamId-based mapping and origin tracing via `origin_of()`
 
 ##### Step 3: Implement apply_type_resolutions function
 
@@ -5431,7 +5431,7 @@ The `apply_type_resolutions` function is the **consumer** side of type resolutio
 - `collect_type_resolutions` (A.2) runs during `name_resolutions` query → populates `HashMap<NodeId, Resolution>`
 - `apply_type_resolutions` (this step) runs during `struct_def`/`trait_def`/`impl_def` → uses that map to produce resolved `Ty`
 
-- [ ] Implement `apply_type_resolutions` function:
+- [x] Implement `apply_type_resolutions` function:
   ```rust
   /// Transforms a Parsed<Ty> into a resolved Ty by applying resolutions.
   ///
@@ -5513,7 +5513,7 @@ The `apply_type_resolutions` function is the **consumer** side of type resolutio
       }
   }
   ```
-- [ ] **Validate**: Unit tests for apply_type_resolutions with various type structures
+- [x] **Validate**: Unit tests for apply_type_resolutions with various type structures
 
 ##### Step 4: Var map inheritance for nested scopes
 
@@ -5567,15 +5567,15 @@ for method in methods {
 2. The caller already knows the parent-child relationship (impl → method)
 3. No need for the query to track "parent def" relationships
 
-- [ ] Update `struct_def` to use `apply_type_resolutions` for field types
-- [ ] Update `trait_def` to use `apply_type_resolutions` for method signatures (combining trait + method var_maps)
-- [ ] Update `impl_def` to use `apply_type_resolutions` for method signatures (combining impl + method var_maps)
-- [ ] Update `annotated_scheme` to use `apply_type_resolutions`
-- [ ] **Validate**: End-to-end test with `impl List['a] { fn push(...) }` verifying inherited type params
+- [x] Update `struct_def` to use `apply_type_resolutions` for field types
+- [x] Update `trait_def` to use `apply_type_resolutions` for method signatures (combining trait + method var_maps)
+- [x] Update `impl_def` to use `apply_type_resolutions` for method signatures (combining impl + method var_maps)
+- [x] Update `annotated_scheme` to use `apply_type_resolutions`
+- [x] **Validate**: End-to-end test with `impl List['a] { fn push(...) }` verifying inherited type params
 
 **Why TypeParamId is more robust than string keys:**
 
-1. **Handles shadowing**: In `trait Foo[T] { fn bar[T](x: T) }`, the inner `T` shadows the outer. With `TypeParamId`, we correctly distinguish `TypeParamId { owner: Foo, index: 0 }` from `TypeParamId { owner: bar, index: 0 }`.
+1. **Handles shadowing**: In `trait Foo['a] { fn bar['a](x: 'a) }`, the inner `'a` shadows the outer. With `TypeParamId`, we correctly distinguish `TypeParamId { owner: Foo, index: 0 }` from `TypeParamId { owner: bar, index: 0 }`.
 
 2. **Handles nested scopes**: Methods inherit parent type parameters. The resolution `Resolution::TypeParam(id)` tells us exactly which definition's type parameter is being referenced.
 
@@ -5592,7 +5592,7 @@ for method in methods {
 - [ ] **Type param test**: Verify type parameters resolve to TypeParam, not Error
 - [ ] **Mapping test**: Verify `mapped_def_types` produces correct `TypeParamId → TyVar` mapping
 - [ ] **Origin tracing test**: Verify `origin_of()` allows tracing a schema variable back to its `TypeParamId`
-- [ ] **Shadowing test**: Verify shadowed type parameters (e.g., `trait Foo[T] { fn bar[T](...) }`) correctly map to distinct `TypeParamId`s with correct origins
+- [ ] **Shadowing test**: Verify shadowed type parameters (e.g., `trait Foo['a] { fn bar['a](...) }`) correctly map to distinct `TypeParamId`s with correct origins
 - [ ] **Integration test**: Verify `struct_def` correctly resolves generic field types using the new mapping
 
 **Deliverable**: `name_resolutions(FileId)` returns complete resolution information for all type references in all definitions (via `collect_type_resolutions`). `mapped_def_types` produces `TypeParamId`-keyed mappings with forward lookup for resolution, reverse lookup for display, and `origin_of()` for diagnostic tracing. The `apply_type_resolutions` function transforms `Parsed<Ty>` into resolved `Ty` by consuming the collected resolutions and var_maps. Downstream queries (`struct_def`, `trait_def`, `impl_def`) combine parent + own var_maps and call `apply_type_resolutions` to produce fully-qualified types with schema variables.
