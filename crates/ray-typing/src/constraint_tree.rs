@@ -1796,7 +1796,7 @@ fn generate_constraints_for_child(
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     use ray_shared::{
         def::DefId,
@@ -1844,7 +1844,6 @@ mod tests {
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
-            schema_allocator: Rc::new(RefCell::new(SchemaVarAllocator::new())),
             lowering_errors: Vec::new(),
         }
     }
@@ -1885,7 +1884,6 @@ mod tests {
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
-            schema_allocator: Rc::new(RefCell::new(SchemaVarAllocator::new())),
             lowering_errors: Vec::new(),
         }
     }
@@ -1909,7 +1907,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -1936,7 +1935,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -1961,7 +1961,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -1988,7 +1989,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2012,7 +2014,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2037,7 +2040,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let scheme_ty = Ty::int();
         ctx.binding_schemes.insert(
@@ -2077,7 +2081,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2122,7 +2127,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2160,7 +2166,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2202,7 +2209,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2231,7 +2239,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2258,7 +2267,8 @@ mod tests {
         let input = make_input(def_id, loop_expr, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
@@ -2300,7 +2310,8 @@ mod tests {
 
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         ctx.binding_schemes.insert(
             def_id.into(),
@@ -2349,7 +2360,8 @@ mod tests {
         let input = make_input(def_id, expr_id, kinds);
         let group = single_binding_group(def_id);
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);

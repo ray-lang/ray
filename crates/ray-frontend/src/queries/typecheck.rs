@@ -6,18 +6,17 @@
 //! the query system) and the incremental frontend (which uses queries for
 //! definition lookups).
 
+use ray_core::typing::build_typecheck_input;
+use ray_query_macros::query;
 use ray_shared::{
-    def::DefId,
-    file_id::FileId,
-    pathlib::ItemPath,
-    resolution::DefTarget,
-    span::Source,
-    ty::Ty,
+    def::DefId, file_id::FileId, pathlib::ItemPath, resolution::DefTarget, span::Source, ty::Ty,
 };
 use ray_typing::{
+    TypeCheckInput,
     env::TypecheckEnv,
     types::{
-        FieldKind, ImplField, ImplKind, ImplTy, NominalKind, StructTy, TraitField, TraitTy, TyScheme,
+        FieldKind, ImplField, ImplKind, ImplTy, NominalKind, StructTy, TraitField, TraitTy,
+        TyScheme,
     },
 };
 
@@ -33,7 +32,7 @@ use crate::{
         types::annotated_scheme,
         workspace::WorkspaceSnapshot,
     },
-    query::Database,
+    query::{Database, Query},
 };
 
 /// Query-based implementation of `TypecheckEnv`.
@@ -230,8 +229,9 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
     fn resolve_builtin(&self, name: &str) -> ItemPath {
         // Try to resolve the builtin in the current file's scope
         match resolve_builtin(self.db, self.file_id, name.to_string()) {
-            Some(target) => def_path(self.db, target)
-                .expect("resolved builtin should have a valid path"),
+            Some(target) => {
+                def_path(self.db, target).expect("resolved builtin should have a valid path")
+            }
             None => {
                 // Fall back to core::{name}
                 ItemPath::from(format!("core::{}", name).as_str())
@@ -257,6 +257,11 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
         Some((trait_path, method_path))
     }
+}
+
+#[query]
+pub fn typecheck_group_input(db: &Database, members: &Vec<DefId>) -> TypeCheckInput {
+    todo!("typecheck_group_input")
 }
 
 #[cfg(test)]

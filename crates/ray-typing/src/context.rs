@@ -1,20 +1,23 @@
 // Per-module and per-binding-group typing context.
 // This is a stripped-down, spec-aligned analogue of the existing TyCtx.
 
-use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
-use crate::constraint_tree::SkolemizedAnnotation;
-use crate::constraints::{ClassPredicate, Constraint, Predicate};
-use crate::env::TypecheckEnv;
-use crate::info::TypeSystemInfo;
-use crate::types::{Subst, Substitutable, TyScheme};
-use ray_shared::pathlib::ItemPath;
-use ray_shared::ty::{SKOLEM_PREFIX, SchemaVarAllocator, Ty, TyVar};
 use ray_shared::{
-    binding_target::BindingTarget, def::DefId, local_binding::LocalBindingId, node_id::NodeId,
-    pathlib::Path,
+    binding_target::BindingTarget,
+    def::DefId,
+    local_binding::LocalBindingId,
+    node_id::NodeId,
+    pathlib::{ItemPath, Path},
+    ty::{SKOLEM_PREFIX, SchemaVarAllocator, Ty, TyVar},
+};
+
+use crate::{
+    constraint_tree::SkolemizedAnnotation,
+    constraints::{ClassPredicate, Constraint, Predicate},
+    env::TypecheckEnv,
+    info::TypeSystemInfo,
+    types::{Subst, Substitutable, TyScheme},
 };
 
 /// Minimal expression and pattern kinds used for v2 constraint generation.
@@ -341,7 +344,7 @@ pub struct SolverContext<'a> {
     binding_required_preds: HashMap<BindingTarget, Vec<Predicate>>,
 
     /// Shared allocator for schema variables.
-    schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
+    schema_allocator: &'a mut SchemaVarAllocator,
 
     /// External typecheck environment
     env: &'a dyn TypecheckEnv,
@@ -367,10 +370,7 @@ impl<'a> MetaAllocator for SolverContext<'a> {
 }
 
 impl<'a> SolverContext<'a> {
-    pub fn new(
-        schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
-        env: &'a dyn TypecheckEnv,
-    ) -> Self {
+    pub fn new(schema_allocator: &'a mut SchemaVarAllocator, env: &'a dyn TypecheckEnv) -> Self {
         SolverContext {
             expr_types: HashMap::new(),
             binding_schemes: HashMap::new(),
@@ -593,12 +593,12 @@ impl<'a> SolverContext<'a> {
             .map(|v| v.as_slice())
     }
 
-    pub fn schema_allocator_mut(&self) -> RefMut<'_, SchemaVarAllocator> {
-        self.schema_allocator.borrow_mut()
+    pub fn schema_allocator_mut(&mut self) -> &mut SchemaVarAllocator {
+        self.schema_allocator
     }
 
-    pub fn alloc_schema_var(&self) -> TyVar {
-        self.schema_allocator.borrow_mut().alloc()
+    pub fn alloc_schema_var(&mut self) -> TyVar {
+        self.schema_allocator.alloc()
     }
 
     pub fn env(&self) -> &dyn TypecheckEnv {

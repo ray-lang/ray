@@ -563,6 +563,29 @@ When you edit an unannotated function's body:
 
 This is why annotations improve incrementality: they break the inference coupling between caller and callee.
 
+**Local binding references across definitions**: A special case arises when a definition references a local binding owned by a different definition. For example:
+
+```ray
+// top-level (owned by FileMain)
+x = 42
+
+fn foo() -> int {
+    x + 1  // references LocalBindingId { owner: FileMain, index: 0 }
+}
+```
+
+Here, `foo` references `x`, which is a `LocalBindingId` owned by FileMain. Since `x` is unannotated, `foo` cannot be typechecked independently - it needs to know `x`'s inferred type.
+
+**Design decision**: Rather than forcing `foo` and FileMain into the same SCC (which would hurt incrementality), we use:
+
+1. **Topological ordering via `def_deps`**: When `def_deps(foo)` encounters a `Resolution::Local(local_id)` where `local_id.owner` is unannotated, it includes that owner in the dependencies. This ensures FileMain is typechecked before `foo`.
+
+2. **Cross-SCC type lookup via `inferred_local_type`**: After FileMain is typechecked, its local bindings' types are stored in `TypecheckResult.local_tys`. When `foo` is typechecked (in a separate SCC), it calls `inferred_local_type(local_id)` to retrieve `x`'s type.
+
+This approach provides better incrementality than forcing everything into one SCC. If `x`'s type changes, FileMain's SCC retypechecks, then `foo`'s SCC retypechecks. But edits to `foo` that don't affect type inference don't require retypechecking FileMain.
+
+**Annotated local bindings**: If the local binding is annotated (`x: int = 42`), no edge is created and no cross-SCC lookup is needed - the typechecker can use the declared type directly.
+
 ```rust
 /// Identifier for a binding group within a module.
 ///
@@ -1421,7 +1444,11 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
   **Note**: This query is workspace-only. Library definitions are already typechecked and don't participate in binding analysis.
 
-  **Error handling**: References to `Resolution::Error` or `Resolution::Local` are skipped. References to `DefTarget::Library` are skipped (library calls don't create binding edges). Only `DefTarget::Workspace` creates edges, and only for DefIds in the same module.
+  **Error handling**: References to `Resolution::Error` are skipped. References to `DefTarget::Library` are skipped (library calls don't create binding edges). Only `DefTarget::Workspace` creates edges, and only for DefIds in the same module.
+
+  **Local binding handling**: References to `Resolution::Local(local_id)` are handled specially. If the local binding's owner (`local_id.owner`) is different from the current definition and the owner is unannotated (e.g., FileMain), an edge to the owner is created. This ensures proper topological ordering for cross-definition local references.
+
+  For example, if definition `foo` references a top-level assignment `x = 42` (which is a `LocalBindingId` owned by FileMain), then `def_deps(foo)` includes FileMain. This ensures FileMain is typechecked before `foo`, so `foo` can look up `x`'s inferred type via `inferred_local_type`.
 
   **Legacy component integration**: This is the "Phase A" extraction from `ray-core/src/passes/binding.rs`. The legacy `run_binding_pass` walks the entire merged module; this query walks only nodes within a single definition.
 
@@ -1662,10 +1689,13 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   #[derive(Clone, Serialize, Deserialize)]
   struct TypecheckResult {
       pub schemes: HashMap<DefId, TyScheme>,
-      pub node_types: HashMap<NodeId, Ty>,
+      pub node_tys: HashMap<NodeId, Ty>,
+      pub local_tys: HashMap<LocalBindingId, Ty>,
       pub errors: Vec<RayError>,
   }
   ```
+
+  The `local_tys` table maps local bindings to their inferred types. This is used by `inferred_local_type(LocalBindingId)` to support cross-SCC type lookup when one definition references a local binding owned by another definition (e.g., a function referencing a top-level assignment owned by FileMain).
 
   **Legacy component integration**: Refactors the core of `typecheck` in `ray-typing/src/lib.rs`. The legacy function processes all binding groups in a module; this query processes one group.
 
@@ -1718,6 +1748,18 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   **Dependencies**: `binding_group_for_def(node_id.owner)`, `typecheck_group(BindingGroupId)` for the resulting group
 
   **Semantics**: Returns the monomorphic type for an expression node. All expression nodes have a type after typechecking completes.
+
+  **Error handling**: Returns an error type if typechecking failed for the containing definition.
+
+- `inferred_local_type(LocalBindingId)` → `Ty`
+
+  **Dependencies**: `binding_group_for_def(local_id.owner)`, `typecheck_group(BindingGroupId)` for the resulting group
+
+  **Semantics**: Returns the inferred type for a local binding (parameter, let-binding, or top-level assignment). This is the primary mechanism for cross-SCC type lookup when one definition references a local binding owned by another definition.
+
+  **Use case**: When definition `foo` references a top-level assignment `x = 42` (owned by FileMain), and `foo` is in a different binding group than FileMain, the typechecker uses this query to retrieve `x`'s inferred type. The topological ordering established by `def_deps` ensures FileMain is typechecked first.
+
+  **Implementation**: Looks up the `LocalBindingId` in the `TypecheckResult.local_tys` table for the binding group containing `local_id.owner`.
 
   **Error handling**: Returns an error type if typechecking failed for the containing definition.
 
@@ -3769,28 +3811,28 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 - [ ] Create new function:
   ```rust
-  pub fn check_single_group(
-      group: &BindingGroup<DefId>,
+  pub fn typecheck_group(
       input: &TypeCheckInput,
+      group: &BindingGroup<DefId>,
       external_schemes: &impl Fn(DefId) -> Option<TyScheme>,
       options: &TypecheckOptions,
-  ) -> GroupTypecheckResult {
+  ) -> TypeCheckResult {
       // ... extracted from solve_groups loop body
   }
   ```
-- [ ] `GroupTypecheckResult` contains:
+- [ ] `TypeCheckResult` contains:
   ```rust
-  pub struct GroupTypecheckResult {
+  pub struct TypeCheckResult {
       pub schemes: HashMap<DefId, TyScheme>,
-      pub node_types: HashMap<NodeId, Ty>,
+      pub node_tys: HashMap<NodeId, Ty>,
       pub errors: Vec<TypeError>,
   }
   ```
-- [ ] **Validate**: Unit test for `check_single_group` with simple group
+- [ ] **Validate**: Unit test for `typecheck_group` with simple group
 
 ##### Step 2: Update solve_groups to use new function
 
-- [ ] Refactor `solve_groups` to call `check_single_group` for each group
+- [ ] Refactor `solve_groups` to call `typecheck_group` for each group
 - [ ] Accumulate results across groups
 - [ ] **Validate**: `cargo test -p ray-typing`
 
@@ -4484,10 +4526,10 @@ This is the largest migration. Do it incrementally, running tests after each ste
           def_scheme(db, DefTarget::Workspace(def_id))
       };
 
-      check_single_group(&group_input, &external_schemes, &options)
+      typecheck_group(&group_input, &external_schemes, &options)
   }
   ```
-- [ ] Wire up to `check_single_group` from Phase 0.G
+- [ ] Wire up to `typecheck_group` from Phase 0.G
 - [ ] Build `BindingGroupInput` from query results
 - [ ] **Validate**: Unit test typechecking simple binding group
 
@@ -4495,7 +4537,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 - [ ] Ensure groups are typechecked in topological order (queries handle this naturally)
 - [ ] Verify external scheme lookup works for cross-group references
+- [ ] **Cross-SCC local binding lookup**: When a definition references a local binding owned by another definition (e.g., `foo` references top-level `x` owned by FileMain), the topological ordering established by `def_deps` ensures the owner is typechecked first. The typechecker uses `inferred_local_type(LocalBindingId)` to retrieve the type.
 - [ ] **Validate**: Unit test with multi-group dependencies
+- [ ] **Validate**: Unit test where annotated function references unannotated FileMain local
 
 ##### Step 3: def_scheme query
 
@@ -4528,12 +4572,27 @@ This is the largest migration. Do it incrementally, running tests after each ste
       let def_id = node_id.owner;
       let group_id = binding_group_for_def(db, def_id);
       let result = typecheck_group(db, group_id);
-      result.node_types.get(&node_id).cloned()
+      result.node_tys.get(&node_id).cloned()
   }
   ```
 - [ ] **Validate**: Unit test querying expression types
 
-##### Step 5: call_resolution query
+##### Step 5: inferred_local_type query
+
+- [ ] Define `inferred_local_type(LocalBindingId)` query:
+  ```rust
+  #[query]
+  fn inferred_local_type(db: &Database, local_id: LocalBindingId) -> Option<Ty> {
+      let group_id = binding_group_for_def(db, local_id.owner);
+      let result = typecheck_group(db, group_id);
+      result.local_tys.get(&local_id).cloned()
+  }
+  ```
+- [ ] This is the primary mechanism for cross-SCC local binding type lookup
+- [ ] Used when a definition references a local binding owned by another definition (e.g., FileMain's top-level assignments)
+- [ ] **Validate**: Unit test querying local binding types across SCCs
+
+##### Step 6: call_resolution query
 
 - [ ] Define `call_resolution(NodeId)` query
 - [ ] Return resolved callee, instantiated types, trait impl (if method)

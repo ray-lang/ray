@@ -16,22 +16,21 @@ pub mod tyctx;
 pub mod types;
 pub mod unify;
 
-use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::mem;
-use std::rc::Rc;
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    mem,
+};
 
-use ray_shared::binding_target::BindingTarget;
-use ray_shared::def::DefId;
-use ray_shared::local_binding::LocalBindingId;
 use ray_shared::{
+    binding_target::BindingTarget,
+    def::DefId,
+    local_binding::LocalBindingId,
     node_id::NodeId,
     pathlib::Path,
     span::Source,
     ty::{SchemaVarAllocator, Ty, TyVar},
 };
 
-use crate::env::TypecheckEnv;
 use crate::{
     binding_groups::{BindingGraph, BindingGroup, BindingId},
     constraint_tree::{
@@ -40,6 +39,7 @@ use crate::{
     constraints::{CallKind, Constraint, ConstraintKind, InstantiateTarget, Predicate},
     context::{ExprKind, InstanceFailureStatus, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
+    env::TypecheckEnv,
     generalize::generalize_group,
     info::{Info, TypeSystemInfo},
     tyctx::TyCtx,
@@ -148,6 +148,7 @@ pub struct ExprRecord {
     pub source: Option<Source>,
 }
 
+#[derive(Clone, Debug)]
 pub struct TypeCheckInput {
     pub bindings: BindingGraph<DefId>,
     /// Consolidated binding metadata keyed by `DefId`. This gradually
@@ -160,9 +161,6 @@ pub struct TypeCheckInput {
     pub expr_records: HashMap<NodeId, ExprRecord>,
     /// Simplified pattern metadata so every AST pattern node can be typed.
     pub pattern_records: HashMap<NodeId, PatternRecord>,
-    /// Shared allocator for schema variables so the frontend and solver
-    /// agree on naming.
-    pub schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
     /// Errors recorded during lowering before the solver runs.
     pub lowering_errors: Vec<TypeError>,
 }
@@ -359,10 +357,6 @@ impl TypeCheckInput {
         self.expr_records
             .get(&expr)
             .and_then(|rec| rec.source.as_ref())
-    }
-
-    pub fn schema_allocator(&self) -> Rc<RefCell<SchemaVarAllocator>> {
-        self.schema_allocator.clone()
     }
 }
 
@@ -771,6 +765,10 @@ pub struct TypeCheckResult {
     pub schemes: HashMap<DefId, TyScheme>,
     /// Monomorphic types for every expression node in the input
     pub node_tys: HashMap<NodeId, Ty>,
+    /// Inferred types for local bindings (parameters, let-bindings, top-level assignments).
+    /// Used by `inferred_local_type(LocalBindingId)` for cross-SCC type lookup when one
+    /// definition references a local binding owned by another definition.
+    pub local_tys: HashMap<LocalBindingId, Ty>,
     /// All type errors discovered while typechecking
     pub errors: Vec<TypeError>,
 }
@@ -798,7 +796,8 @@ pub fn typecheck(
     // Shared type context checking pass. This will accumulate information
     // across binding groups. Seed any pre-existing binding schemes from
     // the frontend (e.g. annotated function types).
-    let mut ctx = SolverContext::new(input.schema_allocator.clone(), env);
+    let mut schema_allocator = SchemaVarAllocator::new();
+    let mut ctx = SolverContext::new(&mut schema_allocator, env);
     log::debug!(
         "[typecheck] schema variable start: ?s{}",
         ctx.schema_allocator_mut().curr_id()
@@ -838,16 +837,23 @@ pub fn typecheck(
     tcx.all_schemes.clear();
     #[allow(unused_mut)] // TEMP
     let mut schemes = HashMap::new();
+    let mut local_tys = HashMap::new();
     for (target, scheme) in binding_schemes.iter() {
-        // Only process top-level definitions for path-based scheme storage
-        if let BindingTarget::Def(def_id) = target {
-            if let Some(record) = input.binding_records.get(def_id) {
-                if let Some(path) = &record.path {
-                    tcx.all_schemes.insert(path.clone(), scheme.clone());
-                    if !record.is_extern && record.parent.is_none() {
-                        tcx.schemes.insert(path.clone(), scheme.clone());
+        match target {
+            // Extract top-level definitions for path-based scheme storage
+            BindingTarget::Def(def_id) => {
+                if let Some(record) = input.binding_records.get(def_id) {
+                    if let Some(path) = &record.path {
+                        tcx.all_schemes.insert(path.clone(), scheme.clone());
+                        if !record.is_extern && record.parent.is_none() {
+                            tcx.schemes.insert(path.clone(), scheme.clone());
+                        }
                     }
                 }
+            }
+            // Extract local binding types (monomorphic, so take the body type)
+            BindingTarget::Local(local_id) => {
+                local_tys.insert(*local_id, scheme.ty.clone());
             }
         }
     }
@@ -855,6 +861,7 @@ pub fn typecheck(
     TypeCheckResult {
         schemes,
         node_tys,
+        local_tys,
         errors,
     }
 }
@@ -1017,7 +1024,8 @@ pub fn typecheck_group<'a>(
     external_schemes: impl Fn(DefId) -> Option<TyScheme> + 'a,
     env: &'a dyn TypecheckEnv,
 ) -> TypeCheckResult {
-    let mut ctx = SolverContext::new(input.schema_allocator.clone(), env);
+    let mut schema_allocator = SchemaVarAllocator::new();
+    let mut ctx = SolverContext::new(&mut schema_allocator, env);
 
     // Set up external scheme lookup callback
     ctx.set_external_schemes(external_schemes);
@@ -1036,9 +1044,18 @@ pub fn typecheck_group<'a>(
 
     // Extract results
     let mut schemes = HashMap::new();
-    for def_id in &group.bindings {
-        if let Some(scheme) = ctx.binding_schemes.get(&(*def_id).into()) {
-            schemes.insert(*def_id, scheme.clone());
+    let mut local_tys = HashMap::new();
+    for (target, scheme) in ctx.binding_schemes.iter() {
+        match target {
+            BindingTarget::Def(def_id) => {
+                if group.bindings.contains(def_id) {
+                    schemes.insert(*def_id, scheme.clone());
+                }
+            }
+            BindingTarget::Local(local_id) => {
+                // Local bindings have monomorphic types, extract from scheme body
+                local_tys.insert(*local_id, scheme.ty.clone());
+            }
         }
     }
 
@@ -1047,6 +1064,7 @@ pub fn typecheck_group<'a>(
     TypeCheckResult {
         schemes,
         node_tys,
+        local_tys,
         errors,
     }
 }
@@ -1530,14 +1548,14 @@ fn collect_predicate_vars(pred: &Predicate) -> HashSet<TyVar> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     use ray_shared::{
         def::DefId,
         file_id::FileId,
         local_binding::LocalBindingId,
         node_id::NodeId,
-        pathlib::{ItemPath, Path},
+        pathlib::ItemPath,
         ty::{SchemaVarAllocator, Ty},
     };
 
@@ -1579,7 +1597,6 @@ mod tests {
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
-            schema_allocator: Rc::new(RefCell::new(SchemaVarAllocator::new())),
             lowering_errors: Vec::new(),
         }
     }
@@ -1754,7 +1771,8 @@ mod tests {
         let mut subst = Subst::new();
         let solve_env = SolverEnv::default();
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let module = make_single_binding_module(def_id, root_expr, kinds);
 
@@ -1806,7 +1824,8 @@ mod tests {
         let mut subst = Subst::new();
         let env = SolverEnv::default();
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let module = make_single_binding_module(def_id, root_expr, kinds);
 
@@ -1854,7 +1873,6 @@ mod tests {
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
-            schema_allocator: Rc::new(RefCell::new(SchemaVarAllocator::new())),
             lowering_errors: Vec::new(),
         }
     }
@@ -1880,7 +1898,6 @@ mod tests {
             node_bindings: HashMap::new(),
             expr_records,
             pattern_records,
-            schema_allocator: Rc::new(RefCell::new(SchemaVarAllocator::new())),
             lowering_errors: Vec::new(),
         }
     }
@@ -2055,7 +2072,8 @@ mod tests {
         let env = SolverEnv::default();
 
         let typecheck_env = MockTypecheckEnv::new();
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let mut root = build_constraint_tree_for_group(&module, &mut ctx, &group);
         walk_tree(&root, &mut |item| println!("{}", item));
@@ -2171,7 +2189,8 @@ mod tests {
         typecheck_env.add_trait(ItemPath::from("core::Int"), int_trait_ty);
         typecheck_env.add_impl(uint_int_impl);
 
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
         ctx.binding_schemes.insert(malloc_def.into(), malloc_scheme);
 
         let result = solve_groups(&module, groups, &mut ctx, &typecheck_env, None);
@@ -2297,7 +2316,8 @@ mod tests {
             bindings: vec![main_def],
         }];
 
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
 
         let result = solve_groups(&module, groups, &mut ctx, &typecheck_env, None);
         assert!(

@@ -228,7 +228,6 @@ pub fn build_typecheck_input(
     resolutions: &HashMap<NodeId, Resolution>,
     def_bindings: BindingGraph<DefId>,
     def_binding_records: HashMap<DefId, BindingRecord>,
-    schema_allocator: Rc<RefCell<SchemaVarAllocator>>,
 ) -> TypeCheckInput {
     let mut ctx = TyLowerCtx::new(srcmap, env, binding_output, resolutions);
 
@@ -337,7 +336,6 @@ pub fn build_typecheck_input(
         node_bindings: ctx.node_bindings,
         expr_records: ctx.expr_records,
         pattern_records: ctx.pattern_records,
-        schema_allocator,
         lowering_errors: ctx.errors,
     }
 }
@@ -1326,7 +1324,6 @@ mod tests {
             &resolutions,
             def_bindings,
             def_binding_records,
-            Rc::default(),
         );
 
         // There should be exactly one binding record with a body expression.

@@ -101,7 +101,6 @@ impl<'a> FrontendPassManager<'a> {
             let def_bindings = build_binding_graph(&all_defs, self.resolutions);
             let def_binding_records = build_def_binding_records(binding_output);
 
-            let schema_allocator = self.tcx.schema_allocator();
             let typecheck_env = MockTypecheckEnv::new();
             let input = build_typecheck_input(
                 &self.module.decls,
@@ -112,7 +111,6 @@ impl<'a> FrontendPassManager<'a> {
                 self.resolutions,
                 def_bindings,
                 def_binding_records,
-                schema_allocator,
             );
             self.lowered_input = Some(input);
             let input = self

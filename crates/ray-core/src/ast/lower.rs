@@ -10,11 +10,7 @@ use ray_shared::{
     span::{Source, Sourced, parsed::Parsed},
     ty::{Ty, TyVar},
 };
-use ray_typing::{
-    constraints::Predicate,
-    tyctx::TyCtx,
-    types::{StructTy, TyScheme},
-};
+use ray_typing::{constraints::Predicate, tyctx::TyCtx, types::TyScheme};
 
 use crate::sourcemap::SourceMap;
 use crate::{

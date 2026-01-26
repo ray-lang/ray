@@ -61,7 +61,7 @@ pub struct GeneralizationResult {
 /// Section 3.4 (in a simplified form for now), and returns updated schemes.
 pub fn generalize_group(
     module: &TypeCheckInput,
-    ctx: &SolverContext,
+    ctx: &mut SolverContext,
     bindings: &[DefId],
     global_metas: &[TyVar],
     residuals: Vec<Constraint>,
@@ -191,7 +191,7 @@ pub fn generalize_group(
             let mut vars: Vec<TyVar> = Vec::with_capacity(metas.len());
             let mut local_closing: Subst = Subst::new();
             {
-                let mut allocator = ctx.schema_allocator_mut();
+                let allocator = ctx.schema_allocator_mut();
                 for old in metas {
                     // Map the old meta class name to the new schema variable so
                     // that the scheme body uses rigid quantified variables rather
@@ -211,11 +211,6 @@ pub fn generalize_group(
                 ty: instantiated.ty,
             };
 
-            log::debug!(
-                "[generalize] scheme = {}, generalized = {}",
-                scheme,
-                generalized
-            );
             closing_subst.extend(local_closing);
             schemes.push((def_id, generalized));
         }

@@ -1340,11 +1340,11 @@ fn solve_with_chosen_method(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, rc::Rc};
+    use std::collections::HashSet;
 
     use ray_shared::{
-        pathlib::{ItemPath, Path},
-        ty::{Ty, TyVar},
+        pathlib::ItemPath,
+        ty::{SchemaVarAllocator, Ty, TyVar},
     };
 
     use crate::{
@@ -1378,7 +1378,8 @@ mod tests {
             fields: vec![],
         });
 
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
         let mut subst = Subst::new();
 
         // Old metas (these are allowed to remain in the final substitution)
@@ -1454,7 +1455,8 @@ mod tests {
             fields: vec![],
         });
 
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
         let mut subst = Subst::new();
 
         let t0 = ctx.fresh_meta().as_tyvar();
@@ -1497,7 +1499,8 @@ mod tests {
             fields: vec![],
         });
 
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
         let mut subst = Subst::new();
 
         let t0 = ctx.fresh_meta().as_tyvar();
@@ -1621,7 +1624,8 @@ mod tests {
             },
         );
 
-        let mut ctx = SolverContext::new(Rc::default(), &typecheck_env);
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
         let mut subst = Subst::new();
 
         let k = TyVar::from("?s1");
