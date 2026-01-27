@@ -4696,7 +4696,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 6: ty_of query
 
-- [ ] Define `ty_of(NodeId)` query:
+- [x] Define `ty_of(NodeId)` query:
   ```rust
   #[query]
   fn ty_of(db: &Database, node_id: NodeId) -> Option<Ty> {
@@ -4706,7 +4706,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       result.node_tys.get(&node_id).cloned()
   }
   ```
-- [ ] **Validate**: Unit test querying expression types
+- [x] **Validate**: Unit test querying expression types
 
 ##### Step 7: inferred_local_type query
 

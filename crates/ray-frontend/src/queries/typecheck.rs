@@ -14,14 +14,8 @@ use ray_core::{
 };
 use ray_query_macros::query;
 use ray_shared::{
-    def::DefId,
-    file_id::FileId,
-    local_binding::LocalBindingId,
-    node_id::NodeId,
-    pathlib::ItemPath,
-    resolution::DefTarget,
-    span::Source,
-    ty::Ty,
+    def::DefId, file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, pathlib::ItemPath,
+    resolution::DefTarget, span::Source, ty::Ty,
 };
 use ray_typing::{
     TypeCheckInput, TypeCheckResult,
@@ -506,10 +500,33 @@ pub fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
     }
 }
 
+/// Returns the inferred type for an expression node.
+///
+/// This query looks up the monomorphic type assigned to an AST node during
+/// type inference. The node's owner DefId determines which binding group
+/// to typecheck.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `node_id` - The AST node identifier (contains owner DefId and local index)
+///
+/// # Returns
+///
+/// The monomorphic type for the expression, or `None` if not found.
+#[query]
+pub fn ty_of(db: &Database, node_id: NodeId) -> Option<Ty> {
+    let def_id = node_id.owner;
+    let group_id = binding_group_for_def(db, def_id);
+    let result = typecheck_group(db, group_id);
+    result.node_tys.get(&node_id).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use ray_shared::{
         def::{DefId, DefKind},
+        node_id::NodeId,
         pathlib::{FilePath, ItemPath, ModulePath},
         resolution::{DefTarget, Resolution},
         ty::Ty,
@@ -523,8 +540,8 @@ mod tests {
             resolve::name_resolutions,
             transform::file_ast,
             typecheck::{
-                QueryEnv, def_scheme, inferred_local_type, typecheck_def_input, typecheck_group,
-                typecheck_group_input,
+                QueryEnv, def_scheme, inferred_local_type, ty_of, typecheck_def_input,
+                typecheck_group, typecheck_group_input,
             },
             workspace::{FileSource, WorkspaceSnapshot},
         },
@@ -1579,7 +1596,10 @@ fn add(x: int, y: int) -> int => x
         let target = DefTarget::Workspace(add_def.def_id);
         let scheme = def_scheme(&db, target);
 
-        assert!(scheme.is_some(), "Should have a scheme for the add function");
+        assert!(
+            scheme.is_some(),
+            "Should have a scheme for the add function"
+        );
 
         let scheme = scheme.unwrap();
         // The function type should be (int, int) -> int
@@ -1699,10 +1719,7 @@ impl Point {
         let scheme = def_scheme(&db, target);
 
         // Impl blocks don't have type schemes (only their methods do)
-        assert!(
-            scheme.is_none(),
-            "Impl block should not have a type scheme"
-        );
+        assert!(scheme.is_none(), "Impl block should not have a type scheme");
     }
 
     #[test]
@@ -1737,9 +1754,192 @@ impl object Point {
         let target = DefTarget::Workspace(method_def.def_id);
         let scheme = def_scheme(&db, target);
 
+        assert!(scheme.is_some(), "Method should have a type scheme");
+    }
+
+    #[test]
+    fn ty_of_returns_type_for_function_body() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Simple function returning a parameter
+        let source = r#"
+fn identity(x: int) -> int => x
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "identity")
+            .expect("Should have identity function");
+
+        // Get the typecheck input to find the definition's root NodeId
+        let group_id = binding_group_for_def(&db, func_def.def_id);
+        let input = typecheck_group_input(&db, group_id.clone());
+
+        // Get the root expression NodeId for the definition.
+        // For functions, this is the entire function definition node (not just the body),
+        // which contains ExprKind::Function { params, body }.
+        let def_node_id = input
+            .def_nodes
+            .get(&func_def.def_id)
+            .expect("Function should have a definition node");
+
+        // Query ty_of for the definition's root expression
+        let def_ty = ty_of(&db, *def_node_id);
+
         assert!(
-            scheme.is_some(),
-            "Method should have a type scheme"
+            def_ty.is_some(),
+            "Should have a type for the function definition expression"
         );
+        // The definition root node has the function type (int -> int)
+        let ty = def_ty.unwrap();
+        assert!(
+            matches!(ty, Ty::Func(_, _)),
+            "Function definition should have a function type, got {:?}",
+            ty
+        );
+    }
+
+    #[test]
+    fn ty_of_returns_type_for_expression_in_expr_records() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function returning a boolean literal
+        let source = r#"
+fn get_true() -> bool => true
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "get_true")
+            .expect("Should have get_true function");
+
+        // Typecheck the group
+        let group_id = binding_group_for_def(&db, func_def.def_id);
+        let result = typecheck_group(&db, group_id.clone());
+
+        // The result should have node_tys for expressions
+        assert!(
+            !result.node_tys.is_empty(),
+            "Should have types for expressions in the function"
+        );
+
+        // Verify at least one expression has type bool (the `true` literal)
+        let has_bool_expr = result.node_tys.values().any(|ty| *ty == Ty::bool());
+        assert!(
+            has_bool_expr,
+            "Should have at least one expression with type bool (the true literal)"
+        );
+
+        // Pick any NodeId from node_tys and verify ty_of returns the same value
+        let (some_node_id, expected_ty) = result.node_tys.iter().next().unwrap();
+        let queried_ty = ty_of(&db, *some_node_id);
+        assert_eq!(
+            queried_ty.as_ref(),
+            Some(expected_ty),
+            "ty_of should return the same type as in node_tys"
+        );
+    }
+
+    #[test]
+    fn ty_of_returns_type_for_file_main_statement() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Top-level assignment
+        let source = r#"
+x = true
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // FileMain is always at index 0
+        let file_main_def_id = DefId::new(file_id, 0);
+
+        // Typecheck the group
+        let group_id = binding_group_for_def(&db, file_main_def_id);
+        let result = typecheck_group(&db, group_id);
+
+        // The result should have node_tys for expressions in FileMain
+        assert!(
+            !result.node_tys.is_empty(),
+            "Should have types for expressions in FileMain"
+        );
+
+        // Verify at least one expression has type bool (the `true` literal on the RHS)
+        let has_bool_expr = result.node_tys.values().any(|ty| *ty == Ty::bool());
+        assert!(
+            has_bool_expr,
+            "Should have at least one expression with type bool (the true literal)"
+        );
+
+        // Pick a NodeId from node_tys and verify ty_of returns the same value
+        let (some_node_id, expected_ty) = result.node_tys.iter().next().unwrap();
+        let queried_ty = ty_of(&db, *some_node_id);
+        assert_eq!(
+            queried_ty.as_ref(),
+            Some(expected_ty),
+            "ty_of should return the same type as in node_tys"
+        );
+    }
+
+    #[test]
+    fn ty_of_returns_none_for_invalid_node_id() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Simple function
+        let source = r#"
+fn foo() -> bool => true
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "foo")
+            .expect("Should have foo function");
+
+        // Create a NodeId with the correct owner but an invalid index
+        let invalid_node_id = NodeId {
+            owner: func_def.def_id,
+            index: 9999, // Unlikely to be a valid index
+        };
+
+        // Query ty_of with the invalid NodeId
+        let ty = ty_of(&db, invalid_node_id);
+
+        // Should return None for a non-existent node
+        assert!(ty.is_none(), "Should return None for an invalid NodeId");
     }
 }
