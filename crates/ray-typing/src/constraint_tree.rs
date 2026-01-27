@@ -413,7 +413,24 @@ pub fn generate_constraints_for_group(
     // expression scope via `generate_constraints_for_expr`.
     let mut next_id = 1;
     for binding_id in &group.bindings {
-        // Look up the root expression for this binding from def_nodes
+        // Check if this is FileMain (stored in file_main_stmts, not def_nodes)
+        if let Some(stmts) = input.file_main_stmts.get(binding_id) {
+            // FileMain: iterate over statements directly
+            for stmt in stmts {
+                generate_constraints_for_expr(
+                    input,
+                    ctx,
+                    *binding_id,
+                    None, // No skolem substitution for FileMain
+                    *stmt,
+                    root,
+                    &mut next_id,
+                );
+            }
+            continue;
+        }
+
+        // Regular binding: look up the root expression
         let Some(expr_root) = input.def_nodes.get(binding_id).copied() else {
             continue;
         };
@@ -1847,7 +1864,7 @@ mod tests {
         TypeCheckInput {
             bindings: graph,
             def_nodes,
-            node_bindings: HashMap::new(),
+            file_main_stmts: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
             lowering_errors: Vec::new(),
@@ -1883,7 +1900,7 @@ mod tests {
         TypeCheckInput {
             bindings: graph,
             def_nodes,
-            node_bindings: HashMap::new(),
+            file_main_stmts: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
             lowering_errors: Vec::new(),

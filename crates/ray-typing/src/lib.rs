@@ -155,8 +155,9 @@ pub struct TypeCheckInput {
     /// This replaces `BindingRecord.body_expr` - the actual expression
     /// metadata is in `expr_records`.
     pub def_nodes: HashMap<DefId, NodeId>,
-    /// Mapping from frontend node ids to lowered binding ids.
-    pub node_bindings: HashMap<NodeId, NodeBinding>,
+    /// Top-level statements for each file's FileMain (DefId with index 0).
+    /// These are typechecked but don't have a single "root" expression.
+    pub file_main_stmts: HashMap<DefId, Vec<NodeId>>,
     /// Consolidated expression metadata keyed by NodeId, replacing the
     /// expr_kinds/expr_sources split as the new lowering pipeline lands.
     pub expr_records: HashMap<NodeId, ExprRecord>,
@@ -797,11 +798,6 @@ pub fn typecheck(
     for (expr_id, ty) in node_tys.iter() {
         tcx.node_tys.insert(*expr_id, ty.clone());
     }
-
-    // TODO: node_bindings still use BindingId from binding_groups.
-    // This needs to be migrated to use LocalBindingId or DefId.
-    // For now, skip this population step.
-    let _ = &input.node_bindings;
 
     // Note: Path-based scheme storage in TyCtx is legacy. In the incremental
     // pipeline, schemes are stored by DefId in TypeCheckResult.
@@ -1552,7 +1548,7 @@ mod tests {
         TypeCheckInput {
             bindings: graph,
             def_nodes,
-            node_bindings: HashMap::new(),
+            file_main_stmts: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
             lowering_errors: Vec::new(),
@@ -1828,7 +1824,7 @@ mod tests {
         TypeCheckInput {
             bindings: graph,
             def_nodes,
-            node_bindings: HashMap::new(),
+            file_main_stmts: HashMap::new(),
             expr_records,
             pattern_records: HashMap::new(),
             lowering_errors: Vec::new(),
@@ -1853,7 +1849,7 @@ mod tests {
         TypeCheckInput {
             bindings: graph,
             def_nodes,
-            node_bindings: HashMap::new(),
+            file_main_stmts: HashMap::new(),
             expr_records,
             pattern_records,
             lowering_errors: Vec::new(),

@@ -2,15 +2,16 @@ use std::collections::HashMap;
 
 use ray_shared::{
     def::DefId,
+    file_id::FileId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::{ItemPath, Path},
+    pathlib::ItemPath,
     resolution::{DefTarget, Resolution},
     ty::Ty,
 };
 use ray_typing::{
-    ExprRecord, NodeBinding, PatternKind, PatternRecord, TypeCheckInput, TypeError,
-    binding_groups::{BindingGraph, BindingId},
+    ExprRecord, PatternKind, PatternRecord, TypeCheckInput, TypeError,
+    binding_groups::BindingGraph,
     context::{AssignLhs, ExprKind, LhsPattern, Pattern},
     env::TypecheckEnv,
     info::TypeSystemInfo,
@@ -18,7 +19,6 @@ use ray_typing::{
 
 use crate::{
     ast::{CurlyElement, Decl, Expr, Literal, Module, Node, Pattern as AstPattern, RangeLimits},
-    passes::binding::BindingPassOutput,
     sourcemap::SourceMap,
 };
 
@@ -26,20 +26,14 @@ struct TyLowerCtx<'a> {
     srcmap: &'a SourceMap,
     env: &'a dyn TypecheckEnv,
     resolutions: &'a HashMap<NodeId, Resolution>,
-    node_bindings: HashMap<NodeId, NodeBinding>,
     expr_records: HashMap<NodeId, ExprRecord>,
     pattern_records: HashMap<NodeId, PatternRecord>,
     /// Mapping from DefId to the root expression NodeId for each definition.
     /// This is used by the typechecker to find the body expression for a binding.
     def_nodes: HashMap<DefId, NodeId>,
-    /// Mapping from fully-qualified value paths to their BindingId, used to
-    /// lower Expr::Name / Expr::Path into ExprKind::Var, and later to
-    /// reconstruct per-binding schemes keyed by their module path.
-    value_bindings: HashMap<Path, BindingId>,
-    /// Stack of local scopes for value bindings introduced within function
-    /// bodies (e.g. via assignment). Each scope maps a simple name to a
-    /// BindingId; lookup walks the stack from innermost to outermost.
-    local_scopes: Vec<HashMap<Path, BindingId>>,
+    /// Top-level statements for each file's FileMain (DefId with index 0).
+    /// Unlike other bindings, FileMain doesn't have a single root expression.
+    file_main_stmts: HashMap<DefId, Vec<NodeId>>,
     loop_depth: usize,
     errors: Vec<TypeError>,
 }
@@ -48,19 +42,16 @@ impl<'a> TyLowerCtx<'a> {
     fn new(
         srcmap: &'a SourceMap,
         env: &'a dyn TypecheckEnv,
-        binding_output: &BindingPassOutput,
         resolutions: &'a HashMap<NodeId, Resolution>,
     ) -> Self {
         TyLowerCtx {
             srcmap,
             env,
             resolutions,
-            node_bindings: binding_output.node_bindings.clone(),
             expr_records: HashMap::new(),
             pattern_records: HashMap::new(),
             def_nodes: HashMap::new(),
-            value_bindings: binding_output.value_bindings.clone(),
-            local_scopes: vec![],
+            file_main_stmts: HashMap::new(),
             loop_depth: 0,
             errors: Vec::new(),
         }
@@ -84,14 +75,6 @@ impl<'a> TyLowerCtx<'a> {
             .insert(id, PatternRecord { kind, source });
     }
 
-    fn enter_scope(&mut self) {
-        self.local_scopes.push(HashMap::new());
-    }
-
-    fn exit_scope(&mut self) {
-        self.local_scopes.pop();
-    }
-
     fn enter_loop(&mut self) {
         self.loop_depth += 1;
     }
@@ -100,54 +83,12 @@ impl<'a> TyLowerCtx<'a> {
         self.loop_depth = self.loop_depth.saturating_sub(1);
     }
 
-    fn insert_local_binding(&mut self, path: Path, binding: BindingId) {
-        if let Some(scope) = self.local_scopes.last_mut() {
-            scope.insert(path, binding);
-        }
-    }
-
-    fn resolve_local(&self, path: &Path) -> Option<BindingId> {
-        for scope in self.local_scopes.iter().rev() {
-            if let Some(binding) = scope.get(path) {
-                return Some(*binding);
-            }
-        }
-        None
-    }
-
-    fn binding_from_node_or_path(&mut self, node_id: NodeId, path: &Path) -> BindingId {
-        if let Some(existing) = self.node_bindings.get(&node_id).copied() {
-            let binding = existing.binding();
-            self.insert_local_binding(path.clone(), binding);
-            binding
-        } else if let Some(existing) = self.resolve_local(path) {
-            existing
-        } else if let Some(existing) = self.value_bindings.get(path).copied() {
-            self.insert_local_binding(path.clone(), existing);
-            existing
-        } else {
-            log::warn!("missing binding for `{}` (node {:#x})", path, node_id);
-            BindingId(0)
-        }
-    }
-
     fn emit_error(&mut self, node: &Node<Expr>, msg: impl Into<String>) {
         let mut info = TypeSystemInfo::new();
         if let Some(src) = self.srcmap.get_by_id(node.id) {
             info.with_src(src);
         }
         self.errors.push(TypeError::message(msg, info));
-    }
-
-    fn emit_missing_binding(&mut self, node_id: NodeId, what: &str) {
-        let mut info = TypeSystemInfo::new();
-        if let Some(src) = self.srcmap.get_by_id(node_id) {
-            info.with_src(src);
-        }
-        self.errors.push(TypeError::message(
-            format!("missing binding for {}", what),
-            info,
-        ));
     }
 }
 
@@ -189,16 +130,19 @@ pub fn collect_def_ids(module: &Module<(), Decl>) -> Vec<DefId> {
 
 pub fn build_typecheck_input(
     decls: &[Node<Decl>],
-    _top_level_stmts: &[Node<Expr>],
+    top_level_stmts: &[Node<Expr>],
     srcmap: &SourceMap,
     env: &dyn TypecheckEnv,
-    binding_output: &BindingPassOutput,
     resolutions: &HashMap<NodeId, Resolution>,
     def_bindings: BindingGraph<DefId>,
 ) -> TypeCheckInput {
-    let mut ctx = TyLowerCtx::new(srcmap, env, binding_output, resolutions);
+    let mut ctx = TyLowerCtx::new(srcmap, env, resolutions);
 
-    // TODO: handle top-level statements
+    // Lower top-level statements as the body of FileMain (DefId with index 0).
+    // FileMain owns all top-level statements and any LocalBindingIds they create.
+    if !top_level_stmts.is_empty() {
+        lower_file_main(&mut ctx, top_level_stmts);
+    }
 
     // For now, treat each function declaration with a body as a separate
     // binding whose root expression is the function body. This matches the
@@ -243,13 +187,7 @@ pub fn build_typecheck_input(
                     for assign_node in consts {
                         match &assign_node.lhs.value {
                             AstPattern::Name(_) => {
-                                if let Some(NodeBinding::Def(_)) =
-                                    ctx.node_bindings.get(&assign_node.id).copied()
-                                {
-                                    let _root_expr_id = lower_expr(&mut ctx, &assign_node.rhs);
-                                } else {
-                                    ctx.emit_missing_binding(assign_node.id, "impl const");
-                                }
+                                let _root_expr_id = lower_expr(&mut ctx, &assign_node.rhs);
                             }
                             _ => {
                                 todo!(
@@ -267,11 +205,7 @@ pub fn build_typecheck_input(
             Decl::Declare(assign) => {
                 match &assign.lhs.value {
                     AstPattern::Name(_) => {
-                        if let Some(NodeBinding::Def(_)) = ctx.node_bindings.get(&decl_node.id) {
-                            let _root_expr_id = lower_expr(&mut ctx, &assign.rhs);
-                        } else {
-                            ctx.emit_missing_binding(decl_node.id, "top-level declaration");
-                        }
+                        let _root_expr_id = lower_expr(&mut ctx, &assign.rhs);
                     }
                     // Destructuring and other complex patterns will be wired
                     // in once the corresponding spec rules are implemented.
@@ -282,14 +216,9 @@ pub fn build_typecheck_input(
                     }
                 }
             }
-            // Extern declarations provide signatures (often intrinsics) that
-            // need bindings so they can be referenced in expressions.
-            Decl::Extern(ext) => {
-                let inner_decl = ext.decl_node();
-                if let Decl::FnSig(sig) = &inner_decl.value {
-                    lower_signature_binding(&mut ctx, decl_node.id, inner_decl.id, sig);
-                }
-            }
+            // Extern declarations don't have bodies to lower - their types come
+            // from the environment via external_scheme().
+            Decl::Extern(_) => {}
             Decl::Mutable(_) | Decl::Name(_) => {
                 // TODO: lower declaration-only bindings into value bindings
                 // once their typing rules are specified.
@@ -300,11 +229,40 @@ pub fn build_typecheck_input(
     TypeCheckInput {
         bindings: def_bindings,
         def_nodes: ctx.def_nodes,
-        node_bindings: ctx.node_bindings,
+        file_main_stmts: ctx.file_main_stmts,
         expr_records: ctx.expr_records,
         pattern_records: ctx.pattern_records,
         lowering_errors: ctx.errors,
     }
+}
+
+/// Lower top-level statements as the body of FileMain.
+///
+/// FileMain is `DefId { file, index: 0 }` - the top-level execution context for
+/// each file. All top-level statements are owned by FileMain and their NodeIds
+/// have `owner` pointing to FileMain's DefId.
+///
+/// Unlike regular bindings which have a single root expression, FileMain has
+/// multiple statements that are stored separately in `file_main_stmts`.
+fn lower_file_main(ctx: &mut TyLowerCtx<'_>, stmts: &[Node<Expr>]) {
+    // Get the FileMain DefId from the first statement's owner.
+    // All top-level statements should have the same owner (FileMain).
+    let file_main_def = stmts[0].id.owner;
+    debug_assert!(
+        file_main_def.index == 0,
+        "FileMain should have index 0, got {}",
+        file_main_def.index
+    );
+
+    // Lower each statement and collect their NodeIds.
+    let mut stmt_ids = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        let stmt_id = lower_expr(ctx, stmt);
+        stmt_ids.push(stmt_id);
+    }
+
+    // Store the statements for FileMain - the typechecker handles FileMain specially.
+    ctx.file_main_stmts.insert(file_main_def, stmt_ids);
 }
 
 fn lower_func_binding(
@@ -313,18 +271,10 @@ fn lower_func_binding(
     sig: &crate::ast::FuncSig,
     body: &Node<Expr>,
 ) {
-    if ctx.node_bindings.get(&decl_id).is_none() {
-        ctx.emit_missing_binding(decl_id, "function");
-        return;
-    }
-
     let mut param_bindings: Vec<LocalBindingId> = Vec::with_capacity(sig.params.len());
 
     // Each function body gets its own local scope for bindings introduced
     // by parameters, assignments, and other local-binding forms.
-    ctx.enter_scope();
-    // Seed the local scope with bindings for function parameters so that
-    // parameter uses lower to ExprKind::Var.
     for param_node in &sig.params {
         // Get LocalBindingId from resolutions (set by name resolution phase)
         let local_id = match ctx.resolutions.get(&param_node.id) {
@@ -338,7 +288,6 @@ fn lower_func_binding(
         param_bindings.push(local_id);
     }
     let body_expr_id = lower_expr(ctx, body);
-    ctx.exit_scope();
 
     let source = ctx.srcmap.get_by_id(decl_id);
     ctx.expr_records.insert(
@@ -356,23 +305,6 @@ fn lower_func_binding(
     ctx.def_nodes.insert(decl_id.owner, decl_id);
 }
 
-fn lower_signature_binding(
-    ctx: &mut TyLowerCtx<'_>,
-    extern_decl_id: NodeId,
-    sig_decl_id: NodeId,
-    _sig: &crate::ast::FuncSig,
-) {
-    let binding_id = match ctx.node_bindings.get(&sig_decl_id) {
-        Some(node_binding) => node_binding.binding(),
-        None => {
-            ctx.emit_missing_binding(sig_decl_id, "extern signature");
-            return;
-        }
-    };
-    ctx.node_bindings
-        .insert(extern_decl_id, NodeBinding::Def(binding_id));
-}
-
 /// Lower an assignment left-hand-side pattern (docs/type-system.md A.7, A.8)
 /// into the simplified `AssignLhs` form used by the type system.
 ///
@@ -387,23 +319,17 @@ fn lower_signature_binding(
 /// on the left-hand side) are left as explicit TODOs.
 fn lower_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> LhsPattern {
     match &pat.value {
-        AstPattern::Name(name) => {
+        AstPattern::Name(_) => {
             // Get LocalBindingId from resolutions
             let local_id = match ctx.resolutions.get(&pat.id) {
                 Some(Resolution::Local(local_id)) => *local_id,
                 _ => {
                     // Fallback for unresolved patterns - should not happen in valid code
                     log::warn!("Pattern {:?} not found in resolutions", pat.id);
-                    // Still record in legacy system for backwards compatibility
-                    let _binding = ctx.binding_from_node_or_path(pat.id, &name.path);
                     ctx.record_pattern(pat, PatternKind::Missing);
-                    return LhsPattern::Binding(LocalBindingId::new(
-                        DefId::new(ray_shared::file_id::FileId(0), 0),
-                        0,
-                    ));
+                    return LhsPattern::Binding(LocalBindingId::new(DefId::new(FileId(0), 0), 0));
                 }
             };
-            // Also record in legacy binding system
             ctx.record_pattern(pat, PatternKind::Binding { binding: local_id });
             LhsPattern::Binding(local_id)
         }
@@ -435,7 +361,7 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
         AstPattern::Name(_) | AstPattern::Sequence(_) | AstPattern::Tuple(_) => {
             AssignLhs::Pattern(lower_pattern(ctx, pat))
         }
-        AstPattern::Deref(node) => {
+        AstPattern::Deref(_) => {
             // Get LocalBindingId from resolutions
             let local_id = match ctx.resolutions.get(&pat.id) {
                 Some(Resolution::Local(local_id)) => *local_id,
@@ -445,14 +371,13 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                     return AssignLhs::ErrorPlaceholder;
                 }
             };
-            let _binding = ctx.binding_from_node_or_path(pat.id, &node.value.path);
             ctx.record_pattern(pat, PatternKind::Deref { binding: local_id });
             AssignLhs::Deref(local_id)
         }
         AstPattern::Dot(lhs_pat, field_name) => {
             // Only support `x.field = rhs` where `x` is a simple name.
             match &lhs_pat.value {
-                AstPattern::Name(n) => {
+                AstPattern::Name(_) => {
                     // Get LocalBindingId from resolutions
                     let local_id = match ctx.resolutions.get(&lhs_pat.id) {
                         Some(Resolution::Local(local_id)) => *local_id,
@@ -465,7 +390,6 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                             return AssignLhs::ErrorPlaceholder;
                         }
                     };
-                    let _binding = ctx.binding_from_node_or_path(lhs_pat.id, &n.path);
                     ctx.record_pattern(lhs_pat, PatternKind::Binding { binding: local_id });
                     let field = field_name
                         .path
@@ -490,7 +414,7 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
             }
         }
         AstPattern::Index(lhs, index, _) => match &lhs.value {
-            AstPattern::Name(n) => {
+            AstPattern::Name(_) => {
                 // Get LocalBindingId from resolutions
                 let local_id = match ctx.resolutions.get(&lhs.id) {
                     Some(Resolution::Local(local_id)) => *local_id,
@@ -500,7 +424,6 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                         return AssignLhs::ErrorPlaceholder;
                     }
                 };
-                let _binding = ctx.binding_from_node_or_path(lhs.id, &n.path);
                 let lowered_index = lower_expr(ctx, index.as_ref());
                 let base_id = ctx.expr_id(lhs.as_ref());
                 ctx.record_pattern(lhs.as_ref(), PatternKind::Binding { binding: local_id });
@@ -651,12 +574,11 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             //
             // For now we support parameter lists where each parameter is a
             // simple name. The parameters are lowered into LocalBindingIds from
-            // the resolutions in a fresh local scope for the closure body.
-            ctx.enter_scope();
+            // the resolutions.
             let mut params: Vec<LocalBindingId> = Vec::with_capacity(closure.args.items.len());
             for param in &closure.args.items {
                 match &param.value {
-                    Expr::Name(name) => {
+                    Expr::Name(_) => {
                         // Get LocalBindingId from resolutions
                         let local_id = match ctx.resolutions.get(&param.id) {
                             Some(Resolution::Local(local_id)) => *local_id,
@@ -665,12 +587,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                                 continue;
                             }
                         };
-                        // Also record in legacy binding system
-                        let _binding = ctx.binding_from_node_or_path(param.id, &name.path);
                         params.push(local_id);
                     }
                     _ => {
-                        ctx.exit_scope();
                         todo!(
                             "lowering for closure parameters that are not simple names into ExprKind"
                         );
@@ -678,7 +597,6 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 }
             }
             let body = lower_expr(ctx, &closure.body);
-            ctx.exit_scope();
             ctx.record_expr(node, ExprKind::Closure { params, body })
         }
         // Struct literals `A { x: e1, y: e2 }` (docs/type-system.md 4.5).
@@ -1110,7 +1028,7 @@ fn lower_literal(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>, lit: &Literal) -> 
 /// - a wildcard `_` (represented here via `Missing`).
 fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Pattern {
     match &pat.value {
-        AstPattern::Name(name) => {
+        AstPattern::Name(_) => {
             // Get LocalBindingId from resolutions
             let local_id = match ctx.resolutions.get(&pat.id) {
                 Some(Resolution::Local(local_id)) => *local_id,
@@ -1119,11 +1037,10 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
                     return Pattern::Wild;
                 }
             };
-            let _binding = ctx.binding_from_node_or_path(pat.id, &name.path);
             Pattern::Binding(local_id)
         }
         AstPattern::Some(inner) => match &inner.value {
-            AstPattern::Name(name) => {
+            AstPattern::Name(_) => {
                 // Get LocalBindingId from resolutions
                 let local_id = match ctx.resolutions.get(&inner.id) {
                     Some(Resolution::Local(local_id)) => *local_id,
@@ -1132,7 +1049,6 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
                         return Pattern::Wild;
                     }
                 };
-                let _binding = ctx.binding_from_node_or_path(inner.id, &name.path);
                 Pattern::Some(local_id)
             }
             _ => {
@@ -1163,7 +1079,7 @@ fn is_supported_guard_pattern(pat: &Node<AstPattern>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     use ray_shared::{
         collections::namecontext::NameContext,
@@ -1240,7 +1156,6 @@ mod tests {
         let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
         let typecheck_env = MockTypecheckEnv::new();
         let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
-        let binding_output = pass_manager.binding_output().clone();
         let def_ids = collect_def_ids(&module);
         let def_bindings = build_binding_graph(&def_ids, &resolutions);
         let input = build_typecheck_input(
@@ -1248,7 +1163,6 @@ mod tests {
             &[],
             &srcmap,
             &typecheck_env,
-            &binding_output,
             &resolutions,
             def_bindings,
         );

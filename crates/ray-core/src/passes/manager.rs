@@ -91,10 +91,6 @@ impl<'a> FrontendPassManager<'a> {
     fn ensure_typecheck(&mut self, ncx: &NameContext, options: TypecheckOptions) {
         if self.typecheck_result.is_none() {
             self.ensure_closure_output();
-            let binding_output = self
-                .binding_output
-                .as_ref()
-                .expect("binding pass output should exist");
 
             // Build DefId-keyed structures for the new typechecker.
             let all_defs = collect_def_ids(self.module);
@@ -106,7 +102,6 @@ impl<'a> FrontendPassManager<'a> {
                 &[],
                 self.srcmap,
                 &typecheck_env,
-                binding_output,
                 self.resolutions,
                 def_bindings,
             );
