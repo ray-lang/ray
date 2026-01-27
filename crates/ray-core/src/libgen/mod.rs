@@ -390,6 +390,9 @@ fn register_decl_paths(
         Decl::Mutable(_) => todo!(),
         Decl::Name(_) => todo!(),
         Decl::Declare(_) => todo!(),
+        Decl::FileMain(_) => {
+            // FileMain doesn't define any paths for libgen
+        }
     }
 }
 

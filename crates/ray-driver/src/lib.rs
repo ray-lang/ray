@@ -620,6 +620,11 @@ fn collect_decl_name_refs(decl: &Node<Decl>, refs: &mut Vec<(NodeId, Path)>) {
         }
         Decl::FnSig(_) | Decl::Struct(_) | Decl::TypeAlias(_, _) => {}
         Decl::Mutable(_) | Decl::Name(_) => {}
+        Decl::FileMain(stmts) => {
+            for stmt in stmts {
+                collect_expr_name_refs(stmt, refs);
+            }
+        }
     }
 }
 

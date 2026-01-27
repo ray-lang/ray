@@ -4639,7 +4639,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: typecheck_group query
 
-- [ ] Define `typecheck_group(BindingGroupId)` query:
+- [x] Define `typecheck_group(BindingGroupId)` query:
   ```rust
   #[query]
   fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypecheckResult {
@@ -4661,18 +4661,18 @@ This is the largest migration. Do it incrementally, running tests after each ste
       ray_typing::typecheck_group(&input, &group, external_schemes, &env)
   }
   ```
-- [ ] Wire up to `typecheck_group` from `ray-typing` (Phase 0.G)
-- [ ] **Validate**: Unit test typechecking simple binding group
+- [x] Wire up to `typecheck_group` from `ray-typing` (Phase 0.G)
+- [x] **Validate**: Unit test typechecking simple binding group
 
 ##### Step 4: Handle group dependencies
 
-- [ ] Ensure groups are typechecked in topological order (queries handle this naturally via `def_scheme` dependency)
-- [ ] Verify external scheme lookup works for cross-group references
-- [ ] **Cross-SCC local binding lookup**: When a definition references a local binding owned by another definition (e.g., `foo` references top-level `x` owned by FileMain), the topological ordering established by `def_deps` ensures the owner is typechecked first. The typechecker uses `inferred_local_type(LocalBindingId)` to retrieve the type.
-- [ ] **Validate**: Unit test with multi-group dependencies
-- [ ] **Validate**: Unit test where annotated function references unannotated FileMain local
+- [x] Ensure groups are typechecked in topological order (queries handle this naturally via `def_scheme` dependency)
+- [x] Verify external scheme lookup works for cross-group references
+- [x] **Cross-SCC local binding lookup**: When a definition references a local binding owned by another definition (e.g., `foo` references top-level `x` owned by FileMain), the topological ordering established by `def_deps` ensures the owner is typechecked first. The typechecker uses `inferred_local_type(LocalBindingId)` to retrieve the type.
+- [x] **Validate**: Unit test with multi-group dependencies
+- [x] **Validate**: Unit test where annotated function references unannotated FileMain local
 
-##### Step 3: def_scheme query
+##### Step 5: def_scheme query
 
 - [ ] Define `def_scheme(DefTarget)` query:
   ```rust
@@ -4694,7 +4694,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 - [ ] Handle annotated vs inferred schemes
 - [ ] **Validate**: Unit test looking up schemes
 
-##### Step 4: ty_of query
+##### Step 6: ty_of query
 
 - [ ] Define `ty_of(NodeId)` query:
   ```rust
@@ -4708,9 +4708,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
   ```
 - [ ] **Validate**: Unit test querying expression types
 
-##### Step 5: inferred_local_type query
+##### Step 7: inferred_local_type query
 
-- [ ] Define `inferred_local_type(LocalBindingId)` query:
+- [x] Define `inferred_local_type(LocalBindingId)` query:
   ```rust
   #[query]
   fn inferred_local_type(db: &Database, local_id: LocalBindingId) -> Option<Ty> {
@@ -4719,11 +4719,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
       result.local_tys.get(&local_id).cloned()
   }
   ```
-- [ ] This is the primary mechanism for cross-SCC local binding type lookup
-- [ ] Used when a definition references a local binding owned by another definition (e.g., FileMain's top-level assignments)
-- [ ] **Validate**: Unit test querying local binding types across SCCs
+- [x] This is the primary mechanism for cross-SCC local binding type lookup
+- [x] Used when a definition references a local binding owned by another definition (e.g., FileMain's top-level assignments)
+- [x] **Validate**: Unit test querying local binding types across SCCs
 
-##### Step 6: call_resolution query
+##### Step 8: call_resolution query
 
 - [ ] Define `call_resolution(NodeId)` query
 - [ ] Return resolved callee, instantiated types, trait impl (if method)

@@ -8,20 +8,18 @@
 
 use std::collections::HashMap;
 
-use ray_core::{ast::{Decl, Node}, typing::build_typecheck_input};
+use ray_core::{
+    ast::{Decl, Node},
+    typing::build_typecheck_input,
+};
 use ray_query_macros::query;
 use ray_shared::{
-    def::DefId,
-    file_id::FileId,
-    node_id::NodeId,
-    pathlib::ItemPath,
-    resolution::DefTarget,
-    span::Source,
-    ty::Ty,
+    def::DefId, file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, pathlib::ItemPath,
+    resolution::DefTarget, span::Source, ty::Ty,
 };
 use ray_typing::{
-    TypeCheckInput,
-    binding_groups::BindingGraph,
+    TypeCheckInput, TypeCheckResult,
+    binding_groups::{BindingGraph, BindingGroup},
     env::TypecheckEnv,
     types::{
         FieldKind, ImplField, ImplKind, ImplTy, NominalKind, StructTy, TraitField, TraitTy,
@@ -35,7 +33,7 @@ use crate::{
             ImplDef, StructDef, TraitDef, def_for_path, def_path, impl_def, impls_for_trait,
             impls_for_type, struct_def, trait_def, traits_in_module,
         },
-        deps::{BindingGroupId, binding_graph, binding_group_members},
+        deps::{BindingGroupId, binding_graph, binding_group_for_def, binding_group_members},
         libraries::LoadedLibraries,
         operators::{lookup_infix_op, lookup_prefix_op},
         resolve::{name_resolutions, resolve_builtin},
@@ -268,6 +266,10 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
         Some((trait_path, method_path))
     }
+
+    fn external_local_type(&self, local_id: LocalBindingId) -> Option<Ty> {
+        inferred_local_type(self.db, local_id)
+    }
 }
 
 /// Lowers a single definition to typechecker IR.
@@ -283,18 +285,6 @@ pub fn typecheck_def_input(db: &Database, def_id: DefId) -> TypeCheckInput {
     let file_result = file_ast(db, def_id.file);
     let resolutions = name_resolutions(db, def_id.file);
     let env = QueryEnv::new(db, def_id.file);
-
-    // FileMain is always at index 0 - it owns top-level statements
-    if def_id.index == 0 && !file_result.ast.stmts.is_empty() {
-        return build_typecheck_input(
-            &[],
-            &file_result.ast.stmts,
-            &file_result.source_map,
-            &env,
-            &resolutions,
-            BindingGraph::new(),
-        );
-    }
 
     // Find the def header for this def_id
     let def_header = file_result.defs.iter().find(|h| h.def_id == def_id);
@@ -406,18 +396,95 @@ pub fn typecheck_group_input(db: &Database, group_id: BindingGroupId) -> TypeChe
     }
 }
 
+/// Typechecks a binding group and returns the type schemes and expression types.
+///
+/// This query:
+/// 1. Retrieves the combined `TypeCheckInput` for the group via `typecheck_group_input`
+/// 2. Builds a `BindingGroup` struct from the group members
+/// 3. Creates an external scheme lookup closure that queries `annotated_scheme` for each def
+/// 4. Delegates to `ray_typing::typecheck_group` for the actual type inference
+///
+/// The external scheme lookup enables cross-group dependencies: when typechecking a group,
+/// any reference to a definition in another group will look up its annotated scheme. Since
+/// groups are processed in topological order (via query dependencies), the referenced
+/// definition's scheme will already be computed.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `group_id` - The binding group ID identifying which group to typecheck
+///
+/// # Returns
+///
+/// A `TypeCheckResult` containing:
+/// - `schemes`: Inferred type schemes for each definition in the group
+/// - `node_tys`: Monomorphic types for each expression node
+/// - `local_tys`: Types for local bindings (parameters, let-bindings)
+/// - `errors`: Any type errors discovered during inference
+#[query]
+pub fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypeCheckResult {
+    let input = typecheck_group_input(db, group_id.clone());
+    let members = binding_group_members(db, group_id.clone());
+
+    // Build BindingGroup struct for the typechecker
+    let group = BindingGroup::new(members.clone());
+
+    // External scheme lookup via query.
+    // For definitions outside this group, we look up their annotated scheme.
+    // This works because queries are processed in topological order.
+    let external_schemes = |def_id: DefId| -> Option<TyScheme> { annotated_scheme(db, def_id) };
+
+    // Use QueryEnv for TypecheckEnv (pick file from first member)
+    let file_id = members.first().map(|d| d.file).unwrap_or(FileId(0));
+    let env = QueryEnv::new(db, file_id);
+
+    ray_typing::typecheck_group(&input, &group, external_schemes, &env)
+}
+
+/// Returns the inferred type for a local binding (parameter, let-binding, top-level assignment).
+///
+/// This query is the primary mechanism for cross-SCC local binding type lookup. When a
+/// definition references a local binding owned by another definition (e.g., FileMain's
+/// top-level assignments), this query retrieves the type from the owner's typecheck result.
+///
+/// The query system ensures topological ordering: the owner's binding group is typechecked
+/// before any dependent group can look up the local's type.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `local_id` - The local binding identifier (contains owner DefId and local index)
+///
+/// # Returns
+///
+/// The monomorphic type for the local binding, or `None` if not found.
+#[query]
+pub fn inferred_local_type(db: &Database, local_id: LocalBindingId) -> Option<Ty> {
+    let group_id = binding_group_for_def(db, local_id.owner);
+    let result = typecheck_group(db, group_id);
+    result.local_tys.get(&local_id).cloned()
+}
+
 #[cfg(test)]
 mod tests {
-    use ray_shared::def::{DefId, DefKind};
-    use ray_shared::pathlib::{FilePath, ItemPath, ModulePath};
+    use ray_shared::{
+        def::{DefId, DefKind},
+        pathlib::{FilePath, ItemPath, ModulePath},
+        resolution::Resolution,
+        ty::Ty,
+    };
     use ray_typing::env::TypecheckEnv;
 
     use crate::{
         queries::{
-            deps::{binding_groups, BindingGroupId},
+            deps::{BindingGroupId, binding_group_for_def, binding_groups},
             libraries::LoadedLibraries,
+            resolve::name_resolutions,
             transform::file_ast,
-            typecheck::{typecheck_def_input, typecheck_group_input, QueryEnv},
+            typecheck::{
+                QueryEnv, inferred_local_type, typecheck_def_input, typecheck_group,
+                typecheck_group_input,
+            },
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -607,7 +674,10 @@ fn add(x: int, y: int) -> int => x + y
         let result = typecheck_def_input(&db, func_def.def_id);
 
         // The result should have lowered the function
-        assert!(!result.def_nodes.is_empty(), "Should have lowered the function");
+        assert!(
+            !result.def_nodes.is_empty(),
+            "Should have lowered the function"
+        );
     }
 
     #[test]
@@ -632,7 +702,10 @@ let y = x + 1
         let result = typecheck_def_input(&db, file_main_def_id);
 
         // The result should have lowered the top-level statements
-        assert!(!result.file_main_stmts.is_empty(), "Should have lowered FileMain statements");
+        assert!(
+            !result.file_main_stmts.is_empty(),
+            "Should have lowered FileMain statements"
+        );
     }
 
     #[test]
@@ -662,7 +735,10 @@ struct Point { x: int, y: int }
 
         // Structs lower but don't produce def_nodes (they're type definitions)
         // Just verify no errors occurred during lowering
-        assert!(result.lowering_errors.is_empty(), "Should have no lowering errors");
+        assert!(
+            result.lowering_errors.is_empty(),
+            "Should have no lowering errors"
+        );
     }
 
     #[test]
@@ -695,7 +771,10 @@ impl object Point {
         let result = typecheck_def_input(&db, method_def.def_id);
 
         // The result should have lowered the method
-        assert!(!result.def_nodes.is_empty(), "Should have lowered the impl method");
+        assert!(
+            !result.def_nodes.is_empty(),
+            "Should have lowered the impl method"
+        );
     }
 
     #[test]
@@ -786,5 +865,646 @@ fn is_odd(n) {
         // Note: We don't assert on lowering_errors here because they may be generated
         // due to unresolved operator calls (like `==` and `-`) since we're not loading
         // the core library. The key validation is that the inputs from both defs were merged.
+    }
+
+    #[test]
+    fn typecheck_group_infers_simple_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Simple fully annotated function
+        let source = r#"
+fn double(x: int) -> int => x
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let double_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "double")
+            .expect("Should have double function");
+
+        // Get its binding group
+        let group_id = binding_group_for_def(&db, double_def.def_id);
+
+        // Typecheck the group
+        let result = typecheck_group(&db, group_id);
+
+        // Should have inferred a scheme for the function
+        assert!(
+            result.schemes.contains_key(&double_def.def_id),
+            "Should have a scheme for the double function"
+        );
+
+        // Should have no type errors for this simple function
+        assert!(
+            result.errors.is_empty(),
+            "Simple annotated function should have no type errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_group_infers_function_with_literal() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function that returns a literal
+        let source = r#"
+fn answer() -> int => 42
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+        let answer_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "answer")
+            .expect("Should have answer function");
+
+        let group_id = binding_group_for_def(&db, answer_def.def_id);
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.schemes.contains_key(&answer_def.def_id),
+            "Should have a scheme for the answer function"
+        );
+        // Note: Integer literals generate Int[int] predicates which require the core::Int
+        // trait to be defined. Without the core library, this will produce an unsolved
+        // predicate error. The key validation is that the function got a scheme.
+    }
+
+    #[test]
+    fn typecheck_group_handles_multi_member_scc() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two mutually recursive functions (unannotated, so they form an SCC)
+        let source = r#"
+fn is_even(n) {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n) {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+        let is_even_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "is_even")
+            .expect("Should have is_even function");
+        let is_odd_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "is_odd")
+            .expect("Should have is_odd function");
+
+        // Both should be in the same group
+        let group_id = binding_group_for_def(&db, is_even_def.def_id);
+
+        // Typecheck the group
+        let result = typecheck_group(&db, group_id);
+
+        // Should have inferred schemes for both functions
+        assert!(
+            result.schemes.contains_key(&is_even_def.def_id),
+            "Should have a scheme for is_even"
+        );
+        assert!(
+            result.schemes.contains_key(&is_odd_def.def_id),
+            "Should have a scheme for is_odd"
+        );
+
+        // Note: There may be errors due to unresolved operators (==, -) without core library.
+        // The key validation is that both functions got schemes.
+    }
+
+    #[test]
+    fn typecheck_group_cross_group_reference() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two annotated functions - they will be in separate binding groups.
+        // bar calls foo, so bar depends on foo.
+        let source = r#"
+fn foo(x: int) -> int => x
+
+fn bar(y: int) -> int => foo(y)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+        let foo_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "foo")
+            .expect("Should have foo function");
+        let bar_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "bar")
+            .expect("Should have bar function");
+
+        // Get binding groups
+        let foo_group = binding_group_for_def(&db, foo_def.def_id);
+        let bar_group = binding_group_for_def(&db, bar_def.def_id);
+
+        // They should be in different groups (both fully annotated)
+        assert_ne!(
+            foo_group.index, bar_group.index,
+            "Annotated functions should be in separate binding groups"
+        );
+
+        // Typecheck bar's group - it should successfully look up foo's scheme
+        let bar_result = typecheck_group(&db, bar_group);
+
+        assert!(
+            bar_result.schemes.contains_key(&bar_def.def_id),
+            "Should have a scheme for bar"
+        );
+        // bar calling foo should typecheck correctly
+        assert!(
+            bar_result.errors.is_empty(),
+            "bar calling foo should typecheck without errors, got: {:?}",
+            bar_result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_group_topological_order_enforced_by_queries() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Chain of dependencies: a -> b -> c (all annotated = separate groups)
+        let source = r#"
+fn a(x: int) -> int => x
+
+fn b(x: int) -> int => a(x)
+
+fn c(x: int) -> int => b(x)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+        let c_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "c")
+            .expect("Should have c function");
+
+        // Typecheck c's group - the query system should automatically
+        // ensure a and b are typechecked first via annotated_scheme lookups
+        let c_group = binding_group_for_def(&db, c_def.def_id);
+        let result = typecheck_group(&db, c_group);
+
+        assert!(
+            result.schemes.contains_key(&c_def.def_id),
+            "Should have a scheme for c"
+        );
+        assert!(
+            result.errors.is_empty(),
+            "Chain of function calls should typecheck without errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn inferred_local_type_returns_function_parameter_type() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with an annotated parameter
+        let source = r#"
+fn identity(x: int) -> int => x
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "identity")
+            .expect("Should have identity function");
+
+        // Get resolutions for this file to find the parameter's LocalBindingId
+        let resolutions = name_resolutions(&db, file_id);
+
+        // Find a Local resolution that is owned by this function
+        let param_local_id = resolutions
+            .values()
+            .filter_map(|r| {
+                if let Resolution::Local(local_id) = r {
+                    if local_id.owner == func_def.def_id {
+                        Some(*local_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("Should have a local binding for the parameter");
+
+        // Query the inferred type
+        let local_ty = inferred_local_type(&db, param_local_id);
+
+        assert!(
+            local_ty.is_some(),
+            "Should have an inferred type for the parameter"
+        );
+        // The parameter is annotated as `int`, so we expect that type
+        assert_eq!(
+            local_ty.unwrap(),
+            ray_shared::ty::Ty::int(),
+            "Parameter should have type int"
+        );
+    }
+
+    #[test]
+    fn inferred_local_type_works_across_sccs() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two annotated functions in separate SCCs
+        // Each has its own parameter whose type should be retrievable
+        let source = r#"
+fn foo(a: int) -> int => a
+
+fn bar(b: bool) -> bool => b
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+        let foo_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "foo")
+            .expect("Should have foo function");
+        let bar_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "bar")
+            .expect("Should have bar function");
+
+        // They should be in different groups (both annotated)
+        let foo_group = binding_group_for_def(&db, foo_def.def_id);
+        let bar_group = binding_group_for_def(&db, bar_def.def_id);
+        assert_ne!(
+            foo_group.index, bar_group.index,
+            "foo and bar should be in different binding groups"
+        );
+
+        // Get resolutions to find parameter LocalBindingIds
+        let resolutions = name_resolutions(&db, file_id);
+
+        // Find foo's parameter
+        let foo_param_id = resolutions
+            .values()
+            .filter_map(|r| {
+                if let Resolution::Local(local_id) = r {
+                    if local_id.owner == foo_def.def_id {
+                        Some(*local_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("Should have a local binding for foo's parameter");
+
+        // Find bar's parameter
+        let bar_param_id = resolutions
+            .values()
+            .filter_map(|r| {
+                if let Resolution::Local(local_id) = r {
+                    if local_id.owner == bar_def.def_id {
+                        Some(*local_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("Should have a local binding for bar's parameter");
+
+        // Query types for both parameters
+        let foo_param_ty = inferred_local_type(&db, foo_param_id);
+        let bar_param_ty = inferred_local_type(&db, bar_param_id);
+
+        assert!(
+            foo_param_ty.is_some(),
+            "Should have type for foo's parameter"
+        );
+        assert!(
+            bar_param_ty.is_some(),
+            "Should have type for bar's parameter"
+        );
+
+        assert_eq!(
+            foo_param_ty.unwrap(),
+            ray_shared::ty::Ty::int(),
+            "foo's parameter should be int"
+        );
+        assert_eq!(
+            bar_param_ty.unwrap(),
+            ray_shared::ty::Ty::bool(),
+            "bar's parameter should be bool"
+        );
+    }
+
+    #[test]
+    fn inferred_local_type_for_let_binding_in_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with a let-binding that creates a local
+        let source = r#"
+fn get_flag() -> bool {
+    x = true
+    x
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "get_flag")
+            .expect("Should have get_flag function");
+
+        // Get resolutions to find x's LocalBindingId
+        let resolutions = name_resolutions(&db, file_id);
+
+        // Find a Local resolution owned by get_flag (should be `x`)
+        let x_local_id = resolutions
+            .values()
+            .filter_map(|r| {
+                if let Resolution::Local(local_id) = r {
+                    if local_id.owner == func_def.def_id {
+                        Some(*local_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("Should have a local binding for x in get_flag");
+
+        // Query the type of x
+        let x_ty = inferred_local_type(&db, x_local_id);
+
+        assert!(
+            x_ty.is_some(),
+            "Should have an inferred type for let-bound x"
+        );
+        assert_eq!(
+            x_ty.unwrap(),
+            ray_shared::ty::Ty::bool(),
+            "x should have type bool (from the literal true)"
+        );
+    }
+
+    #[test]
+    fn inferred_local_type_for_file_main_assignment() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Top-level assignment that creates a local binding in FileMain
+        let source = r#"
+x = true
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // FileMain has def_id index 0
+        let file_main_def_id = ray_shared::def::DefId::new(file_id, 0);
+
+        // Get resolutions to find x's LocalBindingId
+        let resolutions = name_resolutions(&db, file_id);
+
+        // Find a Local resolution owned by FileMain (should be `x`)
+        let x_local_id = resolutions
+            .values()
+            .filter_map(|r| {
+                if let Resolution::Local(local_id) = r {
+                    if local_id.owner == file_main_def_id {
+                        Some(*local_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("Should have a local binding for x in FileMain");
+
+        // Query the type of x
+        let x_ty = inferred_local_type(&db, x_local_id);
+
+        assert!(
+            x_ty.is_some(),
+            "Should have an inferred type for FileMain's x"
+        );
+        assert_eq!(
+            x_ty.unwrap(),
+            Ty::bool(),
+            "x should have type bool (from the literal true)"
+        );
+    }
+
+    #[test]
+    fn typecheck_annotated_function_references_file_main_local() {
+        // The annotated function `get_flag` is in its own SCC (fully annotated).
+        // FileMain (containing `flag = true`) is in a separate SCC (unannotated).
+        // When typechecking `get_flag`, it must look up the type of `flag` via
+        // `inferred_local_type`, which requires FileMain to be typechecked first.
+        // The query system ensures this topological ordering.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Top-level assignment (unannotated, owned by FileMain) and a function that references it.
+        // The function must look up `flag`'s type via inferred_local_type.
+        let source = r#"
+flag = true
+
+fn get_flag() -> bool => flag
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let file_result = file_ast(&db, file_id);
+
+        // Find the function def
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "get_flag")
+            .expect("Should have get_flag function");
+
+        // FileMain is always at index 0
+        let file_main_def_id = DefId::new(file_id, 0);
+
+        // Verify they are in different binding groups
+        let func_group = binding_group_for_def(&db, func_def.def_id);
+        let file_main_group = binding_group_for_def(&db, file_main_def_id);
+        assert_ne!(
+            func_group.index, file_main_group.index,
+            "get_flag and FileMain should be in different binding groups"
+        );
+
+        // Typecheck FileMain's group first
+        let file_main_result = typecheck_group(&db, file_main_group);
+
+        // Typecheck the function's group
+        let func_result = typecheck_group(&db, func_group);
+
+        // The function should have a scheme
+        assert!(
+            func_result.schemes.contains_key(&func_def.def_id),
+            "Should have a scheme for get_flag"
+        );
+
+        // Verify no type errors for the function
+        assert!(
+            func_result.errors.is_empty(),
+            "get_flag should have no type errors, got: {:?}",
+            func_result.errors
+        );
+
+        // Verify the cross-SCC local binding lookup works:
+        // The `flag` reference inside `get_flag`'s body must resolve to a LocalBindingId
+        // owned by FileMain (not by get_flag itself). This is the key validation that
+        // inferred_local_type is being used for cross-SCC lookup.
+        let resolutions = name_resolutions(&db, file_id);
+
+        // Find the reference to `flag` that is owned by FileMain (the definition site)
+        let flag_def_local_id = resolutions
+            .values()
+            .filter_map(|r| {
+                if let Resolution::Local(local_id) = r {
+                    if local_id.owner == file_main_def_id {
+                        Some(*local_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("Should have a local binding for flag in FileMain");
+
+        // Find all references to `flag` - there should be at least 2:
+        // 1. The definition in FileMain (flag = true)
+        // 2. The reference in get_flag's body (=> flag)
+        let flag_references: Vec<_> = resolutions
+            .iter()
+            .filter_map(|(node_id, r)| {
+                if let Resolution::Local(local_id) = r {
+                    if *local_id == flag_def_local_id {
+                        Some(*node_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // We should have at least 2 references to the same local binding:
+        // one at the definition site and one inside get_flag's body
+        assert!(
+            flag_references.len() >= 2,
+            "Should have at least 2 references to flag (definition and use in get_flag), got {}",
+            flag_references.len()
+        );
+
+        // The key validation: the reference inside get_flag resolves to a LocalBindingId
+        // whose owner is FileMain, NOT get_flag. This proves that when typechecking get_flag,
+        // we must call inferred_local_type(flag_def_local_id) to get flag's type from FileMain.
+        assert_eq!(
+            flag_def_local_id.owner, file_main_def_id,
+            "The flag local binding should be owned by FileMain, not get_flag"
+        );
+
+        // Verify inferred_local_type returns the correct type for the cross-SCC local
+        let flag_ty = inferred_local_type(&db, flag_def_local_id);
+        assert!(
+            flag_ty.is_some(),
+            "inferred_local_type should return a type for flag"
+        );
+        assert_eq!(flag_ty.unwrap(), Ty::bool(), "flag should have type bool");
+
+        // Verify FileMain was typechecked successfully (no errors)
+        assert!(
+            file_main_result.errors.is_empty(),
+            "FileMain should have no type errors, got: {:?}",
+            file_main_result.errors
+        );
     }
 }

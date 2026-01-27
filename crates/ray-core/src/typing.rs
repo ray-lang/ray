@@ -228,6 +228,14 @@ pub fn build_typecheck_input(
                 // TODO: lower declaration-only bindings into value bindings
                 // once their typing rules are specified.
             }
+            Decl::FileMain(stmts) => {
+                // FileMain statements are lowered via the top_level_stmts parameter,
+                // not via the decls iteration. But we now wrap them in a Decl::FileMain
+                // node, so we can handle them here directly.
+                if !stmts.is_empty() {
+                    lower_file_main(&mut ctx, stmts);
+                }
+            }
         }
     }
 

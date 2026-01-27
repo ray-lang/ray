@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Expr, Pattern};
+use ray_core::ast::{Decl, Expr, Pattern};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind},
@@ -45,15 +45,20 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
     let file_main_def_id = DefId::new(file_id, 0);
     let mut binding_index = 0u32;
 
-    // First, extract top-level bindings from statements (e.g., `x = 42`)
-    for stmt in &parse_result.ast.stmts {
-        if let Expr::Assign(assign) = &stmt.value {
-            // Extract the name from the LHS pattern
-            if let Pattern::Name(name) = &assign.lhs.value {
-                let binding_name = name.path.to_short_name();
-                let local_id = LocalBindingId::new(file_main_def_id, binding_index);
-                exports.insert(binding_name, ExportedItem::Local(local_id));
-                binding_index += 1;
+    // First, extract top-level bindings from FileMain (e.g., `x = 42`)
+    // FileMain is the first decl and wraps top-level statements
+    if let Some(file_main_decl) = parse_result.ast.decls.first() {
+        if let Decl::FileMain(stmts) = &file_main_decl.value {
+            for stmt in stmts {
+                if let Expr::Assign(assign) = &stmt.value {
+                    // Extract the name from the LHS pattern
+                    if let Pattern::Name(name) = &assign.lhs.value {
+                        let binding_name = name.path.to_short_name();
+                        let local_id = LocalBindingId::new(file_main_def_id, binding_index);
+                        exports.insert(binding_name, ExportedItem::Local(local_id));
+                        binding_index += 1;
+                    }
+                }
             }
         }
     }

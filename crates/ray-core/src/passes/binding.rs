@@ -185,6 +185,11 @@ impl<'a> BindingPassCtx<'a> {
                     self.record_extern(decl_node.id, inner_decl.id, sig);
                 }
             }
+            Decl::FileMain(stmts) => {
+                for stmt in stmts {
+                    self.visit_expr(stmt);
+                }
+            }
         }
     }
 

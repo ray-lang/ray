@@ -359,13 +359,19 @@ fn validate_mutability(
     for item in walk_decl(decl) {
         match item {
             WalkItem::EnterScope(kind) => match kind {
-                WalkScopeKind::Block | WalkScopeKind::Closure | WalkScopeKind::Function => {
+                WalkScopeKind::Block
+                | WalkScopeKind::Closure
+                | WalkScopeKind::Function
+                | WalkScopeKind::FileMain => {
                     ctx.push_scope();
                 }
                 WalkScopeKind::Module => {}
             },
             WalkItem::ExitScope(kind) => match kind {
-                WalkScopeKind::Block | WalkScopeKind::Closure | WalkScopeKind::Function => {
+                WalkScopeKind::Block
+                | WalkScopeKind::Closure
+                | WalkScopeKind::Function
+                | WalkScopeKind::FileMain => {
                     ctx.pop_scope();
                 }
                 WalkScopeKind::Module => {}

@@ -312,6 +312,12 @@ impl LowerAST for Node<Decl> {
             Decl::Trait(tr) => Sourced(tr, &src).lower(ctx)?,
             Decl::TypeAlias(name, ty) => todo!("lower: Decl::TypeAlias: {:?} = {:?}", name, ty),
             Decl::Impl(im) => Sourced(im, &src).lower(ctx)?,
+            Decl::FileMain(stmts) => {
+                // FileMain statements are lowered separately via build_typecheck_input
+                for stmt in stmts {
+                    stmt.lower(ctx)?;
+                }
+            }
         };
         Ok(())
     }

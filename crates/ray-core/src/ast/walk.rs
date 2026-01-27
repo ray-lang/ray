@@ -20,6 +20,7 @@ pub enum WalkItem<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum WalkScopeKind {
     Module,
+    FileMain,
     Function,
     Block,
     Closure,
@@ -111,6 +112,11 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             Decl::Extern(ext) => {
                 walk.stack
                     .push(StackEntry::EnterNode(WalkItem::Decl(ext.decl_node())));
+            }
+            Decl::FileMain(stmts) => {
+                for stmt in stmts.iter().rev() {
+                    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(stmt)));
+                }
             }
             Decl::Mutable(_)
             | Decl::Name(_)
@@ -384,6 +390,7 @@ fn scope_kind<'a>(item: &WalkItem<'a>) -> Option<WalkScopeKind> {
     match item {
         WalkItem::Decl(decl) => match &decl.value {
             Decl::Func(func) if func.body.is_some() => Some(WalkScopeKind::Function),
+            Decl::FileMain(_) => Some(WalkScopeKind::FileMain),
             _ => None,
         },
         WalkItem::Func(func) if func.body.is_some() => Some(WalkScopeKind::Function),

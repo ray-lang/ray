@@ -81,14 +81,9 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
         filepath: &ast.filepath,
     };
 
-    // Transform declarations
+    // Transform declarations (including FileMain which contains top-level statements)
     for decl in &mut ast.decls {
         transform_decl(decl, &mut ctx);
-    }
-
-    // Transform top-level statements
-    for stmt in &mut ast.stmts {
-        transform_expr(stmt, &mut ctx);
     }
 
     FileAst {
@@ -151,6 +146,12 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
                     }
                 }
                 _ => {}
+            }
+        }
+        Decl::FileMain(stmts) => {
+            // Transform all top-level statements
+            for stmt in stmts {
+                transform_expr(stmt, ctx);
             }
         }
         // Other declaration types don't contain expressions to transform

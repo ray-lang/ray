@@ -69,6 +69,10 @@ pub enum Decl {
     Trait(Trait),
     TypeAlias(Node<Name>, Parsed<Ty>),
     Impl(Impl),
+    /// Top-level execution context for a file.
+    /// Contains all top-level statements (expressions) that are not declarations.
+    /// Always has DefId with index 0 for the file.
+    FileMain(Vec<Node<super::Expr>>),
 }
 
 impl PartialOrd for Decl {
@@ -98,6 +102,7 @@ impl Into<usize> for &Decl {
             Decl::Impl(_) => 5,
             Decl::Declare(_) => 6,
             Decl::Mutable(_) | Decl::Name(_) => 7,
+            Decl::FileMain(_) => 8,
         }
     }
 }
@@ -115,6 +120,7 @@ impl Decl {
             Decl::Trait(_) => "Trait",
             Decl::TypeAlias(_, _) => "TypeAlias",
             Decl::Impl(_) => "Impl",
+            Decl::FileMain(_) => "FileMain",
         }
     }
 
@@ -130,6 +136,7 @@ impl Decl {
             Decl::Trait(_) => str!("trait"),
             Decl::TypeAlias(_, _) => str!("type alias"),
             Decl::Impl(_) => str!("impl"),
+            Decl::FileMain(_) => str!("file main"),
         }
     }
 
@@ -142,6 +149,7 @@ impl Decl {
             Decl::Func(f) => f.sig.ty.is_some(),
             Decl::FnSig(sig) => sig.ty.is_some(),
             Decl::Impl(_) => false, // not entirely true, but we don't care here
+            Decl::FileMain(_) => false, // FileMain is not explicitly typed
         }
     }
 
@@ -157,6 +165,7 @@ impl Decl {
             Decl::Declare(_) => todo!(),
             Decl::Func(f) => f.sig.ty.as_ref(),
             Decl::FnSig(sig) => sig.ty.as_ref(),
+            Decl::FileMain(_) => None, // FileMain doesn't have an explicit type
         }
     }
 
@@ -197,6 +206,9 @@ impl Decl {
                             .flat_map(|d| d.lhs.path().map(|path| (path, None))),
                     );
                 }
+            }
+            Decl::FileMain(_) => {
+                // FileMain doesn't export named definitions
             }
         }
         defs
@@ -324,6 +336,14 @@ impl std::fmt::Display for Decl {
                     write!(f, "(impl {}{})", im.ty, qualifiers)
                 }
             }
+            Decl::FileMain(stmts) => {
+                if stmts.is_empty() {
+                    write!(f, "(file-main)")
+                } else {
+                    let stmts_str = format!("{}\n", strutils::indent_lines_iter(stmts, 2));
+                    write!(f, "(file-main\n{})", stmts_str)
+                }
+            }
         }
     }
 }
@@ -337,7 +357,7 @@ impl Decl {
             Decl::FnSig(sig) => sig.path.name(),
             Decl::Struct(s) => s.path.name(),
             Decl::Trait(t) => Some(t.ty.name()),
-            Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) => None,
+            Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) => None,
         }
     }
 }

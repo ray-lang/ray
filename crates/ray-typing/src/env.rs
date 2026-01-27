@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use ray_shared::{
     def::DefId,
+    local_binding::LocalBindingId,
     pathlib::{ItemPath, Path},
+    ty::Ty,
 };
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +46,13 @@ pub trait TypecheckEnv {
     ///
     /// This is used for cross-group dependencies during typechecking.
     fn external_scheme(&self, def_id: DefId) -> Option<TyScheme>;
+
+    /// Look up the type for a local binding outside the current binding group.
+    ///
+    /// This is used when a definition references a local binding owned by another
+    /// definition (e.g., a function referencing a top-level assignment in FileMain).
+    /// The query system ensures the owner's binding group is typechecked first.
+    fn external_local_type(&self, local_id: LocalBindingId) -> Option<Ty>;
 
     /// Resolve a builtin type name to its definition path.
     ///

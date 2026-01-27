@@ -109,11 +109,18 @@ pub fn resolve_names_in_file(
 
     for item in walk_file(ast) {
         match item {
+            WalkItem::EnterScope(WalkScopeKind::FileMain) => {
+                ctx.local_scopes.push(HashMap::new());
+            }
             WalkItem::EnterScope(WalkScopeKind::Function) => {
                 ctx.local_scopes.push(HashMap::new());
             }
             WalkItem::EnterScope(WalkScopeKind::Closure | WalkScopeKind::Block) => {
                 ctx.local_scopes.push(HashMap::new());
+            }
+            WalkItem::ExitScope(WalkScopeKind::FileMain) => {
+                // Don't pop FileMain's scope - its locals should remain visible
+                // to sibling declarations (functions, etc.) in the same file.
             }
             WalkItem::ExitScope(_) => {
                 ctx.local_scopes.pop();
@@ -122,7 +129,7 @@ pub fn resolve_names_in_file(
                 resolve_names_in_decl(decl, &mut ctx);
             }
             WalkItem::Func(func) => {
-                // This is emitted for impl methods
+                // This is emitted for impl methods.
                 ctx.current_def = Some(func.id.owner);
                 ctx.local_counter = 0;
 
@@ -278,6 +285,12 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
                     collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
                 }
             }
+        }
+        Decl::FileMain(_stmts) => {
+            // Set up FileMain as the current definition owner for local bindings.
+            // FileMain always has DefId with index 0 for the file.
+            ctx.current_def = Some(decl.id.owner);
+            ctx.local_counter = 0;
         }
     }
 }
@@ -861,6 +874,12 @@ impl NameResolve for Node<Decl> {
             Decl::Trait(trait_) => Sourced(trait_, &src).resolve_names(ctx),
             Decl::TypeAlias(_, _) => todo!(),
             Decl::Impl(impl_) => Sourced(impl_, &src).resolve_names(ctx),
+            Decl::FileMain(stmts) => {
+                for stmt in stmts {
+                    stmt.resolve_names(ctx)?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -989,7 +1008,11 @@ impl NameResolve for Sourced<'_, Extern> {
             }
             Decl::Struct(struct_) => Sourced(struct_, src).resolve_names(ctx)?,
             Decl::Impl(impl_) => Sourced(impl_, src).resolve_names(ctx)?,
-            Decl::Func(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) | Decl::Extern(_) => {
+            Decl::Func(_)
+            | Decl::Trait(_)
+            | Decl::TypeAlias(_, _)
+            | Decl::Extern(_)
+            | Decl::FileMain(_) => {
                 unreachable!("extern cannot wrap {:?}", ext.decl())
             }
         }

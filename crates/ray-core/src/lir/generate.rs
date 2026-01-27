@@ -3502,6 +3502,12 @@ impl LirGen<GenResult> for Node<Decl> {
             Decl::Declare(_) => todo!(),
             Decl::FnSig(_) => todo!(),
             Decl::TypeAlias(_, _) | Decl::Struct(_) => {}
+            Decl::FileMain(stmts) => {
+                // FileMain statements are generated via the main entry point
+                for stmt in stmts {
+                    stmt.lir_gen(ctx, tcx)?;
+                }
+            }
         }
 
         Ok(lir::Value::Empty)

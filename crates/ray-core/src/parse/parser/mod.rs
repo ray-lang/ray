@@ -22,7 +22,7 @@ pub use recover::{Recover, RecoveryCtx};
 use std::{fs, io, mem};
 
 use ray_shared::{
-    def::{DefHeader, DefId},
+    def::{DefHeader, DefId, DefKind},
     file_id::FileId,
     node_id::{NodeId, NodeIdGuard},
     pathlib::{FilePath, Path},
@@ -476,9 +476,33 @@ impl<'src> Parser<'src> {
             }
         }
 
+        // If there are top-level statements, create a FileMain decl node.
+        // FileMain is always at index 0 and owns all top-level bindings.
+        // It must be inserted at the BEGINNING of decls so it's processed first during
+        // name resolution, making its locals visible to sibling declarations (functions, etc.).
+        if !items.stmts.is_empty() {
+            let file_main_def_id = DefId::new(parser.file_id, 0);
+            // Create the FileMain decl node - this wraps the statements in a proper Decl
+            let file_main_decl = parser.mk_node(
+                Decl::FileMain(std::mem::take(&mut items.stmts)),
+                span,
+                path.clone(),
+            );
+            parser.defs.push(DefHeader {
+                def_id: file_main_def_id,
+                root_node: file_main_decl.id,
+                name: "<FileMain>".to_string(),
+                kind: DefKind::FileMain,
+                span,
+                name_span: span,
+                parent: None,
+            });
+            items.decls.insert(0, file_main_decl);
+        }
+
         Ok(File {
             path,
-            stmts: items.stmts,
+            stmts: items.stmts, // Now empty if there were statements (moved to FileMain decl)
             decls: items.decls,
             imports: items.imports,
             doc_comment,

@@ -320,7 +320,7 @@ impl<'a> SymbolBuildContext<'a> {
                     Decl::Impl(imp) => {
                         self.record_parsed_ty(&imp.ty);
                     }
-                    Decl::Extern(_) | Decl::TypeAlias(_, _) => continue,
+                    Decl::Extern(_) | Decl::TypeAlias(_, _) | Decl::FileMain(_) => continue,
                 },
                 WalkItem::Expr(expr) => match &expr.value {
                     Expr::Assign(assign) => self.record_assign(assign),

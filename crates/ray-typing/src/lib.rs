@@ -1230,13 +1230,19 @@ fn instantiate_wanteds_into_equalities(
             InstantiateTarget::Def(def_id) => ctx
                 .lookup_def_scheme(*def_id)
                 .unwrap_or_else(|| panic!("cannot find scheme for def: {:?}", def_id)),
-            InstantiateTarget::Local(binding_id) => ctx
-                .binding_schemes
-                .get(&(*binding_id).into())
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!("cannot find scheme for local binding: {:?}", binding_id)
-                }),
+            InstantiateTarget::Local(binding_id) => {
+                // First check local binding_schemes (same SCC)
+                if let Some(scheme) = ctx.binding_schemes.get(&(*binding_id).into()).cloned() {
+                    scheme
+                } else {
+                    // Cross-SCC local binding lookup via environment
+                    let external_ty = ctx.env().external_local_type(*binding_id).unwrap_or_else(|| {
+                        panic!("cannot find scheme for local binding: {:?}", binding_id)
+                    });
+                    // Local bindings are monomorphic (no quantified variables)
+                    TyScheme::from_mono(external_ty)
+                }
+            }
         };
 
         let (inst_ty, qualifiers) =

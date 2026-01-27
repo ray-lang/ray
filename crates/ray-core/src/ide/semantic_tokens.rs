@@ -187,6 +187,11 @@ impl<'a> SemanticTokenCollector<'a> {
                 );
             }
             Decl::Declare(assign) => self.visit_assign(assign),
+            Decl::FileMain(stmts) => {
+                for stmt in stmts {
+                    self.visit_expr(stmt);
+                }
+            }
         }
     }
 

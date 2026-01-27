@@ -360,6 +360,8 @@ fn compute_signature_status(decl: &Node<Decl>) -> SignatureStatus {
                 SignatureStatus::Unannotated
             }
         }
+        // FileMain doesn't have a signature - it's a container for statements
+        Decl::FileMain(_) => SignatureStatus::FullyAnnotated,
     }
 }
 
@@ -630,7 +632,7 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
             vec![]
         }
         Decl::Extern(ext) => extract_type_param_names(ext.decl_node()),
-        Decl::Name(_) | Decl::Mutable(_) | Decl::Declare(_) => vec![],
+        Decl::Name(_) | Decl::Mutable(_) | Decl::Declare(_) | Decl::FileMain(_) => vec![],
     }
 }
 
