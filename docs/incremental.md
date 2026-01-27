@@ -4674,7 +4674,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 5: def_scheme query
 
-- [ ] Define `def_scheme(DefTarget)` query:
+- [x] Define `def_scheme(DefTarget)` query:
   ```rust
   #[query]
   fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
@@ -4691,8 +4691,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       }
   }
   ```
-- [ ] Handle annotated vs inferred schemes
-- [ ] **Validate**: Unit test looking up schemes
+- [x] Handle annotated vs inferred schemes
+- [x] **Validate**: Unit test looking up schemes
 
 ##### Step 6: ty_of query
 

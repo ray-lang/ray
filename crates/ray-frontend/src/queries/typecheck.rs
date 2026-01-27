@@ -14,8 +14,14 @@ use ray_core::{
 };
 use ray_query_macros::query;
 use ray_shared::{
-    def::DefId, file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, pathlib::ItemPath,
-    resolution::DefTarget, span::Source, ty::Ty,
+    def::DefId,
+    file_id::FileId,
+    local_binding::LocalBindingId,
+    node_id::NodeId,
+    pathlib::ItemPath,
+    resolution::DefTarget,
+    span::Source,
+    ty::Ty,
 };
 use ray_typing::{
     TypeCheckInput, TypeCheckResult,
@@ -34,7 +40,7 @@ use crate::{
             impls_for_type, struct_def, trait_def, traits_in_module,
         },
         deps::{BindingGroupId, binding_graph, binding_group_for_def, binding_group_members},
-        libraries::LoadedLibraries,
+        libraries::{LoadedLibraries, library_data},
         operators::{lookup_infix_op, lookup_prefix_op},
         resolve::{name_resolutions, resolve_builtin},
         transform::file_ast,
@@ -465,12 +471,47 @@ pub fn inferred_local_type(db: &Database, local_id: LocalBindingId) -> Option<Ty
     result.local_tys.get(&local_id).cloned()
 }
 
+/// Returns the type scheme for a definition (workspace or library).
+///
+/// This query provides a unified interface for looking up type schemes regardless
+/// of whether the definition is in the current workspace or a compiled library.
+///
+/// For workspace definitions, this triggers typechecking of the definition's
+/// binding group if not already cached, then extracts the scheme from the result.
+///
+/// For library definitions, the scheme is looked up directly from the library's
+/// precomputed data.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `target` - The definition target (workspace DefId or library LibraryDefId)
+///
+/// # Returns
+///
+/// The type scheme for the definition, or `None` if not found (e.g., for
+/// definitions that don't have type schemes like impls).
+#[query]
+pub fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let group_id = binding_group_for_def(db, def_id);
+            let result = typecheck_group(db, group_id);
+            result.schemes.get(&def_id).cloned()
+        }
+        DefTarget::Library(lib_def_id) => {
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+            lib_data.schemes.get(&lib_def_id).cloned()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ray_shared::{
         def::{DefId, DefKind},
         pathlib::{FilePath, ItemPath, ModulePath},
-        resolution::Resolution,
+        resolution::{DefTarget, Resolution},
         ty::Ty,
     };
     use ray_typing::env::TypecheckEnv;
@@ -482,7 +523,7 @@ mod tests {
             resolve::name_resolutions,
             transform::file_ast,
             typecheck::{
-                QueryEnv, inferred_local_type, typecheck_def_input, typecheck_group,
+                QueryEnv, def_scheme, inferred_local_type, typecheck_def_input, typecheck_group,
                 typecheck_group_input,
             },
             workspace::{FileSource, WorkspaceSnapshot},
@@ -1505,6 +1546,200 @@ fn get_flag() -> bool => flag
             file_main_result.errors.is_empty(),
             "FileMain should have no type errors, got: {:?}",
             file_main_result.errors
+        );
+    }
+
+    // Tests for def_scheme
+
+    #[test]
+    fn def_scheme_returns_scheme_for_annotated_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Simple fully annotated function
+        let source = r#"
+fn add(x: int, y: int) -> int => x
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let add_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "add")
+            .expect("Should have add function");
+
+        // Query def_scheme via DefTarget::Workspace
+        let target = DefTarget::Workspace(add_def.def_id);
+        let scheme = def_scheme(&db, target);
+
+        assert!(scheme.is_some(), "Should have a scheme for the add function");
+
+        let scheme = scheme.unwrap();
+        // The function type should be (int, int) -> int
+        assert!(
+            scheme.vars.is_empty(),
+            "Simple function should have no type variables"
+        );
+    }
+
+    #[test]
+    fn def_scheme_returns_scheme_for_unannotated_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Unannotated function (inferred return type)
+        let source = r#"
+fn get_true() => true
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "get_true")
+            .expect("Should have get_true function");
+
+        // Query def_scheme via DefTarget::Workspace
+        let target = DefTarget::Workspace(func_def.def_id);
+        let scheme = def_scheme(&db, target);
+
+        // Even unannotated functions get inferred schemes after typechecking
+        assert!(
+            scheme.is_some(),
+            "Should have an inferred scheme for the unannotated function"
+        );
+    }
+
+    #[test]
+    fn def_scheme_returns_scheme_for_generic_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Generic function with type parameter
+        let source = r#"
+fn identity['a](x: 'a) -> 'a => x
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the function's def
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "identity")
+            .expect("Should have identity function");
+
+        // Query def_scheme via DefTarget::Workspace
+        let target = DefTarget::Workspace(func_def.def_id);
+        let scheme = def_scheme(&db, target);
+
+        assert!(
+            scheme.is_some(),
+            "Should have a scheme for the generic function"
+        );
+
+        let scheme = scheme.unwrap();
+        // The function should have one type variable ('a)
+        assert_eq!(
+            scheme.vars.len(),
+            1,
+            "Generic function should have one type variable"
+        );
+    }
+
+    #[test]
+    fn def_scheme_returns_none_for_impl() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Struct with impl block
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl Point {
+    fn new(x: int, y: int) -> Point => Point { x, y }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the impl's def (not the method, but the impl block itself)
+        let file_result = file_ast(&db, file_id);
+        let impl_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Impl))
+            .expect("Should have an impl def");
+
+        // Query def_scheme via DefTarget::Workspace
+        let target = DefTarget::Workspace(impl_def.def_id);
+        let scheme = def_scheme(&db, target);
+
+        // Impl blocks don't have type schemes (only their methods do)
+        assert!(
+            scheme.is_none(),
+            "Impl block should not have a type scheme"
+        );
+    }
+
+    #[test]
+    fn def_scheme_returns_scheme_for_impl_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Struct with impl block containing a method (using `impl object` syntax)
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn origin(): Point => Point { x: 0, y: 0 }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the method's def
+        let file_result = file_ast(&db, file_id);
+        let method_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Method))
+            .expect("Should have a method def");
+
+        // Query def_scheme via DefTarget::Workspace
+        let target = DefTarget::Workspace(method_def.def_id);
+        let scheme = def_scheme(&db, target);
+
+        assert!(
+            scheme.is_some(),
+            "Method should have a type scheme"
         );
     }
 }
