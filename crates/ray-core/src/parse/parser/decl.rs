@@ -44,7 +44,7 @@ impl Parser<'_> {
         start: Pos,
         only_sigs: bool,
         ctx: &ParseContext,
-    ) -> ParseResult<(Vec<Node<Func>>, Vec<ParsedDecl>, Vec<Node<Assign>>)> {
+    ) -> ParseResult<(Vec<Node<Decl>>, Vec<ParsedDecl>, Vec<Node<Assign>>)> {
         let mut funcs = vec![];
         let mut externs = vec![];
         let mut consts = vec![];
@@ -110,17 +110,18 @@ impl Parser<'_> {
                         f.sig.is_method = true;
                         let name = f.sig.path.to_short_name();
                         let name_span = parser.srcmap.get(&f.sig.path).span.unwrap();
-                        let func_node = parser.mk_node(f, span, ctx.path.clone());
+                        // Wrap in Decl::Func so methods have the same shape as top-level functions
+                        let decl_node = parser.mk_node(Decl::Func(f), span, ctx.path.clone());
                         parser.defs.push(DefHeader {
                             def_id,
-                            root_node: func_node.id,
+                            root_node: decl_node.id,
                             name,
                             kind: DefKind::Method,
                             span,
                             name_span,
                             parent: Some(impl_def_id),
                         });
-                        funcs.push(func_node);
+                        funcs.push(decl_node);
                         Ok(span.end)
                     })
                 }

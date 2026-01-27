@@ -104,7 +104,7 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             Decl::Impl(imp) => {
                 if let Some(funcs) = imp.funcs.as_ref() {
                     for func in funcs.iter().rev() {
-                        walk.stack.push(StackEntry::EnterNode(WalkItem::Func(func)));
+                        walk.stack.push(StackEntry::EnterNode(WalkItem::Decl(func)));
                     }
                 }
             }

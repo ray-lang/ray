@@ -109,9 +109,12 @@ pub fn collect_def_ids(module: &Module<(), Decl>) -> Vec<DefId> {
             }
             Decl::Impl(im) => {
                 if let Some(funcs) = &im.funcs {
-                    for func_node in funcs {
-                        if func_node.value.body.is_some() {
-                            all_defs.push(func_node.id.owner);
+                    for decl_node in funcs {
+                        let Decl::Func(func) = &decl_node.value else {
+                            unreachable!("impl funcs should only contain Decl::Func");
+                        };
+                        if func.body.is_some() {
+                            all_defs.push(decl_node.id.owner);
                         }
                     }
                 }
@@ -174,10 +177,12 @@ pub fn build_typecheck_input(
             Decl::Impl(im) => {
                 // Methods inside the impl.
                 if let Some(funcs) = &im.funcs {
-                    for func_node in funcs {
-                        let func = &func_node.value;
+                    for decl_node in funcs {
+                        let Decl::Func(func) = &decl_node.value else {
+                            unreachable!("impl funcs should only contain Decl::Func");
+                        };
                         if let Some(body) = &func.body {
-                            lower_func_binding(&mut ctx, func_node.id, &func.sig, body);
+                            lower_func_binding(&mut ctx, decl_node.id, &func.sig, body);
                         }
                     }
                 }

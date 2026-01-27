@@ -576,12 +576,15 @@ fn validate_impl(
 
 /// Validate an impl method for annotation policy.
 fn validate_impl_method(
-    func: &Node<Func>,
+    decl: &Node<Decl>,
     filepath: &FilePath,
     srcmap: &SourceMap,
     errors: &mut Vec<RayError>,
 ) {
-    validate_annotation_policy(&func.value.sig, &func.value.body, filepath, srcmap, errors);
+    let Decl::Func(func) = &decl.value else {
+        unreachable!("impl funcs should only contain Decl::Func");
+    };
+    validate_annotation_policy(&func.sig, &func.body, filepath, srcmap, errors);
 }
 
 /// Validate a trait definition.

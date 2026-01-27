@@ -247,7 +247,7 @@ impl<'a> SemanticTokenCollector<'a> {
         }
         if let Some(funcs) = &im.funcs {
             for func in funcs {
-                self.visit_func(func);
+                self.visit_decl(func);
             }
         }
         if let Some(consts) = &im.consts {

@@ -6,13 +6,20 @@
 //! the query system) and the incremental frontend (which uses queries for
 //! definition lookups).
 
-use ray_core::typing::build_typecheck_input;
+use ray_core::{ast::{Decl, Node}, typing::build_typecheck_input};
 use ray_query_macros::query;
 use ray_shared::{
-    def::DefId, file_id::FileId, pathlib::ItemPath, resolution::DefTarget, span::Source, ty::Ty,
+    def::{DefId, DefKind},
+    file_id::FileId,
+    node_id::NodeId,
+    pathlib::ItemPath,
+    resolution::DefTarget,
+    span::Source,
+    ty::Ty,
 };
 use ray_typing::{
     TypeCheckInput,
+    binding_groups::BindingGraph,
     env::TypecheckEnv,
     types::{
         FieldKind, ImplField, ImplKind, ImplTy, NominalKind, StructTy, TraitField, TraitTy,
@@ -28,7 +35,8 @@ use crate::{
         },
         libraries::LoadedLibraries,
         operators::{lookup_infix_op, lookup_prefix_op},
-        resolve::resolve_builtin,
+        resolve::{name_resolutions, resolve_builtin},
+        transform::file_ast,
         types::annotated_scheme,
         workspace::WorkspaceSnapshot,
     },
@@ -259,9 +267,78 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
     }
 }
 
+/// Lowers a single definition to typechecker IR.
+///
+/// For regular definitions (functions, structs, traits, impls), this finds
+/// the declaration AST node and lowers it. For FileMain (DefKind::FileMain),
+/// this lowers the file's top-level statements.
+///
+/// The returned `TypeCheckInput` contains an empty binding graph since
+/// binding group construction is handled by a separate query.
 #[query]
-fn typecheck_def_input(db: &Database, def_id: DefId) -> TypeCheckInput {
-    todo!("typecheck_def_input")
+pub fn typecheck_def_input(db: &Database, def_id: DefId) -> TypeCheckInput {
+    let file_result = file_ast(db, def_id.file);
+    let resolutions = name_resolutions(db, def_id.file);
+    let env = QueryEnv::new(db, def_id.file);
+
+    // FileMain is always at index 0 - it owns top-level statements
+    if def_id.index == 0 && !file_result.ast.stmts.is_empty() {
+        return build_typecheck_input(
+            &[],
+            &file_result.ast.stmts,
+            &file_result.source_map,
+            &env,
+            &resolutions,
+            BindingGraph::new(),
+        );
+    }
+
+    // Find the def header for this def_id
+    let def_header = file_result.defs.iter().find(|h| h.def_id == def_id);
+
+    // Find the declaration AST node (works for both top-level and nested defs)
+    if let Some(header) = def_header {
+        if let Some(decl) = find_decl_by_id(&file_result.ast.decls, header.root_node) {
+            return build_typecheck_input(
+                &[decl.clone()],
+                &[],
+                &file_result.source_map,
+                &env,
+                &resolutions,
+                BindingGraph::new(),
+            );
+        }
+    }
+
+    // Fallback: return empty input if def not found
+    build_typecheck_input(
+        &[],
+        &[],
+        &file_result.source_map,
+        &env,
+        &resolutions,
+        BindingGraph::new(),
+    )
+}
+
+/// Find a declaration AST node by its NodeId, searching both top-level
+/// declarations and nested definitions inside impl blocks.
+fn find_decl_by_id(decls: &[Node<Decl>], node_id: NodeId) -> Option<&Node<Decl>> {
+    for decl in decls {
+        // Check top-level declaration
+        if decl.id == node_id {
+            return Some(decl);
+        }
+        // Check nested declarations inside impl blocks
+        if let Decl::Impl(im) = &decl.value {
+            if let Some(funcs) = &im.funcs {
+                if let Some(method) = funcs.iter().find(|d| d.id == node_id) {
+                    return Some(method);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[query]
@@ -271,13 +348,15 @@ pub fn typecheck_group_input(db: &Database, members: &Vec<DefId>) -> TypeCheckIn
 
 #[cfg(test)]
 mod tests {
+    use ray_shared::def::{DefId, DefKind};
     use ray_shared::pathlib::{FilePath, ItemPath, ModulePath};
     use ray_typing::env::TypecheckEnv;
 
     use crate::{
         queries::{
             libraries::LoadedLibraries,
-            typecheck::QueryEnv,
+            transform::file_ast,
+            typecheck::{typecheck_def_input, QueryEnv},
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -439,5 +518,122 @@ trait Ord['a] {
         let traits = env.all_traits();
 
         assert_eq!(traits.len(), 2, "Should find both Eq and Ord traits");
+    }
+
+    #[test]
+    fn typecheck_def_input_lowers_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn add(x: int, y: int) -> int => x + y
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the def_id for the function
+        let file_result = file_ast(&db, file_id);
+        let func_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }))
+            .expect("Should have a function def");
+
+        let result = typecheck_def_input(&db, func_def.def_id);
+
+        // The result should have lowered the function
+        assert!(!result.def_nodes.is_empty(), "Should have lowered the function");
+    }
+
+    #[test]
+    fn typecheck_def_input_lowers_file_main() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+let x = 42
+let y = x + 1
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // FileMain is always at index 0 for any file
+        let file_main_def_id = DefId::new(file_id, 0);
+
+        let result = typecheck_def_input(&db, file_main_def_id);
+
+        // The result should have lowered the top-level statements
+        assert!(!result.file_main_stmts.is_empty(), "Should have lowered FileMain statements");
+    }
+
+    #[test]
+    fn typecheck_def_input_lowers_struct() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct Point { x: int, y: int }
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the def_id for the struct
+        let file_result = file_ast(&db, file_id);
+        let struct_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Struct))
+            .expect("Should have a struct def");
+
+        let result = typecheck_def_input(&db, struct_def.def_id);
+
+        // Structs lower but don't produce def_nodes (they're type definitions)
+        // Just verify no errors occurred during lowering
+        assert!(result.lowering_errors.is_empty(), "Should have no lowering errors");
+    }
+
+    #[test]
+    fn typecheck_def_input_lowers_impl_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn origin(): Point => Point { x: 0, y: 0 }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the def_id for the method
+        let file_result = file_ast(&db, file_id);
+        let method_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Method))
+            .expect("Should have a method def");
+
+        let result = typecheck_def_input(&db, method_def.def_id);
+
+        // The result should have lowered the method
+        assert!(!result.def_nodes.is_empty(), "Should have lowered the impl method");
     }
 }

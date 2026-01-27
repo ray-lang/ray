@@ -3422,18 +3422,24 @@ impl LirGen<GenResult> for Node<Decl> {
                 }
 
                 if let Some(funcs) = &imp.funcs {
-                    for func in funcs {
-                        let node = func.as_ref();
+                    for decl in funcs {
+                        let Decl::Func(func) = &decl.value else {
+                            unreachable!("impl funcs should only contain Decl::Func");
+                        };
+                        let func_node = Node {
+                            id: decl.id,
+                            value: func,
+                        };
                         let ty = tcx
-                            .get_poly_ty(node.id)
+                            .get_poly_ty(decl.id)
                             .cloned()
-                            .unwrap_or_else(|| ctx.ty_of(tcx, func.id));
+                            .unwrap_or_else(|| ctx.ty_of(tcx, decl.id));
                         log::debug!(
                             "[lir_gen] generate impl func: ty = {}, sig = {:?}",
                             ty,
                             func.sig
                         );
-                        (&node, &ty).lir_gen(ctx, tcx)?;
+                        (&func_node, &ty).lir_gen(ctx, tcx)?;
                     }
                 }
             }

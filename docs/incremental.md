@@ -1676,7 +1676,7 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   - Type arg arity checks in `lower_impl()` → type argument arity validation
   - Assignment mutability checks in `lower_assign()` → mutability checking
 
-- `typecheck_def_input(DefId)` → `DefTypecheckInput`
+- `typecheck_def_input(DefId)` → `TypeCheckInput`
 
   **Dependencies**: `file_ast(def_id.file)`, `name_resolutions(def_id.file)`, `annotated_scheme(def_id)`, operator/builtin queries via `TypecheckEnv`
 
@@ -1689,23 +1689,6 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   - Pattern nodes → `PatternKind` variants
 
   **Why per-definition granularity**: Lowering is self-contained per-definition—it only needs the definition's AST subtree, the `resolutions` map (keyed by `NodeId`), and `TypecheckEnv` for operator/builtin lookup. Per-definition caching means editing one function only re-lowers that function, not the entire binding group.
-
-  **Definitions**:
-  ```rust
-  #[derive(Clone)]
-  struct DefTypecheckInput {
-      /// The binding record for this definition (kind, scheme, body_expr, etc.)
-      pub binding_record: BindingRecord,
-      /// Expression records for all nodes owned by this definition
-      pub expr_records: HashMap<NodeId, ExprRecord>,
-      /// Pattern records for all pattern nodes owned by this definition
-      pub pattern_records: HashMap<NodeId, PatternRecord>,
-      /// Node-to-binding mappings for nodes in this definition
-      pub node_bindings: HashMap<NodeId, NodeBinding>,
-      /// Lowering errors (e.g., unsupported patterns)
-      pub lowering_errors: Vec<TypeError>,
-  }
-  ```
 
   **Legacy component integration**: Refactors `build_typecheck_input` in `ray-core/src/typing.rs`. The legacy function lowers all declarations at once; this query lowers one definition at a time.
 
@@ -4588,21 +4571,10 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: typecheck_def_input query (per-definition lowering)
 
-- [ ] Define `DefTypecheckInput` struct in `ray-frontend/src/queries/typecheck.rs`:
-  ```rust
-  #[derive(Clone)]
-  pub struct DefTypecheckInput {
-      pub binding_record: BindingRecord,
-      pub expr_records: HashMap<NodeId, ExprRecord>,
-      pub pattern_records: HashMap<NodeId, PatternRecord>,
-      pub node_bindings: HashMap<NodeId, NodeBinding>,
-      pub lowering_errors: Vec<TypeError>,
-  }
-  ```
-- [ ] Define `typecheck_def_input(DefId)` query:
+- [x] Define `typecheck_def_input(DefId)` query:
   ```rust
   #[query]
-  fn typecheck_def_input(db: &Database, def_id: DefId) -> DefTypecheckInput {
+  fn typecheck_def_input(db: &Database, def_id: DefId) -> TypeCheckInput {
       let file_ast = file_ast(db, def_id.file);
       let resolutions = name_resolutions(db, def_id.file);
       let env = QueryEnv::new(db, def_id.file);
@@ -4620,13 +4592,13 @@ This is the largest migration. Do it incrementally, running tests after each ste
       )
   }
   ```
-- [ ] Implement `lower_def_for_typecheck` by refactoring logic from `ray-core/src/typing.rs`:
+- [x] Implement `lower_def_for_typecheck` by refactoring logic from `ray-core/src/typing.rs`:
   - Extract single-definition lowering from `build_typecheck_input`
   - Remove dependency on legacy `BindingPassOutput`
   - Use `resolutions` map for `LocalBindingId` lookup (already transitioning to this)
   - Use `TypecheckEnv` for operator/builtin resolution
-- [ ] **Validate**: Unit test lowering a simple function definition
-- [ ] **Validate**: Unit test lowering handles operators correctly via `TypecheckEnv`
+- [x] **Validate**: Unit test lowering a simple function definition
+- [x] **Validate**: Unit test lowering handles operators correctly via `TypecheckEnv`
 
 ##### Step 2: typecheck_group_input query (combine per-def inputs)
 

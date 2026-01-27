@@ -600,8 +600,11 @@ fn collect_decl_name_refs(decl: &Node<Decl>, refs: &mut Vec<(NodeId, Path)>) {
         }
         Decl::Impl(im) => {
             if let Some(funcs) = &im.funcs {
-                for func in funcs {
-                    collect_func_refs(&func.value, refs);
+                for decl in funcs {
+                    let Decl::Func(func) = &decl.value else {
+                        unreachable!("impl funcs should only contain Decl::Func");
+                    };
+                    collect_func_refs(func, refs);
                 }
             }
             if let Some(externs) = &im.externs {

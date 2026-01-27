@@ -786,8 +786,11 @@ fn extract_impl_methods(im: &Impl, defs: &[DefHeader], parent_path: &ItemPath) -
     let mut methods = Vec::new();
 
     if let Some(funcs) = &im.funcs {
-        for func in funcs {
-            let def_id = match defs.iter().find(|h| h.root_node == func.id) {
+        for decl in funcs {
+            let Decl::Func(func) = &decl.value else {
+                unreachable!("impl funcs should only contain Decl::Func");
+            };
+            let def_id = match defs.iter().find(|h| h.root_node == decl.id) {
                 Some(h) => h.def_id,
                 None => continue,
             };
@@ -804,7 +807,7 @@ fn extract_impl_methods(im: &Impl, defs: &[DefHeader], parent_path: &ItemPath) -
                 methods.push(MethodInfo {
                     target,
                     path,
-                    name,
+                    name: name.to_string(),
                     is_static,
                     recv_mode,
                     scheme,
@@ -871,8 +874,11 @@ where
     let mut methods = Vec::new();
 
     if let Some(funcs) = &im.funcs {
-        for func in funcs {
-            let def_id = match defs.iter().find(|h| h.root_node == func.id) {
+        for decl in funcs {
+            let Decl::Func(func) = &decl.value else {
+                unreachable!("impl funcs should only contain Decl::Func");
+            };
+            let def_id = match defs.iter().find(|h| h.root_node == decl.id) {
                 Some(h) => h.def_id,
                 None => continue,
             };
@@ -905,7 +911,7 @@ where
                 methods.push(MethodInfo {
                     target,
                     path,
-                    name,
+                    name: name.to_string(),
                     is_static,
                     recv_mode,
                     scheme,

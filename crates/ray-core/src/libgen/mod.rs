@@ -337,7 +337,7 @@ fn register_decl_paths(
 
             if let Some(funcs) = &im.funcs {
                 for func in funcs {
-                    register_func(func.id, func, srcmap, tcx, records, Some(&kind));
+                    register_decl_paths(func, srcmap, tcx, records, Some(&kind));
                 }
             }
 

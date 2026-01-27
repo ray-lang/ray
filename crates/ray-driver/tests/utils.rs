@@ -82,12 +82,15 @@ pub fn find_func<'a>(module: &'a Module<(), Decl>, path: &'a Path) -> &'a Func {
 }
 
 #[allow(dead_code)]
-pub fn find_func_in<'a>(funcs: &'a Vec<Node<Func>>, path: &'a Path) -> &'a Func {
+pub fn find_func_in<'a>(funcs: &'a Vec<Node<Decl>>, path: &'a Path) -> &'a Func {
     funcs
         .iter()
         .find_map(|decl| {
-            if &decl.sig.path.value == path {
-                Some(&decl.value)
+            let Decl::Func(func) = &decl.value else {
+                return None;
+            };
+            if &func.sig.path.value == path {
+                Some(func)
             } else {
                 None
             }

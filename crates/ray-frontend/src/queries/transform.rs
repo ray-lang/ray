@@ -118,8 +118,11 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
         Decl::Impl(im) => {
             // Transform functions in impl blocks
             if let Some(funcs) = &mut im.funcs {
-                for func in funcs {
-                    if let Some(body) = &mut func.value.body {
+                for decl in funcs {
+                    let Decl::Func(func) = &mut decl.value else {
+                        unreachable!("impl funcs should only contain Decl::Func");
+                    };
+                    if let Some(body) = &mut func.body {
                         transform_expr(body, ctx);
                     }
                 }

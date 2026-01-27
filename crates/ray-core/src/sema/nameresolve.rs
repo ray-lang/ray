@@ -379,10 +379,13 @@ fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_
 
     // Resolve method signatures
     if let Some(funcs) = &imp.funcs {
-        for func in funcs {
+        for decl in funcs {
+            let Decl::Func(func) = &decl.value else {
+                unreachable!("impl funcs should only contain Decl::Func");
+            };
             resolve_func_sig(
-                func.id.owner,
-                &func.value.sig,
+                decl.id.owner,
+                &func.sig,
                 &type_params, // Impl's type params are in scope for methods
                 ctx,
             );
@@ -956,9 +959,12 @@ impl NameResolve for Module<(), Decl> {
                 }
                 Decl::Impl(impl_) => {
                     if let Some(funcs) = &mut impl_.funcs {
-                        for func_node in funcs {
-                            let func_def_id = func_node.id.owner;
-                            ctx.resolve_func_body(func_def_id, &mut func_node.value)?;
+                        for decl_node in funcs {
+                            let func_def_id = decl_node.id.owner;
+                            let Decl::Func(func) = &mut decl_node.value else {
+                                unreachable!("impl funcs should only contain Decl::Func");
+                            };
+                            ctx.resolve_func_body(func_def_id, func)?;
                         }
                     }
                 }
@@ -1036,7 +1042,10 @@ impl NameResolve for Sourced<'_, Impl> {
     fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (imp, src) = self.unpack_mut();
         if let Some(funcs) = &mut imp.funcs {
-            for func in funcs {
+            for decl in funcs {
+                let Decl::Func(func) = &mut decl.value else {
+                    unreachable!("impl funcs should only contain Decl::Func");
+                };
                 log::debug!("resolve_names: impl func: {:?}", func.sig);
                 Sourced(&mut func.sig, src).resolve_names(ctx)?;
             }
@@ -2662,10 +2671,11 @@ mod tests {
             has_body: true,
             span: Span::default(),
         };
-        let method = Node::new(Func {
+        let method = Func {
             sig: method_sig,
             body: None,
-        });
+        };
+        let method_decl = Node::new(Decl::Func(method));
 
         // Create impl type: ToStr[Point]
         // Need synthetic IDs for the impl type even though we don't check them
@@ -2678,7 +2688,7 @@ mod tests {
             ty: parsed_impl_ty,
             qualifiers: vec![],
             externs: None,
-            funcs: Some(vec![method]),
+            funcs: Some(vec![method_decl]),
             consts: None,
             is_object: false,
         };
@@ -2728,10 +2738,11 @@ mod tests {
             has_body: true,
             span: Span::default(),
         };
-        let method = Node::new(Func {
+        let method = Func {
             sig: method_sig,
             body: None,
-        });
+        };
+        let method_decl = Node::new(Decl::Func(method));
 
         // Create impl type: Point (object impl)
         let impl_ty = Ty::con("Point");
@@ -2744,7 +2755,7 @@ mod tests {
             ty: parsed_impl_ty,
             qualifiers: vec![],
             externs: None,
-            funcs: Some(vec![method]),
+            funcs: Some(vec![method_decl]),
             consts: None,
             is_object: true,
         };

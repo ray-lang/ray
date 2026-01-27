@@ -187,7 +187,7 @@ impl Decl {
                 }
 
                 if let Some(funcs) = &im.funcs {
-                    defs.extend(funcs.iter().map(|f| (&f.sig.path.value, f.sig.ty.as_ref())));
+                    defs.extend(funcs.iter().map(|d| d.get_defs()).concat());
                 }
 
                 if let Some(consts) = &im.consts {
@@ -236,7 +236,8 @@ pub struct Impl {
     pub ty: Parsed<Ty>,
     pub qualifiers: Vec<Parsed<Ty>>,
     pub externs: Option<Vec<Node<Decl>>>,
-    pub funcs: Option<Vec<Node<Func>>>,
+    /// Methods inside the impl block, wrapped as `Decl::Func`.
+    pub funcs: Option<Vec<Node<Decl>>>,
     pub consts: Option<Vec<Node<Assign>>>,
     pub is_object: bool,
 }
