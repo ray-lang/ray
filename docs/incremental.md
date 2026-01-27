@@ -4602,7 +4602,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: typecheck_group_input query (combine per-def inputs)
 
-- [ ] Define `typecheck_group_input(BindingGroupId)` query:
+- [x] Define `typecheck_group_input(BindingGroupId)` query:
   ```rust
   #[query]
   fn typecheck_group_input(db: &Database, group_id: BindingGroupId) -> TypeCheckInput {
@@ -4635,7 +4635,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       }
   }
   ```
-- [ ] **Validate**: Unit test combining inputs from multi-member binding group
+- [x] **Validate**: Unit test combining inputs from multi-member binding group
 
 ##### Step 3: typecheck_group query
 

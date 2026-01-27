@@ -6,10 +6,12 @@
 //! the query system) and the incremental frontend (which uses queries for
 //! definition lookups).
 
+use std::collections::HashMap;
+
 use ray_core::{ast::{Decl, Node}, typing::build_typecheck_input};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, DefKind},
+    def::DefId,
     file_id::FileId,
     node_id::NodeId,
     pathlib::ItemPath,
@@ -33,6 +35,7 @@ use crate::{
             ImplDef, StructDef, TraitDef, def_for_path, def_path, impl_def, impls_for_trait,
             impls_for_type, struct_def, trait_def, traits_in_module,
         },
+        deps::{BindingGroupId, binding_graph, binding_group_members},
         libraries::LoadedLibraries,
         operators::{lookup_infix_op, lookup_prefix_op},
         resolve::{name_resolutions, resolve_builtin},
@@ -341,9 +344,66 @@ fn find_decl_by_id(decls: &[Node<Decl>], node_id: NodeId) -> Option<&Node<Decl>>
     None
 }
 
+/// Combines per-definition lowered inputs into a single `TypeCheckInput` for a binding group.
+///
+/// This query collects the `TypeCheckInput` from each member definition in the group
+/// and merges them together. The binding graph is retrieved from the module-level
+/// `binding_graph` query.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `group_id` - The binding group ID identifying which group to combine inputs for
+///
+/// # Returns
+///
+/// A combined `TypeCheckInput` containing:
+/// - `bindings`: The full module binding graph (for computing SCCs)
+/// - `def_nodes`: Merged mapping from DefId to root expression NodeId
+/// - `file_main_stmts`: Merged FileMain statements from all members
+/// - `expr_records`: Merged expression metadata from all members
+/// - `pattern_records`: Merged pattern metadata from all members
+/// - `lowering_errors`: Accumulated lowering errors from all members
 #[query]
-pub fn typecheck_group_input(db: &Database, members: &Vec<DefId>) -> TypeCheckInput {
-    todo!("typecheck_group_input")
+pub fn typecheck_group_input(db: &Database, group_id: BindingGroupId) -> TypeCheckInput {
+    let members = binding_group_members(db, group_id.clone());
+
+    let mut def_nodes: HashMap<DefId, NodeId> = HashMap::new();
+    let mut file_main_stmts: HashMap<DefId, Vec<NodeId>> = HashMap::new();
+    let mut expr_records = HashMap::new();
+    let mut pattern_records = HashMap::new();
+    let mut lowering_errors = Vec::new();
+
+    for def_id in &members {
+        let input = typecheck_def_input(db, *def_id);
+
+        // Merge def_nodes (DefId → root expression NodeId)
+        def_nodes.extend(input.def_nodes);
+
+        // Merge file_main_stmts (FileMain top-level statements)
+        file_main_stmts.extend(input.file_main_stmts);
+
+        // Merge expression records
+        expr_records.extend(input.expr_records);
+
+        // Merge pattern records
+        pattern_records.extend(input.pattern_records);
+
+        // Accumulate lowering errors
+        lowering_errors.extend(input.lowering_errors);
+    }
+
+    // Get the full binding graph for the module
+    let bindings = binding_graph(db, group_id.module);
+
+    TypeCheckInput {
+        bindings,
+        def_nodes,
+        file_main_stmts,
+        expr_records,
+        pattern_records,
+        lowering_errors,
+    }
 }
 
 #[cfg(test)]
@@ -354,9 +414,10 @@ mod tests {
 
     use crate::{
         queries::{
+            deps::{binding_groups, BindingGroupId},
             libraries::LoadedLibraries,
             transform::file_ast,
-            typecheck::{typecheck_def_input, QueryEnv},
+            typecheck::{typecheck_def_input, typecheck_group_input, QueryEnv},
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -635,5 +696,95 @@ impl object Point {
 
         // The result should have lowered the method
         assert!(!result.def_nodes.is_empty(), "Should have lowered the impl method");
+    }
+
+    #[test]
+    fn typecheck_group_input_combines_multi_member_group() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two mutually recursive functions WITHOUT type annotations form a
+        // multi-member binding group (SCC). The binding graph only includes edges to
+        // unannotated definitions, so we use block body syntax with no parameter types.
+        let source = r#"
+fn is_even(n) {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n) {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get binding groups for the module
+        let groups_result = binding_groups(&db, module_path.clone());
+
+        // Find the group containing is_even and is_odd (they should be in the same SCC)
+        let file_result = file_ast(&db, file_id);
+        let is_even_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "is_even")
+            .expect("Should have is_even function");
+        let is_odd_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "is_odd")
+            .expect("Should have is_odd function");
+
+        // Find which group they're in
+        let mut target_group_idx = None;
+        for (idx, members) in groups_result.members.iter().enumerate() {
+            if members.contains(&is_even_def.def_id) {
+                target_group_idx = Some(idx);
+                // Verify both are in the same group (mutual recursion)
+                assert!(
+                    members.contains(&is_odd_def.def_id),
+                    "is_even and is_odd should be in the same binding group (SCC)"
+                );
+                break;
+            }
+        }
+        let group_idx = target_group_idx.expect("Should find binding group containing is_even");
+
+        let group_id = BindingGroupId {
+            module: module_path,
+            index: group_idx as u32,
+        };
+
+        // Call typecheck_group_input
+        let combined_input = typecheck_group_input(&db, group_id);
+
+        // Verify the combined input has both functions' def_nodes
+        assert!(
+            combined_input.def_nodes.contains_key(&is_even_def.def_id),
+            "Combined input should contain is_even"
+        );
+        assert!(
+            combined_input.def_nodes.contains_key(&is_odd_def.def_id),
+            "Combined input should contain is_odd"
+        );
+
+        // Verify expression records were merged (should have records from both functions)
+        assert!(
+            !combined_input.expr_records.is_empty(),
+            "Combined input should have merged expr_records"
+        );
+
+        // Verify the binding graph is the full module graph (not empty)
+        assert!(
+            combined_input.bindings.edges.len() >= 2,
+            "Binding graph should have at least the two functions"
+        );
+
+        // Note: We don't assert on lowering_errors here because they may be generated
+        // due to unresolved operator calls (like `==` and `-`) since we're not loading
+        // the core library. The key validation is that the inputs from both defs were merged.
     }
 }
