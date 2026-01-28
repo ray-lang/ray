@@ -30,8 +30,8 @@ use ray_typing::{
 use crate::{
     queries::{
         defs::{
-            ImplDef, StructDef, TraitDef, def_for_path, def_path, impl_def, impls_for_trait,
-            impls_for_type, struct_def, trait_def, traits_in_module,
+            ImplDef, StructDef, TraitDef, all_traits, def_for_path, def_path, impl_def,
+            impls_for_trait, impls_for_type, struct_def, trait_def, traits_in_module,
         },
         deps::{BindingGroupId, binding_graph, binding_group_for_def, binding_group_members},
         libraries::{LoadedLibraries, library_data},
@@ -63,76 +63,6 @@ impl<'db> QueryEnv<'db> {
     pub fn new(db: &'db Database, file_id: FileId) -> Self {
         QueryEnv { db, file_id }
     }
-
-    /// Convert a defs::TraitDef to a ray_typing::types::TraitTy.
-    fn convert_trait_def(&self, trait_def: &TraitDef) -> TraitTy {
-        TraitTy {
-            path: trait_def.path.clone(),
-            ty: trait_def.ty.clone(),
-            super_traits: trait_def.super_traits.clone(),
-            fields: trait_def
-                .methods
-                .iter()
-                .map(|m| TraitField {
-                    kind: FieldKind::Method,
-                    name: m.name.clone(),
-                    ty: m.scheme.clone(),
-                    is_static: m.is_static,
-                    recv_mode: m.recv_mode,
-                })
-                .collect(),
-            default_ty: trait_def.default_ty.clone(),
-        }
-    }
-
-    /// Convert a defs::ImplDef to a ray_typing::types::ImplTy.
-    fn convert_impl_def(&self, impl_def: &ImplDef) -> ImplTy {
-        let kind = match &impl_def.trait_ty {
-            Some(trait_ty) => ImplKind::Trait {
-                base_ty: impl_def.implementing_type.clone(),
-                trait_ty: trait_ty.clone(),
-                ty_args: impl_def
-                    .type_params
-                    .iter()
-                    .map(|v| Ty::Var(v.clone()))
-                    .collect(),
-            },
-            None => ImplKind::Inherent {
-                recv_ty: impl_def.implementing_type.clone(),
-            },
-        };
-
-        ImplTy {
-            kind,
-            predicates: vec![],
-            fields: impl_def
-                .methods
-                .iter()
-                .map(|m| ImplField {
-                    kind: FieldKind::Method,
-                    path: m.path.clone(),
-                    scheme: Some(m.scheme.clone()),
-                    is_static: m.is_static,
-                    recv_mode: m.recv_mode,
-                    src: Source::default(),
-                })
-                .collect(),
-        }
-    }
-
-    /// Convert a defs::StructDef to a ray_typing::types::StructTy.
-    fn convert_struct_def(&self, struct_def: &StructDef) -> StructTy {
-        StructTy {
-            kind: NominalKind::Struct,
-            path: struct_def.path.clone(),
-            ty: struct_def.ty.clone(),
-            fields: struct_def
-                .fields
-                .iter()
-                .map(|f| (f.name.clone(), f.ty.clone()))
-                .collect(),
-        }
-    }
 }
 
 impl<'db> TypecheckEnv for QueryEnv<'db> {
@@ -141,39 +71,20 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
         let target = def_for_path(self.db, path.clone())?;
 
         // Get the struct definition and convert to StructTy
-        let def = struct_def(self.db, target)?;
-        Some(self.convert_struct_def(&def))
+        Some(struct_def(self.db, target)?.convert_to_struct_ty())
     }
 
     fn trait_def(&self, path: &ItemPath) -> Option<TraitTy> {
         let target = def_for_path(self.db, path.clone())?;
         let trait_definition = trait_def(self.db, target)?;
-        Some(self.convert_trait_def(&trait_definition))
+        Some(trait_definition.convert_to_trait_ty())
     }
 
     fn all_traits(&self) -> Vec<TraitTy> {
-        let mut traits = Vec::new();
-
-        // Collect workspace traits
-        let workspace = self.db.get_input::<WorkspaceSnapshot>(());
-        for module_path in workspace.all_module_paths() {
-            let trait_ids = traits_in_module(self.db, module_path.clone());
-            for trait_id in trait_ids {
-                if let Some(trait_definition) = trait_def(self.db, DefTarget::Workspace(trait_id)) {
-                    traits.push(self.convert_trait_def(&trait_definition));
-                }
-            }
-        }
-
-        // Collect library traits
-        let libraries = self.db.get_input::<LoadedLibraries>(());
-        for (_lib_path, lib_data) in &libraries.libraries {
-            for (_lib_def_id, trait_definition) in &lib_data.traits {
-                traits.push(self.convert_trait_def(trait_definition));
-            }
-        }
-
-        traits
+        all_traits(self.db)
+            .into_iter()
+            .map(|trait_def| trait_def.convert_to_trait_ty())
+            .collect()
     }
 
     fn impls_for_trait(&self, trait_path: &ItemPath) -> Vec<ImplTy> {
@@ -186,10 +97,7 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
         impl_targets
             .into_iter()
-            .filter_map(|impl_target| {
-                let impl_definition = impl_def(self.db, impl_target)?;
-                Some(self.convert_impl_def(&impl_definition))
-            })
+            .filter_map(|impl_target| Some(impl_def(self.db, impl_target)?.convert_to_impl_ty()))
             .collect()
     }
 
@@ -204,10 +112,7 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
         impls_result
             .inherent
             .into_iter()
-            .filter_map(|impl_target| {
-                let impl_definition = impl_def(self.db, impl_target)?;
-                Some(self.convert_impl_def(&impl_definition))
-            })
+            .filter_map(|impl_target| Some(impl_def(self.db, impl_target)?.convert_to_impl_ty()))
             .collect()
     }
 
@@ -224,10 +129,7 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
             .inherent
             .into_iter()
             .chain(impls_result.trait_impls.into_iter())
-            .filter_map(|impl_target| {
-                let impl_definition = impl_def(self.db, impl_target)?;
-                Some(self.convert_impl_def(&impl_definition))
-            })
+            .filter_map(|impl_target| Some(impl_def(self.db, impl_target)?.convert_to_impl_ty()))
             .collect()
     }
 
@@ -269,6 +171,10 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
     fn external_local_type(&self, local_id: LocalBindingId) -> Option<Ty> {
         inferred_local_type(self.db, local_id)
+    }
+
+    fn def_item_path(&self, target: &DefTarget) -> Option<ItemPath> {
+        def_path(self.db, target.clone())
     }
 }
 

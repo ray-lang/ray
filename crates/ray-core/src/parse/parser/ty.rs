@@ -41,12 +41,20 @@ impl Parser<'_> {
         ctx: &ParseContext,
     ) -> ParseResult<Parsed<TyScheme>> {
         Ok(if peek!(self, TokenKind::Question) {
-            let (ty, src, ids) = ty.take();
+            let (ty, src, mut ids) = ty.take();
             let start = src.span.unwrap().start;
             let end = self.expect_end(TokenKind::Question, ctx)?;
+            let span = Span { start, end };
+
+            // Add a synthetic ID for the nilable wrapper type (Ty::Proj("nilable", [...])).
+            // This is needed because Ty::flatten() includes the Proj type itself plus its
+            // type parameters, so the synthetic IDs must match.
+            let nilable_synth_id = self.mk_synthetic(span);
+            ids.insert(0, nilable_synth_id);
+
             let mut parsed = Parsed::new(
                 TyScheme::from_mono(Ty::nilable(ty.into_mono())),
-                self.mk_src(Span { start, end }),
+                self.mk_src(span),
             );
             parsed.set_synthetic_ids(ids);
             parsed

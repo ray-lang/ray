@@ -71,6 +71,12 @@ impl<'a> ResolveContext<'a> {
             return;
         };
 
+        // Skip if this node already has a resolution (e.g., it was already
+        // resolved as an lvalue through a parent Index pattern)
+        if self.resolutions.contains_key(&node_id) {
+            return;
+        }
+
         let local_id = LocalBindingId::new(owner_def_id, self.local_counter);
         self.local_counter += 1;
         if let Some(scope) = self.local_scopes.last_mut() {
@@ -209,18 +215,25 @@ pub fn resolve_names_in_file(
                 }
             }
             WalkItem::Pattern(pat) => {
-                // Handle assignment patterns that introduce new bindings
-                ctx.bind_locals(pat.paths().into_iter().filter_map(|node| {
+                // Handle assignment patterns - create new bindings for new names,
+                // resolve existing bindings for lvalues
+                for node in pat.paths().into_iter() {
                     let (path, is_lvalue) = node.value;
-                    if is_lvalue {
-                        return None;
-                    }
                     let Some(name) = path.name() else {
-                        return None;
+                        continue;
                     };
 
-                    Some((node.id, name))
-                }));
+                    if is_lvalue {
+                        // For lvalues (e.g., `l` in `l[0] = 42`), look up the existing
+                        // binding and record a resolution without creating a new binding
+                        if let Some(local_id) = ctx.lookup_local(&name) {
+                            ctx.resolutions.insert(node.id, Resolution::Local(local_id));
+                        }
+                    } else {
+                        // For new bindings, create and bind
+                        ctx.bind_local(node.id, name);
+                    }
+                }
             }
             _ => {}
         }
@@ -1145,7 +1158,15 @@ impl NameResolve for Sourced<'_, Assign> {
             let full_path = base_scope.append_path(path.clone());
             *path = full_path.clone();
 
-            if !is_lvalue {
+            if is_lvalue {
+                // For lvalues (e.g., `l` in `l[0] = 42`), look up the existing
+                // binding and record a resolution without creating a new binding
+                if let Some(n) = name_str {
+                    if let Some(local_id) = ctx.lookup_local(&n) {
+                        ctx.record_resolution(node.id, Resolution::Local(local_id));
+                    }
+                }
+            } else {
                 ctx.add_path(&full_path);
                 // Register the local binding with its NodeId
                 if let Some(n) = name_str {

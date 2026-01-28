@@ -509,7 +509,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             let lhs = lower_expr(ctx, &binop.lhs);
             let rhs = lower_expr(ctx, &binop.rhs);
             let op_sym = binop.op.to_string();
-            if let Some((method_fqn, trait_fqn)) = ctx.env.infix_op(&op_sym) {
+            if let Some((trait_fqn, method_fqn)) = ctx.env.infix_op(&op_sym) {
                 let result_id = ctx.expr_id(node);
                 let args = vec![lhs, rhs];
                 let operator_id = ctx.record_expr(
@@ -616,10 +616,24 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         // We require a named struct on the LHS; unlabeled `{ ... }` forms
         // are left for future extension.
         Expr::Curly(curly) => {
-            let path = if let Some(lhs) = &curly.lhs {
-                ItemPath::from(lhs.value())
-            } else {
-                todo!("lowering for anonymous `{{...}}` curly expressions into ExprKind")
+            // Get the raw AST path as a fallback
+            let ast_path = curly.lhs.as_ref().map(|lhs| ItemPath::from(lhs.value()));
+
+            // Try to get the fully qualified path from name resolution.
+            // The resolution was stored by nameresolve.rs for curly expressions.
+            let path = match ctx.resolutions.get(&node.id) {
+                Some(Resolution::Def(target)) => {
+                    // Use the resolved DefTarget to get the fully qualified ItemPath
+                    ctx.env.def_item_path(target).or(ast_path)
+                }
+                _ => ast_path,
+            };
+
+            let path = match path {
+                Some(p) => p,
+                None => {
+                    todo!("lowering for anonymous `{{...}}` curly expressions into ExprKind")
+                }
             };
 
             let mut fields = Vec::with_capacity(curly.elements.len());
@@ -952,7 +966,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         Expr::UnaryOp(unary) => {
             let expr = lower_expr(ctx, &unary.expr);
             let op_sym = unary.op.to_string();
-            if let Some((method_fqn, trait_fqn)) = ctx.env.prefix_op(&op_sym) {
+            if let Some((trait_fqn, method_fqn)) = ctx.env.prefix_op(&op_sym) {
                 let result_id = ctx.expr_id(node);
                 let operator_id = ctx.record_expr(
                     &unary.op,

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ray_shared::pathlib::ItemPath;
+use ray_shared::resolution::DefTarget;
 use ray_shared::{
     node_id::NodeId,
     pathlib::Path,
@@ -19,9 +20,9 @@ use crate::{
     },
 };
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallResolution {
-    pub base_fqn: ItemPath,
+    pub target: DefTarget,
     pub poly_callee_ty: TyScheme,
     pub callee_ty: TyScheme,
     pub subst: Subst,

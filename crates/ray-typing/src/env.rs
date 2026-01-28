@@ -6,6 +6,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     pathlib::{ItemPath, Path},
+    resolution::DefTarget,
     ty::Ty,
 };
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,12 @@ pub trait TypecheckEnv {
     ///
     /// Returns `(trait_path, method_path)` for operators like `-` (negation), `!`, etc.
     fn prefix_op(&self, symbol: &str) -> Option<(ItemPath, ItemPath)>;
+
+    /// Get the fully qualified ItemPath for a definition target.
+    ///
+    /// This is used during lowering to convert resolved names (stored as DefTarget)
+    /// into their canonical paths for use in the type system.
+    fn def_item_path(&self, target: &DefTarget) -> Option<ItemPath>;
 }
 
 #[derive(

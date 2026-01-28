@@ -60,40 +60,42 @@ pub fn run_call_resolution_pass(module: &TypeCheckInput, tcx: &mut TyCtx, ncx: &
 }
 
 fn resolve_op(operator_id: NodeId, trait_path: &ItemPath, method_path: &ItemPath, tcx: &mut TyCtx) {
-    if tcx.call_resolution(operator_id).is_some() {
-        return;
-    }
+    unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
 
-    let Some(trait_ty) = tcx.get_trait_ty(trait_path) else {
-        return;
-    };
+    // if tcx.call_resolution(operator_id).is_some() {
+    //     return;
+    // }
 
-    let Some(method_name) = method_path.item_name() else {
-        return;
-    };
+    // let Some(trait_ty) = tcx.get_trait_ty(trait_path) else {
+    //     return;
+    // };
 
-    let Some(trait_field) = trait_ty.get_field(&method_name) else {
-        return;
-    };
+    // let Some(method_name) = method_path.item_name() else {
+    //     return;
+    // };
 
-    let poly_callee_ty = trait_field.ty.clone();
-    let callee_ty = TyScheme::from_mono(tcx.get_ty(operator_id).cloned().unwrap());
-    let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
-        Ok((_, subst)) => subst,
-        Err(_) => Subst::new(),
-    };
+    // let Some(trait_field) = trait_ty.get_field(&method_name) else {
+    //     return;
+    // };
 
-    let base_fqn = method_path.clone();
+    // let poly_callee_ty = trait_field.ty.clone();
+    // let callee_ty = TyScheme::from_mono(tcx.get_ty(operator_id).cloned().unwrap());
+    // let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
+    //     Ok((_, subst)) => subst,
+    //     Err(_) => Subst::new(),
+    // };
 
-    tcx.set_call_resolution(
-        operator_id,
-        CallResolution {
-            base_fqn,
-            poly_callee_ty,
-            callee_ty,
-            subst,
-        },
-    );
+    // let base_fqn = method_path.clone();
+
+    // tcx.set_call_resolution(
+    //     operator_id,
+    //     CallResolution {
+    //         target: base_fqn,
+    //         poly_callee_ty,
+    //         callee_ty,
+    //         subst,
+    //     },
+    // );
 }
 
 fn resolve_call(callee_id: NodeId, module: &TypeCheckInput, tcx: &mut TyCtx) {

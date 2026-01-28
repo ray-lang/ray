@@ -10,10 +10,14 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::{ItemPath, ModulePath},
     resolution::{DefTarget, Resolution},
+    span::Source,
     ty::{Ty, TyVar},
     type_param_id::TypeParamId,
 };
-use ray_typing::types::{ReceiverMode, TyScheme};
+use ray_typing::types::{
+    FieldKind, ImplField, ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, TraitField,
+    TraitTy, TyScheme,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -60,6 +64,22 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
 }
 
+impl StructDef {
+    /// Convert a StructTy.
+    pub fn convert_to_struct_ty(&self) -> StructTy {
+        StructTy {
+            kind: NominalKind::Struct,
+            path: self.path.clone(),
+            ty: self.ty.clone(),
+            fields: self
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.ty.clone()))
+                .collect(),
+        }
+    }
+}
+
 /// Information about a method in a trait or impl.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MethodInfo {
@@ -100,6 +120,36 @@ pub struct TraitDef {
     pub default_ty: Option<Ty>,
 }
 
+impl TraitDef {
+    /// Convert to a TraitTy
+    pub fn convert_to_trait_ty(&self) -> TraitTy {
+        TraitTy {
+            path: self.path.clone(),
+            ty: self.ty.clone(),
+            super_traits: self.super_traits.clone(),
+            fields: self
+                .methods
+                .iter()
+                .map(|m| TraitField {
+                    kind: FieldKind::Method,
+                    name: m.name.clone(),
+                    ty: m.scheme.clone(),
+                    is_static: m.is_static,
+                    recv_mode: m.recv_mode,
+                })
+                .collect(),
+            default_ty: self.default_ty.clone(),
+        }
+    }
+
+    pub fn find_method(&self, method_name: &str) -> Option<MethodInfo> {
+        self.methods
+            .iter()
+            .find(|method_info| method_info.name == method_name)
+            .cloned()
+    }
+}
+
 /// An impl definition for the query layer.
 ///
 /// This is separate from the typechecker's ImplTy to support:
@@ -116,6 +166,50 @@ pub struct ImplDef {
     pub trait_ty: Option<Ty>,
     /// Methods defined in this impl.
     pub methods: Vec<MethodInfo>,
+}
+
+impl ImplDef {
+    /// Convert an ImplTy.
+    pub fn convert_to_impl_ty(&self) -> ImplTy {
+        let kind = match &self.trait_ty {
+            Some(trait_ty) => ImplKind::Trait {
+                base_ty: self.implementing_type.clone(),
+                trait_ty: trait_ty.clone(),
+                ty_args: self
+                    .type_params
+                    .iter()
+                    .map(|v| Ty::Var(v.clone()))
+                    .collect(),
+            },
+            None => ImplKind::Inherent {
+                recv_ty: self.implementing_type.clone(),
+            },
+        };
+
+        ImplTy {
+            kind,
+            predicates: vec![],
+            fields: self
+                .methods
+                .iter()
+                .map(|m| ImplField {
+                    kind: FieldKind::Method,
+                    path: m.path.clone(),
+                    scheme: Some(m.scheme.clone()),
+                    is_static: m.is_static,
+                    recv_mode: m.recv_mode,
+                    src: Source::default(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn find_method(&self, method_name: &str) -> Option<MethodInfo> {
+        self.methods
+            .iter()
+            .find(|method_info| method_info.name == method_name)
+            .cloned()
+    }
 }
 
 /// A type alias definition extracted from either workspace or library.
@@ -215,10 +309,8 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
             // Check if this def has a parent (i.e., it's a method in an impl/trait)
             if let Some(parent_def_id) = def_header.parent {
                 // Look up the parent def to get its name (the type or trait name)
-                if let Some(parent_header) = parse_result
-                    .defs
-                    .iter()
-                    .find(|h| h.def_id == parent_def_id)
+                if let Some(parent_header) =
+                    parse_result.defs.iter().find(|h| h.def_id == parent_def_id)
                 {
                     // Build fully qualified path: module::ParentName::method_name
                     return Some(ItemPath::new(
@@ -334,7 +426,10 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
 /// For example, for `struct Box['a] { value: 'a }`, the field `value` gets
 /// `TyScheme { vars: ['a], qualifiers: [], ty: 'a }`.
 #[allow(dead_code)]
-fn extract_struct_fields(fields: &Option<Vec<Node<Name>>>, type_params: &[TyVar]) -> Vec<StructField> {
+fn extract_struct_fields(
+    fields: &Option<Vec<Node<Name>>>,
+    type_params: &[TyVar],
+) -> Vec<StructField> {
     match fields {
         Some(field_nodes) => field_nodes
             .iter()
@@ -669,6 +764,53 @@ fn extract_library_trait(db: &Database, lib_def_id: &LibraryDefId) -> Option<Tra
     lib_data.traits.get(lib_def_id).cloned()
 }
 
+/// Look up all traits
+///
+/// Finds all traits in the workspace and library definitions
+///
+#[query]
+pub fn all_traits(db: &Database) -> Vec<TraitDef> {
+    let mut traits = Vec::new();
+
+    // Collect workspace traits
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    for module_path in workspace.all_module_paths() {
+        let trait_ids = traits_in_module(db, module_path.clone());
+        for trait_id in trait_ids {
+            if let Some(trait_definition) = trait_def(db, DefTarget::Workspace(trait_id)) {
+                traits.push(trait_definition);
+            }
+        }
+    }
+
+    // Collect library traits
+    let libraries = db.get_input::<LoadedLibraries>(());
+    for (_lib_path, lib_data) in &libraries.libraries {
+        for (_lib_def_id, trait_definition) in &lib_data.traits {
+            traits.push(trait_definition.clone());
+        }
+    }
+
+    traits
+}
+
+/// Look up trait methods in the workspace.
+#[query]
+pub fn trait_methods_for_name(db: &Database, method_name: &String) -> Vec<(TraitDef, MethodInfo)> {
+    all_traits(db)
+        .into_iter()
+        .filter_map(|trait_def| {
+            trait_def.methods.iter().find_map(|method_info| {
+                if method_info.name == method_name {
+                    Some((trait_def.clone(), method_info.clone()))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
+}
+
 // ============================================================================
 // impl_def query
 // ============================================================================
@@ -744,13 +886,15 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
                 let impl_ty = resolve_ty_with_scope(db, &args[0], def_id.file, &module_path);
 
                 // Resolve the full trait type using resolutions
-                let trait_type = apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
+                let trait_type =
+                    apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
 
                 (impl_ty, Some(trait_type))
             }
             _ => {
                 // Fallback: treat as inherent
-                let impl_ty = apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
+                let impl_ty =
+                    apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
                 (impl_ty, None)
             }
         }
@@ -1130,6 +1274,41 @@ pub fn impls_for_type(db: &Database, type_target: DefTarget) -> ImplsForType {
     result
 }
 
+/// Find the impl of a trait for a given type
+///
+/// Searches all impls in the workspace and libraries
+///
+/// Returns `None` if it cannot be found
+#[query]
+pub fn trait_impl_for_type(
+    db: &Database,
+    type_target: DefTarget,
+    trait_target: DefTarget,
+) -> Option<DefTarget> {
+    // Get the trait's path for comparison
+    let trait_path = def_path(db, trait_target)?;
+
+    // Get all trait impls for the type
+    let ImplsForType { trait_impls, .. } = impls_for_type(db, type_target);
+
+    // Find the impl whose trait_ty matches the target trait
+    for impl_target in trait_impls {
+        if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
+            if let Some(trait_ty) = &impl_definition.trait_ty {
+                // Check if the trait type's path matches the target trait path
+                if let Some(impl_trait_path) = trait_ty.item_path() {
+                    // Compare the base paths (without type arguments)
+                    if impl_trait_path == &trait_path {
+                        return Some(impl_target);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Collect workspace impls that implement the target type.
 fn collect_workspace_impls_for_type(
     db: &Database,
@@ -1147,7 +1326,8 @@ fn collect_workspace_impls_for_type(
             let impl_target = DefTarget::Workspace(impl_id);
             if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
                 // Check if this impl's implementing_type matches the target.
-                let matches = type_matches_target(&impl_definition.implementing_type, type_target, db);
+                let matches =
+                    type_matches_target(&impl_definition.implementing_type, type_target, db);
 
                 if matches {
                     if impl_definition.trait_ty.is_some() {
@@ -1286,12 +1466,7 @@ fn path_for_target(target: &DefTarget, db: &Database) -> Option<ItemPath> {
 ///
 /// For types without Parsed wrapper (like nested type args), we look up the type
 /// name in the file's scope (which includes module exports and selective imports).
-fn resolve_ty_with_scope(
-    db: &Database,
-    ty: &Ty,
-    file_id: FileId,
-    module_path: &ModulePath,
-) -> Ty {
+fn resolve_ty_with_scope(db: &Database, ty: &Ty, file_id: FileId, module_path: &ModulePath) -> Ty {
     let scope = file_scope(db, file_id);
 
     match ty {
@@ -1312,9 +1487,8 @@ fn resolve_ty_with_scope(
             // Local reference with type args - try to look up in file scope
             let resolved_path = if let Some(item_name) = path.item_name() {
                 if let Some(target) = scope.get(item_name) {
-                    path_for_target(target, db).unwrap_or_else(|| {
-                        ItemPath::new(module_path.clone(), path.item.clone())
-                    })
+                    path_for_target(target, db)
+                        .unwrap_or_else(|| ItemPath::new(module_path.clone(), path.item.clone()))
                 } else {
                     ItemPath::new(module_path.clone(), path.item.clone())
                 }
@@ -1393,9 +1567,9 @@ mod tests {
     use crate::{
         queries::{
             defs::{
-                StructField, MethodInfo, StructDef, TraitDef, def_for_path, impl_def, impls_for_trait,
-                impls_for_type, impls_in_module, struct_def, trait_def, traits_in_module,
-                type_alias,
+                MethodInfo, StructDef, StructField, TraitDef, def_for_path, impl_def,
+                impls_for_trait, impls_for_type, impls_in_module, struct_def, trait_def,
+                traits_in_module, type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
             workspace::{FileSource, WorkspaceSnapshot},

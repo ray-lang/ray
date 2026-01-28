@@ -4,6 +4,7 @@ use ray_shared::{
     collections::namecontext::NameContext,
     node_id::NodeId,
     pathlib::{ItemPath, ModulePath, Path},
+    resolution::DefTarget,
     span::Source,
     ty::Ty,
 };
@@ -1311,7 +1312,7 @@ impl<'a> GenCtx<'a> {
             Ty::Func(params, _) => params.first(),
             _ => None,
         };
-        let recv_mode = self.recv_mode_for_base(tcx, &resolved.base_fqn);
+        let recv_mode = self.recv_mode_for_base(tcx, &resolved.target);
 
         let recv_val: lir::Value = lir::Variable::Local(recv_loc).into();
         let recv_var = if let Some(param_mono) = recv_param_mono {
@@ -1541,46 +1542,48 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    fn recv_mode_for_base(&self, tcx: &TyCtx, path: &ItemPath) -> ReceiverMode {
-        log::debug!("[recv_mode_for_base] func_fqn = {}", path);
-        let Some(method_name) = path.item_name() else {
-            log::debug!("[recv_mode_for_base] missing method name: {}", path);
-            return ReceiverMode::None;
-        };
+    fn recv_mode_for_base(&self, tcx: &TyCtx, target: &DefTarget) -> ReceiverMode {
+        todo!("FIXME: this uses legacy code that needs to change")
 
-        if let Some(trait_fqn) = tcx.resolve_trait_from_path(&path) {
-            let Some(field) = tcx.get_trait_field(&trait_fqn, &method_name) else {
-                log::debug!(
-                    "[recv_mode_for_base] could not resolve trait field {} for trait: {}",
-                    path,
-                    trait_fqn,
-                );
-                return ReceiverMode::None;
-            };
+        // log::debug!("[recv_mode_for_base] func_fqn = {}", path);
+        // let Some(method_name) = path.item_name() else {
+        //     log::debug!("[recv_mode_for_base] missing method name: {}", path);
+        //     return ReceiverMode::None;
+        // };
 
-            log::debug!("[recv_mode_for_base] found trait field: {:?}", field);
-            return field.recv_mode;
-        }
+        // if let Some(trait_fqn) = tcx.resolve_trait_from_path(&path) {
+        //     let Some(field) = tcx.get_trait_field(&trait_fqn, &method_name) else {
+        //         log::debug!(
+        //             "[recv_mode_for_base] could not resolve trait field {} for trait: {}",
+        //             path,
+        //             trait_fqn,
+        //         );
+        //         return ReceiverMode::None;
+        //     };
 
-        let Some(recv_fqn) = path.parent_item().filter(|path| !path.is_empty()) else {
-            log::debug!(
-                "[recv_mode_for_base] could not derive receiver fqn from path: {}",
-                path
-            );
-            return ReceiverMode::None;
-        };
+        //     log::debug!("[recv_mode_for_base] found trait field: {:?}", field);
+        //     return field.recv_mode;
+        // }
 
-        let Some((_, field)) = tcx.resolve_inherent_method(&recv_fqn, &method_name) else {
-            log::debug!(
-                "[recv_mode_for_base] could not resolve inherent method {} for recv: {}",
-                method_name,
-                recv_fqn
-            );
-            return ReceiverMode::None;
-        };
+        // let Some(recv_fqn) = path.parent_item().filter(|path| !path.is_empty()) else {
+        //     log::debug!(
+        //         "[recv_mode_for_base] could not derive receiver fqn from path: {}",
+        //         path
+        //     );
+        //     return ReceiverMode::None;
+        // };
 
-        log::debug!("[recv_mode_for_base] found inherent field: {:?}", field);
-        field.recv_mode
+        // let Some((_, field)) = tcx.resolve_inherent_method(&recv_fqn, &method_name) else {
+        //     log::debug!(
+        //         "[recv_mode_for_base] could not resolve inherent method {} for recv: {}",
+        //         method_name,
+        //         recv_fqn
+        //     );
+        //     return ReceiverMode::None;
+        // };
+
+        // log::debug!("[recv_mode_for_base] found inherent field: {:?}", field);
+        // field.recv_mode
     }
 
     fn build_call_args(
@@ -1708,7 +1711,7 @@ impl<'a> GenCtx<'a> {
             _ => Vec::new(),
         };
 
-        let recv_mode = self.recv_mode_for_base(tcx, &resolved.base_fqn);
+        let recv_mode = self.recv_mode_for_base(tcx, &resolved.target);
 
         let recv_param_mono = param_monos.first();
 
@@ -1808,7 +1811,7 @@ impl<'a> GenCtx<'a> {
                     _ => Vec::new(),
                 };
 
-                let recv_mode = self.recv_mode_for_base(tcx, &resolved.base_fqn);
+                let recv_mode = self.recv_mode_for_base(tcx, &resolved.target);
                 let recv_param_mono = param_monos.first().cloned();
                 let recv_expr_scheme = self.ty_of(tcx, container_pat.id);
                 let recv_value =
@@ -3200,7 +3203,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     _ => Vec::new(),
                 };
 
-                let recv_mode = ctx.recv_mode_for_base(tcx, &resolved.base_fqn);
+                let recv_mode = ctx.recv_mode_for_base(tcx, &resolved.target);
                 let call_args = ctx.build_call_args(
                     tcx,
                     true,
