@@ -1,7 +1,7 @@
 use ray_query_macros::query;
-use ray_shared::{local_binding::LocalBindingId, node_id::NodeId, pathlib::ItemPath, ty::Ty};
+use ray_shared::{node_id::NodeId, pathlib::ItemPath, ty::Ty};
 use ray_typing::{
-    PatternKind, TypeCheckInput,
+    TypeCheckInput,
     context::{AssignLhs, ExprKind},
     tyctx::CallResolution,
     types::{Subst, TyScheme},
@@ -11,11 +11,12 @@ use ray_typing::{
 use crate::{
     queries::{
         defs::{
-            ImplsForType, def_for_path, impl_def, impls_for_type, trait_def, trait_impl_for_type,
+            ImplsForType, def_for_path, impl_def, impls_for_type, trait_def,
+            trait_impl_for_type, trait_methods_for_name,
         },
         deps::binding_group_for_def,
         resolve::resolve_builtin,
-        typecheck::{inferred_local_type, ty_of, typecheck_group_input},
+        typecheck::{ty_of, typecheck_group_input},
     },
     query::{Database, Query},
 };
@@ -69,17 +70,6 @@ pub fn call_resolution(db: &Database, node_id: NodeId) -> Option<CallResolution>
         };
     }
 
-    // Check if this node is a pattern (for nested index patterns like `l[i]` in `l[i][j] = v`)
-    if let Some(pattern_record) = input.pattern_records.get(&node_id) {
-        return match &pattern_record.kind {
-            PatternKind::Index { container, index } => {
-                // This pattern needs Index::get resolution
-                resolve_index_get(db, node_id, *container, *index)
-            }
-            _ => None,
-        };
-    }
-
     None
 }
 
@@ -113,11 +103,12 @@ fn resolve_op(
         Err(_) => Subst::new(),
     };
 
-    // target is the method's DefTarget
-    let target = method_info.target.clone();
+    // trait_target is the trait method's DefTarget
+    let trait_target = Some(method_info.target.clone());
 
     Some(CallResolution {
-        target,
+        trait_target,
+        impl_target: None, // Impl target would require looking up the specific impl
         poly_callee_ty,
         callee_ty,
         subst,
@@ -164,7 +155,8 @@ fn resolve_call(db: &Database, callee: &NodeId, input: &TypeCheckInput) -> Optio
             Err(_) => Subst::new(),
         };
         return Some(CallResolution {
-            target: method_info.target,
+            trait_target: None, // Inherent methods don't have a trait target
+            impl_target: Some(method_info.target),
             poly_callee_ty,
             callee_ty,
             subst,
@@ -184,10 +176,10 @@ fn resolve_index_get(
     let file_id = container_id.owner.file;
     let index_trait_target = resolve_builtin(db, file_id, "Index".to_string())?;
     let index_trait_def = trait_def(db, index_trait_target.clone())?;
-    let get_method_info = index_trait_def.find_method("get")?;
+    let trait_method_info = index_trait_def.find_method("get")?;
 
     // Get the method scheme and find the types of expressions
-    let poly_callee_ty = get_method_info.scheme.clone();
+    let poly_callee_ty = trait_method_info.scheme.clone();
     let container_ty = ty_of(db, container_id)?;
     let index_ty = ty_of(db, index_id)?;
     let result_ty = ty_of(db, index_expr_id)?;
@@ -197,7 +189,7 @@ fn resolve_index_get(
     let recv_target = def_for_path(db, container_path)?;
     let index_impl_target = trait_impl_for_type(db, recv_target, index_trait_target)?;
     let index_impl_def = impl_def(db, index_impl_target)?;
-    let get_method_info = index_impl_def.find_method("get")?;
+    let impl_method_info = index_impl_def.find_method("get")?;
 
     // Construct the monomorphic function type
     let recv_ty = Ty::ref_of(container_ty);
@@ -210,7 +202,8 @@ fn resolve_index_get(
     };
 
     Some(CallResolution {
-        target: get_method_info.target,
+        trait_target: Some(trait_method_info.target),
+        impl_target: Some(impl_method_info.target),
         poly_callee_ty,
         callee_ty,
         subst,
@@ -221,20 +214,20 @@ fn resolve_index_set(
     db: &Database,
     assign_expr_id: NodeId,
     _lhs_pattern_id: NodeId,
-    container_binding: LocalBindingId,
+    container_id: NodeId,
     index_id: NodeId,
     rhs_id: NodeId,
     _input: &TypeCheckInput,
 ) -> Option<CallResolution> {
     // Lookup the Index trait and find the "set" method info from the definition
-    let file_id = container_binding.owner.file;
+    let file_id = container_id.owner.file;
     let index_trait_target = resolve_builtin(db, file_id, "Index".to_string())?;
     let index_trait_def = trait_def(db, index_trait_target.clone())?;
-    let set_method_info = index_trait_def.find_method("set")?;
+    let trait_method_info = index_trait_def.find_method("set")?;
 
     // Get the method scheme and find the types of expressions
-    let poly_callee_ty = set_method_info.scheme.clone();
-    let container_ty = inferred_local_type(db, container_binding)?;
+    let poly_callee_ty = trait_method_info.scheme.clone();
+    let container_ty = ty_of(db, container_id)?;
     let index_ty = ty_of(db, index_id)?;
     let rhs_ty = ty_of(db, rhs_id)?;
     let result_ty = ty_of(db, assign_expr_id)?;
@@ -244,10 +237,9 @@ fn resolve_index_set(
     let recv_target = def_for_path(db, container_path)?;
     let index_impl_target = trait_impl_for_type(db, recv_target, index_trait_target)?;
     let index_impl_def = impl_def(db, index_impl_target)?;
-    let set_method_info = index_impl_def.find_method("set")?;
+    let impl_method_info = index_impl_def.find_method("set")?;
 
     // Construct the monomorphic function type: (*Container, Index, Elem) -> Elem?
-    // The set method signature is: fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
     let recv_ty = Ty::ref_of(container_ty);
     let callee_ty = TyScheme::from_mono(Ty::Func(
         vec![recv_ty, index_ty, rhs_ty],
@@ -261,7 +253,8 @@ fn resolve_index_set(
     };
 
     Some(CallResolution {
-        target: set_method_info.target,
+        trait_target: Some(trait_method_info.target),
+        impl_target: Some(impl_method_info.target),
         poly_callee_ty,
         callee_ty,
         subst,
@@ -275,10 +268,7 @@ mod tests {
         file_id::FileId,
         pathlib::{FilePath, ModulePath},
     };
-    use ray_typing::{
-        PatternKind,
-        context::{AssignLhs, ExprKind},
-    };
+    use ray_typing::context::{AssignLhs, ExprKind};
 
     use crate::{
         queries::{
@@ -587,86 +577,4 @@ fn test() -> int? {
         }
     }
 
-    #[test]
-    #[ignore = "Nested index patterns (m[0][1] = v) not yet implemented in lowering"]
-    fn call_resolution_for_nested_index_pattern() {
-        // Test nested index like l[i][j] = v where l[i] is a pattern needing Index::get
-        let source = r#"
-trait Index['a, 'el, 'idx] {
-    fn get(self: *'a, idx: 'idx) -> 'el?
-    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
-}
-
-struct List { data: int }
-struct Matrix { rows: List }
-
-impl Index[Matrix, List, int] {
-    fn get(self: *Matrix, idx: int) -> List? => nil
-    fn set(self: *Matrix, idx: int, el: List) -> List? => nil
-}
-
-impl Index[List, int, int] {
-    fn get(self: *List, idx: int) -> int? => nil
-    fn set(self: *List, idx: int, el: int) -> int? => nil
-}
-
-fn test() {
-    m = Matrix { rows: List { data: 0 } }
-    m[0][1] = 42
-}
-"#;
-        let (db, file_id) = setup_test_db(source);
-
-        let file_result = file_ast(&db, file_id);
-        let test_def = find_def_by_name(&file_result, "test").expect("Should have test function");
-
-        let group_id = binding_group_for_def(&db, test_def.def_id);
-        let input = typecheck_group_input(&db, group_id);
-
-        // Find the outer Assign expression (for m[0][1] = 42)
-        let assign_node_id = input.expr_records.iter().find_map(|(id, record)| {
-            if let ExprKind::Assign { lhs, .. } = &record.kind {
-                if matches!(lhs, AssignLhs::Index { .. }) {
-                    return Some(*id);
-                }
-            }
-            None
-        });
-
-        assert!(
-            assign_node_id.is_some(),
-            "Should have an index assignment expression"
-        );
-
-        // The outer assignment should resolve to Index::set
-        if let Some(assign_node_id) = assign_node_id {
-            let resolution = call_resolution(&db, assign_node_id);
-            assert!(
-                resolution.is_some(),
-                "Outer index assignment should produce call resolution"
-            );
-        }
-
-        // Find the inner PatternKind::Index (for m[0])
-        let inner_pattern_id = input.pattern_records.iter().find_map(|(id, record)| {
-            if matches!(record.kind, PatternKind::Index { .. }) {
-                return Some(*id);
-            }
-            None
-        });
-
-        assert!(
-            inner_pattern_id.is_some(),
-            "Should have an inner index pattern"
-        );
-
-        // The inner pattern should resolve to Index::get
-        if let Some(inner_pattern_id) = inner_pattern_id {
-            let resolution = call_resolution(&db, inner_pattern_id);
-            assert!(
-                resolution.is_some(),
-                "Inner index pattern should produce call resolution"
-            );
-        }
-    }
 }

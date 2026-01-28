@@ -83,9 +83,13 @@ impl<'a> TyLowerCtx<'a> {
         self.loop_depth = self.loop_depth.saturating_sub(1);
     }
 
-    fn emit_error(&mut self, node: &Node<Expr>, msg: impl Into<String>) {
+    fn emit_error<T>(&mut self, node: &Node<T>, msg: impl Into<String>) {
+        self.emit_error_at(node.id, msg);
+    }
+
+    fn emit_error_at(&mut self, node_id: NodeId, msg: impl Into<String>) {
         let mut info = TypeSystemInfo::new();
-        if let Some(src) = self.srcmap.get_by_id(node.id) {
+        if let Some(src) = self.srcmap.get_by_id(node_id) {
             info.with_src(src);
         }
         self.errors.push(TypeError::message(msg, info));
@@ -294,7 +298,7 @@ fn lower_func_binding(
             Some(Resolution::Local(local_id)) => *local_id,
             _ => {
                 // Fallback: create a placeholder LocalBindingId if not resolved
-                log::warn!("Parameter {:?} not found in resolutions", param_node.id);
+                log::debug!("Parameter {:?} not found in resolutions", param_node.id);
                 continue;
             }
         };
@@ -338,7 +342,7 @@ fn lower_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> LhsPattern
                 Some(Resolution::Local(local_id)) => *local_id,
                 _ => {
                     // Fallback for unresolved patterns - should not happen in valid code
-                    log::warn!("Pattern {:?} not found in resolutions", pat.id);
+                    log::debug!("Pattern {:?} not found in resolutions", pat.id);
                     ctx.record_pattern(pat, PatternKind::Missing);
                     return LhsPattern::Binding(LocalBindingId::new(DefId::new(FileId(0), 0), 0));
                 }
@@ -379,7 +383,7 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
             let local_id = match ctx.resolutions.get(&pat.id) {
                 Some(Resolution::Local(local_id)) => *local_id,
                 _ => {
-                    log::warn!("Deref pattern {:?} not found in resolutions", pat.id);
+                    log::debug!("Deref pattern {:?} not found in resolutions", pat.id);
                     ctx.record_pattern(pat, PatternKind::Missing);
                     return AssignLhs::ErrorPlaceholder;
                 }
@@ -395,7 +399,7 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                     let local_id = match ctx.resolutions.get(&lhs_pat.id) {
                         Some(Resolution::Local(local_id)) => *local_id,
                         _ => {
-                            log::warn!(
+                            log::debug!(
                                 "Field pattern base {:?} not found in resolutions",
                                 lhs_pat.id
                             );
@@ -426,49 +430,70 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
                 }
             }
         }
-        AstPattern::Index(lhs, index, _) => match &lhs.value {
-            AstPattern::Name(_) => {
-                // Get LocalBindingId from resolutions
-                let local_id = match ctx.resolutions.get(&lhs.id) {
-                    Some(Resolution::Local(local_id)) => *local_id,
-                    _ => {
-                        log::warn!("Index pattern base {:?} not found in resolutions", lhs.id);
-                        ctx.record_pattern(pat, PatternKind::Missing);
-                        return AssignLhs::ErrorPlaceholder;
-                    }
-                };
-                let lowered_index = lower_expr(ctx, index.as_ref());
-                let base_id = ctx.expr_id(lhs.as_ref());
-                ctx.record_pattern(lhs.as_ref(), PatternKind::Binding { binding: local_id });
-                ctx.record_pattern(
+        AstPattern::Index(lhs, index, _) => {
+            let lowered_index = lower_expr(ctx, index.as_ref());
+            let container_id = ctx.expr_id(lhs.as_ref());
+
+            // Only simple index patterns are supported: l[0] = v where l is a name.
+            // Nested index patterns like m[0][1] = v are not supported because
+            // Index::get returns a nilable type, and we don't have nilable chaining.
+            let AstPattern::Name(_) = &lhs.value else {
+                ctx.emit_error(
                     pat,
-                    PatternKind::Index {
-                        container: base_id,
-                        index: lowered_index,
-                    },
+                    "nested index assignment is not supported; Index::get returns a nilable type",
                 );
-                AssignLhs::Index {
-                    container: local_id,
-                    index: lowered_index,
+                ctx.record_pattern(pat, PatternKind::Missing);
+                return AssignLhs::ErrorPlaceholder;
+            };
+
+            let local_id = match ctx.resolutions.get(&lhs.id) {
+                Some(Resolution::Local(local_id)) => *local_id,
+                _ => {
+                    log::debug!("Index pattern base {:?} not found in resolutions", lhs.id);
+                    ctx.record_pattern(pat, PatternKind::Missing);
+                    return AssignLhs::ErrorPlaceholder;
                 }
+            };
+            ctx.record_pattern(lhs.as_ref(), PatternKind::Binding { binding: local_id });
+            // Also record an expression for the container so it gets typed.
+            // The container_id needs a type for constraint generation.
+            ctx.expr_records.insert(
+                container_id,
+                ExprRecord {
+                    kind: ExprKind::LocalRef(local_id),
+                    source: ctx.srcmap.get_by_id(lhs.id),
+                },
+            );
+
+            ctx.record_pattern(
+                pat,
+                PatternKind::Index {
+                    container: container_id,
+                    index: lowered_index,
+                },
+            );
+            AssignLhs::Index {
+                container: container_id,
+                index: lowered_index,
             }
-            _ => todo!("lowering for complex index assignment patterns into ExprKind::Assign"),
-        },
+        }
         AstPattern::Some(_) => {
             // Assignment with `some(...)` patterns on the left-hand side is
             // not permitted; these should be rejected earlier in the pipeline
             // (Section A.7 only covers `some(x)` in guard positions).
-            unreachable!(
+            log::debug!(
                 "assignment with `some(...)` pattern on the left-hand side should be rejected before typing"
-            )
+            );
+            ctx.record_pattern(pat, PatternKind::Missing);
+            AssignLhs::ErrorPlaceholder
         }
         AstPattern::Missing(_) => {
-            ctx.record_pattern(pat, PatternKind::Missing);
             // `Missing` is the error placeholder pattern. To keep type
             // checking progressing on partially-invalid ASTs, we treat this
             // like an ignored left-hand side: no bindings are introduced and
             // the assignment constraints only affect the right-hand side and
             // the overall result type.
+            ctx.record_pattern(pat, PatternKind::Missing);
             AssignLhs::ErrorPlaceholder
         }
     }
@@ -596,7 +621,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                         let local_id = match ctx.resolutions.get(&param.id) {
                             Some(Resolution::Local(local_id)) => *local_id,
                             _ => {
-                                log::warn!("Closure param {:?} not found in resolutions", param.id);
+                                log::debug!(
+                                    "Closure param {:?} not found in resolutions",
+                                    param.id
+                                );
                                 continue;
                             }
                         };
@@ -1060,7 +1088,7 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
             let local_id = match ctx.resolutions.get(&pat.id) {
                 Some(Resolution::Local(local_id)) => *local_id,
                 _ => {
-                    log::warn!("Guard pattern {:?} not found in resolutions", pat.id);
+                    log::debug!("Guard pattern {:?} not found in resolutions", pat.id);
                     return Pattern::Wild;
                 }
             };
@@ -1072,7 +1100,7 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
                 let local_id = match ctx.resolutions.get(&inner.id) {
                     Some(Resolution::Local(local_id)) => *local_id,
                     _ => {
-                        log::warn!("Some pattern inner {:?} not found in resolutions", inner.id);
+                        log::debug!("Some pattern inner {:?} not found in resolutions", inner.id);
                         return Pattern::Wild;
                     }
                 };

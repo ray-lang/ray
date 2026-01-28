@@ -1,12 +1,10 @@
 use ray_shared::{
     collections::namecontext::NameContext,
-    local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::{ItemPath, Path},
-    ty::Ty,
+    pathlib::ItemPath,
 };
 use ray_typing::{
-    PatternKind, PatternRecord, TypeCheckInput,
+    TypeCheckInput,
     context::{AssignLhs, ExprKind},
     tyctx::{CallResolution, TyCtx},
     types::{Subst, TyScheme},
@@ -225,7 +223,7 @@ fn resolve_index(
 fn resolve_index_set(
     _assign_expr_id: NodeId,
     _lhs_pattern_id: NodeId,
-    _container_binding: LocalBindingId,
+    _container_id: NodeId,
     _index_id: NodeId,
     _rhs_id: NodeId,
     _module: &TypeCheckInput,
@@ -298,70 +296,4 @@ fn resolve_index_set(
     // {
     //     resolve_index_pattern_chain(*container, module, tcx, ncx);
     // }
-}
-
-fn resolve_index_pattern_chain(
-    pattern_id: NodeId,
-    module: &TypeCheckInput,
-    tcx: &mut TyCtx,
-    ncx: &NameContext,
-) {
-    let Some(record) = module.pattern_records.get(&pattern_id) else {
-        return;
-    };
-
-    if let PatternKind::Index { container, index } = &record.kind {
-        resolve_index_pattern_get(pattern_id, *container, *index, tcx, ncx);
-        resolve_index_pattern_chain(*container, module, tcx, ncx);
-    }
-}
-
-fn resolve_index_pattern_get(
-    _pattern_id: NodeId,
-    _container_id: NodeId,
-    _index_id: NodeId,
-    _tcx: &mut TyCtx,
-    _ncx: &NameContext,
-) {
-    unreachable!("DO NOT REMOVE THIS PANIC: legacy code should not be called")
-
-    // if tcx.call_resolution(pattern_id).is_some() {
-    //     return;
-    // }
-
-    // let trait_fqn = ncx.builtin_ty("Index");
-    // let Some(trait_ty) = tcx.get_trait_ty(&ItemPath::from(&trait_fqn)) else {
-    //     return;
-    // };
-
-    // let method_name = "get".to_string();
-    // let Some(trait_field) = trait_ty.get_field(&method_name) else {
-    //     return;
-    // };
-
-    // let poly_callee_ty = trait_field.ty.clone();
-
-    // let container_ty = tcx.ty_of(container_id).mono().clone();
-    // let index_ty = tcx.ty_of(index_id).mono().clone();
-    // let result_ty = tcx.ty_of(pattern_id).mono().clone();
-
-    // let recv_ty = Ty::ref_of(container_ty);
-    // let callee_ty = TyScheme::from_mono(Ty::Func(vec![recv_ty, index_ty], Box::new(result_ty)));
-
-    // let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
-    //     Ok((_, subst)) => subst,
-    //     Err(_) => Subst::new(),
-    // };
-
-    // let base_fqn = trait_ty.path.append(&method_name);
-
-    // tcx.set_call_resolution(
-    //     pattern_id,
-    //     CallResolution {
-    //         base_fqn,
-    //         poly_callee_ty,
-    //         callee_ty,
-    //         subst,
-    //     },
-    // );
 }

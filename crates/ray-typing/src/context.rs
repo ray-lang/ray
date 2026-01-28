@@ -273,8 +273,12 @@ pub enum AssignLhs {
     /// Index assignment `container[index] = rhs`, which uses the
     /// `Index[Container, Elem, Index]` trait as described in
     /// docs/type-system.md A.8.
+    ///
+    /// The `container` is a NodeId representing the container expression,
+    /// which may be a simple local reference or a nested index expression
+    /// (e.g., `m[0]` in `m[0][1] = v`).
     Index {
-        container: LocalBindingId,
+        container: NodeId,
         index: NodeId,
     },
     /// Error placeholder produced from a `Missing` pattern on the left-hand

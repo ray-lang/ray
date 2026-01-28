@@ -37,7 +37,7 @@ use crate::{
         ConstraintNode, ConstraintTreeWalkItem, build_constraint_tree_for_group, walk_tree,
     },
     constraints::{CallKind, Constraint, ConstraintKind, InstantiateTarget, Predicate},
-    context::{ExprKind, InstanceFailureStatus, SolverContext},
+    context::{AssignLhs, ExprKind, InstanceFailureStatus, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
     env::TypecheckEnv,
     generalize::generalize_group,
@@ -276,7 +276,15 @@ impl TypeCheckInput {
             }
             Some(ExprKind::Set { items }) => items.clone(),
             Some(ExprKind::New { count }) => count.iter().copied().collect(),
-            Some(ExprKind::Assign { rhs, .. }) => vec![*rhs],
+            Some(ExprKind::Assign { lhs, rhs, .. }) => {
+                let mut out = vec![*rhs];
+                // For index assignments, include container and index as children
+                if let AssignLhs::Index { container, index } = lhs {
+                    out.push(*container);
+                    out.push(*index);
+                }
+                out
+            }
             Some(ExprKind::Wrapper { expr }) => vec![*expr],
             Some(ExprKind::Cast { expr, .. }) => vec![*expr],
             Some(ExprKind::Missing) => vec![],

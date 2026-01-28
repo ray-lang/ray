@@ -172,15 +172,20 @@ impl ImplDef {
     /// Convert an ImplTy.
     pub fn convert_to_impl_ty(&self) -> ImplTy {
         let kind = match &self.trait_ty {
-            Some(trait_ty) => ImplKind::Trait {
-                base_ty: self.implementing_type.clone(),
-                trait_ty: trait_ty.clone(),
-                ty_args: self
-                    .type_params
-                    .iter()
-                    .map(|v| Ty::Var(v.clone()))
-                    .collect(),
-            },
+            Some(trait_ty) => {
+                // Extract ty_args from the trait type.
+                // For Ty::Proj(path, [impl_type, arg1, arg2, ...]), ty_args = [arg1, arg2, ...]
+                // The first argument is the implementing type (base_ty), the rest are type args.
+                let ty_args = match trait_ty {
+                    Ty::Proj(_, args) if args.len() > 1 => args[1..].to_vec(),
+                    _ => vec![],
+                };
+                ImplKind::Trait {
+                    base_ty: self.implementing_type.clone(),
+                    trait_ty: trait_ty.clone(),
+                    ty_args,
+                }
+            }
             None => ImplKind::Inherent {
                 recv_ty: self.implementing_type.clone(),
             },
@@ -1473,6 +1478,11 @@ fn resolve_ty_with_scope(db: &Database, ty: &Ty, file_id: FileId, module_path: &
         Ty::Const(path) if path.module.is_empty() => {
             // Local reference - try to look up in file scope
             if let Some(item_name) = path.item_name() {
+                // Check if this is a primitive/builtin type - these should NOT be module-qualified
+                if Ty::is_builtin_name(item_name) {
+                    return ty.clone();
+                }
+
                 if let Some(target) = scope.get(item_name) {
                     if let Some(resolved_path) = path_for_target(target, db) {
                         return Ty::Const(resolved_path);

@@ -1312,7 +1312,8 @@ impl<'a> GenCtx<'a> {
             Ty::Func(params, _) => params.first(),
             _ => None,
         };
-        let recv_mode = self.recv_mode_for_base(tcx, &resolved.target);
+        let target = resolved.target().expect("call resolution missing target");
+        let recv_mode = self.recv_mode_for_base(tcx, target);
 
         let recv_val: lir::Value = lir::Variable::Local(recv_loc).into();
         let recv_var = if let Some(param_mono) = recv_param_mono {
@@ -1711,7 +1712,8 @@ impl<'a> GenCtx<'a> {
             _ => Vec::new(),
         };
 
-        let recv_mode = self.recv_mode_for_base(tcx, &resolved.target);
+        let target = resolved.target().expect("call resolution missing target");
+        let recv_mode = self.recv_mode_for_base(tcx, target);
 
         let recv_param_mono = param_monos.first();
 
@@ -1811,7 +1813,8 @@ impl<'a> GenCtx<'a> {
                     _ => Vec::new(),
                 };
 
-                let recv_mode = self.recv_mode_for_base(tcx, &resolved.target);
+                let target = resolved.target().expect("call resolution missing target");
+                let recv_mode = self.recv_mode_for_base(tcx, target);
                 let recv_param_mono = param_monos.first().cloned();
                 let recv_expr_scheme = self.ty_of(tcx, container_pat.id);
                 let recv_value =
@@ -3203,7 +3206,8 @@ impl LirGen<GenResult> for Node<Expr> {
                     _ => Vec::new(),
                 };
 
-                let recv_mode = ctx.recv_mode_for_base(tcx, &resolved.target);
+                let target = resolved.target().expect("call resolution missing target");
+                let recv_mode = ctx.recv_mode_for_base(tcx, target);
                 let call_args = ctx.build_call_args(
                     tcx,
                     true,

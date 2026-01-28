@@ -1320,7 +1320,9 @@ fn generate_constraints_for_expr(
                         //   Γ ⊢ container[index] = rhs ⇝ (unit,
                         //      Cc ∪ Ci ∪ Crhs ∪ { Index[Tc, Tel, Tidx], Trhs == Tel })
                         //
-                        let container_ty = ctx.binding_ty_or_fresh(*container);
+                        // Container is a NodeId - either a simple local reference
+                        // or a nested index expression (e.g., m[0] in m[0][1] = v).
+                        let container_ty = ctx.expr_ty_or_fresh(*container);
                         let index_ty = ctx.expr_ty_or_fresh(*index);
                         let elem_ty = ctx.fresh_meta();
                         ctx.expr_types.insert(*lhs_pattern, elem_ty.clone());
