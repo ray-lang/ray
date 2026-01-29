@@ -7,6 +7,15 @@ use crate::{
     type_param_id::TypeParamId,
 };
 
+/// The category of name being resolved.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NameKind {
+    /// A type name (in type annotations, struct fields, etc.)
+    Type,
+    /// A value name (function call, variable reference, struct literal, etc.)
+    Value,
+}
+
 /// The result of resolving a name reference in the AST.
 ///
 /// Each name usage in the source code resolves to one of these variants,
@@ -20,7 +29,7 @@ pub enum Resolution {
     /// A type parameter in scope
     TypeParam(TypeParamId),
     /// Name could not be resolved (error case)
-    Error,
+    Error { name: String, kind: NameKind },
 }
 
 /// Target of a definition reference.

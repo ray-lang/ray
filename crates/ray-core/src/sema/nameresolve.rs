@@ -7,7 +7,7 @@ use ray_shared::{
     local_binding::LocalBindingId,
     node_id::NodeId,
     pathlib::{ModulePath, Path},
-    resolution::{DefTarget, Resolution},
+    resolution::{DefTarget, NameKind, Resolution},
     span::{Sourced, parsed::Parsed},
     ty::{Ty, TyVar},
     type_param_id::TypeParamId,
@@ -568,12 +568,11 @@ pub fn collect_type_resolutions_from_scheme(
     }
 
     for (node_id, ty) in synthetic_ids.iter().zip(ty_refs.iter()) {
-        let resolution = if let Some(name) = extract_type_name(ty) {
-            resolve_type_name(&name, type_params, ctx)
-        } else {
-            Resolution::Error
-        };
-        ctx.resolutions.insert(*node_id, resolution);
+        // Only resolve named types, skip structural types (Func, Ref, etc.)
+        if let Some(name) = extract_type_name(ty) {
+            let resolution = resolve_type_name(&name, type_params, ctx);
+            ctx.resolutions.insert(*node_id, resolution);
+        }
     }
 }
 
@@ -617,7 +616,10 @@ fn resolve_type_name(
         }
     }
 
-    Resolution::Error
+    Resolution::Error {
+        name: name.to_string(),
+        kind: NameKind::Type,
+    }
 }
 
 /// Resolves all type references in a Parsed<Ty> using its synthetic IDs.
@@ -643,14 +645,11 @@ pub fn collect_type_resolutions(
     );
 
     for (node_id, ty) in synthetic_ids.iter().zip(ty_refs.iter()) {
-        // Extract the type name from the Ty and resolve it
-        let resolution = if let Some(name) = extract_type_name(ty) {
-            resolve_type_name(&name, type_params, ctx)
-        } else {
-            // Structural types (Func, Ref, etc.) don't need resolution themselves
-            Resolution::Error
-        };
-        ctx.resolutions.insert(*node_id, resolution);
+        // Only resolve named types, skip structural types (Func, Ref, etc.)
+        if let Some(name) = extract_type_name(ty) {
+            let resolution = resolve_type_name(&name, type_params, ctx);
+            ctx.resolutions.insert(*node_id, resolution);
+        }
     }
 }
 
@@ -1431,7 +1430,7 @@ mod tests {
         file_id::FileId,
         node_id::NodeId,
         pathlib::{FilePath, Path},
-        resolution::{DefTarget, Resolution},
+        resolution::{DefTarget, NameKind, Resolution},
         span::{Source, Span, parsed::Parsed},
         ty::{Ty, TyVar},
         type_param_id::TypeParamId,
@@ -1839,7 +1838,10 @@ mod tests {
 
         assert_eq!(
             ctx.resolutions.get(&node_id),
-            Some(&Resolution::Error),
+            Some(&Resolution::Error {
+                name: "Unknown".to_string(),
+                kind: NameKind::Type,
+            }),
             "Unknown type should resolve to Error"
         );
     }
@@ -2310,7 +2312,10 @@ mod tests {
         // Field type should resolve to Error
         assert_eq!(
             resolutions.get(&field_node_id),
-            Some(&Resolution::Error),
+            Some(&Resolution::Error {
+                name: "Unknown".to_string(),
+                kind: NameKind::Type,
+            }),
             "Unknown type should resolve to Error"
         );
     }

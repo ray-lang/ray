@@ -163,7 +163,7 @@ where
                             ty.clone()
                         }
                     }
-                    Some(Resolution::Local(_)) | Some(Resolution::Error) | None => {
+                    Some(Resolution::Local(_)) | Some(Resolution::Error { .. }) | None => {
                         // Keep original (error reported elsewhere or not resolvable)
                         ty.clone()
                     }

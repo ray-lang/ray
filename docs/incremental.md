@@ -4725,9 +4725,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 8: call_resolution query
 
-- [ ] Define `call_resolution(NodeId)` query
-- [ ] Return resolved callee, instantiated types, trait impl (if method)
-- [ ] **Validate**: Unit test for method call resolution
+- [x] Define `call_resolution(NodeId)` query
+- [x] Return resolved callee, instantiated types, trait impl (if method)
+- [x] **Validate**: Unit test for method call resolution
 
 ---
 
@@ -4754,7 +4754,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: file_diagnostics query
 
-- [ ] Define `file_diagnostics(FileId)` query:
+- [x] Define `file_diagnostics(FileId)` query:
   ```rust
   #[query]
   fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
@@ -4789,7 +4789,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       errors
   }
   ```
-- [ ] **Validate**: Unit test collecting all error types
+- [x] **Validate**: Unit test collecting all error types
 
 ##### Step 2: span_of query
 
@@ -4798,7 +4798,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
   #[query]
   fn span_of(db: &Database, node_id: NodeId) -> Option<Span> {
       let parse_result = parse(db, node_id.owner.file);
-      parse_result.source_map.span_of_node(node_id)
+      parse_result.source_map.get_by_id(node_id)
   }
   ```
 - [ ] **Validate**: Unit test looking up spans

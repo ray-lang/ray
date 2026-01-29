@@ -2,6 +2,7 @@ pub mod calls;
 pub mod closures;
 pub mod defs;
 pub mod deps;
+pub mod diagnostics;
 pub mod exports;
 pub mod imports;
 pub mod libraries;

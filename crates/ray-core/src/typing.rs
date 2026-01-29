@@ -825,7 +825,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::TypeParam(_) => {
                         todo!("FIXME: name resolved to type param reference")
                     }
-                    Resolution::Error => ctx.record_expr(node, ExprKind::Missing),
+                    Resolution::Error { .. } => ctx.record_expr(node, ExprKind::Missing),
                 }
             } else {
                 ctx.emit_error(node, "unresolved name reference".to_string());
@@ -866,7 +866,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::TypeParam(_) => {
                         todo!("FIXME: path resolved to type parameter reference")
                     }
-                    Resolution::Error => ctx.record_expr(node, ExprKind::Missing),
+                    Resolution::Error { .. } => ctx.record_expr(node, ExprKind::Missing),
                 }
             } else {
                 ctx.emit_error(node, "unresolved path reference".to_string());
