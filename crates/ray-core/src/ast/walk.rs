@@ -24,6 +24,8 @@ pub enum WalkScopeKind {
     Function,
     Block,
     Closure,
+    Impl,
+    Trait,
 }
 
 pub struct ModuleWalk<T> {
@@ -391,6 +393,8 @@ fn scope_kind<'a>(item: &WalkItem<'a>) -> Option<WalkScopeKind> {
         WalkItem::Decl(decl) => match &decl.value {
             Decl::Func(func) if func.body.is_some() => Some(WalkScopeKind::Function),
             Decl::FileMain(_) => Some(WalkScopeKind::FileMain),
+            Decl::Impl(_) => Some(WalkScopeKind::Impl),
+            Decl::Trait(_) => Some(WalkScopeKind::Trait),
             _ => None,
         },
         WalkItem::Func(func) if func.body.is_some() => Some(WalkScopeKind::Function),

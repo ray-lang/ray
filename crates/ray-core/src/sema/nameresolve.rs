@@ -32,6 +32,8 @@ pub struct ResolveContext<'a> {
     current_def: Option<DefId>,
     local_counter: u32,
     local_scopes: Vec<HashMap<String, LocalBindingId>>,
+    /// Stack of type parameter scopes (impl, trait, function can all introduce type params)
+    type_param_scopes: Vec<HashMap<String, TypeParamId>>,
     resolutions: HashMap<NodeId, Resolution>,
     /// NodeIds of FnSig decls that have been resolved by their parent (trait/extern)
     /// to avoid re-processing when walked as standalone items
@@ -51,6 +53,7 @@ impl<'a> ResolveContext<'a> {
             current_def: None,
             local_counter: 0,
             local_scopes: Vec::new(),
+            type_param_scopes: Vec::new(),
             resolutions: HashMap::new(),
             resolved_fnsigs: HashSet::new(),
         }
@@ -91,6 +94,16 @@ impl<'a> ResolveContext<'a> {
             self.bind_local(node_id, name);
         }
     }
+
+    /// Returns combined type parameters from all scopes (impl, trait, function).
+    /// Inner scopes shadow outer scopes.
+    fn type_params(&self) -> HashMap<String, TypeParamId> {
+        let mut combined = HashMap::new();
+        for scope in &self.type_param_scopes {
+            combined.extend(scope.clone());
+        }
+        combined
+    }
 }
 
 /// Resolve names in a file AST and return the resolution table.
@@ -124,11 +137,22 @@ pub fn resolve_names_in_file(
             WalkItem::EnterScope(WalkScopeKind::Closure | WalkScopeKind::Block) => {
                 ctx.local_scopes.push(HashMap::new());
             }
+            WalkItem::EnterScope(WalkScopeKind::Impl | WalkScopeKind::Trait) => {
+                // Type params are pushed when we see the Decl, not on EnterScope
+            }
             WalkItem::ExitScope(WalkScopeKind::FileMain) => {
                 // Don't pop FileMain's scope - its locals should remain visible
                 // to sibling declarations (functions, etc.) in the same file.
             }
-            WalkItem::ExitScope(_) => {
+            WalkItem::ExitScope(WalkScopeKind::Function) => {
+                ctx.local_scopes.pop();
+                ctx.type_param_scopes.pop();
+            }
+            WalkItem::ExitScope(WalkScopeKind::Impl)
+            | WalkItem::ExitScope(WalkScopeKind::Trait) => {
+                ctx.type_param_scopes.pop();
+            }
+            WalkItem::ExitScope(WalkScopeKind::Block | WalkScopeKind::Closure) => {
                 ctx.local_scopes.pop();
             }
             WalkItem::Decl(decl) => {
@@ -211,6 +235,25 @@ pub fn resolve_names_in_file(
                             }
                         }
                     }
+                    Expr::Cast(cast) => {
+                        // Resolve type references in cast expressions (e.g., `x as int`)
+                        let type_params = ctx.type_params();
+                        collect_type_resolutions(&cast.ty, &type_params, &mut ctx);
+                    }
+                    Expr::New(new_expr) => {
+                        // Resolve type references in new expressions (e.g., `new(Point, 10)`)
+                        let type_params = ctx.type_params();
+                        collect_type_resolutions(&new_expr.ty.value, &type_params, &mut ctx);
+                    }
+                    Expr::Type(parsed_ty_scheme) => {
+                        // Resolve type references in type expressions (e.g., `sizeof(int)`)
+                        let type_params = ctx.type_params();
+                        collect_type_resolutions_from_scheme(
+                            parsed_ty_scheme,
+                            &type_params,
+                            &mut ctx,
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -253,6 +296,11 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
 
+            // Push function's type params for expressions in the body
+            let ty_vars = extract_ty_vars_from_type_params(&func.sig.ty_params);
+            let scope = build_type_param_scope(decl.id.owner, &ty_vars);
+            ctx.type_param_scopes.push(scope);
+
             resolve_names_in_func_sig(decl.id.owner, &func.sig, ctx);
         }
         Decl::FnSig(sig) => {
@@ -263,6 +311,8 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             }
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
+            // FnSig has no body, so no type param scope needed for expressions.
+            // The signature's type refs are resolved in resolve_names_in_func_sig.
             resolve_names_in_func_sig(decl.id.owner, sig, ctx);
         }
         Decl::Struct(struct_decl) => {
@@ -270,10 +320,20 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             resolve_struct_type_refs(decl.id.owner, struct_decl, ctx);
         }
         Decl::Trait(trait_decl) => {
+            // Push trait's type params for method signatures
+            let ty_vars = trait_decl.ty.value().type_params();
+            let scope = build_type_param_scope(decl.id.owner, &ty_vars);
+            ctx.type_param_scopes.push(scope);
+
             // Resolve type references in trait definition
             resolve_trait_type_refs(decl.id.owner, trait_decl, ctx);
         }
         Decl::Impl(imp) => {
+            // Push impl's type params for method bodies
+            let ty_vars = imp.ty.value().type_params();
+            let scope = build_type_param_scope(decl.id.owner, &ty_vars);
+            ctx.type_param_scopes.push(scope);
+
             // Resolve type references in impl block
             resolve_impl_type_refs(decl.id.owner, imp, ctx);
         }
@@ -1441,9 +1501,9 @@ mod tests {
 
     use crate::{
         ast::{
-            Assign, Block, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, Extern, File,
-            FnParam, Func, FuncSig, Impl, Literal, Name, Node, Pattern as AstPattern, Sequence,
-            Struct, Trait, TypeParams,
+            Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, Extern,
+            File, FnParam, Func, FuncSig, Impl, Literal, Name, New, Node, Pattern as AstPattern,
+            ScopedAccess, Sequence, Struct, Trait, TypeParams, token::{Token, TokenKind},
         },
         sema::{
             build_type_param_scope, collect_type_resolutions, nameresolve::ResolveContext,
@@ -3576,6 +3636,450 @@ mod tests {
             resolutions.get(&a_node_id),
             Some(&Resolution::TypeParam(expected_type_param_id)),
             "Type parameter 'a should resolve to TypeParam (not Error from double-resolution)"
+        );
+    }
+
+    // =========================================================================
+    // Tests for expression type resolution (Cast, New, Type)
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_cast_type() {
+        // fn f() { 42 as Point }  where Point is a struct export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create the type in the cast: Point
+        let ty = Ty::con("Point");
+        let type_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![type_node_id]);
+
+        // Create cast expression: x as Point
+        let lhs = Box::new(Node::new(Expr::Name(Name::new("x"))));
+        let cast_expr = Node::new(Expr::Cast(Cast {
+            lhs,
+            ty: parsed_ty,
+            as_span: Span::default(),
+        }));
+
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![cast_expr],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+
+        // Point is exported from the module
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Cast type should resolve to Point struct
+        assert!(
+            resolutions.contains_key(&type_node_id),
+            "Cast type should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&type_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Cast type should resolve to Point struct"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_cast_type_with_type_param() {
+        // fn f['a]() { 42 as 'a }  where 'a is a type parameter
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create type parameter 'a for the function
+        let ty_param_a = Ty::var("'a");
+        let mut parsed_ty_param = Parsed::new(ty_param_a, Source::default());
+        parsed_ty_param.set_synthetic_ids(vec![NodeId::new()]);
+
+        // Create the type in the cast: 'a
+        let ty = Ty::var("'a");
+        let type_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![type_node_id]);
+
+        // Create cast expression: x as 'a
+        let lhs = Box::new(Node::new(Expr::Name(Name::new("x"))));
+        let cast_expr = Node::new(Expr::Cast(Cast {
+            lhs,
+            ty: parsed_ty,
+            as_span: Span::default(),
+        }));
+
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![cast_expr],
+        }));
+        let mut func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        func.sig.ty_params = Some(TypeParams {
+            tys: vec![parsed_ty_param],
+            lb_span: Span::default(),
+            rb_span: Span::default(),
+        });
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Cast type should resolve to type parameter
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert!(
+            resolutions.contains_key(&type_node_id),
+            "Cast type should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&type_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Cast type 'a should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_new_type() {
+        // fn f() { new(Point, 10) }  where Point is a struct export
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create the type in new: Point
+        let ty = Ty::con("Point");
+        let type_node_id = NodeId::new();
+        let mut parsed_ty = Parsed::new(ty, Source::default());
+        parsed_ty.set_synthetic_ids(vec![type_node_id]);
+
+        // Create new expression: new(Point, n)
+        let count = Some(Box::new(Node::new(Expr::Name(Name::new("n")))));
+        let new_expr = Node::new(Expr::New(New {
+            ty: Node::new(parsed_ty),
+            count,
+            new_span: Span::default(),
+            paren_span: Span::default(),
+        }));
+
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![new_expr],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+
+        // Point is exported from the module
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // New type should resolve to Point struct
+        assert!(
+            resolutions.contains_key(&type_node_id),
+            "New type should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&type_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "New type should resolve to Point struct"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_type_expression() {
+        // fn f() { sizeof(Point) }  where Point is a struct export (Type expression)
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create the type expression: Point (as TyScheme)
+        let ty = Ty::con("Point");
+        let type_node_id = NodeId::new();
+        let mut parsed_ty_scheme = Parsed::new(TyScheme::from(ty), Source::default());
+        parsed_ty_scheme.set_synthetic_ids(vec![type_node_id]);
+
+        // Create type expression: sizeof(Point) represented as Expr::Type
+        let type_expr = Node::new(Expr::Type(parsed_ty_scheme));
+
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![type_expr],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+
+        // Point is exported from the module
+        let point_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Type expression should resolve to Point struct
+        assert!(
+            resolutions.contains_key(&type_node_id),
+            "Type expression should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&type_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(point_def_id))),
+            "Type expression should resolve to Point struct"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_cast_in_impl_method_with_impl_type_param() {
+        // impl object Container['a] { fn cast_it(self) { x as 'a } }
+        // Verifies that impl-level type params are in scope for method bodies
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create the cast type: 'a (referencing impl's type param)
+        let cast_ty = Ty::var("'a");
+        let cast_type_node_id = NodeId::new();
+        let mut cast_parsed_ty = Parsed::new(cast_ty, Source::default());
+        cast_parsed_ty.set_synthetic_ids(vec![cast_type_node_id]);
+
+        // Create cast expression: x as 'a
+        let lhs = Box::new(Node::new(Expr::Name(Name::new("x"))));
+        let cast_expr = Node::new(Expr::Cast(Cast {
+            lhs,
+            ty: cast_parsed_ty,
+            as_span: Span::default(),
+        }));
+
+        // Create method with body containing cast
+        let method_body = Node::new(Expr::Block(Block {
+            stmts: vec![cast_expr],
+        }));
+        let method = Func::new(Node::new(Path::from("cast_it")), vec![], method_body);
+        let method_decl = Node::new(Decl::Func(method));
+
+        // Create impl type: Container['a]
+        let impl_ty = Ty::proj("Container", vec![Ty::var("'a")]);
+        let container_node_id = NodeId::new();
+        let a_impl_node_id = NodeId::new();
+        let mut impl_parsed_ty = Parsed::new(impl_ty, Source::default());
+        impl_parsed_ty.set_synthetic_ids(vec![container_node_id, a_impl_node_id]);
+
+        // Create the impl block
+        let imp = Impl {
+            ty: impl_parsed_ty,
+            qualifiers: vec![],
+            externs: None,
+            funcs: Some(vec![method_decl]),
+            consts: None,
+            is_object: true,
+        };
+        let impl_decl = Node::new(Decl::Impl(imp));
+
+        let file = test_file(vec![impl_decl], vec![]);
+        let imports = HashMap::new();
+
+        // Container is exported
+        let container_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert(
+            "Container".to_string(),
+            DefTarget::Workspace(container_def_id),
+        );
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Cast type 'a in method body should resolve to impl's type parameter
+        // The owner is the impl's def_id (from impl_decl.id.owner)
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert!(
+            resolutions.contains_key(&cast_type_node_id),
+            "Cast type in impl method should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&cast_type_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Cast type 'a should resolve to impl's TypeParam"
+        );
+    }
+
+    // =========================================================================
+    // Tests for ScopedAccess type resolution
+    // =========================================================================
+
+    #[test]
+    fn resolve_names_in_file_resolves_scoped_access_lhs_type() {
+        // fn f() { Math[int]::double }
+        // The LHS type Math[int] should be resolved: Math -> export, int -> builtin
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create the LHS type: Math[int]
+        let lhs_ty = Ty::proj("Math", vec![Ty::con("int")]);
+        let math_node_id = NodeId::new();
+        let int_node_id = NodeId::new();
+        let mut parsed_lhs_ty = Parsed::new(TyScheme::from(lhs_ty), Source::default());
+        parsed_lhs_ty.set_synthetic_ids(vec![math_node_id, int_node_id]);
+
+        // Create the LHS expression: Expr::Type(Math[int])
+        let lhs_expr = Node::new(Expr::Type(parsed_lhs_ty));
+
+        // Create the RHS name: double
+        let rhs_name = Node::new(Name::new("double"));
+
+        // Create ScopedAccess: Math[int]::double
+        let scoped_access = ScopedAccess {
+            lhs: Box::new(lhs_expr),
+            rhs: rhs_name,
+            sep: Token { kind: TokenKind::DoubleColon, span: Span::default() },
+        };
+        let scoped_access_expr = Node::new(Expr::ScopedAccess(scoped_access));
+
+        // Create function containing the scoped access
+        let func_body = Node::new(Expr::Block(Block {
+            stmts: vec![scoped_access_expr],
+        }));
+        let func = Func::new(Node::new(Path::from("test::f")), vec![], func_body);
+        let decl = Node::new(Decl::Func(func));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+
+        // Math is exported, int is also exported (simulating builtin)
+        let math_def_id = DefId::new(FileId(0), 1);
+        let int_def_id = DefId::new(FileId(0), 2);
+        let mut exports = HashMap::new();
+        exports.insert("Math".to_string(), DefTarget::Workspace(math_def_id));
+        exports.insert("int".to_string(), DefTarget::Workspace(int_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Math should be resolved
+        assert!(
+            resolutions.contains_key(&math_node_id),
+            "Math in ScopedAccess LHS should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&math_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(math_def_id))),
+            "Math should resolve to export"
+        );
+
+        // int should be resolved
+        assert!(
+            resolutions.contains_key(&int_node_id),
+            "int in ScopedAccess LHS should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&int_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(int_def_id))),
+            "int should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_scoped_access_lhs_with_type_param() {
+        // impl Container['a] { fn f() { Container['a]::helper } }
+        // The LHS type Container['a] should be resolved: Container -> export, 'a -> TypeParam
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Create the LHS type: Container['a]
+        let lhs_ty = Ty::proj("Container", vec![Ty::var("'a")]);
+        let container_node_id = NodeId::new();
+        let a_node_id = NodeId::new();
+        let mut parsed_lhs_ty = Parsed::new(TyScheme::from(lhs_ty), Source::default());
+        parsed_lhs_ty.set_synthetic_ids(vec![container_node_id, a_node_id]);
+
+        // Create the LHS expression: Expr::Type(Container['a])
+        let lhs_expr = Node::new(Expr::Type(parsed_lhs_ty));
+
+        // Create the RHS name: helper
+        let rhs_name = Node::new(Name::new("helper"));
+
+        // Create ScopedAccess: Container['a]::helper
+        let scoped_access = ScopedAccess {
+            lhs: Box::new(lhs_expr),
+            rhs: rhs_name,
+            sep: Token { kind: TokenKind::DoubleColon, span: Span::default() },
+        };
+        let scoped_access_expr = Node::new(Expr::ScopedAccess(scoped_access));
+
+        // Create method containing the scoped access
+        let method_body = Node::new(Expr::Block(Block {
+            stmts: vec![scoped_access_expr],
+        }));
+        let method = Func::new(Node::new(Path::from("test::Container::f")), vec![], method_body);
+        let method_decl = Node::new(Decl::Func(method));
+
+        // Create impl type: Container['a]
+        let impl_ty = Ty::proj("Container", vec![Ty::var("'a")]);
+        let mut impl_parsed_ty = Parsed::new(impl_ty, Source::default());
+        // Need synthetic IDs for the impl type (Container and 'a)
+        impl_parsed_ty.set_synthetic_ids(vec![NodeId::new(), NodeId::new()]);
+
+        // Create impl declaration
+        let imp = Impl {
+            ty: impl_parsed_ty,
+            qualifiers: vec![],
+            externs: None,
+            funcs: Some(vec![method_decl]),
+            consts: None,
+            is_object: true,
+        };
+        let impl_decl = Node::new(Decl::Impl(imp));
+
+        let file = test_file(vec![impl_decl], vec![]);
+        let imports = HashMap::new();
+
+        // Container is exported
+        let container_def_id = DefId::new(FileId(0), 1);
+        let mut exports = HashMap::new();
+        exports.insert(
+            "Container".to_string(),
+            DefTarget::Workspace(container_def_id),
+        );
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // Container should be resolved
+        assert!(
+            resolutions.contains_key(&container_node_id),
+            "Container in ScopedAccess LHS should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&container_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(container_def_id))),
+            "Container should resolve to export"
+        );
+
+        // 'a should be resolved to TypeParam from impl
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert!(
+            resolutions.contains_key(&a_node_id),
+            "'a in ScopedAccess LHS should have resolution"
+        );
+        assert_eq!(
+            resolutions.get(&a_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "'a should resolve to impl's TypeParam"
         );
     }
 }

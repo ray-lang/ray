@@ -754,16 +754,9 @@ fn solve_resolve_call(
 
     log::debug!("[solve_resolve_call] {}", call);
     match &call.kind {
-        CallKind::Scoped {
-            def_id,
-            receiver_subst,
-        } => {
-            // Scoped calls already have a resolved def; do not re-resolve by name.
-            if !ctx.binding_schemes.contains_key(&(*def_id).into()) {
-                log::debug!("[solve_resolve_call] cannot find def {:?}", def_id);
-                return SolveOutcome::Unsolved;
-            };
-
+        CallKind::Scoped { receiver_subst } => {
+            // Scoped calls resolve the method by name on the subject type.
+            // Unlike Instance calls, the subject type is explicit (T in T::method).
             let mut subject_ty = call.subject_ty.clone();
             subject_ty.apply_subst(subst);
             let maybe_subject_fqn = subject_fqn(&subject_ty);

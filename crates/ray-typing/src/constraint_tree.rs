@@ -731,18 +731,14 @@ fn generate_constraints_for_expr(
                 // the definition's scheme and equating with the expression type.
                 node.wanteds.push(Constraint::inst(*def_id, expr_ty, info));
             }
-            ExprKind::ScopedAccess { def_id, lhs_ty, .. } => {
-                // Scoped access `T::member`: `T[...]` instantiates the *type*
-                // on the left-hand side, not the member binding itself.
+            ExprKind::ScopedAccess {
+                member_name, lhs_ty, ..
+            } => {
+                // Non-call scoped access `T::member` (e.g., taking a method as a value).
+                // This is handled by generating a ResolveCall constraint that resolves
+                // the member by name on the LHS type, then equates the result type.
                 //
-                // However, many associated members currently have schemes
-                // whose qualifiers mention impl-scoped schema variables.
-                //
-                // Inside an annotated binding body, we already have a
-                // schema->skolem substitution from skolemization. When the LHS
-                // type is parameterized by those same schema vars, we can
-                // derive the receiver substitution simply by restricting that
-                // skolem substitution to the vars that appear in `lhs_ty`.
+                // Compute receiver substitution for impl-scoped schema variables.
                 let receiver_subst = skolem_subst.and_then(|skolem_subst| {
                     let mut lhs_vars = HashSet::new();
                     lhs_ty.free_ty_vars(&mut lhs_vars);
@@ -757,16 +753,18 @@ fn generate_constraints_for_expr(
                     if subst.is_empty() { None } else { Some(subst) }
                 });
 
-                if let Some(receiver_subst) = receiver_subst {
-                    node.wanteds.push(Constraint::inst_with_receiver_subst(
-                        *def_id,
-                        expr_ty,
+                // For non-call scoped access, we want the method's function type.
+                // We emit a ResolveCall constraint with the expression's NodeId as call_site.
+                node.wanteds.push(Constraint {
+                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_scoped(
+                        lhs_ty.clone(),
+                        expr_ty, // method's function type
+                        member_name.clone(),
                         receiver_subst,
-                        info,
-                    ));
-                } else {
-                    node.wanteds.push(Constraint::inst(*def_id, expr_ty, info));
-                }
+                        expr, // use expr NodeId as call_site for resolution tracking
+                    )),
+                    info,
+                });
             }
             ExprKind::FieldAccess { recv, field } => {
                 // Field access `e.field` generates a nominal HasField
@@ -1772,9 +1770,9 @@ fn generate_constraints_for_expr(
                 }
 
                 // Also treat `T::method(args...)` / `T[...]::method(args...)` as a deferred
-                // member call. The callee is lowered as `ScopedAccess { def_id, lhs_ty }`.
+                // member call. The callee is lowered as `ScopedAccess { member_name, lhs_ty }`.
+                // The method is resolved by name during constraint solving.
                 if let Some(ExprKind::ScopedAccess {
-                    def_id,
                     member_name,
                     lhs_ty,
                 }) = input.expr_kind(*callee).cloned()
@@ -1812,7 +1810,6 @@ fn generate_constraints_for_expr(
                     node.wanteds.push(Constraint {
                         kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_scoped(
                             lhs_ty,
-                            def_id,
                             expected_fn_ty,
                             member_name,
                             receiver_subst,
@@ -1822,13 +1819,13 @@ fn generate_constraints_for_expr(
                     });
 
                     // Recurse into explicit args, but do not recurse into the callee
-                    // `ScopedAccess` node (which would instantiate the binding scheme).
+                    // `ScopedAccess` node (which would generate another ResolveCall).
                     for child_expr in args.iter().copied() {
                         generate_constraints_for_child(
                             input,
                             ctx,
                             node,
-                            def_id,
+                            def_id, // Use outer function's def_id, not scoped access target
                             skolem_subst,
                             next_id,
                             child_expr,

@@ -94,6 +94,94 @@ impl<'a> TyLowerCtx<'a> {
         }
         self.errors.push(TypeError::message(msg, info));
     }
+
+    /// Resolve a parsed type scheme to a `Ty` with fully qualified paths.
+    ///
+    /// Uses the resolutions map and the env's `def_item_path` method to convert
+    /// unqualified type paths (e.g., `Math`) to their fully qualified form
+    /// (e.g., `test::Math`).
+    fn resolve_type_scheme(
+        &self,
+        parsed: &ray_shared::span::parsed::Parsed<ray_typing::types::TyScheme>,
+    ) -> Ty {
+        let synthetic_ids = parsed.synthetic_ids();
+        let ty = parsed.mono();
+        let mut id_iter = synthetic_ids.iter();
+        self.resolve_ty(ty, &mut id_iter)
+    }
+
+    /// Recursively resolve a type, consuming synthetic IDs in flatten order.
+    fn resolve_ty<'b>(
+        &self,
+        ty: &Ty,
+        id_iter: &mut impl Iterator<Item = &'b NodeId>,
+    ) -> Ty {
+        match ty {
+            Ty::Const(original_path) => {
+                if let Some(node_id) = id_iter.next() {
+                    if let Some(Resolution::Def(target)) = self.resolutions.get(node_id) {
+                        if let Some(resolved_path) = self.env.def_item_path(target) {
+                            return Ty::Const(resolved_path);
+                        }
+                    }
+                }
+                ty.clone()
+            }
+            Ty::Var(_) => {
+                // Consume the synthetic ID but don't transform vars
+                let _ = id_iter.next();
+                ty.clone()
+            }
+            Ty::Proj(original_path, args) => {
+                // First synthetic ID is for the base type
+                let resolved_path = if let Some(node_id) = id_iter.next() {
+                    if let Some(Resolution::Def(target)) = self.resolutions.get(node_id) {
+                        self.env.def_item_path(target).unwrap_or_else(|| original_path.clone())
+                    } else {
+                        original_path.clone()
+                    }
+                } else {
+                    original_path.clone()
+                };
+
+                // Then transform each type argument
+                let resolved_args: Vec<Ty> = args
+                    .iter()
+                    .map(|arg| self.resolve_ty(arg, id_iter))
+                    .collect();
+
+                Ty::Proj(resolved_path, resolved_args)
+            }
+            Ty::Func(params, ret) => {
+                let resolved_params: Vec<Ty> = params
+                    .iter()
+                    .map(|p| self.resolve_ty(p, id_iter))
+                    .collect();
+                let resolved_ret = self.resolve_ty(ret, id_iter);
+                Ty::Func(resolved_params, Box::new(resolved_ret))
+            }
+            Ty::Tuple(elems) => {
+                let resolved_elems: Vec<Ty> = elems
+                    .iter()
+                    .map(|e| self.resolve_ty(e, id_iter))
+                    .collect();
+                Ty::Tuple(resolved_elems)
+            }
+            Ty::Ref(inner) => {
+                let resolved_inner = self.resolve_ty(inner, id_iter);
+                Ty::Ref(Box::new(resolved_inner))
+            }
+            Ty::RawPtr(inner) => {
+                let resolved_inner = self.resolve_ty(inner, id_iter);
+                Ty::RawPtr(Box::new(resolved_inner))
+            }
+            Ty::Array(inner, size) => {
+                let resolved_inner = self.resolve_ty(inner, id_iter);
+                Ty::Array(Box::new(resolved_inner), *size)
+            }
+            Ty::Never | Ty::Any => ty.clone(),
+        }
+    }
 }
 
 /// Collect DefIds from module declarations that produce value bindings.
@@ -936,9 +1024,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             ctx.record_expr(node, ExprKind::Set { items })
         }
         Expr::ScopedAccess(scoped_access) => {
-            // For now we support `type[T]::name` style access only when the LHS is
-            // an explicit type expression (e.g. `dict['k, 'v]::with_capacity`),
-            // lowering it to a fully-qualified value path `T::name`.
+            // Support `T::member` style access where LHS is an explicit type expression
+            // (e.g. `dict['k, 'v]::with_capacity`). The member is resolved by name
+            // during constraint solving, not during lowering.
             if let Expr::Type(ty) = &scoped_access.lhs.value {
                 let member_name = scoped_access
                     .rhs
@@ -947,29 +1035,19 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     .name()
                     .unwrap_or_else(|| scoped_access.rhs.value.to_string());
 
-                // Use the resolutions table to find the target definition
-                if let Some(resolution) = ctx.resolutions.get(&node.id) {
-                    match resolution {
-                        Resolution::Def(DefTarget::Workspace(def_id)) => ctx.record_expr(
-                            node,
-                            ExprKind::ScopedAccess {
-                                def_id: *def_id,
-                                member_name,
-                                lhs_ty: ty.value().mono().clone(),
-                            },
-                        ),
-                        _ => {
-                            ctx.emit_error(
-                                node,
-                                "scoped access must resolve to a definition".to_string(),
-                            );
-                            ctx.record_expr(node, ExprKind::Missing)
-                        }
-                    }
-                } else {
-                    ctx.emit_error(node, "could not resolve scoped access".to_string());
-                    ctx.record_expr(node, ExprKind::Missing)
-                }
+                // Resolve the type to get fully qualified paths (e.g., Math -> test::Math).
+                // This is needed for impl/trait method lookup during constraint solving.
+                let lhs_ty = ctx.resolve_type_scheme(ty);
+
+                // Record the scoped access with the resolved type info. Method resolution
+                // happens during constraint solving via ResolveCall constraints.
+                ctx.record_expr(
+                    node,
+                    ExprKind::ScopedAccess {
+                        member_name,
+                        lhs_ty,
+                    },
+                )
             } else {
                 ctx.emit_error(
                     node,

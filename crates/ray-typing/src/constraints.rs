@@ -138,8 +138,11 @@ pub enum CallKind {
     /// `recv.method(args...)`
     Instance,
     /// `T::method(args...)` or `T[...]::method(args...)`
+    ///
+    /// Unlike Instance, the method is resolved by name on the explicit subject
+    /// type rather than an inferred receiver type. The solver looks up the
+    /// method the same way as Instance calls.
     Scoped {
-        def_id: DefId,
         receiver_subst: Option<Subst>,
     },
 }
@@ -183,7 +186,6 @@ impl ResolveCallConstraint {
 
     pub fn new_scoped(
         subject_ty: Ty,
-        def_id: DefId,
         expected_fn_ty: Ty,
         method_name: impl Into<String>,
         receiver_subst: Option<Subst>,
@@ -191,10 +193,7 @@ impl ResolveCallConstraint {
     ) -> Self {
         let method_name = method_name.into();
         ResolveCallConstraint {
-            kind: CallKind::Scoped {
-                def_id,
-                receiver_subst,
-            },
+            kind: CallKind::Scoped { receiver_subst },
             subject_ty,
             expected_fn_ty,
             method_name,
@@ -586,7 +585,13 @@ impl std::fmt::Display for ResolveCallConstraint {
             CallKind::Instance => {
                 format!("Instance")
             }
-            CallKind::Scoped { def_id, .. } => format!("Scoped {{ def_id: {:?} }}", def_id),
+            CallKind::Scoped { receiver_subst } => {
+                if receiver_subst.is_some() {
+                    "Scoped { with_receiver_subst }".to_string()
+                } else {
+                    "Scoped".to_string()
+                }
+            }
         };
         write!(
             f,

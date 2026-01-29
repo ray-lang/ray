@@ -1427,13 +1427,11 @@ fn check_residuals_and_emit_errors(
                     errors.push(TypeError::message(msg, info));
                     continue;
                 }
-                CallKind::Scoped { def_id, .. } => {
-                    // For error messages, use the def_id's string representation.
-                    // In the incremental pipeline, path lookup happens elsewhere.
-                    let binding_name = def_id.to_string();
+                CallKind::Scoped { .. } => {
+                    // For scoped calls, use the method name and subject type for error messages.
                     let msg = format!(
-                        "cannot resolve scoped call: `{}` on `{}` with signature: ({}) -> {}",
-                        binding_name, resolve_call.subject_ty, args, ret_ty
+                        "cannot resolve scoped call: `{}::{}` with signature: ({}) -> {}",
+                        resolve_call.subject_ty, resolve_call.method_name, args, ret_ty
                     );
                     errors.push(TypeError::message(msg, info));
                     continue;

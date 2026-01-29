@@ -565,7 +565,6 @@ fn main() -> int {
     }
 
     #[test]
-    #[ignore = "typing.rs ScopedAccess lowering looks in ctx.resolutions instead of doing type-based member lookup"]
     fn symbol_targets_resolves_scoped_access_call() {
         let source = r#"
 struct Math['t] {}

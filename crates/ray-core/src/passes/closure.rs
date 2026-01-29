@@ -257,7 +257,11 @@ impl<L: BindingLookup> ClosureCtx<L> {
             WalkScopeKind::Function => {
                 self.function_stack.pop();
             }
-            WalkScopeKind::Block | WalkScopeKind::Module | WalkScopeKind::FileMain => {}
+            WalkScopeKind::Block
+            | WalkScopeKind::Module
+            | WalkScopeKind::FileMain
+            | WalkScopeKind::Impl
+            | WalkScopeKind::Trait => {}
         }
         self.scope_stack.pop();
     }

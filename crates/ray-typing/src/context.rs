@@ -44,9 +44,9 @@ pub enum ExprKind {
     /// A scoped access `T::member`.
     ///
     /// Note: any type arguments in `T[...]::member` belong to the left-hand
-    /// side type `T[...]`, not to the member itself.
+    /// side type `T[...]`, not to the member itself. The member is resolved
+    /// during constraint solving, not during lowering.
     ScopedAccess {
-        def_id: DefId,
         member_name: String,
         lhs_ty: Ty,
     },

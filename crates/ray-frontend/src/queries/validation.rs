@@ -365,7 +365,7 @@ fn validate_mutability(
                 | WalkScopeKind::FileMain => {
                     ctx.push_scope();
                 }
-                WalkScopeKind::Module => {}
+                WalkScopeKind::Module | WalkScopeKind::Impl | WalkScopeKind::Trait => {}
             },
             WalkItem::ExitScope(kind) => match kind {
                 WalkScopeKind::Block
@@ -374,7 +374,7 @@ fn validate_mutability(
                 | WalkScopeKind::FileMain => {
                     ctx.pop_scope();
                 }
-                WalkScopeKind::Module => {}
+                WalkScopeKind::Module | WalkScopeKind::Impl | WalkScopeKind::Trait => {}
             },
             WalkItem::Decl(decl_node) => {
                 // Register parameters for the outer function declaration
