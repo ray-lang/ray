@@ -1913,18 +1913,22 @@ These queries take `DefTarget` to handle both workspace and library definitions 
 
 - `symbol_targets(NodeId)` → `Vec<SymbolTarget>`
 
-  **Dependencies**: `name_resolutions(node_id.owner.file)`, `call_resolution(NodeId)`, `parse(target_def.file)` for each resolved target DefId
+  **Dependencies**: `definition_identities(node_id.owner.file)`, `name_resolutions(node_id.owner.file)`, `call_site_index(node_id.owner.file)`, `call_resolution(NodeId)`
 
-  **Semantics**: For a NodeId (typically a name reference), returns go-to-definition targets. Multiple targets occur when both trait definition and impl are relevant (e.g., clicking on a method call might show both the trait method signature and the impl).
+  **Semantics**: For a NodeId, returns the resolved symbol identity for the node. If the node is a definition site, the role is `Definition`; otherwise the role is `Reference`. Multiple targets occur when both trait definition and impl are relevant (e.g., clicking on a method call might show both the trait method signature and the impl).
 
   **Error handling**: Returns empty vec if the NodeId has no resolvable targets.
 
   **Definitions**:
   ```rust
   struct SymbolTarget {
-      pub path: ItemPath,
-      pub location: SourceLocation,  // Handles both workspace and library targets
+      pub identity: SymbolIdentity,
       pub role: SymbolRole,
+  }
+
+  enum SymbolIdentity {
+      Def(DefTarget),
+      Local(LocalBindingId),
   }
 
   enum SymbolRole {
@@ -1933,7 +1937,19 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   }
   ```
 
-  Note: `SourceLocation` is defined in `DefinitionRecord` and handles both workspace (`FileId + Span`) and library (`FilePath + Span`) targets.
+  Note: For definition targets, `definition_record(DefTarget)` provides the source location when needed (go-to-definition, hover).
+
+- `definition_identities(FileId)` → `HashMap<NodeId, SymbolIdentity>`
+
+  **Dependencies**: `parse(FileId)`, `name_resolutions(FileId)`
+
+  **Semantics**: Returns definition-site NodeIds and their identities (def names, binding declarations, parameters, and pattern bindings). Used to determine whether a node represents a definition vs reference.
+
+- `call_site_index(FileId)` → `HashMap<NodeId, NodeId>`
+
+  **Dependencies**: `parse(FileId)`
+
+  **Semantics**: Index mapping callee-name NodeIds to their call expression NodeId, used to resolve method calls for `symbol_targets`.
 
 - `def_name(DefTarget)` → `String`
 
@@ -4818,20 +4834,59 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 4: symbol_targets query
 
-- [ ] Define `symbol_targets(NodeId)` query (for go-to-definition):
+- [x] Define `symbol_targets(NodeId)` query (for symbol identity / go-to-definition):
   ```rust
   #[query]
   fn symbol_targets(db: &Database, node_id: NodeId) -> Vec<SymbolTarget> {
-      let resolutions = name_resolutions(db, node_id.owner.file);
-      match resolutions.get(&node_id) {
-          Some(Resolution::Def(target)) => vec![SymbolTarget::Def(*target)],
-          Some(Resolution::Local(local_id)) => vec![SymbolTarget::Local(*local_id)],
-          _ => vec![],
+      let file_id = node_id.owner.file;
+      let defs = definition_identities(db, file_id);
+      if let Some(identity) = defs.get(&node_id) {
+          return vec![SymbolTarget { identity: identity.clone(), role: SymbolRole::Definition }];
       }
+
+      let resolutions = name_resolutions(db, file_id);
+      if let Some(resolution) = resolutions.get(&node_id) {
+          return match resolution {
+              Resolution::Def(target) => vec![SymbolTarget {
+                  identity: SymbolIdentity::Def(target.clone()),
+                  role: SymbolRole::Reference,
+              }],
+              Resolution::Local(local_id) => vec![SymbolTarget {
+                  identity: SymbolIdentity::Local(*local_id),
+                  role: SymbolRole::Reference,
+              }],
+              _ => vec![],
+          };
+      }
+
+      let call_sites = call_site_index(db, file_id);
+      let Some(call_id) = call_sites.get(&node_id).copied() else {
+          return vec![];
+      };
+
+      let Some(resolution) = call_resolution(db, call_id) else {
+          return vec![];
+      };
+
+      // Include trait + impl targets if available
+      let mut targets = Vec::new();
+      if let Some(trait_target) = resolution.trait_target {
+          targets.push(SymbolTarget {
+              identity: SymbolIdentity::Def(trait_target),
+              role: SymbolRole::Reference,
+          });
+      }
+      if let Some(impl_target) = resolution.impl_target {
+          targets.push(SymbolTarget {
+              identity: SymbolIdentity::Def(impl_target),
+              role: SymbolRole::Reference,
+          });
+      }
+      targets
   }
   ```
-- [ ] Handle method calls (resolve to impl method)
-- [ ] **Validate**: Unit test for various symbol types
+- [x] Handle method calls (resolve to impl method)
+- [x] **Validate**: Unit test for various symbol types
 
 ---
 

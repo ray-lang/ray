@@ -10,6 +10,7 @@ pub mod locations;
 pub mod operators;
 pub mod parse;
 pub mod resolve;
+pub mod symbols;
 pub mod transform;
 pub mod typecheck;
 pub mod types;

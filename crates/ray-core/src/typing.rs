@@ -1216,11 +1216,8 @@ mod tests {
         let mut srcmap = SourceMap::new();
         srcmap.set_src(&func_body_expr, make_test_source());
 
-        let env = GlobalEnv::new();
-        let mut tcx = TyCtx::new(env);
         let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
         let typecheck_env = MockTypecheckEnv::new();
-        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
         let def_ids = collect_def_ids(&module);
         let def_bindings = build_binding_graph(&def_ids, &resolutions);
         let input = build_typecheck_input(

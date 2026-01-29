@@ -12,6 +12,7 @@ pub mod optlevel;
 pub mod pathlib;
 pub mod resolution;
 pub mod span;
+pub mod symbol;
 pub mod ty;
 pub mod type_param_id;
 pub mod utils;
