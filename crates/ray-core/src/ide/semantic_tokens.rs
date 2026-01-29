@@ -138,7 +138,9 @@ impl<'a> SemanticTokenCollector<'a> {
 
     fn visit_import(&mut self, import: &Import) {
         match &import.kind {
-            ImportKind::Path(path) => self.emit_path_node(path, SemanticTokenKind::Namespace, &[]),
+            ImportKind::Path(path) | ImportKind::Glob(path) => {
+                self.emit_path_node(path, SemanticTokenKind::Namespace, &[])
+            }
             ImportKind::Names(path, names) => {
                 self.emit_path_node(path, SemanticTokenKind::Namespace, &[]);
                 for name in names {

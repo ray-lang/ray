@@ -14,7 +14,7 @@ use ray_shared::{
 use crate::{
     queries::{
         exports::{ExportedItem, file_exports, module_def_index},
-        imports::resolved_imports,
+        imports::{ImportNames, resolved_imports},
         libraries::LoadedLibraries,
         parse::parse_file,
         workspace::WorkspaceSnapshot,
@@ -47,8 +47,8 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
     let mut imports_map: HashMap<String, ModulePath> = HashMap::new();
     for (alias, import_result) in &resolved {
         if let Ok(resolved_import) = import_result {
-            if resolved_import.names.is_none() {
-                // Plain import: `import utils` enables `utils::foo` (qualified access only)
+            if matches!(resolved_import.names, ImportNames::Namespace) {
+                // Namespace import: `import utils` enables `utils::foo` (qualified access only)
                 imports_map.insert(alias.clone(), resolved_import.module_path.clone());
             }
         }
@@ -69,7 +69,12 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
         }
     };
 
-    resolve_names_in_file(&parse_result.ast, &imports_map, &combined_exports, import_exports)
+    resolve_names_in_file(
+        &parse_result.ast,
+        &imports_map,
+        &combined_exports,
+        import_exports,
+    )
 }
 
 /// The top-level scope for a file: names that are visible without qualification.
@@ -103,25 +108,37 @@ pub fn file_scope(db: &Database, file_id: FileId) -> HashMap<String, DefTarget> 
         combined_exports.entry(sibling_name).or_insert(target);
     }
 
-    // Add selective imports
+    // Add selective and glob imports
     for (_alias, import_result) in &resolved {
         if let Ok(resolved_import) = import_result {
-            if let Some(names) = &resolved_import.names {
-                let module_path = &resolved_import.module_path;
+            let module_path = &resolved_import.module_path;
 
-                let imported_exports = if libraries.library_for_module(&module_path).is_some() {
-                    get_library_exports(&libraries, module_path)
-                } else {
-                    let imported_module_index = module_def_index(db, module_path.clone());
-                    convert_to_def_targets(&imported_module_index)
-                };
+            let imported_exports = if libraries.library_for_module(&module_path).is_some() {
+                get_library_exports(&libraries, module_path)
+            } else {
+                let imported_module_index = module_def_index(db, module_path.clone());
+                convert_to_def_targets(&imported_module_index)
+            };
 
-                for imported_name in names {
-                    if let Some(target) = imported_exports.get(imported_name) {
-                        combined_exports
-                            .entry(imported_name.clone())
-                            .or_insert(target.clone());
+            match &resolved_import.names {
+                ImportNames::Selective(names) => {
+                    // Bring only the specified names into scope
+                    for imported_name in names {
+                        if let Some(target) = imported_exports.get(imported_name) {
+                            combined_exports
+                                .entry(imported_name.clone())
+                                .or_insert(target.clone());
+                        }
                     }
+                }
+                ImportNames::Glob => {
+                    // Bring all exported names into scope
+                    for (name, target) in imported_exports {
+                        combined_exports.entry(name).or_insert(target);
+                    }
+                }
+                ImportNames::Namespace => {
+                    // Namespace imports don't bring names directly into scope
                 }
             }
         }
@@ -262,8 +279,8 @@ mod tests {
     use crate::{
         queries::{
             libraries::{LibraryData, LoadedLibraries},
-            resolve::name_resolutions,
-            workspace::{FileSource, WorkspaceSnapshot},
+            resolve::{name_resolutions, resolve_builtin},
+            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -271,6 +288,11 @@ mod tests {
     /// Helper to set up empty LoadedLibraries in the database.
     fn setup_empty_libraries(db: &Database) {
         LoadedLibraries::new(db, (), std::collections::HashMap::new());
+    }
+
+    /// Helper to set up CompilerOptions with no_core = true (no implicit imports).
+    fn setup_no_core(db: &Database) {
+        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
     }
 
     #[test]
@@ -281,6 +303,7 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
         FileSource::new(&db, file_id, "".to_string());
 
         let resolutions = name_resolutions(&db, file_id);
@@ -296,6 +319,7 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
         // fn f(x) { x }
         FileSource::new(&db, file_id, "fn f(x) { x }".to_string());
 
@@ -321,6 +345,7 @@ mod tests {
         let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // file1 defines helper
         FileSource::new(&db, file1, "fn helper() {}".to_string());
@@ -348,6 +373,7 @@ mod tests {
         let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
         // Use qualified access: utils::helper()
@@ -380,6 +406,7 @@ mod tests {
         let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
         // Selective import: `import utils with helper` enables bare `helper()`
@@ -411,6 +438,7 @@ mod tests {
         let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // file1 defines x as a function
         FileSource::new(&db, file1, "fn x() {}".to_string());
@@ -437,6 +465,7 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
         // fn f() { y = 1; y }
         FileSource::new(&db, file_id, "fn f() { y = 1\n y }".to_string());
 
@@ -461,6 +490,7 @@ mod tests {
         let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
@@ -497,6 +527,7 @@ mod tests {
         let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         FileSource::new(&db, utils_file, "fn foo() {}".to_string());
         // Selective import: `import utils with foo` does NOT enable `utils::foo`
@@ -531,6 +562,7 @@ mod tests {
         let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
@@ -567,6 +599,7 @@ mod tests {
         let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
@@ -589,6 +622,79 @@ mod tests {
         assert_eq!(
             def_count, 2,
             "Plain import should allow qualified access to 'utils::foo' and 'utils::bar'"
+        );
+    }
+
+    #[test]
+    fn name_resolutions_glob_import_brings_all_names_into_scope() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        // Create utils module with two functions
+        let utils_file = workspace.add_file(FilePath::from("utils/mod.ray"), Path::from("utils"));
+        // Create main module that glob imports utils
+        let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        // utils has foo and bar
+        FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
+        // main glob imports utils, then uses both foo and bar unqualified
+        FileSource::new(
+            &db,
+            main_file,
+            "import utils with *\nfn main() { foo()\n bar() }".to_string(),
+        );
+
+        let resolutions = name_resolutions(&db, main_file);
+
+        // Count Def resolutions - should be 2 (both foo and bar resolve unqualified)
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        // Both foo and bar should resolve unqualified
+        assert_eq!(
+            def_count, 2,
+            "Glob import should bring both 'foo' and 'bar' into scope"
+        );
+    }
+
+    #[test]
+    fn name_resolutions_glob_import_does_not_enable_qualified_access() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        // Create utils module with a function
+        let utils_file = workspace.add_file(FilePath::from("utils/mod.ray"), Path::from("utils"));
+        // Create main module that glob imports utils
+        let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        // utils has foo
+        FileSource::new(&db, utils_file, "fn foo() {}".to_string());
+        // Glob import: `import utils with *` should NOT enable `utils::foo`
+        FileSource::new(
+            &db,
+            main_file,
+            "import utils with *\nfn main() { utils::foo() }".to_string(),
+        );
+
+        let resolutions = name_resolutions(&db, main_file);
+
+        // Count Def resolutions - should be 0 (qualified access should NOT work)
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert_eq!(
+            def_count, 0,
+            "Glob import should NOT enable qualified access 'utils::foo'"
         );
     }
 
@@ -629,6 +735,7 @@ mod tests {
         );
         libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
+        setup_no_core(&db);
 
         // Import core::io and use qualified access: io::read()
         FileSource::new(
@@ -706,6 +813,7 @@ mod tests {
         );
         libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
+        setup_no_core(&db);
 
         // Selective import: only "read" should be available unqualified
         FileSource::new(
@@ -730,8 +838,6 @@ mod tests {
 
     #[test]
     fn resolve_builtin_finds_workspace_definition() {
-        use super::resolve_builtin;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -739,12 +845,16 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // Define a struct named "list"
         FileSource::new(&db, file_id, "struct list { items: int }".to_string());
 
         let result = resolve_builtin(&db, file_id, "list".to_string());
-        assert!(result.is_some(), "Should resolve 'list' to workspace definition");
+        assert!(
+            result.is_some(),
+            "Should resolve 'list' to workspace definition"
+        );
         assert!(
             matches!(result, Some(DefTarget::Workspace(_))),
             "Should be a workspace target"
@@ -753,8 +863,6 @@ mod tests {
 
     #[test]
     fn resolve_builtin_finds_library_import() {
-        use super::resolve_builtin;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -782,6 +890,7 @@ mod tests {
         );
         libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
+        setup_no_core(&db);
 
         // Selective import: `import core::collections with list`
         FileSource::new(
@@ -791,7 +900,10 @@ mod tests {
         );
 
         let result = resolve_builtin(&db, main_file, "list".to_string());
-        assert!(result.is_some(), "Should resolve 'list' from library import");
+        assert!(
+            result.is_some(),
+            "Should resolve 'list' from library import"
+        );
         assert!(
             matches!(result, Some(DefTarget::Library(_))),
             "Should be a library target"
@@ -800,14 +912,13 @@ mod tests {
 
     #[test]
     fn resolve_builtin_returns_none_for_unimported_name() {
-        use super::resolve_builtin;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         FileSource::new(&db, file_id, "fn main() {}".to_string());
 
@@ -817,8 +928,6 @@ mod tests {
 
     #[test]
     fn resolve_builtin_finds_sibling_export() {
-        use super::resolve_builtin;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -828,6 +937,7 @@ mod tests {
         let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
+        setup_no_core(&db);
 
         // file1 defines MyType
         FileSource::new(&db, file1, "struct MyType {}".to_string());
@@ -845,8 +955,6 @@ mod tests {
 
     #[test]
     fn resolve_builtin_workspace_shadows_library() {
-        use super::resolve_builtin;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -875,6 +983,7 @@ mod tests {
         );
         libraries.add(ModulePath::from("core"), core_lib);
         LoadedLibraries::new(&db, (), libraries.libraries);
+        setup_no_core(&db);
 
         // Workspace defines its own "list", and also imports from library
         FileSource::new(

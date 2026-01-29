@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use ray_shared::{pathlib::ItemPath, ty::Ty};
+use ray_shared::{pathlib::ItemPath, resolution::DefTarget, ty::Ty};
 
 use crate::{
     constraint_tree::ConstraintNode,
@@ -28,7 +28,10 @@ use crate::{
         instantiate_impl_predicates, match_impl_head,
     },
     info::TypeSystemInfo,
-    types::{ImplKind, ReceiverMode, Subst, Substitutable, TraitField, TraitTy, TyScheme},
+    types::{
+        ImplKind, MethodResolutionInfo, ReceiverMode, Subst, Substitutable, TraitField, TraitTy,
+        TyScheme,
+    },
     unify::{match_ty, unify},
 };
 
@@ -838,6 +841,23 @@ fn solve_resolve_call(
             match outcome {
                 SolveOutcome::Solved | SolveOutcome::SolvedWith(_) => {
                     subst.union(trial_subst);
+
+                    // Build resolution info
+                    let resolution = match &chosen {
+                        ChosenMethod::Inherent(method) => MethodResolutionInfo {
+                            trait_target: None,
+                            impl_target: method.target.clone(),
+                            poly_scheme: method.scheme.clone(),
+                        },
+                        ChosenMethod::Trait(method) => MethodResolutionInfo {
+                            trait_target: method.field.target.clone(),
+                            impl_target: method.impl_target.clone(),
+                            poly_scheme: method.field.ty.clone(),
+                        }
+                    };
+
+                    // Record the method resolution in the side-table
+                    ctx.method_resolutions.insert(call.call_site, resolution);
                     outcome
                 }
                 _ => outcome,
@@ -852,12 +872,15 @@ struct InherentMethod {
     is_static: bool,
     recv_mode: ReceiverMode,
     recv_ty: Ty,
+    target: Option<DefTarget>,
 }
 
 #[derive(Clone, Debug)]
 struct TraitMethod {
     trait_ty: TraitTy,
     field: TraitField,
+    /// The impl method target, if the receiver type is concrete and known.
+    impl_target: Option<DefTarget>,
 }
 
 #[derive(Debug)]
@@ -928,6 +951,7 @@ fn find_unique_inherent_method(
                 is_static: field.is_static,
                 recv_mode: field.recv_mode,
                 recv_ty: recv_ty.clone(),
+                target: field.target.clone(),
             });
         }
     }
@@ -962,7 +986,7 @@ fn solve_scoped_call(
     );
 
     let mut trial_subst = ctx_bundle.subst.clone();
-    let outcome = match chosen {
+    let (outcome, resolution_info) = match chosen {
         ChosenMethod::Inherent(method) => {
             let impl_subst = receiver_subst_from_recv_ty(&method.recv_ty, ctx_bundle.subject_ty)?;
             log::debug!(
@@ -981,12 +1005,18 @@ fn solve_scoped_call(
                     return None;
                 }
             }
-            solve_with_chosen_method(
+            let resolution = MethodResolutionInfo {
+                trait_target: None,
+                impl_target: method.target.clone(),
+                poly_scheme: method.scheme.clone(),
+            };
+            let outcome = solve_with_chosen_method(
                 &ChosenMethod::Inherent(method),
                 Some(&combined),
                 ctx_bundle,
                 &mut trial_subst,
-            )
+            );
+            (outcome, resolution)
         }
         ChosenMethod::Trait(method) => {
             let trait_subst = receiver_subst_for_trait(&method.trait_ty, ctx_bundle.subject_ty)?;
@@ -1006,17 +1036,30 @@ fn solve_scoped_call(
                     return None;
                 }
             }
-            solve_with_chosen_method(
+            let resolution = MethodResolutionInfo {
+                trait_target: method.field.target.clone(),
+                impl_target: method.impl_target.clone(),
+                poly_scheme: method.field.ty.clone(),
+            };
+            let outcome = solve_with_chosen_method(
                 &ChosenMethod::Trait(method),
                 Some(&combined),
                 ctx_bundle,
                 &mut trial_subst,
-            )
+            );
+            (outcome, resolution)
         }
     };
 
     match outcome {
-        SolveOutcome::Solved | SolveOutcome::SolvedWith(_) => Some((trial_subst, outcome)),
+        SolveOutcome::Solved | SolveOutcome::SolvedWith(_) => {
+            // Record the method resolution in the side-table
+            ctx_bundle
+                .ctx
+                .method_resolutions
+                .insert(ctx_bundle.call.call_site, resolution_info);
+            Some((trial_subst, outcome))
+        }
         _ => None,
     }
 }
@@ -1079,6 +1122,7 @@ fn find_unique_trait_method<'a>(
             matches.push(TraitMethod {
                 trait_ty: trait_ty.clone(),
                 field: field.clone(),
+                impl_target: None, // No concrete impl available in global search
             });
         }
     }
@@ -1117,7 +1161,11 @@ fn find_unique_trait_method_from_givens<'a>(
             StaticRequirement::NonStatic if field.is_static => continue,
             _ => {}
         }
-        matches.push(TraitMethod { trait_ty, field });
+        matches.push(TraitMethod {
+            trait_ty,
+            field,
+            impl_target: None, // No concrete impl available from givens
+        });
     }
 
     if matches.len() == 1 {
@@ -1149,13 +1197,16 @@ fn find_unique_trait_method_for_recv<'a>(
             continue;
         }
 
-        if !impl_ty
+        // Find the impl field and extract its target
+        let impl_field = impl_ty
             .fields
             .iter()
-            .any(|field| field.path.item_name() == Some(&method_name.to_string()))
-        {
+            .find(|field| field.path.item_name() == Some(&method_name.to_string()));
+
+        let Some(impl_field) = impl_field else {
             continue;
-        }
+        };
+        let impl_target = impl_field.target.clone();
 
         let Some(trait_ty) = env.trait_def(&trait_path) else {
             continue;
@@ -1168,7 +1219,11 @@ fn find_unique_trait_method_for_recv<'a>(
             StaticRequirement::NonStatic if field.is_static => continue,
             _ => {}
         }
-        matches.push(TraitMethod { trait_ty, field });
+        matches.push(TraitMethod {
+            trait_ty,
+            field,
+            impl_target,
+        });
     }
 
     if matches.len() == 1 {
@@ -1343,6 +1398,9 @@ mod tests {
     use std::collections::HashSet;
 
     use ray_shared::{
+        def::DefId,
+        file_id::FileId,
+        node_id::NodeId,
         pathlib::ItemPath,
         ty::{SchemaVarAllocator, Ty, TyVar},
     };
@@ -1619,6 +1677,7 @@ mod tests {
                     is_static: false,
                     recv_mode: ReceiverMode::Value,
                     kind: FieldKind::Method,
+                    target: None,
                 }],
                 default_ty: None,
             },
@@ -1632,11 +1691,20 @@ mod tests {
         let subject_ty = Ty::Var(k);
         let recv_param_ty = ctx.fresh_meta();
         let expected_fn_ty = Ty::Func(vec![recv_param_ty], Box::new(Ty::u64()));
+        // Dummy NodeId for test
+        let dummy_node_id = NodeId {
+            owner: DefId {
+                file: FileId(0),
+                index: 0,
+            },
+            index: 0,
+        };
         let wanted = Constraint {
             kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
                 subject_ty.clone(),
                 "hash",
                 expected_fn_ty,
+                dummy_node_id,
             )),
             info: TypeSystemInfo::default(),
         };

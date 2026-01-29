@@ -1442,8 +1442,9 @@ mod tests {
 
     use crate::{
         ast::{
-            Assign, Block, Closure as AstClosure, Decl, Expr, Extern, File, FnParam, Func, FuncSig,
-            Impl, Literal, Name, Node, Pattern as AstPattern, Sequence, Struct, Trait, TypeParams,
+            Assign, Block, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, Extern, File,
+            FnParam, Func, FuncSig, Impl, Literal, Name, Node, Pattern as AstPattern, Sequence,
+            Struct, Trait, TypeParams,
         },
         sema::{
             build_type_param_scope, collect_type_resolutions, nameresolve::ResolveContext,
@@ -1698,9 +1699,6 @@ mod tests {
         // fn f() { Point { x: 1 } }  where Point is a struct export
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
-
-        use crate::ast::{Curly, CurlyElement};
-        use ray_shared::span::{Source, parsed::Parsed};
 
         // Create curly expression: Point { x: 1 }
         let field_name = Name::new("x");

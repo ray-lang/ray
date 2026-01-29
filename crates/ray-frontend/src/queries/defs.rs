@@ -136,6 +136,7 @@ impl TraitDef {
                     ty: m.scheme.clone(),
                     is_static: m.is_static,
                     recv_mode: m.recv_mode,
+                    target: Some(m.target.clone()),
                 })
                 .collect(),
             default_ty: self.default_ty.clone(),
@@ -204,6 +205,7 @@ impl ImplDef {
                     is_static: m.is_static,
                     recv_mode: m.recv_mode,
                     src: Source::default(),
+                    target: Some(m.target.clone()),
                 })
                 .collect(),
         }
@@ -253,6 +255,12 @@ pub fn def_for_path(db: &Database, path: ItemPath) -> Option<DefTarget> {
     }
 
     let item_name = &path.item[0];
+
+    // Check for primitive/builtin types (int, bool, float, etc.)
+    // These have no module (root module) and a single builtin name
+    if path.module.segments().is_empty() && Ty::is_builtin_name(item_name) {
+        return Some(DefTarget::Primitive(path));
+    }
 
     // Try workspace first
     let module_index = module_def_index(db, path.module.clone());
@@ -339,6 +347,7 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
             }
             None
         }
+        DefTarget::Primitive(path) => Some(path),
     }
 }
 
@@ -353,6 +362,7 @@ pub fn struct_def(db: &Database, target: DefTarget) -> Option<StructDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_struct(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_struct(db, &lib_def_id),
+        DefTarget::Primitive(_) => None, // Primitives are not structs
     }
 }
 
@@ -525,6 +535,7 @@ pub fn trait_def(db: &Database, target: DefTarget) -> Option<TraitDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_trait(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_trait(db, &lib_def_id),
+        DefTarget::Primitive(_) => None, // Primitives are not traits
     }
 }
 
@@ -831,6 +842,7 @@ pub fn impl_def(db: &Database, target: DefTarget) -> Option<ImplDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_impl(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_impl(db, &lib_def_id),
+        DefTarget::Primitive(_) => None, // Primitives don't have impl definitions
     }
 }
 
@@ -1146,6 +1158,7 @@ pub fn type_alias(db: &Database, target: DefTarget) -> Option<TypeAliasDef> {
             // Library type aliases not yet supported in LibraryData
             None
         }
+        DefTarget::Primitive(_) => None, // Primitives are not type aliases
     }
 }
 
@@ -1464,6 +1477,7 @@ fn path_for_target(target: &DefTarget, db: &Database) -> Option<ItemPath> {
                 .find(|(_, def_id)| *def_id == lib_def_id)
                 .map(|(item_path, _)| item_path.clone())
         }
+        DefTarget::Primitive(path) => Some(path.clone()),
     }
 }
 
@@ -1577,9 +1591,9 @@ mod tests {
     use crate::{
         queries::{
             defs::{
-                MethodInfo, StructDef, StructField, TraitDef, def_for_path, impl_def,
+                MethodInfo, StructDef, StructField, TraitDef, def_for_path, def_path, impl_def,
                 impls_for_trait, impls_for_type, impls_in_module, struct_def, trait_def,
-                traits_in_module, type_alias,
+                trait_methods_for_name, traits_in_module, type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
             workspace::{FileSource, WorkspaceSnapshot},
@@ -1620,8 +1634,22 @@ mod tests {
         let path = ItemPath::new(module_path, vec!["helper".into()]);
         let result = def_for_path(&db, path);
 
-        assert!(result.is_some());
-        assert!(matches!(result.unwrap(), DefTarget::Workspace(_)));
+        assert!(
+            result.is_some(),
+            "def_for_path should find 'helper' function"
+        );
+        match result.unwrap() {
+            DefTarget::Workspace(def_id) => {
+                assert_eq!(
+                    def_id.file, file_id,
+                    "DefId should reference the correct file"
+                );
+            }
+            other => panic!(
+                "Expected DefTarget::Workspace for function, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
@@ -1635,11 +1663,34 @@ mod tests {
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
 
-        let path = ItemPath::new(module_path, vec!["Point".into()]);
-        let result = def_for_path(&db, path);
+        let path = ItemPath::new(module_path.clone(), vec!["Point".into()]);
+        let result = def_for_path(&db, path.clone());
 
-        assert!(result.is_some());
-        assert!(matches!(result.unwrap(), DefTarget::Workspace(_)));
+        assert!(result.is_some(), "def_for_path should find 'Point' struct");
+        let target = result.unwrap();
+        match &target {
+            DefTarget::Workspace(def_id) => {
+                assert_eq!(
+                    def_id.file, file_id,
+                    "DefId should reference the correct file"
+                );
+            }
+            other => panic!("Expected DefTarget::Workspace for struct, got {:?}", other),
+        }
+
+        // Verify we can retrieve the struct definition through the target
+        let struct_definition = struct_def(&db, target);
+        assert!(
+            struct_definition.is_some(),
+            "Should be able to get struct_def from target"
+        );
+        let struct_definition = struct_definition.unwrap();
+        assert_eq!(struct_definition.path, path, "Struct path should match");
+        assert_eq!(
+            struct_definition.fields.len(),
+            2,
+            "Point should have 2 fields"
+        );
     }
 
     #[test]
@@ -1732,7 +1783,16 @@ mod tests {
         };
         let result = def_for_path(&db, item_path);
 
-        assert!(result.is_some());
+        assert!(result.is_some(), "def_for_path should find 'foo'");
+        match result.unwrap() {
+            DefTarget::Workspace(def_id) => {
+                assert_eq!(
+                    def_id.file, file_id,
+                    "DefId should reference the correct file"
+                );
+            }
+            other => panic!("Expected DefTarget::Workspace, got {:?}", other),
+        }
     }
 
     #[test]
@@ -3083,5 +3143,366 @@ struct Box['a] { value: 'a }
         } else {
             panic!("Struct field should be Ty::Var, got: {:?}", field_ty);
         }
+    }
+
+    // ============================================================================
+    // def_for_path primitive type tests
+    // ============================================================================
+
+    #[test]
+    fn def_for_path_returns_primitive_for_int() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let path = ItemPath::new(ModulePath::root(), vec!["int".into()]);
+        let result = def_for_path(&db, path.clone());
+
+        assert!(result.is_some(), "def_for_path should find 'int'");
+        match result.unwrap() {
+            DefTarget::Primitive(p) => {
+                assert_eq!(p, path, "Primitive path should match input path");
+            }
+            other => panic!("Expected DefTarget::Primitive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn def_for_path_returns_primitive_for_bool() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let path = ItemPath::new(ModulePath::root(), vec!["bool".into()]);
+        let result = def_for_path(&db, path.clone());
+
+        assert!(result.is_some(), "def_for_path should find 'bool'");
+        match result.unwrap() {
+            DefTarget::Primitive(p) => {
+                assert_eq!(p, path, "Primitive path should match input path");
+            }
+            other => panic!("Expected DefTarget::Primitive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn def_for_path_returns_primitive_for_char() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let path = ItemPath::new(ModulePath::root(), vec!["char".into()]);
+        let result = def_for_path(&db, path.clone());
+
+        assert!(result.is_some(), "def_for_path should find 'char'");
+        match result.unwrap() {
+            DefTarget::Primitive(p) => {
+                assert_eq!(p, path, "Primitive path should match input path");
+            }
+            other => panic!("Expected DefTarget::Primitive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn def_for_path_string_is_not_primitive() {
+        // `string` is a struct defined in core, not a primitive type.
+        // Without the prelude/core library loaded, it should not be found.
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let path = ItemPath::new(ModulePath::root(), vec!["string".into()]);
+        let result = def_for_path(&db, path);
+
+        assert!(
+            result.is_none(),
+            "string is not a primitive - should not be found without core library"
+        );
+    }
+
+    #[test]
+    fn def_for_path_does_not_treat_non_primitive_as_primitive() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "struct MyInt { value: int }".to_string());
+
+        // "MyInt" in root module should not be found (it's in mymodule)
+        let path = ItemPath::new(ModulePath::root(), vec!["MyInt".into()]);
+        let result = def_for_path(&db, path);
+        assert!(
+            result.is_none(),
+            "User-defined type in non-root module should not be found at root"
+        );
+
+        // "MyInt" in mymodule should be found as Workspace, not Primitive
+        let path = ItemPath::new(module_path, vec!["MyInt".into()]);
+        let result = def_for_path(&db, path);
+        assert!(result.is_some(), "User-defined type should be found");
+        assert!(
+            matches!(result.unwrap(), DefTarget::Workspace(_)),
+            "User-defined type should be Workspace, not Primitive"
+        );
+    }
+
+    #[test]
+    fn def_for_path_primitive_requires_root_module() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // "int" in a non-root module should NOT be treated as a primitive
+        let path = ItemPath::new(ModulePath::from("somemodule"), vec!["int".into()]);
+        let result = def_for_path(&db, path);
+
+        assert!(
+            result.is_none(),
+            "Primitive name in non-root module should not be found"
+        );
+    }
+
+    // ============================================================================
+    // def_path tests
+    // ============================================================================
+
+    #[test]
+    fn def_path_returns_path_for_workspace_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "fn helper() -> int => 42".to_string());
+
+        let path = ItemPath::new(module_path.clone(), vec!["helper".into()]);
+        let target = def_for_path(&db, path.clone()).expect("function should be found");
+
+        let result = def_path(&db, target);
+
+        assert!(result.is_some(), "def_path should return a path");
+        assert_eq!(
+            result.unwrap(),
+            path,
+            "def_path should return the correct path"
+        );
+    }
+
+    #[test]
+    fn def_path_returns_path_for_workspace_struct() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+
+        let path = ItemPath::new(module_path.clone(), vec!["Point".into()]);
+        let target = def_for_path(&db, path.clone()).expect("struct should be found");
+
+        let result = def_path(&db, target);
+
+        assert!(result.is_some(), "def_path should return a path");
+        assert_eq!(
+            result.unwrap(),
+            path,
+            "def_path should return the correct path"
+        );
+    }
+
+    #[test]
+    fn def_path_returns_path_for_primitive() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let path = ItemPath::new(ModulePath::root(), vec!["int".into()]);
+        let target = def_for_path(&db, path.clone()).expect("int should be found as primitive");
+
+        let result = def_path(&db, target);
+
+        assert!(
+            result.is_some(),
+            "def_path should return a path for primitives"
+        );
+        assert_eq!(
+            result.unwrap(),
+            path,
+            "def_path should return the primitive path"
+        );
+    }
+
+    #[test]
+    fn def_path_roundtrips_for_all_primitive_types() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Note: "string" is NOT a primitive - it's a struct in core
+        let primitives = ["int", "bool", "char", "uint", "i32", "u64", "i8", "u8"];
+
+        for name in primitives {
+            let path = ItemPath::new(ModulePath::root(), vec![name.into()]);
+            let target = def_for_path(&db, path.clone());
+            assert!(
+                target.is_some(),
+                "def_for_path should find primitive '{}'",
+                name
+            );
+
+            let roundtrip = def_path(&db, target.unwrap());
+            assert!(
+                roundtrip.is_some(),
+                "def_path should return path for primitive '{}'",
+                name
+            );
+            assert_eq!(
+                roundtrip.unwrap(),
+                path,
+                "def_path should roundtrip for primitive '{}'",
+                name
+            );
+        }
+    }
+
+    // ============================================================================
+    // trait_methods_for_name tests
+    // ============================================================================
+
+    #[test]
+    fn trait_methods_for_name_finds_method_in_trait() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let results = trait_methods_for_name(&db, &"to_str".to_string());
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find exactly one trait with to_str method"
+        );
+        let (trait_def, method_info) = &results[0];
+        assert_eq!(trait_def.path.item, vec!["ToStr".to_string()]);
+        assert_eq!(method_info.name, "to_str");
+    }
+
+    #[test]
+    fn trait_methods_for_name_finds_method_in_multiple_traits() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Display['a] {
+    fn show(self: 'a) -> string
+}
+
+trait Debug['a] {
+    fn show(self: 'a) -> string
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let results = trait_methods_for_name(&db, &"show".to_string());
+
+        assert_eq!(
+            results.len(),
+            2,
+            "Should find 'show' method in both Display and Debug traits"
+        );
+
+        let trait_names: Vec<_> = results
+            .iter()
+            .map(|(t, _)| t.path.item[0].clone())
+            .collect();
+        assert!(trait_names.contains(&"Display".to_string()));
+        assert!(trait_names.contains(&"Debug".to_string()));
+    }
+
+    #[test]
+    fn trait_methods_for_name_returns_empty_for_unknown_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let results = trait_methods_for_name(&db, &"nonexistent".to_string());
+
+        assert!(
+            results.is_empty(),
+            "Should return empty vec for unknown method name"
+        );
+    }
+
+    #[test]
+    fn trait_methods_for_name_returns_correct_method_info() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Printable['a] {
+    fn print(self: *'a) -> unit
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let results = trait_methods_for_name(&db, &"print".to_string());
+
+        assert_eq!(results.len(), 1);
+        let (_trait_def, method_info) = &results[0];
+        assert_eq!(method_info.name, "print");
+        assert!(
+            !method_info.is_static,
+            "Method with self parameter should not be static"
+        );
+        assert!(
+            matches!(method_info.target, DefTarget::Workspace(_)),
+            "Method target should be workspace def"
+        );
     }
 }

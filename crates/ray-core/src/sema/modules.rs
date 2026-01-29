@@ -479,7 +479,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                     module_path: Some(import_module_path),
                     named_path,
                 }) => match &import.kind {
-                    ast::ImportKind::Path(_) | ast::ImportKind::Names(_, _) => self.build_import(
+                    ast::ImportKind::Path(_)
+                    | ast::ImportKind::Names(_, _)
+                    | ast::ImportKind::Glob(_) => self.build_import(
                         import,
                         &filepath,
                         import_module_path,
@@ -595,6 +597,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                             .whitelist
                             .get_or_insert_with(|| HashSet::new())
                             .extend(names.iter().map(|n| n.to_string()));
+                    }
+                    ast::ImportKind::Glob(_) => {
+                        // Glob import: all exports are directly accessible (no whitelist)
                     }
                     ast::ImportKind::CImport(..) => unreachable!(),
                 }
@@ -766,7 +771,7 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
                 &import.span,
                 module_root,
             ),
-            ast::ImportKind::Names(path, _) => {
+            ast::ImportKind::Names(path, _) | ast::ImportKind::Glob(path) => {
                 let filepath = match self.resolve_module_import(
                     path,
                     parent_filepath,

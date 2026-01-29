@@ -1,7 +1,6 @@
 use ray_query_macros::query;
-use ray_shared::{node_id::NodeId, pathlib::ItemPath, ty::Ty};
+use ray_shared::{node_id::NodeId, ty::Ty};
 use ray_typing::{
-    TypeCheckInput,
     context::{AssignLhs, ExprKind},
     tyctx::CallResolution,
     types::{Subst, TyScheme},
@@ -10,13 +9,8 @@ use ray_typing::{
 
 use crate::{
     queries::{
-        defs::{
-            ImplsForType, def_for_path, impl_def, impls_for_type, trait_def,
-            trait_impl_for_type, trait_methods_for_name,
-        },
         deps::binding_group_for_def,
-        resolve::resolve_builtin,
-        typecheck::{ty_of, typecheck_group_input},
+        typecheck::{ty_of, typecheck_group, typecheck_group_input},
     },
     query::{Database, Query},
 };
@@ -35,67 +29,43 @@ use crate::{
 pub fn call_resolution(db: &Database, node_id: NodeId) -> Option<CallResolution> {
     let def_id = node_id.owner;
     let group_id = binding_group_for_def(db, def_id);
-    let input = typecheck_group_input(db, group_id.clone());
+    let result = typecheck_group(db, group_id.clone());
+    let input = typecheck_group_input(db, group_id);
 
-    // Check if this node is an expression
-    if let Some(expr_record) = input.expr_records.get(&node_id) {
-        return match &expr_record.kind {
-            ExprKind::BinaryOp {
-                trait_fqn,
-                method_fqn,
-                operator,
-                ..
-            }
-            | ExprKind::UnaryOp {
-                trait_fqn,
-                method_fqn,
-                operator,
-                ..
-            } => resolve_op(db, trait_fqn, method_fqn, operator),
-            ExprKind::Call { callee, .. } => resolve_call(db, callee, &input),
-            ExprKind::Index { container, index } => {
-                resolve_index_get(db, node_id, *container, *index)
-            }
-            ExprKind::Assign {
-                lhs_pattern,
-                lhs,
-                rhs,
-            } => {
-                let AssignLhs::Index { container, index } = lhs else {
-                    return None;
-                };
-                resolve_index_set(db, node_id, *lhs_pattern, *container, *index, *rhs, &input)
-            }
-            _ => None,
-        };
-    }
+    // Look up the method resolution from the side-table populated by the solver
+    let resolution_info = result.method_resolutions.get(&node_id)?;
+    let poly_callee_ty = resolution_info.poly_scheme.clone();
 
-    None
-}
-
-fn resolve_op(
-    db: &Database,
-    trait_fqn: &ItemPath,
-    method_fqn: &ItemPath,
-    operator: &NodeId,
-) -> Option<CallResolution> {
-    // Look up the trait definition
-    let trait_target = def_for_path(db, trait_fqn.clone())?;
-    let trait_definition = trait_def(db, trait_target)?;
-
-    // Find the method in the trait
-    let method_name = method_fqn.item_name()?;
-    let method_info = trait_definition
-        .methods
-        .iter()
-        .find(|m| m.name == method_name)?;
-
-    // poly_callee_ty is the trait method's type scheme
-    let poly_callee_ty = method_info.scheme.clone();
-
-    // callee_ty is the instantiated type from typechecking
-    let callee_mono_ty = ty_of(db, *operator)?;
-    let callee_ty = TyScheme::from_mono(callee_mono_ty.clone());
+    // Compute callee_ty based on expression kind
+    let expr_record = input.expr_records.get(&node_id)?;
+    let callee_ty = match &expr_record.kind {
+        ExprKind::BinaryOp { operator, .. } | ExprKind::UnaryOp { operator, .. } => {
+            TyScheme::from_mono(ty_of(db, *operator)?)
+        }
+        ExprKind::Call { callee, .. } => TyScheme::from_mono(ty_of(db, *callee)?),
+        ExprKind::Index { container, index } => {
+            let container_ty = ty_of(db, *container)?;
+            let index_ty = ty_of(db, *index)?;
+            let result_ty = ty_of(db, node_id)?;
+            let recv_ty = Ty::ref_of(container_ty);
+            TyScheme::from_mono(Ty::Func(vec![recv_ty, index_ty], Box::new(result_ty)))
+        }
+        ExprKind::Assign { lhs, rhs, .. } => {
+            let AssignLhs::Index { container, index } = lhs else {
+                return None;
+            };
+            let container_ty = ty_of(db, *container)?;
+            let index_ty = ty_of(db, *index)?;
+            let rhs_ty = ty_of(db, *rhs)?;
+            let result_ty = ty_of(db, node_id)?;
+            let recv_ty = Ty::ref_of(container_ty);
+            TyScheme::from_mono(Ty::Func(
+                vec![recv_ty, index_ty, rhs_ty],
+                Box::new(result_ty),
+            ))
+        }
+        _ => return None,
+    };
 
     // Compute substitution via MGU
     let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
@@ -103,158 +73,9 @@ fn resolve_op(
         Err(_) => Subst::new(),
     };
 
-    // trait_target is the trait method's DefTarget
-    let trait_target = Some(method_info.target.clone());
-
     Some(CallResolution {
-        trait_target,
-        impl_target: None, // Impl target would require looking up the specific impl
-        poly_callee_ty,
-        callee_ty,
-        subst,
-    })
-}
-
-fn resolve_call(db: &Database, callee: &NodeId, input: &TypeCheckInput) -> Option<CallResolution> {
-    let callee_kind = input.expr_kind(*callee)?;
-    let ExprKind::FieldAccess { recv, field } = callee_kind else {
-        return None;
-    };
-
-    let recv_ty = ty_of(db, *recv)?;
-
-    let recv_path = match &recv_ty {
-        Ty::Ref(inner) => inner.item_path(),
-        _ => recv_ty.item_path(),
-    };
-    let recv_path = recv_path?;
-
-    let recv_target = def_for_path(db, recv_path.clone())?;
-
-    let ImplsForType {
-        inherent,
-        trait_impls,
-    } = impls_for_type(db, recv_target);
-
-    let mut options = trait_impls
-        .iter()
-        .chain(inherent.iter())
-        .filter_map(|target| impl_def(db, target.clone()))
-        .filter_map(|impl_def| impl_def.find_method(field))
-        .collect::<Vec<_>>();
-    if let Some(method_info) = options.pop() {
-        if !options.is_empty() {
-            // Should we do something differently if there is ambiguity?
-            return None;
-        }
-
-        let callee_ty = TyScheme::from_mono(ty_of(db, *callee).unwrap());
-        let poly_callee_ty = method_info.scheme.clone();
-        let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
-            Ok((_, subst)) => subst,
-            Err(_) => Subst::new(),
-        };
-        return Some(CallResolution {
-            trait_target: None, // Inherent methods don't have a trait target
-            impl_target: Some(method_info.target),
-            poly_callee_ty,
-            callee_ty,
-            subst,
-        });
-    }
-
-    None
-}
-
-fn resolve_index_get(
-    db: &Database,
-    index_expr_id: NodeId,
-    container_id: NodeId,
-    index_id: NodeId,
-) -> Option<CallResolution> {
-    // Lookup the Index trait and find the "get" method info from the definition
-    let file_id = container_id.owner.file;
-    let index_trait_target = resolve_builtin(db, file_id, "Index".to_string())?;
-    let index_trait_def = trait_def(db, index_trait_target.clone())?;
-    let trait_method_info = index_trait_def.find_method("get")?;
-
-    // Get the method scheme and find the types of expressions
-    let poly_callee_ty = trait_method_info.scheme.clone();
-    let container_ty = ty_of(db, container_id)?;
-    let index_ty = ty_of(db, index_id)?;
-    let result_ty = ty_of(db, index_expr_id)?;
-
-    // Find the impl target for the container type
-    let container_path = container_ty.item_path().cloned()?;
-    let recv_target = def_for_path(db, container_path)?;
-    let index_impl_target = trait_impl_for_type(db, recv_target, index_trait_target)?;
-    let index_impl_def = impl_def(db, index_impl_target)?;
-    let impl_method_info = index_impl_def.find_method("get")?;
-
-    // Construct the monomorphic function type
-    let recv_ty = Ty::ref_of(container_ty);
-    let callee_ty = TyScheme::from_mono(Ty::Func(vec![recv_ty, index_ty], Box::new(result_ty)));
-
-    // Calculate the substitution from MGU of the monomorphic types
-    let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
-        Ok((_, subst)) => subst,
-        Err(_) => Subst::new(),
-    };
-
-    Some(CallResolution {
-        trait_target: Some(trait_method_info.target),
-        impl_target: Some(impl_method_info.target),
-        poly_callee_ty,
-        callee_ty,
-        subst,
-    })
-}
-
-fn resolve_index_set(
-    db: &Database,
-    assign_expr_id: NodeId,
-    _lhs_pattern_id: NodeId,
-    container_id: NodeId,
-    index_id: NodeId,
-    rhs_id: NodeId,
-    _input: &TypeCheckInput,
-) -> Option<CallResolution> {
-    // Lookup the Index trait and find the "set" method info from the definition
-    let file_id = container_id.owner.file;
-    let index_trait_target = resolve_builtin(db, file_id, "Index".to_string())?;
-    let index_trait_def = trait_def(db, index_trait_target.clone())?;
-    let trait_method_info = index_trait_def.find_method("set")?;
-
-    // Get the method scheme and find the types of expressions
-    let poly_callee_ty = trait_method_info.scheme.clone();
-    let container_ty = ty_of(db, container_id)?;
-    let index_ty = ty_of(db, index_id)?;
-    let rhs_ty = ty_of(db, rhs_id)?;
-    let result_ty = ty_of(db, assign_expr_id)?;
-
-    // Find the impl target for the container type
-    let container_path = container_ty.item_path().cloned()?;
-    let recv_target = def_for_path(db, container_path)?;
-    let index_impl_target = trait_impl_for_type(db, recv_target, index_trait_target)?;
-    let index_impl_def = impl_def(db, index_impl_target)?;
-    let impl_method_info = index_impl_def.find_method("set")?;
-
-    // Construct the monomorphic function type: (*Container, Index, Elem) -> Elem?
-    let recv_ty = Ty::ref_of(container_ty);
-    let callee_ty = TyScheme::from_mono(Ty::Func(
-        vec![recv_ty, index_ty, rhs_ty],
-        Box::new(result_ty),
-    ));
-
-    // Calculate the substitution from MGU of the monomorphic types
-    let subst = match mgu(poly_callee_ty.mono(), callee_ty.mono()) {
-        Ok((_, subst)) => subst,
-        Err(_) => Subst::new(),
-    };
-
-    Some(CallResolution {
-        trait_target: Some(trait_method_info.target),
-        impl_target: Some(impl_method_info.target),
+        trait_target: resolution_info.trait_target.clone(),
+        impl_target: resolution_info.impl_target.clone(),
         poly_callee_ty,
         callee_ty,
         subst,
@@ -321,13 +142,13 @@ fn main() -> int => helper(42)
             .find(|(_, record)| matches!(record.kind, ExprKind::Call { .. }))
             .map(|(id, _)| *id);
 
-        if let Some(call_node_id) = call_node_id {
-            let resolution = call_resolution(&db, call_node_id);
-            assert!(
-                resolution.is_none(),
-                "Direct function calls should not produce call resolution"
-            );
-        }
+        assert!(call_node_id.is_some(), "cannot find call node ID");
+
+        let resolution = call_resolution(&db, call_node_id.unwrap());
+        assert!(
+            resolution.is_none(),
+            "Direct function calls should not produce call resolution"
+        );
     }
 
     #[test]
@@ -350,13 +171,13 @@ fn get_value() -> int => 42
             .find(|(_, record)| matches!(record.kind, ExprKind::LiteralInt))
             .map(|(id, _)| *id);
 
-        if let Some(literal_node_id) = literal_node_id {
-            let resolution = call_resolution(&db, literal_node_id);
-            assert!(
-                resolution.is_none(),
-                "Literal expressions should not produce call resolution"
-            );
-        }
+        assert!(literal_node_id.is_some(), "cannot find literal node ID");
+
+        let resolution = call_resolution(&db, literal_node_id.unwrap());
+        assert!(
+            resolution.is_none(),
+            "Literal expressions should not produce call resolution"
+        );
     }
 
     #[test]
@@ -393,26 +214,30 @@ fn test() -> int => 1 + 2
             "Should have a BinaryOp expression"
         );
 
-        if let Some(binary_op_node_id) = binary_op_node_id {
-            // Debug: print what the BinaryOp contains
-            if let Some(record) = input.expr_records.get(&binary_op_node_id) {
-                if let ExprKind::BinaryOp {
-                    trait_fqn,
-                    method_fqn,
-                    ..
-                } = &record.kind
-                {
-                    eprintln!("trait_fqn: {:?}", trait_fqn);
-                    eprintln!("method_fqn: {:?}", method_fqn);
-                }
-            }
+        let resolution = call_resolution(&db, binary_op_node_id.unwrap());
+        assert!(
+            resolution.is_some(),
+            "BinaryOp should produce call resolution"
+        );
 
-            let resolution = call_resolution(&db, binary_op_node_id);
-            assert!(
-                resolution.is_some(),
-                "BinaryOp should produce call resolution"
-            );
-        }
+        let resolution = resolution.unwrap();
+
+        // Binary operators resolve through traits, so both targets should be set
+        assert!(
+            resolution.trait_target.is_some(),
+            "Binary op should have trait_target (Add::+)"
+        );
+        assert!(
+            resolution.impl_target.is_some(),
+            "Binary op should have impl_target (Add[int,int,int]::+)"
+        );
+
+        // target() prefers impl_target when available
+        assert_eq!(
+            resolution.target(),
+            resolution.impl_target.as_ref(),
+            "target() should prefer impl_target"
+        );
     }
 
     #[test]
@@ -438,19 +263,6 @@ fn test() -> int {
         let group_id = binding_group_for_def(&db, test_def.def_id);
         let input = typecheck_group_input(&db, group_id);
 
-        // Debug: print diagnostics
-        eprintln!("All defs in file:");
-        for def in &file_result.defs {
-            eprintln!("  {} ({:?})", def.name, def.def_id);
-        }
-        eprintln!("Parse/transform errors: {:?}", file_result.errors);
-        eprintln!("Lowering errors: {:?}", input.lowering_errors);
-
-        // Debug: print all expr kinds
-        for (id, record) in input.expr_records.iter() {
-            eprintln!("  {:?}: {:?}", id, record.kind);
-        }
-
         // Find a Call expression with a FieldAccess callee (method call pattern)
         let method_call_node_id = input.expr_records.iter().find_map(|(id, record)| {
             if let ExprKind::Call { callee, .. } = &record.kind {
@@ -468,13 +280,30 @@ fn test() -> int {
             "Should have a method call expression"
         );
 
-        if let Some(method_call_node_id) = method_call_node_id {
-            let resolution = call_resolution(&db, method_call_node_id);
-            assert!(
-                resolution.is_some(),
-                "Method call should produce call resolution"
-            );
-        }
+        let resolution = call_resolution(&db, method_call_node_id.unwrap());
+        assert!(
+            resolution.is_some(),
+            "Method call should produce call resolution"
+        );
+
+        let resolution = resolution.unwrap();
+
+        // Inherent methods don't go through traits
+        assert!(
+            resolution.trait_target.is_none(),
+            "Inherent method should not have trait_target"
+        );
+        assert!(
+            resolution.impl_target.is_some(),
+            "Inherent method should have impl_target (Point::magnitude)"
+        );
+
+        // The target() method should return the impl target
+        assert_eq!(
+            resolution.target(),
+            resolution.impl_target.as_ref(),
+            "target() should return impl_target for inherent methods"
+        );
     }
 
     #[test]
@@ -515,13 +344,30 @@ fn test() -> int? {
 
         assert!(index_node_id.is_some(), "Should have an Index expression");
 
-        if let Some(index_node_id) = index_node_id {
-            let resolution = call_resolution(&db, index_node_id);
-            assert!(
-                resolution.is_some(),
-                "Index expression should produce call resolution"
-            );
-        }
+        let resolution = call_resolution(&db, index_node_id.unwrap());
+        assert!(
+            resolution.is_some(),
+            "Index expression should produce call resolution"
+        );
+
+        let resolution = resolution.unwrap();
+
+        // Index operations resolve through the Index trait
+        assert!(
+            resolution.trait_target.is_some(),
+            "Index get should have trait_target (Index::get)"
+        );
+        assert!(
+            resolution.impl_target.is_some(),
+            "Index get should have impl_target (Index[List,int,int]::get)"
+        );
+
+        // The target() method should return the impl target (more specific)
+        assert_eq!(
+            resolution.target(),
+            resolution.impl_target.as_ref(),
+            "target() should prefer impl_target"
+        );
     }
 
     #[test]
@@ -568,13 +414,29 @@ fn test() -> int? {
             "Should have an index assignment expression"
         );
 
-        if let Some(assign_node_id) = assign_node_id {
-            let resolution = call_resolution(&db, assign_node_id);
-            assert!(
-                resolution.is_some(),
-                "Index assignment should produce call resolution"
-            );
-        }
-    }
+        let resolution = call_resolution(&db, assign_node_id.unwrap());
+        assert!(
+            resolution.is_some(),
+            "Index assignment should produce call resolution"
+        );
 
+        let resolution = resolution.unwrap();
+
+        // Index set operations resolve through the Index trait
+        assert!(
+            resolution.trait_target.is_some(),
+            "Index set should have trait_target (Index::set)"
+        );
+        assert!(
+            resolution.impl_target.is_some(),
+            "Index set should have impl_target (Index[List,int,int]::set)"
+        );
+
+        // The target() method should return the impl target (more specific)
+        assert_eq!(
+            resolution.target(),
+            resolution.impl_target.as_ref(),
+            "target() should prefer impl_target"
+        );
+    }
 }

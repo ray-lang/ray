@@ -235,6 +235,44 @@ impl Database {
         value.clone()
     }
 
+    /// Get an input value, returning the default if not set.
+    ///
+    /// This is useful for optional configuration inputs like `CompilerOptions`.
+    pub fn get_input_or_default<I: Input>(&self, key: I::Key) -> I::Value
+    where
+        I::Value: Default,
+    {
+        let ikey = InputKey {
+            name: I::NAME,
+            key: KeyId::new(&key),
+        };
+        self.register_input::<I>();
+        let inputs = self.inputs.read().expect("inputs lock poisoned");
+
+        let value = match inputs.get(&ikey) {
+            Some(v) => v.downcast_ref::<I::Value>().expect("input type mismatch").clone(),
+            None => I::Value::default(),
+        };
+
+        let fp = I::fingerprint(&value);
+        if let Some(frame) = self
+            .active_inputs
+            .lock()
+            .expect("active_inputs lock poisoned")
+            .last_mut()
+        {
+            if !frame.iter().any(|dep| dep.key == ikey) {
+                frame.push(InputDep {
+                    key: ikey,
+                    fingerprint: fp,
+                    value_type: TypeId::of::<I::Value>(),
+                });
+            }
+        }
+
+        value
+    }
+
     fn cached_valid(&self, key: &QueryKey, cached: &CachedValue) -> bool {
         self.inputs_match(&cached.input_deps) && self.query_deps_match(key, &cached.query_deps)
     }

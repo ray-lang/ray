@@ -43,7 +43,7 @@ use crate::{
     generalize::generalize_group,
     info::{Info, TypeSystemInfo},
     tyctx::TyCtx,
-    types::{Subst, Substitutable as _, TyScheme},
+    types::{MethodResolutionInfo, Subst, Substitutable as _, TyScheme},
 };
 
 /// Associates a frontend node with a binding, distinguishing between
@@ -747,6 +747,9 @@ pub struct TypeCheckResult {
     /// Used by `inferred_local_type(LocalBindingId)` for cross-SCC type lookup when one
     /// definition references a local binding owned by another definition.
     pub local_tys: HashMap<LocalBindingId, Ty>,
+    /// Resolved method calls, keyed by the call expression's NodeId.
+    /// Populated by the solver when it resolves `ResolveCall` constraints.
+    pub method_resolutions: HashMap<NodeId, MethodResolutionInfo>,
     /// All type errors discovered while typechecking
     pub errors: Vec<TypeError>,
 }
@@ -796,6 +799,7 @@ pub fn typecheck(
 
     let binding_schemes = mem::take(&mut ctx.binding_schemes);
     let node_tys = mem::take(&mut ctx.expr_types);
+    let method_resolutions = mem::take(&mut ctx.method_resolutions);
 
     // At this point, solving + defaulting should have eliminated all unresolved
     // meta type variables from expression types. If any remain, treat it as a
@@ -831,6 +835,7 @@ pub fn typecheck(
         schemes,
         node_tys,
         local_tys,
+        method_resolutions,
         errors,
     }
 }
@@ -1028,11 +1033,13 @@ pub fn typecheck_group<'a>(
     }
 
     let node_tys = mem::take(&mut ctx.expr_types);
+    let method_resolutions = mem::take(&mut ctx.method_resolutions);
 
     TypeCheckResult {
         schemes,
         node_tys,
         local_tys,
+        method_resolutions,
         errors,
     }
 }

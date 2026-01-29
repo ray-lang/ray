@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     def::{DefId, LibraryDefId},
     local_binding::LocalBindingId,
+    pathlib::ItemPath,
     type_param_id::TypeParamId,
 };
 
@@ -29,4 +30,6 @@ pub enum DefTarget {
     Workspace(DefId),
     /// Definition from a compiled library (.raylib).
     Library(LibraryDefId),
+    /// A primitive/builtin type (int, bool, char, uint, etc.).
+    Primitive(ItemPath),
 }

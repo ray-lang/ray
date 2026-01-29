@@ -385,10 +385,15 @@ impl Ty {
         }
     }
 
+    /// Returns true if the name is a primitive/builtin type.
+    ///
+    /// These are types intrinsic to the type system with no struct definition.
+    /// Note: `string` is NOT a primitive - it's a struct defined in core and
+    /// made available via the prelude.
     pub fn is_builtin_name(name: &str) -> bool {
         match name {
-            "string" | "char" | "bool" | "int" | "uint" | "i8" | "i16" | "i32" | "i64" | "u8"
-            | "u16" | "u32" | "u64" => true,
+            "char" | "bool" | "int" | "uint" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16"
+            | "u32" | "u64" => true,
             _ => false,
         }
     }

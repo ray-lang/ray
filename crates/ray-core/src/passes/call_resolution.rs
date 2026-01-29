@@ -6,9 +6,7 @@ use ray_shared::{
 use ray_typing::{
     TypeCheckInput,
     context::{AssignLhs, ExprKind},
-    tyctx::{CallResolution, TyCtx},
-    types::{Subst, TyScheme},
-    unify::mgu,
+    tyctx::TyCtx,
 };
 
 pub fn run_call_resolution_pass(module: &TypeCheckInput, tcx: &mut TyCtx, ncx: &NameContext) {

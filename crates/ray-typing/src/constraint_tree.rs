@@ -1031,9 +1031,26 @@ fn generate_constraints_for_expr(
                 let index_fqn = ctx.env().resolve_builtin("Index");
                 node.wanteds.push(Constraint::class(
                     index_fqn,
-                    vec![container_ty, elem_ty, index_ty],
+                    vec![container_ty.clone(), elem_ty.clone(), index_ty.clone()],
                     info.clone(),
                 ));
+
+                // Also emit ResolveCallConstraint to record in the side-table
+                // Index::get has signature: (*container, index) -> elem?
+                let recv_ty = Ty::ref_of(container_ty.clone());
+                let expected_fn_ty = Ty::Func(
+                    vec![recv_ty, index_ty],
+                    Box::new(Ty::nilable(elem_ty)),
+                );
+                node.wanteds.push(Constraint {
+                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                        container_ty,
+                        "get",
+                        expected_fn_ty,
+                        expr,
+                    )),
+                    info: info.clone(),
+                });
             }
             ExprKind::BinaryOp {
                 trait_fqn,
@@ -1075,7 +1092,7 @@ fn generate_constraints_for_expr(
                         if let Some((_, _, _, ret_ty)) = field.ty.try_borrow_fn() {
                             if !ret_ty.is_tyvar() {
                                 node.wanteds.push(Constraint::eq(
-                                    expr_ty,
+                                    expr_ty.clone(),
                                     ret_ty.clone(),
                                     info.clone(),
                                 ));
@@ -1084,10 +1101,26 @@ fn generate_constraints_for_expr(
                     }
                 } else {
                     // Fallback: assume 3-ary [lhs, rhs, result].
-                    args.push(expr_ty);
+                    args.push(expr_ty.clone());
                 }
                 node.wanteds
-                    .push(Constraint::class(trait_fqn.clone(), args, info.clone()));
+                    .push(Constraint::class(trait_fqn.clone(), args.clone(), info.clone()));
+
+                // Also emit ResolveCallConstraint to record in the side-table
+                let method_name = method_fqn.item_name().unwrap_or_default();
+                let expected_fn_ty = Ty::Func(
+                    vec![args[0].clone(), args[1].clone()],
+                    Box::new(expr_ty.clone()),
+                );
+                node.wanteds.push(Constraint {
+                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                        args[0].clone(),
+                        method_name,
+                        expected_fn_ty,
+                        expr,
+                    )),
+                    info: info.clone(),
+                });
             }
             ExprKind::OpFunc { args, result, .. } => {
                 let arg_tys: Vec<_> = args.iter().map(|id| ctx.expr_ty_or_fresh(*id)).collect();
@@ -1099,7 +1132,7 @@ fn generate_constraints_for_expr(
             ExprKind::UnaryOp {
                 trait_fqn,
                 method_fqn,
-                expr,
+                expr: inner_expr,
                 ..
             } => {
                 // Unary operators (docs/type-system.md "Operators"):
@@ -1110,7 +1143,7 @@ fn generate_constraints_for_expr(
                 // Γ ⊢ uop e ⇝ (?r, C ∪ { UnaryOpTrait[T, ?r] })
                 //
                 // where `trait_fqn` is the unary operator's trait (e.g. "core::Neg").
-                let arg_ty = ctx.expr_ty_or_fresh(*expr);
+                let arg_ty = ctx.expr_ty_or_fresh(*inner_expr);
 
                 let mut args = vec![arg_ty];
 
@@ -1133,7 +1166,7 @@ fn generate_constraints_for_expr(
                         if let Some((_, _, _, ret_ty)) = field.ty.try_borrow_fn() {
                             if !ret_ty.is_tyvar() {
                                 node.wanteds.push(Constraint::eq(
-                                    expr_ty,
+                                    expr_ty.clone(),
                                     ret_ty.clone(),
                                     info.clone(),
                                 ));
@@ -1142,10 +1175,23 @@ fn generate_constraints_for_expr(
                     }
                 } else {
                     // Fallback: assume 2-ary [arg, result].
-                    args.push(expr_ty);
+                    args.push(expr_ty.clone());
                 }
                 node.wanteds
-                    .push(Constraint::class(trait_fqn.clone(), args, info.clone()));
+                    .push(Constraint::class(trait_fqn.clone(), args.clone(), info.clone()));
+
+                // Also emit ResolveCallConstraint to record in the side-table
+                let method_name = method_fqn.item_name().unwrap_or_default();
+                let expected_fn_ty = Ty::Func(vec![args[0].clone()], Box::new(expr_ty));
+                node.wanteds.push(Constraint {
+                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                        args[0].clone(),
+                        method_name,
+                        expected_fn_ty,
+                        expr,
+                    )),
+                    info: info.clone(),
+                });
             }
             ExprKind::Boxed { expr: inner } => {
                 // Heap allocation / boxing (Section 1.1 "Pointer types"):
@@ -1330,11 +1376,28 @@ fn generate_constraints_for_expr(
                         let index_fqn = ctx.env().resolve_builtin("Index");
                         node.wanteds.push(Constraint::class(
                             index_fqn,
-                            vec![container_ty, elem_ty.clone(), index_ty],
+                            vec![container_ty.clone(), elem_ty.clone(), index_ty.clone()],
                             info.clone(),
                         ));
                         node.wanteds
-                            .push(Constraint::eq(rhs_ty, elem_ty, info.clone()));
+                            .push(Constraint::eq(rhs_ty.clone(), elem_ty.clone(), info.clone()));
+
+                        // Also emit ResolveCallConstraint to record in the side-table
+                        // Index::set has signature: (*container, index, elem) -> elem?
+                        let recv_ty = Ty::ref_of(container_ty.clone());
+                        let expected_fn_ty = Ty::Func(
+                            vec![recv_ty, index_ty, rhs_ty],
+                            Box::new(Ty::nilable(elem_ty)),
+                        );
+                        node.wanteds.push(Constraint {
+                            kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                                container_ty,
+                                "set",
+                                expected_fn_ty,
+                                expr,
+                            )),
+                            info: info.clone(),
+                        });
                     }
                     AssignLhs::Deref(binding) => {
                         // Deref assignment `*p = e` (Section A.8):
@@ -1685,6 +1748,7 @@ fn generate_constraints_for_expr(
                             recv_ty,
                             field,
                             expected_fn_ty,
+                            expr, // call_site: the call expression's NodeId
                         )),
                         info: info.clone(),
                     });
@@ -1752,6 +1816,7 @@ fn generate_constraints_for_expr(
                             expected_fn_ty,
                             member_name,
                             receiver_subst,
+                            expr, // call_site: the call expression's NodeId
                         )),
                         info: info.clone(),
                     });

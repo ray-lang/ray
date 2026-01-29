@@ -127,6 +127,7 @@ pub fn lookup_prefix_op(db: &Database, symbol: String) -> Option<OperatorEntry> 
 #[cfg(test)]
 mod tests {
     use ray_shared::{
+        def::LibraryDefId,
         pathlib::{FilePath, ModulePath},
         resolution::DefTarget,
     };
@@ -340,8 +341,6 @@ trait Display['a] {
         db.set_input::<WorkspaceSnapshot>((), workspace);
 
         // Set up a library with operators
-        use ray_shared::def::LibraryDefId;
-
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::ops"));
@@ -388,8 +387,6 @@ trait Display['a] {
         db.set_input::<WorkspaceSnapshot>((), workspace);
 
         // Set up a library with the same operator
-        use ray_shared::def::LibraryDefId;
-
         let mut libraries = LoadedLibraries::default();
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::ops"));

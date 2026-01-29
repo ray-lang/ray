@@ -53,6 +53,26 @@ impl ModulePath {
     pub fn to_path(&self) -> Path {
         Path::from(self.0.join("::").as_str())
     }
+
+    /// Check if this module path starts with the given prefix.
+    ///
+    /// Returns true if the first segments of this path match all segments of the prefix.
+    pub fn starts_with(&self, prefix: &str) -> bool {
+        let prefix_segments: Vec<&str> = if prefix.is_empty() {
+            vec![]
+        } else {
+            prefix.split("::").collect()
+        };
+
+        if prefix_segments.len() > self.0.len() {
+            return false;
+        }
+
+        self.0
+            .iter()
+            .zip(prefix_segments.iter())
+            .all(|(a, b)| a == *b)
+    }
 }
 
 impl From<&str> for ModulePath {
@@ -118,5 +138,16 @@ mod tests {
         let path = Path::from("std::io");
         let module_path = ModulePath::from(&path);
         assert_eq!(module_path.segments(), &["std", "io"]);
+    }
+
+    #[test]
+    fn module_path_starts_with() {
+        let path = ModulePath::from("core::io::file");
+        assert!(path.starts_with("core"));
+        assert!(path.starts_with("core::io"));
+        assert!(path.starts_with("core::io::file"));
+        assert!(!path.starts_with("core::io::file::extra"));
+        assert!(!path.starts_with("std"));
+        assert!(!path.starts_with("cor"));
     }
 }

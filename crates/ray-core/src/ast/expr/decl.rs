@@ -8,7 +8,7 @@ use ray_shared::{pathlib::Path, span::parsed::Parsed, ty::Ty, utils::join};
 use ray_typing::types::{NominalKind, TyScheme};
 
 use crate::{
-    ast::{Assign, Func, FuncSig, Name, Node, TypeParams},
+    ast::{Assign, Expr, Func, FuncSig, Name, Node, TypeParams},
     strutils,
 };
 
@@ -72,7 +72,7 @@ pub enum Decl {
     /// Top-level execution context for a file.
     /// Contains all top-level statements (expressions) that are not declarations.
     /// Always has DefId with index 0 for the file.
-    FileMain(Vec<Node<super::Expr>>),
+    FileMain(Vec<Node<Expr>>),
 }
 
 impl PartialOrd for Decl {

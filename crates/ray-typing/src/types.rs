@@ -4,6 +4,7 @@ use std::ops::{Deref, DerefMut};
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     pathlib::ItemPath,
+    resolution::DefTarget,
     span::Source,
     ty::{Ty, TyVar},
 };
@@ -510,6 +511,21 @@ impl Substitutable for StructTy {
     }
 }
 
+/// Information about a resolved method call, output by the solver.
+///
+/// This captures which method was selected for a call expression, allowing
+/// the `call_resolution` query to build the full `CallResolution` with types
+/// and substitutions.
+#[derive(Clone, Debug)]
+pub struct MethodResolutionInfo {
+    /// The trait method target, if this is a trait method call.
+    pub trait_target: Option<DefTarget>,
+    /// The impl/inherent method target, if the receiver type is concrete.
+    pub impl_target: Option<DefTarget>,
+    /// The polymorphic type scheme of the resolved method.
+    pub poly_scheme: TyScheme,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldKind {
     Method,
@@ -522,6 +538,9 @@ pub struct TraitField {
     pub ty: TyScheme,
     pub is_static: bool,
     pub recv_mode: ReceiverMode,
+    /// The definition target for this trait method, if known.
+    /// Used by the solver to output resolved call targets.
+    pub target: Option<DefTarget>,
 }
 
 impl Substitutable for TraitField {
@@ -584,6 +603,9 @@ pub struct ImplField {
     pub is_static: bool,
     pub recv_mode: ReceiverMode,
     pub src: Source,
+    /// The definition target for this impl method, if known.
+    /// Used by the solver to output resolved call targets.
+    pub target: Option<DefTarget>,
 }
 
 impl Substitutable for ImplField {

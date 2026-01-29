@@ -17,7 +17,7 @@ use crate::{
     constraints::{ClassPredicate, Constraint, Predicate},
     env::TypecheckEnv,
     info::TypeSystemInfo,
-    types::{Subst, Substitutable, TyScheme},
+    types::{MethodResolutionInfo, Subst, Substitutable, TyScheme},
 };
 
 /// Minimal expression and pattern kinds used for v2 constraint generation.
@@ -356,6 +356,9 @@ pub struct SolverContext<'a> {
     /// Optional callback for looking up external schemes (e.g., from previously-checked
     /// binding groups in incremental compilation).
     external_schemes: Option<Box<dyn Fn(DefId) -> Option<TyScheme> + 'a>>,
+
+    /// Resolved method calls accumulated during solving, keyed by call site NodeId.
+    pub method_resolutions: HashMap<NodeId, MethodResolutionInfo>,
 }
 
 pub trait MetaAllocator {
@@ -393,6 +396,7 @@ impl<'a> SolverContext<'a> {
             generalized_metas: HashSet::new(),
             predicate_failures: Vec::new(),
             external_schemes: None,
+            method_resolutions: HashMap::new(),
         }
     }
 

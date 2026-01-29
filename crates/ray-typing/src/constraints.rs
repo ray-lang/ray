@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
+    node_id::NodeId,
     pathlib::ItemPath,
     ty::{Ty, TyVar},
 };
@@ -159,6 +160,8 @@ pub struct ResolveCallConstraint {
     pub expected_fn_ty: Ty,
     /// Name of the method for the call
     pub method_name: String,
+    /// The NodeId of the call expression, used to key the method resolution side-table.
+    pub call_site: NodeId,
 }
 
 impl ResolveCallConstraint {
@@ -166,6 +169,7 @@ impl ResolveCallConstraint {
         subject_ty: Ty,
         method_name: impl Into<String>,
         expected_fn_ty: Ty,
+        call_site: NodeId,
     ) -> Self {
         let method_name = method_name.into();
         ResolveCallConstraint {
@@ -173,6 +177,7 @@ impl ResolveCallConstraint {
             subject_ty,
             expected_fn_ty,
             method_name,
+            call_site,
         }
     }
 
@@ -182,6 +187,7 @@ impl ResolveCallConstraint {
         expected_fn_ty: Ty,
         method_name: impl Into<String>,
         receiver_subst: Option<Subst>,
+        call_site: NodeId,
     ) -> Self {
         let method_name = method_name.into();
         ResolveCallConstraint {
@@ -192,6 +198,7 @@ impl ResolveCallConstraint {
             subject_ty,
             expected_fn_ty,
             method_name,
+            call_site,
         }
     }
 

@@ -867,6 +867,7 @@ mod tests {
                 lib_def_id.module.clone(),
                 vec![format!("lib_{}", lib_def_id.index)],
             ),
+            DefTarget::Primitive(path) => path.clone(),
         }
     }
 
@@ -1299,8 +1300,6 @@ mod tests {
 
     #[test]
     fn mapped_def_types_uses_type_param_id_as_key() {
-        use ray_shared::type_param_id::TypeParamId;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -1354,8 +1353,6 @@ mod tests {
 
     #[test]
     fn mapped_def_types_origin_of_traces_back_to_type_param_id() {
-        use ray_shared::type_param_id::TypeParamId;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();

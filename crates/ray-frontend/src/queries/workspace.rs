@@ -8,6 +8,16 @@ use ray_shared::pathlib::{FilePath, ModulePath};
 
 use crate::query::{Database, Input};
 
+/// Global compiler options that affect compilation behavior.
+///
+/// This is a singleton input keyed by `()`.
+#[input(key = "()")]
+#[derive(Clone, Debug, Default, Hash)]
+pub struct CompilerOptions {
+    /// When true, don't automatically import `core` and `core::io`.
+    pub no_core: bool,
+}
+
 /// Input representing the source code contents of a file.
 ///
 /// Keyed by `FileId` so that queries can depend on individual file contents.

@@ -1,4 +1,4 @@
-use super::{DEPTH_IDX_BRACKET, DEPTH_IDX_CURLY, DEPTH_IDX_PAREN};
+use super::{DEPTH_IDX_BRACKET, DEPTH_IDX_CURLY, DEPTH_IDX_PAREN, ParseResult};
 use super::{ExprResult, Parser, context::ParseContext};
 
 use crate::ast::{Dict, Expr, List, Set, TrailingPolicy, ValueKind, token::TokenKind};
@@ -48,7 +48,7 @@ impl Parser<'_> {
         }
     }
 
-    fn peek_curly_braced_expr_kind(&mut self) -> super::ParseResult<CurlyBracedExprKind> {
+    fn peek_curly_braced_expr_kind(&mut self) -> ParseResult<CurlyBracedExprKind> {
         use TokenKind::*;
 
         debug_assert!(matches!(self.peek_kind(), LeftCurly));

@@ -817,6 +817,11 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Def(DefTarget::Library(_)) => {
                         todo!("FIXME: name resolved to library reference")
                     }
+                    Resolution::Def(DefTarget::Primitive(_)) => {
+                        // Primitive type names (int, bool, etc.) used as values
+                        ctx.emit_error(node, "type name cannot be used as a value".to_string());
+                        ctx.record_expr(node, ExprKind::Missing)
+                    }
                     Resolution::TypeParam(_) => {
                         todo!("FIXME: name resolved to type param reference")
                     }
@@ -852,6 +857,11 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Def(DefTarget::Library(_)) => {
                         // External references (from libraries)
                         todo!("FIXME: path resolved to library reference")
+                    }
+                    Resolution::Def(DefTarget::Primitive(_)) => {
+                        // Primitive type names (int, bool, etc.) used as values
+                        ctx.emit_error(node, "type name cannot be used as a value".to_string());
+                        ctx.record_expr(node, ExprKind::Missing)
                     }
                     Resolution::TypeParam(_) => {
                         todo!("FIXME: path resolved to type parameter reference")
