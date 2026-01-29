@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod exports;
 pub mod imports;
 pub mod libraries;
+pub mod locations;
 pub mod operators;
 pub mod parse;
 pub mod resolve;

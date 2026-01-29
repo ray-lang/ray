@@ -4793,7 +4793,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: span_of query
 
-- [ ] Define `span_of(NodeId)` query:
+- [x] Define `span_of(NodeId)` query:
   ```rust
   #[query]
   fn span_of(db: &Database, node_id: NodeId) -> Option<Span> {
@@ -4801,11 +4801,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
       parse_result.source_map.get_by_id(node_id)
   }
   ```
-- [ ] **Validate**: Unit test looking up spans
+- [x] **Validate**: Unit test looking up spans
 
 ##### Step 3: find_at_position query
 
-- [ ] Define `find_at_position(FileId, Position)` query:
+- [x] Define `find_at_position(FileId, Position)` query:
   ```rust
   #[query]
   fn find_at_position(db: &Database, file_id: FileId, pos: Position) -> Option<NodeId> {
@@ -4813,8 +4813,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       parse_result.source_map.node_at_position(pos)
   }
   ```
-- [ ] Build position → NodeId index in SourceMap
-- [ ] **Validate**: Unit test finding nodes at positions
+- [x] Build position → NodeId index in SourceMap
+- [x] **Validate**: Unit test finding nodes at positions
 
 ##### Step 4: symbol_targets query
 
