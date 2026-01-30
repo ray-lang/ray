@@ -18,8 +18,8 @@ use ray_shared::{pathlib::ItemPath, resolution::DefTarget, ty::Ty};
 use crate::{
     constraint_tree::ConstraintNode,
     constraints::{
-        CallKind, ClassPredicate, Constraint, ConstraintKind, Predicate, RecvKind,
-        ResolveCallConstraint,
+        ClassPredicate, Constraint, ConstraintKind, MemberAccessKind, Predicate, RecvKind,
+        ResolveMemberConstraint,
     },
     context::{ImplFailure, InstanceFailure, InstanceFailureStatus, SolverContext},
     env::TypecheckEnv,
@@ -94,8 +94,8 @@ fn solve_constraint(
         }
     }
 
-    if let ConstraintKind::ResolveCall(_) = &constraint.kind {
-        return solve_resolve_call(constraint, givens_with_subst, subst, ctx);
+    if let ConstraintKind::ResolveMember(_) = &constraint.kind {
+        return solve_resolve_member(constraint, givens_with_subst, subst, ctx);
     }
 
     // Finally, treat syntactic matches against givens as solved.
@@ -742,32 +742,33 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
     }
 }
 
-fn solve_resolve_call(
+fn solve_resolve_member(
     wanted: &Constraint,
     givens: &[Constraint],
     subst: &mut Subst,
     ctx: &mut SolverContext,
 ) -> SolveOutcome {
-    let ConstraintKind::ResolveCall(call) = &wanted.kind else {
+    let ConstraintKind::ResolveMember(call) = &wanted.kind else {
         return SolveOutcome::Unsolved;
     };
 
     log::debug!("[solve_resolve_call] {}", call);
     match &call.kind {
-        CallKind::Scoped { receiver_subst } => {
-            // Scoped calls resolve the method by name on the subject type.
-            // Unlike Instance calls, the subject type is explicit (T in T::method).
+        MemberAccessKind::ScopedCall { receiver_subst }
+        | MemberAccessKind::ScopedAccess { receiver_subst } => {
+            // Scoped calls/access resolve the member by name on the subject type.
+            // Unlike Instance calls, the subject type is explicit (T in T::member).
             let mut subject_ty = call.subject_ty.clone();
             subject_ty.apply_subst(subst);
             let maybe_subject_fqn = subject_fqn(&subject_ty);
 
             log::debug!(
-                "[solve_resolve_call] scoped subject_ty = {}, method_name = {}",
+                "[solve_resolve_call] scoped subject_ty = {}, member_name = {}",
                 subject_ty,
-                call.method_name
+                call.member_name
             );
 
-            let mut ctx_bundle = ResolveCallContext {
+            let mut ctx_bundle = ResolveMemberContext {
                 call,
                 wanted,
                 givens,
@@ -779,7 +780,7 @@ fn solve_resolve_call(
             };
 
             if let Some((trial_subst, outcome)) =
-                solve_scoped_call(StaticRequirement::Either, &mut ctx_bundle)
+                solve_scoped_member(StaticRequirement::Either, &mut ctx_bundle)
             {
                 subst.union(trial_subst);
                 outcome
@@ -787,14 +788,14 @@ fn solve_resolve_call(
                 SolveOutcome::Unsolved
             }
         }
-        CallKind::Instance => {
+        MemberAccessKind::InstanceCall => {
             let mut subject_ty = call.subject_ty.clone();
             subject_ty.apply_subst(subst);
 
             log::debug!(
                 "[solve_resolve_call] subject_ty = {}, method_name = {}",
                 subject_ty,
-                call.method_name
+                call.member_name
             );
 
             // Candidate inherent methods require a headed receiver type (we
@@ -806,7 +807,7 @@ fn solve_resolve_call(
             );
             let chosen = match choose_method(
                 maybe_subject_fqn.as_ref(),
-                &call.method_name,
+                &call.member_name,
                 StaticRequirement::NonStatic,
                 givens,
                 ctx.env(),
@@ -817,7 +818,7 @@ fn solve_resolve_call(
 
             // Solve transactionally: if we cannot fully discharge the call (including
             // its qualifiers), do not commit any unifications to the outer subst.
-            let mut call_ctx = ResolveCallContext {
+            let mut call_ctx = ResolveMemberContext {
                 call,
                 wanted,
                 givens,
@@ -846,11 +847,11 @@ fn solve_resolve_call(
                             trait_target: method.field.target.clone(),
                             impl_target: method.impl_target.clone(),
                             poly_scheme: method.field.ty.clone(),
-                        }
+                        },
                     };
 
                     // Record the method resolution in the side-table
-                    ctx.method_resolutions.insert(call.call_site, resolution);
+                    ctx.method_resolutions.insert(call.site, resolution);
                     outcome
                 }
                 _ => outcome,
@@ -956,21 +957,34 @@ fn find_unique_inherent_method(
     }
 }
 
-fn solve_scoped_call(
+fn solve_scoped_member(
     required_is_static: StaticRequirement,
-    ctx_bundle: &mut ResolveCallContext<'_, '_>,
+    ctx_bundle: &mut ResolveMemberContext<'_, '_>,
 ) -> Option<(Subst, SolveOutcome)> {
     let Some(subject_fqn) = ctx_bundle.subject_fqn else {
         return None;
     };
 
-    let chosen = choose_method(
-        Some(subject_fqn),
-        &ctx_bundle.call.method_name,
+    // Check if the subject is a trait type (e.g., `Greet[Person]::greet`).
+    // This requires special handling: we look up the method on the trait itself,
+    // then find the impl for the implementing type (first type argument).
+    let chosen = if let Some(trait_method) = find_method_for_trait_type(
+        ctx_bundle.subject_ty,
+        subject_fqn,
+        &ctx_bundle.call.member_name,
         required_is_static,
-        ctx_bundle.givens,
         ctx_bundle.ctx.env(),
-    )?;
+    ) {
+        ChosenMethod::Trait(trait_method)
+    } else {
+        choose_method(
+            Some(subject_fqn),
+            &ctx_bundle.call.member_name,
+            required_is_static,
+            ctx_bundle.givens,
+            ctx_bundle.ctx.env(),
+        )?
+    };
     log::debug!(
         "[solve_scoped_call] chosen = {:?}, subject_ty = {}, recv_subst = {:?}",
         chosen,
@@ -1050,15 +1064,15 @@ fn solve_scoped_call(
             ctx_bundle
                 .ctx
                 .method_resolutions
-                .insert(ctx_bundle.call.call_site, resolution_info);
+                .insert(ctx_bundle.call.site, resolution_info);
             Some((trial_subst, outcome))
         }
         _ => None,
     }
 }
 
-struct ResolveCallContext<'a, 'ctx> {
-    call: &'a ResolveCallConstraint,
+struct ResolveMemberContext<'a, 'ctx> {
+    call: &'a ResolveMemberConstraint,
     wanted: &'a Constraint,
     givens: &'a [Constraint],
     subst: &'a Subst,
@@ -1226,6 +1240,84 @@ fn find_unique_trait_method_for_recv<'a>(
     }
 }
 
+/// Find a method when the subject type IS a trait type (e.g., `Greet[Person]::greet`).
+///
+/// This handles the case where the user explicitly uses a trait instantiation as the
+/// receiver in scoped access. The implementing type is extracted from the trait type's
+/// first type argument.
+///
+/// For example, in `Greet[Person]::greet(p)`:
+/// - `subject_ty` is `Greet[Person]` (Ty::Proj("Greet", [Person]))
+/// - `subject_fqn` is "Greet"
+/// - We look up the trait `Greet`, find method `greet`
+/// - We extract `Person` as the implementing type
+/// - We find `impl Greet[Person]` to get the impl_target
+fn find_method_for_trait_type(
+    subject_ty: &Ty,
+    subject_fqn: &ItemPath,
+    method_name: &str,
+    required_is_static: StaticRequirement,
+    env: &dyn TypecheckEnv,
+) -> Option<TraitMethod> {
+    // Check if subject_fqn refers to a trait
+    let trait_ty = env.trait_def(subject_fqn)?;
+
+    // Find the method on the trait
+    let field = trait_ty.get_field(method_name)?.clone();
+
+    // Check static requirement
+    match required_is_static {
+        StaticRequirement::Static if !field.is_static => return None,
+        StaticRequirement::NonStatic if field.is_static => return None,
+        _ => {}
+    }
+
+    // Extract the implementing type from subject_ty's first type argument
+    // For Greet[Person], this gives us Person
+    let impl_recv_ty = match subject_ty {
+        Ty::Proj(_, args) if !args.is_empty() => args[0].clone(),
+        _ => return None,
+    };
+
+    // Get the FQN of the implementing type to find its impl
+    let impl_recv_fqn = match &impl_recv_ty {
+        Ty::Const(p) | Ty::Proj(p, _) => p,
+        _ => return None,
+    };
+
+    // Find an impl of this trait for the implementing type
+    let impls = env.impls_for_recv(impl_recv_fqn);
+    let impl_target = impls.iter().find_map(|impl_ty| {
+        // Check if this impl is for our trait
+        let ImplKind::Trait {
+            trait_ty: impl_trait_ty,
+            ..
+        } = &impl_ty.kind
+        else {
+            return None;
+        };
+        let impl_trait_path = match impl_trait_ty {
+            Ty::Const(p) | Ty::Proj(p, _) => p,
+            _ => return None,
+        };
+        if impl_trait_path != subject_fqn {
+            return None;
+        }
+        // Find the method in this impl
+        impl_ty
+            .fields
+            .iter()
+            .find(|f| f.path.item_name() == Some(&method_name.to_string()))
+            .and_then(|f| f.target.clone())
+    });
+
+    Some(TraitMethod {
+        trait_ty,
+        field,
+        impl_target,
+    })
+}
+
 fn receiver_subst_from_recv_ty(recv_ty: &Ty, subject_ty: &Ty) -> Option<Subst> {
     let mut vars = HashSet::new();
     recv_ty.free_ty_vars(&mut vars);
@@ -1250,7 +1342,7 @@ fn solve_chosen_method_call(
     is_static: bool,
     recv_mode: ReceiverMode,
     trait_method: Option<(&TraitTy, &TraitField)>,
-    ctx_bundle: &mut ResolveCallContext<'_, '_>,
+    ctx_bundle: &mut ResolveMemberContext<'_, '_>,
     subst: &mut Subst,
 ) -> SolveOutcome {
     // Instantiate the method scheme at this use site.
@@ -1304,7 +1396,7 @@ fn solve_chosen_method_call(
         }
     }
 
-    let mut expected_fn_ty = ctx_bundle.call.expected_fn_ty.clone();
+    let mut expected_fn_ty = ctx_bundle.call.expected_ty.clone();
     expected_fn_ty.apply_subst(subst);
 
     // Unify the method type against the expected call signature.
@@ -1341,7 +1433,7 @@ fn solve_chosen_method_call(
     }
 
     // Emit qualifiers as additional goals rather than requiring them to be
-    // immediately solvable. This allows ResolveCall to commit signature
+    // immediately solvable. This allows ResolveMember to commit signature
     // equalities while deferring trait obligations.
     for mut pred in qualifiers {
         pred.apply_subst(subst);
@@ -1361,7 +1453,7 @@ fn solve_chosen_method_call(
 fn solve_with_chosen_method(
     chosen: &ChosenMethod,
     receiver_subst: Option<&Subst>,
-    ctx_bundle: &mut ResolveCallContext<'_, '_>,
+    ctx_bundle: &mut ResolveMemberContext<'_, '_>,
     trial_subst: &mut Subst,
 ) -> SolveOutcome {
     match chosen {
@@ -1395,20 +1487,22 @@ mod tests {
         file_id::FileId,
         node_id::NodeId,
         pathlib::ItemPath,
+        span::Source,
         ty::{SchemaVarAllocator, Ty, TyVar},
     };
 
     use crate::{
         constraints::{
-            ClassPredicate, Constraint, ConstraintKind, Predicate, RecvKind, ResolveCallConstraint,
+            ClassPredicate, Constraint, ConstraintKind, Predicate, RecvKind,
+            ResolveMemberConstraint,
         },
         context::SolverContext,
         goal_solver::InstanceSolveStatus,
         info::TypeSystemInfo,
         mocks::MockTypecheckEnv,
         types::{
-            FieldKind, ImplKind, ImplTy, ReceiverMode, Subst, Substitutable as _, TraitField,
-            TraitTy, TyScheme,
+            FieldKind, ImplField, ImplKind, ImplTy, ReceiverMode, Subst, Substitutable as _,
+            TraitField, TraitTy, TyScheme,
         },
     };
 
@@ -1693,7 +1787,7 @@ mod tests {
             index: 0,
         };
         let wanted = Constraint {
-            kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+            kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                 subject_ty.clone(),
                 "hash",
                 expected_fn_ty,
@@ -1710,5 +1804,214 @@ mod tests {
 
         let res = solve_constraints(&[wanted], &givens, &mut subst, &mut ctx);
         assert!(res.unsolved.is_empty());
+    }
+
+    #[test]
+    fn resolve_scoped_call_static_method_on_inherent_impl() {
+        // Test: Math::double(5) where Math has an inherent impl with `static fn double(x: int) -> int`
+        let mut typecheck_env = MockTypecheckEnv::new();
+
+        // impl object Math {
+        //     static fn double(x: int) -> int => x * 2
+        // }
+        typecheck_env.add_impl(ImplTy {
+            kind: ImplKind::Inherent {
+                recv_ty: Ty::con("Math"),
+            },
+            predicates: vec![],
+            fields: vec![ImplField {
+                kind: FieldKind::Method,
+                path: ItemPath::from("Math::double"),
+                scheme: Some(TyScheme {
+                    vars: vec![],
+                    qualifiers: vec![],
+                    ty: Ty::Func(vec![Ty::int()], Box::new(Ty::int())),
+                }),
+                is_static: true,
+                recv_mode: ReceiverMode::None,
+                src: Source::default(),
+                target: None,
+            }],
+        });
+
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+        let mut subst = Subst::new();
+
+        // Expected function type: (int) -> int
+        let expected_fn_ty = Ty::Func(vec![Ty::int()], Box::new(Ty::int()));
+
+        let dummy_node_id = NodeId {
+            owner: DefId {
+                file: FileId(0),
+                index: 0,
+            },
+            index: 0,
+        };
+
+        // ScopedCall constraint: Math::double with expected fn type
+        let wanted = Constraint {
+            kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_call(
+                Ty::con("Math"), // subject_ty
+                expected_fn_ty,  // expected_ty
+                "double",        // member_name
+                None,            // receiver_subst
+                dummy_node_id,   // site
+            )),
+            info: TypeSystemInfo::default(),
+        };
+
+        let res = solve_constraints(&[wanted], &[], &mut subst, &mut ctx);
+        assert!(
+            res.unsolved.is_empty(),
+            "ScopedCall should resolve static method: {:?}",
+            res.unsolved
+        );
+
+        // Should have recorded the resolution
+        assert!(
+            ctx.method_resolutions.contains_key(&dummy_node_id),
+            "should record method resolution for scoped call"
+        );
+    }
+
+    #[test]
+    fn resolve_scoped_access_static_method_as_value() {
+        // Test: let f = Math::double (non-call access to static method)
+        let mut typecheck_env = MockTypecheckEnv::new();
+
+        // impl object Math {
+        //     static fn double(x: int) -> int => x * 2
+        // }
+        typecheck_env.add_impl(ImplTy {
+            kind: ImplKind::Inherent {
+                recv_ty: Ty::con("Math"),
+            },
+            predicates: vec![],
+            fields: vec![ImplField {
+                kind: FieldKind::Method,
+                path: ItemPath::from("Math::double"),
+                scheme: Some(TyScheme {
+                    vars: vec![],
+                    qualifiers: vec![],
+                    ty: Ty::Func(vec![Ty::int()], Box::new(Ty::int())),
+                }),
+                is_static: true,
+                recv_mode: ReceiverMode::None,
+                src: Source::default(),
+                target: None,
+            }],
+        });
+
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+        let mut subst = Subst::new();
+
+        // For non-call access, we expect the method's function type
+        let expected_ty = Ty::Func(vec![Ty::int()], Box::new(Ty::int()));
+
+        let dummy_node_id = NodeId {
+            owner: DefId {
+                file: FileId(0),
+                index: 0,
+            },
+            index: 0,
+        };
+
+        // ScopedAccess constraint: Math::double as a value
+        let wanted = Constraint {
+            kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_access(
+                Ty::con("Math"), // subject_ty
+                expected_ty,     // expected_ty (method's fn type)
+                "double",        // member_name
+                None,            // receiver_subst
+                dummy_node_id,   // site
+            )),
+            info: TypeSystemInfo::default(),
+        };
+
+        let res = solve_constraints(&[wanted], &[], &mut subst, &mut ctx);
+        assert!(
+            res.unsolved.is_empty(),
+            "ScopedAccess should resolve static method as value: {:?}",
+            res.unsolved
+        );
+
+        // Should have recorded the resolution
+        assert!(
+            ctx.method_resolutions.contains_key(&dummy_node_id),
+            "should record method resolution for scoped access"
+        );
+    }
+
+    #[test]
+    fn resolve_scoped_access_infers_method_type() {
+        // Test: let f = Math::double where f's type is a fresh meta
+        // Solver should unify the meta with (int) -> int
+        let mut typecheck_env = MockTypecheckEnv::new();
+
+        typecheck_env.add_impl(ImplTy {
+            kind: ImplKind::Inherent {
+                recv_ty: Ty::con("Math"),
+            },
+            predicates: vec![],
+            fields: vec![ImplField {
+                kind: FieldKind::Method,
+                path: ItemPath::from("Math::double"),
+                scheme: Some(TyScheme {
+                    vars: vec![],
+                    qualifiers: vec![],
+                    ty: Ty::Func(vec![Ty::int()], Box::new(Ty::int())),
+                }),
+                is_static: true,
+                recv_mode: ReceiverMode::None,
+                src: Source::default(),
+                target: None,
+            }],
+        });
+
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+        let mut subst = Subst::new();
+
+        // Fresh meta for the expression type (what `f` would be typed as)
+        let expr_ty = ctx.fresh_meta();
+        let expr_ty_var = expr_ty.clone().as_tyvar();
+
+        let dummy_node_id = NodeId {
+            owner: DefId {
+                file: FileId(0),
+                index: 0,
+            },
+            index: 0,
+        };
+
+        let wanted = Constraint {
+            kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_access(
+                Ty::con("Math"),
+                expr_ty, // fresh meta
+                "double",
+                None,
+                dummy_node_id,
+            )),
+            info: TypeSystemInfo::default(),
+        };
+
+        let res = solve_constraints(&[wanted], &[], &mut subst, &mut ctx);
+        assert!(
+            res.unsolved.is_empty(),
+            "ScopedAccess should resolve and infer type: {:?}",
+            res.unsolved
+        );
+
+        // The meta should be unified to the method's type
+        let resolved_ty = subst.get(&expr_ty_var).expect("expr type should be bound");
+        let mut resolved = resolved_ty.clone();
+        resolved.apply_subst(&subst);
+        assert_eq!(
+            resolved,
+            Ty::Func(vec![Ty::int()], Box::new(Ty::int())),
+            "expression type should be inferred as (int) -> int"
+        );
     }
 }

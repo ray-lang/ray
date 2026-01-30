@@ -10,11 +10,7 @@ use ray_shared::{
 };
 
 use crate::{
-    queries::{
-        calls::call_resolution,
-        parse::parse_file,
-        resolve::name_resolutions,
-    },
+    queries::{calls::call_resolution, parse::parse_file, resolve::name_resolutions},
     query::{Database, Query},
 };
 
@@ -71,10 +67,7 @@ pub fn symbol_targets(db: &Database, node_id: NodeId) -> Vec<SymbolTarget> {
     targets
 }
 
-fn symbol_targets_from_resolution(
-    resolution: &Resolution,
-    role: SymbolRole,
-) -> Vec<SymbolTarget> {
+fn symbol_targets_from_resolution(resolution: &Resolution, role: SymbolRole) -> Vec<SymbolTarget> {
     match resolution {
         Resolution::Def(target) => {
             vec![SymbolTarget::new(SymbolIdentity::Def(target.clone()), role)]
@@ -372,7 +365,9 @@ fn test() -> int {
             "expected method def target"
         );
         assert!(
-            targets.iter().all(|target| target.role == SymbolRole::Reference),
+            targets
+                .iter()
+                .all(|target| target.role == SymbolRole::Reference),
             "expected reference roles for method call"
         );
     }
@@ -614,13 +609,139 @@ fn test() -> int => Math[int]::double(5)
             "expected method def target for scoped access call"
         );
         assert!(
-            targets.iter().all(|target| target.role == SymbolRole::Reference),
+            targets
+                .iter()
+                .all(|target| target.role == SymbolRole::Reference),
             "expected reference roles"
         );
     }
 
-    // Note: Pattern binding test for destructuring (e.g., `Point { x, y } = ...`)
-    // is omitted because destructuring patterns are not yet fully supported.
-    // See typing system comment: "destructuring patterns are left for future work."
-    // Local binding definitions are tested via function parameters and closure arguments.
+    #[test]
+    fn symbol_targets_resolves_scoped_access_trait_method_on_type() {
+        // Test scoped access to a trait method via a trait instantiation: Greet[Person]::greet
+        let source = r#"
+trait Greet['t] {
+    fn greet(self: *'t) -> int
+}
+
+struct Person {}
+
+impl Greet[Person] {
+    fn greet(self: *Person) -> int => 1
+}
+
+fn test(p: *Person) -> int => Greet[Person]::greet(p)
+"#;
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the impl method def - it's the greet with a parent (impl methods have parents)
+        // There are two greets: one in the trait (no body), one in the impl (has body)
+        let impl_method_def = parse_result
+            .defs
+            .iter()
+            .filter(|def| def.name == "greet")
+            .last() // Impl method comes after trait method
+            .expect("expected impl method def");
+
+        let mut method_name_id = None;
+        for item in walk_file(&parse_result.ast) {
+            let WalkItem::Expr(expr) = item else {
+                continue;
+            };
+            let Expr::Call(call) = &expr.value else {
+                continue;
+            };
+            if let Expr::ScopedAccess(scoped) = &call.callee.value {
+                if scoped.rhs.path.name().as_deref() == Some("greet") {
+                    method_name_id = Some(scoped.rhs.id);
+                    break;
+                }
+            }
+        }
+
+        let method_name_id = method_name_id.expect("expected scoped access call name node");
+        let targets = symbol_targets(&db, method_name_id);
+
+        // The scoped access Greet[Person]::greet should resolve to the impl method
+        assert!(
+            targets.iter().any(|target| {
+                matches!(
+                    target.identity,
+                    SymbolIdentity::Def(DefTarget::Workspace(def_id))
+                        if def_id == impl_method_def.def_id
+                )
+            }),
+            "expected impl method def target for scoped trait method call, got {:?}",
+            targets
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| target.role == SymbolRole::Reference),
+            "expected reference roles"
+        );
+    }
+
+    #[test]
+    fn symbol_targets_resolves_scoped_access_on_parameterized_inherent_impl() {
+        // Test scoped access on a parameterized inherent impl: Box['t]::value
+        // Note: The method doesn't use 't in its signature, same as Math::double
+        let source = r#"
+struct Box['t] {}
+
+impl object Box['t] {
+    static fn value() -> int => 42
+}
+
+fn test() -> int => Box[int]::value()
+"#;
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+
+        let method_def = parse_result
+            .defs
+            .iter()
+            .find(|def| def.name == "value")
+            .expect("expected value method def");
+
+        let mut method_name_id = None;
+        for item in walk_file(&parse_result.ast) {
+            let WalkItem::Expr(expr) = item else {
+                continue;
+            };
+            let Expr::Call(call) = &expr.value else {
+                continue;
+            };
+            if let Expr::ScopedAccess(scoped) = &call.callee.value {
+                if scoped.rhs.path.name().as_deref() == Some("value") {
+                    method_name_id = Some(scoped.rhs.id);
+                    break;
+                }
+            }
+        }
+
+        let method_name_id = method_name_id.expect("expected scoped access call name node");
+
+        let targets = symbol_targets(&db, method_name_id);
+
+        assert!(
+            targets.iter().any(|target| {
+                matches!(
+                    target.identity,
+                    SymbolIdentity::Def(DefTarget::Workspace(def_id))
+                        if def_id == method_def.def_id
+                )
+            }),
+            "expected method def target for scoped access on parameterized impl"
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| target.role == SymbolRole::Reference),
+            "expected reference roles"
+        );
+    }
 }

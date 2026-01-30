@@ -15,7 +15,7 @@ use ray_shared::{
 use crate::{
     PatternKind, TypeCheckInput,
     binding_groups::BindingGroup,
-    constraints::{Constraint, ConstraintKind, ResolveCallConstraint},
+    constraints::{Constraint, ConstraintKind, ResolveMemberConstraint},
     context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
     info::TypeSystemInfo,
     types::{Subst, Substitutable, TyScheme},
@@ -734,11 +734,17 @@ fn generate_constraints_for_expr(
             ExprKind::ScopedAccess {
                 member_name, lhs_ty, ..
             } => {
-                // Non-call scoped access `T::member` (e.g., taking a method as a value).
-                // This is handled by generating a ResolveCall constraint that resolves
-                // the member by name on the LHS type, then equates the result type.
+                // Scoped access `T::member`: `T[...]` instantiates the *type*
+                // on the left-hand side, not the member binding itself.
                 //
-                // Compute receiver substitution for impl-scoped schema variables.
+                // However, many associated members currently have schemes
+                // whose qualifiers mention impl-scoped schema variables.
+                //
+                // Inside an annotated binding body, we already have a
+                // schema->skolem substitution from skolemization. When the LHS
+                // type is parameterized by those same schema vars, we can
+                // derive the receiver substitution simply by restricting that
+                // skolem substitution to the vars that appear in `lhs_ty`.
                 let receiver_subst = skolem_subst.and_then(|skolem_subst| {
                     let mut lhs_vars = HashSet::new();
                     lhs_ty.free_ty_vars(&mut lhs_vars);
@@ -753,15 +759,16 @@ fn generate_constraints_for_expr(
                     if subst.is_empty() { None } else { Some(subst) }
                 });
 
-                // For non-call scoped access, we want the method's function type.
-                // We emit a ResolveCall constraint with the expression's NodeId as call_site.
+                // For non-call scoped access (e.g., taking a method as a value),
+                // we emit a ResolveMember constraint that finds the member by name
+                // on the LHS type and unifies with the expression type.
                 node.wanteds.push(Constraint {
-                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_scoped(
+                    kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_access(
                         lhs_ty.clone(),
-                        expr_ty, // method's function type
+                        expr_ty, // member's type (function type for methods)
                         member_name.clone(),
                         receiver_subst,
-                        expr, // use expr NodeId as call_site for resolution tracking
+                        expr, // use expr NodeId as site for resolution tracking
                     )),
                     info,
                 });
@@ -1033,7 +1040,7 @@ fn generate_constraints_for_expr(
                     info.clone(),
                 ));
 
-                // Also emit ResolveCallConstraint to record in the side-table
+                // Also emit ResolveMemberConstraint to record in the side-table
                 // Index::get has signature: (*container, index) -> elem?
                 let recv_ty = Ty::ref_of(container_ty.clone());
                 let expected_fn_ty = Ty::Func(
@@ -1041,7 +1048,7 @@ fn generate_constraints_for_expr(
                     Box::new(Ty::nilable(elem_ty)),
                 );
                 node.wanteds.push(Constraint {
-                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                    kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                         container_ty,
                         "get",
                         expected_fn_ty,
@@ -1104,14 +1111,14 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::class(trait_fqn.clone(), args.clone(), info.clone()));
 
-                // Also emit ResolveCallConstraint to record in the side-table
+                // Also emit ResolveMemberConstraint to record in the side-table
                 let method_name = method_fqn.item_name().unwrap_or_default();
                 let expected_fn_ty = Ty::Func(
                     vec![args[0].clone(), args[1].clone()],
                     Box::new(expr_ty.clone()),
                 );
                 node.wanteds.push(Constraint {
-                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                    kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                         args[0].clone(),
                         method_name,
                         expected_fn_ty,
@@ -1178,11 +1185,11 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::class(trait_fqn.clone(), args.clone(), info.clone()));
 
-                // Also emit ResolveCallConstraint to record in the side-table
+                // Also emit ResolveMemberConstraint to record in the side-table
                 let method_name = method_fqn.item_name().unwrap_or_default();
                 let expected_fn_ty = Ty::Func(vec![args[0].clone()], Box::new(expr_ty));
                 node.wanteds.push(Constraint {
-                    kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                    kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                         args[0].clone(),
                         method_name,
                         expected_fn_ty,
@@ -1380,7 +1387,7 @@ fn generate_constraints_for_expr(
                         node.wanteds
                             .push(Constraint::eq(rhs_ty.clone(), elem_ty.clone(), info.clone()));
 
-                        // Also emit ResolveCallConstraint to record in the side-table
+                        // Also emit ResolveMemberConstraint to record in the side-table
                         // Index::set has signature: (*container, index, elem) -> elem?
                         let recv_ty = Ty::ref_of(container_ty.clone());
                         let expected_fn_ty = Ty::Func(
@@ -1388,7 +1395,7 @@ fn generate_constraints_for_expr(
                             Box::new(Ty::nilable(elem_ty)),
                         );
                         node.wanteds.push(Constraint {
-                            kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                            kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                                 container_ty,
                                 "set",
                                 expected_fn_ty,
@@ -1738,11 +1745,11 @@ fn generate_constraints_for_expr(
                     // (even in the presence of annotations), and global-by-name lookup is
                     // ambiguous once multiple traits or inherent impls share method names.
                     //
-                    // Instead, emit a deferred `ResolveCall` constraint and let the solver
+                    // Instead, emit a deferred `ResolveMember` constraint and let the solver
                     // rewrite it into existing constraints (Instantiate/Eq/Recv) once the
                     // receiver/LHS type becomes headed.
                     node.wanteds.push(Constraint {
-                        kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_instance(
+                        kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                             recv_ty,
                             field,
                             expected_fn_ty,
@@ -1808,7 +1815,7 @@ fn generate_constraints_for_expr(
                     });
 
                     node.wanteds.push(Constraint {
-                        kind: ConstraintKind::ResolveCall(ResolveCallConstraint::new_scoped(
+                        kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_call(
                             lhs_ty,
                             expected_fn_ty,
                             member_name,
@@ -1819,7 +1826,7 @@ fn generate_constraints_for_expr(
                     });
 
                     // Recurse into explicit args, but do not recurse into the callee
-                    // `ScopedAccess` node (which would generate another ResolveCall).
+                    // `ScopedAccess` node (which would generate another ResolveMember).
                     for child_expr in args.iter().copied() {
                         generate_constraints_for_child(
                             input,

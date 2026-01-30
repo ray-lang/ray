@@ -134,84 +134,108 @@ pub struct InstantiateConstraint {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CallKind {
-    /// `recv.method(args...)`
-    Instance,
-    /// `T::method(args...)` or `T[...]::method(args...)`
+pub enum MemberAccessKind {
+    /// `recv.member(args...)` - instance member call
+    InstanceCall,
+    /// `T::member(args...)` or `T[...]::member(args...)` - scoped member call
     ///
-    /// Unlike Instance, the method is resolved by name on the explicit subject
+    /// Unlike InstanceCall, the member is resolved by name on the explicit subject
     /// type rather than an inferred receiver type. The solver looks up the
-    /// method the same way as Instance calls.
-    Scoped {
+    /// member the same way as InstanceCall.
+    ScopedCall {
+        receiver_subst: Option<Subst>,
+    },
+    /// `T::member` - scoped member access (non-call, e.g., constant or fn as value)
+    ///
+    /// Same resolution as ScopedCall but not a call expression - the member's
+    /// type scheme is instantiated and unified with the expected type.
+    ScopedAccess {
         receiver_subst: Option<Subst>,
     },
 }
 
-/// Deferred resolution of a member call.
+/// Deferred resolution of a member access.
 ///
-/// This is emitted during constraint generation for member-call syntax when
+/// This is emitted during constraint generation for member access syntax when
 /// the receiver/LHS type is not yet known (it is often still a meta variable
 /// at this phase). The solver is responsible for resolving this into the
 /// existing constraint forms (Instantiate/Eq/Recv) once the subject type is
 /// headed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolveCallConstraint {
-    pub kind: CallKind,
-    /// Receiver type (for instance calls) or LHS type (for scoped calls).
+pub struct ResolveMemberConstraint {
+    pub kind: MemberAccessKind,
+    /// Receiver type (for instance calls) or LHS type (for scoped access).
     pub subject_ty: Ty,
-    /// Expected function type at the call site, including the receiver.
-    pub expected_fn_ty: Ty,
-    /// Name of the method for the call
-    pub method_name: String,
-    /// The NodeId of the call expression, used to key the method resolution side-table.
-    pub call_site: NodeId,
+    /// Expected type - function type for calls, member's type for non-call access.
+    pub expected_ty: Ty,
+    /// Name of the member being accessed.
+    pub member_name: String,
+    /// The NodeId of the expression, used to key the method resolution side-table.
+    pub site: NodeId,
 }
 
-impl ResolveCallConstraint {
+impl ResolveMemberConstraint {
     pub fn new_instance(
         subject_ty: Ty,
-        method_name: impl Into<String>,
-        expected_fn_ty: Ty,
-        call_site: NodeId,
+        member_name: impl Into<String>,
+        expected_ty: Ty,
+        site: NodeId,
     ) -> Self {
-        let method_name = method_name.into();
-        ResolveCallConstraint {
-            kind: CallKind::Instance,
+        let member_name = member_name.into();
+        ResolveMemberConstraint {
+            kind: MemberAccessKind::InstanceCall,
             subject_ty,
-            expected_fn_ty,
-            method_name,
-            call_site,
+            expected_ty,
+            member_name,
+            site,
         }
     }
 
-    pub fn new_scoped(
+    pub fn new_scoped_call(
         subject_ty: Ty,
-        expected_fn_ty: Ty,
-        method_name: impl Into<String>,
+        expected_ty: Ty,
+        member_name: impl Into<String>,
         receiver_subst: Option<Subst>,
-        call_site: NodeId,
+        site: NodeId,
     ) -> Self {
-        let method_name = method_name.into();
-        ResolveCallConstraint {
-            kind: CallKind::Scoped { receiver_subst },
+        let member_name = member_name.into();
+        ResolveMemberConstraint {
+            kind: MemberAccessKind::ScopedCall { receiver_subst },
             subject_ty,
-            expected_fn_ty,
-            method_name,
-            call_site,
+            expected_ty,
+            member_name,
+            site,
+        }
+    }
+
+    pub fn new_scoped_access(
+        subject_ty: Ty,
+        expected_ty: Ty,
+        member_name: impl Into<String>,
+        receiver_subst: Option<Subst>,
+        site: NodeId,
+    ) -> Self {
+        let member_name = member_name.into();
+        ResolveMemberConstraint {
+            kind: MemberAccessKind::ScopedAccess { receiver_subst },
+            subject_ty,
+            expected_ty,
+            member_name,
+            site,
         }
     }
 
     pub fn free_ty_vars(&self, out: &mut HashSet<TyVar>) {
         self.subject_ty.free_ty_vars(out);
-        self.expected_fn_ty.free_ty_vars(out);
-        if let CallKind::Scoped {
-            receiver_subst: Some(receiver_subst),
-            ..
-        } = &self.kind
-        {
-            for ty in receiver_subst.values() {
-                ty.free_ty_vars(out);
+        self.expected_ty.free_ty_vars(out);
+        match &self.kind {
+            MemberAccessKind::ScopedCall { receiver_subst: Some(subst) }
+            | MemberAccessKind::ScopedAccess { receiver_subst: Some(subst) } => {
+                for ty in subst.values() {
+                    ty.free_ty_vars(out);
+                }
             }
+            _ => {}
         }
     }
 }
@@ -289,7 +313,7 @@ impl Predicate {
 pub enum ConstraintKind {
     Eq(EqConstraint),
     Instantiate(InstantiateConstraint),
-    ResolveCall(ResolveCallConstraint),
+    ResolveMember(ResolveMemberConstraint),
     Class(ClassPredicate),
     HasField(HasFieldPredicate),
     Recv(RecvPredicate),
@@ -388,7 +412,7 @@ impl Constraint {
             ConstraintKind::Recv(r) => Some(Predicate::Recv(r.clone())),
             ConstraintKind::Eq(_)
             | ConstraintKind::Instantiate(_)
-            | ConstraintKind::ResolveCall(_) => None,
+            | ConstraintKind::ResolveMember(_) => None,
         }
     }
 
@@ -420,8 +444,8 @@ impl Constraint {
                     }
                 }
             }
-            ConstraintKind::ResolveCall(call) => {
-                call.free_ty_vars(out);
+            ConstraintKind::ResolveMember(member) => {
+                member.free_ty_vars(out);
             }
         }
     }
@@ -467,18 +491,18 @@ impl Substitutable for InstantiateConstraint {
     }
 }
 
-impl Substitutable for ResolveCallConstraint {
+impl Substitutable for ResolveMemberConstraint {
     fn apply_subst(&mut self, subst: &Subst) {
         self.subject_ty.apply_subst(subst);
-        self.expected_fn_ty.apply_subst(subst);
-        if let CallKind::Scoped {
-            receiver_subst: Some(receiver_subst),
-            ..
-        } = &mut self.kind
-        {
-            for ty in receiver_subst.values_mut() {
-                ty.apply_subst(subst);
+        self.expected_ty.apply_subst(subst);
+        match &mut self.kind {
+            MemberAccessKind::ScopedCall { receiver_subst: Some(rs) }
+            | MemberAccessKind::ScopedAccess { receiver_subst: Some(rs) } => {
+                for ty in rs.values_mut() {
+                    ty.apply_subst(subst);
+                }
             }
+            _ => {}
         }
     }
 }
@@ -498,7 +522,7 @@ impl Substitutable for ConstraintKind {
         match self {
             ConstraintKind::Eq(c) => c.apply_subst(subst),
             ConstraintKind::Instantiate(c) => c.apply_subst(subst),
-            ConstraintKind::ResolveCall(c) => c.apply_subst(subst),
+            ConstraintKind::ResolveMember(c) => c.apply_subst(subst),
             ConstraintKind::Class(c) => c.apply_subst(subst),
             ConstraintKind::HasField(c) => c.apply_subst(subst),
             ConstraintKind::Recv(c) => c.apply_subst(subst),
@@ -518,7 +542,7 @@ impl std::fmt::Display for ConstraintKind {
         match self {
             ConstraintKind::Eq(eq) => write!(f, "{}", eq),
             ConstraintKind::Instantiate(inst) => write!(f, "{}", inst),
-            ConstraintKind::ResolveCall(call) => write!(f, "{}", call),
+            ConstraintKind::ResolveMember(member) => write!(f, "{}", member),
             ConstraintKind::Class(c) => write!(f, "{}", c),
             ConstraintKind::HasField(h) => write!(f, "{}", h),
             ConstraintKind::Recv(r) => write!(f, "{}", r),
@@ -578,25 +602,30 @@ impl std::fmt::Display for InstantiateConstraint {
     }
 }
 
-impl std::fmt::Display for ResolveCallConstraint {
+impl std::fmt::Display for ResolveMemberConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let method_name = &self.method_name;
+        let member_name = &self.member_name;
         let kind_str = match &self.kind {
-            CallKind::Instance => {
-                format!("Instance")
-            }
-            CallKind::Scoped { receiver_subst } => {
+            MemberAccessKind::InstanceCall => "InstanceCall".to_string(),
+            MemberAccessKind::ScopedCall { receiver_subst } => {
                 if receiver_subst.is_some() {
-                    "Scoped { with_receiver_subst }".to_string()
+                    "ScopedCall { with_receiver_subst }".to_string()
                 } else {
-                    "Scoped".to_string()
+                    "ScopedCall".to_string()
+                }
+            }
+            MemberAccessKind::ScopedAccess { receiver_subst } => {
+                if receiver_subst.is_some() {
+                    "ScopedAccess { with_receiver_subst }".to_string()
+                } else {
+                    "ScopedAccess".to_string()
                 }
             }
         };
         write!(
             f,
-            "ResolveCall({}, {}, {}: expected_fn_ty = {})",
-            kind_str, self.subject_ty, method_name, self.expected_fn_ty
+            "ResolveMember({}, {}, {}: expected_ty = {})",
+            kind_str, self.subject_ty, member_name, self.expected_ty
         )
     }
 }

@@ -6,3 +6,4 @@
 *.log
 *.raylib
 /.ray
+*.local.*

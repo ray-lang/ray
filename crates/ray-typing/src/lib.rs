@@ -36,7 +36,7 @@ use crate::{
     constraint_tree::{
         ConstraintNode, ConstraintTreeWalkItem, build_constraint_tree_for_group, walk_tree,
     },
-    constraints::{CallKind, Constraint, ConstraintKind, InstantiateTarget, Predicate},
+    constraints::{Constraint, ConstraintKind, InstantiateTarget, MemberAccessKind, Predicate},
     context::{AssignLhs, ExprKind, InstanceFailureStatus, SolverContext},
     defaulting::{DefaultingLog, DefaultingOutcomeKind, DefaultingResult, apply_defaulting},
     env::TypecheckEnv,
@@ -748,7 +748,7 @@ pub struct TypeCheckResult {
     /// definition references a local binding owned by another definition.
     pub local_tys: HashMap<LocalBindingId, Ty>,
     /// Resolved method calls, keyed by the call expression's NodeId.
-    /// Populated by the solver when it resolves `ResolveCall` constraints.
+    /// Populated by the solver when it resolves `ResolveMember` constraints.
     pub method_resolutions: HashMap<NodeId, MethodResolutionInfo>,
     /// All type errors discovered while typechecking
     pub errors: Vec<TypeError>,
@@ -1106,13 +1106,7 @@ fn solve_single_group(
         goal_solver::solve_constraints(&residuals, &solve_env.givens, &mut subst, ctx);
     ctx.apply_subst(&subst);
     log::debug!("[typecheck_group] subst: {:#}", subst);
-    check_residuals_and_emit_errors(
-        input,
-        &post_defaulting.unsolved,
-        ctx,
-        pretty_subst,
-        &mut errors,
-    );
+    check_residuals_and_emit_errors(&post_defaulting.unsolved, ctx, pretty_subst, &mut errors);
 
     errors
 }
@@ -1251,9 +1245,12 @@ fn instantiate_wanteds_into_equalities(
                     scheme
                 } else {
                     // Cross-SCC local binding lookup via environment
-                    let external_ty = ctx.env().external_local_type(*binding_id).unwrap_or_else(|| {
-                        panic!("cannot find scheme for local binding: {:?}", binding_id)
-                    });
+                    let external_ty =
+                        ctx.env()
+                            .external_local_type(*binding_id)
+                            .unwrap_or_else(|| {
+                                panic!("cannot find scheme for local binding: {:?}", binding_id)
+                            });
                     // Local bindings are monomorphic (no quantified variables)
                     TyScheme::from_mono(external_ty)
                 }
@@ -1320,7 +1317,6 @@ fn instantiate_scheme_for_use(
 }
 
 fn check_residuals_and_emit_errors(
-    module: &TypeCheckInput,
     residuals: &[Constraint],
     ctx: &SolverContext,
     pretty_subst: Option<&Subst>,
@@ -1328,8 +1324,8 @@ fn check_residuals_and_emit_errors(
 ) {
     for pred in residuals {
         let mut info = pred.info.clone();
-        if let ConstraintKind::ResolveCall(resolve_call) = &pred.kind {
-            let (args, ret_ty) = match resolve_call.expected_fn_ty.try_borrow_fn() {
+        if let ConstraintKind::ResolveMember(resolve_call) = &pred.kind {
+            let (args, ret_ty) = match resolve_call.expected_ty.try_borrow_fn() {
                 Ok((param_tys, ret_ty)) => {
                     let args = param_tys
                         .iter()
@@ -1342,7 +1338,7 @@ fn check_residuals_and_emit_errors(
             };
 
             match &resolve_call.kind {
-                CallKind::Instance => {
+                MemberAccessKind::InstanceCall => {
                     // Only attempt method availability/ambiguity diagnostics once
                     // the receiver type is headed; otherwise we don't know which
                     // receiver type to search.
@@ -1363,7 +1359,7 @@ fn check_residuals_and_emit_errors(
                                 let Some(name) = field.path.item_name() else {
                                     continue;
                                 };
-                                if name != resolve_call.method_name || field.is_static {
+                                if name != resolve_call.member_name || field.is_static {
                                     continue;
                                 }
                                 inherent_candidates.push(field.path.to_string());
@@ -1372,13 +1368,13 @@ fn check_residuals_and_emit_errors(
 
                         let mut trait_candidates = Vec::new();
                         for trait_ty in ctx.env().all_traits() {
-                            if let Some(field) = trait_ty.get_field(&resolve_call.method_name) {
+                            if let Some(field) = trait_ty.get_field(&resolve_call.member_name) {
                                 if field.is_static {
                                     continue;
                                 }
                                 trait_candidates.push(format!(
                                     "{}::{}",
-                                    trait_ty.path, resolve_call.method_name
+                                    trait_ty.path, resolve_call.member_name
                                 ));
                             }
                         }
@@ -1392,7 +1388,7 @@ fn check_residuals_and_emit_errors(
                         if total_candidates == 0 {
                             let msg = format!(
                                 "no method named `{}` found for `{}`",
-                                resolve_call.method_name, resolve_call.subject_ty
+                                resolve_call.member_name, resolve_call.subject_ty
                             );
                             errors.push(TypeError::message(msg, info));
                             continue;
@@ -1401,7 +1397,7 @@ fn check_residuals_and_emit_errors(
                         if total_candidates > 1 {
                             let mut msg = format!(
                                 "ambiguous method call: multiple candidates for `{}.{}`",
-                                resolve_call.subject_ty, resolve_call.method_name
+                                resolve_call.subject_ty, resolve_call.member_name
                             );
                             if !inherent_candidates.is_empty() {
                                 msg.push_str(&format!(
@@ -1422,16 +1418,25 @@ fn check_residuals_and_emit_errors(
 
                     let msg = format!(
                         "cannot resolve method call: `{}.{}` with signature: ({}) -> {}",
-                        resolve_call.subject_ty, resolve_call.method_name, args, ret_ty
+                        resolve_call.subject_ty, resolve_call.member_name, args, ret_ty
                     );
                     errors.push(TypeError::message(msg, info));
                     continue;
                 }
-                CallKind::Scoped { .. } => {
-                    // For scoped calls, use the method name and subject type for error messages.
+                MemberAccessKind::ScopedCall { .. } => {
+                    // For scoped calls, use the member name and subject type for error messages.
                     let msg = format!(
                         "cannot resolve scoped call: `{}::{}` with signature: ({}) -> {}",
-                        resolve_call.subject_ty, resolve_call.method_name, args, ret_ty
+                        resolve_call.subject_ty, resolve_call.member_name, args, ret_ty
+                    );
+                    errors.push(TypeError::message(msg, info));
+                    continue;
+                }
+                MemberAccessKind::ScopedAccess { .. } => {
+                    // For scoped member access (non-call), report as member access failure.
+                    let msg = format!(
+                        "cannot resolve scoped member access: `{}::{}`",
+                        resolve_call.subject_ty, resolve_call.member_name
                     );
                     errors.push(TypeError::message(msg, info));
                     continue;
@@ -2028,8 +2033,7 @@ mod tests {
             },
         );
 
-        let module =
-            make_multi_binding_module_with_patterns(def_nodes, kinds, pattern_records);
+        let module = make_multi_binding_module_with_patterns(def_nodes, kinds, pattern_records);
 
         // Solve the top-level group containing only `main`. The local binding `id`
         // must be solved and generalized before its uses in later statements.
@@ -2080,7 +2084,6 @@ mod tests {
 
         let malloc_def = DefId::new(FileId(0), 0);
         let main_def = DefId::new(FileId(0), 1);
-        let malloc_arg = LocalBindingId::new(malloc_def, 12); // local param
 
         let _guard = NodeId::enter_def(main_def);
 
@@ -2240,8 +2243,7 @@ mod tests {
             },
         );
 
-        let module =
-            make_multi_binding_module_with_patterns(def_nodes, kinds, pattern_records);
+        let module = make_multi_binding_module_with_patterns(def_nodes, kinds, pattern_records);
 
         // MockTypecheckEnv: core::Int has a default type of `uint`, and there is an impl
         // Int[uint]. This should allow defaulting to pick `uint` for the literal.
