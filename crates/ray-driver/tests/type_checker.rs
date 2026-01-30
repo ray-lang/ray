@@ -1,7 +1,5 @@
-use ray_core::{
-    passes::{FrontendPassManager, binding::BindingPassOutput},
-    sema::ModuleBuilder,
-};
+use ray_codegen::modules::ModuleBuilder;
+use ray_core::passes::{FrontendPassManager, binding::BindingPassOutput};
 use ray_shared::{
     pathlib::{ItemPath, ModulePath, Path},
     ty::{Ty, TyVar},

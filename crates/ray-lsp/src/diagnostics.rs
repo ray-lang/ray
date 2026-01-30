@@ -3,10 +3,10 @@ use std::{
     path::PathBuf,
 };
 
+use ray_codegen::libgen::DefinitionRecord;
 use ray_core::{
     ast::{Decl, Module},
     errors::RayError,
-    libgen::DefinitionRecord,
     parse::{ParseOptions, Parser},
     sema::SymbolMap,
     sourcemap::SourceMap,

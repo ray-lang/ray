@@ -4,11 +4,14 @@ use std::{
     fs,
 };
 
+use ray_codegen::{
+    codegen::{CodegenOptions, llvm},
+    libgen, lir, modules,
+};
 use ray_core::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Pattern},
-    codegen::{CodegenOptions, llvm},
     errors::{RayError, RayErrorKind},
-    libgen, lir, passes,
+    passes,
     sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
     sourcemap::SourceMap,
 };
@@ -124,7 +127,7 @@ impl Driver {
             c_include_paths.insert(0, default_include);
         }
         let mut mod_builder =
-            sema::ModuleBuilder::new(&self.ray_paths, c_include_paths, options.no_core);
+            modules::ModuleBuilder::new(&self.ray_paths, c_include_paths, options.no_core);
         let module_scope = match mod_builder.build(&options.input_path, overlays)? {
             Some(module_path) => module_path,
             None => return Err(mod_builder.take_errors()),

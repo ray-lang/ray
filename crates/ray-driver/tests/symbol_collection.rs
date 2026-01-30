@@ -4,9 +4,10 @@ mod utils;
 
 use std::collections::HashMap;
 
+use ray_codegen::modules::ModuleBuilder;
 use ray_core::{
     ast::{CurlyElement, Expr},
-    sema::{ModuleBuilder, SymbolRole},
+    sema::SymbolRole,
 };
 use ray_driver::{BuildOptions, Driver};
 use ray_shared::{

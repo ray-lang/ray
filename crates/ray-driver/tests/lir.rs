@@ -4,7 +4,7 @@ mod utils;
 
 use std::convert::TryInto;
 
-use ray_core::lir::{Inst, Program, Value};
+use ray_codegen::lir::{Inst, Program, Value};
 use ray_shared::ty::Ty;
 use utils::test_build;
 
@@ -355,7 +355,7 @@ pub fn main() -> u32 {
         after_block
             .markers()
             .iter()
-            .any(|marker| matches!(marker, ray_core::lir::ControlMarker::End(label) if *label == cond_label)),
+            .any(|marker| matches!(marker, ray_codegen::lir::ControlMarker::End(label) if *label == cond_label)),
         "expected post-loop block to be marked as End({}), got markers={:?}\n--- LIR Program ---\n{}",
         cond_label,
         after_block.markers(),

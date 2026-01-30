@@ -1,0 +1,21 @@
+[package]
+name = "ray-codegen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bincode = "1.3"
+bitflags = "1.2"
+inkwell = { version = "0.6", features = ["llvm17-0"] }
+itertools = "0.14"
+lazy_static = "1.4.0"
+lld = { path = "../lld" }
+log = "0.4"
+petgraph = { version = "0.5.1", features = ["serde-1"] }
+rand = "0.8"
+ray-core = { path = "../ray-core" }
+ray-frontend = { path = "../ray-frontend" }
+ray-shared = { path = "../ray-shared" }
+ray-typing = { path = "../ray-typing" }
+serde = { version = "1.0", features = ["derive", "rc"] }
+xxhash-rust = { version = "0.8.2", features = ["xxh3"] }

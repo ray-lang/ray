@@ -22,8 +22,8 @@ use tower_lsp::{
     },
 };
 
-use ray_core::libgen;
-use ray_core::libgen::DefinitionKind;
+use ray_codegen::libgen;
+use ray_codegen::libgen::DefinitionKind;
 use ray_shared::span::Span;
 use ray_shared::{node_id::NodeId, pathlib::FilePath};
 use serde_json::Value;

@@ -1118,6 +1118,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ray-codegen"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bitflags 1.2.1",
+ "inkwell",
+ "itertools",
+ "lazy_static",
+ "lld",
+ "log",
+ "petgraph",
+ "rand",
+ "ray-core",
+ "ray-frontend",
+ "ray-shared",
+ "ray-typing",
+ "serde",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "ray-core"
 version = "0.1.0"
 dependencies = [
@@ -1152,6 +1173,7 @@ dependencies = [
  "inkwell",
  "itertools",
  "log",
+ "ray-codegen",
  "ray-core",
  "ray-shared",
  "ray-typing",
@@ -1179,6 +1201,7 @@ dependencies = [
  "fern",
  "log",
  "pretty_assertions",
+ "ray-codegen",
  "ray-core",
  "ray-driver",
  "ray-shared",

@@ -2,7 +2,8 @@
 
 mod utils;
 
-use ray_core::{codegen::llvm::emit_module_ir, lir::Program, target::Target};
+use ray_codegen::{codegen::llvm::emit_module_ir, lir::Program};
+use ray_core::target::Target;
 use ray_shared::optlevel::OptLevel;
 use utils::{enable_debug_logs, test_build};
 

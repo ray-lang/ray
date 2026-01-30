@@ -5,12 +5,9 @@ extern crate lazy_static;
 pub mod macros;
 
 pub mod ast;
-pub mod codegen;
 pub mod convert;
 pub mod errors;
 pub mod ide;
-pub mod libgen;
-pub mod lir;
 pub mod parse;
 pub mod passes;
 pub mod sema;
