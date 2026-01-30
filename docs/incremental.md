@@ -4918,7 +4918,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 4: decorators query
 
-- [ ] Define `decorators(DefId)` query:
+- [x] Define `decorators(DefId)` query:
   ```rust
   #[query]
   fn decorators(db: &Database, def_id: DefId) -> Vec<Decorator> {
@@ -4926,12 +4926,12 @@ This is the largest migration. Do it incrementally, running tests after each ste
       extract_decorators(&parse_result.source_map, def_id)
   }
   ```
-- [ ] Extract decorator nodes from source map
-- [ ] **Validate**: Unit test with decorated definitions
+- [x] Extract decorator nodes from source map
+- [x] **Validate**: Unit test with decorated definitions
 
 ##### Step 5: has_decorator query
 
-- [ ] Define `has_decorator(DefId, name)` query:
+- [x] Define `has_decorator(DefId, name)` query:
   ```rust
   #[query]
   fn has_decorator(db: &Database, def_id: DefId, name: &str) -> bool {
@@ -4939,11 +4939,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
       decorators.iter().any(|d| d.name == name)
   }
   ```
-- [ ] **Validate**: Unit test
+- [x] **Validate**: Unit test
 
 ##### Step 6: doc_comment query
 
-- [ ] Define `doc_comment(DefId)` query:
+- [x] Define `doc_comment(DefId)` query:
   ```rust
   #[query]
   fn doc_comment(db: &Database, def_id: DefId) -> Option<String> {
@@ -4951,7 +4951,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       parse_result.source_map.doc_comment_for(def_id)
   }
   ```
-- [ ] **Validate**: Unit test with documented definitions
+- [x] **Validate**: Unit test with documented definitions
 
 ---
 

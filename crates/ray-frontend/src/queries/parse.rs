@@ -1,13 +1,13 @@
 //! Parse query infrastructure for the incremental compiler.
 
 use ray_core::{
-    ast::File,
+    ast::{Decorator, File},
     errors::RayError,
     parse::{ParseOptions, Parser},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
-use ray_shared::{def::DefHeader, file_id::FileId};
+use ray_shared::{def::DefHeader, def::DefId, file_id::FileId, pathlib::Path};
 
 use crate::{
     queries::workspace::{FileSource, WorkspaceSnapshot},
@@ -54,13 +54,58 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
     }
 }
 
+/// Returns the decorators attached to a definition.
+///
+/// Decorators are extracted from the source map using the definition's root node.
+#[query]
+pub fn decorators(db: &Database, def_id: DefId) -> Vec<Decorator> {
+    let parse_result = parse_file(db, def_id.file);
+    let def_header = parse_result
+        .defs
+        .iter()
+        .find(|h| h.def_id == def_id);
+
+    let Some(def_header) = def_header else {
+        return Vec::new();
+    };
+
+    parse_result
+        .source_map
+        .decorators()
+        .get(&def_header.root_node)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Checks if a definition has a decorator with the given name.
+///
+/// The name is matched against the decorator's path. For simple decorators
+/// like `@inline`, the name would be "inline".
+pub fn has_decorator(db: &Database, def_id: DefId, name: &str) -> bool {
+    let decorators = decorators(db, def_id);
+    let target_path = Path::from(name);
+    decorators.iter().any(|d| d.path.value == target_path)
+}
+
+/// Returns the doc comment for a definition, if present.
+#[query]
+pub fn doc_comment(db: &Database, def_id: DefId) -> Option<String> {
+    let parse_result = parse_file(db, def_id.file);
+    let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
+
+    parse_result
+        .source_map
+        .doc_by_id(def_header.root_node)
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use ray_shared::pathlib::FilePath;
 
     use crate::{
         queries::{
-            parse::parse_file,
+            parse::{decorators, doc_comment, has_decorator, parse_file},
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -122,5 +167,161 @@ mod tests {
         let result = parse_file(&db, file_id);
 
         assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn decorators_returns_decorators_for_definition() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        FileSource::new(
+            &db,
+            file_id,
+            "@inline\nfn double(x: int) -> int => x * 2".to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        // Skip FileMain (index 0), function is index 1
+        let fn_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "double")
+            .expect("expected double function");
+
+        let decorators = decorators(&db, fn_def.def_id);
+
+        assert_eq!(decorators.len(), 1);
+        assert_eq!(decorators[0].path.value.to_string(), "inline");
+    }
+
+    #[test]
+    fn decorators_returns_empty_when_no_decorators() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        FileSource::new(&db, file_id, "fn main() {}".to_string());
+
+        let parse_result = parse_file(&db, file_id);
+        let fn_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .expect("expected main function");
+
+        let decorators = decorators(&db, fn_def.def_id);
+
+        assert!(decorators.is_empty());
+    }
+
+    #[test]
+    fn has_decorator_returns_true_when_decorator_present() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        FileSource::new(
+            &db,
+            file_id,
+            "@inline\nfn double(x: int) -> int => x * 2".to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let fn_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "double")
+            .expect("expected double function");
+
+        assert!(has_decorator(&db, fn_def.def_id, "inline"));
+        assert!(!has_decorator(&db, fn_def.def_id, "intrinsic"));
+    }
+
+    #[test]
+    fn has_decorator_returns_false_when_no_decorators() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        FileSource::new(&db, file_id, "fn main() {}".to_string());
+
+        let parse_result = parse_file(&db, file_id);
+        let fn_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .expect("expected main function");
+
+        assert!(!has_decorator(&db, fn_def.def_id, "inline"));
+    }
+
+    #[test]
+    fn doc_comment_returns_comment_for_definition() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        FileSource::new(
+            &db,
+            file_id,
+            "/// This is a documented function.\nfn documented() {}".to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let fn_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "documented")
+            .expect("expected documented function");
+
+        let doc = doc_comment(&db, fn_def.def_id);
+
+        assert!(doc.is_some());
+        assert!(doc.unwrap().contains("This is a documented function"));
+    }
+
+    #[test]
+    fn doc_comment_returns_none_when_no_doc() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        FileSource::new(&db, file_id, "fn undocumented() {}".to_string());
+
+        let parse_result = parse_file(&db, file_id);
+        let fn_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "undocumented")
+            .expect("expected undocumented function");
+
+        let doc = doc_comment(&db, fn_def.def_id);
+
+        assert!(doc.is_none());
     }
 }
