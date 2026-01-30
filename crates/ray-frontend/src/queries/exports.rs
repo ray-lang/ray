@@ -95,8 +95,9 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
                 // Regular definition -> ExportedItem::Def
                 exports.insert(def.name.clone(), ExportedItem::Def(def.def_id));
             }
-            DefKind::FileMain | DefKind::Method | DefKind::Impl => {
-                // Already handled above
+            DefKind::FileMain | DefKind::Method | DefKind::Impl | DefKind::Primitive => {
+                // FileMain, Method, Impl are handled above
+                // Primitive is for built-in types, not workspace definitions
                 unreachable!()
             }
         }

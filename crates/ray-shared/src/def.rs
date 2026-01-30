@@ -55,6 +55,7 @@ pub enum DefKind {
     Binding { annotated: bool, mutable: bool },
     AssociatedConst { annotated: bool }, // annotated: true if type is explicit
     Method,                              // Always has explicit signature (from trait or explicit)
+    Primitive,
     Struct,
     Trait,
     Impl,

@@ -90,9 +90,12 @@ fn is_unannotated(kind: DefKind) -> bool {
         DefKind::Binding { annotated, .. } => !annotated,
         DefKind::AssociatedConst { annotated } => !annotated,
         // These definitions have explicit types - edges to them are omitted
-        DefKind::Method | DefKind::Struct | DefKind::Trait | DefKind::Impl | DefKind::TypeAlias => {
-            false
-        }
+        DefKind::Method
+        | DefKind::Struct
+        | DefKind::Trait
+        | DefKind::Impl
+        | DefKind::TypeAlias
+        | DefKind::Primitive => false,
     }
 }
 

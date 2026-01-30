@@ -8,9 +8,9 @@ use ray_shared::{
     def::{DefHeader, DefId, DefKind, LibraryDefId},
     file_id::FileId,
     node_id::NodeId,
-    pathlib::{ItemPath, ModulePath},
+    pathlib::{FilePath, ItemPath, ModulePath},
     resolution::{DefTarget, Resolution},
-    span::Source,
+    span::{Source, Span},
     ty::{Ty, TyVar},
     type_param_id::TypeParamId,
 };
@@ -232,6 +232,34 @@ pub struct TypeAliasDef {
     pub aliased_type: Ty,
 }
 
+/// Source location for a definition, supporting both workspace and library definitions.
+///
+/// Used for go-to-definition and hover functionality.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceLocation {
+    /// Workspace definition with known FileId and span.
+    Workspace { file: FileId, span: Span },
+    /// Library definition with original source path (for source navigation).
+    Library { filepath: FilePath, span: Span },
+}
+
+/// Aggregated metadata about a definition for display purposes.
+///
+/// This record is used for hover info and go-to-definition functionality.
+/// It combines the path, location, documentation, and kind of a definition
+/// into a single convenient structure.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DefinitionRecord {
+    /// Fully qualified path of the definition.
+    pub path: ItemPath,
+    /// Source location for go-to-definition.
+    pub source_location: Option<SourceLocation>,
+    /// Documentation comment (if any).
+    pub doc: Option<String>,
+    /// The kind of definition (function, struct, trait, etc.).
+    pub kind: DefKind,
+}
+
 /// Look up a top-level definition by its full path.
 ///
 /// Given an `ItemPath` like `mymodule::foo`, this query:
@@ -348,6 +376,122 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
             None
         }
         DefTarget::Primitive(path) => Some(path),
+    }
+}
+
+/// Get the simple name of a definition.
+///
+/// For workspace definitions, returns the name from the DefHeader.
+/// For library definitions, looks up the name from the ItemPath in the names index.
+///
+/// Returns `None` if the definition cannot be found.
+///
+/// Examples:
+/// - For a function `mymodule::helper`, returns `"helper"`
+/// - For a method `mymodule::List::push`, returns `"push"`
+/// - For a struct `mymodule::Point`, returns `"Point"`
+#[query]
+pub fn def_name(db: &Database, target: DefTarget) -> Option<String> {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let parse_result = parse_file(db, def_id.file);
+            let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
+            Some(def_header.name.clone())
+        }
+        DefTarget::Library(lib_def_id) => {
+            // For library definitions, get the name from the ItemPath
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+            // Find the ItemPath that maps to this LibraryDefId
+            for (path, id) in &lib_data.names {
+                if *id == lib_def_id {
+                    return path.item_name().map(|s| s.to_string());
+                }
+            }
+            None
+        }
+        DefTarget::Primitive(path) => path.item_name().map(|s| s.to_string()),
+    }
+}
+
+/// Get aggregated metadata about a definition for display.
+///
+/// Returns a `DefinitionRecord` containing the path, source location,
+/// documentation, and kind of the definition.
+///
+/// For workspace definitions:
+/// - Path is constructed from module path + definition name
+/// - Source location includes the FileId and span
+/// - Documentation is not yet implemented (returns None)
+/// - Kind is taken directly from DefHeader
+///
+/// For library definitions:
+/// - Path is looked up from the library's names index
+/// - Source location is not available (returns None)
+/// - Documentation is not available (returns None)
+/// - Kind is inferred from which collection contains the definition
+#[query]
+pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionRecord> {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let path = def_path(db, DefTarget::Workspace(def_id))?;
+            let parse_result = parse_file(db, def_id.file);
+            let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
+
+            let source_location = Some(SourceLocation::Workspace {
+                file: def_id.file,
+                span: def_header.span,
+            });
+
+            // doc_comment query not yet implemented
+            let doc = None;
+
+            Some(DefinitionRecord {
+                path,
+                source_location,
+                doc,
+                kind: def_header.kind,
+            })
+        }
+        DefTarget::Library(lib_def_id) => {
+            let path = def_path(db, DefTarget::Library(lib_def_id.clone()))?;
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+
+            // Library definitions don't have source locations in current implementation
+            let source_location = None;
+
+            // Library definitions don't have doc comments in current implementation
+            let doc = None;
+
+            // Infer kind from which collection contains this definition
+            let kind = if lib_data.structs.contains_key(&lib_def_id) {
+                DefKind::Struct
+            } else if lib_data.traits.contains_key(&lib_def_id) {
+                DefKind::Trait
+            } else if lib_data.impls.contains_key(&lib_def_id) {
+                DefKind::Impl
+            } else {
+                // Default to function for definitions in schemes but not in other collections
+                DefKind::Function {
+                    signature: ray_shared::def::SignatureStatus::FullyAnnotated,
+                }
+            };
+
+            Some(DefinitionRecord {
+                path,
+                source_location,
+                doc,
+                kind,
+            })
+        }
+        DefTarget::Primitive(path) => {
+            // Primitives are built-in types with no source location
+            Some(DefinitionRecord {
+                path,
+                source_location: None,
+                doc: None,
+                kind: DefKind::Primitive,
+            })
+        }
     }
 }
 
@@ -1581,7 +1725,7 @@ fn type_matches_target(ty: &Ty, target: &DefTarget, db: &Database) -> bool {
 #[cfg(test)]
 mod tests {
     use ray_shared::{
-        def::LibraryDefId,
+        def::{DefKind, LibraryDefId},
         pathlib::{FilePath, ItemPath, ModulePath},
         resolution::DefTarget,
         ty::Ty,
@@ -1591,9 +1735,10 @@ mod tests {
     use crate::{
         queries::{
             defs::{
-                MethodInfo, StructDef, StructField, TraitDef, def_for_path, def_path, impl_def,
-                impls_for_trait, impls_for_type, impls_in_module, struct_def, trait_def,
-                trait_methods_for_name, traits_in_module, type_alias,
+                MethodInfo, SourceLocation, StructDef, StructField, TraitDef, def_for_path,
+                def_name, def_path, definition_record, impl_def, impls_for_trait, impls_for_type,
+                impls_in_module, struct_def, trait_def, trait_methods_for_name, traits_in_module,
+                type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
             workspace::{FileSource, WorkspaceSnapshot},
@@ -3504,5 +3649,272 @@ trait Printable['a] {
             matches!(method_info.target, DefTarget::Workspace(_)),
             "Method target should be workspace def"
         );
+    }
+
+    // ========================================================================
+    // def_name tests
+    // ========================================================================
+
+    #[test]
+    fn def_name_returns_function_name() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "fn helper() {}".to_string());
+
+        let path = ItemPath::new(module_path, vec!["helper".into()]);
+        let target = def_for_path(&db, path).expect("function should be found");
+
+        let name = def_name(&db, target);
+        assert_eq!(name, Some("helper".to_string()));
+    }
+
+    #[test]
+    fn def_name_returns_struct_name() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+
+        let path = ItemPath::new(module_path, vec!["Point".into()]);
+        let target = def_for_path(&db, path).expect("struct should be found");
+
+        let name = def_name(&db, target);
+        assert_eq!(name, Some("Point".to_string()));
+    }
+
+    #[test]
+    fn def_name_returns_method_name() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct List { items: int }
+
+impl object List {
+    fn push(self) => self.items
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Get the impl to find the method
+        let list_path = ItemPath::new(module_path.clone(), vec!["List".into()]);
+        let list_target = def_for_path(&db, list_path).expect("struct should be found");
+        let impls = impls_for_type(&db, list_target);
+
+        assert!(!impls.inherent.is_empty(), "should have inherent impl");
+        let impl_target = &impls.inherent[0];
+        let impl_definition = impl_def(&db, impl_target.clone()).expect("impl should exist");
+
+        assert!(!impl_definition.methods.is_empty(), "should have method");
+        let method_target = impl_definition.methods[0].target.clone();
+
+        let name = def_name(&db, method_target);
+        assert_eq!(name, Some("push".to_string()));
+    }
+
+    #[test]
+    fn def_name_returns_primitive_name() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let target = DefTarget::Primitive(ItemPath::new(ModulePath::root(), vec!["int".into()]));
+        let name = def_name(&db, target);
+        assert_eq!(name, Some("int".to_string()));
+    }
+
+    #[test]
+    fn def_name_returns_library_function_name() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with a function
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::io"));
+
+        let read_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let read_path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
+
+        core_lib.names.insert(read_path, read_def_id.clone());
+        core_lib
+            .schemes
+            .insert(read_def_id.clone(), TyScheme::from_mono(Ty::unit()));
+        libraries.add(ModulePath::from("core"), core_lib);
+        LoadedLibraries::new(&db, (), libraries.libraries);
+
+        let target = DefTarget::Library(read_def_id);
+        let name = def_name(&db, target);
+        assert_eq!(name, Some("read".to_string()));
+    }
+
+    // ========================================================================
+    // definition_record tests
+    // ========================================================================
+
+    #[test]
+    fn definition_record_returns_function_info() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "fn helper() {}".to_string());
+
+        let path = ItemPath::new(module_path, vec!["helper".into()]);
+        let target = def_for_path(&db, path.clone()).expect("function should be found");
+
+        let record = definition_record(&db, target).expect("should get definition record");
+
+        assert_eq!(record.path, path);
+        assert!(
+            matches!(record.source_location, Some(SourceLocation::Workspace { file, .. }) if file == file_id),
+            "should have workspace source location"
+        );
+        assert!(record.doc.is_none(), "doc not yet implemented");
+        assert!(
+            matches!(record.kind, DefKind::Function { .. }),
+            "should be a function"
+        );
+    }
+
+    #[test]
+    fn definition_record_returns_struct_info() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+
+        let path = ItemPath::new(module_path, vec!["Point".into()]);
+        let target = def_for_path(&db, path.clone()).expect("struct should be found");
+
+        let record = definition_record(&db, target).expect("should get definition record");
+
+        assert_eq!(record.path, path);
+        assert!(
+            matches!(record.source_location, Some(SourceLocation::Workspace { file, .. }) if file == file_id),
+            "should have workspace source location"
+        );
+        assert!(matches!(record.kind, DefKind::Struct));
+    }
+
+    #[test]
+    fn definition_record_returns_trait_info() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Eq['a] {
+    fn eq(self: 'a, other: 'a) -> bool
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let path = ItemPath::new(module_path, vec!["Eq".into()]);
+        let target = def_for_path(&db, path.clone()).expect("trait should be found");
+
+        let record = definition_record(&db, target).expect("should get definition record");
+
+        assert_eq!(record.path, path);
+        assert!(matches!(record.kind, DefKind::Trait));
+    }
+
+    #[test]
+    fn definition_record_returns_primitive_info() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let path = ItemPath::new(ModulePath::root(), vec!["int".into()]);
+        let target = DefTarget::Primitive(path.clone());
+
+        let record = definition_record(&db, target).expect("should get definition record");
+
+        assert_eq!(record.path, path);
+        assert!(
+            record.source_location.is_none(),
+            "primitives have no source location"
+        );
+        assert!(record.doc.is_none());
+        assert!(matches!(record.kind, DefKind::Primitive));
+    }
+
+    #[test]
+    fn definition_record_returns_library_struct_info() {
+        let db = Database::new();
+
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with a struct
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::option"));
+
+        let option_def_id = LibraryDefId {
+            module: ModulePath::from("core::option"),
+            index: 0,
+        };
+        let option_path = ItemPath::new(ModulePath::from("core::option"), vec!["Option".into()]);
+
+        core_lib
+            .names
+            .insert(option_path.clone(), option_def_id.clone());
+        core_lib.structs.insert(
+            option_def_id.clone(),
+            StructDef {
+                target: DefTarget::Library(option_def_id.clone()),
+                path: option_path.clone(),
+                ty: TyScheme::from_mono(Ty::Const(option_path.clone())),
+                fields: vec![],
+            },
+        );
+        libraries.add(ModulePath::from("core"), core_lib);
+        LoadedLibraries::new(&db, (), libraries.libraries);
+
+        let target = DefTarget::Library(option_def_id);
+
+        let record = definition_record(&db, target).expect("should get definition record");
+
+        assert_eq!(record.path, option_path);
+        assert!(
+            record.source_location.is_none(),
+            "library defs have no source location in current impl"
+        );
+        assert!(matches!(record.kind, DefKind::Struct));
     }
 }

@@ -1875,10 +1875,6 @@ These queries take `DefTarget` to handle both workspace and library definitions 
   }
   ```
 
-- `file_of(NodeId)` → `FileId`
-
-  **Semantics**: Extracts the FileId from a NodeId. This is a pure computation on the NodeId structure, not a query.
-
 - `find_at_position(FileId, line, col)` → `Option<NodeId>`
 
   **Dependencies**: `parse(FileId)`
@@ -4894,19 +4890,19 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: def_name query
 
-- [ ] Define `def_name(DefTarget)` query
-- [ ] Return definition name from `DefHeader`
-- [ ] **Validate**: Unit test
+- [x] Define `def_name(DefTarget)` query
+- [x] Return definition name from `DefHeader`
+- [x] **Validate**: Unit test
 
 ##### Step 2: def_path query
 
-- [ ] Define `def_path(DefTarget)` query
-- [ ] Return fully qualified `ItemPath`
-- [ ] **Validate**: Unit test
+- [x] Define `def_path(DefTarget)` query
+- [x] Return fully qualified `ItemPath`
+- [x] **Validate**: Unit test
 
 ##### Step 3: definition_record query
 
-- [ ] Define `definition_record(DefTarget)` query:
+- [x] Define `definition_record(DefTarget)` query:
   ```rust
   #[query]
   fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionRecord> {
@@ -4918,20 +4914,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
       Some(DefinitionRecord { name, path, scheme, span, kind: /* ... */ })
   }
   ```
-- [ ] **Validate**: Unit test
+- [x] **Validate**: Unit test
 
-##### Step 4: file_of query
-
-- [ ] Define `file_of(NodeId)` query:
-  ```rust
-  #[query]
-  fn file_of(db: &Database, node_id: NodeId) -> FileId {
-      node_id.owner.file
-  }
-  ```
-- [ ] **Validate**: Unit test
-
-##### Step 5: decorators query
+##### Step 4: decorators query
 
 - [ ] Define `decorators(DefId)` query:
   ```rust
@@ -4944,7 +4929,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 - [ ] Extract decorator nodes from source map
 - [ ] **Validate**: Unit test with decorated definitions
 
-##### Step 6: has_decorator query
+##### Step 5: has_decorator query
 
 - [ ] Define `has_decorator(DefId, name)` query:
   ```rust
@@ -4956,7 +4941,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
   ```
 - [ ] **Validate**: Unit test
 
-##### Step 7: doc_comment query
+##### Step 6: doc_comment query
 
 - [ ] Define `doc_comment(DefId)` query:
   ```rust
