@@ -1722,6 +1722,105 @@ fn type_matches_target(ty: &Ty, target: &DefTarget, db: &Database) -> bool {
     ty_path == &target_path
 }
 
+// ============================================================================
+// method_receiver_mode query
+// ============================================================================
+
+/// Get the receiver mode for a method given its DefTarget.
+///
+/// This query looks up the method's parent (trait or impl) and finds the
+/// method's `ReceiverMode` from its `MethodInfo`.
+///
+/// Returns `ReceiverMode::None` if the target is not a method or if the
+/// receiver mode cannot be determined.
+#[query]
+pub fn method_receiver_mode(db: &Database, method_target: DefTarget) -> ReceiverMode {
+    match method_target {
+        DefTarget::Workspace(def_id) => workspace_method_receiver_mode(db, def_id),
+        DefTarget::Library(lib_def_id) => library_method_receiver_mode(db, &lib_def_id),
+        DefTarget::Primitive(_) => ReceiverMode::None,
+    }
+}
+
+/// Get receiver mode for a workspace method.
+fn workspace_method_receiver_mode(db: &Database, method_def_id: DefId) -> ReceiverMode {
+    let parse_result = parse_file(db, method_def_id.file);
+
+    // Find the method's DefHeader
+    let Some(method_header) = parse_result.defs.iter().find(|h| h.def_id == method_def_id) else {
+        return ReceiverMode::None;
+    };
+
+    // Check if this is actually a method (has a parent)
+    let Some(parent_def_id) = method_header.parent else {
+        return ReceiverMode::None;
+    };
+
+    let method_name = &method_header.name;
+
+    // Try to get the parent as an impl or trait
+    let parent_target = DefTarget::Workspace(parent_def_id);
+
+    // Try impl first
+    if let Some(impl_def) = impl_def(db, parent_target.clone()) {
+        if let Some(method_info) = impl_def.find_method(method_name) {
+            return method_info.recv_mode;
+        }
+    }
+
+    // Try trait
+    if let Some(trait_def) = trait_def(db, parent_target) {
+        if let Some(method_info) = trait_def.find_method(method_name) {
+            return method_info.recv_mode;
+        }
+    }
+
+    ReceiverMode::None
+}
+
+/// Get receiver mode for a library method.
+fn library_method_receiver_mode(db: &Database, lib_def_id: &LibraryDefId) -> ReceiverMode {
+    let Some(lib_data) = library_data(db, lib_def_id.module.clone()) else {
+        return ReceiverMode::None;
+    };
+
+    // Get the method's path to find its name
+    let method_path = lib_data
+        .names
+        .iter()
+        .find(|(_, id)| *id == lib_def_id)
+        .map(|(path, _)| path.clone());
+
+    let Some(method_path) = method_path else {
+        return ReceiverMode::None;
+    };
+
+    let Some(method_name) = method_path.item.last() else {
+        return ReceiverMode::None;
+    };
+
+    // Search all impls and traits for this method
+    // First check impls
+    for impl_def in lib_data.impls.values() {
+        if let Some(method_info) = impl_def.find_method(method_name) {
+            if method_info.target == DefTarget::Library(lib_def_id.clone()) {
+                return method_info.recv_mode;
+            }
+        }
+    }
+
+    // Then check traits
+    for trait_def in lib_data.traits.values() {
+        if let Some(method_info) = trait_def.find_method(method_name) {
+            if method_info.target == DefTarget::Library(lib_def_id.clone()) {
+                return method_info.recv_mode;
+            }
+        }
+    }
+
+    ReceiverMode::None
+}
+
 #[cfg(test)]
 mod tests {
     use ray_shared::{
@@ -1737,10 +1836,11 @@ mod tests {
             defs::{
                 MethodInfo, SourceLocation, StructDef, StructField, TraitDef, def_for_path,
                 def_name, def_path, definition_record, impl_def, impls_for_trait, impls_for_type,
-                impls_in_module, struct_def, trait_def, trait_methods_for_name, traits_in_module,
-                type_alias,
+                impls_in_module, method_receiver_mode, struct_def, trait_def,
+                trait_methods_for_name, traits_in_module, type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
+            parse::parse_file,
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -2297,6 +2397,141 @@ impl object Point {
 
         let result = impl_def(&db, target);
         assert!(result.is_none());
+    }
+
+    // method_receiver_mode tests
+
+    #[test]
+    fn method_receiver_mode_returns_value_for_self_param() {
+        use crate::queries::parse::parse_file;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Method with `self` parameter should have ReceiverMode::Value
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn distance(self) -> int => self.x + self.y
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Find the method's DefId from the parsed file
+        let parse_result = parse_file(&db, file_id);
+        let method_header = parse_result
+            .defs
+            .iter()
+            .find(|h| h.name == "distance")
+            .expect("distance method should be found");
+
+        let method_target = DefTarget::Workspace(method_header.def_id);
+        let recv_mode = method_receiver_mode(&db, method_target);
+
+        assert_eq!(recv_mode, ReceiverMode::Value);
+    }
+
+    #[test]
+    fn method_receiver_mode_returns_ptr_for_ref_param() {
+        use crate::queries::parse::parse_file;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Method with `*Point` parameter should have ReceiverMode::Ptr
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn inspect(self: *Point) -> int => self.x
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Find the method's DefId from the parsed file
+        let parse_result = parse_file(&db, file_id);
+        let method_header = parse_result
+            .defs
+            .iter()
+            .find(|h| h.name == "inspect")
+            .expect("inspect method should be found");
+
+        let method_target = DefTarget::Workspace(method_header.def_id);
+        let recv_mode = method_receiver_mode(&db, method_target);
+
+        assert_eq!(recv_mode, ReceiverMode::Ptr);
+    }
+
+    #[test]
+    fn method_receiver_mode_returns_none_for_static_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Static method (no receiver) should have ReceiverMode::None
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    static fn create(x: int, y: int) -> Point => Point { x, y }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Find the method's DefId from the parsed file
+        let parse_result = parse_file(&db, file_id);
+        let method_header = parse_result
+            .defs
+            .iter()
+            .find(|h| h.name == "create")
+            .expect("create method should be found");
+
+        let method_target = DefTarget::Workspace(method_header.def_id);
+        let recv_mode = method_receiver_mode(&db, method_target);
+
+        assert_eq!(recv_mode, ReceiverMode::None);
+    }
+
+    #[test]
+    fn method_receiver_mode_returns_none_for_non_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(&db, file_id, "fn helper() {}".to_string());
+
+        // Find the function's DefId from the parsed file
+        let parse_result = parse_file(&db, file_id);
+        let func_header = parse_result
+            .defs
+            .iter()
+            .find(|h| h.name == "helper")
+            .expect("helper function should be found");
+
+        let func_target = DefTarget::Workspace(func_header.def_id);
+        let recv_mode = method_receiver_mode(&db, func_target);
+
+        // Non-methods should return ReceiverMode::None
+        assert_eq!(recv_mode, ReceiverMode::None);
     }
 
     // type_alias tests
