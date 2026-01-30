@@ -72,7 +72,7 @@ impl lir::Program {
         let (module_main_path, user_main_base_path) = {
             let prog_ref = prog.borrow();
             (
-                prog_ref.main_path(),
+                prog_ref.module_main_path(),
                 prog_ref.module_path.clone().append("main"),
             )
         };
@@ -126,7 +126,10 @@ impl lir::Program {
             ctx.with_builder(lir::Builder::new());
             ctx.with_new_block(|ctx| {
                 // call all the main functions from the libs first
-                let mut main_funcs = libs.iter().map(|l| l.main_path()).collect::<Vec<_>>();
+                let mut main_funcs = libs
+                    .iter()
+                    .map(|l| l.module_main_path())
+                    .collect::<Vec<_>>();
 
                 // then call _this_ module's main function
                 main_funcs.push(module_main_path.clone());
@@ -249,7 +252,7 @@ impl lir::Program {
         }
 
         // remove the polymorphic functions
-        let module_main_path = self.main_path();
+        let module_main_path = self.module_main_path();
         let user_main_base_path = self.module_path.clone().append("main");
         let resolved_user_main = self.resolved_user_main.clone();
         let mut i = 0;

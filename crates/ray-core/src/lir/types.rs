@@ -10,7 +10,7 @@ use petgraph::{
     visit::{Dfs, DfsEvent, EdgeRef, depth_first_search},
 };
 use ray_shared::{
-    pathlib::{ItemPath, Path},
+    pathlib::{ItemPath, ModulePath, Path},
     span::Source,
     ty::Ty,
     utils::{join, map_join},
@@ -1029,7 +1029,7 @@ impl Display for Extern {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Program {
-    pub module_path: ray_shared::pathlib::Path,
+    pub module_path: Path,
     pub globals: Vec<Global>,
     pub data: Vec<Data>,
     pub funcs: Vec<Node<Func>>,
@@ -1085,7 +1085,7 @@ impl Substitutable for Program {
 }
 
 impl Program {
-    pub fn new(m: ray_shared::pathlib::Path) -> Program {
+    pub fn new(m: Path) -> Program {
         Program {
             module_path: m,
             globals: vec![],
@@ -1125,7 +1125,7 @@ impl Program {
         }
     }
 
-    pub fn main_path(&self) -> Path {
+    pub fn module_main_path(&self) -> Path {
         self.module_path
             .append(RAY_MAIN_FUNCTION)
             .append_func_type(vec![Ty::unit()], Ty::unit())
