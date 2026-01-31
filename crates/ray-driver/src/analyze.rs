@@ -1,10 +1,30 @@
-use std::{ffi::OsString, str::FromStr};
+use std::{cmp::Ordering, collections::HashSet, ffi::OsString, str::FromStr};
 
 use clap::Args;
-use ray_core::errors::RayError;
-use ray_shared::node_id::NodeId;
-use ray_shared::pathlib::{FilePath, Path};
-use ray_shared::span::{Pos, Source, Span};
+use ray_core::{
+    ast::{Decl, Node},
+    errors::RayError,
+    sourcemap::SourceMap,
+};
+use ray_frontend::{
+    queries::{
+        defs::def_path,
+        locations::span_of,
+        resolve::name_resolutions,
+        symbols::symbol_targets,
+        typecheck::{def_scheme, ty_of},
+        workspace::WorkspaceSnapshot,
+    },
+    query::Database,
+};
+use ray_shared::{
+    file_id::FileId,
+    node_id::NodeId,
+    pathlib::{FilePath, ItemPath},
+    resolution::DefTarget,
+    span::{Pos, Source, Span},
+    symbol::{SymbolIdentity, SymbolRole},
+};
 
 use crate::GlobalOptions;
 
@@ -156,11 +176,11 @@ pub struct TypeInfo {
 #[derive(Debug, Clone)]
 pub struct DefinitionInfo {
     pub usage_id: NodeId,
-    pub usage_path: Path,
+    pub usage_path: ItemPath,
     pub usage_filepath: FilePath,
     pub usage_span: Option<Span>,
     pub definition_id: Option<NodeId>,
-    pub definition_path: Option<Path>,
+    pub definition_path: Option<ItemPath>,
     pub definition_filepath: Option<FilePath>,
     pub definition_span: Option<Span>,
     pub definition_doc: Option<String>,
@@ -520,4 +540,302 @@ fn definition_to_json(def: DefinitionInfo) -> String {
         definition_span,
         definition_doc
     )
+}
+
+// -----------------------------------------------------------------------------
+// Collection functions
+// -----------------------------------------------------------------------------
+
+/// Input for analysis collection functions.
+pub struct AnalysisInput<'a> {
+    pub db: &'a Database,
+    pub file_id: FileId,
+    pub decls: &'a [Node<Decl>],
+    pub srcmap: &'a SourceMap,
+}
+
+pub fn collect_symbols(input: &AnalysisInput) -> Vec<SymbolInfo> {
+    let mut symbols = Vec::new();
+    let mut seen = HashSet::new();
+
+    for decl in input.decls {
+        let source = input.srcmap.get(decl);
+        let span = source.span;
+        let filepath = source.filepath.clone();
+        let doc = input.srcmap.doc(decl).cloned();
+
+        match &decl.value {
+            Decl::Func(func) => {
+                let name = func.sig.path.to_string();
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let ty = type_info_for_node(input.db, decl.id).map(|(ty, _)| ty);
+                symbols.push(SymbolInfo {
+                    id: decl.id,
+                    name,
+                    kind: SymbolKind::Function,
+                    filepath: filepath.clone(),
+                    span,
+                    ty,
+                    parent_id: None,
+                    doc: doc.clone(),
+                });
+            }
+            Decl::Struct(st) => {
+                let name = st.path.value.to_string();
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let struct_id = decl.id;
+                symbols.push(SymbolInfo {
+                    id: struct_id,
+                    name,
+                    kind: SymbolKind::Struct,
+                    filepath: filepath.clone(),
+                    span,
+                    ty: None,
+                    parent_id: None,
+                    doc: doc.clone(),
+                });
+
+                if let Some(fields) = &st.fields {
+                    for field in fields {
+                        let field_name = field.to_string();
+                        let field_source = input.srcmap.get(field);
+                        let field_span = field_source.span;
+                        let field_doc = input.srcmap.doc(field).cloned();
+                        symbols.push(SymbolInfo {
+                            id: field.id,
+                            name: field_name,
+                            kind: SymbolKind::Field,
+                            filepath: field_source.filepath.clone(),
+                            span: field_span,
+                            ty: type_info_for_node(input.db, field.id).map(|(ty, _)| ty),
+                            parent_id: Some(struct_id),
+                            doc: field_doc,
+                        });
+                    }
+                }
+            }
+            Decl::Trait(tr) => {
+                let name = tr.ty.to_string();
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                symbols.push(SymbolInfo {
+                    id: decl.id,
+                    name,
+                    kind: SymbolKind::Trait,
+                    filepath: filepath.clone(),
+                    span,
+                    ty: None,
+                    parent_id: None,
+                    doc: doc.clone(),
+                });
+            }
+            Decl::TypeAlias(alias_name, alias_ty) => {
+                let name = alias_name.value.path.to_string();
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                symbols.push(SymbolInfo {
+                    id: decl.id,
+                    name,
+                    kind: SymbolKind::TypeAlias,
+                    filepath: filepath.clone(),
+                    span,
+                    ty: Some(alias_ty.to_string()),
+                    parent_id: None,
+                    doc: doc.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    symbols
+}
+
+/// Get type information for a node using queries.
+///
+/// Returns (type_string, is_scheme) where is_scheme indicates if this is a
+/// polymorphic type scheme (true) or a monomorphic type (false).
+fn type_info_for_node(db: &Database, node_id: NodeId) -> Option<(String, bool)> {
+    // For top-level definitions, try to get the polymorphic scheme
+    let target = DefTarget::Workspace(node_id.owner);
+    if let Some(scheme) = def_scheme(db, target) {
+        // Only return the scheme if this node is the "root" of the definition
+        // (index 0 typically represents the definition node itself)
+        if node_id.index <= 1 {
+            return Some((scheme.to_string(), scheme.is_polymorphic()));
+        }
+    }
+
+    // For expression nodes, get the inferred mono type
+    ty_of(db, node_id).map(|ty| (ty.to_string(), false))
+}
+
+pub fn collect_types(input: &AnalysisInput) -> Vec<TypeInfo> {
+    let mut types = Vec::new();
+
+    for decl in input.decls {
+        if let Some((ty_str, is_scheme)) = type_info_for_node(input.db, decl.id) {
+            let source = input.srcmap.get(decl);
+            types.push(TypeInfo {
+                id: decl.id,
+                filepath: source.filepath.clone(),
+                span: source.span,
+                ty: ty_str,
+                is_scheme,
+            });
+        }
+
+        if let Decl::Func(func) = &decl.value {
+            for param in &func.sig.params {
+                maybe_push_node_type(&mut types, input.db, input.srcmap, param);
+            }
+
+            if let Some(body) = &func.body {
+                maybe_push_node_type(&mut types, input.db, input.srcmap, body);
+            }
+        }
+    }
+
+    types.sort_by(|a, b| {
+        a.filepath
+            .cmp(&b.filepath)
+            .then_with(|| compare_span(a.span, b.span))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    log::debug!("collected {} type entries", types.len());
+
+    types
+}
+
+pub fn collect_definitions(input: &AnalysisInput) -> Vec<DefinitionInfo> {
+    let mut definitions = Vec::new();
+    let mut seen_usage_ids = HashSet::new();
+
+    let resolutions = name_resolutions(input.db, input.file_id);
+
+    for (usage_id, _resolution) in resolutions.iter() {
+        if !seen_usage_ids.insert(*usage_id) {
+            continue;
+        }
+
+        // Get usage location from source map
+        let usage_source = match input.srcmap.get_by_id(*usage_id) {
+            Some(src) => src,
+            None => continue,
+        };
+
+        // Use symbol_targets to resolve to definition(s)
+        let targets = symbol_targets(input.db, *usage_id);
+        if targets.is_empty() {
+            continue;
+        }
+
+        // Skip definition sites - we only want references
+        if targets.iter().any(|t| t.role == SymbolRole::Definition) {
+            continue;
+        }
+
+        // Get the first target (primary definition)
+        let target = &targets[0];
+        let SymbolIdentity::Def(def_target) = &target.identity else {
+            // Skip local bindings for now - they don't have paths
+            continue;
+        };
+
+        // Get definition path and location
+        let definition_path = def_path(input.db, def_target.clone());
+        let definition_span = match def_target {
+            DefTarget::Workspace(def_id) => {
+                let def_node_id = NodeId {
+                    owner: *def_id,
+                    index: 0,
+                };
+                span_of(input.db, def_node_id)
+            }
+            DefTarget::Library(_) | DefTarget::Primitive(_) => None,
+        };
+
+        // Get the filepath for the definition
+        let definition_filepath = match def_target {
+            DefTarget::Workspace(def_id) => {
+                let workspace = input.db.get_input::<WorkspaceSnapshot>(());
+                workspace
+                    .file_info(def_id.file)
+                    .map(|info| info.path.clone())
+            }
+            DefTarget::Library(_) | DefTarget::Primitive(_) => None,
+        };
+
+        // Construct usage path from the definition path
+        let usage_path = definition_path
+            .clone()
+            .unwrap_or_else(|| ItemPath::from(format!("<unknown:{}>", usage_id).as_str()));
+
+        definitions.push(DefinitionInfo {
+            usage_id: *usage_id,
+            usage_path,
+            usage_filepath: usage_source.filepath.clone(),
+            usage_span: usage_source.span,
+            definition_id: match def_target {
+                DefTarget::Workspace(def_id) => Some(NodeId {
+                    owner: *def_id,
+                    index: 0,
+                }),
+                _ => None,
+            },
+            definition_path,
+            definition_filepath,
+            definition_span,
+            definition_doc: None,
+        });
+    }
+
+    definitions.sort_by(|a, b| {
+        a.usage_filepath
+            .cmp(&b.usage_filepath)
+            .then_with(|| compare_span(a.usage_span, b.usage_span))
+            .then_with(|| a.usage_id.cmp(&b.usage_id))
+    });
+
+    log::debug!("collected {} definition entries", definitions.len());
+
+    definitions
+}
+
+fn compare_span(a: Option<Span>, b: Option<Span>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => (a.start.lineno, a.start.col, a.end.lineno, a.end.col).cmp(&(
+            b.start.lineno,
+            b.start.col,
+            b.end.lineno,
+            b.end.col,
+        )),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn maybe_push_node_type<T>(
+    entries: &mut Vec<TypeInfo>,
+    db: &Database,
+    srcmap: &SourceMap,
+    node: &Node<T>,
+) {
+    if let Some((ty_str, is_scheme)) = type_info_for_node(db, node.id) {
+        let source = srcmap.get(node);
+        entries.push(TypeInfo {
+            id: node.id,
+            filepath: source.filepath.clone(),
+            span: source.span,
+            ty: ty_str,
+            is_scheme,
+        });
+    }
 }
