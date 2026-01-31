@@ -322,6 +322,26 @@ fn lookup_in_library(db: &Database, path: &ItemPath) -> Option<DefTarget> {
     Some(DefTarget::Library(lib_def_id))
 }
 
+/// Get the DefHeader for a workspace definition.
+///
+/// This provides access to definition metadata (name, kind, span, parent)
+/// for workspace definitions. Library and primitive definitions don't have
+/// DefHeaders - use other queries like `def_name` or `definition_record` for those.
+///
+/// # Arguments
+///
+/// * `db` - The query database
+/// * `def_id` - The definition identifier
+///
+/// # Returns
+///
+/// The DefHeader if the definition exists, `None` otherwise.
+#[query]
+pub fn def_header(db: &Database, def_id: DefId) -> Option<DefHeader> {
+    let parse_result = parse_file(db, def_id.file);
+    parse_result.defs.iter().find(|h| h.def_id == def_id).cloned()
+}
+
 /// Convert a DefTarget to its ItemPath.
 ///
 /// For workspace definitions, looks up the DefHeader to get the name and module.

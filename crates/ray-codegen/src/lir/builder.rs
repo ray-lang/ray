@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
-use ray_shared::ty::Ty;
-use ray_typing::binding_groups::BindingId;
+use ray_shared::{local_binding::LocalBindingId, ty::Ty};
 use ray_typing::types::TyScheme;
 
 use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
-pub type VarMap = HashMap<BindingId, usize>;
+pub type VarMap = HashMap<LocalBindingId, usize>;
 
 #[derive(Clone, Debug)]
 pub struct Builder {
@@ -87,12 +86,12 @@ impl Builder {
     }
 
     #[inline(always)]
-    pub fn get_var(&self, binding: &BindingId) -> Option<&usize> {
+    pub fn get_var(&self, binding: &LocalBindingId) -> Option<&usize> {
         self.vars.get(binding)
     }
 
     #[inline(always)]
-    pub fn set_var(&mut self, binding: BindingId, debug_name: String, idx: usize) {
+    pub fn set_var(&mut self, binding: LocalBindingId, debug_name: String, idx: usize) {
         self.block().define_var(debug_name, idx);
         self.vars.insert(binding, idx);
     }
@@ -104,7 +103,7 @@ impl Builder {
         idx
     }
 
-    pub fn param(&mut self, binding: BindingId, name: String, ty: Ty) -> usize {
+    pub fn param(&mut self, binding: LocalBindingId, name: String, ty: Ty) -> usize {
         let idx = self.local(ty.clone().into());
         self.params.push(Param::new(name.clone(), idx, ty));
         self.set_var(binding, name, idx);

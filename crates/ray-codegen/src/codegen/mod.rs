@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use ray_shared::{optlevel::OptLevel, pathlib::Path};
-use ray_typing::tyctx::TyCtx;
 
 use ray_core::{ast::Node, sourcemap::SourceMap};
 
@@ -36,7 +35,7 @@ pub(self) fn collect_symbols(
 trait Codegen<Ctx> {
     type Output;
 
-    fn codegen(&self, ctx: &mut Ctx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output;
+    fn codegen(&self, ctx: &mut Ctx, srcmap: &SourceMap) -> Self::Output;
 }
 
 impl<T, I, Ctx> Codegen<Ctx> for Vec<T>
@@ -45,8 +44,8 @@ where
 {
     type Output = Vec<I>;
 
-    fn codegen(&self, ctx: &mut Ctx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output {
-        self.iter().map(|t| t.codegen(ctx, tcx, srcmap)).collect()
+    fn codegen(&self, ctx: &mut Ctx, srcmap: &SourceMap) -> Self::Output {
+        self.iter().map(|t| t.codegen(ctx, srcmap)).collect()
     }
 }
 
@@ -56,7 +55,7 @@ where
 {
     type Output = I;
 
-    fn codegen(&self, ctx: &mut Ctx, tcx: &TyCtx, srcmap: &SourceMap) -> Self::Output {
-        self.value.codegen(ctx, tcx, srcmap)
+    fn codegen(&self, ctx: &mut Ctx, srcmap: &SourceMap) -> Self::Output {
+        self.value.codegen(ctx, srcmap)
     }
 }

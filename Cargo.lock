@@ -1175,6 +1175,7 @@ dependencies = [
  "log",
  "ray-codegen",
  "ray-core",
+ "ray-frontend",
  "ray-shared",
  "ray-typing",
 ]

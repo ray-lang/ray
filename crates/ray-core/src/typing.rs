@@ -111,11 +111,7 @@ impl<'a> TyLowerCtx<'a> {
     }
 
     /// Recursively resolve a type, consuming synthetic IDs in flatten order.
-    fn resolve_ty<'b>(
-        &self,
-        ty: &Ty,
-        id_iter: &mut impl Iterator<Item = &'b NodeId>,
-    ) -> Ty {
+    fn resolve_ty<'b>(&self, ty: &Ty, id_iter: &mut impl Iterator<Item = &'b NodeId>) -> Ty {
         match ty {
             Ty::Const(original_path) => {
                 if let Some(node_id) = id_iter.next() {
@@ -136,7 +132,9 @@ impl<'a> TyLowerCtx<'a> {
                 // First synthetic ID is for the base type
                 let resolved_path = if let Some(node_id) = id_iter.next() {
                     if let Some(Resolution::Def(target)) = self.resolutions.get(node_id) {
-                        self.env.def_item_path(target).unwrap_or_else(|| original_path.clone())
+                        self.env
+                            .def_item_path(target)
+                            .unwrap_or_else(|| original_path.clone())
                     } else {
                         original_path.clone()
                     }
@@ -153,18 +151,14 @@ impl<'a> TyLowerCtx<'a> {
                 Ty::Proj(resolved_path, resolved_args)
             }
             Ty::Func(params, ret) => {
-                let resolved_params: Vec<Ty> = params
-                    .iter()
-                    .map(|p| self.resolve_ty(p, id_iter))
-                    .collect();
+                let resolved_params: Vec<Ty> =
+                    params.iter().map(|p| self.resolve_ty(p, id_iter)).collect();
                 let resolved_ret = self.resolve_ty(ret, id_iter);
                 Ty::Func(resolved_params, Box::new(resolved_ret))
             }
             Ty::Tuple(elems) => {
-                let resolved_elems: Vec<Ty> = elems
-                    .iter()
-                    .map(|e| self.resolve_ty(e, id_iter))
-                    .collect();
+                let resolved_elems: Vec<Ty> =
+                    elems.iter().map(|e| self.resolve_ty(e, id_iter)).collect();
                 Ty::Tuple(resolved_elems)
             }
             Ty::Ref(inner) => {

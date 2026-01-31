@@ -1,3 +1,4 @@
+pub mod bindings;
 pub mod calls;
 pub mod closures;
 pub mod defs;

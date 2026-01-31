@@ -1,3 +1,5 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use serde::{Deserialize, Serialize};
 
 use crate::def::DefId;
@@ -19,6 +21,16 @@ pub struct LocalBindingId {
 impl std::fmt::Display for LocalBindingId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::local{}", self.owner, self.index)
+    }
+}
+
+impl std::fmt::LowerHex for LocalBindingId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut state = DefaultHasher::new();
+        self.owner.hash(&mut state);
+        self.index.hash(&mut state);
+        let out = state.finish();
+        write!(f, "{:x}", out)
     }
 }
 

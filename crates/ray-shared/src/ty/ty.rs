@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     collections::{namecontext::NameContext, nametree::Scope},
-    pathlib::{ItemPath, Path, TypePath},
+    pathlib::{ItemPath, Path},
     ty::TyVar,
 };
 
@@ -434,27 +434,48 @@ impl Ty {
         }
     }
 
-    /// Get the instantiated type path for codegen.
-    ///
-    /// Returns `Some(TypePath)` for types that can be monomorphized:
-    /// - `Const` → `TypePath::Nominal { base, args: [] }`
-    /// - `Proj` → `TypePath::Nominal { base, args }`
-    /// - `Array` → `TypePath::Array { elem, size }`
-    /// - `Tuple` → `TypePath::Tuple(elems)`
-    ///
-    /// Returns `None` for structural pointer types (Ref, RawPtr), function types,
-    /// type variables, and special types (Any, Never).
-    pub fn type_path(&self) -> Option<TypePath> {
-        match self {
-            Ty::Const(p) => Some(TypePath::simple(p.clone())),
-            Ty::Proj(p, args) => Some(TypePath::with_args(p.clone(), args.clone())),
-            Ty::Array(elem, size) => Some(TypePath::array(elem.as_ref().clone(), *size)),
-            Ty::Tuple(elems) => Some(TypePath::tuple(elems.clone())),
-            _ => None,
+    /// Create a nominal type (Const or Proj) from a path and optional type arguments.
+    pub fn nominal(path: ItemPath, args: Vec<Ty>) -> Ty {
+        if args.is_empty() {
+            Ty::Const(path)
+        } else {
+            Ty::Proj(path, args)
         }
     }
 
-    #[deprecated(note = "use item_path() or type_path() instead")]
+    /// Mangle this type into a symbol-safe string for codegen.
+    pub fn to_mangled(&self) -> String {
+        match self {
+            Ty::Const(path) => path.to_string(),
+            Ty::Proj(path, args) => {
+                if args.is_empty() {
+                    path.to_string()
+                } else {
+                    let args_str = args.iter().map(|t| t.to_mangled()).collect::<Vec<_>>().join(",");
+                    format!("{}[{}]", path, args_str)
+                }
+            }
+            Ty::Var(v) => v.0.to_string(),
+            Ty::Func(params, ret) => {
+                let params_str = params.iter().map(|t| t.to_mangled()).collect::<Vec<_>>().join(",");
+                format!("<({}):{}>", params_str, ret.to_mangled())
+            }
+            Ty::Ref(inner) => format!("*{}", inner.to_mangled()),
+            Ty::RawPtr(inner) => format!("rawptr[{}]", inner.to_mangled()),
+            Ty::Tuple(elems) => {
+                let elems_str = elems.iter().map(|t| t.to_mangled()).collect::<Vec<_>>().join(",");
+                format!("({})", elems_str)
+            }
+            Ty::Array(elem, size) => format!("[{};{}]", elem.to_mangled(), size),
+            Ty::Any => "any".to_string(),
+            Ty::Never => "never".to_string(),
+        }
+    }
+
+    /// Get the instantiated type path for codegen.
+    ///
+    /// Returns `Some(&ItemPath)` for nominal types:
+    #[deprecated(note = "use item_path() instead")]
     pub fn get_path(&self) -> Path {
         match self {
             Ty::Never => Path::from("never"),

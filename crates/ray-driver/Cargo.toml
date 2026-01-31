@@ -11,5 +11,6 @@ itertools = "0.14"
 log = "0.4"
 ray-codegen = { path = "../ray-codegen" }
 ray-core = { path = "../ray-core" }
+ray-frontend = { path = "../ray-frontend" }
 ray-shared = { path = "../ray-shared" }
 ray-typing = { path = "../ray-typing" }

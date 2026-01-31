@@ -28,14 +28,11 @@ use llvm::{
 use rand::RngCore;
 use ray_shared::{
     optlevel::OptLevel,
-    pathlib::{FilePath, ItemPath, Path, TypePath},
+    pathlib::{FilePath, ItemPath, Path},
     ty::{Ty, TyVar},
     utils::map_join,
 };
-use ray_typing::{
-    tyctx::TyCtx,
-    types::{StructTy, Subst, Substitutable},
-};
+use ray_typing::types::{StructTy, Subst, Substitutable};
 
 use ray_core::{
     ast::{Modifier, Node},
@@ -57,9 +54,8 @@ lazy_static! {
     static ref MALLOC_BUF_HASH: u64 = xxhash_rust::xxh3::xxh3_64(MALLOC_BUF);
 }
 
-pub fn codegen<'a, 'ctx, P>(
+pub fn codegen<'a, P>(
     program: &lir::Program,
-    tcx: &TyCtx,
     srcmap: &SourceMap,
     lcx: &'a llvm::context::Context,
     target: &Target,
@@ -72,15 +68,8 @@ where
     let name = program.module_path.to_string();
     let module = lcx.create_module(&name);
     let builder = lcx.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(
-        target,
-        lcx,
-        &module,
-        &builder,
-        tcx,
-        &program.synthetic_structs,
-    );
-    if let Some(err) = program.codegen(&mut ctx, tcx, srcmap).err() {
+    let mut ctx = LLVMCodegenCtx::new(target, lcx, &module, &builder, &program.struct_types);
+    if let Some(err) = program.codegen(&mut ctx, srcmap).err() {
         // TODO: convert to ray error
         panic!("error during codegen: {}", err);
     }
@@ -188,7 +177,6 @@ where
 
 pub fn emit_module_ir(
     program: &lir::Program,
-    tcx: &TyCtx,
     srcmap: &SourceMap,
     target: &Target,
     opt_level: OptLevel,
@@ -196,15 +184,8 @@ pub fn emit_module_ir(
     let context = llvm::context::Context::create();
     let module = context.create_module(&program.module_path.to_string());
     let builder = context.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(
-        target,
-        &context,
-        &module,
-        &builder,
-        tcx,
-        &program.synthetic_structs,
-    );
-    if let Err(err) = program.codegen(&mut ctx, tcx, srcmap) {
+    let mut ctx = LLVMCodegenCtx::new(target, &context, &module, &builder, &program.struct_types);
+    if let Err(err) = program.codegen(&mut ctx, srcmap) {
         panic!("error during codegen: {}", err);
     }
     ctx.ensure_wasi_globals();
@@ -265,8 +246,8 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     curr_fn: Option<FunctionValue<'ctx>>,
     curr_ret_ty: Option<Ty>,
     fn_index: HashMap<Path, FunctionValue<'ctx>>,
-    tcx: &'a TyCtx,
-    struct_types: HashMap<TypePath, StructType<'ctx>>,
+    /// LLVM struct type cache - maps ray types to LLVM struct types.
+    struct_types: HashMap<Ty, StructType<'ctx>>,
     data_addrs: HashMap<(Path, usize), GlobalValue<'ctx>>,
     globals: HashMap<(Path, usize), GlobalValue<'ctx>>,
     locals: HashMap<usize, PointerValue<'ctx>>,
@@ -275,7 +256,8 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     pointee_tys: HashMap<PointerValue<'ctx>, Ty>,
     sret_param: Option<PointerValue<'ctx>>,
     intrinsics: HashMap<Path, lir::IntrinsicKind>,
-    synthetic_structs: &'a HashMap<ItemPath, StructTy>,
+    /// Struct definitions from the program (both workspace and synthetic).
+    struct_defs: &'a HashMap<ItemPath, StructTy>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -284,8 +266,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         lcx: &'ctx llvm::context::Context,
         module: &'a llvm::module::Module<'ctx>,
         builder: &'a llvm::builder::Builder<'ctx>,
-        tcx: &'a TyCtx,
-        synthetic_structs: &'a HashMap<ItemPath, StructTy>,
+        struct_defs: &'a HashMap<ItemPath, StructTy>,
     ) -> Self {
         LLVMTarget::initialize_webassembly(&InitializationConfig::default());
 
@@ -319,7 +300,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             curr_fn: None,
             curr_ret_ty: None,
             fn_index: HashMap::new(),
-            tcx,
             struct_types: HashMap::new(),
             data_addrs: HashMap::new(),
             globals: HashMap::new(),
@@ -329,7 +309,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             pointee_tys: HashMap::new(),
             sret_param: None,
             intrinsics: HashMap::new(),
-            synthetic_structs,
+            struct_defs,
         }
     }
 
@@ -408,22 +388,17 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 
     fn lookup_struct_ty(&self, path: &ItemPath) -> &StructTy {
-        if let Some(ty) = self.tcx.get_struct_ty(path) {
-            return ty;
-        }
-        self.synthetic_structs
+        self.struct_defs
             .get(path)
             .expect(&format!("could not find struct type: {}", path))
     }
 
     fn lookup_struct_ty_instantiated(&self, def_path: &ItemPath, args: &[Ty]) -> StructTy {
-        let mut struct_ty = if let Some(ty) = self.tcx.get_struct_ty(def_path) {
-            ty.clone()
-        } else if let Some(extra) = self.synthetic_structs.get(def_path) {
-            extra.clone()
-        } else {
-            panic!("could not find struct type: {}", def_path);
-        };
+        let mut struct_ty = self
+            .struct_defs
+            .get(def_path)
+            .cloned()
+            .expect(&format!("could not find struct type: {}", def_path));
 
         if args.is_empty() {
             return struct_ty;
@@ -448,12 +423,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 
     fn is_struct(&self, ty: &Ty) -> bool {
-        if self.tcx.is_struct(ty) {
-            return true;
-        }
-
         if let Some(path) = ty.item_path() {
-            self.synthetic_structs.get(path).is_some()
+            self.struct_defs.contains_key(path)
         } else {
             false
         }
@@ -723,12 +694,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             lhs_ty = inner.clone();
         }
 
-        // Special-case `nilable['a]`, which is not a nominal struct in `tcx`
+        // Special-case `nilable['a]`, which is not a nominal struct
         // but is lowered to an Option-like aggregate:
         //   { is_some: bool, payload: 'a }
         //
-        // We compute field indices and types directly from this layout rather
-        // than going through `tcx.get_struct_ty`.
+        // We compute field indices and types directly from this layout
         if let Some(payload_ty) = lhs_ty.nilable_payload() {
             let (field_index, field_ty) = match field.as_str() {
                 "is_some" => (0, Ty::bool()),
@@ -766,7 +736,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             return Ok(gep);
         }
 
-        // Nominal struct case: use `tcx` metadata to find the field index.
+        // Nominal struct case
         let lhs_fqn = lhs_ty
             .item_path()
             .expect("expected nominal type for field access");
@@ -1152,7 +1122,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         &mut self,
         idx: usize,
         value: &lir::Value,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<InstructionValue<'ctx>, BuilderError> {
         let dst_ptr = self.get_local(idx);
@@ -1161,12 +1130,12 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         // If destination is an aggregate (struct/tuple/array), copy bytes via memcpy
         // instead of performing an aggregate load+store.
         if dst_ty.is_aggregate() {
-            let src_val = value.codegen(self, tcx, srcmap)?;
+            let src_val = value.codegen(self, srcmap)?;
             return self.memcpy_aggregate_from_value(dst_ptr, &dst_ty, src_val);
         }
 
         // Non-aggregate destination: perform the normal store.
-        let value = value.codegen(self, tcx, srcmap)?;
+        let value = value.codegen(self, srcmap)?;
         self.store(dst_ptr, value)
     }
 
@@ -1176,19 +1145,18 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         dest_var: &lir::Variable,
         src_var: &lir::Variable,
         size: &lir::Atom,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<InstructionValue<'ctx>, BuilderError> {
-        let mut dest = dest_var.codegen(self, tcx, srcmap)?.into_pointer_value();
+        let mut dest = dest_var.codegen(self, srcmap)?.into_pointer_value();
         if dest_var.is_local() && self.get_pointee_ty(dest).is_any_pointer() {
             dest = self.load_pointer(dest)?.into_pointer_value();
         }
 
-        let mut src = src_var.codegen(self, tcx, srcmap)?.into_pointer_value();
+        let mut src = src_var.codegen(self, srcmap)?.into_pointer_value();
         if src_var.is_local() && self.get_pointee_ty(src).is_any_pointer() {
             src = self.load_pointer(src)?.into_pointer_value();
         }
-        let size_val = size.codegen(self, tcx, srcmap)?;
+        let size_val = size.codegen(self, srcmap)?;
         let size = self.maybe_load_pointer(size_val)?.into_int_value();
         let td = self.target_machine.get_target_data();
         let dest_align = {
@@ -1259,7 +1227,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         args: &Vec<lir::Variable>,
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
         ray_param_tys: &Vec<Ty>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<Vec<BasicMetadataValueEnum<'ctx>>, BuilderError> {
         assert_eq!(
@@ -1268,7 +1235,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             "callee LLVM param count and Ray param count must match for non-sret calls"
         );
 
-        let arg_vals = args.codegen(self, tcx, srcmap);
+        let arg_vals = args.codegen(self, srcmap);
         expected_params
             .iter()
             .zip(ray_param_tys.iter())
@@ -1288,10 +1255,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         args: &Vec<lir::Variable>,
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
         ray_param_tys: &Vec<Ty>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<CallSiteValue<'ctx>, BuilderError> {
-        let args = self.build_call_args(args, expected_params, ray_param_tys, tcx, srcmap)?;
+        let args = self.build_call_args(args, expected_params, ray_param_tys, srcmap)?;
         self.builder.build_call(function, args.as_slice(), "")
     }
 
@@ -1301,10 +1267,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
         ray_param_tys: &Vec<Ty>,
         ret_ty: &Ty,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<(Vec<BasicMetadataValueEnum<'ctx>>, PointerValue<'ctx>), BuilderError> {
-        let arg_vals = args.codegen(self, tcx, srcmap);
+        let arg_vals = args.codegen(self, srcmap);
 
         // sret: allocate a local return slot, pass as first arg, and return the pointer as the value.
         let ret_slot = self.alloca(ret_ty)?;
@@ -1346,11 +1311,10 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         expected_params: &Vec<BasicMetadataTypeEnum<'ctx>>,
         ray_param_tys: &Vec<Ty>,
         ret_ty: &Ty,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<(CallSiteValue<'ctx>, PointerValue<'ctx>), BuilderError> {
         let (marshalled_vals, ret_slot) =
-            self.build_sret_call_args(args, expected_params, ray_param_tys, ret_ty, tcx, srcmap)?;
+            self.build_sret_call_args(args, expected_params, ray_param_tys, ret_ty, srcmap)?;
 
         // Emit the call (returns void in sret case)
         let call = self
@@ -1368,7 +1332,6 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         args: &Vec<lir::Variable>,
         param_tys: &Vec<Ty>,
         ret_ty: &Ty,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<(CallSiteValue<'ctx>, Option<PointerValue<'ctx>>), BuilderError> {
         let llvm_fn_ty = self.to_llvm_fn_ty(param_tys, ret_ty);
@@ -1380,14 +1343,14 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         if ret_ty.is_aggregate() {
             let (args, ret_slot) =
-                self.build_sret_call_args(args, &expected_params, param_tys, ret_ty, tcx, srcmap)?;
+                self.build_sret_call_args(args, &expected_params, param_tys, ret_ty, srcmap)?;
             let call = self
                 .builder
                 .build_indirect_call(llvm_fn_ty, func_ptr, &args, "")?;
             return Ok((call, Some(ret_slot)));
         }
 
-        let args = self.build_call_args(args, &expected_params, param_tys, tcx, srcmap)?;
+        let args = self.build_call_args(args, &expected_params, param_tys, srcmap)?;
         let call = self
             .builder
             .build_indirect_call(llvm_fn_ty, func_ptr, &args, "")?;
@@ -1468,7 +1431,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     }
 
     fn get_struct_type(&mut self, path: &ItemPath, args: &[Ty]) -> StructType<'ctx> {
-        let key = TypePath::with_args(path.clone(), args.to_vec());
+        let key = Ty::nominal(path.clone(), args.to_vec());
 
         if let Some(st) = self.struct_types.get(&key) {
             return st.clone();
@@ -1498,12 +1461,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
     type Output = Result<(), BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         // collect the function symbols
         let mut fn_map: HashMap<Path, &Node<lir::Func>> = HashMap::new();
         for func in self.funcs.iter() {
@@ -1591,7 +1549,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             let global_val =
                 ctx.module
                     .add_global(global_type, Some(AddressSpace::default()), &global.name);
-            let init_value = global.init_value.codegen(ctx, tcx, srcmap)?;
+            let init_value = global.init_value.codegen(ctx, srcmap)?;
             global_val.set_initializer(&init_value);
 
             let ptr = global_val.as_pointer_value();
@@ -1672,7 +1630,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
                 .collect::<Vec<_>>();
             ctx.local_tys = local_tys;
             ctx.curr_fn = Some(val);
-            f.codegen(ctx, tcx, srcmap)?;
+            f.codegen(ctx, srcmap)?;
         }
 
         if let Some(malloc_fn) = ctx.module.get_function("malloc") {
@@ -1687,12 +1645,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
     type Output = Result<(), BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("generating {}", self);
 
         // clear the locals and blocks
@@ -1791,7 +1744,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
         for block in self.blocks.iter() {
             let bb = ctx.get_block(block.label());
             ctx.builder.position_at_end(bb);
-            block.codegen(ctx, tcx, srcmap)?;
+            block.codegen(ctx, srcmap)?;
         }
 
         // add a branch from entry block to first block
@@ -1808,14 +1761,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
 impl Codegen<LLVMCodegenCtx<'_, '_>> for lir::Block {
     type Output = Result<(), BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'_, '_>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'_, '_>, srcmap: &SourceMap) -> Self::Output {
         for i in self.deref() {
-            let _ = i.codegen(ctx, tcx, srcmap)?;
+            let _ = i.codegen(ctx, srcmap)?;
 
             // use inkwell::values::InstructionOpcode::*;
             // if matches!(
@@ -1843,12 +1791,7 @@ impl Codegen<LLVMCodegenCtx<'_, '_>> for lir::Block {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
     type Output = Result<Option<InstructionValue<'ctx>>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("[codegen] {}", self);
         Ok(Some(match self {
             lir::Inst::StructInit(_, _) => {
@@ -1858,7 +1801,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
 
             lir::Inst::Free(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Call(call) => {
-                match call.codegen(ctx, tcx, srcmap)? {
+                match call.codegen(ctx, srcmap)? {
                     LoweredCall::Value(_v) => {
                         // Intrinsic folded to a value in expression position; as a statement call,
                         // this becomes a no-op.
@@ -1879,19 +1822,19 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                     // Skipping codegen here avoids spurious loads/stores and keeps IR clean.
                     return Ok(None);
                 }
-                ctx.build_set_local(*idx, value, tcx, srcmap)?
+                ctx.build_set_local(*idx, value, srcmap)?
             }
             lir::Inst::MemCopy(dest_var, src_var, size) => {
-                ctx.build_memcpy(dest_var, src_var, size, tcx, srcmap)?
+                ctx.build_memcpy(dest_var, src_var, size, srcmap)?
             }
-            lir::Inst::Store(s) => s.codegen(ctx, tcx, srcmap)?,
-            lir::Inst::Insert(i) => i.codegen(ctx, tcx, srcmap)?,
-            lir::Inst::SetField(s) => s.codegen(ctx, tcx, srcmap)?,
+            lir::Inst::Store(s) => s.codegen(ctx, srcmap)?,
+            lir::Inst::Insert(i) => i.codegen(ctx, srcmap)?,
+            lir::Inst::SetField(s) => s.codegen(ctx, srcmap)?,
             lir::Inst::IncRef(_, _) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::DecRef(_) => todo!("codegen lir::Inst: {}", self),
             lir::Inst::Return(v) => {
                 // Compute the value to return, then delegate to the typed-return helper.
-                let ret_val = v.codegen(ctx, tcx, srcmap)?;
+                let ret_val = v.codegen(ctx, srcmap)?;
                 let ret_ty = ctx.curr_ret_ty.clone().expect("missing curr_ret_ty");
                 ctx.build_typed_return(&ret_ty, ret_val)?
             }
@@ -1900,8 +1843,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                 let bb = ctx.get_block(*idx);
                 ctx.builder.build_unconditional_branch(bb)?
             }
-            lir::Inst::Break(b) => b.codegen(ctx, tcx, srcmap)?,
-            lir::Inst::If(if_expr) => if_expr.codegen(ctx, tcx, srcmap)?,
+            lir::Inst::Break(b) => b.codegen(ctx, srcmap)?,
+            lir::Inst::If(if_expr) => if_expr.codegen(ctx, srcmap)?,
         }))
     }
 }
@@ -1909,20 +1852,15 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         match self {
             lir::Value::VarRef(_) => {
                 unreachable!("COMPILER BUG: this should be removed by this point")
             }
             lir::Value::Empty => Ok(ctx.unit()),
-            lir::Value::Atom(a) => a.codegen(ctx, tcx, srcmap),
-            lir::Value::Malloc(m) => m.codegen(ctx, tcx, srcmap),
-            lir::Value::Call(c) => Ok(match c.codegen(ctx, tcx, srcmap)? {
+            lir::Value::Atom(a) => a.codegen(ctx, srcmap),
+            lir::Value::Malloc(m) => m.codegen(ctx, srcmap),
+            lir::Value::Call(c) => Ok(match c.codegen(ctx, srcmap)? {
                 LoweredCall::Value(v) => v,
                 LoweredCall::Call { call, ret_slot } => ret_slot
                     .map(|p| p.as_basic_value_enum())
@@ -1933,13 +1871,13 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             }),
             lir::Value::CExternCall(_) => todo!("codegen lir::CExternCall: {}", self),
             lir::Value::Select(_) => todo!("codegen lir::Select: {}", self),
-            lir::Value::Phi(phi) => phi.codegen(ctx, tcx, srcmap),
-            lir::Value::Load(l) => l.codegen(ctx, tcx, srcmap),
-            lir::Value::Extract(e) => e.codegen(ctx, tcx, srcmap),
-            lir::Value::Lea(lea) => lea.codegen(ctx, tcx, srcmap),
-            lir::Value::GetField(g) => g.codegen(ctx, tcx, srcmap),
-            lir::Value::BasicOp(b) => b.codegen(ctx, tcx, srcmap),
-            lir::Value::Cast(c) => c.codegen(ctx, tcx, srcmap),
+            lir::Value::Phi(phi) => phi.codegen(ctx, srcmap),
+            lir::Value::Load(l) => l.codegen(ctx, srcmap),
+            lir::Value::Extract(e) => e.codegen(ctx, srcmap),
+            lir::Value::Lea(lea) => lea.codegen(ctx, srcmap),
+            lir::Value::GetField(g) => g.codegen(ctx, srcmap),
+            lir::Value::BasicOp(b) => b.codegen(ctx, srcmap),
+            lir::Value::Cast(c) => c.codegen(ctx, srcmap),
             lir::Value::IntConvert(_) => todo!("codegen lir::IntConvert: {}", self),
             lir::Value::Type(_) => todo!("codegen lir::Type: {}", self),
             lir::Value::Closure(closure) => {
@@ -1962,7 +1900,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
                     .build_struct_gep(llvm_struct, slot, 0, "closure.fn")?;
                 ctx.builder.build_store(fn_field, fn_ptr)?;
 
-                let env_raw = closure.env.codegen(ctx, tcx, srcmap)?;
+                let env_raw = closure.env.codegen(ctx, srcmap)?;
                 let env_value = ctx.maybe_load_pointer(env_raw)?;
                 let env_field =
                     ctx.builder
@@ -1978,12 +1916,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         let orig_ty = self.ty.mono();
         let element_ty = match orig_ty.clone() {
             Ty::Ref(inner) | Ty::RawPtr(inner) => *inner,
@@ -2005,7 +1938,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
 
         let size = match &self.count {
             lir::Atom::Variable(v) => {
-                let mut size_value = v.codegen(ctx, tcx, srcmap)?;
+                let mut size_value = v.codegen(ctx, srcmap)?;
                 while let BasicValueEnum::PointerValue(ptr) = size_value {
                     size_value = ctx.load_pointer(ptr)?;
                 }
@@ -2048,14 +1981,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Load {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("[load] generating: {:?}", self);
-        let mut ptr = self.src.codegen(ctx, tcx, srcmap)?.into_pointer_value();
+        let mut ptr = self.src.codegen(ctx, srcmap)?.into_pointer_value();
         if ctx.is_local_slot(&ptr) {
             // since slots themselves are pointers to whatever is inside
             // we need to do an initial load of the slot first
@@ -2092,14 +2020,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Load {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Extract {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("[extract] generating: {:?}", self);
-        let mut value = self.src.codegen(ctx, tcx, srcmap)?;
+        let mut value = self.src.codegen(ctx, srcmap)?;
         if let BasicValueEnum::PointerValue(ptr) = value {
             value = ctx.load_pointer(ptr)?;
         }
@@ -2114,16 +2037,11 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Extract {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Insert {
     type Output = Result<InstructionValue<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("[insert] generating: {:?}", self);
         let ptr = match self.src {
             lir::Variable::Local(idx) => ctx.get_local(idx),
-            _ => self.src.codegen(ctx, tcx, srcmap)?.into_pointer_value(),
+            _ => self.src.codegen(ctx, srcmap)?.into_pointer_value(),
         };
         let dst_ty = ctx.get_pointee_ty(ptr).clone();
         let base = if self.index == 0 {
@@ -2137,7 +2055,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Insert {
         } else {
             ctx.load_pointer(ptr)?
         };
-        let mut value = self.value.codegen(ctx, tcx, srcmap)?;
+        let mut value = self.value.codegen(ctx, srcmap)?;
         if let BasicValueEnum::PointerValue(ptr) = value {
             value = ctx.load_pointer(ptr)?;
         }
@@ -2152,12 +2070,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Insert {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Store {
     type Output = Result<InstructionValue<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         match self.dst {
             lir::Variable::Data(..) => todo!(),
             lir::Variable::Global(..) => todo!(),
@@ -2172,7 +2085,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Store {
                     ptr = ctx.get_element_ptr(ptr, self.offset)?;
                 }
 
-                let value = self.value.codegen(ctx, tcx, srcmap)?;
+                let value = self.value.codegen(ctx, srcmap)?;
                 ctx.store(ptr, value)
             }
             lir::Variable::Unit => todo!(),
@@ -2183,16 +2096,11 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Store {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Lea {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         let ptr = match &self.offset {
             lir::LeaOffset::Const(offset) => {
                 // generate the base pointer
-                let var = self.var.codegen(ctx, tcx, srcmap)?;
+                let var = self.var.codegen(ctx, srcmap)?;
                 let mut ptr = var.into_pointer_value();
 
                 // use the offset to get the pointer
@@ -2216,12 +2124,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Lea {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::If {
     type Output = Result<InstructionValue<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        _: &TyCtx,
-        _: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, _: &SourceMap) -> Self::Output {
         let val = ctx.load_local(self.cond_loc)?.into_int_value();
         let then_block = ctx.get_block(self.then_label);
         let else_block = ctx.get_block(self.else_label);
@@ -2233,12 +2136,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::If {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Phi {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        _: &TyCtx,
-        _: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, _: &SourceMap) -> Self::Output {
         let curr_block = ctx.builder.get_insert_block().unwrap();
         // find the first non-phi instruction and use that to position the phi node
         let mut inst = curr_block.get_first_instruction();
@@ -2284,7 +2182,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Phi {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Break {
     type Output = Result<InstructionValue<'ctx>, BuilderError>;
 
-    fn codegen(&self, _: &mut LLVMCodegenCtx, _: &TyCtx, _: &SourceMap) -> Self::Output {
+    fn codegen(&self, _: &mut LLVMCodegenCtx, _: &SourceMap) -> Self::Output {
         unimplemented!("lir::Break::codegen")
     }
 }
@@ -2292,12 +2190,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Break {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::GetField {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        _: &TyCtx,
-        _: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, _: &SourceMap) -> Self::Output {
         let ptr = ctx.get_field_ptr(&self.src, &self.field)?;
 
         log::debug!(
@@ -2316,12 +2209,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::GetField {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::SetField {
     type Output = Result<InstructionValue<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         let ptr = ctx.get_field_ptr(&self.dst, &self.field)?;
         let field_ty = ctx.get_pointee_ty(ptr).clone();
 
@@ -2334,7 +2222,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::SetField {
         );
 
         // If the field itself is an aggregate (struct/tuple/array), copy bytes via memcpy.
-        let value = self.value.codegen(ctx, tcx, srcmap)?;
+        let value = self.value.codegen(ctx, srcmap)?;
         if field_ty.is_aggregate() {
             log::debug!("[SetField] aggregate field; using memcpy");
             return ctx.memcpy_aggregate_from_value(ptr, &field_ty, value);
@@ -2348,14 +2236,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::SetField {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Cast {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("[Cast::codegen] src = {}, ty = {}", self.src, self.ty);
-        let mut val = self.src.codegen(ctx, tcx, srcmap)?;
+        let mut val = self.src.codegen(ctx, srcmap)?;
         val = ctx.maybe_load_pointer(val)?;
 
         let ty = ctx.to_llvm_type(&self.ty);
@@ -2390,14 +2273,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Cast {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
     type Output = Result<LoweredCall<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         if let Some(&kind) = ctx.intrinsics.get(&self.fn_name) {
-            return self.codegen_intrinsic(kind, ctx, tcx, srcmap);
+            return self.codegen_intrinsic(kind, ctx, srcmap);
         }
 
         // Look up callee to inspect its Ray function type for parameter and
@@ -2414,7 +2292,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
         if let Some(fn_idx) = self.fn_ref {
             let func_ptr = ctx.load_local(fn_idx)?.into_pointer_value();
             let (call, ret_slot) =
-                ctx.build_indirect_call(func_ptr, &self.args, ray_param_tys, ret_ty, tcx, srcmap)?;
+                ctx.build_indirect_call(func_ptr, &self.args, ray_param_tys, ret_ty, srcmap)?;
             return Ok(LoweredCall::Call { call, ret_slot });
         }
 
@@ -2439,7 +2317,6 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
                 &expected_params,
                 ray_param_tys,
                 ret_ty,
-                tcx,
                 srcmap,
             )?;
             return Ok(LoweredCall::Call {
@@ -2454,7 +2331,6 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
             &self.args,
             &expected_params,
             ray_param_tys,
-            tcx,
             srcmap,
         )?;
         Ok(LoweredCall::Call {
@@ -2469,14 +2345,13 @@ impl<'a, 'ctx> lir::Call {
         &self,
         kind: lir::IntrinsicKind,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<LoweredCall<'ctx>, BuilderError> {
         match kind {
-            lir::IntrinsicKind::PtrAdd => self.codegen_ptr_offset(ctx, tcx, srcmap, true),
-            lir::IntrinsicKind::PtrSub => self.codegen_ptr_offset(ctx, tcx, srcmap, false),
+            lir::IntrinsicKind::PtrAdd => self.codegen_ptr_offset(ctx, srcmap, true),
+            lir::IntrinsicKind::PtrSub => self.codegen_ptr_offset(ctx, srcmap, false),
             lir::IntrinsicKind::DerefRef | lir::IntrinsicKind::DerefRaw => {
-                self.codegen_deref(ctx, tcx, srcmap)
+                self.codegen_deref(ctx, srcmap)
             }
             lir::IntrinsicKind::SizeOf => self.codegen_sizeof(ctx),
             lir::IntrinsicKind::Memcopy => {
@@ -2484,14 +2359,14 @@ impl<'a, 'ctx> lir::Call {
                 let src = self.args.get(1).expect("memcopy expects src argument");
                 let size_atom =
                     lir::Atom::Variable(self.args.get(2).expect("memcopy expects size").clone());
-                let inst = ctx.build_memcpy(dst, src, &size_atom, tcx, srcmap)?;
+                let inst = ctx.build_memcpy(dst, src, &size_atom, srcmap)?;
                 Ok(LoweredCall::Inst(inst))
             }
             lir::IntrinsicKind::IntHashBytes => {
                 // Returns `(u64, uint)` where:
                 // - the `u64` is the value's low bytes packed little-endian
                 // - the `uint` is the byte length of the input integer type
-                let val = self.eval_intrinsic_int(ctx, tcx, srcmap, 0)?;
+                let val = self.eval_intrinsic_int(ctx, srcmap, 0)?;
                 let bit_width = val.get_type().get_bit_width();
                 if bit_width == 0 {
                     panic!("int_hash_bytes: zero-width integer");
@@ -2538,7 +2413,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Eq
             | lir::IntrinsicKind::U32Eq
             | lir::IntrinsicKind::U64Eq => {
-                self.codegen_basic_op(lir::Op::Eq, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Eq, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::BoolNeq
             | lir::IntrinsicKind::IntNeq
@@ -2551,7 +2426,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Neq
             | lir::IntrinsicKind::U32Neq
             | lir::IntrinsicKind::U64Neq => {
-                self.codegen_basic_op(lir::Op::Neq, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Neq, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntAdd
             | lir::IntrinsicKind::I8Add
@@ -2563,7 +2438,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Add
             | lir::IntrinsicKind::U32Add
             | lir::IntrinsicKind::U64Add => {
-                self.codegen_basic_op(lir::Op::Add, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Add, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntSub
             | lir::IntrinsicKind::I8Sub
@@ -2575,7 +2450,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Sub
             | lir::IntrinsicKind::U32Sub
             | lir::IntrinsicKind::U64Sub => {
-                self.codegen_basic_op(lir::Op::Sub, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Sub, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntMul
             | lir::IntrinsicKind::I8Mul
@@ -2587,7 +2462,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Mul
             | lir::IntrinsicKind::U32Mul
             | lir::IntrinsicKind::U64Mul => {
-                self.codegen_basic_op(lir::Op::Mul, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Mul, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntDiv
             | lir::IntrinsicKind::I8Div
@@ -2599,7 +2474,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Div
             | lir::IntrinsicKind::U32Div
             | lir::IntrinsicKind::U64Div => {
-                self.codegen_basic_op(lir::Op::Div, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Div, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntMod
             | lir::IntrinsicKind::I8Mod
@@ -2611,15 +2486,13 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Mod
             | lir::IntrinsicKind::U32Mod
             | lir::IntrinsicKind::U64Mod => {
-                self.codegen_basic_op(lir::Op::Mod, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Mod, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntNeg
             | lir::IntrinsicKind::I8Neg
             | lir::IntrinsicKind::I16Neg
             | lir::IntrinsicKind::I32Neg
-            | lir::IntrinsicKind::I64Neg => {
-                self.codegen_basic_op(lir::Op::Neg, true, ctx, tcx, srcmap)
-            }
+            | lir::IntrinsicKind::I64Neg => self.codegen_basic_op(lir::Op::Neg, true, ctx, srcmap),
             lir::IntrinsicKind::IntBitAnd
             | lir::IntrinsicKind::I8BitAnd
             | lir::IntrinsicKind::I16BitAnd
@@ -2630,7 +2503,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16BitAnd
             | lir::IntrinsicKind::U32BitAnd
             | lir::IntrinsicKind::U64BitAnd => {
-                self.codegen_basic_op(lir::Op::BitAnd, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::BitAnd, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntBitOr
             | lir::IntrinsicKind::I8BitOr
@@ -2642,7 +2515,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16BitOr
             | lir::IntrinsicKind::U32BitOr
             | lir::IntrinsicKind::U64BitOr => {
-                self.codegen_basic_op(lir::Op::BitOr, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::BitOr, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntBitXor
             | lir::IntrinsicKind::I8BitXor
@@ -2654,7 +2527,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16BitXor
             | lir::IntrinsicKind::U32BitXor
             | lir::IntrinsicKind::U64BitXor => {
-                self.codegen_basic_op(lir::Op::BitXor, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::BitXor, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntLt
             | lir::IntrinsicKind::I8Lt
@@ -2666,7 +2539,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Lt
             | lir::IntrinsicKind::U32Lt
             | lir::IntrinsicKind::U64Lt => {
-                self.codegen_basic_op(lir::Op::Lt, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Lt, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntGt
             | lir::IntrinsicKind::I8Gt
@@ -2678,7 +2551,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Gt
             | lir::IntrinsicKind::U32Gt
             | lir::IntrinsicKind::U64Gt => {
-                self.codegen_basic_op(lir::Op::Gt, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::Gt, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntLteq
             | lir::IntrinsicKind::I8Lteq
@@ -2690,7 +2563,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Lteq
             | lir::IntrinsicKind::U32Lteq
             | lir::IntrinsicKind::U64Lteq => {
-                self.codegen_basic_op(lir::Op::LtEq, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::LtEq, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntGteq
             | lir::IntrinsicKind::I8Gteq
@@ -2702,7 +2575,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Gteq
             | lir::IntrinsicKind::U32Gteq
             | lir::IntrinsicKind::U64Gteq => {
-                self.codegen_basic_op(lir::Op::GtEq, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::GtEq, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntShl
             | lir::IntrinsicKind::I8Shl
@@ -2714,7 +2587,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Shl
             | lir::IntrinsicKind::U32Shl
             | lir::IntrinsicKind::U64Shl => {
-                self.codegen_basic_op(lir::Op::ArithShiftLeft, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::ArithShiftLeft, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntShr
             | lir::IntrinsicKind::I8Shr
@@ -2726,7 +2599,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Shr
             | lir::IntrinsicKind::U32Shr
             | lir::IntrinsicKind::U64Shr => {
-                self.codegen_basic_op(lir::Op::ArithShiftRight, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::ArithShiftRight, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntRotl
             | lir::IntrinsicKind::I8Rotl
@@ -2738,7 +2611,7 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Rotl
             | lir::IntrinsicKind::U32Rotl
             | lir::IntrinsicKind::U64Rotl => {
-                self.codegen_basic_op(lir::Op::RotateLeft, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::RotateLeft, kind.is_signed(), ctx, srcmap)
             }
             lir::IntrinsicKind::IntRotr
             | lir::IntrinsicKind::I8Rotr
@@ -2750,29 +2623,22 @@ impl<'a, 'ctx> lir::Call {
             | lir::IntrinsicKind::U16Rotr
             | lir::IntrinsicKind::U32Rotr
             | lir::IntrinsicKind::U64Rotr => {
-                self.codegen_basic_op(lir::Op::RotateRight, kind.is_signed(), ctx, tcx, srcmap)
+                self.codegen_basic_op(lir::Op::RotateRight, kind.is_signed(), ctx, srcmap)
             }
-            lir::IntrinsicKind::BoolAnd => {
-                self.codegen_basic_op(lir::Op::And, false, ctx, tcx, srcmap)
-            }
-            lir::IntrinsicKind::BoolOr => {
-                self.codegen_basic_op(lir::Op::Or, false, ctx, tcx, srcmap)
-            }
-            lir::IntrinsicKind::BoolNot => {
-                self.codegen_basic_op(lir::Op::Not, false, ctx, tcx, srcmap)
-            }
+            lir::IntrinsicKind::BoolAnd => self.codegen_basic_op(lir::Op::And, false, ctx, srcmap),
+            lir::IntrinsicKind::BoolOr => self.codegen_basic_op(lir::Op::Or, false, ctx, srcmap),
+            lir::IntrinsicKind::BoolNot => self.codegen_basic_op(lir::Op::Not, false, ctx, srcmap),
         }
     }
 
     fn codegen_ptr_offset(
         &self,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
         is_add: bool,
     ) -> Result<LoweredCall<'ctx>, BuilderError> {
-        let ptr_val = self.eval_intrinsic_ptr(ctx, tcx, srcmap, 0)?;
-        let offset_val = self.eval_intrinsic_int(ctx, tcx, srcmap, 1)?;
+        let ptr_val = self.eval_intrinsic_ptr(ctx, srcmap, 0)?;
+        let offset_val = self.eval_intrinsic_int(ctx, srcmap, 1)?;
         log::debug!(
             "[codegen_ptr_offset] ptr_val={:?} offset_val={:?} pointee_ty={}",
             ptr_val,
@@ -2817,10 +2683,9 @@ impl<'a, 'ctx> lir::Call {
     fn codegen_deref(
         &self,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<LoweredCall<'ctx>, BuilderError> {
-        let ptr_val = self.eval_intrinsic_ptr(ctx, tcx, srcmap, 0)?;
+        let ptr_val = self.eval_intrinsic_ptr(ctx, srcmap, 0)?;
         let loaded = ctx.load_pointer(ptr_val)?;
         Ok(LoweredCall::Value(loaded))
     }
@@ -2843,13 +2708,12 @@ impl<'a, 'ctx> lir::Call {
         op: lir::Op,
         signed: bool,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
     ) -> Result<LoweredCall<'ctx>, BuilderError> {
         // convert the lir op and size into a wasm op
         let operands = self
             .args
-            .codegen(ctx, tcx, srcmap)
+            .codegen(ctx, srcmap)
             .into_iter()
             .map(|result| {
                 // unwrap any pointers
@@ -2981,11 +2845,10 @@ impl<'a, 'ctx> lir::Call {
     fn eval_intrinsic_ptr(
         &self,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
         idx: usize,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
-        let mut val = self.args[idx].codegen(ctx, tcx, srcmap)?;
+        let mut val = self.args[idx].codegen(ctx, srcmap)?;
         if let BasicValueEnum::PointerValue(ptr) = val {
             let is_slot = ctx.is_local_slot(&ptr);
             log::debug!(
@@ -3008,11 +2871,10 @@ impl<'a, 'ctx> lir::Call {
     fn eval_intrinsic_int(
         &self,
         ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
         srcmap: &SourceMap,
         idx: usize,
     ) -> Result<IntValue<'ctx>, BuilderError> {
-        let val = self.args[idx].codegen(ctx, tcx, srcmap)?;
+        let val = self.args[idx].codegen(ctx, srcmap)?;
         let loaded = ctx.maybe_load_pointer(val)?;
         match loaded {
             BasicValueEnum::IntValue(int) => Ok(int),
@@ -3024,16 +2886,11 @@ impl<'a, 'ctx> lir::Call {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::BasicOp {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         // convert the lir op and size into a wasm op
         let operands = self
             .operands
-            .codegen(ctx, tcx, srcmap)
+            .codegen(ctx, srcmap)
             .into_iter()
             .map(|result| {
                 // unwrap any pointers
@@ -3148,14 +3005,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::BasicOp {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Atom {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        tcx: &TyCtx,
-        srcmap: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         Ok(match self {
-            lir::Atom::Variable(v) => v.codegen(ctx, tcx, srcmap)?,
+            lir::Atom::Variable(v) => v.codegen(ctx, srcmap)?,
             lir::Atom::FuncRef(func_ref) => {
                 let fn_val = ctx
                     .fn_index
@@ -3195,12 +3047,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Atom {
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Variable {
     type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
 
-    fn codegen(
-        &self,
-        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
-        _: &TyCtx,
-        _: &SourceMap,
-    ) -> Self::Output {
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, _: &SourceMap) -> Self::Output {
         Ok(match self {
             lir::Variable::Data(path, idx) => ctx
                 .data_addrs

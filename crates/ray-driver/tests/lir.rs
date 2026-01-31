@@ -36,12 +36,10 @@ fn lir_generation_simple_function() {
     }
 
     let program = Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -82,12 +80,10 @@ pub fn main() -> u32 {
     );
 
     let program = Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -195,12 +191,10 @@ pub fn main() -> u32 {
     );
 
     Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -236,12 +230,10 @@ pub fn main() -> u32 {
     );
 
     Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -267,12 +259,10 @@ pub fn main() -> u32 {
     );
 
     Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -300,12 +290,10 @@ pub fn main() -> u32 {
     );
 
     let program = Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -404,12 +392,10 @@ pub fn main() -> u32 {
     );
 
     let program = Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");

@@ -10,15 +10,13 @@ use petgraph::{
     visit::{Dfs, DfsEvent, EdgeRef, depth_first_search},
 };
 use ray_shared::{
+    local_binding::LocalBindingId,
     pathlib::{ItemPath, ModulePath, Path},
     span::Source,
     ty::Ty,
     utils::{join, map_join},
 };
-use ray_typing::{
-    binding_groups::BindingId,
-    types::{ImplTy, StructTy, Subst, Substitutable, TyScheme},
-};
+use ray_typing::types::{ImplTy, StructTy, Subst, Substitutable, TyScheme};
 use serde::{Deserialize, Serialize};
 
 use ray_core::{
@@ -1030,7 +1028,7 @@ impl Display for Extern {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Program {
-    pub module_path: Path,
+    pub module_path: ModulePath,
     pub globals: Vec<Global>,
     pub data: Vec<Data>,
     pub funcs: Vec<Node<Func>>,
@@ -1048,7 +1046,11 @@ pub struct Program {
     pub module_main_idx: i64, // index in Funcs for module main
     pub user_main_idx: i64,   // index in Funcs for user main
     pub resolved_user_main: Option<Path>,
-    pub synthetic_structs: HashMap<ItemPath, StructTy>,
+    /// All struct types needed for codegen.
+    ///
+    /// Includes both workspace struct definitions and synthetic structs
+    /// (closure environment types, function handle types, etc.).
+    pub struct_types: HashMap<ItemPath, StructTy>,
 }
 
 impl Display for Program {
@@ -1086,7 +1088,8 @@ impl Substitutable for Program {
 }
 
 impl Program {
-    pub fn new(m: Path) -> Program {
+    pub fn new(m: impl Into<ModulePath>) -> Program {
+        let m = m.into();
         Program {
             module_path: m,
             globals: vec![],
@@ -1101,7 +1104,7 @@ impl Program {
             module_main_idx: -1,
             user_main_idx: -1,
             resolved_user_main: None,
-            synthetic_structs: HashMap::new(),
+            struct_types: HashMap::new(),
         }
     }
 
@@ -1117,7 +1120,7 @@ impl Program {
         self.externs.extend(other.externs);
         self.extern_map.extend(other.extern_map);
         self.trait_member_set.extend(other.trait_member_set);
-        self.synthetic_structs.extend(other.synthetic_structs);
+        self.struct_types.extend(other.struct_types);
         for (trait_name, bucket) in other.impls_by_trait {
             self.impls_by_trait
                 .entry(trait_name)
@@ -1128,6 +1131,7 @@ impl Program {
 
     pub fn module_main_path(&self) -> Path {
         self.module_path
+            .to_path()
             .append(RAY_MAIN_FUNCTION)
             .append_func_type(vec![Ty::unit()], Ty::unit())
     }
@@ -1135,7 +1139,7 @@ impl Program {
     pub fn user_main_path(&self) -> Path {
         self.resolved_user_main
             .clone()
-            .unwrap_or_else(|| self.module_path.append("main"))
+            .unwrap_or_else(|| self.module_path.to_path().append("main"))
     }
 }
 
@@ -2615,8 +2619,13 @@ impl Substitutable for Closure {
 
 #[derive(Clone)]
 pub struct CaptureSlot {
-    pub binding: BindingId,
-    pub name: String,
+    pub binding: LocalBindingId,
     pub ty: TyScheme,
     pub value: Variable,
+}
+
+impl CaptureSlot {
+    pub fn id(&self) -> String {
+        format!("%__capture_{:x}", self.binding)
+    }
 }

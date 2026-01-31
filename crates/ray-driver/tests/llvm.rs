@@ -35,12 +35,10 @@ pub fn main() -> u32 {
     );
 
     let mut program = Program::generate(
+        &frontend.db,
+        frontend.file_id,
         &frontend.module,
-        &frontend.tcx,
-        &frontend.ncx,
         &frontend.srcmap,
-        &frontend.bindings,
-        &frontend.closure_analysis,
         frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
@@ -51,7 +49,6 @@ pub fn main() -> u32 {
     enable_debug_logs();
     let ir = emit_module_ir(
         &program,
-        &frontend.tcx,
         &frontend.srcmap,
         &Target::default(),
         OptLevel::O0,

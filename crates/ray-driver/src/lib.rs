@@ -12,11 +12,19 @@ use ray_core::{
     ast::{Assign, CurlyElement, Decl, Expr, FnParam, Func, Module, Node, Pattern},
     errors::{RayError, RayErrorKind},
     passes,
-    sema::{self, SymbolBuildContext, SymbolMap, build_symbol_map},
+    sema::{SymbolBuildContext, SymbolMap, build_symbol_map},
     sourcemap::SourceMap,
+};
+use ray_frontend::{
+    queries::{
+        libraries::LoadedLibraries,
+        workspace::{FileSource, WorkspaceSnapshot},
+    },
+    query::Database,
 };
 use ray_shared::{
     collections::namecontext::NameContext,
+    file_id::FileId,
     node_id::NodeId,
     optlevel::OptLevel,
     pathlib::{FilePath, Path, RayPaths},
@@ -36,8 +44,9 @@ pub use build::BuildOptions;
 pub use build::EmitType;
 pub use global_options::*;
 
-#[derive(Debug)]
 pub struct FrontendResult {
+    pub db: Database,
+    pub file_id: FileId,
     pub module_path: Path,
     pub module: Module<(), Decl>,
     pub tcx: TyCtx,
@@ -190,7 +199,22 @@ impl Driver {
         }
         log::debug!("[build_frontend] ----------------");
 
+        // Create a Database for query-based LIR generation
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path_for_db =
+            ray_shared::pathlib::ModulePath::from(result.module.path.to_string());
+        let file_id = workspace.add_file(options.input_path.clone(), module_path_for_db);
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        LoadedLibraries::new(&db, (), std::collections::HashMap::new());
+
+        // Set file source for the main file
+        let source_content = std::fs::read_to_string(&options.input_path).unwrap_or_default();
+        FileSource::new(&db, file_id, source_content);
+
         Ok(FrontendResult {
+            db,
+            file_id,
             module_path,
             module: result.module,
             tcx: result.tcx,
@@ -251,6 +275,8 @@ impl Driver {
         }
 
         let FrontendResult {
+            db,
+            file_id,
             module_path,
             module,
             tcx,
@@ -258,20 +284,10 @@ impl Driver {
             srcmap,
             libs,
             paths: module_paths,
-            bindings,
-            closure_analysis,
             ..
         } = frontend;
 
-        let mut program = lir::Program::generate(
-            &module,
-            &tcx,
-            &ncx,
-            &srcmap,
-            &bindings,
-            &closure_analysis,
-            libs,
-        )?;
+        let mut program = lir::Program::generate(&db, file_id, &module, &srcmap, libs)?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
             if !options.build_lib {
                 log::debug!("program before monomorphization:\n{}", program);
@@ -323,7 +339,6 @@ impl Driver {
             };
             llvm::codegen(
                 &program,
-                &tcx,
                 &srcmap,
                 &lcx,
                 &target,
