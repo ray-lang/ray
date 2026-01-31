@@ -339,7 +339,11 @@ fn lookup_in_library(db: &Database, path: &ItemPath) -> Option<DefTarget> {
 #[query]
 pub fn def_header(db: &Database, def_id: DefId) -> Option<DefHeader> {
     let parse_result = parse_file(db, def_id.file);
-    parse_result.defs.iter().find(|h| h.def_id == def_id).cloned()
+    parse_result
+        .defs
+        .iter()
+        .find(|h| h.def_id == def_id)
+        .cloned()
 }
 
 /// Convert a DefTarget to its ItemPath.
@@ -2423,8 +2427,6 @@ impl object Point {
 
     #[test]
     fn method_receiver_mode_returns_value_for_self_param() {
-        use crate::queries::parse::parse_file;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -2459,8 +2461,6 @@ impl object Point {
 
     #[test]
     fn method_receiver_mode_returns_ptr_for_ref_param() {
-        use crate::queries::parse::parse_file;
-
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();

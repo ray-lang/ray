@@ -2596,8 +2596,6 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Load::new(src, lir::Size::zero())
             }
             Expr::List(list) => {
-                use ray_frontend::queries::resolve::resolve_builtin;
-
                 let item_count = list.items.len();
                 let capacity = (item_count * 3) as u64;
 

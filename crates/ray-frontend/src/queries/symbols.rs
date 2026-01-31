@@ -210,7 +210,7 @@ mod tests {
             libraries::LoadedLibraries,
             parse::parse_file,
             resolve::name_resolutions,
-            symbols::symbol_targets,
+            symbols::{definition_identities, symbol_targets},
             workspace::{FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -270,8 +270,6 @@ fn main() -> int => helper()
 
     #[test]
     fn symbol_targets_resolves_local_binding_reference() {
-        use super::definition_identities;
-
         let source = r#"
 fn main() -> int {
     x = 1
