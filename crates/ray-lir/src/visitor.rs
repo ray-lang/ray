@@ -1,4 +1,4 @@
-use crate::lir;
+use crate as lir;
 
 pub trait IterCalls<'a> {
     fn iter_calls(self) -> std::vec::IntoIter<&'a mut lir::Inst>;

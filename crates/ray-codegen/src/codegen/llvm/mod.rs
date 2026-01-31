@@ -48,6 +48,56 @@ use crate::{
 
 use super::Codegen;
 
+/// Extension trait for codegen methods on lir::Call
+trait CallCodegenExt<'a, 'ctx> {
+    fn codegen_intrinsic(
+        &self,
+        kind: lir::IntrinsicKind,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        srcmap: &SourceMap,
+    ) -> Result<LoweredCall<'ctx>, BuilderError>;
+
+    fn codegen_ptr_offset(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        srcmap: &SourceMap,
+        is_add: bool,
+    ) -> Result<LoweredCall<'ctx>, BuilderError>;
+
+    fn codegen_deref(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        srcmap: &SourceMap,
+    ) -> Result<LoweredCall<'ctx>, BuilderError>;
+
+    fn codegen_sizeof(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+    ) -> Result<LoweredCall<'ctx>, BuilderError>;
+
+    fn codegen_basic_op(
+        &self,
+        op: lir::Op,
+        signed: bool,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        srcmap: &SourceMap,
+    ) -> Result<LoweredCall<'ctx>, BuilderError>;
+
+    fn eval_intrinsic_ptr(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        srcmap: &SourceMap,
+        idx: usize,
+    ) -> Result<PointerValue<'ctx>, BuilderError>;
+
+    fn eval_intrinsic_int(
+        &self,
+        ctx: &mut LLVMCodegenCtx<'a, 'ctx>,
+        srcmap: &SourceMap,
+        idx: usize,
+    ) -> Result<IntValue<'ctx>, BuilderError>;
+}
+
 static MALLOC_BUF: &'static [u8] = include_bytes!("../../../../../lib/libc/wasi_malloc.wasm");
 
 lazy_static! {
@@ -2340,7 +2390,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Call {
     }
 }
 
-impl<'a, 'ctx> lir::Call {
+impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
     fn codegen_intrinsic(
         &self,
         kind: lir::IntrinsicKind,

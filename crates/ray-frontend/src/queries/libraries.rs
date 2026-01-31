@@ -18,10 +18,23 @@ use ray_typing::{
 };
 use serde::{Deserialize, Serialize};
 
+use ray_core::sourcemap::SourceMap;
+
 use crate::{
-    queries::defs::{ImplDef, StructDef, TraitDef},
+    queries::defs::{DefinitionRecord, ImplDef, StructDef, TraitDef},
     query::{Database, Input, Query},
 };
+
+/// Binary format for compiled libraries (.raylib files).
+///
+/// This struct mirrors the serialization format from ray-codegen.
+/// It's defined here to avoid a circular dependency (ray-codegen depends on ray-frontend).
+#[derive(Debug, Deserialize)]
+struct RayLib {
+    data: LibraryData,
+    #[allow(dead_code)]
+    program: ray_lir::Program,
+}
 
 /// Data extracted from a compiled library (.raylib file).
 ///
@@ -61,6 +74,12 @@ pub struct LibraryData {
 
     /// Module paths contained in this library.
     pub modules: Vec<ModulePath>,
+
+    /// Definition records for IDE features (go-to-definition, hover, etc.).
+    pub definitions: HashMap<LibraryDefId, DefinitionRecord>,
+
+    /// Source map for error messages and source locations.
+    pub source_map: SourceMap,
 }
 
 impl LibraryData {
@@ -104,11 +123,14 @@ pub enum OperatorArity {
 ///
 /// This is a singleton input (keyed by `()`) that stores all loaded library data.
 /// Libraries are loaded at startup and their exports are used for name resolution.
+/// File paths are tracked separately for lazy LIR loading via `library_lir` query.
 #[input(key = "()")]
 #[derive(Clone, Debug, Default)]
 pub struct LoadedLibraries {
     /// Library data keyed by the library's module path (e.g., "core", "std").
     pub libraries: HashMap<ModulePath, LibraryData>,
+    /// File paths for each library, used for lazy LIR loading.
+    pub library_files: HashMap<ModulePath, FilePath>,
 }
 
 impl Hash for LoadedLibraries {
@@ -119,6 +141,15 @@ impl Hash for LoadedLibraries {
         for path in keys {
             path.hash(state);
         }
+        // Also hash file paths
+        let mut file_keys: Vec<_> = self.library_files.keys().collect();
+        file_keys.sort_by_key(|k| k.to_string());
+        for path in file_keys {
+            path.hash(state);
+            if let Some(file) = self.library_files.get(path) {
+                file.hash(state);
+            }
+        }
     }
 }
 
@@ -128,9 +159,25 @@ impl LoadedLibraries {
         self.libraries.insert(lib_path, data);
     }
 
+    /// Add a library from a file, tracking the file path for lazy LIR loading.
+    pub fn add_from_file(&mut self, lib_path: ModulePath, file: FilePath, data: LibraryData) {
+        self.libraries.insert(lib_path.clone(), data);
+        self.library_files.insert(lib_path, file);
+    }
+
     /// Get a library by its path.
     pub fn get(&self, lib_path: &ModulePath) -> Option<&LibraryData> {
         self.libraries.get(lib_path)
+    }
+
+    /// Get the file path for a library (for lazy LIR loading).
+    pub fn library_file_for(&self, lib_path: &ModulePath) -> Option<&FilePath> {
+        self.library_files.get(lib_path)
+    }
+
+    /// Get all library root paths.
+    pub fn all_library_roots(&self) -> impl Iterator<Item = &ModulePath> {
+        self.libraries.keys()
     }
 
     /// Check if a module path exists in any loaded library.
@@ -226,6 +273,27 @@ pub fn library_root(db: &Database, module_path: ModulePath) -> Option<ModulePath
     libraries.library_for_module(&module_path).cloned()
 }
 
+/// Lazily load the LIR program for a library.
+///
+/// This query reads the .raylib file and extracts the LIR program for codegen.
+/// The file path is obtained from `LoadedLibraries.library_files`.
+///
+/// # Arguments
+/// * `lib_root` - The library root path (e.g., "core")
+///
+/// # Returns
+/// The LIR program for the library, or `None` if the library isn't loaded
+/// or the file can't be read.
+#[query]
+pub fn library_lir(db: &Database, lib_root: ModulePath) -> Option<ray_lir::Program> {
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let lib_file = libraries.library_file_for(&lib_root)?;
+
+    let file = File::open(lib_file.as_ref()).ok()?;
+    let raylib: RayLib = bincode::deserialize_from(file).ok()?;
+    Some(raylib.program)
+}
+
 /// Load a library from a .raylib file, remapping schema variables to avoid
 /// collisions with workspace type inference.
 ///
@@ -240,8 +308,10 @@ pub fn load_library(
     allocator: &mut SchemaVarAllocator,
 ) -> io::Result<LibraryData> {
     let file = File::open(path.as_ref())?;
-    let mut data: LibraryData = bincode::deserialize_from(file)
+    let raylib: RayLib = bincode::deserialize_from(file)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let mut data = raylib.data;
 
     // Find the maximum schema var ID used in the library
     let max_lib_var = find_max_schema_var_id(&data);

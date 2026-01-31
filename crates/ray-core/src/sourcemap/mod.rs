@@ -51,6 +51,12 @@ impl IntoIterator for SourceMap {
     }
 }
 
+impl Default for SourceMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SourceMap {
     pub fn new() -> Self {
         Self {

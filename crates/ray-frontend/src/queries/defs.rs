@@ -248,7 +248,7 @@ pub enum SourceLocation {
 /// This record is used for hover info and go-to-definition functionality.
 /// It combines the path, location, documentation, and kind of a definition
 /// into a single convenient structure.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DefinitionRecord {
     /// Fully qualified path of the definition.
     pub path: ItemPath,

@@ -13,7 +13,9 @@ use ray_shared::{
     local_binding::LocalBindingId,
     pathlib::{ItemPath, ModulePath, Path},
     span::Source,
+    str,
     ty::Ty,
+    unless,
     utils::{join, map_join},
 };
 use ray_typing::types::{ImplTy, StructTy, Subst, Substitutable, TyScheme};
@@ -25,9 +27,8 @@ use ray_core::{
     strutils::indent_lines,
 };
 
-use crate::lir::IntrinsicKind;
-
-use super::RAY_MAIN_FUNCTION;
+use crate::IntrinsicKind;
+use crate::RAY_MAIN_FUNCTION;
 
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {
@@ -2336,10 +2337,10 @@ impl LeaOffset {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lea {
     /// Variable to load address of
-    pub(crate) var: Variable,
+    pub var: Variable,
 
     /// Effective byte/ptr offset from `value`
-    pub(crate) offset: LeaOffset,
+    pub offset: LeaOffset,
 }
 
 LirImplInto!(Value for Lea);

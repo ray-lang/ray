@@ -48,7 +48,7 @@ pub struct DefHeader {
     pub parent: Option<DefId>, // For methods: the impl/trait DefId
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum DefKind {
     FileMain, // Top-level execution context (index: 0)
     Function { signature: SignatureStatus },

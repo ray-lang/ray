@@ -2,7 +2,7 @@
 
 mod utils;
 
-use ray_codegen::{codegen::llvm::emit_module_ir, lir::Program};
+use ray_codegen::{codegen::llvm::emit_module_ir, lir};
 use ray_core::target::Target;
 use ray_shared::optlevel::OptLevel;
 use utils::{enable_debug_logs, test_build};
@@ -34,15 +34,14 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let mut program = Program::generate(
+    let mut program = lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
-    program.monomorphize();
+    lir::monomorphize(&mut program);
 
     eprintln!("---------- LIR ----------\n{}", program);
 

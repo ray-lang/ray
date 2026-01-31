@@ -15,6 +15,7 @@ petgraph = { version = "0.5.1", features = ["serde-1"] }
 rand = "0.8"
 ray-core = { path = "../ray-core" }
 ray-frontend = { path = "../ray-frontend" }
+ray-lir = { path = "../ray-lir" }
 ray-shared = { path = "../ray-shared" }
 ray-typing = { path = "../ray-typing" }
 serde = { version = "1.0", features = ["derive", "rc"] }

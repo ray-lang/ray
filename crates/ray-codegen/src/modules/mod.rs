@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-};
+use std::collections::{HashMap, HashSet};
 
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
@@ -10,14 +7,8 @@ use ray_shared::{
     pathlib::{FilePath, Path, RayPaths},
     resolution::Resolution,
     span::{Source, Span},
-    ty::{Ty, TyVar},
-    utils::map_join,
 };
-use ray_typing::{
-    env::GlobalEnv,
-    tyctx::TyCtx,
-    types::{Subst, Substitutable},
-};
+use ray_typing::{env::GlobalEnv, tyctx::TyCtx};
 
 use ray_core::{
     ast::{self, Decl, Expr, Import, Module},
@@ -137,51 +128,10 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         let mut lib_set = HashSet::new();
         let global_env = GlobalEnv::new();
         let mut tcx = TyCtx::new(global_env);
-        let mut definitions = HashMap::new();
 
-        let curr_schema_allocator = tcx.schema_allocator();
-        for (lib_path, mut lib) in self.libs {
-            // create a substitution to map the library's variables
-            let subst = {
-                let local_curr_id = curr_schema_allocator.borrow().curr_id();
-                let lib_curr_id = lib.tcx.schema_allocator().borrow().curr_id();
-                log::debug!(
-                    "[ModuleBuilder::finish] map schema variables from lib: lib_path = {}, lib_curr_id = {}, local_curr_id = {}",
-                    lib_path,
-                    lib_curr_id,
-                    local_curr_id
-                );
-                (0..lib_curr_id)
-                    .flat_map(|u| {
-                        let old_var = TyVar::new(format!("?s{}", u));
-                        if u == curr_schema_allocator.borrow().curr_id() {
-                            // generate and ignore the new variable
-                            let _ = curr_schema_allocator.borrow_mut().alloc();
-                            return None;
-                        }
-
-                        let new_var = curr_schema_allocator.borrow_mut().alloc();
-                        Some((old_var, Ty::Var(new_var)))
-                    })
-                    .collect::<Subst>()
-            };
-            log::debug!("library ({}) subst: {}", lib_path, subst);
-            log::debug!(
-                "library schemes for {}:\n{}",
-                lib_path,
-                map_join(lib.tcx.schemes(), "\n", |(path, scheme)| {
-                    format!("  {}: {}", path, scheme)
-                })
-            );
-            lib.tcx.apply_subst(&subst);
-            lib.program.apply_subst(&subst);
-
-            lib_set.insert(lib_path.clone());
-            tcx.extend(lib.tcx);
-            ncx.extend(lib.ncx);
-            srcmaps.insert(lib_path, lib.srcmap);
-            libs.push(lib.program);
-            definitions.extend(lib.definitions.into_iter());
+        // Legacy library loading code removed - libraries are now loaded via the query system
+        if !self.libs.is_empty() {
+            unreachable!("legacy ModuleBuilder library loading should no longer be called");
         }
 
         let modules = self.modules;
@@ -723,35 +673,9 @@ impl<'a> ModuleBuilder<'a, Expr, Decl> {
         None
     }
 
-    fn load_library(&mut self, lib_path: FilePath, module_path: &Path) -> RayResult<()> {
-        if self.libs.contains_key(module_path) {
-            // already loaded
-            log::debug!("library already loaded: {}", module_path);
-            return Ok(());
-        }
-
-        let lib: RayLib = match bincode::deserialize_from(fs::File::open(&lib_path)?) {
-            Ok(l) => l,
-            Err(e) => {
-                return Err(RayError {
-                    msg: format!("Failed loading library file {}: {}", lib_path, e),
-                    src: vec![Source {
-                        filepath: lib_path,
-                        ..Default::default()
-                    }],
-                    kind: RayErrorKind::Parse,
-                    context: Some("loading raylib file".to_string()),
-                });
-            }
-        };
-
-        // add each library module to the list of input paths
-        for path in lib.modules.iter().cloned() {
-            self.module_paths.insert(path);
-        }
-
-        self.libs.insert(module_path.clone(), lib);
-        Ok(())
+    fn load_library(&mut self, _lib_path: FilePath, _module_path: &Path) -> RayResult<()> {
+        // Legacy library loading removed - libraries are now loaded via the query system
+        unreachable!("legacy ModuleBuilder::load_library should no longer be called")
     }
 
     fn resolve_import(

@@ -3,8 +3,12 @@ use std::{
     fmt::Display,
 };
 
+use ray_core::{
+    ast::{CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Modifier, Module, Node, Pattern},
+    sourcemap::SourceMap,
+};
+use ray_frontend::queries::libraries::LibraryData;
 use ray_shared::{
-    collections::namecontext::NameContext,
     node_id::NodeId,
     pathlib::{FilePath, Path, PathPart},
     span::Span,
@@ -16,21 +20,18 @@ use ray_typing::{
 };
 use serde::{Deserialize, Serialize};
 
-use ray_core::{
-    ast::{CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Modifier, Module, Node, Pattern},
-    sourcemap::SourceMap,
-};
-
 use crate::lir;
 
+/// Binary serialization format for compiled libraries.
+///
+/// A RayLib file contains:
+/// - `data`: The library metadata (type schemes, struct/trait/impl definitions,
+///   operators, source map) used during compilation of dependent code
+/// - `program`: The LIR representation for codegen
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RayLib {
+    pub data: LibraryData,
     pub program: lir::Program,
-    pub tcx: TyCtx,
-    pub ncx: NameContext,
-    pub srcmap: SourceMap,
-    pub modules: Vec<Path>,
-    pub definitions: HashMap<Path, DefinitionRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,23 +232,9 @@ impl Display for DefinitionRecord {
     }
 }
 
-pub fn serialize(
-    program: lir::Program,
-    tcx: TyCtx,
-    ncx: NameContext,
-    srcmap: SourceMap,
-    modules: Vec<Path>,
-    definitions: HashMap<Path, DefinitionRecord>,
-) -> Vec<u8> {
-    bincode::serialize(&RayLib {
-        program,
-        tcx,
-        ncx,
-        srcmap,
-        modules,
-        definitions,
-    })
-    .unwrap()
+/// Serialize a library to binary format for distribution.
+pub fn serialize(data: LibraryData, program: lir::Program) -> Vec<u8> {
+    bincode::serialize(&RayLib { data, program }).unwrap()
 }
 
 pub fn collect_definition_records(

@@ -27,6 +27,7 @@ use ray_frontend::{
             def_for_path, def_header, def_path, impl_def, impls_for_trait, method_receiver_mode,
             struct_def, trait_def,
         },
+        libraries::{LoadedLibraries, library_lir},
         parse::parse_file,
         resolve::{name_resolutions, resolve_builtin},
         typecheck::{def_scheme, inferred_local_type, ty_of},
@@ -135,222 +136,225 @@ fn resolve_user_main_info(db: &Database, module: &Module<(), Decl>) -> Option<(P
     })
 }
 
-impl lir::Program {
-    pub fn generate(
-        db: &Database,
-        file_id: FileId,
-        module: &Module<(), Decl>,
-        srcmap: &SourceMap,
-        libs: Vec<lir::Program>,
-    ) -> RayResult<lir::Program> {
-        let path = module.path.clone();
-        let user_main_info = resolve_user_main_info(db, module);
-        let prog = Rc::new(RefCell::new(lir::Program::new(path)));
-        let mut ctx = GenCtx::new(db, file_id, Rc::clone(&prog), srcmap);
-        module.decls.lir_gen(&mut ctx)?;
+pub fn generate(
+    db: &Database,
+    file_id: FileId,
+    module: &Module<(), Decl>,
+    srcmap: &SourceMap,
+) -> RayResult<lir::Program> {
+    // Get library programs via the query system
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let libs: Vec<lir::Program> = libraries
+        .all_library_roots()
+        .filter_map(|lib_root| library_lir(db, lib_root.clone()))
+        .collect();
+    let path = module.path.clone();
+    let user_main_info = resolve_user_main_info(db, module);
+    let prog = Rc::new(RefCell::new(lir::Program::new(path)));
+    let mut ctx = GenCtx::new(db, file_id, Rc::clone(&prog), srcmap);
+    module.decls.lir_gen(&mut ctx)?;
 
-        let (module_main_path, user_main_base_path) = {
-            let prog_ref = prog.borrow();
-            (
-                prog_ref.module_main_path(),
-                prog_ref.module_path.to_path().append("main"),
-            )
-        };
+    let (module_main_path, user_main_base_path) = {
+        let prog_ref = prog.borrow();
+        (
+            prog_ref.module_main_path(),
+            prog_ref.module_path.to_path().append("main"),
+        )
+    };
 
-        let has_module_main = {
-            let prog_ref = prog.borrow();
-            prog_ref.funcs.iter().any(|f| f.name == module_main_path)
-        };
+    let has_module_main = {
+        let prog_ref = prog.borrow();
+        prog_ref.funcs.iter().any(|f| f.name == module_main_path)
+    };
 
-        if !has_module_main {
-            ctx.with_builder(lir::Builder::new());
-            ctx.with_new_block(|ctx| {
-                ctx.ret(lir::Value::Empty);
-            });
+    if !has_module_main {
+        ctx.with_builder(lir::Builder::new());
+        ctx.with_new_block(|ctx| {
+            ctx.ret(lir::Value::Empty);
+        });
 
-            let builder = ctx.builder.take().unwrap();
-            let (params, locals, blocks, symbols, cfg) = builder.done();
-            let mut module_main_fn = Node::new(lir::Func::new(
-                module_main_path.clone(),
-                TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
-                vec![],
-                symbols,
-                cfg,
-            ));
-            module_main_fn.params = params;
-            module_main_fn.locals = locals;
-            module_main_fn.blocks = blocks;
-            ctx.new_func(module_main_fn);
-        }
-
-        let user_main_resolved_path = if let Some((path, _)) = &user_main_info {
-            Some(path.clone())
-        } else {
-            let prog_ref = prog.borrow();
-            prog_ref.funcs.iter().find_map(|f| {
-                f.name
-                    .starts_with(&user_main_base_path)
-                    .then(|| f.name.clone())
-            })
-        };
-
-        let start_idx = if !module.is_lib {
-            let mut main_symbols = lir::SymbolSet::new();
-            log::debug!("module main path: {}", module_main_path);
-            if let Some(user_main_resolved_path) = &user_main_resolved_path {
-                log::debug!("user main path (resolved): {}", user_main_resolved_path);
-            } else {
-                log::debug!("user main path (resolved): None");
-            }
-
-            ctx.with_builder(lir::Builder::new());
-            ctx.with_new_block(|ctx| {
-                // call all the main functions from the libs first
-                let mut main_funcs = libs
-                    .iter()
-                    .map(|l| l.module_main_path())
-                    .collect::<Vec<_>>();
-
-                // then call _this_ module's main function
-                main_funcs.push(module_main_path.clone());
-
-                // generate calls
-                for main in main_funcs {
-                    log::debug!("calling main function: {}", main);
-                    main_symbols.insert(main.clone());
-                    ctx.push(
-                        lir::Call::new(
-                            main,
-                            vec![],
-                            Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                            None,
-                        )
-                        .into(),
-                    );
-                }
-
-                if let Some((user_main_path, user_main_ty)) = &user_main_info {
-                    log::debug!("calling user main function: {}", user_main_path);
-                    main_symbols.insert(user_main_path.clone());
-                    ctx.push(
-                        lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None)
-                            .into(),
-                    );
-                } else if let Some(user_main_path) = &user_main_resolved_path {
-                    log::debug!("calling user main function: {}", user_main_path);
-                    main_symbols.insert(user_main_path.clone());
-                    ctx.push(
-                        lir::Call::new(
-                            user_main_path.clone(),
-                            vec![],
-                            Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                            None,
-                        )
-                        .into(),
-                    );
-                }
-
-                ctx.ret(lir::Value::Empty);
-            });
-
-            // add the _start function
-            let builder = ctx.builder.take().unwrap();
-            let (params, locals, blocks, symbols, cfg) = builder.done();
-            let mut start_fn = Node::new(lir::Func::new(
-                START_FUNCTION.into(),
-                TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
-                vec![],
-                symbols,
-                cfg,
-            ));
-            start_fn.params = params;
-            start_fn.locals = locals;
-            start_fn.blocks = blocks;
-            start_fn.symbols.extend(main_symbols);
-            ctx.new_func(start_fn) as i64
-        } else {
-            -1
-        };
-
-        // Build struct_types: start with workspace structs, then add synthetic ones
-        let mut struct_types = build_struct_types(db);
-        for struct_ty in ctx
-            .closure_env_types
-            .values()
-            .chain(ctx.closure_value_types.values())
-            .chain(ctx.fn_handle_types.values())
-        {
-            struct_types.insert(struct_ty.path.clone(), struct_ty.clone());
-        }
-
-        drop(ctx);
-
-        // take the prog out of the pointer
-        let mut prog = Rc::try_unwrap(prog).unwrap().into_inner();
-        prog.start_idx = start_idx;
-        prog.resolved_user_main = user_main_resolved_path.clone();
-        prog.struct_types = struct_types;
-        prog.impls_by_trait = build_impls_by_trait(db);
-        if prog.user_main_idx < 0 {
-            if let Some(path) = &user_main_resolved_path {
-                if let Some(idx) = prog.funcs.iter().position(|f| f.name == *path) {
-                    prog.user_main_idx = idx as i64;
-                }
-            }
-        }
-        for other in libs {
-            prog.extend(other);
-        }
-        Ok(prog)
+        let builder = ctx.builder.take().unwrap();
+        let (params, locals, blocks, symbols, cfg) = builder.done();
+        let mut module_main_fn = Node::new(lir::Func::new(
+            module_main_path.clone(),
+            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
+            vec![],
+            symbols,
+            cfg,
+        ));
+        module_main_fn.params = params;
+        module_main_fn.locals = locals;
+        module_main_fn.blocks = blocks;
+        ctx.new_func(module_main_fn);
     }
 
-    pub fn monomorphize(&mut self) {
-        let mut mr = mono::Monomorphizer::new(self);
-        let funcs = mr.monomorphize();
+    let user_main_resolved_path = if let Some((path, _)) = &user_main_info {
+        Some(path.clone())
+    } else {
+        let prog_ref = prog.borrow();
+        prog_ref.funcs.iter().find_map(|f| {
+            f.name
+                .starts_with(&user_main_base_path)
+                .then(|| f.name.clone())
+        })
+    };
 
-        let mono_fn_externs = mr.mono_fn_externs();
-        for (poly_fn, mono_fns) in mono_fn_externs {
-            let poly_idx = *self.extern_map.get(&poly_fn).unwrap();
-            for (mono_fn, mono_ty) in mono_fns {
-                let mut mono_ext = self.externs[poly_idx].clone();
-                mono_ext.name = mono_fn.clone();
-                mono_ext.ty = TyScheme::from_mono(mono_ty);
-                self.extern_map.insert(mono_fn, self.externs.len());
-                self.externs.push(mono_ext);
-            }
+    let start_idx = if !module.is_lib {
+        let mut main_symbols = lir::SymbolSet::new();
+        log::debug!("module main path: {}", module_main_path);
+        if let Some(user_main_resolved_path) = &user_main_resolved_path {
+            log::debug!("user main path (resolved): {}", user_main_resolved_path);
+        } else {
+            log::debug!("user main path (resolved): None");
         }
 
-        // remove the polymorphic functions
-        let module_main_path = self.module_main_path();
-        let user_main_base_path = self.module_path.to_path().append("main");
-        let resolved_user_main = self.resolved_user_main.clone();
-        let mut i = 0;
-        while i < self.funcs.len() {
-            let f = &self.funcs[i];
-            if f.name == START_FUNCTION {
-                self.start_idx = i as i64;
-            } else if let Some(resolved) = &resolved_user_main {
-                if f.name == *resolved {
-                    self.user_main_idx = i as i64;
-                } else if f.name == module_main_path {
-                    self.module_main_idx = i as i64;
-                }
-            } else if f.name.starts_with(&user_main_base_path) {
-                self.user_main_idx = i as i64;
+        ctx.with_builder(lir::Builder::new());
+        ctx.with_new_block(|ctx| {
+            // call all the main functions from the libs first
+            let mut main_funcs = libs
+                .iter()
+                .map(|l| l.module_main_path())
+                .collect::<Vec<_>>();
+
+            // then call _this_ module's main function
+            main_funcs.push(module_main_path.clone());
+
+            // generate calls
+            for main in main_funcs {
+                log::debug!("calling main function: {}", main);
+                main_symbols.insert(main.clone());
+                ctx.push(
+                    lir::Call::new(
+                        main,
+                        vec![],
+                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                        None,
+                    )
+                    .into(),
+                );
+            }
+
+            if let Some((user_main_path, user_main_ty)) = &user_main_info {
+                log::debug!("calling user main function: {}", user_main_path);
+                main_symbols.insert(user_main_path.clone());
+                ctx.push(
+                    lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None)
+                        .into(),
+                );
+            } else if let Some(user_main_path) = &user_main_resolved_path {
+                log::debug!("calling user main function: {}", user_main_path);
+                main_symbols.insert(user_main_path.clone());
+                ctx.push(
+                    lir::Call::new(
+                        user_main_path.clone(),
+                        vec![],
+                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                        None,
+                    )
+                    .into(),
+                );
+            }
+
+            ctx.ret(lir::Value::Empty);
+        });
+
+        // add the _start function
+        let builder = ctx.builder.take().unwrap();
+        let (params, locals, blocks, symbols, cfg) = builder.done();
+        let mut start_fn = Node::new(lir::Func::new(
+            START_FUNCTION.into(),
+            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
+            vec![],
+            symbols,
+            cfg,
+        ));
+        start_fn.params = params;
+        start_fn.locals = locals;
+        start_fn.blocks = blocks;
+        start_fn.symbols.extend(main_symbols);
+        ctx.new_func(start_fn) as i64
+    } else {
+        -1
+    };
+
+    // Build struct_types: start with workspace structs, then add synthetic ones
+    let mut struct_types = build_struct_types(db);
+    for struct_ty in ctx
+        .closure_env_types
+        .values()
+        .chain(ctx.closure_value_types.values())
+        .chain(ctx.fn_handle_types.values())
+    {
+        struct_types.insert(struct_ty.path.clone(), struct_ty.clone());
+    }
+
+    drop(ctx);
+
+    // take the prog out of the pointer
+    let mut prog = Rc::try_unwrap(prog).unwrap().into_inner();
+    prog.start_idx = start_idx;
+    prog.resolved_user_main = user_main_resolved_path.clone();
+    prog.struct_types = struct_types;
+    prog.impls_by_trait = build_impls_by_trait(db);
+    if prog.user_main_idx < 0 {
+        if let Some(path) = &user_main_resolved_path {
+            if let Some(idx) = prog.funcs.iter().position(|f| f.name == *path) {
+                prog.user_main_idx = idx as i64;
+            }
+        }
+    }
+    for other in libs {
+        prog.extend(other);
+    }
+    Ok(prog)
+}
+
+pub fn monomorphize(program: &mut lir::Program) {
+    let mut mr = mono::Monomorphizer::new(program);
+    let funcs = mr.monomorphize();
+
+    let mono_fn_externs = mr.mono_fn_externs();
+    for (poly_fn, mono_fns) in mono_fn_externs {
+        let poly_idx = *program.extern_map.get(&poly_fn).unwrap();
+        for (mono_fn, mono_ty) in mono_fns {
+            let mut mono_ext = program.externs[poly_idx].clone();
+            mono_ext.name = mono_fn.clone();
+            mono_ext.ty = TyScheme::from_mono(mono_ty);
+            program.extern_map.insert(mono_fn, program.externs.len());
+            program.externs.push(mono_ext);
+        }
+    }
+
+    // remove the polymorphic functions
+    let module_main_path = program.module_main_path();
+    let user_main_base_path = program.module_path.to_path().append("main");
+    let resolved_user_main = program.resolved_user_main.clone();
+    let mut i = 0;
+    while i < program.funcs.len() {
+        let f = &program.funcs[i];
+        if f.name == START_FUNCTION {
+            program.start_idx = i as i64;
+        } else if let Some(resolved) = &resolved_user_main {
+            if f.name == *resolved {
+                program.user_main_idx = i as i64;
             } else if f.name == module_main_path {
-                self.module_main_idx = i as i64;
+                program.module_main_idx = i as i64;
             }
-
-            if f.ty.is_polymorphic() {
-                self.funcs.remove(i);
-            } else {
-                i += 1;
-            }
+        } else if f.name.starts_with(&user_main_base_path) {
+            program.user_main_idx = i as i64;
+        } else if f.name == module_main_path {
+            program.module_main_idx = i as i64;
         }
 
-        // add the new monomorphized functions
-        self.funcs.extend(funcs);
+        if f.ty.is_polymorphic() {
+            program.funcs.remove(i);
+        } else {
+            i += 1;
+        }
     }
+
+    // add the new monomorphized functions
+    program.funcs.extend(funcs);
 }
 
 pub trait LirGen<T> {

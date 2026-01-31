@@ -10,8 +10,11 @@ edition = "2024"
 members = [
     "crates/wasi_malloc",
     "crates/ray-cfg",
+    "crates/ray-codegen",
     "crates/ray-core",
+    "crates/ray-driver",
     "crates/ray-frontend",
+    "crates/ray-lir",
     "crates/ray-lsp",
     "crates/ray-shared",
     "crates/ray-typing",

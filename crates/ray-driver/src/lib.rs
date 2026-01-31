@@ -16,7 +16,7 @@ use ray_core::{
 };
 use ray_frontend::{
     queries::{
-        libraries::LoadedLibraries,
+        libraries::{LibraryData, LoadedLibraries},
         workspace::{FileSource, WorkspaceSnapshot},
     },
     query::Database,
@@ -26,7 +26,7 @@ use ray_shared::{
     file_id::FileId,
     node_id::NodeId,
     optlevel::OptLevel,
-    pathlib::{FilePath, Path, RayPaths},
+    pathlib::{FilePath, ModulePath, Path, RayPaths},
     span::Source,
 };
 use ray_typing::{TypecheckOptions, tyctx::TyCtx, types::Substitutable};
@@ -52,7 +52,6 @@ pub struct FrontendResult {
     pub ncx: NameContext,
     pub srcmap: SourceMap,
     pub symbol_map: SymbolMap,
-    pub libs: Vec<lir::Program>,
     pub paths: HashSet<Path>,
     pub definitions_by_path: HashMap<Path, libgen::DefinitionRecord>,
     pub definitions_by_id: HashMap<NodeId, libgen::DefinitionRecord>,
@@ -207,11 +206,10 @@ impl Driver {
         // Create a Database for query-based LIR generation
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
-        let module_path_for_db =
-            ray_shared::pathlib::ModulePath::from(result.module.path.to_string());
+        let module_path_for_db = ModulePath::from(result.module.path.to_string());
         let file_id = workspace.add_file(options.input_path.clone(), module_path_for_db);
         db.set_input::<WorkspaceSnapshot>((), workspace);
-        LoadedLibraries::new(&db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
 
         // Set file source for the main file
         let source_content = std::fs::read_to_string(&options.input_path).unwrap_or_default();
@@ -226,7 +224,6 @@ impl Driver {
             ncx: result.ncx,
             srcmap: result.srcmap,
             symbol_map,
-            libs: result.libs,
             paths: result.paths,
             definitions_by_path,
             definitions_by_id,
@@ -284,19 +281,16 @@ impl Driver {
             file_id,
             module_path,
             module,
-            tcx,
-            ncx,
             srcmap,
-            libs,
             paths: module_paths,
             ..
         } = frontend;
 
-        let mut program = lir::Program::generate(&db, file_id, &module, &srcmap, libs)?;
+        let mut program = lir::generate(&db, file_id, &module, &srcmap)?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
             if !options.build_lib {
                 log::debug!("program before monomorphization:\n{}", program);
-                program.monomorphize();
+                lir::monomorphize(&mut program);
                 log::debug!("program after monomorphization:");
             }
             println!("{}", program);
@@ -325,15 +319,24 @@ impl Driver {
             modules.sort();
             log::debug!("modules: {:?}", modules);
 
-            let definitions = libgen::collect_definition_records(&module, &srcmap, &tcx);
-            let lib = libgen::serialize(program, tcx, ncx, srcmap, modules, definitions);
+            // TODO: build_library_data() should populate LibraryData from queries
+            // For now, create a minimal LibraryData with just modules and source_map
+            let lib_data = LibraryData {
+                modules: modules
+                    .into_iter()
+                    .map(|p| ModulePath::from(p.to_string().as_str()))
+                    .collect(),
+                source_map: srcmap.clone(),
+                ..Default::default()
+            };
+            let lib = libgen::serialize(lib_data, program);
             let path = output_path("raylib");
 
             log::info!("writing to {}", path);
             fs::write(path, lib).map_err(|err| vec![err.into()])
         } else {
             log::debug!("program before monomorphization:\n{}", program);
-            program.monomorphize();
+            lir::monomorphize(&mut program);
             log::debug!("program after monomorphization:\n{}", program);
 
             let lcx = inkwell::context::Context::create();

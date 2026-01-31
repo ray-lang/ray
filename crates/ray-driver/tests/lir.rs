@@ -4,7 +4,7 @@ mod utils;
 
 use std::convert::TryInto;
 
-use ray_codegen::lir::{Inst, Program, Value};
+use ray_codegen::lir::{self, Inst, Program, Value};
 use ray_shared::ty::Ty;
 use utils::test_build;
 
@@ -35,12 +35,11 @@ fn lir_generation_simple_function() {
         eprintln!("frontend error: {:?}", error);
     }
 
-    let program = Program::generate(
+    let program = lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
     // Sanity check: at least one function emitted (main + id)
@@ -79,12 +78,11 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let program = Program::generate(
+    let program = lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
 
@@ -190,12 +188,11 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    Program::generate(
+    lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
 }
@@ -229,12 +226,11 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    Program::generate(
+    lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
 }
@@ -258,12 +254,11 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    Program::generate(
+    lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
 }
@@ -289,12 +284,11 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let program = Program::generate(
+    let program = lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
 
@@ -391,12 +385,11 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let program = Program::generate(
+    let program = lir::generate(
         &frontend.db,
         frontend.file_id,
         &frontend.module,
         &frontend.srcmap,
-        frontend.libs.clone(),
     )
     .expect("lir generation should succeed");
 

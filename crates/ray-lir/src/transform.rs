@@ -1,4 +1,4 @@
-use super::{Block, Func, Inst, Program};
+use crate::{Block, Func, Inst, Program};
 
 pub trait Transform {
     type Ctx;
