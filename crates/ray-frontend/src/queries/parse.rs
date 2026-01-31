@@ -60,10 +60,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
 #[query]
 pub fn decorators(db: &Database, def_id: DefId) -> Vec<Decorator> {
     let parse_result = parse_file(db, def_id.file);
-    let def_header = parse_result
-        .defs
-        .iter()
-        .find(|h| h.def_id == def_id);
+    let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id);
 
     let Some(def_header) = def_header else {
         return Vec::new();

@@ -56,9 +56,10 @@ impl TypecheckEnv for MockTypecheckEnv {
         self.impls
             .iter()
             .filter(|impl_ty| match &impl_ty.kind {
-                ImplKind::Trait { trait_ty, .. } => {
-                    trait_ty.item_path().map(|p| p == trait_path).unwrap_or(false)
-                }
+                ImplKind::Trait { trait_ty, .. } => trait_ty
+                    .item_path()
+                    .map(|p| p == trait_path)
+                    .unwrap_or(false),
                 ImplKind::Inherent { .. } => false,
             })
             .cloned()

@@ -732,7 +732,9 @@ fn generate_constraints_for_expr(
                 node.wanteds.push(Constraint::inst(*def_id, expr_ty, info));
             }
             ExprKind::ScopedAccess {
-                member_name, lhs_ty, ..
+                member_name,
+                lhs_ty,
+                ..
             } => {
                 // Scoped access `T::member`: `T[...]` instantiates the *type*
                 // on the left-hand side, not the member binding itself.
@@ -763,13 +765,15 @@ fn generate_constraints_for_expr(
                 // we emit a ResolveMember constraint that finds the member by name
                 // on the LHS type and unifies with the expression type.
                 node.wanteds.push(Constraint {
-                    kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_access(
-                        lhs_ty.clone(),
-                        expr_ty, // member's type (function type for methods)
-                        member_name.clone(),
-                        receiver_subst,
-                        expr, // use expr NodeId as site for resolution tracking
-                    )),
+                    kind: ConstraintKind::ResolveMember(
+                        ResolveMemberConstraint::new_scoped_access(
+                            lhs_ty.clone(),
+                            expr_ty, // member's type (function type for methods)
+                            member_name.clone(),
+                            receiver_subst,
+                            expr, // use expr NodeId as site for resolution tracking
+                        ),
+                    ),
                     info,
                 });
             }
@@ -1043,10 +1047,8 @@ fn generate_constraints_for_expr(
                 // Also emit ResolveMemberConstraint to record in the side-table
                 // Index::get has signature: (*container, index) -> elem?
                 let recv_ty = Ty::ref_of(container_ty.clone());
-                let expected_fn_ty = Ty::Func(
-                    vec![recv_ty, index_ty],
-                    Box::new(Ty::nilable(elem_ty)),
-                );
+                let expected_fn_ty =
+                    Ty::Func(vec![recv_ty, index_ty], Box::new(Ty::nilable(elem_ty)));
                 node.wanteds.push(Constraint {
                     kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
                         container_ty,
@@ -1108,8 +1110,11 @@ fn generate_constraints_for_expr(
                     // Fallback: assume 3-ary [lhs, rhs, result].
                     args.push(expr_ty.clone());
                 }
-                node.wanteds
-                    .push(Constraint::class(trait_fqn.clone(), args.clone(), info.clone()));
+                node.wanteds.push(Constraint::class(
+                    trait_fqn.clone(),
+                    args.clone(),
+                    info.clone(),
+                ));
 
                 // Also emit ResolveMemberConstraint to record in the side-table
                 let method_name = method_fqn.item_name().unwrap_or_default();
@@ -1182,8 +1187,11 @@ fn generate_constraints_for_expr(
                     // Fallback: assume 2-ary [arg, result].
                     args.push(expr_ty.clone());
                 }
-                node.wanteds
-                    .push(Constraint::class(trait_fqn.clone(), args.clone(), info.clone()));
+                node.wanteds.push(Constraint::class(
+                    trait_fqn.clone(),
+                    args.clone(),
+                    info.clone(),
+                ));
 
                 // Also emit ResolveMemberConstraint to record in the side-table
                 let method_name = method_fqn.item_name().unwrap_or_default();
@@ -1384,8 +1392,11 @@ fn generate_constraints_for_expr(
                             vec![container_ty.clone(), elem_ty.clone(), index_ty.clone()],
                             info.clone(),
                         ));
-                        node.wanteds
-                            .push(Constraint::eq(rhs_ty.clone(), elem_ty.clone(), info.clone()));
+                        node.wanteds.push(Constraint::eq(
+                            rhs_ty.clone(),
+                            elem_ty.clone(),
+                            info.clone(),
+                        ));
 
                         // Also emit ResolveMemberConstraint to record in the side-table
                         // Index::set has signature: (*container, index, elem) -> elem?
@@ -1395,12 +1406,14 @@ fn generate_constraints_for_expr(
                             Box::new(Ty::nilable(elem_ty)),
                         );
                         node.wanteds.push(Constraint {
-                            kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_instance(
-                                container_ty,
-                                "set",
-                                expected_fn_ty,
-                                expr,
-                            )),
+                            kind: ConstraintKind::ResolveMember(
+                                ResolveMemberConstraint::new_instance(
+                                    container_ty,
+                                    "set",
+                                    expected_fn_ty,
+                                    expr,
+                                ),
+                            ),
                             info: info.clone(),
                         });
                     }
@@ -1815,13 +1828,15 @@ fn generate_constraints_for_expr(
                     });
 
                     node.wanteds.push(Constraint {
-                        kind: ConstraintKind::ResolveMember(ResolveMemberConstraint::new_scoped_call(
-                            lhs_ty,
-                            expected_fn_ty,
-                            member_name,
-                            receiver_subst,
-                            expr, // call_site: the call expression's NodeId
-                        )),
+                        kind: ConstraintKind::ResolveMember(
+                            ResolveMemberConstraint::new_scoped_call(
+                                lhs_ty,
+                                expected_fn_ty,
+                                member_name,
+                                receiver_subst,
+                                expr, // call_site: the call expression's NodeId
+                            ),
+                        ),
                         info: info.clone(),
                     });
 

@@ -1503,7 +1503,8 @@ mod tests {
         ast::{
             Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, Extern,
             File, FnParam, Func, FuncSig, Impl, Literal, Name, New, Node, Pattern as AstPattern,
-            ScopedAccess, Sequence, Struct, Trait, TypeParams, token::{Token, TokenKind},
+            ScopedAccess, Sequence, Struct, Trait, TypeParams,
+            token::{Token, TokenKind},
         },
         sema::{
             build_type_param_scope, collect_type_resolutions, nameresolve::ResolveContext,
@@ -3945,7 +3946,10 @@ mod tests {
         let scoped_access = ScopedAccess {
             lhs: Box::new(lhs_expr),
             rhs: rhs_name,
-            sep: Token { kind: TokenKind::DoubleColon, span: Span::default() },
+            sep: Token {
+                kind: TokenKind::DoubleColon,
+                span: Span::default(),
+            },
         };
         let scoped_access_expr = Node::new(Expr::ScopedAccess(scoped_access));
 
@@ -4015,7 +4019,10 @@ mod tests {
         let scoped_access = ScopedAccess {
             lhs: Box::new(lhs_expr),
             rhs: rhs_name,
-            sep: Token { kind: TokenKind::DoubleColon, span: Span::default() },
+            sep: Token {
+                kind: TokenKind::DoubleColon,
+                span: Span::default(),
+            },
         };
         let scoped_access_expr = Node::new(Expr::ScopedAccess(scoped_access));
 
@@ -4023,7 +4030,11 @@ mod tests {
         let method_body = Node::new(Expr::Block(Block {
             stmts: vec![scoped_access_expr],
         }));
-        let method = Func::new(Node::new(Path::from("test::Container::f")), vec![], method_body);
+        let method = Func::new(
+            Node::new(Path::from("test::Container::f")),
+            vec![],
+            method_body,
+        );
         let method_decl = Node::new(Decl::Func(method));
 
         // Create impl type: Container['a]

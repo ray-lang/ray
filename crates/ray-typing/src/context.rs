@@ -46,10 +46,7 @@ pub enum ExprKind {
     /// Note: any type arguments in `T[...]::member` belong to the left-hand
     /// side type `T[...]`, not to the member itself. The member is resolved
     /// during constraint solving, not during lowering.
-    ScopedAccess {
-        member_name: String,
-        lhs_ty: Ty,
-    },
+    ScopedAccess { member_name: String, lhs_ty: Ty },
     /// An integer literal without an explicit size suffix; its concrete
     /// type is determined by the `Int` class constraints and defaulting.
     LiteralInt,
@@ -277,10 +274,7 @@ pub enum AssignLhs {
     /// The `container` is a NodeId representing the container expression,
     /// which may be a simple local reference or a nested index expression
     /// (e.g., `m[0]` in `m[0][1] = v`).
-    Index {
-        container: NodeId,
-        index: NodeId,
-    },
+    Index { container: NodeId, index: NodeId },
     /// Error placeholder produced from a `Missing` pattern on the left-hand
     /// side. This allows type checking to continue for the right-hand side
     /// and surrounding expression without introducing bindings or additional

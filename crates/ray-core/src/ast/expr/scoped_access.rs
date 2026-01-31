@@ -12,4 +12,3 @@ impl std::fmt::Display for ScopedAccess {
         write!(f, "{}::{}", self.lhs, self.rhs)
     }
 }
-

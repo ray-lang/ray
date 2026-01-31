@@ -250,7 +250,10 @@ impl Database {
         let inputs = self.inputs.read().expect("inputs lock poisoned");
 
         let value = match inputs.get(&ikey) {
-            Some(v) => v.downcast_ref::<I::Value>().expect("input type mismatch").clone(),
+            Some(v) => v
+                .downcast_ref::<I::Value>()
+                .expect("input type mismatch")
+                .clone(),
             None => I::Value::default(),
         };
 

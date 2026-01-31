@@ -243,8 +243,8 @@ mod tests {
     use crate::{
         queries::{
             deps::{
-                binding_graph, binding_group_for_def, binding_group_members, binding_groups,
-                def_deps, BindingGroupId,
+                BindingGroupId, binding_graph, binding_group_for_def, binding_group_members,
+                binding_groups, def_deps,
             },
             libraries::LoadedLibraries,
             parse::parse_file,
@@ -601,7 +601,10 @@ fn caller() -> int {
         let graph = binding_graph(&db, module_path);
 
         // caller -> helper edge should exist (helper is truly unannotated)
-        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        let caller_edges = graph
+            .edges
+            .get(&caller_def.def_id)
+            .expect("caller in graph");
         assert!(
             caller_edges.contains(&helper_def.def_id),
             "caller should have edge to unannotated helper"
@@ -652,7 +655,10 @@ fn caller() -> int {
         let graph = binding_graph(&db, module_path);
 
         // caller -> helper edge should NOT exist (helper is fully annotated)
-        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        let caller_edges = graph
+            .edges
+            .get(&caller_def.def_id)
+            .expect("caller in graph");
         assert!(
             !caller_edges.contains(&helper_def.def_id),
             "caller should NOT have edge to annotated helper"
@@ -706,7 +712,10 @@ fn caller() -> int {
         let graph = binding_graph(&db, module_path);
 
         // caller -> helper edge should NOT exist (arrow body = ReturnElided = annotated)
-        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        let caller_edges = graph
+            .edges
+            .get(&caller_def.def_id)
+            .expect("caller in graph");
         assert!(
             !caller_edges.contains(&helper_def.def_id),
             "caller should NOT have edge to arrow-body helper (ReturnElided)"
@@ -758,7 +767,10 @@ fn caller() -> int {
         let graph = binding_graph(&db, module_path);
 
         // caller -> helper edge SHOULD exist (block body without return = Unannotated)
-        let caller_edges = graph.edges.get(&caller_def.def_id).expect("caller in graph");
+        let caller_edges = graph
+            .edges
+            .get(&caller_def.def_id)
+            .expect("caller in graph");
         assert!(
             caller_edges.contains(&helper_def.def_id),
             "caller should have edge to block-body helper without return annotation (Unannotated)"
@@ -905,7 +917,10 @@ fn is_odd(n) {
 
         let graph = binding_graph(&db, ModulePath::from("nonexistent"));
 
-        assert!(graph.edges.is_empty(), "Unknown module should have empty graph");
+        assert!(
+            graph.edges.is_empty(),
+            "Unknown module should have empty graph"
+        );
     }
 
     // ==================== binding_groups tests ====================
@@ -1029,7 +1044,11 @@ fn is_odd(n) {
         let result = binding_groups(&db, module_path);
 
         // Should have exactly 1 group with both functions
-        assert_eq!(result.group_ids.len(), 1, "Should have 1 group for mutual recursion");
+        assert_eq!(
+            result.group_ids.len(),
+            1,
+            "Should have 1 group for mutual recursion"
+        );
         assert_eq!(result.members.len(), 1);
 
         let members = &result.members[0];
@@ -1168,9 +1187,18 @@ fn caller() -> int { helper(42) }
     fn binding_groups_group_id_can_be_used_as_key() {
         // Test that BindingGroupId is usable as a HashMap key
         let module = ModulePath::from("test");
-        let id1 = BindingGroupId { module: module.clone(), index: 0 };
-        let id2 = BindingGroupId { module: module.clone(), index: 1 };
-        let id1_copy = BindingGroupId { module: module.clone(), index: 0 };
+        let id1 = BindingGroupId {
+            module: module.clone(),
+            index: 0,
+        };
+        let id2 = BindingGroupId {
+            module: module.clone(),
+            index: 1,
+        };
+        let id1_copy = BindingGroupId {
+            module: module.clone(),
+            index: 0,
+        };
 
         let mut set = HashSet::new();
         set.insert(id1);
@@ -1296,7 +1324,11 @@ fn is_odd(n) {
             .expect("should find is_odd");
 
         let groups_result = binding_groups(&db, module_path.clone());
-        assert_eq!(groups_result.group_ids.len(), 1, "Should have 1 group for mutual recursion");
+        assert_eq!(
+            groups_result.group_ids.len(),
+            1,
+            "Should have 1 group for mutual recursion"
+        );
 
         let members = binding_group_members(&db, groups_result.group_ids[0].clone());
         assert_eq!(members.len(), 2, "Group should have 2 members");

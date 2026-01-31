@@ -29,10 +29,7 @@ use ray_core::{
     transform::{self, CombineResult},
 };
 
-use crate::{
-    libgen::RayLib,
-    lir::Program,
-};
+use crate::{libgen::RayLib, lir::Program};
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 

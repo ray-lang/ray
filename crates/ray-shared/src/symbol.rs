@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    local_binding::LocalBindingId,
-    resolution::DefTarget,
-};
+use crate::{local_binding::LocalBindingId, resolution::DefTarget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SymbolRole {

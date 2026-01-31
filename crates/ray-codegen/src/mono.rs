@@ -18,10 +18,7 @@ use ray_typing::{
     unify::{match_scheme_vars, mgu},
 };
 
-use ray_core::{
-    ast::Node,
-    convert::ToSet,
-};
+use ray_core::{ast::Node, convert::ToSet};
 
 use crate::{
     lir::{self, NamedInst},

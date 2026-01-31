@@ -4,9 +4,9 @@ use tower_lsp::{LspService, Server};
 
 mod diagnostics;
 mod helpers;
-mod symbols;
 mod semantic_tokens;
 mod server;
+mod symbols;
 
 use server::RayLanguageServer;
 

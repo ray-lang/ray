@@ -523,7 +523,9 @@ fn validate_impl(
             errors.push(RayError {
                 msg: format!(
                     "trait `{}` expected {} type argument(s) but found {}",
-                    trait_definition.path.item_name().unwrap_or("?"), expected_count, ty_args_count
+                    trait_definition.path.item_name().unwrap_or("?"),
+                    expected_count,
+                    ty_args_count
                 ),
                 src: vec![Source {
                     span: im.ty.span().copied(),
@@ -545,7 +547,8 @@ fn validate_impl(
             errors.push(RayError {
                 msg: format!(
                     "impl `{}` is missing required method `{}`",
-                    trait_definition.path.item_name().unwrap_or("?"), required_method.name
+                    trait_definition.path.item_name().unwrap_or("?"),
+                    required_method.name
                 ),
                 src: vec![Source {
                     span: Some(srcmap.span_of(decl)),
@@ -566,7 +569,8 @@ fn validate_impl(
             errors.push(RayError {
                 msg: format!(
                     "method `{}` does not exist on trait `{}`",
-                    impl_method.name, trait_definition.path.item_name().unwrap_or("?")
+                    impl_method.name,
+                    trait_definition.path.item_name().unwrap_or("?")
                 ),
                 src: vec![Source {
                     span: Some(srcmap.span_of(decl)),

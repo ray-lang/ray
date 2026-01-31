@@ -345,7 +345,11 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
     // Collect field information
     let mut field_names: Vec<Ident> = Vec::new();
     let mut field_types: Vec<Type> = Vec::new();
-    let is_tuple_struct = fields.iter().next().map(|f| f.ident.is_none()).unwrap_or(false);
+    let is_tuple_struct = fields
+        .iter()
+        .next()
+        .map(|f| f.ident.is_none())
+        .unwrap_or(false);
 
     for (i, field) in fields.iter().enumerate() {
         let name = field

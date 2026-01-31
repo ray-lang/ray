@@ -135,7 +135,10 @@ fn main() {
             .rfind(needle)
             .expect("expected scoped __h2 in source");
         let byte_offset = byte_offset + 2;
-        let line = source[..byte_offset].bytes().filter(|&b| b == b'\n').count();
+        let line = source[..byte_offset]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count();
         let col = source[..byte_offset]
             .split('\n')
             .last()

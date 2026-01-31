@@ -47,12 +47,7 @@ pub fn main() -> u32 {
     eprintln!("---------- LIR ----------\n{}", program);
 
     enable_debug_logs();
-    let ir = emit_module_ir(
-        &program,
-        &frontend.srcmap,
-        &Target::default(),
-        OptLevel::O0,
-    );
+    let ir = emit_module_ir(&program, &frontend.srcmap, &Target::default(), OptLevel::O0);
 
     eprintln!("---------- LLVM ----------\n{}", ir);
 

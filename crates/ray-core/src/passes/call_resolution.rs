@@ -1,8 +1,4 @@
-use ray_shared::{
-    collections::namecontext::NameContext,
-    node_id::NodeId,
-    pathlib::ItemPath,
-};
+use ray_shared::{collections::namecontext::NameContext, node_id::NodeId, pathlib::ItemPath};
 use ray_typing::{
     TypeCheckInput,
     context::{AssignLhs, ExprKind},

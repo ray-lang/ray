@@ -142,16 +142,12 @@ pub enum MemberAccessKind {
     /// Unlike InstanceCall, the member is resolved by name on the explicit subject
     /// type rather than an inferred receiver type. The solver looks up the
     /// member the same way as InstanceCall.
-    ScopedCall {
-        receiver_subst: Option<Subst>,
-    },
+    ScopedCall { receiver_subst: Option<Subst> },
     /// `T::member` - scoped member access (non-call, e.g., constant or fn as value)
     ///
     /// Same resolution as ScopedCall but not a call expression - the member's
     /// type scheme is instantiated and unified with the expected type.
-    ScopedAccess {
-        receiver_subst: Option<Subst>,
-    },
+    ScopedAccess { receiver_subst: Option<Subst> },
 }
 
 /// Deferred resolution of a member access.
@@ -229,8 +225,12 @@ impl ResolveMemberConstraint {
         self.subject_ty.free_ty_vars(out);
         self.expected_ty.free_ty_vars(out);
         match &self.kind {
-            MemberAccessKind::ScopedCall { receiver_subst: Some(subst) }
-            | MemberAccessKind::ScopedAccess { receiver_subst: Some(subst) } => {
+            MemberAccessKind::ScopedCall {
+                receiver_subst: Some(subst),
+            }
+            | MemberAccessKind::ScopedAccess {
+                receiver_subst: Some(subst),
+            } => {
                 for ty in subst.values() {
                     ty.free_ty_vars(out);
                 }
@@ -496,8 +496,12 @@ impl Substitutable for ResolveMemberConstraint {
         self.subject_ty.apply_subst(subst);
         self.expected_ty.apply_subst(subst);
         match &mut self.kind {
-            MemberAccessKind::ScopedCall { receiver_subst: Some(rs) }
-            | MemberAccessKind::ScopedAccess { receiver_subst: Some(rs) } => {
+            MemberAccessKind::ScopedCall {
+                receiver_subst: Some(rs),
+            }
+            | MemberAccessKind::ScopedAccess {
+                receiver_subst: Some(rs),
+            } => {
                 for ty in rs.values_mut() {
                     ty.apply_subst(subst);
                 }

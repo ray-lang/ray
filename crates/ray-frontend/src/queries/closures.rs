@@ -70,7 +70,9 @@ pub fn closures_in_def(db: &Database, def_id: DefId) -> Vec<ClosureInfo> {
 pub fn closure_info(db: &Database, closure_node: NodeId) -> Option<ClosureInfo> {
     let def_id = closure_node.owner;
     let closures = closures_in_def(db, def_id);
-    closures.into_iter().find(|c| c.closure_expr == closure_node)
+    closures
+        .into_iter()
+        .find(|c| c.closure_expr == closure_node)
 }
 
 /// Find a declaration AST node by its root NodeId.
@@ -168,7 +170,10 @@ fn outer() {
         let closure_info = &closures[0];
         assert_eq!(closure_info.parent_def, outer_def.def_id);
         // The closure captures 'x'
-        assert!(!closure_info.captures.is_empty(), "Closure should capture x");
+        assert!(
+            !closure_info.captures.is_empty(),
+            "Closure should capture x"
+        );
     }
 
     #[test]
@@ -367,7 +372,10 @@ fn outer() {
 
         // Now look up via closure_info
         let info = closure_info(&db, closure_node_id);
-        assert!(info.is_some(), "closure_info should return Some for valid closure");
+        assert!(
+            info.is_some(),
+            "closure_info should return Some for valid closure"
+        );
 
         let info = info.unwrap();
         assert_eq!(info.closure_expr, closure_node_id);
@@ -398,7 +406,10 @@ fn outer() {
         };
 
         let info = closure_info(&db, fake_node_id);
-        assert!(info.is_none(), "closure_info should return None for non-closure node");
+        assert!(
+            info.is_none(),
+            "closure_info should return None for non-closure node"
+        );
     }
 
     #[test]
@@ -424,6 +435,9 @@ fn outer() {
         };
 
         let info = closure_info(&db, fake_node_id);
-        assert!(info.is_none(), "closure_info should return None for unknown owner");
+        assert!(
+            info.is_none(),
+            "closure_info should return None for unknown owner"
+        );
     }
 }

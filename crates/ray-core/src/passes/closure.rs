@@ -8,7 +8,9 @@ use ray_shared::resolution::Resolution;
 use ray_typing::NodeBinding;
 use ray_typing::binding_groups::BindingId;
 
-use crate::ast::{Closure, Decl, Expr, FnParam, Module, Node, WalkItem, WalkScopeKind, walk_decl, walk_module};
+use crate::ast::{
+    Closure, Decl, Expr, FnParam, Module, Node, WalkItem, WalkScopeKind, walk_decl, walk_module,
+};
 use crate::passes::binding::BindingPassOutput;
 
 /// Information about a single closure expression (new API).

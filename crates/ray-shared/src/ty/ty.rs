@@ -451,19 +451,31 @@ impl Ty {
                 if args.is_empty() {
                     path.to_string()
                 } else {
-                    let args_str = args.iter().map(|t| t.to_mangled()).collect::<Vec<_>>().join(",");
+                    let args_str = args
+                        .iter()
+                        .map(|t| t.to_mangled())
+                        .collect::<Vec<_>>()
+                        .join(",");
                     format!("{}[{}]", path, args_str)
                 }
             }
             Ty::Var(v) => v.0.to_string(),
             Ty::Func(params, ret) => {
-                let params_str = params.iter().map(|t| t.to_mangled()).collect::<Vec<_>>().join(",");
+                let params_str = params
+                    .iter()
+                    .map(|t| t.to_mangled())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!("<({}):{}>", params_str, ret.to_mangled())
             }
             Ty::Ref(inner) => format!("*{}", inner.to_mangled()),
             Ty::RawPtr(inner) => format!("rawptr[{}]", inner.to_mangled()),
             Ty::Tuple(elems) => {
-                let elems_str = elems.iter().map(|t| t.to_mangled()).collect::<Vec<_>>().join(",");
+                let elems_str = elems
+                    .iter()
+                    .map(|t| t.to_mangled())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!("({})", elems_str)
             }
             Ty::Array(elem, size) => format!("[{};{}]", elem.to_mangled(), size),
