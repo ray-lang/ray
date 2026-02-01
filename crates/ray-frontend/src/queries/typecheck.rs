@@ -431,6 +431,8 @@ pub fn ty_of(db: &Database, node_id: NodeId) -> Option<Ty> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_shared::{
         def::{DefId, DefKind},
         node_id::NodeId,
@@ -456,7 +458,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     #[test]

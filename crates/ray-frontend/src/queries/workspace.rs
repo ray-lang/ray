@@ -54,12 +54,16 @@ pub struct ModuleInfo {
 /// This is a singleton input keyed by `()`.
 #[derive(Clone, Debug, Default)]
 pub struct WorkspaceSnapshot {
+    /// Entry point file for this compilation.
+    pub entry: Option<FileId>,
     /// Module path -> module information.
     pub modules: HashMap<ModulePath, ModuleInfo>,
     /// File ID -> file information.
     pub files: HashMap<FileId, FileInfo>,
     /// File path -> File ID (for reverse lookup).
     pub path_to_id: HashMap<FilePath, FileId>,
+    /// Search paths for resolving imports (library directories).
+    pub search_paths: Vec<FilePath>,
     /// Counter for allocating new FileIds.
     next_file_id: u32,
 }
@@ -258,6 +262,12 @@ fn is_dir_module(dir: &FilePath) -> bool {
 // Implement Hash for WorkspaceSnapshot (needed for fingerprinting)
 impl Hash for WorkspaceSnapshot {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash entry point
+        self.entry.hash(state);
+
+        // Hash search paths
+        self.search_paths.hash(state);
+
         // Hash modules in sorted order for determinism
         let mut modules: Vec<_> = self.modules.iter().collect();
         modules.sort_by_key(|(k, _)| k.to_string());

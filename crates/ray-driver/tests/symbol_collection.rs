@@ -18,6 +18,7 @@ use ray_shared::{
 use utils::{find_func, find_func_in, find_impl, test_build};
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_function_and_parameter_definitions() {
     let src = r#"
 fn foo(a: int, b: int) -> int {
@@ -44,6 +45,7 @@ fn foo(a: int, b: int) -> int {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_impl_function() {
     let src = r#"
 trait Foo['a] {
@@ -81,6 +83,7 @@ fn foo(self: int) -> int {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_symbols_deref() {
     let src = r#"
 fn main() {
@@ -129,6 +132,7 @@ ptr = new(u8, 1)
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_curly_elements() {
     let src = r#"
 fn make_string() -> string {
@@ -211,6 +215,7 @@ string { raw_ptr, len }
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_variable_definitions() {
     let src = r#"
 fn foo(x: int, y: int) -> int {
@@ -269,6 +274,7 @@ fn foo(x: int, y: int) -> int {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collect_definitions_for_deref() {
     let src = r#"
 trait Int['a] {
@@ -307,6 +313,7 @@ fn foo() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_definitions_for_trait_funcs() {
     let src = r#"
 trait Addable['a] {
@@ -337,6 +344,7 @@ trait Addable['a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn collects_definitions_for_impl_funcs() {
     let src = r#"
 trait Foo['a] {

@@ -384,8 +384,11 @@ pub struct FileInputKey {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::hash::{Hash, Hasher};
+
     use ray_query_macros::{input, query};
+
+    use crate::query::{CyclePolicy, Database, Input, Query};
 
     #[derive(Clone, Debug, Eq, PartialEq, Hash)]
     struct IntKey(u64);

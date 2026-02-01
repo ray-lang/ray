@@ -254,7 +254,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     #[test]

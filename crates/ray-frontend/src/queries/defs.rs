@@ -1847,6 +1847,8 @@ fn library_method_receiver_mode(db: &Database, lib_def_id: &LibraryDefId) -> Rec
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_shared::{
         def::{DefKind, LibraryDefId},
         pathlib::{FilePath, ItemPath, ModulePath},
@@ -1872,7 +1874,7 @@ mod tests {
 
     /// Helper to set up empty LoadedLibraries in the database.
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     #[test]
@@ -1999,7 +2001,7 @@ mod tests {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         let path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
         let result = def_for_path(&db, path);
@@ -2212,7 +2214,7 @@ impl object List {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         let target = DefTarget::Library(option_def_id);
 
@@ -2339,7 +2341,7 @@ trait Eq['a] {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         let target = DefTarget::Library(ord_def_id);
 
@@ -3292,7 +3294,7 @@ impl Stringify[Foo] {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         // Workspace imports Display and implements it for a local type
         let source = r#"
@@ -3377,7 +3379,7 @@ impl Display[Point] {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         // Workspace defines a trait and implements it for the library type
         let source = r#"
@@ -4017,7 +4019,7 @@ impl object List {
             .schemes
             .insert(read_def_id.clone(), TyScheme::from_mono(Ty::unit()));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         let target = DefTarget::Library(read_def_id);
         let name = def_name(&db, target);
@@ -4159,7 +4161,7 @@ trait Eq['a] {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         let target = DefTarget::Library(option_def_id);
 

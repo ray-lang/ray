@@ -268,6 +268,8 @@ fn compute_sibling_exports(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_shared::{
         def::LibraryDefId,
         pathlib::{FilePath, ItemPath, ModulePath, Path},
@@ -287,7 +289,7 @@ mod tests {
 
     /// Helper to set up empty LoadedLibraries in the database.
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     /// Helper to set up CompilerOptions with no_core = true (no implicit imports).
@@ -734,7 +736,7 @@ mod tests {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
         setup_no_core(&db);
 
         // Import core::io and use qualified access: io::read()
@@ -812,7 +814,7 @@ mod tests {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
         setup_no_core(&db);
 
         // Selective import: only "read" should be available unqualified
@@ -889,7 +891,7 @@ mod tests {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
         setup_no_core(&db);
 
         // Selective import: `import core::collections with list`
@@ -982,7 +984,7 @@ mod tests {
             },
         );
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
         setup_no_core(&db);
 
         // Workspace defines its own "list", and also imports from library

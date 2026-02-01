@@ -462,6 +462,8 @@ fn annotate_self_param_if_missing(sig: &mut FuncSig, self_ty: &Ty, srcmap: &Sour
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_core::ast::{CurlyElement, Decl, Expr};
     use ray_shared::pathlib::{FilePath, ModulePath, Path};
 
@@ -475,7 +477,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     #[test]

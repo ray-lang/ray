@@ -114,6 +114,8 @@ fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_shared::pathlib::{FilePath, ModulePath};
 
     use ray_shared::{def::DefId, node_id::NodeId};
@@ -129,7 +131,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     #[test]

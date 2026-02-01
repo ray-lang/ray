@@ -126,6 +126,8 @@ pub fn lookup_prefix_op(db: &Database, symbol: String) -> Option<OperatorEntry> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_shared::{
         def::LibraryDefId,
         pathlib::{FilePath, ModulePath},
@@ -141,7 +143,7 @@ mod tests {
 
     /// Helper to set up empty LoadedLibraries in the database.
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     #[test]
@@ -365,7 +367,7 @@ trait Display['a] {
         );
 
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         let index = operator_index(&db);
 
@@ -410,7 +412,7 @@ trait Display['a] {
         );
 
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         // Define a workspace trait with the same operator
         let source = r#"

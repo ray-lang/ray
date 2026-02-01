@@ -5,19 +5,20 @@ use std::{
 
 use ray_codegen::{
     codegen::{CodegenOptions, llvm},
-    libgen, lir, modules,
+    libgen, lir,
 };
 use ray_core::{
     ast::{Decl, Module},
     errors::{RayError, RayErrorKind},
     passes,
-    sema::{SymbolBuildContext, SymbolMap, build_symbol_map},
+    sema::SymbolMap,
     sourcemap::SourceMap,
 };
 use ray_frontend::{
     queries::{
         libraries::{LibraryData, LoadedLibraries},
-        workspace::{FileSource, WorkspaceSnapshot},
+        transform::file_ast,
+        workspace::WorkspaceSnapshot,
     },
     query::Database,
 };
@@ -29,10 +30,11 @@ use ray_shared::{
     pathlib::{FilePath, ModulePath, Path, RayPaths},
     span::Source,
 };
-use ray_typing::{TypecheckOptions, tyctx::TyCtx, types::Substitutable};
+use ray_typing::{tyctx::TyCtx, types::Substitutable};
 
 mod analyze;
 mod build;
+mod discovery;
 mod global_options;
 
 pub use analyze::{
@@ -134,102 +136,124 @@ impl Driver {
         options: &BuildOptions,
         overlays: Option<HashMap<FilePath, String>>,
     ) -> Result<FrontendResult, Vec<RayError>> {
-        let mut c_include_paths = options.c_include_paths.clone().unwrap_or_else(|| vec![]);
-        let default_include = self.ray_paths.get_c_includes_path();
-        if default_include.exists() && !c_include_paths.contains(&default_include) {
-            c_include_paths.insert(0, default_include);
+        // Build search paths for library resolution
+        let mut search_paths = vec![self.ray_paths.get_lib_path()];
+        if let Some(link_paths) = &options.link_modules {
+            search_paths.extend(link_paths.iter().cloned());
         }
-        let mut mod_builder =
-            modules::ModuleBuilder::new(&self.ray_paths, c_include_paths, options.no_core);
-        let module_scope = match mod_builder.build(&options.input_path, overlays)? {
-            Some(module_path) => module_path,
-            None => return Err(mod_builder.take_errors()),
+
+        // Create database first
+        let db = Database::new();
+
+        // Run discovery to populate workspace and libraries
+        let discovery_options = discovery::DiscoveryOptions {
+            no_core: options.no_core,
+            build_lib: options.build_lib,
         };
-        let module_path = module_scope.path;
+        let (workspace, loaded_libs) = discovery::discover_workspace(
+            &db,
+            &options.input_path,
+            search_paths,
+            discovery_options,
+            overlays.as_ref(),
+        )
+        .map_err(|e| vec![e])?;
+
+        // Get entry file info
+        let file_id = workspace.entry.ok_or_else(|| {
+            vec![RayError {
+                msg: "no entry file in workspace".to_string(),
+                src: vec![],
+                kind: RayErrorKind::Compile,
+                context: None,
+            }]
+        })?;
+
+        let file_info = workspace.file_info(file_id).ok_or_else(|| {
+            vec![RayError {
+                msg: "entry file not found in workspace".to_string(),
+                src: vec![],
+                kind: RayErrorKind::Compile,
+                context: None,
+            }]
+        })?;
+
+        let module_path = Path::from(file_info.module_path.to_string());
+
+        // Collect module paths for library generation
+        let paths: HashSet<Path> = workspace
+            .all_module_paths()
+            .map(|mp| Path::from(mp.to_string()))
+            .collect();
+
+        // Set the workspace as input (in case discovery modified it)
+        db.set_input::<WorkspaceSnapshot>((), workspace.clone());
+
+        // Set loaded libraries as input
+        LoadedLibraries::new(&db, (), loaded_libs.libraries, loaded_libs.library_files);
+
+        // Build combined source map from all file ASTs
+        let mut combined_srcmap = SourceMap::new();
+        let mut all_errors: Vec<RayError> = Vec::new();
+
+        for fid in workspace.all_file_ids() {
+            let file_ast_result = file_ast(&db, fid);
+            combined_srcmap.extend_with(file_ast_result.source_map.clone());
+            all_errors.extend(file_ast_result.errors.clone());
+        }
 
         if options.print_ast {
-            for m in mod_builder.modules.values() {
-                eprintln!("{}", m);
+            for fid in workspace.all_file_ids() {
+                let file_ast_result = file_ast(&db, fid);
+                // Note: File doesn't impl Debug, so we just print decls
+                for decl in &file_ast_result.ast.decls {
+                    eprintln!("{}", decl);
+                }
             }
         }
 
-        let mut result = mod_builder.finish(&module_path)?;
-        result.module.is_lib = options.build_lib;
-
-        log::debug!("{}", result.module);
-        log::info!("type checking module...");
-
-        // Run the new typechecker on the lowered module and merge its
-        // schemes into the existing defs. The existing v1 pipeline remains
-        // available elsewhere for parity checks.
-        let tc_options = TypecheckOptions::default();
-        let pass_manager = passes::FrontendPassManager::new(
-            &result.module,
-            &result.srcmap,
-            &mut result.tcx,
-            &result.resolutions,
-        );
-        let (binding_output, closure_output, check_result) =
-            pass_manager.run_passes(&result.ncx, tc_options);
-
-        let errors: Vec<RayError> = check_result.errors.into_iter().map(Into::into).collect();
-        let definitions_by_path =
-            libgen::collect_definition_records(&result.module, &result.srcmap, &result.tcx);
-        let mut definitions_by_id: HashMap<NodeId, libgen::DefinitionRecord> = HashMap::new();
-        for record in definitions_by_path.values() {
-            definitions_by_id
-                .entry(record.id)
-                .or_insert_with(|| record.clone());
-        }
-
-        let symbol_map = build_symbol_map(SymbolBuildContext::new(
-            &result.module,
-            &result.tcx,
-            &result.srcmap,
-        ));
-
         log::debug!("[build_frontend] Frontend Summary");
         log::debug!("[build_frontend] ----------------");
-        log::debug!("[build_frontend] symbol_map:");
-        for (_, sym) in symbol_map.iter() {
-            log::debug!(
-                "[build_frontend]   {} @ {}:{}:{} (role = {:?})",
-                sym.path,
-                sym.filepath,
-                sym.span.start.lineno + 1,
-                sym.span.start.col + 1,
-                sym.role,
-            );
-        }
+        log::debug!(
+            "[build_frontend] files: {:?}",
+            workspace.all_file_ids().collect::<Vec<_>>()
+        );
+        log::debug!("[build_frontend] modules: {:?}", paths);
+        log::debug!("[build_frontend] errors: {:?}", all_errors.len());
         log::debug!("[build_frontend] ----------------");
 
-        // Create a Database for query-based LIR generation
-        let db = Database::new();
-        let mut workspace = WorkspaceSnapshot::new();
-        let module_path_for_db = ModulePath::from(result.module.path.to_string());
-        let file_id = workspace.add_file(options.input_path.clone(), module_path_for_db);
-        db.set_input::<WorkspaceSnapshot>((), workspace);
-        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
-
-        // Set file source for the main file
-        let source_content = std::fs::read_to_string(&options.input_path).unwrap_or_default();
-        FileSource::new(&db, file_id, source_content);
+        // Create placeholder values for legacy fields
+        // These are deprecated and will be removed as we migrate to queries
+        let empty_module = Module {
+            path: module_path.clone(),
+            stmts: vec![],
+            decls: vec![],
+            imports: vec![],
+            import_stmts: vec![],
+            submodules: vec![],
+            doc_comment: None,
+            root_filepath: options.input_path.clone(),
+            filepaths: vec![options.input_path.clone()],
+            is_lib: options.build_lib,
+        };
+        let empty_tcx = TyCtx::default();
+        let empty_ncx = NameContext::new();
 
         Ok(FrontendResult {
             db,
             file_id,
             module_path,
-            module: result.module,
-            tcx: result.tcx,
-            ncx: result.ncx,
-            srcmap: result.srcmap,
-            symbol_map,
-            paths: result.paths,
-            definitions_by_path,
-            definitions_by_id,
-            errors,
-            bindings: binding_output,
-            closure_analysis: closure_output,
+            module: empty_module,
+            tcx: empty_tcx,
+            ncx: empty_ncx,
+            srcmap: combined_srcmap,
+            symbol_map: SymbolMap::new(),
+            paths,
+            definitions_by_path: HashMap::new(),
+            definitions_by_id: HashMap::new(),
+            errors: all_errors,
+            bindings: passes::binding::BindingPassOutput::empty(),
+            closure_analysis: passes::closure::ClosurePassOutput::default(),
         })
     }
 
@@ -278,15 +302,13 @@ impl Driver {
 
         let FrontendResult {
             db,
-            file_id,
             module_path,
-            module,
             srcmap,
             paths: module_paths,
             ..
         } = frontend;
 
-        let mut program = lir::generate(&db, file_id, &module, &srcmap)?;
+        let mut program = lir::generate(&db, options.build_lib)?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
             if !options.build_lib {
                 log::debug!("program before monomorphization:\n{}", program);

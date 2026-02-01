@@ -37,7 +37,6 @@ pub struct TypeInfoSnapshot {
 pub struct AnalysisSnapshotData {
     pub module_path: Path,
     pub entry_path: FilePath,
-    pub module: Module<(), Decl>,
     pub name_context: NameContext,
     pub srcmap: SourceMap,
     pub node_type_info: HashMap<NodeId, TypeInfoSnapshot>,
@@ -181,7 +180,6 @@ fn collect_semantic_errors(
 
     let FrontendResult {
         module_path,
-        module,
         tcx,
         ncx,
         srcmap,
@@ -212,7 +210,6 @@ fn collect_semantic_errors(
     let snapshot = AnalysisSnapshotData {
         module_path,
         entry_path: filepath.clone(),
-        module,
         name_context: ncx,
         srcmap,
         node_type_info,
@@ -226,7 +223,6 @@ fn collect_semantic_errors(
 }
 
 fn dedup_diagnostics(mut diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    use std::collections::HashSet;
     let mut seen = HashSet::new();
     diags.retain(|d| {
         // Dedup by message + start position (+ severity/source). Ignore end pos to collapse double-EOF variants.

@@ -1179,6 +1179,7 @@ dependencies = [
  "ray-frontend",
  "ray-shared",
  "ray-typing",
+ "tempfile",
 ]
 
 [[package]]

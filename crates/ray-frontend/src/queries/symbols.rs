@@ -229,7 +229,7 @@ mod tests {
 
     fn setup_test_db_with_libs(source: &str) -> (Database, ray_shared::file_id::FileId) {
         let (db, file_id) = setup_test_db(source);
-        LoadedLibraries::new(&db, (), HashMap::new());
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         (db, file_id)
     }
 

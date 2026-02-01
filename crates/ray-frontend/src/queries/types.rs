@@ -841,7 +841,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     fn test_def_id() -> DefId {

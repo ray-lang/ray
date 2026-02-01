@@ -142,6 +142,8 @@ fn collect_resolution_errors(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_core::errors::RayErrorKind;
     use ray_shared::pathlib::{FilePath, ModulePath};
 
@@ -155,7 +157,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     fn setup_no_core(db: &Database) {

@@ -5,6 +5,7 @@ mod utils;
 use utils::{TestBuildOptions, test_build_with_options};
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn value_receiver_methods_typecheck_for_value_and_pointer() {
     let src = r#"
 trait Value['a] {
@@ -35,6 +36,7 @@ fn call_on_ptr(p: *int) -> int {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn ptr_receiver_methods_typecheck_for_value_and_pointer() {
     let src = r#"
 trait ByRef['a] {

@@ -1,4 +1,9 @@
-use std::{cell::RefCell, collections::HashMap, ops::Deref, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    ops::Deref,
+    rc::Rc,
+};
 
 use ray_shared::{
     def::DefKind,
@@ -30,6 +35,7 @@ use ray_frontend::{
         libraries::{LoadedLibraries, library_lir},
         parse::parse_file,
         resolve::{name_resolutions, resolve_builtin},
+        transform::file_ast,
         typecheck::{def_scheme, inferred_local_type, ty_of},
         workspace::WorkspaceSnapshot,
     },
@@ -38,8 +44,8 @@ use ray_frontend::{
 
 use ray_core::{
     ast::{
-        self, Assign, BinOp, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Module,
-        Node, Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
+        self, Assign, BinOp, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Node,
+        Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
     },
     errors::RayResult,
     passes::closure::ClosureInfo,
@@ -51,9 +57,7 @@ use crate::{lir, mangle, mono};
 use super::START_FUNCTION;
 
 /// Build the impls_by_trait map by collecting all trait impls from workspace and libraries.
-fn build_impls_by_trait(db: &Database) -> std::collections::BTreeMap<ItemPath, Vec<ImplTy>> {
-    use std::collections::BTreeMap;
-
+fn build_impls_by_trait(db: &Database) -> BTreeMap<ItemPath, Vec<ImplTy>> {
     let mut result: BTreeMap<ItemPath, Vec<ImplTy>> = BTreeMap::new();
     let workspace = db.get_input::<WorkspaceSnapshot>(());
 
@@ -116,43 +120,88 @@ fn build_struct_types(db: &Database) -> HashMap<ItemPath, StructTy> {
     result
 }
 
-fn resolve_user_main_info(db: &Database, module: &Module<(), Decl>) -> Option<(Path, TyScheme)> {
-    let expected = module.path.append("main");
-    module.decls.iter().find_map(|decl| match &decl.value {
-        Decl::Func(func) => {
-            let func_path = func.sig.path.value.with_names_only();
-            if func_path != expected {
-                return None;
+/// Resolve user main function info from the workspace.
+///
+/// Searches for a function named `<entry_module>::main` across all files
+/// in the workspace and returns its mangled name and type scheme.
+fn resolve_user_main_info(db: &Database, entry_module_path: &Path) -> Option<(Path, TyScheme)> {
+    let expected = entry_module_path.append("main");
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    for file_id in workspace.all_file_ids() {
+        let file_ast_result = file_ast(db, file_id);
+        for decl in &file_ast_result.ast.decls {
+            if let Decl::Func(func) = &decl.value {
+                let func_path = func.sig.path.value.with_names_only();
+                if func_path != expected {
+                    continue;
+                }
+                let fn_ty = def_scheme(db, DefTarget::Workspace(decl.id.owner))?;
+                let fn_name = if fn_ty.is_polymorphic() {
+                    func.sig.path.value.clone()
+                } else {
+                    mangle::fn_name(&func.sig.path.value, &fn_ty)
+                };
+                return Some((fn_name, fn_ty));
             }
-            let fn_ty = def_scheme(db, DefTarget::Workspace(decl.id.owner))?;
-            let fn_name = if fn_ty.is_polymorphic() {
-                func.sig.path.value.clone()
-            } else {
-                mangle::fn_name(&func.sig.path.value, &fn_ty)
-            };
-            Some((fn_name, fn_ty))
         }
-        _ => None,
-    })
+    }
+
+    None
 }
 
-pub fn generate(
-    db: &Database,
-    file_id: FileId,
-    module: &Module<(), Decl>,
-    srcmap: &SourceMap,
-) -> RayResult<lir::Program> {
-    // Get library programs via the query system
+/// Generate LIR for the workspace.
+///
+/// This is the main entry point for LIR generation. It processes all files
+/// in the workspace and generates a single LIR program.
+///
+/// # Arguments
+/// * `db` - The query database
+/// * `is_lib` - Whether we're building a library (skips _start generation)
+pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
+    // Get workspace and libraries
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
     let libraries = db.get_input::<LoadedLibraries>(());
     let libs: Vec<lir::Program> = libraries
         .all_library_roots()
         .filter_map(|lib_root| library_lir(db, lib_root.clone()))
         .collect();
-    let path = module.path.clone();
-    let user_main_info = resolve_user_main_info(db, module);
+
+    // Get entry file and module path
+    let entry_file_id = workspace.entry.ok_or_else(|| ray_core::errors::RayError {
+        msg: "no entry file in workspace".to_string(),
+        src: vec![],
+        kind: ray_core::errors::RayErrorKind::Compile,
+        context: None,
+    })?;
+    let entry_info =
+        workspace
+            .file_info(entry_file_id)
+            .ok_or_else(|| ray_core::errors::RayError {
+                msg: "entry file not found in workspace".to_string(),
+                src: vec![],
+                kind: ray_core::errors::RayErrorKind::Compile,
+                context: None,
+            })?;
+    let path = entry_info.module_path.to_path();
+
+    // Build combined SourceMap and collect all decls from all files
+    let mut combined_srcmap = SourceMap::new();
+    let mut all_decls: Vec<Node<Decl>> = Vec::new();
+
+    for file_id in workspace.all_file_ids() {
+        let file_ast_result = file_ast(db, file_id);
+        combined_srcmap.extend_with(file_ast_result.source_map.clone());
+        all_decls.extend(file_ast_result.ast.decls.clone());
+    }
+
+    // Find user main function
+    let user_main_info = resolve_user_main_info(db, &path);
+
+    // Create program and generate LIR for all decls
     let prog = Rc::new(RefCell::new(lir::Program::new(path)));
-    let mut ctx = GenCtx::new(db, file_id, Rc::clone(&prog), srcmap);
-    module.decls.lir_gen(&mut ctx)?;
+    let mut ctx = GenCtx::new(db, entry_file_id, Rc::clone(&prog), &combined_srcmap);
+    all_decls.lir_gen(&mut ctx)?;
 
     let (module_main_path, user_main_base_path) = {
         let prog_ref = prog.borrow();
@@ -199,7 +248,7 @@ pub fn generate(
         })
     };
 
-    let start_idx = if !module.is_lib {
+    let start_idx = if !is_lib {
         let mut main_symbols = lir::SymbolSet::new();
         log::debug!("module main path: {}", module_main_path);
         if let Some(user_main_resolved_path) = &user_main_resolved_path {

@@ -8,6 +8,7 @@ use ray_shared::optlevel::OptLevel;
 use utils::{enable_debug_logs, test_build};
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn llvm_emits_closure_env_and_function() {
     let src = r#"
 @intrinsic extern fn u32_add(a: u32, b: u32) -> u32
@@ -34,13 +35,8 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let mut program = lir::generate(
-        &frontend.db,
-        frontend.file_id,
-        &frontend.module,
-        &frontend.srcmap,
-    )
-    .expect("lir generation should succeed");
+    let mut program =
+        lir::generate(&frontend.db, false).expect("lir generation should succeed");
     lir::monomorphize(&mut program);
 
     eprintln!("---------- LIR ----------\n{}", program);

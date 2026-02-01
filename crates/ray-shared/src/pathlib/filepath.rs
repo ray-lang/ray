@@ -47,6 +47,12 @@ impl FilePath {
         self.buf.push(path);
     }
 
+    pub fn join<P: AsRef<Path>>(&self, path: P) -> FilePath {
+        let mut fp = self.clone();
+        fp.push(path);
+        fp
+    }
+
     pub fn canonicalize(&self) -> io::Result<FilePath> {
         Ok(FilePath {
             buf: self.buf.canonicalize()?,

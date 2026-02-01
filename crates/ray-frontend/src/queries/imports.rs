@@ -235,6 +235,8 @@ fn resolve_module_path(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_core::ast::ImportKind;
     use ray_shared::pathlib::{FilePath, ModulePath};
 
@@ -249,7 +251,7 @@ mod tests {
 
     /// Helper to set up empty LoadedLibraries in the database.
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     /// Helper to set up CompilerOptions with no_core = true (no implicit imports).
@@ -541,7 +543,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         FileSource::new(&db, file_id, "import core::io".to_string());
 
@@ -567,7 +569,7 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let core_lib = LibraryData::default();
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         FileSource::new(&db, file_id, "import core".to_string());
 
@@ -595,7 +597,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_with_core(&db); // no_core = false
 
@@ -637,7 +639,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_no_core(&db); // no_core = true
 
@@ -665,7 +667,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_with_core(&db); // no_core = false
 
@@ -695,7 +697,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_with_core(&db); // no_core = false
 
@@ -725,7 +727,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_with_core(&db);
 
@@ -821,7 +823,7 @@ mod tests {
         let mut core_lib = LibraryData::default();
         core_lib.modules.push(ModulePath::from("core::io"));
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_with_core(&db); // Global no_core = false
 
@@ -851,7 +853,7 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let core_lib = LibraryData::default();
         libraries.add(ModulePath::from("core"), core_lib);
-        LoadedLibraries::new(&db, (), libraries.libraries);
+        db.set_input::<LoadedLibraries>((), libraries);
 
         setup_with_core(&db); // Global no_core = false
 

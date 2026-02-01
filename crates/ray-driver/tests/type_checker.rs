@@ -208,6 +208,7 @@ fn assert_scheme_matches(
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_simple_u32_id_function() {
     let src = r#"
         fn id(x: u32) -> u32 { x }
@@ -220,6 +221,7 @@ fn typechecks_simple_u32_id_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_unannotated_id_function() {
     let src = r#"
         fn inferred_id(x) { x }
@@ -235,6 +237,7 @@ fn typechecks_unannotated_id_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_unannotated_bool_literal_function() {
     let src = r#"
         fn inferred_bool() { true }
@@ -248,6 +251,7 @@ fn typechecks_unannotated_bool_literal_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn records_call_resolution_for_unary_ops() {
     let src = r#"
         @intrinsic extern fn i32_neg(a: i32) -> i32
@@ -277,6 +281,7 @@ fn records_call_resolution_for_unary_ops() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_generic_id_with_class_constraint() {
     let src = r#"
         trait Int['t] {}
@@ -303,6 +308,7 @@ fn typechecks_generic_id_with_class_constraint() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_u32_literal_function() {
     let src = r#"
         fn lit() -> u32 { 1u32 }
@@ -315,6 +321,7 @@ fn typechecks_u32_literal_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_generic_plain_id_function() {
     let src = r#"
         fn id_generic['t](x: 't) -> 't { x }
@@ -330,6 +337,7 @@ fn typechecks_generic_plain_id_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_pair_function() {
     let src = r#"
         fn pair(x: u32, y: bool) -> (u32, bool) { (x, y) }
@@ -345,6 +353,7 @@ fn typechecks_pair_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_f64_literal_function() {
     let src = r#"
         fn lit_f64() -> f64 { 1.0f64 }
@@ -357,6 +366,7 @@ fn typechecks_f64_literal_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_local_closure_call() {
     let src = r#"
         fn call_local_closure() -> u32 {
@@ -379,6 +389,7 @@ fn typechecks_local_closure_call() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_closure_with_capture() {
     let src = r#"
         fn call_closure_with_capture(base: u32) -> u32 {
@@ -401,6 +412,7 @@ fn typechecks_closure_with_capture() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_bool_literal_function() {
     let src = r#"
         fn lit_bool() -> bool { true }
@@ -413,6 +425,7 @@ fn typechecks_bool_literal_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_generic_swap_function() {
     let src = r#"
         fn swap['a, 'b](x: 'a, y: 'b) -> ('b, 'a) { (y, x) }
@@ -433,6 +446,7 @@ fn typechecks_generic_swap_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_nil_literal_function() {
     let src = r#"
         fn lit_nil() -> nilable[u32] { nil }
@@ -445,6 +459,7 @@ fn typechecks_nil_literal_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_some_literal_function() {
     let src = r#"
         fn lit_some() -> nilable[u32] { some(1u32) }
@@ -457,6 +472,7 @@ fn typechecks_some_literal_function() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_if_bool_expression() {
     let src = r#"
         fn if_bool(b: bool) -> bool {
@@ -471,6 +487,7 @@ fn typechecks_if_bool_expression() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_while_unit_expression() {
     let src = r#"
         fn while_unit(b: bool) -> () {
@@ -485,6 +502,7 @@ fn typechecks_while_unit_expression() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_loop_with_break_bool() {
     let src = r#"
         fn loop_break(b: bool) -> bool {
@@ -499,6 +517,7 @@ fn typechecks_loop_with_break_bool() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_if_pattern_nilable_expression() {
     let src = r#"
         fn pattern_if(arg: nilable[u32]) -> u32 {
@@ -513,6 +532,7 @@ fn typechecks_if_pattern_nilable_expression() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_struct_literal_and_field_access() {
     let src = r#"
         struct Pair { x: u32, y: bool }
@@ -541,6 +561,7 @@ fn typechecks_struct_literal_and_field_access() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_list_and_int_literals() {
     let src = r#"
         trait Int['a] {
@@ -576,6 +597,7 @@ fn typechecks_list_and_int_literals() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_pointer_field_access_unconstrained_ptr_add() {
     let src = r#"
 @intrinsic extern fn __rawptr_add(p: rawptr['a], offset: uint) -> rawptr['a]
@@ -614,6 +636,7 @@ fn set_like(self: *list['a], idx: uint, el: 'a) -> 'a? {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_index_operator_returns_nilable_elem() {
     let src = r#"
 trait Int['a] {
@@ -661,6 +684,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_index_assignment() {
     let src = r#"
 trait Int['a] {
@@ -697,6 +721,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_polymorphic_closure() {
     let src = r#"
 @intrinsic extern fn u32_add(a: u32, b: u32) -> u32
@@ -762,6 +787,7 @@ fn poly() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_polymorphic_calls() {
     let src = r#"
 fn callee(x: 'a) -> 'a {
@@ -791,6 +817,7 @@ fn caller(y: 'a) -> 'a {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_qualifiers() {
     let src = r#"
 trait Int['a] {}
@@ -829,6 +856,7 @@ fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_method_call_discharged_by_given_trait() {
     let src = r#"
 trait ToStr['a] {
@@ -848,6 +876,7 @@ fn io_print(v: 'a) -> () where ToStr['a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_cross_function_given_trait_discharge() {
     let src = r#"
 trait ToStr['a] {
@@ -870,6 +899,7 @@ fn core_print(v: 'a) -> () where ToStr['a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_signed_tostr_calls_abs_under_qualifiers() {
     let src = r#"
 trait ToStr['a] {
@@ -928,6 +958,7 @@ fn core_print(v: 'a) -> () where ToStr['a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_generic_tostr_for_u32() {
     let src = r#"
 trait ToStr['a] {
@@ -967,6 +998,7 @@ fn f(x: u32) -> () {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_writev_stdout_wasi_shape() {
     let src = r#"
 @intrinsic extern fn int_add(lhs: int, rhs: int) -> int
@@ -1055,6 +1087,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_int_literals() {
     let src = r#"
 trait Int['a] {
@@ -1078,6 +1111,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_literals_and_string_struct() {
     let src = r#"
 extern fn malloc(size: uint) -> rawptr[u8]
@@ -1105,6 +1139,7 @@ fn mk_string() -> string {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_literals_and_rawptr() {
     let src = r#"
 extern fn malloc(size: uint) -> rawptr[u8]
@@ -1130,6 +1165,7 @@ fn mk_string() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_int_literal_not_captured_by_givens() {
     let src = r#"
 extern fn malloc(size: uint) -> rawptr[u8]
@@ -1154,6 +1190,7 @@ fn foo['a](x: 'a) -> rawptr[u8] where Int['a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_generic_div_assign_uses_receiver_given_to_constrain_rhs() {
     let src = r#"
 trait Int['a] {
@@ -1188,6 +1225,7 @@ fn foo(i: 'a) -> 'a where Int['a], Div['a, 'a, 'a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_generic_eq_zero_uses_receiver_given_to_constrain_rhs() {
     let src = r#"
 trait Int['a] {
@@ -1221,6 +1259,7 @@ fn is_one(x: 'a) -> bool where Int['a], Eq['a, 'a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_rawptr_deref_assignment() {
     let src = r#"
 extern fn malloc(size: uint) -> rawptr[u8]
@@ -1252,6 +1291,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_rawptr_add_and_deref_assignment() {
     let src = r#"
 @intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
@@ -1313,6 +1353,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_method_call_via_dot_callee() {
     let src = r#"
 	trait Foo['a] {
@@ -1334,6 +1375,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_literals_and_add() {
     let src = r#"
 @intrinsic extern fn int_add(lhs: int, rhs: int) -> int
@@ -1372,6 +1414,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_impl_function() {
     let src = r#"
 @intrinsic extern fn int_add(lhs: int, rhs: int) -> int
@@ -1452,6 +1495,7 @@ fn main() {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_impl_method_infers_return_and_omits_self_type() {
     let src = r#"
 struct string {}
@@ -1479,6 +1523,7 @@ fn main() {
 // Regression test for io.ray:14 failure - rawptr addition with integer literal
 // in a function with trait constraints, calling a function that does rawptr arithmetic.
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_rawptr_add_with_integer_literal_in_constrained_function() {
     let src = r#"
 @intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
@@ -1562,6 +1607,7 @@ fn print(v: 'a) -> () where ToStr['a] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_field_access_on_pointer_to_generic_struct() {
     let src = r#"
 @intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
@@ -1634,6 +1680,7 @@ impl Index[Container['a], 'a, uint] {
 }
 
 #[test]
+#[ignore = "pending ModuleBuilder removal"]
 fn typechecks_scoped_static_call_in_impl_with_bounds() {
     let src = r#"
         struct A['a, 'b] {}

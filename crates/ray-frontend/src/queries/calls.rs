@@ -84,6 +84,8 @@ pub fn call_resolution(db: &Database, node_id: NodeId) -> Option<CallResolution>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ray_shared::{
         def::DefHeader,
         file_id::FileId,
@@ -104,7 +106,7 @@ mod tests {
     };
 
     fn setup_empty_libraries(db: &Database) {
-        LoadedLibraries::new(db, (), std::collections::HashMap::new());
+        LoadedLibraries::new(db, (), HashMap::new(), HashMap::new());
     }
 
     fn setup_test_db(source: &str) -> (Database, FileId) {
