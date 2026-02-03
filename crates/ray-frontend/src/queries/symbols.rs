@@ -1,16 +1,24 @@
 use std::collections::{HashMap, HashSet};
 
-use ray_core::ast::{Decl, Expr, WalkItem, walk_file};
+use ray_core::ast::{CurlyElement, Decl, Expr, WalkItem, walk_file};
 use ray_query_macros::query;
 use ray_shared::{
+    def::DefId,
     file_id::FileId,
     node_id::NodeId,
     resolution::{DefTarget, Resolution},
     symbol::{SymbolIdentity, SymbolRole, SymbolTarget},
+    ty::Ty,
 };
 
 use crate::{
-    queries::{calls::call_resolution, parse::parse_file, resolve::name_resolutions},
+    queries::{
+        calls::call_resolution,
+        defs::{def_for_path, struct_fields},
+        parse::parse_file,
+        resolve::name_resolutions,
+        typecheck::ty_of,
+    },
     query::{Database, Query},
 };
 
@@ -23,21 +31,104 @@ use crate::{
 /// For method calls, this includes the impl target and (if applicable) the trait
 /// method target.
 ///
+/// For curly element values, this includes both the local variable reference AND
+/// the struct field being initialized.
+///
+/// For field accesses (like `point.x`), this resolves to the struct field definition.
+///
 /// **Dependencies**: `definition_identities(file_id)`, `name_resolutions(file_id)`,
-/// `call_site_index(file_id)`, `call_resolution(NodeId)`
+/// `call_site_index(file_id)`, `call_resolution(NodeId)`, `curly_field_index(file_id)`,
+/// `dot_field_index(file_id)`
 #[query]
 pub fn symbol_targets(db: &Database, node_id: NodeId) -> Vec<SymbolTarget> {
     let file_id = node_id.owner.file;
-    let definition_identities = definition_identities(db, file_id);
-    if let Some(identity) = definition_identities.get(&node_id) {
-        return vec![SymbolTarget::new(identity.clone(), SymbolRole::Definition)];
+
+    // Definition site → return immediately
+    if let Some(target) = collect_definition_target(db, file_id, node_id) {
+        return vec![target];
     }
 
+    // Collect all reference targets
+    let mut targets = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 1. Name resolution (local variables, def references, type annotations)
+    for target in collect_name_resolution_targets(db, file_id, node_id) {
+        if seen.insert(target.identity.clone()) {
+            targets.push(target);
+        }
+    }
+
+    // 2. Struct field (curly element values like `Point { x: value }`)
+    if let Some(target) = collect_curly_field_target(db, file_id, node_id) {
+        if seen.insert(target.identity.clone()) {
+            targets.push(target);
+        }
+    }
+
+    // 3. Call resolution (method calls via dot or scoped access)
+    for target in collect_call_resolution_targets(db, file_id, node_id) {
+        if seen.insert(target.identity.clone()) {
+            targets.push(target);
+        }
+    }
+
+    // 4. Dot field access (like `point.x` when not a method call)
+    if let Some(target) = collect_dot_field_target(db, file_id, node_id) {
+        if seen.insert(target.identity.clone()) {
+            targets.push(target);
+        }
+    }
+
+    targets
+}
+
+/// Collect definition target if this node is a definition site.
+fn collect_definition_target(
+    db: &Database,
+    file_id: FileId,
+    node_id: NodeId,
+) -> Option<SymbolTarget> {
+    let identities = definition_identities(db, file_id);
+    identities
+        .get(&node_id)
+        .map(|identity| SymbolTarget::new(identity.clone(), SymbolRole::Definition))
+}
+
+/// Collect name resolution targets (local variables, def references, type annotations).
+fn collect_name_resolution_targets(
+    db: &Database,
+    file_id: FileId,
+    node_id: NodeId,
+) -> Vec<SymbolTarget> {
     let resolutions = name_resolutions(db, file_id);
-    if let Some(resolution) = resolutions.get(&node_id) {
-        return symbol_targets_from_resolution(resolution, SymbolRole::Reference);
-    }
+    resolutions
+        .get(&node_id)
+        .map(|res| symbol_targets_from_resolution(res, SymbolRole::Reference))
+        .unwrap_or_default()
+}
 
+/// Collect struct field target if this is a curly element value.
+fn collect_curly_field_target(
+    db: &Database,
+    file_id: FileId,
+    node_id: NodeId,
+) -> Option<SymbolTarget> {
+    let curly_fields = curly_field_index(db, file_id);
+    curly_fields.get(&node_id).map(|field_def_id| {
+        SymbolTarget::new(
+            SymbolIdentity::Def(DefTarget::Workspace(*field_def_id)),
+            SymbolRole::Reference,
+        )
+    })
+}
+
+/// Collect call resolution targets (trait and impl method targets for method calls).
+fn collect_call_resolution_targets(
+    db: &Database,
+    file_id: FileId,
+    node_id: NodeId,
+) -> Vec<SymbolTarget> {
     let call_sites = call_site_index(db, file_id);
     let Some(call_id) = call_sites.get(&node_id).copied() else {
         return Vec::new();
@@ -48,20 +139,19 @@ pub fn symbol_targets(db: &Database, node_id: NodeId) -> Vec<SymbolTarget> {
     };
 
     let mut targets = Vec::new();
-    let mut seen = HashSet::new();
 
     if let Some(trait_target) = resolution.trait_target {
-        let identity = SymbolIdentity::Def(trait_target);
-        if seen.insert(identity.clone()) {
-            targets.push(SymbolTarget::new(identity, SymbolRole::Reference));
-        }
+        targets.push(SymbolTarget::new(
+            SymbolIdentity::Def(trait_target),
+            SymbolRole::Reference,
+        ));
     }
 
     if let Some(impl_target) = resolution.impl_target {
-        let identity = SymbolIdentity::Def(impl_target);
-        if seen.insert(identity.clone()) {
-            targets.push(SymbolTarget::new(identity, SymbolRole::Reference));
-        }
+        targets.push(SymbolTarget::new(
+            SymbolIdentity::Def(impl_target),
+            SymbolRole::Reference,
+        ));
     }
 
     targets
@@ -77,6 +167,73 @@ fn symbol_targets_from_resolution(resolution: &Resolution, role: SymbolRole) -> 
         }
         Resolution::TypeParam(_) | Resolution::Error { .. } => Vec::new(),
     }
+}
+
+/// Index mapping curly element value node IDs to their struct field DefIds.
+///
+/// For curly expressions like `Point { x: value, y: 0 }`, this maps each value
+/// expression's node ID to the corresponding struct field's DefId.
+///
+/// This enables "Go to Definition" on curly element values to navigate to both
+/// the local variable being referenced AND the struct field being initialized.
+///
+/// **Dependencies**: `parse_file(file_id)`, `name_resolutions(file_id)`
+#[query]
+pub fn curly_field_index(db: &Database, file_id: FileId) -> HashMap<NodeId, DefId> {
+    let parse_result = parse_file(db, file_id);
+    let resolutions = name_resolutions(db, file_id);
+    let mut index = HashMap::new();
+
+    for item in walk_file(&parse_result.ast) {
+        let WalkItem::Expr(expr) = item else {
+            continue;
+        };
+
+        let Expr::Curly(curly) = &expr.value else {
+            continue;
+        };
+
+        // Skip curly expressions without a type annotation
+        if curly.lhs.is_none() {
+            continue;
+        };
+
+        // Resolve the struct type using the curly expression's node ID
+        let Some(Resolution::Def(DefTarget::Workspace(struct_def_id))) = resolutions.get(&expr.id)
+        else {
+            continue;
+        };
+
+        // Get field DefIds for this struct (handles cross-file lookups)
+        let field_defs = struct_fields(db, *struct_def_id);
+
+        // Map each curly element value to its field DefId
+        for elem in &curly.elements {
+            match &elem.value {
+                CurlyElement::Labeled(field_name, value_expr) => {
+                    // Explicit: `field: value`
+                    let Some(field_name_str) = field_name.path.name() else {
+                        continue;
+                    };
+                    if let Some(field_def_id) = field_defs.get(&field_name_str) {
+                        index.insert(value_expr.id, *field_def_id);
+                    }
+                }
+                CurlyElement::Name(name) => {
+                    // Shorthand: `field` (both field name and value reference)
+                    let Some(field_name_str) = name.path.name() else {
+                        continue;
+                    };
+                    if let Some(field_def_id) = field_defs.get(&field_name_str) {
+                        // For shorthand, the element node ID is the reference
+                        index.insert(elem.id, *field_def_id);
+                    }
+                }
+            }
+        }
+    }
+
+    index
 }
 
 /// Returns definition-site NodeIds and their identities for a file.
@@ -191,6 +348,88 @@ pub fn call_site_index(db: &Database, file_id: FileId) -> HashMap<NodeId, NodeId
     }
 
     index
+}
+
+/// Index mapping dot expression field access node IDs to their struct field DefIds.
+///
+/// For dot expressions like `point.x` that are field accesses (NOT method calls),
+/// this maps the RHS name node ID (`x`) to the corresponding struct field's DefId.
+///
+/// This enables "Go to Definition" on field accesses to navigate to the struct
+/// field definition.
+///
+/// **Note**: This query only covers field accesses. Method calls are handled by
+/// `call_site_index` and `call_resolution`.
+///
+/// **Dependencies**: `parse_file(file_id)`, `call_site_index(file_id)`,
+/// `ty_of(node_id)`, `def_for_path(path)`, `struct_fields(def_id)`
+#[query]
+pub fn dot_field_index(db: &Database, file_id: FileId) -> HashMap<NodeId, DefId> {
+    let parse_result = parse_file(db, file_id);
+    let call_sites = call_site_index(db, file_id);
+    let mut index = HashMap::new();
+
+    for item in walk_file(&parse_result.ast) {
+        let WalkItem::Expr(expr) = item else {
+            continue;
+        };
+
+        let Expr::Dot(dot) = &expr.value else {
+            continue;
+        };
+
+        // Skip if this is a method call (handled by call_resolution)
+        if call_sites.contains_key(&dot.rhs.id) {
+            continue;
+        }
+
+        // Get the type of the LHS expression
+        let Some(lhs_ty) = ty_of(db, dot.lhs.id) else {
+            continue;
+        };
+
+        // Get the struct path from the type (handling references)
+        let struct_path = match lhs_ty {
+            Ty::Ref(inner) | Ty::RawPtr(inner) => inner.item_path().cloned(),
+            ref ty => ty.item_path().cloned(),
+        };
+
+        let Some(struct_item_path) = struct_path else {
+            continue;
+        };
+
+        // Look up the struct definition
+        let Some(DefTarget::Workspace(struct_def_id)) = def_for_path(db, struct_item_path) else {
+            continue;
+        };
+
+        // Get the field name and look up its DefId
+        let Some(field_name) = dot.rhs.path.name() else {
+            continue;
+        };
+
+        let field_defs = struct_fields(db, struct_def_id);
+        if let Some(field_def_id) = field_defs.get(&field_name) {
+            index.insert(dot.rhs.id, *field_def_id);
+        }
+    }
+
+    index
+}
+
+/// Collect struct field target if this is a dot expression field access.
+fn collect_dot_field_target(
+    db: &Database,
+    file_id: FileId,
+    node_id: NodeId,
+) -> Option<SymbolTarget> {
+    let dot_fields = dot_field_index(db, file_id);
+    dot_fields.get(&node_id).map(|field_def_id| {
+        SymbolTarget::new(
+            SymbolIdentity::Def(DefTarget::Workspace(*field_def_id)),
+            SymbolRole::Reference,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -740,6 +979,159 @@ fn test() -> int => Box[int]::value()
                 .iter()
                 .all(|target| target.role == SymbolRole::Reference),
             "expected reference roles"
+        );
+    }
+
+    #[test]
+    fn symbol_targets_resolves_dot_field_access() {
+        // Test that `point.x` resolves to the struct field definition
+        let source = r#"
+struct Point { x: int, y: int }
+
+fn get_x(p: Point) -> int => p.x
+"#;
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the struct field definition for `x`
+        let field_def = parse_result
+            .defs
+            .iter()
+            .find(|def| def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField))
+            .expect("expected x field def");
+
+        // Find the dot expression `p.x` in the function body
+        let mut field_access_id = None;
+        for item in walk_file(&parse_result.ast) {
+            let WalkItem::Expr(expr) = item else {
+                continue;
+            };
+            let Expr::Dot(dot) = &expr.value else {
+                continue;
+            };
+            if dot.rhs.path.name().as_deref() == Some("x") {
+                field_access_id = Some(dot.rhs.id);
+                break;
+            }
+        }
+
+        let field_access_id = field_access_id.expect("expected field access node");
+        let targets = symbol_targets(&db, field_access_id);
+
+        assert!(
+            targets.iter().any(|target| {
+                matches!(
+                    target.identity,
+                    SymbolIdentity::Def(DefTarget::Workspace(def_id))
+                        if def_id == field_def.def_id
+                )
+            }),
+            "expected struct field def target for field access, got {:?}",
+            targets
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| target.role == SymbolRole::Reference),
+            "expected reference roles for field access"
+        );
+    }
+
+    #[test]
+    fn symbol_targets_resolves_dot_field_access_through_reference() {
+        // Test that `point.x` works through a reference (e.g., `p: *Point`)
+        let source = r#"
+struct Point { x: int, y: int }
+
+fn get_x(p: *Point) -> int => p.x
+"#;
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the struct field definition for `x`
+        let field_def = parse_result
+            .defs
+            .iter()
+            .find(|def| def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField))
+            .expect("expected x field def");
+
+        // Find the dot expression `p.x` in the function body
+        let mut field_access_id = None;
+        for item in walk_file(&parse_result.ast) {
+            let WalkItem::Expr(expr) = item else {
+                continue;
+            };
+            let Expr::Dot(dot) = &expr.value else {
+                continue;
+            };
+            if dot.rhs.path.name().as_deref() == Some("x") {
+                field_access_id = Some(dot.rhs.id);
+                break;
+            }
+        }
+
+        let field_access_id = field_access_id.expect("expected field access node");
+        let targets = symbol_targets(&db, field_access_id);
+
+        assert!(
+            targets.iter().any(|target| {
+                matches!(
+                    target.identity,
+                    SymbolIdentity::Def(DefTarget::Workspace(def_id))
+                        if def_id == field_def.def_id
+                )
+            }),
+            "expected struct field def target for field access through reference, got {:?}",
+            targets
+        );
+    }
+
+    #[test]
+    fn symbol_targets_dot_method_call_not_in_dot_field_index() {
+        // Verify that method calls are NOT included in dot_field_index
+        // (they should be handled by call_resolution instead)
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn magnitude(self: *Point) -> int => self.x
+}
+
+fn test() -> int {
+    p = Point { x: 3, y: 4 }
+    p.magnitude()
+}
+"#;
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the method call `p.magnitude()` - get the dot rhs id
+        let mut method_name_id = None;
+        for item in walk_file(&parse_result.ast) {
+            let WalkItem::Expr(expr) = item else {
+                continue;
+            };
+            let Expr::Call(call) = &expr.value else {
+                continue;
+            };
+            if let Expr::Dot(dot) = &call.callee.value {
+                if dot.rhs.path.name().as_deref() == Some("magnitude") {
+                    method_name_id = Some(dot.rhs.id);
+                    break;
+                }
+            }
+        }
+
+        let method_name_id = method_name_id.expect("expected method call name node");
+
+        // The dot_field_index should NOT contain this node (it's a method call)
+        let dot_fields = super::dot_field_index(&db, file_id);
+        assert!(
+            !dot_fields.contains_key(&method_name_id),
+            "method calls should not be in dot_field_index"
         );
     }
 }

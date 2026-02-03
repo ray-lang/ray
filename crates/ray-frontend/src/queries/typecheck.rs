@@ -15,31 +15,27 @@ use ray_core::{
 use ray_query_macros::query;
 use ray_shared::{
     def::DefId, file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, pathlib::ItemPath,
-    resolution::DefTarget, span::Source, ty::Ty,
+    resolution::DefTarget, ty::Ty,
 };
 use ray_typing::{
     TypeCheckInput, TypeCheckResult,
     binding_groups::{BindingGraph, BindingGroup},
     env::TypecheckEnv,
-    types::{
-        FieldKind, ImplField, ImplKind, ImplTy, NominalKind, StructTy, TraitField, TraitTy,
-        TyScheme,
-    },
+    types::{ImplTy, StructTy, TraitTy, TyScheme},
 };
 
 use crate::{
     queries::{
         defs::{
-            ImplDef, StructDef, TraitDef, all_traits, def_for_path, def_path, impl_def,
-            impls_for_trait, impls_for_type, struct_def, trait_def, traits_in_module,
+            all_traits, def_for_path, def_path, impl_def, impls_for_trait, impls_for_type,
+            struct_def, trait_def,
         },
         deps::{BindingGroupId, binding_graph, binding_group_for_def, binding_group_members},
-        libraries::{LoadedLibraries, library_data},
+        libraries::library_data,
         operators::{lookup_infix_op, lookup_prefix_op},
         resolve::{name_resolutions, resolve_builtin},
         transform::file_ast,
         types::annotated_scheme,
-        workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
 };

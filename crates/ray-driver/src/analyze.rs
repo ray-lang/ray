@@ -10,6 +10,7 @@ use ray_frontend::{
     queries::{
         defs::def_path,
         locations::span_of,
+        parse::parse_file,
         resolve::name_resolutions,
         symbols::symbol_targets,
         typecheck::{def_scheme, ty_of},
@@ -18,7 +19,6 @@ use ray_frontend::{
     query::Database,
 };
 use ray_shared::{
-    file_id::FileId,
     node_id::NodeId,
     pathlib::{FilePath, ItemPath},
     resolution::DefTarget,
@@ -546,111 +546,109 @@ fn definition_to_json(def: DefinitionInfo) -> String {
 // Collection functions
 // -----------------------------------------------------------------------------
 
-/// Input for analysis collection functions.
-pub struct AnalysisInput<'a> {
-    pub db: &'a Database,
-    pub file_id: FileId,
-    pub decls: &'a [Node<Decl>],
-    pub srcmap: &'a SourceMap,
-}
-
-pub fn collect_symbols(input: &AnalysisInput) -> Vec<SymbolInfo> {
+pub fn collect_symbols(db: &Database) -> Vec<SymbolInfo> {
     let mut symbols = Vec::new();
     let mut seen = HashSet::new();
 
-    for decl in input.decls {
-        let source = input.srcmap.get(decl);
-        let span = source.span;
-        let filepath = source.filepath.clone();
-        let doc = input.srcmap.doc(decl).cloned();
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+        let srcmap = &parse_result.source_map;
 
-        match &decl.value {
-            Decl::Func(func) => {
-                let name = func.sig.path.to_string();
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                let ty = type_info_for_node(input.db, decl.id).map(|(ty, _)| ty);
-                symbols.push(SymbolInfo {
-                    id: decl.id,
-                    name,
-                    kind: SymbolKind::Function,
-                    filepath: filepath.clone(),
-                    span,
-                    ty,
-                    parent_id: None,
-                    doc: doc.clone(),
-                });
-            }
-            Decl::Struct(st) => {
-                let name = st.path.value.to_string();
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                let struct_id = decl.id;
-                symbols.push(SymbolInfo {
-                    id: struct_id,
-                    name,
-                    kind: SymbolKind::Struct,
-                    filepath: filepath.clone(),
-                    span,
-                    ty: None,
-                    parent_id: None,
-                    doc: doc.clone(),
-                });
+        for decl in &parse_result.ast.decls {
+            let source = srcmap.get(decl);
+            let span = source.span;
+            let filepath = source.filepath.clone();
+            let doc = srcmap.doc(decl).cloned();
 
-                if let Some(fields) = &st.fields {
-                    for field in fields {
-                        let field_name = field.to_string();
-                        let field_source = input.srcmap.get(field);
-                        let field_span = field_source.span;
-                        let field_doc = input.srcmap.doc(field).cloned();
-                        symbols.push(SymbolInfo {
-                            id: field.id,
-                            name: field_name,
-                            kind: SymbolKind::Field,
-                            filepath: field_source.filepath.clone(),
-                            span: field_span,
-                            ty: type_info_for_node(input.db, field.id).map(|(ty, _)| ty),
-                            parent_id: Some(struct_id),
-                            doc: field_doc,
-                        });
+            match &decl.value {
+                Decl::Func(func) => {
+                    let name = func.sig.path.to_string();
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    let ty = type_info_for_node(db, decl.id).map(|(ty, _)| ty);
+                    symbols.push(SymbolInfo {
+                        id: decl.id,
+                        name,
+                        kind: SymbolKind::Function,
+                        filepath: filepath.clone(),
+                        span,
+                        ty,
+                        parent_id: None,
+                        doc: doc.clone(),
+                    });
+                }
+                Decl::Struct(st) => {
+                    let name = st.path.value.to_string();
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    let struct_id = decl.id;
+                    symbols.push(SymbolInfo {
+                        id: struct_id,
+                        name,
+                        kind: SymbolKind::Struct,
+                        filepath: filepath.clone(),
+                        span,
+                        ty: None,
+                        parent_id: None,
+                        doc: doc.clone(),
+                    });
+
+                    if let Some(fields) = &st.fields {
+                        for field in fields {
+                            let field_name = field.to_string();
+                            let field_source = srcmap.get(field);
+                            let field_span = field_source.span;
+                            let field_doc = srcmap.doc(field).cloned();
+                            symbols.push(SymbolInfo {
+                                id: field.id,
+                                name: field_name,
+                                kind: SymbolKind::Field,
+                                filepath: field_source.filepath.clone(),
+                                span: field_span,
+                                ty: type_info_for_node(db, field.id).map(|(ty, _)| ty),
+                                parent_id: Some(struct_id),
+                                doc: field_doc,
+                            });
+                        }
                     }
                 }
-            }
-            Decl::Trait(tr) => {
-                let name = tr.ty.to_string();
-                if !seen.insert(name.clone()) {
-                    continue;
+                Decl::Trait(tr) => {
+                    let name = tr.ty.to_string();
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    symbols.push(SymbolInfo {
+                        id: decl.id,
+                        name,
+                        kind: SymbolKind::Trait,
+                        filepath: filepath.clone(),
+                        span,
+                        ty: None,
+                        parent_id: None,
+                        doc: doc.clone(),
+                    });
                 }
-                symbols.push(SymbolInfo {
-                    id: decl.id,
-                    name,
-                    kind: SymbolKind::Trait,
-                    filepath: filepath.clone(),
-                    span,
-                    ty: None,
-                    parent_id: None,
-                    doc: doc.clone(),
-                });
-            }
-            Decl::TypeAlias(alias_name, alias_ty) => {
-                let name = alias_name.value.path.to_string();
-                if !seen.insert(name.clone()) {
-                    continue;
+                Decl::TypeAlias(alias_name, alias_ty) => {
+                    let name = alias_name.value.path.to_string();
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    symbols.push(SymbolInfo {
+                        id: decl.id,
+                        name,
+                        kind: SymbolKind::TypeAlias,
+                        filepath: filepath.clone(),
+                        span,
+                        ty: Some(alias_ty.to_string()),
+                        parent_id: None,
+                        doc: doc.clone(),
+                    });
                 }
-                symbols.push(SymbolInfo {
-                    id: decl.id,
-                    name,
-                    kind: SymbolKind::TypeAlias,
-                    filepath: filepath.clone(),
-                    span,
-                    ty: Some(alias_ty.to_string()),
-                    parent_id: None,
-                    doc: doc.clone(),
-                });
+                _ => {}
             }
-            _ => {}
         }
     }
     symbols
@@ -675,28 +673,34 @@ fn type_info_for_node(db: &Database, node_id: NodeId) -> Option<(String, bool)> 
     ty_of(db, node_id).map(|ty| (ty.to_string(), false))
 }
 
-pub fn collect_types(input: &AnalysisInput) -> Vec<TypeInfo> {
+pub fn collect_types(db: &Database) -> Vec<TypeInfo> {
     let mut types = Vec::new();
 
-    for decl in input.decls {
-        if let Some((ty_str, is_scheme)) = type_info_for_node(input.db, decl.id) {
-            let source = input.srcmap.get(decl);
-            types.push(TypeInfo {
-                id: decl.id,
-                filepath: source.filepath.clone(),
-                span: source.span,
-                ty: ty_str,
-                is_scheme,
-            });
-        }
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+        let srcmap = &parse_result.source_map;
 
-        if let Decl::Func(func) = &decl.value {
-            for param in &func.sig.params {
-                maybe_push_node_type(&mut types, input.db, input.srcmap, param);
+        for decl in &parse_result.ast.decls {
+            if let Some((ty_str, is_scheme)) = type_info_for_node(db, decl.id) {
+                let source = srcmap.get(decl);
+                types.push(TypeInfo {
+                    id: decl.id,
+                    filepath: source.filepath.clone(),
+                    span: source.span,
+                    ty: ty_str,
+                    is_scheme,
+                });
             }
 
-            if let Some(body) = &func.body {
-                maybe_push_node_type(&mut types, input.db, input.srcmap, body);
+            if let Decl::Func(func) = &decl.value {
+                for param in &func.sig.params {
+                    maybe_push_node_type(&mut types, db, srcmap, param);
+                }
+
+                if let Some(body) = &func.body {
+                    maybe_push_node_type(&mut types, db, srcmap, body);
+                }
             }
         }
     }
@@ -713,87 +717,89 @@ pub fn collect_types(input: &AnalysisInput) -> Vec<TypeInfo> {
     types
 }
 
-pub fn collect_definitions(input: &AnalysisInput) -> Vec<DefinitionInfo> {
+pub fn collect_definitions(db: &Database) -> Vec<DefinitionInfo> {
     let mut definitions = Vec::new();
     let mut seen_usage_ids = HashSet::new();
 
-    let resolutions = name_resolutions(input.db, input.file_id);
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+        let srcmap = &parse_result.source_map;
+        let resolutions = name_resolutions(db, file_id);
 
-    for (usage_id, _resolution) in resolutions.iter() {
-        if !seen_usage_ids.insert(*usage_id) {
-            continue;
-        }
-
-        // Get usage location from source map
-        let usage_source = match input.srcmap.get_by_id(*usage_id) {
-            Some(src) => src,
-            None => continue,
-        };
-
-        // Use symbol_targets to resolve to definition(s)
-        let targets = symbol_targets(input.db, *usage_id);
-        if targets.is_empty() {
-            continue;
-        }
-
-        // Skip definition sites - we only want references
-        if targets.iter().any(|t| t.role == SymbolRole::Definition) {
-            continue;
-        }
-
-        // Get the first target (primary definition)
-        let target = &targets[0];
-        let SymbolIdentity::Def(def_target) = &target.identity else {
-            // Skip local bindings for now - they don't have paths
-            continue;
-        };
-
-        // Get definition path and location
-        let definition_path = def_path(input.db, def_target.clone());
-        let definition_span = match def_target {
-            DefTarget::Workspace(def_id) => {
-                let def_node_id = NodeId {
-                    owner: *def_id,
-                    index: 0,
-                };
-                span_of(input.db, def_node_id)
+        for (usage_id, _resolution) in resolutions.iter() {
+            if !seen_usage_ids.insert(*usage_id) {
+                continue;
             }
-            DefTarget::Library(_) | DefTarget::Primitive(_) => None,
-        };
 
-        // Get the filepath for the definition
-        let definition_filepath = match def_target {
-            DefTarget::Workspace(def_id) => {
-                let workspace = input.db.get_input::<WorkspaceSnapshot>(());
-                workspace
-                    .file_info(def_id.file)
-                    .map(|info| info.path.clone())
+            // Get usage location from source map
+            let usage_source = match srcmap.get_by_id(*usage_id) {
+                Some(src) => src,
+                None => continue,
+            };
+
+            // Use symbol_targets to resolve to definition(s)
+            let targets = symbol_targets(db, *usage_id);
+            if targets.is_empty() {
+                continue;
             }
-            DefTarget::Library(_) | DefTarget::Primitive(_) => None,
-        };
 
-        // Construct usage path from the definition path
-        let usage_path = definition_path
-            .clone()
-            .unwrap_or_else(|| ItemPath::from(format!("<unknown:{}>", usage_id).as_str()));
+            // Skip definition sites - we only want references
+            if targets.iter().any(|t| t.role == SymbolRole::Definition) {
+                continue;
+            }
 
-        definitions.push(DefinitionInfo {
-            usage_id: *usage_id,
-            usage_path,
-            usage_filepath: usage_source.filepath.clone(),
-            usage_span: usage_source.span,
-            definition_id: match def_target {
-                DefTarget::Workspace(def_id) => Some(NodeId {
-                    owner: *def_id,
-                    index: 0,
-                }),
-                _ => None,
-            },
-            definition_path,
-            definition_filepath,
-            definition_span,
-            definition_doc: None,
-        });
+            // Get the first target (primary definition)
+            let target = &targets[0];
+            let SymbolIdentity::Def(def_target) = &target.identity else {
+                // Skip local bindings for now - they don't have paths
+                continue;
+            };
+
+            // Get definition path and location
+            let definition_path = def_path(db, def_target.clone());
+            let definition_span = match def_target {
+                DefTarget::Workspace(def_id) => {
+                    let def_node_id = NodeId {
+                        owner: *def_id,
+                        index: 0,
+                    };
+                    span_of(db, def_node_id)
+                }
+                DefTarget::Library(_) | DefTarget::Primitive(_) => None,
+            };
+
+            // Get the filepath for the definition
+            let definition_filepath = match def_target {
+                DefTarget::Workspace(def_id) => {
+                    workspace.file_info(def_id.file).map(|info| info.path.clone())
+                }
+                DefTarget::Library(_) | DefTarget::Primitive(_) => None,
+            };
+
+            // Construct usage path from the definition path
+            let usage_path = definition_path
+                .clone()
+                .unwrap_or_else(|| ItemPath::from(format!("<unknown:{}>", usage_id).as_str()));
+
+            definitions.push(DefinitionInfo {
+                usage_id: *usage_id,
+                usage_path,
+                usage_filepath: usage_source.filepath.clone(),
+                usage_span: usage_source.span,
+                definition_id: match def_target {
+                    DefTarget::Workspace(def_id) => Some(NodeId {
+                        owner: *def_id,
+                        index: 0,
+                    }),
+                    _ => None,
+                },
+                definition_path,
+                definition_filepath,
+                definition_span,
+                definition_doc: None,
+            });
+        }
     }
 
     definitions.sort_by(|a, b| {

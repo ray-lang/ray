@@ -518,7 +518,7 @@ impl Parser<'_> {
                 kind,
                 path,
                 ty_params,
-                fields,
+                fields: fields.clone(),
             };
 
             let span = Span { start, end };
@@ -532,6 +532,25 @@ impl Parser<'_> {
                 name_span,
                 parent: None,
             });
+
+            // Create DefHeaders for each struct field
+            if let Some(ref field_nodes) = fields {
+                for field_node in field_nodes {
+                    let field_def_id = parser.next_def_id();
+                    let field_name = field_node.value.path.name().unwrap_or_default();
+                    let field_span = parser.srcmap.span_of(field_node);
+                    parser.defs.push(DefHeader {
+                        def_id: field_def_id,
+                        root_node: field_node.id,
+                        name: field_name,
+                        kind: DefKind::StructField,
+                        span: field_span,
+                        name_span: field_span, // Field name spans the whole field declaration
+                        parent: Some(def_id),  // Parent is the struct
+                    });
+                }
+            }
+
             Ok(node)
         })
     }

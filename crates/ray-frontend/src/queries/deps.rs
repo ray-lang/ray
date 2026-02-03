@@ -92,6 +92,7 @@ fn is_unannotated(kind: DefKind) -> bool {
         // These definitions have explicit types - edges to them are omitted
         DefKind::Method
         | DefKind::Struct
+        | DefKind::StructField
         | DefKind::Trait
         | DefKind::Impl
         | DefKind::TypeAlias

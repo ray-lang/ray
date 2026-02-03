@@ -37,7 +37,6 @@ pub struct TypeInfoSnapshot {
 pub struct AnalysisSnapshotData {
     pub module_path: Path,
     pub entry_path: FilePath,
-    pub name_context: NameContext,
     pub srcmap: SourceMap,
     pub node_type_info: HashMap<NodeId, TypeInfoSnapshot>,
     pub symbol_map: SymbolMap,
@@ -181,7 +180,6 @@ fn collect_semantic_errors(
     let FrontendResult {
         module_path,
         tcx,
-        ncx,
         srcmap,
         symbol_map,
         paths,
@@ -210,7 +208,6 @@ fn collect_semantic_errors(
     let snapshot = AnalysisSnapshotData {
         module_path,
         entry_path: filepath.clone(),
-        name_context: ncx,
         srcmap,
         node_type_info,
         symbol_map,

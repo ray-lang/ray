@@ -346,6 +346,24 @@ pub fn def_header(db: &Database, def_id: DefId) -> Option<DefHeader> {
         .cloned()
 }
 
+/// Get the field DefIds for a struct.
+///
+/// Given a struct's DefId, returns a map from field name to field DefId.
+/// The struct may be in any file - this query handles cross-file lookups.
+///
+/// Returns an empty map if the DefId doesn't refer to a struct or if
+/// the struct has no fields.
+#[query]
+pub fn struct_fields(db: &Database, struct_def_id: DefId) -> HashMap<String, DefId> {
+    let parse_result = parse_file(db, struct_def_id.file);
+    parse_result
+        .defs
+        .iter()
+        .filter(|h| h.parent == Some(struct_def_id) && matches!(h.kind, DefKind::StructField))
+        .map(|h| (h.name.clone(), h.def_id))
+        .collect()
+}
+
 /// Convert a DefTarget to its ItemPath.
 ///
 /// For workspace definitions, looks up the DefHeader to get the name and module.

@@ -3,10 +3,15 @@
 use std::collections::HashMap;
 
 use ray_core::{
-    ast::{Decl, Func, Impl, Module, Node},
+    ast::{Decl, Func, Impl, Node},
     errors::RayError,
 };
 use ray_driver::*;
+use ray_frontend::{
+    queries::{defs::def_path, parse::parse_file, resolve::name_resolutions, workspace::WorkspaceSnapshot},
+    query::Database,
+};
+use ray_shared::resolution::{DefTarget, Resolution};
 use ray_shared::{
     pathlib::{FilePath, Path, RayPaths},
     ty::Ty,
@@ -69,20 +74,28 @@ impl Int[uint] {}
     format!("{}\n{}", core, src)
 }
 
+/// Find a function declaration by path using queries.
+///
+/// Searches all files in the workspace for a function with the given path.
 #[allow(dead_code)]
-pub fn find_func<'a>(module: &'a Module<(), Decl>, path: &'a Path) -> &'a Func {
-    module
-        .decls
-        .iter()
-        .find_map(|decl| match &decl.value {
-            Decl::Func(func) if &func.sig.path.value == path => Some(func),
-            _ => None,
-        })
-        .expect(&format!("could not find function: {}", path))
+pub fn find_func(db: &Database, path: &Path) -> Func {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+        for decl in &parse_result.ast.decls {
+            if let Decl::Func(func) = &decl.value {
+                if &func.sig.path.value == path {
+                    return func.clone();
+                }
+            }
+        }
+    }
+    panic!("could not find function: {}", path)
 }
 
+/// Find a function within a list of declarations (e.g., impl funcs).
 #[allow(dead_code)]
-pub fn find_func_in<'a>(funcs: &'a Vec<Node<Decl>>, path: &'a Path) -> &'a Func {
+pub fn find_func_in(funcs: &[Node<Decl>], path: &Path) -> Func {
     funcs
         .iter()
         .find_map(|decl| {
@@ -90,7 +103,7 @@ pub fn find_func_in<'a>(funcs: &'a Vec<Node<Decl>>, path: &'a Path) -> &'a Func 
                 return None;
             };
             if &func.sig.path.value == path {
-                Some(func)
+                Some(func.clone())
             } else {
                 None
             }
@@ -98,22 +111,49 @@ pub fn find_func_in<'a>(funcs: &'a Vec<Node<Decl>>, path: &'a Path) -> &'a Func 
         .expect(&format!("could not find function: {}", path))
 }
 
+/// Find an impl declaration by resolved trait path and type parameter using queries.
+///
+/// Searches all files in the workspace for an impl whose trait type resolves to
+/// the given path. Uses name resolution to get the qualified path.
+///
+/// For `impl Foo[int]`, pass `path = "test::Foo"` and `ty = Ty::int()`.
 #[allow(dead_code)]
-pub fn find_impl<'a>(module: &'a Module<(), Decl>, path: &'a Path, ty: &Ty) -> &'a Impl {
-    module
-        .decls
-        .iter()
-        .find_map(|decl| match &decl.value {
-            Decl::Impl(i) => {
-                let impl_path = i.ty.get_path();
+pub fn find_impl(db: &Database, trait_path: &Path, impl_ty: &Ty) -> Impl {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+        let resolutions = name_resolutions(db, file_id);
+
+        for decl in &parse_result.ast.decls {
+            if let Decl::Impl(i) = &decl.value {
+                // Get the synthetic IDs for the impl type (e.g., [Foo_id, int_id] for Foo[int])
+                let synthetic_ids = i.ty.synthetic_ids();
+                if synthetic_ids.is_empty() {
+                    continue;
+                }
+
+                // First synthetic ID is the trait/base type
+                let trait_node_id = synthetic_ids[0];
+                let Some(Resolution::Def(DefTarget::Workspace(trait_def_id))) =
+                    resolutions.get(&trait_node_id)
+                else {
+                    continue;
+                };
+
+                // Get the resolved path for the trait
+                let Some(resolved_trait_path) = def_path(db, DefTarget::Workspace(*trait_def_id))
+                    .map(|ip| ip.to_path())
+                else {
+                    continue;
+                };
+
+                // Check if trait path matches and type argument matches
                 let ty_param = i.ty.first_type_argument();
-                if path == &impl_path && ty == ty_param {
-                    Some(i)
-                } else {
-                    None
+                if &resolved_trait_path == trait_path && ty_param == impl_ty {
+                    return i.clone();
                 }
             }
-            _ => None,
-        })
-        .expect(&format!("could not find impl: {}", path))
+        }
+    }
+    panic!("could not find impl: {}", trait_path)
 }

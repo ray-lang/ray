@@ -57,6 +57,7 @@ pub enum DefKind {
     Method,                              // Always has explicit signature (from trait or explicit)
     Primitive,
     Struct,
+    StructField, // A field within a struct (parent is the struct DefId)
     Trait,
     Impl,
     TypeAlias,

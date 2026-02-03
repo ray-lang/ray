@@ -278,6 +278,23 @@ pub fn resolve_names_in_file(
                     }
                 }
             }
+            // Curly element shorthand (e.g., `Point { x }` where `x` is both field name and value).
+            // The walker doesn't descend into CurlyElement::Name because the inner Name isn't
+            // wrapped in a Node (it's just `Name`, not `Node<Name>`). We handle it explicitly
+            // here so the shorthand resolves to the local variable being referenced.
+            // For CurlyElement::Labeled, the walker descends into the value expression normally.
+            WalkItem::CurlyElement(elem) => {
+                if let CurlyElement::Name(name) = &elem.value {
+                    let name_str = name.path.name().unwrap_or_default();
+                    let resolution = ctx
+                        .lookup_local(&name_str)
+                        .map(Resolution::Local)
+                        .or_else(|| exports.get(&name_str).cloned().map(Resolution::Def));
+                    if let Some(res) = resolution {
+                        ctx.resolutions.insert(elem.id, res);
+                    }
+                }
+            }
             _ => {}
         }
     }

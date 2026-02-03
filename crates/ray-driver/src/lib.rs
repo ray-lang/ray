@@ -8,7 +8,6 @@ use ray_codegen::{
     libgen, lir,
 };
 use ray_core::{
-    ast::{Decl, Module},
     errors::{RayError, RayErrorKind},
     passes,
     sema::SymbolMap,
@@ -38,8 +37,8 @@ mod discovery;
 mod global_options;
 
 pub use analyze::{
-    AnalysisFormat, AnalysisInput, AnalysisReport, AnalyzeOptions, DefinitionInfo, SymbolInfo,
-    SymbolKind, TypeInfo, collect_definitions, collect_symbols, collect_types,
+    AnalysisFormat, AnalysisReport, AnalyzeOptions, DefinitionInfo, SymbolInfo, SymbolKind,
+    TypeInfo, collect_definitions, collect_symbols, collect_types,
 };
 pub use build::BuildOptions;
 pub use build::EmitType;
@@ -49,9 +48,8 @@ pub struct FrontendResult {
     pub db: Database,
     pub file_id: FileId,
     pub module_path: Path,
-    pub module: Module<(), Decl>,
     pub tcx: TyCtx,
-    pub ncx: NameContext,
+    // pub ncx: NameContext,
     pub srcmap: SourceMap,
     pub symbol_map: SymbolMap,
     pub paths: HashSet<Path>,
@@ -100,15 +98,9 @@ impl Driver {
 
         match self.build_frontend(&build_options, None) {
             Ok(frontend) => {
-                let input = AnalysisInput {
-                    db: &frontend.db,
-                    file_id: frontend.file_id,
-                    decls: &frontend.module.decls,
-                    srcmap: &frontend.srcmap,
-                };
-                let symbols = collect_symbols(&input);
-                let definitions = collect_definitions(&input);
-                let types = collect_types(&input);
+                let symbols = collect_symbols(&frontend.db);
+                let definitions = collect_definitions(&frontend.db);
+                let types = collect_types(&frontend.db);
                 AnalysisReport::new(
                     format,
                     input_path,
@@ -224,18 +216,6 @@ impl Driver {
 
         // Create placeholder values for legacy fields
         // These are deprecated and will be removed as we migrate to queries
-        let empty_module = Module {
-            path: module_path.clone(),
-            stmts: vec![],
-            decls: vec![],
-            imports: vec![],
-            import_stmts: vec![],
-            submodules: vec![],
-            doc_comment: None,
-            root_filepath: options.input_path.clone(),
-            filepaths: vec![options.input_path.clone()],
-            is_lib: options.build_lib,
-        };
         let empty_tcx = TyCtx::default();
         let empty_ncx = NameContext::new();
 
@@ -243,9 +223,8 @@ impl Driver {
             db,
             file_id,
             module_path,
-            module: empty_module,
             tcx: empty_tcx,
-            ncx: empty_ncx,
+            // ncx: empty_ncx,
             srcmap: combined_srcmap,
             symbol_map: SymbolMap::new(),
             paths,
