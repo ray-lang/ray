@@ -2,19 +2,17 @@
 
 mod utils;
 
-use std::collections::HashMap;
-
-use ray_codegen::modules::ModuleBuilder;
 use ray_core::ast::{CurlyElement, Expr};
-use ray_driver::{BuildOptions, Driver};
 use ray_frontend::queries::{defs::def_path, symbols::symbol_targets};
 use ray_shared::{
-    pathlib::{Path, RayPaths},
+    pathlib::Path,
     symbol::{SymbolIdentity, SymbolRole},
     ty::Ty,
 };
 
-use utils::{find_func, find_func_in, find_impl, test_build, test_build_with_options, TestBuildOptions};
+use utils::{
+    TestBuildOptions, find_func, find_func_in, find_impl, test_build, test_build_with_options,
+};
 
 #[test]
 fn collects_function_and_parameter_definitions() {
@@ -183,7 +181,9 @@ fn make_string() -> string {
 
     // Use symbol_targets query to check the definition site
     let def_targets = symbol_targets(&result.db, raw_ptr_path_node.id);
-    let def_sym = def_targets.first().expect("expected symbol for raw_ptr definition");
+    let def_sym = def_targets
+        .first()
+        .expect("expected symbol for raw_ptr definition");
     assert_eq!(def_sym.role, SymbolRole::Definition);
     assert!(
         matches!(def_sym.identity, SymbolIdentity::Local(_)),
@@ -229,8 +229,7 @@ fn make_string() -> string {
     assert!(
         targets.iter().any(|t| {
             if let SymbolIdentity::Def(ref target) = t.identity {
-                let path = def_path(&result.db, target.clone())
-                    .map(|ip| ip.to_path());
+                let path = def_path(&result.db, target.clone()).map(|ip| ip.to_path());
                 path == Some(Path::from("test::string::raw_ptr")) && t.role == SymbolRole::Reference
             } else {
                 false
@@ -239,171 +238,4 @@ fn make_string() -> string {
         "expected struct field reference for string::raw_ptr, got {:?}",
         targets
     );
-}
-
-#[test]
-#[ignore = "pending ModuleBuilder removal"]
-fn collects_variable_definitions() {
-    let src = r#"
-fn foo(x: int, y: int) -> int {
-    z = x + y
-    z
-}"#;
-
-    let mut result =
-        ModuleBuilder::from_src(&src, Path::from("test")).expect("Failed to build module");
-
-    // add + op for type checking
-    result.tcx.add_infix_op(
-        "+".into(),
-        Path::from("core::Add::+"),
-        Path::from("core::Add"),
-    );
-
-    // let infer_result = InferSystem::infer(
-    //     &mut result.tcx,
-    //     &mut result.ncx,
-    //     &result.srcmap,
-    //     &result.module,
-    //     &result.defs,
-    // );
-
-    // assert!(infer_result.errors.is_empty(), "Type inference failed");
-
-    // // verify types
-
-    // let records = collect_definition_records(&result.module, &result.srcmap, &result.tcx);
-
-    // let foo_path = Path::from("test::foo");
-    // let var_x_path = Path::from("test::foo::x");
-    // let var_y_path = Path::from("test::foo::y");
-    // let var_z_path = Path::from("test::foo::z");
-
-    // assert!(records.contains_key(&foo_path));
-    // assert!(records.contains_key(&var_x_path));
-    // assert!(records.contains_key(&var_y_path));
-    // assert!(records.contains_key(&var_z_path));
-
-    // println!("Definition Records:\n");
-    // for (path, record) in &records {
-    //     println!("- {} ({}): {}", path, record.id, record);
-    // }
-
-    // println!("TyCtx: {:#?}", result.tcx);
-
-    // // verify types
-    // let x_record = records.get(&var_x_path).unwrap();
-    // let x_ty = result
-    //     .tcx
-    //     .get_ty(x_record.id)
-    //     .expect("Failed to get type for x");
-    // assert_eq!(x_ty.to_string(), "int");
-}
-
-#[test]
-#[ignore = "pending ModuleBuilder removal"]
-fn collect_definitions_for_deref() {
-    let src = r#"
-trait Int['a] {
-    default (uint)
-}
-
-impl Int[uint] {}
-
-fn foo() {
-    ptr = new(uint, 1)
-    *ptr = 42
-}"#;
-
-    let ray_paths = RayPaths::default();
-    let mut overlays = HashMap::new();
-    overlays.insert("test.ray".into(), src.to_string());
-    let driver = Driver::new(ray_paths);
-    let options = BuildOptions {
-        input_path: "test.ray".into(),
-        no_core: true,
-        ..Default::default()
-    };
-    let result = driver
-        .build_frontend(&options, Some(overlays))
-        .expect("Failed to build frontend");
-
-    let records = result.definitions_by_path;
-
-    let deref_path = Path::from("test::foo::ptr");
-
-    assert!(records.contains_key(&deref_path));
-
-    println!("source map: {:#?}", result.srcmap);
-    println!("definitions: {:#?}", records);
-    println!("symbol map: {:#?}", result.symbol_map);
-}
-
-#[test]
-#[ignore = "pending ModuleBuilder removal"]
-fn collects_definitions_for_trait_funcs() {
-    let src = r#"
-trait Addable['a] {
-    fn add(self: 'a, other: 'a) -> 'a
-}
-"#;
-
-    let ray_paths = RayPaths::default();
-    let mut overlays = HashMap::new();
-    overlays.insert("test.ray".into(), src.to_string());
-    let driver = Driver::new(ray_paths);
-    let options = BuildOptions {
-        input_path: "test.ray".into(),
-        no_core: true,
-        ..Default::default()
-    };
-    let result = driver
-        .build_frontend(&options, Some(overlays))
-        .expect("Failed to build frontend");
-
-    let records = result.definitions_by_path;
-
-    let add_func_path = Path::from("test::Addable::['a]::add");
-
-    assert!(records.contains_key(&add_func_path));
-
-    println!("definitions: {:#?}", records);
-}
-
-#[test]
-#[ignore = "pending ModuleBuilder removal"]
-fn collects_definitions_for_impl_funcs() {
-    let src = r#"
-trait Foo['a] {
-    fn foo(self: 'a)
-}
-
-impl Foo[int] {
-    fn foo(self: int) {}
-}
-"#;
-
-    let ray_paths = RayPaths::default();
-    let mut overlays = HashMap::new();
-    overlays.insert("test.ray".into(), src.to_string());
-    let driver = Driver::new(ray_paths);
-    let options = BuildOptions {
-        input_path: "test.ray".into(),
-        no_core: true,
-        ..Default::default()
-    };
-    let result = driver
-        .build_frontend(&options, Some(overlays))
-        .expect("Failed to build frontend");
-
-    let records = result.definitions_by_path;
-
-    println!("records: {:#?}", records);
-    println!("symbol map: {:#?}", result.symbol_map);
-
-    let func_path = Path::from("test::Foo::[int]::foo");
-
-    assert!(records.contains_key(&func_path));
-
-    println!("definitions: {:#?}", records);
 }

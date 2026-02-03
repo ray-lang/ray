@@ -385,6 +385,9 @@ fn lower_func_binding(
             }
         };
         param_bindings.push(local_id);
+        // Record the parameter in pattern_records so it can be looked up later
+        // (e.g., by local_binding_for_node during LIR generation)
+        ctx.record_pattern(param_node, PatternKind::Binding { binding: local_id });
     }
     let body_expr_id = lower_expr(ctx, body);
 

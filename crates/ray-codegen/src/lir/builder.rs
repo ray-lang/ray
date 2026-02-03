@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
+use ray_lir::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 use ray_shared::{local_binding::LocalBindingId, ty::Ty};
 use ray_typing::types::TyScheme;
-
-use super::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
 
 pub type VarMap = HashMap<LocalBindingId, usize>;
 

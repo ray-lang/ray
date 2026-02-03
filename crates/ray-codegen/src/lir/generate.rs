@@ -5,8 +5,9 @@ use std::{
     rc::Rc,
 };
 
+use ray_lir::START_FUNCTION;
 use ray_shared::{
-    def::DefKind,
+    def::{DefId, DefKind},
     file_id::FileId,
     local_binding::LocalBindingId,
     node_id::NodeId,
@@ -23,6 +24,15 @@ use ray_typing::{
     unify::{match_ty, mgu},
 };
 
+use ray_core::{
+    ast::{
+        self, Assign, BinOp, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Node,
+        Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
+    },
+    errors::{RayError, RayErrorKind, RayResult},
+    passes::closure::ClosureInfo,
+    sourcemap::SourceMap,
+};
 use ray_frontend::{
     queries::{
         bindings::local_binding_for_node,
@@ -41,20 +51,267 @@ use ray_frontend::{
     },
     query::Database,
 };
+use ray_lir as lir;
 
-use ray_core::{
-    ast::{
-        self, Assign, BinOp, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Node,
-        Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
-    },
-    errors::RayResult,
-    passes::closure::ClosureInfo,
-    sourcemap::SourceMap,
-};
+use crate::{lir::Builder, mangle, mono};
 
-use crate::{lir, mangle, mono};
+/// Generate LIR for the workspace.
+///
+/// This is the main entry point for LIR generation. It processes all files
+/// in the workspace and generates a single LIR program.
+///
+/// # Arguments
+/// * `db` - The query database
+/// * `is_lib` - Whether we're building a library (skips _start generation)
+pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
+    // Get workspace and libraries
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let libs: Vec<lir::Program> = libraries
+        .all_library_roots()
+        .filter_map(|lib_root| library_lir(db, lib_root.clone()))
+        .collect();
 
-use super::START_FUNCTION;
+    // Get entry file and module path
+    let entry_file_id = workspace.entry.ok_or_else(|| RayError {
+        msg: "no entry file in workspace".to_string(),
+        src: vec![],
+        kind: RayErrorKind::Compile,
+        context: None,
+    })?;
+    let entry_info = workspace.file_info(entry_file_id).ok_or_else(|| RayError {
+        msg: "entry file not found in workspace".to_string(),
+        src: vec![],
+        kind: RayErrorKind::Compile,
+        context: None,
+    })?;
+    let path = entry_info.module_path.to_path();
+
+    // Build combined SourceMap and collect all decls from all files
+    let mut combined_srcmap = SourceMap::new();
+    let mut all_decls: Vec<Node<Decl>> = Vec::new();
+
+    for file_id in workspace.all_file_ids() {
+        let file_ast_result = file_ast(db, file_id);
+        combined_srcmap.extend_with(file_ast_result.source_map.clone());
+        all_decls.extend(file_ast_result.ast.decls.clone());
+    }
+
+    // Find user main function
+    let user_main_info = resolve_user_main_info(db, &path);
+
+    // Create program and generate LIR for all decls
+    let prog = Rc::new(RefCell::new(lir::Program::new(path)));
+    let mut ctx = GenCtx::new(db, entry_file_id, Rc::clone(&prog), &combined_srcmap);
+    all_decls.lir_gen(&mut ctx)?;
+
+    let (module_main_path, user_main_base_path) = {
+        let prog_ref = prog.borrow();
+        (
+            prog_ref.module_main_path(),
+            prog_ref.module_path.to_path().append("main"),
+        )
+    };
+
+    let has_module_main = {
+        let prog_ref = prog.borrow();
+        prog_ref.funcs.iter().any(|f| f.name == module_main_path)
+    };
+
+    if !has_module_main {
+        // Enter a synthetic def scope for LIR-generated nodes
+        let _guard = NodeId::enter_def(DefId::default());
+
+        ctx.with_builder(Builder::new());
+        ctx.with_new_block(|ctx| {
+            ctx.ret(lir::Value::Empty);
+        });
+
+        let builder = ctx.builder.take().unwrap();
+        let (params, locals, blocks, symbols, cfg) = builder.done();
+        let mut module_main_fn = lir::Func::new(
+            module_main_path.clone(),
+            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
+            vec![],
+            symbols,
+            cfg,
+            None, // synthetic function
+        );
+        module_main_fn.params = params;
+        module_main_fn.locals = locals;
+        module_main_fn.blocks = blocks;
+        ctx.new_func(module_main_fn);
+    }
+
+    let user_main_resolved_path = if let Some((path, _)) = &user_main_info {
+        Some(path.clone())
+    } else {
+        let prog_ref = prog.borrow();
+        prog_ref.funcs.iter().find_map(|f| {
+            f.name
+                .starts_with(&user_main_base_path)
+                .then(|| f.name.clone())
+        })
+    };
+
+    let start_idx = if !is_lib {
+        let mut main_symbols = lir::SymbolSet::new();
+        log::debug!("module main path: {}", module_main_path);
+        if let Some(user_main_resolved_path) = &user_main_resolved_path {
+            log::debug!("user main path (resolved): {}", user_main_resolved_path);
+        } else {
+            log::debug!("user main path (resolved): None");
+        }
+
+        ctx.with_builder(Builder::new());
+        ctx.with_new_block(|ctx| {
+            // call all the main functions from the libs first
+            let mut main_funcs = libs
+                .iter()
+                .map(|l| l.module_main_path())
+                .collect::<Vec<_>>();
+
+            // then call _this_ module's main function
+            main_funcs.push(module_main_path.clone());
+
+            // generate calls
+            for main in main_funcs {
+                log::debug!("calling main function: {}", main);
+                main_symbols.insert(main.clone());
+                ctx.push(
+                    lir::Call::new(
+                        main,
+                        vec![],
+                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                        None,
+                    )
+                    .into(),
+                );
+            }
+
+            if let Some((user_main_path, user_main_ty)) = &user_main_info {
+                log::debug!("calling user main function: {}", user_main_path);
+                main_symbols.insert(user_main_path.clone());
+                ctx.push(
+                    lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None)
+                        .into(),
+                );
+            } else if let Some(user_main_path) = &user_main_resolved_path {
+                log::debug!("calling user main function: {}", user_main_path);
+                main_symbols.insert(user_main_path.clone());
+                ctx.push(
+                    lir::Call::new(
+                        user_main_path.clone(),
+                        vec![],
+                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                        None,
+                    )
+                    .into(),
+                );
+            }
+
+            ctx.ret(lir::Value::Empty);
+        });
+
+        // add the _start function
+        let builder = ctx.builder.take().unwrap();
+        let (params, locals, blocks, symbols, cfg) = builder.done();
+        let mut start_fn = lir::Func::new(
+            START_FUNCTION.into(),
+            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
+            vec![],
+            symbols,
+            cfg,
+            None, // synthetic function
+        );
+        start_fn.params = params;
+        start_fn.locals = locals;
+        start_fn.blocks = blocks;
+        start_fn.symbols.extend(main_symbols);
+        ctx.new_func(start_fn) as i64
+    } else {
+        -1
+    };
+
+    // Build struct_types: start with workspace structs, then add synthetic ones
+    let mut struct_types = build_struct_types(db);
+    for struct_ty in ctx
+        .closure_env_types
+        .values()
+        .chain(ctx.closure_value_types.values())
+        .chain(ctx.fn_handle_types.values())
+    {
+        struct_types.insert(struct_ty.path.clone(), struct_ty.clone());
+    }
+
+    drop(ctx);
+
+    // take the prog out of the pointer
+    let mut prog = Rc::try_unwrap(prog).unwrap().into_inner();
+    prog.start_idx = start_idx;
+    prog.resolved_user_main = user_main_resolved_path.clone();
+    prog.struct_types = struct_types;
+    prog.impls_by_trait = build_impls_by_trait(db);
+    if prog.user_main_idx < 0 {
+        if let Some(path) = &user_main_resolved_path {
+            if let Some(idx) = prog.funcs.iter().position(|f| f.name == *path) {
+                prog.user_main_idx = idx as i64;
+            }
+        }
+    }
+    for other in libs {
+        prog.extend(other);
+    }
+    Ok(prog)
+}
+
+pub fn monomorphize(program: &mut lir::Program) {
+    let mut mr = mono::Monomorphizer::new(program);
+    let funcs = mr.monomorphize();
+
+    let mono_fn_externs = mr.mono_fn_externs();
+    for (poly_fn, mono_fns) in mono_fn_externs {
+        let poly_idx = *program.extern_map.get(&poly_fn).unwrap();
+        for (mono_fn, mono_ty) in mono_fns {
+            let mut mono_ext = program.externs[poly_idx].clone();
+            mono_ext.name = mono_fn.clone();
+            mono_ext.ty = TyScheme::from_mono(mono_ty);
+            program.extern_map.insert(mono_fn, program.externs.len());
+            program.externs.push(mono_ext);
+        }
+    }
+
+    // remove the polymorphic functions
+    let module_main_path = program.module_main_path();
+    let user_main_base_path = program.module_path.to_path().append("main");
+    let resolved_user_main = program.resolved_user_main.clone();
+    let mut i = 0;
+    while i < program.funcs.len() {
+        let f = &program.funcs[i];
+        if f.name == START_FUNCTION {
+            program.start_idx = i as i64;
+        } else if let Some(resolved) = &resolved_user_main {
+            if f.name == *resolved {
+                program.user_main_idx = i as i64;
+            } else if f.name == module_main_path {
+                program.module_main_idx = i as i64;
+            }
+        } else if f.name.starts_with(&user_main_base_path) {
+            program.user_main_idx = i as i64;
+        } else if f.name == module_main_path {
+            program.module_main_idx = i as i64;
+        }
+
+        if f.ty.is_polymorphic() {
+            program.funcs.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+
+    // add the new monomorphized functions
+    program.funcs.extend(funcs);
+}
 
 /// Build the impls_by_trait map by collecting all trait impls from workspace and libraries.
 fn build_impls_by_trait(db: &Database) -> BTreeMap<ItemPath, Vec<ImplTy>> {
@@ -150,262 +407,6 @@ fn resolve_user_main_info(db: &Database, entry_module_path: &Path) -> Option<(Pa
     None
 }
 
-/// Generate LIR for the workspace.
-///
-/// This is the main entry point for LIR generation. It processes all files
-/// in the workspace and generates a single LIR program.
-///
-/// # Arguments
-/// * `db` - The query database
-/// * `is_lib` - Whether we're building a library (skips _start generation)
-pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
-    // Get workspace and libraries
-    let workspace = db.get_input::<WorkspaceSnapshot>(());
-    let libraries = db.get_input::<LoadedLibraries>(());
-    let libs: Vec<lir::Program> = libraries
-        .all_library_roots()
-        .filter_map(|lib_root| library_lir(db, lib_root.clone()))
-        .collect();
-
-    // Get entry file and module path
-    let entry_file_id = workspace.entry.ok_or_else(|| ray_core::errors::RayError {
-        msg: "no entry file in workspace".to_string(),
-        src: vec![],
-        kind: ray_core::errors::RayErrorKind::Compile,
-        context: None,
-    })?;
-    let entry_info =
-        workspace
-            .file_info(entry_file_id)
-            .ok_or_else(|| ray_core::errors::RayError {
-                msg: "entry file not found in workspace".to_string(),
-                src: vec![],
-                kind: ray_core::errors::RayErrorKind::Compile,
-                context: None,
-            })?;
-    let path = entry_info.module_path.to_path();
-
-    // Build combined SourceMap and collect all decls from all files
-    let mut combined_srcmap = SourceMap::new();
-    let mut all_decls: Vec<Node<Decl>> = Vec::new();
-
-    for file_id in workspace.all_file_ids() {
-        let file_ast_result = file_ast(db, file_id);
-        combined_srcmap.extend_with(file_ast_result.source_map.clone());
-        all_decls.extend(file_ast_result.ast.decls.clone());
-    }
-
-    // Find user main function
-    let user_main_info = resolve_user_main_info(db, &path);
-
-    // Create program and generate LIR for all decls
-    let prog = Rc::new(RefCell::new(lir::Program::new(path)));
-    let mut ctx = GenCtx::new(db, entry_file_id, Rc::clone(&prog), &combined_srcmap);
-    all_decls.lir_gen(&mut ctx)?;
-
-    let (module_main_path, user_main_base_path) = {
-        let prog_ref = prog.borrow();
-        (
-            prog_ref.module_main_path(),
-            prog_ref.module_path.to_path().append("main"),
-        )
-    };
-
-    let has_module_main = {
-        let prog_ref = prog.borrow();
-        prog_ref.funcs.iter().any(|f| f.name == module_main_path)
-    };
-
-    if !has_module_main {
-        ctx.with_builder(lir::Builder::new());
-        ctx.with_new_block(|ctx| {
-            ctx.ret(lir::Value::Empty);
-        });
-
-        let builder = ctx.builder.take().unwrap();
-        let (params, locals, blocks, symbols, cfg) = builder.done();
-        let mut module_main_fn = Node::new(lir::Func::new(
-            module_main_path.clone(),
-            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
-            vec![],
-            symbols,
-            cfg,
-        ));
-        module_main_fn.params = params;
-        module_main_fn.locals = locals;
-        module_main_fn.blocks = blocks;
-        ctx.new_func(module_main_fn);
-    }
-
-    let user_main_resolved_path = if let Some((path, _)) = &user_main_info {
-        Some(path.clone())
-    } else {
-        let prog_ref = prog.borrow();
-        prog_ref.funcs.iter().find_map(|f| {
-            f.name
-                .starts_with(&user_main_base_path)
-                .then(|| f.name.clone())
-        })
-    };
-
-    let start_idx = if !is_lib {
-        let mut main_symbols = lir::SymbolSet::new();
-        log::debug!("module main path: {}", module_main_path);
-        if let Some(user_main_resolved_path) = &user_main_resolved_path {
-            log::debug!("user main path (resolved): {}", user_main_resolved_path);
-        } else {
-            log::debug!("user main path (resolved): None");
-        }
-
-        ctx.with_builder(lir::Builder::new());
-        ctx.with_new_block(|ctx| {
-            // call all the main functions from the libs first
-            let mut main_funcs = libs
-                .iter()
-                .map(|l| l.module_main_path())
-                .collect::<Vec<_>>();
-
-            // then call _this_ module's main function
-            main_funcs.push(module_main_path.clone());
-
-            // generate calls
-            for main in main_funcs {
-                log::debug!("calling main function: {}", main);
-                main_symbols.insert(main.clone());
-                ctx.push(
-                    lir::Call::new(
-                        main,
-                        vec![],
-                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                        None,
-                    )
-                    .into(),
-                );
-            }
-
-            if let Some((user_main_path, user_main_ty)) = &user_main_info {
-                log::debug!("calling user main function: {}", user_main_path);
-                main_symbols.insert(user_main_path.clone());
-                ctx.push(
-                    lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None)
-                        .into(),
-                );
-            } else if let Some(user_main_path) = &user_main_resolved_path {
-                log::debug!("calling user main function: {}", user_main_path);
-                main_symbols.insert(user_main_path.clone());
-                ctx.push(
-                    lir::Call::new(
-                        user_main_path.clone(),
-                        vec![],
-                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                        None,
-                    )
-                    .into(),
-                );
-            }
-
-            ctx.ret(lir::Value::Empty);
-        });
-
-        // add the _start function
-        let builder = ctx.builder.take().unwrap();
-        let (params, locals, blocks, symbols, cfg) = builder.done();
-        let mut start_fn = Node::new(lir::Func::new(
-            START_FUNCTION.into(),
-            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
-            vec![],
-            symbols,
-            cfg,
-        ));
-        start_fn.params = params;
-        start_fn.locals = locals;
-        start_fn.blocks = blocks;
-        start_fn.symbols.extend(main_symbols);
-        ctx.new_func(start_fn) as i64
-    } else {
-        -1
-    };
-
-    // Build struct_types: start with workspace structs, then add synthetic ones
-    let mut struct_types = build_struct_types(db);
-    for struct_ty in ctx
-        .closure_env_types
-        .values()
-        .chain(ctx.closure_value_types.values())
-        .chain(ctx.fn_handle_types.values())
-    {
-        struct_types.insert(struct_ty.path.clone(), struct_ty.clone());
-    }
-
-    drop(ctx);
-
-    // take the prog out of the pointer
-    let mut prog = Rc::try_unwrap(prog).unwrap().into_inner();
-    prog.start_idx = start_idx;
-    prog.resolved_user_main = user_main_resolved_path.clone();
-    prog.struct_types = struct_types;
-    prog.impls_by_trait = build_impls_by_trait(db);
-    if prog.user_main_idx < 0 {
-        if let Some(path) = &user_main_resolved_path {
-            if let Some(idx) = prog.funcs.iter().position(|f| f.name == *path) {
-                prog.user_main_idx = idx as i64;
-            }
-        }
-    }
-    for other in libs {
-        prog.extend(other);
-    }
-    Ok(prog)
-}
-
-pub fn monomorphize(program: &mut lir::Program) {
-    let mut mr = mono::Monomorphizer::new(program);
-    let funcs = mr.monomorphize();
-
-    let mono_fn_externs = mr.mono_fn_externs();
-    for (poly_fn, mono_fns) in mono_fn_externs {
-        let poly_idx = *program.extern_map.get(&poly_fn).unwrap();
-        for (mono_fn, mono_ty) in mono_fns {
-            let mut mono_ext = program.externs[poly_idx].clone();
-            mono_ext.name = mono_fn.clone();
-            mono_ext.ty = TyScheme::from_mono(mono_ty);
-            program.extern_map.insert(mono_fn, program.externs.len());
-            program.externs.push(mono_ext);
-        }
-    }
-
-    // remove the polymorphic functions
-    let module_main_path = program.module_main_path();
-    let user_main_base_path = program.module_path.to_path().append("main");
-    let resolved_user_main = program.resolved_user_main.clone();
-    let mut i = 0;
-    while i < program.funcs.len() {
-        let f = &program.funcs[i];
-        if f.name == START_FUNCTION {
-            program.start_idx = i as i64;
-        } else if let Some(resolved) = &resolved_user_main {
-            if f.name == *resolved {
-                program.user_main_idx = i as i64;
-            } else if f.name == module_main_path {
-                program.module_main_idx = i as i64;
-            }
-        } else if f.name.starts_with(&user_main_base_path) {
-            program.user_main_idx = i as i64;
-        } else if f.name == module_main_path {
-            program.module_main_idx = i as i64;
-        }
-
-        if f.ty.is_polymorphic() {
-            program.funcs.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-
-    // add the new monomorphized functions
-    program.funcs.extend(funcs);
-}
-
 pub trait LirGen<T> {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<T>;
 }
@@ -426,7 +427,7 @@ pub struct GenCtx<'a> {
     db: &'a Database,
     file_id: FileId,
     prog: Rc<RefCell<lir::Program>>,
-    builder: Option<lir::Builder>,
+    builder: Option<Builder>,
     data_idx: HashMap<Vec<u8>, usize>,
     global_idx: HashMap<String, usize>,
     pub(crate) srcmap: &'a SourceMap,
@@ -440,7 +441,7 @@ pub struct GenCtx<'a> {
 }
 
 impl<'a> std::ops::Deref for GenCtx<'a> {
-    type Target = lir::Builder;
+    type Target = Builder;
 
     fn deref(&self) -> &Self::Target {
         self.builder.as_ref().unwrap()
@@ -492,6 +493,13 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// Returns the raw type for a node without converting function types to handles.
+    /// Use this for function definitions where you need the actual function signature.
+    fn raw_ty_of(&self, id: NodeId) -> TyScheme {
+        let ty = ty_of(self.db, id).unwrap_or_else(|| panic!("could not find type of node {id}"));
+        TyScheme::from_mono(ty)
+    }
+
     fn local_ty_of(&mut self, id: LocalBindingId) -> TyScheme {
         let ty = inferred_local_type(self.db, id)
             .unwrap_or_else(|| panic!("could not find type of node {id}"));
@@ -507,7 +515,7 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    fn with_builder(&mut self, builder: lir::Builder) -> Option<lir::Builder> {
+    fn with_builder(&mut self, builder: Builder) -> Option<Builder> {
         self.builder.replace(builder)
     }
 
@@ -519,7 +527,7 @@ impl<'a> GenCtx<'a> {
         self.builder.as_mut().unwrap().symbols.insert(sym);
     }
 
-    fn new_func(&mut self, func: Node<lir::Func>) -> usize {
+    fn new_func(&mut self, func: lir::Func) -> usize {
         let mut prog = self.prog.borrow_mut();
         let idx = prog.funcs.len();
         if func.ty.is_polymorphic() {
@@ -750,9 +758,22 @@ impl<'a> GenCtx<'a> {
         closure_info(self.db, node_id)
     }
 
-    /// Returns the LocalBindingId for a pattern node using the query system.
+    /// Returns the LocalBindingId for a node using the query system.
+    ///
+    /// For pattern nodes (parameters, let-bindings), this looks up the pattern_records.
+    /// For name expression nodes (references to locals), this looks up name_resolutions.
     fn binding_for_node(&self, node_id: NodeId) -> Option<LocalBindingId> {
-        local_binding_for_node(self.db, node_id)
+        // First try pattern_records (for pattern definition sites)
+        if let Some(binding) = local_binding_for_node(self.db, node_id) {
+            return Some(binding);
+        }
+        // Fall back to name_resolutions (for name usage sites)
+        let resolutions = name_resolutions(self.db, self.file_id);
+        if let Some(ray_shared::resolution::Resolution::Local(binding)) = resolutions.get(&node_id)
+        {
+            return Some(*binding);
+        }
+        None
     }
 
     /// Generate a fallback debug name for a binding when no AST name is available.
@@ -910,7 +931,7 @@ impl<'a> GenCtx<'a> {
         let mut wrapper_path = name.clone();
         wrapper_path = wrapper_path.append("$fn_handle");
 
-        let outer_builder = self.with_builder(lir::Builder::new());
+        let outer_builder = self.with_builder(Builder::new());
 
         let wrapper_ty = {
             let mut abi_params = Vec::with_capacity(params.len() + 1);
@@ -952,13 +973,14 @@ impl<'a> GenCtx<'a> {
         let builder = self.builder.take().unwrap();
         let (params_ir, locals, blocks, symbols, cfg) = builder.done();
 
-        let mut func = Node::new(lir::Func::new(
+        let mut func = lir::Func::new(
             wrapper_path.clone(),
             wrapper_ty.clone(),
             vec![],
             symbols,
             cfg,
-        ));
+            None, // synthetic wrapper function
+        );
         func.params = params_ir;
         func.locals = locals;
         func.blocks = blocks;
@@ -1043,7 +1065,7 @@ impl<'a> GenCtx<'a> {
             return Ok(existing.clone());
         }
 
-        let outer_builder = self.with_builder(lir::Builder::new());
+        let outer_builder = self.with_builder(Builder::new());
 
         self.with_entry_block(|ctx| {
             // ABI env parameter: rawptr[u8]
@@ -1138,13 +1160,14 @@ impl<'a> GenCtx<'a> {
             .get_closure_info(expr.id)
             .expect("closure info missing for node");
         let fn_path = self.make_closure_path(&info, expr.id);
-        let mut func = Node::new(lir::Func::new(
+        let mut func = lir::Func::new(
             fn_path.clone(),
             fn_ty_with_env.clone(),
             Vec::new(),
             symbols,
             cfg,
-        ));
+            Some(expr.id),
+        );
         func.params = params;
         func.locals = locals;
         func.blocks = blocks;
@@ -2227,7 +2250,7 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
         let &(func, fn_ty) = self;
 
-        ctx.with_builder(lir::Builder::new());
+        ctx.with_builder(Builder::new());
 
         ctx.with_entry_block(|ctx| {
             // add the parameters to the function
@@ -2284,15 +2307,14 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
         };
 
         log::debug!("function name: {}", name);
-        let mut func = Node::with_id(
-            func.id,
-            lir::Func::new(
-                base.value.clone(),
-                fn_ty.clone(),
-                func.sig.modifiers.clone(),
-                symbols,
-                cfg,
-            ),
+        let source_id = func.id;
+        let mut func = lir::Func::new(
+            base.value.clone(),
+            fn_ty.clone(),
+            func.sig.modifiers.clone(),
+            symbols,
+            cfg,
+            Some(source_id),
         );
         func.name = name;
         func.params = params;
@@ -2361,7 +2383,8 @@ impl LirGen<GenResult> for (&Call, &Source) {
             );
             resolved.callee_ty.clone()
         } else {
-            ctx.ty_of(call.callee.id)
+            // Use raw_ty_of to get the actual function type, not a handle-wrapped type
+            ctx.raw_ty_of(call.callee.id)
         };
 
         log::debug!("[lir_gen] scheme for call {}: {}", call, fn_ty);
@@ -3444,7 +3467,7 @@ impl LirGen<GenResult> for Node<Decl> {
             Decl::Func(func) => {
                 let node = Node::with_id(self.id, func);
                 let ty = def_scheme(ctx.db, DefTarget::Workspace(self.id.owner))
-                    .unwrap_or_else(|| ctx.ty_of(self.id));
+                    .unwrap_or_else(|| ctx.raw_ty_of(self.id));
                 return (&node, &ty).lir_gen(ctx);
             }
             Decl::Mutable(_) | Decl::Name(_) => {
@@ -3555,5 +3578,379 @@ impl LirGen<GenResult> for Node<Decl> {
         }
 
         Ok(lir::Value::Empty)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use ray_frontend::{
+        queries::{
+            libraries::LoadedLibraries,
+            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+        },
+        query::Database,
+    };
+    use ray_shared::{
+        file_id::FileId,
+        pathlib::{FilePath, ModulePath},
+        ty::Ty,
+        utils::map_join,
+    };
+
+    use ray_lir::{ControlMarker, Inst, Value};
+
+    use crate::lir::generate;
+
+    fn setup_test_workspace(src: &str) -> (Database, FileId) {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
+        workspace.entry = Some(file_id);
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        FileSource::new(&db, file_id, src.to_string());
+        (db, file_id)
+    }
+
+    #[test]
+    fn generates_simple_function() {
+        let src = r#"
+            fn id(x: u32) -> u32 { x }
+            pub fn main() -> u32 { id(1u32) }
+        "#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let gen_result = generate(&db, false);
+        if let Err(err) = gen_result {
+            panic!("{:?}", err);
+        }
+
+        let prog = gen_result.unwrap();
+        assert_eq!(
+            prog.funcs.len(),
+            4, // _start, module main, id, and user main
+            "expected 4 functions, found {}: [{}]",
+            prog.funcs.len(),
+            map_join(&prog.funcs, ", ", |f| format!("{:#}", f.name))
+        );
+
+        let id_func = prog
+            .funcs
+            .iter()
+            .find(|f| &f.name.with_names_only().to_short_name() == "id");
+        assert!(id_func.is_some());
+    }
+
+    #[test]
+    #[ignore = "needs bug fix"]
+    fn generates_closure_and_struct() {
+        let src = r#"
+@intrinsic extern fn u32_add(a: u32, b: u32) -> u32
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+impl Add[u32, u32, u32] {
+    fn +(lhs: u32, rhs: u32) -> u32 => u32_add(lhs, rhs)
+}
+
+struct Pair { x: u32, y: u32 }
+
+pub fn main() -> u32 {
+    p = Pair { x: 1u32, y: 2u32 }
+    add = (a, b) => a + b
+    add(p.x, p.y)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_pair_literal = false;
+        let mut saw_closure_call = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                match inst {
+                    Inst::StructInit(_, struct_ty) => {
+                        if struct_ty.path.to_string().contains("Pair") {
+                            saw_pair_literal = true;
+                        }
+                    }
+                    Inst::SetLocal(_, value) => {
+                        if let Value::Call(call) = value {
+                            if call.fn_ref.is_some() {
+                                saw_closure_call = true;
+                                assert_eq!(
+                                    call.args.len(),
+                                    3,
+                                    "closure call should pass env + two arguments"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            saw_pair_literal,
+            "expected Pair struct literal to lower through StructInit\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_closure_call,
+            "expected Call::new_ref instruction when invoking the lambda\n--- LIR Program ---\n{:#?}",
+            prog
+        );
+
+        let closure_func = prog
+            .funcs
+            .iter()
+            .find(|func| func.name.to_string().contains("$closure_"))
+            .expect("lowering should emit a dedicated closure function");
+        assert_eq!(
+            closure_func.params.len(),
+            3,
+            "closure should accept env + two parameters"
+        );
+        let env_param = closure_func
+            .params
+            .first()
+            .expect("closure function must start with env parameter");
+        match &env_param.ty {
+            Ty::RawPtr(inner) => assert_eq!(
+                **inner,
+                Ty::u8(),
+                "env parameter should be backed by rawptr, got {}",
+                inner
+            ),
+            other => panic!(
+                "expected closure env parameter to be a rawptr[u8], got {}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn generates_index_operator() {
+        let src = r#"
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+}
+
+struct Box { v: u32 }
+
+impl Index[Box, u32, u32] {
+    fn get(self: *Box, idx: u32) -> u32? {
+        nil
+    }
+}
+
+pub fn main() -> u32 {
+    b = Box { v: 1u32 }
+    x = b[0u32]
+    0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        generate(&db, false).expect("lir generation should succeed");
+    }
+
+    #[test]
+    fn generates_index_assignment() {
+        let src = r#"
+trait Index['a, 'el, 'idx] {
+    fn get(self: *'a, idx: 'idx) -> 'el?
+    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+}
+
+struct Box { v: u32 }
+
+impl Index[Box, u32, u32] {
+    fn get(self: *Box, idx: u32) -> u32? { nil }
+    fn set(self: *Box, idx: u32, el: u32) -> u32? { nil }
+}
+
+pub fn main() -> u32 {
+    b = Box { v: 1u32 }
+    b[0u32] = 2u32
+    0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        generate(&db, false).expect("lir generation should succeed");
+    }
+
+    #[test]
+    #[ignore = "needs bug fix"]
+    fn generates_field_assignment() {
+        let src = r#"
+struct Pair { x: u32, y: u32 }
+
+pub fn main() -> u32 {
+    p = Pair { x: 1u32, y: 2u32 }
+    p.x = 3u32
+    0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        generate(&db, false).expect("lir generation should succeed");
+    }
+
+    #[test]
+    fn generates_while_break_exits_loop() {
+        let src = r#"
+pub fn main() -> u32 {
+    mut x = 0u32
+    while true {
+        x = 1u32
+        break
+    }
+    x = 2u32
+    x
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let loop_header = main_func
+            .blocks
+            .iter()
+            .find(|block| block.is_loop_header())
+            .expect("expected at least one loop header block");
+        let cond_label = loop_header.label();
+
+        let Some(Inst::If(loop_if)) = loop_header.last() else {
+            panic!(
+                "expected loop header to end with Inst::If\n--- LIR Program ---\n{}",
+                prog
+            );
+        };
+        let break_label = loop_if.else_label;
+
+        let break_block = main_func
+            .blocks
+            .iter()
+            .find(|block| block.label() == break_label)
+            .expect("expected loop break target block to exist");
+        let Some(Inst::Goto(after_label)) = break_block.last().cloned() else {
+            panic!(
+                "expected break target block to end with Inst::Goto\n--- LIR Program ---\n{}",
+                prog
+            );
+        };
+
+        let after_block = main_func
+            .blocks
+            .iter()
+            .find(|block| block.label() == after_label)
+            .expect("expected post-loop block to exist");
+        assert!(
+            after_block
+                .markers()
+                .iter()
+                .any(|marker| matches!(marker, ControlMarker::End(label) if *label == cond_label)),
+            "expected post-loop block to be marked as End({}), got markers={:?}\n--- LIR Program ---\n{}",
+            cond_label,
+            after_block.markers(),
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "needs bug fix"]
+    fn generates_for_loop_calls_iter_next() {
+        let src = r#"
+trait Iter['it, 'el] {
+    fn next(self: *'it) -> 'el?
+}
+
+trait Iterable['c, 'it, 'el] {
+    fn iter(self: *'c) -> 'it
+}
+
+struct Counter { start: u32 }
+struct CounterIter { done: bool }
+
+impl Iterable[Counter, CounterIter, u32] {
+    fn iter(self: *Counter) -> CounterIter {
+        CounterIter { done: false }
+    }
+}
+
+impl Iter[CounterIter, u32] {
+    fn next(self: *CounterIter) -> u32? { nil }
+}
+
+pub fn main() -> u32 {
+    c = Counter { start: 0u32 }
+    for x in c {
+        y = x
+    }
+    0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_iter = false;
+        let mut saw_next = false;
+
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, value) = inst {
+                    if let Value::Call(call) = value {
+                        let name = call.fn_name.to_string();
+                        if name.contains("Iterable::iter") {
+                            saw_iter = true;
+                        }
+                        if name.contains("Iter::next") {
+                            saw_next = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_iter,
+            "expected `for` lowering to call Iterable::iter\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_next,
+            "expected `for` lowering to call Iter::next\n--- LIR Program ---\n{}",
+            prog
+        );
     }
 }

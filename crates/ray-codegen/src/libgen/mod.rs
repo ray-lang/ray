@@ -8,6 +8,7 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_frontend::queries::libraries::LibraryData;
+use ray_lir as lir;
 use ray_shared::{
     node_id::NodeId,
     pathlib::{FilePath, Path, PathPart},
@@ -19,8 +20,6 @@ use ray_typing::{
     types::{Subst, Substitutable},
 };
 use serde::{Deserialize, Serialize};
-
-use crate::lir;
 
 /// Binary serialization format for compiled libraries.
 ///

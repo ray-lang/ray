@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use itertools::Itertools;
 use ray_shared::{
-    def::{DefHeader, DefId, DefKind},
+    def::{DefHeader, DefId, DefKind, SignatureStatus},
     span::{Pos, Span, parsed::Parsed},
     ty::Ty,
 };
@@ -251,11 +251,20 @@ impl Parser<'_> {
                     let name_span = parser.srcmap.get(&sig.path).span.unwrap();
 
                     let node = parser.mk_decl(Decl::FnSig(sig), span, path);
+                    // Use DefKind::Method only if inside a parent (impl/trait),
+                    // otherwise it's a top-level extern function
+                    let kind = if parent_def_id.is_some() {
+                        DefKind::Method
+                    } else {
+                        DefKind::Function {
+                            signature: SignatureStatus::FullyAnnotated,
+                        }
+                    };
                     parser.defs.push(DefHeader {
                         def_id,
                         root_node: node.id,
                         name,
-                        kind: DefKind::Method,
+                        kind,
                         span,
                         name_span,
                         parent: parent_def_id,

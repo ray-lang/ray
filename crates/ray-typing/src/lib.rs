@@ -798,7 +798,7 @@ pub fn typecheck(
         solve_groups(input, groups, &mut ctx, env, Some(&pretty_subst));
 
     let binding_schemes = mem::take(&mut ctx.binding_schemes);
-    let node_tys = mem::take(&mut ctx.expr_types);
+    let mut node_tys = mem::take(&mut ctx.expr_types);
     let method_resolutions = mem::take(&mut ctx.method_resolutions);
 
     // At this point, solving + defaulting should have eliminated all unresolved
@@ -827,6 +827,21 @@ pub fn typecheck(
             // Extract local binding types (monomorphic, so take the body type)
             BindingTarget::Local(local_id) => {
                 local_tys.insert(*local_id, scheme.ty.clone());
+            }
+        }
+    }
+
+    // Copy pattern binding types to node_tys so that ty_of(node_id) works for
+    // pattern nodes (parameters, let-bindings, etc.), not just expression nodes.
+    for (node_id, pattern_record) in &input.pattern_records {
+        let binding_id = match &pattern_record.kind {
+            PatternKind::Binding { binding } => Some(*binding),
+            PatternKind::Deref { binding } => Some(*binding),
+            _ => None,
+        };
+        if let Some(binding_id) = binding_id {
+            if let Some(ty) = local_tys.get(&binding_id) {
+                node_tys.insert(*node_id, ty.clone());
             }
         }
     }
@@ -1032,8 +1047,23 @@ pub fn typecheck_group<'a>(
         }
     }
 
-    let node_tys = mem::take(&mut ctx.expr_types);
+    let mut node_tys = mem::take(&mut ctx.expr_types);
     let method_resolutions = mem::take(&mut ctx.method_resolutions);
+
+    // Copy pattern binding types to node_tys so that ty_of(node_id) works for
+    // pattern nodes (parameters, let-bindings, etc.), not just expression nodes.
+    for (node_id, pattern_record) in &input.pattern_records {
+        let binding_id = match &pattern_record.kind {
+            PatternKind::Binding { binding } => Some(*binding),
+            PatternKind::Deref { binding } => Some(*binding),
+            _ => None,
+        };
+        if let Some(binding_id) = binding_id {
+            if let Some(ty) = local_tys.get(&binding_id) {
+                node_tys.insert(*node_id, ty.clone());
+            }
+        }
+    }
 
     TypeCheckResult {
         schemes,

@@ -11,6 +11,7 @@ use petgraph::{
 };
 use ray_shared::{
     local_binding::LocalBindingId,
+    node_id::NodeId,
     pathlib::{ItemPath, ModulePath, Path},
     span::Source,
     str,
@@ -1032,7 +1033,7 @@ pub struct Program {
     pub module_path: ModulePath,
     pub globals: Vec<Global>,
     pub data: Vec<Data>,
-    pub funcs: Vec<Node<Func>>,
+    pub funcs: Vec<Func>,
     pub externs: Vec<Extern>,
     pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
@@ -1496,6 +1497,9 @@ pub struct Func {
     pub symbols: SymbolSet,
     pub modifiers: Vec<Modifier>,
     pub cfg: ControlFlowGraph,
+    /// The source AST node this function was generated from, if any.
+    /// `None` for synthetic functions like `_start` and module main.
+    pub source_id: Option<NodeId>,
 }
 
 pub struct FuncDisplayCtx<'a, T> {
@@ -1576,6 +1580,7 @@ impl Func {
         modifiers: Vec<Modifier>,
         symbols: SymbolSet,
         cfg: ControlFlowGraph,
+        source_id: Option<NodeId>,
     ) -> Func {
         Func {
             name,
@@ -1583,6 +1588,7 @@ impl Func {
             modifiers,
             symbols,
             cfg,
+            source_id,
             params: vec![],
             locals: vec![],
             blocks: vec![],

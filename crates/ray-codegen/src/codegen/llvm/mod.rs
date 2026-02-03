@@ -26,6 +26,13 @@ use llvm::{
     },
 };
 use rand::RngCore;
+use ray_core::{
+    ast::{Modifier, Node},
+    errors::{RayError, RayErrorKind},
+    sourcemap::SourceMap,
+    target::Target,
+};
+use ray_lir::{self as lir, SymbolSet};
 use ray_shared::{
     optlevel::OptLevel,
     pathlib::{FilePath, ItemPath, Path},
@@ -34,17 +41,7 @@ use ray_shared::{
 };
 use ray_typing::types::{StructTy, Subst, Substitutable};
 
-use ray_core::{
-    ast::{Modifier, Node},
-    errors::{RayError, RayErrorKind},
-    sourcemap::SourceMap,
-    target::Target,
-};
-
-use crate::{
-    codegen::{CodegenOptions, collect_symbols},
-    lir::{self, SymbolSet},
-};
+use crate::codegen::{CodegenOptions, collect_symbols};
 
 use super::Codegen;
 
@@ -1513,7 +1510,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
 
     fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         // collect the function symbols
-        let mut fn_map: HashMap<Path, &Node<lir::Func>> = HashMap::new();
+        let mut fn_map: HashMap<Path, &lir::Func> = HashMap::new();
         for func in self.funcs.iter() {
             match fn_map.entry(func.name.clone()) {
                 Entry::Vacant(entry) => {
@@ -1521,11 +1518,10 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
                 }
                 Entry::Occupied(mut entry) => {
                     let existing = *entry.get();
-                    let existing_weight =
-                        existing.value.blocks.iter().map(|b| b.len()).sum::<usize>();
-                    let new_weight = func.value.blocks.iter().map(|b| b.len()).sum::<usize>();
-                    let existing_symbols = existing.value.symbols.len();
-                    let new_symbols = func.value.symbols.len();
+                    let existing_weight = existing.blocks.iter().map(|b| b.len()).sum::<usize>();
+                    let new_weight = func.blocks.iter().map(|b| b.len()).sum::<usize>();
+                    let existing_symbols = existing.symbols.len();
+                    let new_symbols = func.symbols.len();
                     if new_weight > existing_weight
                         || (new_weight == existing_weight && new_symbols > existing_symbols)
                     {
@@ -1654,12 +1650,12 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
                 ctx.fn_attr(fn_val, "wasm-export-name", lir::START_FUNCTION);
             }
 
-            if srcmap.has_inline(f) {
-                let inline_attr = ctx
-                    .lcx
-                    .create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
-                fn_val.add_attribute(AttributeLoc::Function, inline_attr);
-            }
+            // if srcmap.has_inline(f) {
+            //     let inline_attr = ctx
+            //         .lcx
+            //         .create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+            //     fn_val.add_attribute(AttributeLoc::Function, inline_attr);
+            // }
 
             ctx.fn_index.insert(f.name.clone(), fn_val);
             funcs.push((i, fn_val));

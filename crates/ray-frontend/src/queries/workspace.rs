@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io;
 
-use ray_query_macros::input;
+use ray_core::sourcemap::SourceMap;
+use ray_query_macros::{input, query};
 use ray_shared::file_id::FileId;
 use ray_shared::pathlib::{FilePath, ModulePath};
 
-use crate::query::{Database, Input};
+use crate::queries::transform::file_ast;
+use crate::query::{Database, Input, Query};
 
 /// Global compiler options that affect compilation behavior.
 ///
@@ -26,6 +28,12 @@ pub struct CompilerOptions {
 #[input(key = "FileId")]
 #[derive(Clone, Hash)]
 pub struct FileSource(pub String);
+
+impl FileSource {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Information about a single file in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -158,29 +166,6 @@ impl WorkspaceSnapshot {
         Ok(snapshot)
     }
 
-    /// Create a new snapshot with file content overlays applied.
-    ///
-    /// This is used by the LSP to provide in-memory file contents that
-    /// override what's on disk. The overlay maps file paths to their contents.
-    ///
-    /// Files in the overlay that don't exist in the snapshot are added.
-    /// The snapshot structure (modules, file IDs) remains stable.
-    pub fn with_overlay(&self, overlay: &HashMap<FilePath, String>) -> Self {
-        let mut snapshot = self.clone();
-
-        // Add any new files from the overlay that aren't already tracked
-        for path in overlay.keys() {
-            if !snapshot.path_to_id.contains_key(path) {
-                // Infer module path from file path
-                // For now, use the file stem as a simple heuristic
-                let module_path = ModulePath::from(path.file_stem().as_str());
-                snapshot.add_file(path.clone(), module_path);
-            }
-        }
-
-        snapshot
-    }
-
     /// Recursively discover files in a directory.
     fn discover_directory(
         &mut self,
@@ -298,6 +283,23 @@ impl Input for WorkspaceSnapshot {
         value.hash(&mut hasher);
         hasher.finish()
     }
+}
+
+/// Builds a combined source map for the entire workspace.
+///
+/// This aggregates source maps from all parsed files in the workspace.
+/// Useful for codegen and library serialization.
+#[query]
+pub fn workspace_source_map(db: &Database, _key: ()) -> SourceMap {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let mut combined = SourceMap::new();
+
+    for file_id in workspace.all_file_ids() {
+        let file_ast_result = file_ast(db, file_id);
+        combined.extend_with(file_ast_result.source_map.clone());
+    }
+
+    combined
 }
 
 #[cfg(test)]
@@ -430,37 +432,31 @@ mod tests {
     }
 
     #[test]
-    fn with_overlay_adds_new_files() {
+    fn adds_new_files() {
         let mut snapshot = WorkspaceSnapshot::new();
         let existing_path = FilePath::from("src/existing.ray");
         snapshot.add_file(existing_path.clone(), ModulePath::from("existing"));
 
-        let mut overlay = HashMap::new();
         let new_path = FilePath::from("src/new.ray");
-        overlay.insert(new_path.clone(), "fn new() {}".to_string());
-
-        let updated = snapshot.with_overlay(&overlay);
+        snapshot.add_file(new_path.clone(), "fn new() {}".to_string());
 
         // Original file still exists
-        assert!(updated.file_id(&existing_path).is_some());
+        assert!(snapshot.file_id(&existing_path).is_some());
 
         // New file was added
-        assert!(updated.file_id(&new_path).is_some());
+        assert!(snapshot.file_id(&new_path).is_some());
     }
 
     #[test]
-    fn with_overlay_preserves_existing_file_ids() {
+    fn add_file_preserves_existing_file_ids() {
         let mut snapshot = WorkspaceSnapshot::new();
         let path = FilePath::from("src/test.ray");
         let original_id = snapshot.add_file(path.clone(), ModulePath::from("test"));
 
-        let mut overlay = HashMap::new();
-        overlay.insert(path.clone(), "modified content".to_string());
-
-        let updated = snapshot.with_overlay(&overlay);
+        let _ = snapshot.add_file(path.clone(), ModulePath::from("test"));
 
         // File ID should be preserved
-        assert_eq!(updated.file_id(&path), Some(original_id));
+        assert_eq!(snapshot.file_id(&path), Some(original_id));
     }
 
     #[test]

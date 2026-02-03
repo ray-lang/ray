@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use ray_shared::{optlevel::OptLevel, pathlib::Path};
-
 use ray_core::{ast::Node, sourcemap::SourceMap};
-
-use crate::lir::{self, SymbolSet};
+use ray_lir::{self as lir, SymbolSet};
+use ray_shared::{optlevel::OptLevel, pathlib::Path};
 
 pub mod llvm;
 
@@ -16,7 +14,7 @@ pub struct CodegenOptions {
 pub(self) fn collect_symbols(
     func: &lir::Func,
     symbols: &mut SymbolSet,
-    fn_map: &HashMap<Path, &Node<lir::Func>>,
+    fn_map: &HashMap<Path, &lir::Func>,
 ) {
     log::debug!("collecting symbols from func: {}", func.name);
     for sym in func.symbols.iter() {

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use ray_lir::Program;
 use ray_shared::{
     collections::{namecontext::NameContext, nametree::Scope},
     file_id::FileId,
@@ -20,7 +21,7 @@ use ray_core::{
     transform::{self, CombineResult},
 };
 
-use crate::{libgen::RayLib, lir::Program};
+use crate::libgen::RayLib;
 
 const C_STANDARD_INCLUDE_PATHS: [&'static str; 2] = ["/usr/include", "/usr/local/include"];
 

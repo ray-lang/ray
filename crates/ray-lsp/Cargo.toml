@@ -12,6 +12,7 @@ env_logger = "0.10"
 ray-codegen = { path = "../ray-codegen" }
 ray-core = { path = "../ray-core" }
 ray-driver = { path = "../ray-driver" }
+ray-frontend = { path = "../ray-frontend" }
 ray-shared = { path = "../ray-shared" }
 serde_json = "1"
 

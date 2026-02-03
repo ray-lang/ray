@@ -1,8 +1,8 @@
 //! Diagnostic queries for the incremental compiler.
 //!
-//! This module provides queries for collecting all diagnostics (errors) for a file.
-//! It aggregates errors from parsing, transformation, name resolution, validation,
-//! and type checking.
+//! This module provides queries for collecting all diagnostics (errors) for files
+//! and the workspace as a whole. It aggregates errors from parsing, transformation,
+//! name resolution, validation, and type checking.
 
 use std::collections::HashMap;
 
@@ -103,6 +103,22 @@ pub fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
     errors
 }
 
+/// Collects all diagnostics for the entire workspace.
+///
+/// This aggregates `file_diagnostics` for all files in the workspace.
+/// Useful for build commands that need to report all errors at once.
+#[query]
+pub fn workspace_diagnostics(db: &Database, _key: ()) -> Vec<RayError> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let mut all_errors = Vec::new();
+
+    for file_id in workspace.all_file_ids() {
+        all_errors.extend(file_diagnostics(db, file_id));
+    }
+
+    all_errors
+}
+
 /// Collects errors from name resolution results.
 ///
 /// Creates errors for any `Resolution::Error` entries in the resolutions map.
@@ -149,7 +165,7 @@ mod tests {
 
     use crate::{
         queries::{
-            diagnostics::file_diagnostics,
+            diagnostics::{file_diagnostics, workspace_diagnostics},
             libraries::LoadedLibraries,
             workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
         },
@@ -350,6 +366,41 @@ fn foo(x: S) -> S { x = S {}; x }
                 .iter()
                 .any(|e| e.msg.contains("cannot assign to immutable")),
             "Should have immutable assignment error: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn workspace_diagnostics_aggregates_file_errors() {
+        // Use type mismatch which does produce type errors
+        // Note: undefined value names (like `undefined_name()`) don't currently
+        // produce Resolution::Error, only undefined type names do
+        let source = r#"
+struct A {}
+struct B {}
+fn foo() -> A => B {}
+"#;
+        let (db, _file_id) = setup_test_db(source);
+
+        let errors = workspace_diagnostics(&db, ());
+
+        assert!(!errors.is_empty(), "Should have type error");
+        assert!(
+            errors.iter().any(|e| e.kind == RayErrorKind::Type),
+            "Should have a type error: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn workspace_diagnostics_returns_empty_for_valid_code() {
+        let (db, _file_id) = setup_test_db("struct Point { x: Point }");
+
+        let errors = workspace_diagnostics(&db, ());
+
+        assert!(
+            errors.is_empty(),
+            "Valid code should produce no errors, got: {:?}",
             errors
         );
     }

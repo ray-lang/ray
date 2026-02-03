@@ -5,6 +5,8 @@ use std::{
 };
 
 use itertools::Itertools as _;
+use ray_core::{ast::Node, convert::ToSet};
+use ray_lir::{self as lir, NamedInst};
 use ray_shared::{
     pathlib::{ItemPath, Path},
     ty::{Ty, TyVar},
@@ -18,12 +20,7 @@ use ray_typing::{
     unify::{match_scheme_vars, mgu},
 };
 
-use ray_core::{ast::Node, convert::ToSet};
-
-use crate::{
-    lir::{self, NamedInst},
-    mangle,
-};
+use crate::mangle;
 
 #[derive(Debug)]
 enum PolyValue<'a> {
@@ -76,8 +73,8 @@ pub struct Monomorphizer<'p> {
     program: Rc<RefCell<&'p mut lir::Program>>,
     extern_set: HashSet<Path>,
     name_set: HashSet<Path>,
-    poly_fn_map: HashMap<Path, Node<lir::Func>>, // polymorphic functions
-    poly_groups: HashMap<Path, Vec<Path>>,       // names-only -> candidate poly function names
+    poly_fn_map: HashMap<Path, lir::Func>, // polymorphic functions
+    poly_groups: HashMap<Path, Vec<Path>>, // names-only -> candidate poly function names
     impls_by_trait: BTreeMap<ItemPath, Vec<ImplTy>>,
     trait_member_set: HashSet<Path>,
     poly_mono_fn_idx: HashMap<Path, Vec<(Path, Ty)>>, // a mapping of polymorphic functions to monomorphizations
@@ -87,7 +84,7 @@ pub struct Monomorphizer<'p> {
 impl<'p> Monomorphizer<'p> {
     pub fn new(program: &'p mut lir::Program) -> Monomorphizer<'p> {
         // TODO: don't clone these into the Monomorphizer (reference them outside)
-        let poly_fn_map: HashMap<Path, Node<lir::Func>> = program
+        let poly_fn_map: HashMap<Path, lir::Func> = program
             .poly_fn_map
             .iter()
             .map(|(n, &i)| (n.clone(), program.funcs[i].clone()))
@@ -229,7 +226,7 @@ impl<'p> Monomorphizer<'p> {
             .collect()
     }
 
-    pub fn monomorphize(&mut self) -> Vec<Node<lir::Func>> {
+    pub fn monomorphize(&mut self) -> Vec<lir::Func> {
         /*
          * Due to changes in the solver, non-function types can also be quantified and/or qualified types.
          * This means that during code generation, values can be polymorphic and must be monomorphized in
@@ -258,8 +255,8 @@ impl<'p> Monomorphizer<'p> {
 
     fn monomorphize_func(
         &mut self,
-        func: &mut Node<lir::Func>,
-        funcs: &mut Vec<Node<lir::Func>>,
+        func: &mut lir::Func,
+        funcs: &mut Vec<lir::Func>,
         globals: &mut Vec<lir::Global>,
     ) {
         let mut symbols = func.symbols.clone();
@@ -305,7 +302,7 @@ impl<'p> Monomorphizer<'p> {
         &mut self,
         poly_ref: &mut PolyRef<'_>,
         locals: &mut HashMap<usize, TyScheme>,
-        funcs: &mut Vec<Node<lir::Func>>,
+        funcs: &mut Vec<lir::Func>,
         globals: &mut Vec<lir::Global>,
     ) -> Option<(Path, Path)> {
         match &mut poly_ref.value {
@@ -357,7 +354,7 @@ impl<'p> Monomorphizer<'p> {
         poly_ty: &TyScheme,
         callee_ty: &mut TyScheme,
         locals: &mut HashMap<usize, TyScheme>,
-        funcs: &mut Vec<Node<lir::Func>>,
+        funcs: &mut Vec<lir::Func>,
         globals: &mut Vec<lir::Global>,
     ) -> (Path, Path) {
         // NOTE: unless there's a bug in the compiler, the callee function type is always monomorphic
@@ -419,7 +416,7 @@ impl<'p> Monomorphizer<'p> {
         original_name: &Path,
         poly_ty: &TyScheme,
         callee_ty: &TyScheme,
-        funcs: &mut Vec<Node<lir::Func>>,
+        funcs: &mut Vec<lir::Func>,
         globals: &mut Vec<lir::Global>,
     ) -> (Path, Path, TyScheme, bool) {
         let poly_fqn = poly_fqn.with_names_only();
@@ -660,7 +657,7 @@ impl<'p> Monomorphizer<'p> {
         func_ref: &mut lir::FuncRef,
         poly_ty: &TyScheme,
         callee_ty: &mut TyScheme,
-        funcs: &mut Vec<Node<lir::Func>>,
+        funcs: &mut Vec<lir::Func>,
         globals: &mut Vec<lir::Global>,
     ) -> (Path, Path) {
         let poly_fqn = func_ref.original_path.with_names_only();

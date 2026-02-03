@@ -128,6 +128,13 @@ pub fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
 
     for &file_id in &module_info.files {
         let parse_result = parse_file(db, file_id);
+        eprintln!("=== DEBUG binding_graph: parsing file {:?} ===", file_id);
+        for def_header in &parse_result.defs {
+            eprintln!(
+                "  def: {:?} kind={:?} name={}",
+                def_header.def_id, def_header.kind, def_header.name
+            );
+        }
         for def_header in parse_result.defs {
             def_kinds.insert(def_header.def_id, def_header.kind);
             all_defs.push(def_header);

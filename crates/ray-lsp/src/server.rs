@@ -781,11 +781,10 @@ impl RayLanguageServer {
         }?;
 
         self.log(format!(
-            "[server] lookup_symbol_targets_at: snapshot version={:?} module={} defs={} symbols={}",
+            "[server] lookup_symbol_targets_at: snapshot version={:?} module={} defs={}",
             snapshot.version,
             snapshot.data.module_path,
             snapshot.data.definitions.len(),
-            snapshot.data.symbol_map.len(),
         ))
         .await;
 

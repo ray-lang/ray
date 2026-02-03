@@ -9,22 +9,19 @@ use ray_codegen::{
 };
 use ray_core::{
     errors::{RayError, RayErrorKind},
-    passes,
-    sema::SymbolMap,
     sourcemap::SourceMap,
 };
 use ray_frontend::{
     queries::{
+        diagnostics::workspace_diagnostics,
         libraries::{LibraryData, LoadedLibraries},
         transform::file_ast,
-        workspace::WorkspaceSnapshot,
+        workspace::{WorkspaceSnapshot, workspace_source_map},
     },
     query::Database,
 };
 use ray_shared::{
-    collections::namecontext::NameContext,
     file_id::FileId,
-    node_id::NodeId,
     optlevel::OptLevel,
     pathlib::{FilePath, ModulePath, Path, RayPaths},
     span::Source,
@@ -44,20 +41,49 @@ pub use build::BuildOptions;
 pub use build::EmitType;
 pub use global_options::*;
 
+/// Result of workspace initialization.
+///
+/// Contains the database with all inputs set and the entry file ID.
+/// Use queries to get diagnostics, source maps, and other derived data:
+/// - `workspace_diagnostics(&db, ())` for all errors
+/// - `workspace_source_map(&db, ())` for combined source map
+/// - `workspace.all_module_paths()` for module paths
+pub struct WorkspaceResult {
+    pub db: Database,
+    pub entry_file: FileId,
+}
+
+impl WorkspaceResult {
+    /// Get the entry module path from the workspace.
+    pub fn entry_module_path(&self) -> Path {
+        let workspace = self.db.get_input::<WorkspaceSnapshot>(());
+        workspace
+            .file_info(self.entry_file)
+            .map(|info| Path::from(info.module_path.to_string()))
+            .unwrap_or_else(Path::new)
+    }
+
+    /// Get all module paths in the workspace.
+    pub fn module_paths(&self) -> HashSet<Path> {
+        let workspace = self.db.get_input::<WorkspaceSnapshot>(());
+        workspace
+            .all_module_paths()
+            .map(|mp| Path::from(mp.to_string()))
+            .collect()
+    }
+}
+
+/// Legacy result type for backward compatibility.
+///
+/// Prefer using `WorkspaceResult` from `init_workspace()` and queries instead.
+#[deprecated(note = "Use WorkspaceResult from init_workspace() and queries instead")]
 pub struct FrontendResult {
     pub db: Database,
     pub file_id: FileId,
     pub module_path: Path,
-    pub tcx: TyCtx,
-    // pub ncx: NameContext,
     pub srcmap: SourceMap,
-    pub symbol_map: SymbolMap,
     pub paths: HashSet<Path>,
-    pub definitions_by_path: HashMap<Path, libgen::DefinitionRecord>,
-    pub definitions_by_id: HashMap<NodeId, libgen::DefinitionRecord>,
     pub errors: Vec<RayError>,
-    pub bindings: passes::binding::BindingPassOutput,
-    pub closure_analysis: passes::closure::ClosurePassOutput,
 }
 
 #[derive(Debug)]
@@ -96,15 +122,16 @@ impl Driver {
             no_core,
         };
 
-        match self.build_frontend(&build_options, None) {
-            Ok(frontend) => {
-                let symbols = collect_symbols(&frontend.db);
-                let definitions = collect_definitions(&frontend.db);
-                let types = collect_types(&frontend.db);
+        match self.init_workspace(&build_options, None) {
+            Ok(workspace) => {
+                let symbols = collect_symbols(&workspace.db);
+                let definitions = collect_definitions(&workspace.db);
+                let types = collect_types(&workspace.db);
+                let module_path = workspace.entry_module_path();
                 AnalysisReport::new(
                     format,
                     input_path,
-                    frontend.module_path,
+                    module_path,
                     Vec::new(),
                     symbols,
                     types,
@@ -123,18 +150,27 @@ impl Driver {
         }
     }
 
-    pub fn build_frontend(
+    /// Initializes a workspace database with all inputs set.
+    ///
+    /// This is the primary entry point for setting up the query database.
+    /// It runs workspace discovery, sets up inputs, and returns the initialized
+    /// database with the entry file ID.
+    ///
+    /// Use queries to get derived data:
+    /// - `workspace_diagnostics(&db, ())` for all errors
+    /// - `workspace_source_map(&db, ())` for combined source map
+    pub fn init_workspace(
         &self,
         options: &BuildOptions,
         overlays: Option<HashMap<FilePath, String>>,
-    ) -> Result<FrontendResult, Vec<RayError>> {
+    ) -> Result<WorkspaceResult, Vec<RayError>> {
         // Build search paths for library resolution
         let mut search_paths = vec![self.ray_paths.get_lib_path()];
         if let Some(link_paths) = &options.link_modules {
             search_paths.extend(link_paths.iter().cloned());
         }
 
-        // Create database first
+        // Create database
         let db = Database::new();
 
         // Run discovery to populate workspace and libraries
@@ -151,8 +187,8 @@ impl Driver {
         )
         .map_err(|e| vec![e])?;
 
-        // Get entry file info
-        let file_id = workspace.entry.ok_or_else(|| {
+        // Get entry file
+        let entry_file = workspace.entry.ok_or_else(|| {
             vec![RayError {
                 msg: "no entry file in workspace".to_string(),
                 src: vec![],
@@ -161,78 +197,54 @@ impl Driver {
             }]
         })?;
 
-        let file_info = workspace.file_info(file_id).ok_or_else(|| {
-            vec![RayError {
-                msg: "entry file not found in workspace".to_string(),
-                src: vec![],
-                kind: RayErrorKind::Compile,
-                context: None,
-            }]
-        })?;
-
-        let module_path = Path::from(file_info.module_path.to_string());
-
-        // Collect module paths for library generation
-        let paths: HashSet<Path> = workspace
-            .all_module_paths()
-            .map(|mp| Path::from(mp.to_string()))
-            .collect();
-
-        // Set the workspace as input (in case discovery modified it)
-        db.set_input::<WorkspaceSnapshot>((), workspace.clone());
+        // Set the workspace as input
+        db.set_input::<WorkspaceSnapshot>((), workspace);
 
         // Set loaded libraries as input
-        LoadedLibraries::new(&db, (), loaded_libs.libraries, loaded_libs.library_files);
-
-        // Build combined source map from all file ASTs
-        let mut combined_srcmap = SourceMap::new();
-        let mut all_errors: Vec<RayError> = Vec::new();
-
-        for fid in workspace.all_file_ids() {
-            let file_ast_result = file_ast(&db, fid);
-            combined_srcmap.extend_with(file_ast_result.source_map.clone());
-            all_errors.extend(file_ast_result.errors.clone());
-        }
+        db.set_input::<LoadedLibraries>((), loaded_libs);
 
         if options.print_ast {
+            let workspace = db.get_input::<WorkspaceSnapshot>(());
             for fid in workspace.all_file_ids() {
                 let file_ast_result = file_ast(&db, fid);
-                // Note: File doesn't impl Debug, so we just print decls
                 for decl in &file_ast_result.ast.decls {
                     eprintln!("{}", decl);
                 }
             }
         }
 
-        log::debug!("[build_frontend] Frontend Summary");
-        log::debug!("[build_frontend] ----------------");
-        log::debug!(
-            "[build_frontend] files: {:?}",
-            workspace.all_file_ids().collect::<Vec<_>>()
-        );
-        log::debug!("[build_frontend] modules: {:?}", paths);
-        log::debug!("[build_frontend] errors: {:?}", all_errors.len());
-        log::debug!("[build_frontend] ----------------");
+        log::debug!("[init_workspace] Workspace initialized");
+        log::debug!("[init_workspace] entry_file: {:?}", entry_file);
 
-        // Create placeholder values for legacy fields
-        // These are deprecated and will be removed as we migrate to queries
-        let empty_tcx = TyCtx::default();
-        let empty_ncx = NameContext::new();
+        Ok(WorkspaceResult { db, entry_file })
+    }
+
+    /// Legacy method for backward compatibility.
+    ///
+    /// Prefer using `init_workspace()` and queries instead.
+    #[deprecated(note = "Use init_workspace() and queries instead")]
+    #[allow(deprecated)]
+    pub fn build_frontend(
+        &self,
+        options: &BuildOptions,
+        overlays: Option<HashMap<FilePath, String>>,
+    ) -> Result<FrontendResult, Vec<RayError>> {
+        let result = self.init_workspace(options, overlays)?;
+
+        let module_path = result.entry_module_path();
+        let paths = result.module_paths();
+
+        // Eagerly collect errors and source map for backward compatibility
+        let errors = workspace_diagnostics(&result.db, ());
+        let srcmap = workspace_source_map(&result.db, ());
 
         Ok(FrontendResult {
-            db,
-            file_id,
+            db: result.db,
+            file_id: result.entry_file,
             module_path,
-            tcx: empty_tcx,
-            // ncx: empty_ncx,
-            srcmap: combined_srcmap,
-            symbol_map: SymbolMap::new(),
+            srcmap,
             paths,
-            definitions_by_path: HashMap::new(),
-            definitions_by_id: HashMap::new(),
-            errors: all_errors,
-            bindings: passes::binding::BindingPassOutput::empty(),
-            closure_analysis: passes::closure::ClosurePassOutput::default(),
+            errors,
         })
     }
 
@@ -270,24 +282,24 @@ impl Driver {
     }
 
     pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
-        let frontend = self.build_frontend(&options, None)?;
-        if !frontend.errors.is_empty() {
-            return Err(frontend.errors);
+        let workspace = self.init_workspace(&options, None)?;
+
+        // Check for errors using the query
+        let errors = workspace_diagnostics(&workspace.db, ());
+        if !errors.is_empty() {
+            return Err(errors);
         }
 
         if options.no_compile {
             return Ok(());
         }
 
-        let FrontendResult {
-            db,
-            module_path,
-            srcmap,
-            paths: module_paths,
-            ..
-        } = frontend;
+        let db = &workspace.db;
+        let module_path = workspace.entry_module_path();
+        let module_paths = workspace.module_paths();
+        let srcmap = workspace_source_map(db, ());
 
-        let mut program = lir::generate(&db, options.build_lib)?;
+        let mut program = lir::generate(db, options.build_lib)?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
             if !options.build_lib {
                 log::debug!("program before monomorphization:\n{}", program);

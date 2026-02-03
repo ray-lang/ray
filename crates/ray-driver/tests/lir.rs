@@ -4,7 +4,7 @@ mod utils;
 
 use std::convert::TryInto;
 
-use ray_codegen::lir::{self, Inst, Program, Value};
+use ray_lir::{ControlMarker, Inst, Value};
 use ray_shared::ty::Ty;
 use utils::test_build;
 
@@ -17,16 +17,6 @@ fn lir_generation_simple_function() {
     "#;
 
     let frontend = test_build(src).expect("frontend build should succeed");
-    eprintln!(
-        "structs: {:?}",
-        frontend
-            .tcx
-            .global_env
-            .structs
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-    );
     assert!(
         frontend.errors.is_empty(),
         "expected no frontend errors, got {:?}",
@@ -36,8 +26,8 @@ fn lir_generation_simple_function() {
         eprintln!("frontend error: {:?}", error);
     }
 
-    let program = lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    let program =
+        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
     // Sanity check: at least one function emitted (main + id)
     assert!(
         !program.funcs.is_empty(),
@@ -75,8 +65,8 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let program = lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    let program =
+        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
         .user_main_idx
@@ -86,7 +76,7 @@ pub fn main() -> u32 {
 
     let mut saw_pair_literal = false;
     let mut saw_closure_call = false;
-    for block in &main_func.value.blocks {
+    for block in &main_func.blocks {
         for inst in block.iter() {
             match inst {
                 Inst::StructInit(_, struct_ty) => {
@@ -125,15 +115,14 @@ pub fn main() -> u32 {
     let closure_func = program
         .funcs
         .iter()
-        .find(|func| func.value.name.to_string().contains("$closure_"))
+        .find(|func| func.name.to_string().contains("$closure_"))
         .expect("lowering should emit a dedicated closure function");
     assert_eq!(
-        closure_func.value.params.len(),
+        closure_func.params.len(),
         3,
         "closure should accept env + two parameters"
     );
     let env_param = closure_func
-        .value
         .params
         .first()
         .expect("closure function must start with env parameter");
@@ -181,8 +170,7 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
 }
 
 #[test]
@@ -215,8 +203,7 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
 }
 
 #[test]
@@ -239,8 +226,7 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
 }
 
 #[test]
@@ -265,8 +251,8 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let program = lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    let program =
+        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
         .user_main_idx
@@ -275,7 +261,6 @@ pub fn main() -> u32 {
     let main_func = &program.funcs[user_main_idx];
 
     let loop_header = main_func
-        .value
         .blocks
         .iter()
         .find(|block| block.is_loop_header())
@@ -291,7 +276,6 @@ pub fn main() -> u32 {
     let break_label = loop_if.else_label;
 
     let break_block = main_func
-        .value
         .blocks
         .iter()
         .find(|block| block.label() == break_label)
@@ -304,7 +288,6 @@ pub fn main() -> u32 {
     };
 
     let after_block = main_func
-        .value
         .blocks
         .iter()
         .find(|block| block.label() == after_label)
@@ -313,7 +296,7 @@ pub fn main() -> u32 {
         after_block
             .markers()
             .iter()
-            .any(|marker| matches!(marker, ray_codegen::lir::ControlMarker::End(label) if *label == cond_label)),
+            .any(|marker| matches!(marker, ControlMarker::End(label) if *label == cond_label)),
         "expected post-loop block to be marked as End({}), got markers={:?}\n--- LIR Program ---\n{}",
         cond_label,
         after_block.markers(),
@@ -362,8 +345,8 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let program = lir::generate(&frontend.db, false)
-    .expect("lir generation should succeed");
+    let program =
+        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
         .user_main_idx
@@ -374,7 +357,7 @@ pub fn main() -> u32 {
     let mut saw_iter = false;
     let mut saw_next = false;
 
-    for block in &main_func.value.blocks {
+    for block in &main_func.blocks {
         for inst in block.iter() {
             if let Inst::SetLocal(_, value) = inst {
                 if let Value::Call(call) = value {

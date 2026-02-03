@@ -36,7 +36,8 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
         use_stdin: false,
     };
 
-    let (ast, defs, source_map, errors) = Parser::parse_to_result(file_id, &source.0, options);
+    let (ast, defs, source_map, errors) =
+        Parser::parse_to_result(file_id, source.as_str(), options);
 
     ParseResult {
         ast: ast.unwrap_or_else(|| File {
