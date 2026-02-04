@@ -26,8 +26,8 @@ use ray_typing::{
 
 use ray_core::{
     ast::{
-        self, Assign, BinOp, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Node,
-        Pattern, PrefixOp, RangeLimits, UnaryOp, token::IntegerBase,
+        self, Assign, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Node, Pattern,
+        PrefixOp, RangeLimits, token::IntegerBase,
     },
     errors::{RayError, RayErrorKind, RayResult},
     passes::closure::ClosureInfo,
@@ -1121,7 +1121,8 @@ impl<'a> GenCtx<'a> {
             body.lir_gen(self)?
         };
 
-        let mut fn_ty_with_env = self.ty_of(expr.id);
+        // Use raw_ty_of to get the actual function type, not the fn_handle wrapper
+        let mut fn_ty_with_env = self.raw_ty_of(expr.id);
         match fn_ty_with_env.mono_mut() {
             Ty::Func(params, _) => {
                 let mut new_params = Vec::with_capacity(params.len() + 1);
@@ -2327,18 +2328,6 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
     }
 }
 
-impl LirGen<GenResult> for UnaryOp {
-    fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
-        ctx.call_from_op(self.op.id, &[self.expr.as_ref()])
-    }
-}
-
-impl LirGen<GenResult> for BinOp {
-    fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
-        ctx.call_from_op(self.op.id, &[self.lhs.as_ref(), self.rhs.as_ref()])
-    }
-}
-
 impl LirGen<GenResult> for (&Call, &Source) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
         let &(call, src) = self;
@@ -2913,7 +2902,11 @@ impl LirGen<GenResult> for Node<Expr> {
                 let src = ctx.srcmap.get(self);
                 (call, &src).lir_gen(ctx)?
             }
-            Expr::BinOp(binop) => binop.lir_gen(ctx)?,
+            Expr::BinOp(binop) => {
+                // Pass the expression node's ID (self.id), not the operator token's ID (binop.op.id),
+                // because method_resolutions is keyed by the BinOp expression node.
+                ctx.call_from_op(self.id, &[binop.lhs.as_ref(), binop.rhs.as_ref()])?
+            }
             Expr::Break(ex) => {
                 if let Some(_) = ex {
                     todo!()
@@ -3366,7 +3359,11 @@ impl LirGen<GenResult> for Node<Expr> {
             }
             Expr::Tuple(tuple) => ctx.emit_tuple(&ty, &tuple.seq.items)?,
             Expr::Type(ty) => lir::Value::Type(ty.clone_value()),
-            Expr::UnaryOp(unop) => unop.lir_gen(ctx)?,
+            Expr::UnaryOp(unop) => {
+                // Pass the expression node's ID (self.id), not the operator token's ID (unop.op.id),
+                // because method_resolutions is keyed by the UnaryOp expression node.
+                ctx.call_from_op(self.id, &[unop.expr.as_ref()])?
+            }
             Expr::Unsafe(_) => todo!("lir_gen: Expr::Unsafe: {}", self.value),
             Expr::While(while_stmt) => {
                 let cond_label = ctx.new_block();
@@ -3470,8 +3467,30 @@ impl LirGen<GenResult> for Node<Decl> {
                     .unwrap_or_else(|| ctx.raw_ty_of(self.id));
                 return (&node, &ty).lir_gen(ctx);
             }
-            Decl::Mutable(_) | Decl::Name(_) => {
-                todo!()
+            Decl::Mutable(name, modifiers) | Decl::Name(name, modifiers) => {
+                if modifiers.contains(&Modifier::Extern) {
+                    let has_intrinsic = ctx.srcmap.has_intrinsic(self);
+                    let intrinsic_kind = if has_intrinsic {
+                        lir::IntrinsicKind::from_path(&name.path)
+                    } else {
+                        None
+                    };
+                    let is_mutable = matches!(&self.value, Decl::Mutable(_, _));
+                    let ty = ctx.ty_of(name.id);
+                    let map_name = name.path.clone();
+                    ctx.new_extern(
+                        map_name.clone(),
+                        map_name,
+                        ty,
+                        is_mutable,
+                        modifiers.clone(),
+                        has_intrinsic,
+                        intrinsic_kind,
+                        None, // No @src support for now
+                    );
+                } else {
+                    todo!("non-extern Mutable/Name declarations")
+                }
             }
             Decl::Trait(tr) => {
                 for func in tr.fields.iter() {
@@ -3509,65 +3528,41 @@ impl LirGen<GenResult> for Node<Decl> {
                     }
                 }
             }
-            Decl::Extern(ext) => {
-                let decl = ext.decl();
-                let src = ext.src();
-                let has_intrinsic = ctx.srcmap.has_intrinsic(self);
-                log::debug!(
-                    "[Decl::lir_gen] has_intrinsic={}: {:?}",
-                    has_intrinsic,
-                    self
-                );
-                let intrinsic_kind = if has_intrinsic {
-                    lir::IntrinsicKind::from_path(match decl {
-                        Decl::FnSig(sig) => &sig.path.value,
-                        Decl::Mutable(name) | Decl::Name(name) => &name.path,
-                        _ => unreachable!("unexpected extern declaration {:?}", decl),
-                    })
-                } else {
-                    None
-                };
-                match ext.decl() {
-                    Decl::Mutable(name) | Decl::Name(name) => {
-                        let is_mutable = matches!(decl, Decl::Mutable(_));
-                        let ty = ctx.ty_of(name.id);
-                        let map_name = name.path.clone();
-                        ctx.new_extern(
-                            map_name.clone(),
-                            map_name,
-                            ty,
-                            is_mutable,
-                            vec![],
-                            has_intrinsic,
-                            intrinsic_kind.clone(),
-                            src.clone(),
-                        );
-                    }
-                    Decl::FnSig(sig) => {
-                        let ty = def_scheme(ctx.db, DefTarget::Workspace(self.id.owner))
-                            .unwrap_or_else(|| ctx.ty_of(self.id));
-                        let map_name = sig.path.value.clone();
-                        let link_name = sig
-                            .path
-                            .name()
-                            .map(|n| Path::from(n))
-                            .unwrap_or_else(Path::new);
-                        ctx.new_extern(
-                            map_name,
-                            link_name,
-                            ty,
-                            false,
-                            sig.modifiers.clone(),
-                            has_intrinsic,
-                            intrinsic_kind,
-                            src.clone(),
-                        );
-                    }
-                    d @ _ => unreachable!("lir_gen Decl::Extern: {:?}", d),
-                }
-            }
             Decl::Declare(_) => todo!(),
-            Decl::FnSig(_) => todo!(),
+            Decl::FnSig(sig) => {
+                if sig.modifiers.contains(&Modifier::Extern) {
+                    let has_intrinsic = ctx.srcmap.has_intrinsic(self);
+                    log::debug!(
+                        "[Decl::lir_gen] extern FnSig has_intrinsic={}: {:?}",
+                        has_intrinsic,
+                        self
+                    );
+                    let intrinsic_kind = if has_intrinsic {
+                        lir::IntrinsicKind::from_path(&sig.path.value)
+                    } else {
+                        None
+                    };
+                    let ty = def_scheme(ctx.db, DefTarget::Workspace(self.id.owner))
+                        .unwrap_or_else(|| ctx.ty_of(self.id));
+                    let map_name = sig.path.value.clone();
+                    let link_name = sig
+                        .path
+                        .name()
+                        .map(|n| Path::from(n))
+                        .unwrap_or_else(Path::new);
+                    ctx.new_extern(
+                        map_name,
+                        link_name,
+                        ty,
+                        false,
+                        sig.modifiers.clone(),
+                        has_intrinsic,
+                        intrinsic_kind,
+                        None, // No @src support for now
+                    );
+                }
+                // Non-extern FnSig (trait method signatures) don't generate LIR
+            }
             Decl::TypeAlias(_, _) | Decl::Struct(_) => {}
             Decl::FileMain(stmts) => {
                 // FileMain statements are generated via the main entry point
@@ -3647,7 +3642,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs bug fix"]
     fn generates_closure_and_struct() {
         let src = r#"
 @intrinsic extern fn u32_add(a: u32, b: u32) -> u32
@@ -3797,7 +3791,6 @@ pub fn main() -> u32 {
     }
 
     #[test]
-    #[ignore = "needs bug fix"]
     fn generates_field_assignment() {
         let src = r#"
 struct Pair { x: u32, y: u32 }
@@ -3881,7 +3874,6 @@ pub fn main() -> u32 {
     }
 
     #[test]
-    #[ignore = "needs bug fix"]
     fn generates_for_loop_calls_iter_next() {
         let src = r#"
 trait Iter['it, 'el] {

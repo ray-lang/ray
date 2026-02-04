@@ -190,9 +190,6 @@ pub fn collect_def_ids(module: &Module<(), Decl>) -> Vec<DefId> {
             Decl::Declare(_) => {
                 all_defs.push(decl_node.id.owner);
             }
-            Decl::Extern(_) => {
-                all_defs.push(decl_node.id.owner);
-            }
             Decl::Impl(im) => {
                 if let Some(funcs) = &im.funcs {
                     for decl_node in funcs {
@@ -309,8 +306,7 @@ pub fn build_typecheck_input(
             }
             // Extern declarations don't have bodies to lower - their types come
             // from the environment via external_scheme().
-            Decl::Extern(_) => {}
-            Decl::Mutable(_) | Decl::Name(_) => {
+            Decl::Mutable(_, _) | Decl::Name(_, _) => {
                 // TODO: lower declaration-only bindings into value bindings
                 // once their typing rules are specified.
             }
@@ -1366,66 +1362,71 @@ mod tests {
         let ncx = NameContext::new();
         let options = TypecheckOptions::default();
         let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
-        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
-        let result = pass_manager.typecheck(&ncx, options).clone();
+        todo!("FIXME: uses legacy code that needs to be replaced")
 
-        assert!(
-            result.errors.is_empty(),
-            "expected no type errors, got {:?}",
-            result.errors
-        );
+        // let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
+        // let result = pass_manager.typecheck(&ncx, options).clone();
+
+        // assert!(
+        //     result.errors.is_empty(),
+        //     "expected no type errors, got {:?}",
+        //     result.errors
+        // );
     }
 
     #[test]
     fn typecheck_boxed_bool_function_with_new_typechecker() {
-        let _guard = test_def_context();
-        // fn b() { box true }
-        //
-        // This exercises lowering of Boxed and the Boxed => *T rule in the
-        // constraint generator.
+        todo!("FIXME: uses legacy code that needs to be replaced")
 
-        let func_path = Node::new(RayPath::from("b"));
+        // let _guard = test_def_context();
+        // // fn b() { box true }
+        // //
+        // // This exercises lowering of Boxed and the Boxed => *T rule in the
+        // // constraint generator.
 
-        let inner_expr = Node::new(Expr::Literal(Literal::Bool(true)));
-        let boxed_expr = Node::new(Expr::Boxed(Boxed {
-            inner: Box::new(inner_expr.clone()),
-            box_span: Span::new(),
-        }));
+        // let func_path = Node::new(RayPath::from("b"));
 
-        let func_body_block = Node::new(Expr::Block(Block {
-            stmts: vec![boxed_expr.clone()],
-        }));
-        let func = Func::new(func_path, vec![], func_body_block);
-        let func_decl = Node::new(Decl::Func(func));
+        // let inner_expr = Node::new(Expr::Literal(Literal::Bool(true)));
+        // let boxed_expr = Node::new(Expr::Boxed(Boxed {
+        //     inner: Box::new(inner_expr.clone()),
+        //     box_span: Span::new(),
+        // }));
 
-        let module: Module<(), Decl> = Module {
-            path: RayPath::from("test_boxed"),
-            stmts: vec![],
-            decls: vec![func_decl],
-            imports: vec![],
-            import_stmts: vec![],
-            submodules: vec![],
-            doc_comment: None,
-            root_filepath: FilePath::from("test_boxed.ray"),
-            filepaths: vec![FilePath::from("test_boxed.ray")],
-            is_lib: false,
-        };
+        // let func_body_block = Node::new(Expr::Block(Block {
+        //     stmts: vec![boxed_expr.clone()],
+        // }));
+        // let func = Func::new(func_path, vec![], func_body_block);
+        // let func_decl = Node::new(Decl::Func(func));
 
-        let mut srcmap = SourceMap::new();
-        srcmap.set_src(&boxed_expr, make_test_source());
+        // let module: Module<(), Decl> = Module {
+        //     path: RayPath::from("test_boxed"),
+        //     stmts: vec![],
+        //     decls: vec![func_decl],
+        //     imports: vec![],
+        //     import_stmts: vec![],
+        //     submodules: vec![],
+        //     doc_comment: None,
+        //     root_filepath: FilePath::from("test_boxed.ray"),
+        //     filepaths: vec![FilePath::from("test_boxed.ray")],
+        //     is_lib: false,
+        // };
 
-        let global_env = GlobalEnv::new();
-        let mut tcx = TyCtx::new(global_env);
-        let ncx = NameContext::new();
-        let options = TypecheckOptions::default();
-        let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
-        let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
-        let result = pass_manager.typecheck(&ncx, options).clone();
+        // let mut srcmap = SourceMap::new();
+        // srcmap.set_src(&boxed_expr, make_test_source());
 
-        assert!(
-            result.errors.is_empty(),
-            "expected no type errors for boxed bool, got {:?}",
-            result.errors
-        );
+        // let global_env = GlobalEnv::new();
+        // let mut tcx = TyCtx::new(global_env);
+        // let ncx = NameContext::new();
+        // let options = TypecheckOptions::default();
+        // let resolutions: HashMap<NodeId, Resolution> = HashMap::new();
+
+        // let mut pass_manager = FrontendPassManager::new(&module, &srcmap, &mut tcx, &resolutions);
+        // let result = pass_manager.typecheck(&ncx, options).clone();
+
+        // assert!(
+        //     result.errors.is_empty(),
+        //     "expected no type errors for boxed bool, got {:?}",
+        //     result.errors
+        // );
     }
 }

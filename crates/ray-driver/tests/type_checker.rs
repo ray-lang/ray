@@ -35,16 +35,18 @@ fn typecheck_src_with_bindings(
         ModuleBuilder::from_src(src, module_path.clone()).expect("module should build");
 
     let tc_options = TypecheckOptions::default();
-    let pass_manager = FrontendPassManager::new(
-        &builder_result.module,
-        &builder_result.srcmap,
-        &mut builder_result.tcx,
-        &builder_result.resolutions,
-    );
-    let (binding_output, _, result) = pass_manager.run_passes(&builder_result.ncx, tc_options);
+    todo!("FIXME: uses legacy code that needs to be replaced")
 
-    let tcx = builder_result.tcx;
-    (module_path, result, tcx, binding_output)
+    // let pass_manager = FrontendPassManager::new(
+    //     &builder_result.module,
+    //     &builder_result.srcmap,
+    //     &mut builder_result.tcx,
+    //     &builder_result.resolutions,
+    // );
+    // let (binding_output, _, result) = pass_manager.run_passes(&builder_result.ncx, tc_options);
+
+    // let tcx = builder_result.tcx;
+    // (module_path, result, tcx, binding_output)
 }
 
 fn assert_typechecks(test_name: &str, result: &TypeCheckResult) {

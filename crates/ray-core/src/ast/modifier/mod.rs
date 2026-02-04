@@ -16,6 +16,8 @@ pub enum Modifier {
     Unsafe,
     /// wasi
     Wasi,
+    /// extern
+    Extern,
 }
 
 impl fmt::Display for Modifier {
@@ -33,6 +35,7 @@ impl<S: AsRef<str>> From<S> for Modifier {
             "internal" => Modifier::Internal,
             "unsafe" => Modifier::Unsafe,
             "wasi" => Modifier::Wasi,
+            "extern" => Modifier::Extern,
             _ => unreachable!(),
         }
     }
@@ -47,6 +50,7 @@ impl Modifier {
             Modifier::Internal => "internal",
             Modifier::Unsafe => "unsafe",
             Modifier::Wasi => "wasi",
+            Modifier::Extern => "extern",
         }
     }
 }

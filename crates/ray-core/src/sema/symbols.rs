@@ -10,8 +10,8 @@ use ray_typing::{tyctx::TyCtx, types::TyScheme};
 
 use crate::{
     ast::{
-        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, ScopedAccess,
-        WalkItem, walk_module,
+        Assign, Call, Curly, CurlyElement, Decl, Dot, Expr, Func, FuncSig, Module, PathBinding,
+        ScopedAccess, WalkItem, walk_module,
     },
     sourcemap::SourceMap,
 };
@@ -128,7 +128,7 @@ impl<'a> SymbolBuildContext<'a> {
 
     fn record_assign(&mut self, assign: &Assign) {
         for node in assign.lhs.paths() {
-            let (path, is_lvalue) = node.value;
+            let PathBinding { path, is_lvalue } = node.value;
             if !is_lvalue {
                 let source = self.srcmap.get_by_id(node.id).unwrap();
                 self.record_definition(node.id, &path, &source);
@@ -281,7 +281,7 @@ impl<'a> SymbolBuildContext<'a> {
             log::debug!("[build_symbol_map] item = {:?}", item);
             match item {
                 WalkItem::Decl(decl) => match &decl.value {
-                    Decl::Mutable(node) | Decl::Name(node) => {
+                    Decl::Mutable(node, _) | Decl::Name(node, _) => {
                         if let Some(source) = self.srcmap.get_by_id(node.id) {
                             self.record_definition(node.id, &node.path, &source);
                         }
@@ -320,7 +320,7 @@ impl<'a> SymbolBuildContext<'a> {
                     Decl::Impl(imp) => {
                         self.record_parsed_ty(&imp.ty);
                     }
-                    Decl::Extern(_) | Decl::TypeAlias(_, _) | Decl::FileMain(_) => continue,
+                    Decl::TypeAlias(_, _) | Decl::FileMain(_) => continue,
                 },
                 WalkItem::Expr(expr) => match &expr.value {
                     Expr::Assign(assign) => self.record_assign(assign),

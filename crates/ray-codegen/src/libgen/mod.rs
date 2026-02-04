@@ -61,7 +61,6 @@ pub enum DefinitionKind {
     Variable {
         ty: Option<Ty>,
     },
-    Extern,
     TypeAlias,
     Unknown,
 }
@@ -210,7 +209,7 @@ impl Display for DefinitionRecord {
                     }
                 }
                 DefinitionKind::Unknown => writeln!(f, "{}", path.unwrap()),
-                DefinitionKind::Extern | DefinitionKind::TypeAlias => Ok(()),
+                DefinitionKind::TypeAlias => Ok(()),
             }
         }
 
@@ -297,10 +296,6 @@ fn register_decl_paths(
         Decl::FnSig(sig) => {
             register_func_sig(decl.id, sig, srcmap, tcx, records, parent);
         }
-        Decl::Extern(ext) => {
-            let parent = DefinitionKind::Extern;
-            register_decl_paths(ext.decl_node(), srcmap, tcx, records, Some(&parent));
-        }
         Decl::Trait(tr) => {
             let kind = DefinitionKind::Trait {
                 ty: tcx.pretty_tys(tr.ty.value()),
@@ -374,8 +369,8 @@ fn register_decl_paths(
                 DefinitionKind::TypeAlias,
             );
         }
-        Decl::Mutable(_) => todo!(),
-        Decl::Name(_) => todo!(),
+        Decl::Mutable(_, _) => todo!(),
+        Decl::Name(_, _) => todo!(),
         Decl::Declare(_) => todo!(),
         Decl::FileMain(_) => {
             // FileMain doesn't define any paths for libgen

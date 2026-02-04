@@ -177,14 +177,8 @@ impl<'a> BindingPassCtx<'a> {
             Decl::Declare(assign) => {
                 self.record_assignment(decl_node.id, &assign.lhs.value, Some(assign.rhs.id))
             }
-            Decl::Mutable(name) => self.record_name_decl(name, true),
-            Decl::Name(name) => self.record_name_decl(name, false),
-            Decl::Extern(ext) => {
-                let inner_decl = ext.decl_node();
-                if let Decl::FnSig(sig) = &inner_decl.value {
-                    self.record_extern(decl_node.id, inner_decl.id, sig);
-                }
-            }
+            Decl::Mutable(name, _) => self.record_name_decl(name, true),
+            Decl::Name(name, _) => self.record_name_decl(name, false),
             Decl::FileMain(stmts) => {
                 for stmt in stmts {
                     self.visit_expr(stmt);
@@ -1248,8 +1242,8 @@ mod tests {
         let mutable_name = Node::new(Name::typed("pkg::MUTABLE", parsed.clone()));
         let named_name = Node::new(Name::typed("pkg::CONST", parsed));
 
-        let mutable_decl = Node::new(Decl::Mutable(mutable_name.clone()));
-        let named_decl = Node::new(Decl::Name(named_name.clone()));
+        let mutable_decl = Node::new(Decl::Mutable(mutable_name.clone(), vec![]));
+        let named_decl = Node::new(Decl::Name(named_name.clone(), vec![]));
 
         let module = test_module(vec![mutable_decl.clone(), named_decl.clone()]);
         let mut srcmap = SourceMap::new();
@@ -1292,8 +1286,8 @@ mod tests {
         let mutable_name = Node::new(Name::new("pkg::UNANNOTATED_MUT"));
         let named_name = Node::new(Name::new("pkg::UNANNOTATED_CONST"));
 
-        let mutable_decl = Node::new(Decl::Mutable(mutable_name.clone()));
-        let named_decl = Node::new(Decl::Name(named_name.clone()));
+        let mutable_decl = Node::new(Decl::Mutable(mutable_name.clone(), vec![]));
+        let named_decl = Node::new(Decl::Name(named_name.clone(), vec![]));
 
         let module = test_module(vec![mutable_decl.clone(), named_decl.clone()]);
         let mut srcmap = SourceMap::new();

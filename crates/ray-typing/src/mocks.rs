@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use ray_shared::{
-    def::DefId, local_binding::LocalBindingId, pathlib::ItemPath, resolution::DefTarget, ty::Ty,
+    def::DefId, local_binding::LocalBindingId, node_id::NodeId, pathlib::ItemPath,
+    resolution::DefTarget, ty::Ty,
 };
 
 use crate::{
@@ -118,5 +119,10 @@ impl TypecheckEnv for MockTypecheckEnv {
     fn def_item_path(&self, _target: &DefTarget) -> Option<ItemPath> {
         // Mock doesn't have access to definition paths
         None
+    }
+
+    fn local_bindings_for_group(&self) -> HashMap<NodeId, LocalBindingId> {
+        // Mock doesn't track local bindings
+        HashMap::new()
     }
 }

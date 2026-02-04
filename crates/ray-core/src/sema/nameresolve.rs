@@ -14,6 +14,7 @@ use ray_shared::{
 };
 use ray_typing::types::TyScheme;
 
+use crate::ast::{PathBinding, PathBindingMut};
 use crate::{
     ast::{
         Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dict,
@@ -261,7 +262,7 @@ pub fn resolve_names_in_file(
                 // Handle assignment patterns - create new bindings for new names,
                 // resolve existing bindings for lvalues
                 for node in pat.paths().into_iter() {
-                    let (path, is_lvalue) = node.value;
+                    let PathBinding { path, is_lvalue } = node.value;
                     let Some(name) = path.name() else {
                         continue;
                     };
@@ -304,11 +305,6 @@ pub fn resolve_names_in_file(
 
 fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
     match &decl.value {
-        Decl::Extern(_ext) => {
-            // The walker automatically visits the inner decl (ext.decl_node()),
-            // and FnSig handles its own type params via sig.ty_params, so we
-            // don't need to do anything special here.
-        }
         Decl::Func(func) => {
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
@@ -358,7 +354,7 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             // Resolve type references in type alias
             resolve_type_alias_type_refs(aliased_ty, ctx);
         }
-        Decl::Mutable(name_node) | Decl::Name(name_node) => {
+        Decl::Mutable(name_node, _) | Decl::Name(name_node, _) => {
             // Resolve type annotation in binding declaration (e.g., `x: Int` or `mut x: String`)
             if let Some(parsed_ty_scheme) = &name_node.value.ty {
                 // Bindings don't have type parameters
@@ -953,9 +949,8 @@ impl NameResolve for Node<Decl> {
     fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let src = ctx.srcmap.get(self);
         match &mut self.value {
-            Decl::Extern(extern_) => Sourced(extern_, &src).resolve_names(ctx),
-            Decl::Mutable(_) => todo!(),
-            Decl::Name(_) => todo!(),
+            Decl::Mutable(_, _) => todo!(),
+            Decl::Name(_, _) => todo!(),
             Decl::Declare(declare) => Sourced(declare, &src).resolve_names(ctx),
             Decl::Func(func) => Sourced(func, &src).resolve_names(ctx),
             Decl::FnSig(fnsig) => Sourced(fnsig, &src).resolve_names(ctx),
@@ -1088,8 +1083,8 @@ impl NameResolve for Sourced<'_, Extern> {
     fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (ext, src) = self.unpack_mut();
         match ext.decl_mut() {
-            Decl::Mutable(_) => todo!(),
-            Decl::Name(_) => todo!(),
+            Decl::Mutable(_, _) => todo!(),
+            Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::FnSig(sig) => {
                 log::debug!("NameResolve::resolve_names: extern fn sig: {:?}", sig);
@@ -1097,11 +1092,7 @@ impl NameResolve for Sourced<'_, Extern> {
             }
             Decl::Struct(struct_) => Sourced(struct_, src).resolve_names(ctx)?,
             Decl::Impl(impl_) => Sourced(impl_, src).resolve_names(ctx)?,
-            Decl::Func(_)
-            | Decl::Trait(_)
-            | Decl::TypeAlias(_, _)
-            | Decl::Extern(_)
-            | Decl::FileMain(_) => {
+            Decl::Func(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) | Decl::FileMain(_) => {
                 unreachable!("extern cannot wrap {:?}", ext.decl())
             }
         }
@@ -1228,7 +1219,7 @@ impl NameResolve for Sourced<'_, Assign> {
     fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (assign, src) = self.unpack_mut();
         for node in assign.lhs.paths_mut() {
-            let (path, is_lvalue) = node.value;
+            let PathBindingMut { path, is_lvalue } = node.value;
             let base_scope = ctx.current_scope_or(&src.path.with_names_only());
             let name_str = path.name();
             let full_path = base_scope.append_path(path.clone());
@@ -1389,7 +1380,7 @@ impl NameResolve for Sourced<'_, For> {
         ctx.push_scope_path(for_scope.clone());
         ctx.local_scopes.push(HashMap::new());
         for node in self.pat.paths_mut() {
-            let (path, is_lvalue) = node.value;
+            let PathBindingMut { path, is_lvalue } = node.value;
             if is_lvalue {
                 continue;
             }
@@ -1519,8 +1510,8 @@ mod tests {
     use crate::{
         ast::{
             Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, Extern,
-            File, FnParam, Func, FuncSig, Impl, Literal, Name, New, Node, Pattern as AstPattern,
-            ScopedAccess, Sequence, Struct, Trait, TypeParams,
+            File, FnParam, Func, FuncSig, Impl, Literal, Modifier, Name, New, Node,
+            Pattern as AstPattern, ScopedAccess, Sequence, Struct, Trait, TypeParams,
             token::{Token, TokenKind},
         },
         sema::{
@@ -3267,7 +3258,7 @@ mod tests {
 
         // Create name binding with type annotation
         let name = Name::typed("x", parsed_ty);
-        let name_decl = Node::new(Decl::Name(Node::new(name)));
+        let name_decl = Node::new(Decl::Name(Node::new(name), vec![]));
 
         let file = test_file(vec![name_decl], vec![]);
         let imports = HashMap::new();
@@ -3300,7 +3291,7 @@ mod tests {
 
         // Create mutable binding with type annotation
         let name = Name::typed("x", parsed_ty);
-        let mutable_decl = Node::new(Decl::Mutable(Node::new(name)));
+        let mutable_decl = Node::new(Decl::Mutable(Node::new(name), vec![]));
 
         let file = test_file(vec![mutable_decl], vec![]);
         let imports = HashMap::new();
@@ -3379,7 +3370,7 @@ mod tests {
 
         // Create name binding with type annotation
         let name = Name::typed("x", parsed_ty);
-        let name_decl = Node::new(Decl::Name(Node::new(name)));
+        let name_decl = Node::new(Decl::Name(Node::new(name), vec![]));
 
         let file = test_file(vec![name_decl], vec![]);
         let imports = HashMap::new();
@@ -3435,7 +3426,7 @@ mod tests {
             ty_params: None,
             ret_ty: None,
             ty: None,
-            modifiers: vec![],
+            modifiers: vec![Modifier::Extern],
             qualifiers: vec![],
             doc_comment: None,
             is_anon: false,
@@ -3444,9 +3435,8 @@ mod tests {
             span: Span::default(),
         };
         let fnsig_decl = Node::new(Decl::FnSig(sig));
-        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
 
-        let file = test_file(vec![extern_decl], vec![]);
+        let file = test_file(vec![fnsig_decl], vec![]);
         let imports = HashMap::new();
         let mut exports = HashMap::new();
         let string_def_id = DefId::new(FileId(0), 1);
@@ -3483,7 +3473,7 @@ mod tests {
             ty_params: None,
             ret_ty: Some(parsed_ret_ty),
             ty: None,
-            modifiers: vec![],
+            modifiers: vec![Modifier::Extern],
             qualifiers: vec![],
             doc_comment: None,
             is_anon: false,
@@ -3492,9 +3482,8 @@ mod tests {
             span: Span::default(),
         };
         let fnsig_decl = Node::new(Decl::FnSig(sig));
-        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
 
-        let file = test_file(vec![extern_decl], vec![]);
+        let file = test_file(vec![fnsig_decl], vec![]);
         let imports = HashMap::new();
         let mut exports = HashMap::new();
         let rawptr_def_id = DefId::new(FileId(0), 1);
@@ -3554,7 +3543,7 @@ mod tests {
             }),
             ret_ty: None,
             ty: None,
-            modifiers: vec![],
+            modifiers: vec![Modifier::Extern],
             qualifiers: vec![],
             doc_comment: None,
             is_anon: false,
@@ -3563,9 +3552,8 @@ mod tests {
             span: Span::default(),
         };
         let fnsig_decl = Node::new(Decl::FnSig(sig));
-        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
 
-        let file = test_file(vec![extern_decl], vec![]);
+        let file = test_file(vec![fnsig_decl], vec![]);
         let imports = HashMap::new();
         let mut exports = HashMap::new();
         let rawptr_def_id = DefId::new(FileId(0), 1);
@@ -3626,7 +3614,7 @@ mod tests {
             }),
             ret_ty: None,
             ty: None,
-            modifiers: vec![],
+            modifiers: vec![Modifier::Extern],
             qualifiers: vec![],
             doc_comment: None,
             is_anon: false,
@@ -3635,9 +3623,8 @@ mod tests {
             span: Span::default(),
         };
         let fnsig_decl = Node::new(Decl::FnSig(sig));
-        let extern_decl = Node::new(Decl::Extern(Extern::new(fnsig_decl)));
 
-        let file = test_file(vec![extern_decl], vec![]);
+        let file = test_file(vec![fnsig_decl], vec![]);
         let imports = HashMap::new();
         let exports = HashMap::new();
 

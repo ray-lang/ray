@@ -170,8 +170,7 @@ impl<'a> SemanticTokenCollector<'a> {
                 self.emit_parsed_ty(ty, SemanticTokenKind::Type);
             }
             Decl::Impl(im) => self.visit_impl(im),
-            Decl::Extern(ext) => self.visit_decl(ext.decl_node()),
-            Decl::Mutable(name) => {
+            Decl::Mutable(name, _) => {
                 self.emit_name_node(
                     name,
                     SemanticTokenKind::Variable,
@@ -181,7 +180,7 @@ impl<'a> SemanticTokenCollector<'a> {
                     ],
                 );
             }
-            Decl::Name(name) => {
+            Decl::Name(name, _) => {
                 self.emit_name_node(
                     name,
                     SemanticTokenKind::Variable,

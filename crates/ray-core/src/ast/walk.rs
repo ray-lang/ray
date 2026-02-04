@@ -111,17 +111,13 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
                     }
                 }
             }
-            Decl::Extern(ext) => {
-                walk.stack
-                    .push(StackEntry::EnterNode(WalkItem::Decl(ext.decl_node())));
-            }
             Decl::FileMain(stmts) => {
                 for stmt in stmts.iter().rev() {
                     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(stmt)));
                 }
             }
-            Decl::Mutable(_)
-            | Decl::Name(_)
+            Decl::Mutable(_, _)
+            | Decl::Name(_, _)
             | Decl::Struct(_)
             | Decl::Declare(_)
             | Decl::FnSig(_)
@@ -230,11 +226,11 @@ fn push_func<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, func: &'a Func) {
 }
 
 fn push_for<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, for_expr: &'a For) {
-    walk.stack
-        .push(StackEntry::EnterNode(WalkItem::Pattern(&for_expr.pat)));
     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
         for_expr.body.as_ref(),
     )));
+    walk.stack
+        .push(StackEntry::EnterNode(WalkItem::Pattern(&for_expr.pat)));
     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
         for_expr.expr.as_ref(),
     )));

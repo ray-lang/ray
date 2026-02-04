@@ -177,7 +177,7 @@ fn make_string() -> string {
     let paths = raw_ptr_assign.lhs.paths();
     let raw_ptr_path_node = paths.first().expect("expected a single path");
     // The raw AST path is just "raw_ptr", not the fully qualified path
-    assert!(raw_ptr_path_node.0.name() == Some("raw_ptr".to_string()));
+    assert!(raw_ptr_path_node.path.name() == Some("raw_ptr".to_string()));
 
     // Use symbol_targets query to check the definition site
     let def_targets = symbol_targets(&result.db, raw_ptr_path_node.id);

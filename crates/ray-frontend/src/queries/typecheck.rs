@@ -26,6 +26,7 @@ use ray_typing::{
 
 use crate::{
     queries::{
+        bindings::local_bindings_for_group,
         defs::{
             all_traits, def_for_path, def_path, impl_def, impls_for_trait, impls_for_type,
             struct_def, trait_def,
@@ -47,17 +48,31 @@ use crate::{
 ///
 /// The `file_id` is used for context-dependent operations like `resolve_builtin`,
 /// which needs to know what file's imports are in scope.
+///
+/// The `group_id` identifies the current binding group being typechecked,
+/// used for `local_bindings_for_group`. This is optional because some contexts
+/// (like AST lowering) don't have a binding group context.
 pub struct QueryEnv<'db> {
     db: &'db Database,
     file_id: FileId,
+    group_id: Option<BindingGroupId>,
 }
 
 impl<'db> QueryEnv<'db> {
-    /// Create a new QueryEnv for a specific file context.
+    /// Create a new QueryEnv for a specific file context without a binding group.
     ///
     /// The file_id determines what imports are in scope for builtin resolution.
+    /// Use `with_group` when you need `local_bindings_for_group` functionality.
     pub fn new(db: &'db Database, file_id: FileId) -> Self {
-        QueryEnv { db, file_id }
+        QueryEnv { db, file_id, group_id: None }
+    }
+
+    /// Create a new QueryEnv with a binding group context.
+    ///
+    /// The file_id determines what imports are in scope for builtin resolution.
+    /// The group_id enables `local_bindings_for_group` to return bindings for the group.
+    pub fn with_group(db: &'db Database, file_id: FileId, group_id: BindingGroupId) -> Self {
+        QueryEnv { db, file_id, group_id: Some(group_id) }
     }
 }
 
@@ -171,6 +186,13 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
     fn def_item_path(&self, target: &DefTarget) -> Option<ItemPath> {
         def_path(self.db, target.clone())
+    }
+
+    fn local_bindings_for_group(&self) -> HashMap<NodeId, LocalBindingId> {
+        match &self.group_id {
+            Some(group_id) => local_bindings_for_group(self.db, group_id.clone()),
+            None => HashMap::new(),
+        }
     }
 }
 
@@ -338,7 +360,7 @@ pub fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypeCheckResu
 
     // Use QueryEnv for TypecheckEnv (pick file from first member)
     let file_id = members.first().map(|d| d.file).unwrap_or(FileId(0));
-    let env = QueryEnv::new(db, file_id);
+    let env = QueryEnv::with_group(db, file_id, group_id);
 
     ray_typing::typecheck_group(&input, &group, external_schemes, &env)
 }

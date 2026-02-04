@@ -308,11 +308,12 @@ fn register_decl_paths(
             register_func(decl.id, func, srcmap, tcx, records, parent);
         }
         Decl::FnSig(sig) => {
+            let parent = if sig.modifiers.contains(&Modifier::Extern) {
+                Some(&DefinitionKind::Extern)
+            } else {
+                parent
+            };
             register_func_sig(decl.id, sig, srcmap, tcx, records, parent);
-        }
-        Decl::Extern(ext) => {
-            let parent = DefinitionKind::Extern;
-            register_decl_paths(ext.decl_node(), srcmap, tcx, records, Some(&parent));
         }
         Decl::Trait(tr) => {
             let kind = DefinitionKind::Trait {
@@ -387,8 +388,8 @@ fn register_decl_paths(
                 DefinitionKind::TypeAlias,
             );
         }
-        Decl::Mutable(_) => todo!(),
-        Decl::Name(_) => todo!(),
+        Decl::Mutable(_, _) => todo!(),
+        Decl::Name(_, _) => todo!(),
         Decl::Declare(_) => todo!(),
         Decl::FileMain(_) => {
             // FileMain doesn't define any paths for libgen

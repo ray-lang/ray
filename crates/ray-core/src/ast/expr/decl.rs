@@ -4,11 +4,16 @@ use std::{
 };
 
 use itertools::Itertools;
-use ray_shared::{pathlib::Path, span::parsed::Parsed, ty::Ty, utils::join};
+use ray_shared::{
+    pathlib::Path,
+    span::parsed::Parsed,
+    ty::Ty,
+    utils::{join, map_join},
+};
 use ray_typing::types::{NominalKind, TyScheme};
 
 use crate::{
-    ast::{Assign, Expr, Func, FuncSig, Name, Node, TypeParams},
+    ast::{Assign, Expr, Func, FuncSig, Modifier, Name, Node, TypeParams},
     strutils,
 };
 
@@ -59,9 +64,8 @@ impl Extern {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decl {
-    Extern(Extern),
-    Mutable(Node<Name>),
-    Name(Node<Name>),
+    Mutable(Node<Name>, Vec<Modifier>),
+    Name(Node<Name>, Vec<Modifier>),
     Declare(Assign),
     Func(Func),
     FnSig(FuncSig),
@@ -97,12 +101,11 @@ impl Into<usize> for &Decl {
             Decl::Trait(_) => 0,
             Decl::Struct(_) => 1,
             Decl::TypeAlias(_, _) => 2,
-            Decl::Extern(_) => 3,
-            Decl::Func(_) | Decl::FnSig(_) => 4,
-            Decl::Impl(_) => 5,
-            Decl::Declare(_) => 6,
-            Decl::Mutable(_) | Decl::Name(_) => 7,
-            Decl::FileMain(_) => 8,
+            Decl::Func(_) | Decl::FnSig(_) => 3,
+            Decl::Impl(_) => 4,
+            Decl::Declare(_) => 5,
+            Decl::Mutable(_, _) | Decl::Name(_, _) => 6,
+            Decl::FileMain(_) => 7,
         }
     }
 }
@@ -110,9 +113,8 @@ impl Into<usize> for &Decl {
 impl Decl {
     pub fn kind(&self) -> &'static str {
         match self {
-            Decl::Extern(_) => "Extern",
-            Decl::Mutable(_) => "Mutable",
-            Decl::Name(_) => "Name",
+            Decl::Mutable(_, _) => "Mutable",
+            Decl::Name(_, _) => "Name",
             Decl::Declare(_) => "Declare",
             Decl::Func(_) => "Func",
             Decl::FnSig(_) => "FnSig",
@@ -126,9 +128,8 @@ impl Decl {
 
     pub fn desc(&self) -> String {
         match self {
-            Decl::Extern(e) => format!("extern {}", e.decl().desc()),
-            Decl::Mutable(_) => todo!("mutable variable"),
-            Decl::Name(_) => todo!("variable"),
+            Decl::Mutable(_, _) => todo!("mutable variable"),
+            Decl::Name(_, _) => todo!("variable"),
             Decl::Declare(_) => todo!("variable"),
             Decl::Func(_) => str!("function"),
             Decl::FnSig(_) => str!("function signature"),
@@ -142,9 +143,9 @@ impl Decl {
 
     pub fn is_typed(&self) -> bool {
         match self {
-            Decl::Extern(_) | Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => true,
-            Decl::Mutable(_) => todo!(),
-            Decl::Name(_) => todo!(),
+            Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => true,
+            Decl::Mutable(_, _) => todo!(),
+            Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::Func(f) => f.sig.ty.is_some(),
             Decl::FnSig(sig) => sig.ty.is_some(),
@@ -155,13 +156,9 @@ impl Decl {
 
     pub fn get_ty(&self) -> Option<&TyScheme> {
         match self {
-            Decl::Extern(_)
-            | Decl::Impl(_)
-            | Decl::Struct(_)
-            | Decl::Trait(_)
-            | Decl::TypeAlias(_, _) => todo!(),
-            Decl::Mutable(_) => todo!(),
-            Decl::Name(_) => todo!(),
+            Decl::Impl(_) | Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => todo!(),
+            Decl::Mutable(_, _) => todo!(),
+            Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::Func(f) => f.sig.ty.as_ref(),
             Decl::FnSig(sig) => sig.ty.as_ref(),
@@ -170,11 +167,10 @@ impl Decl {
     }
 
     pub fn get_defs(&self) -> HashMap<&Path, Option<&TyScheme>> {
-        let mut defs = HashMap::new();
+        let mut defs: HashMap<&Path, Option<&TyScheme>> = HashMap::new();
         match self {
-            Decl::Extern(ex) => defs.extend(ex.decl().get_defs()),
-            Decl::Mutable(_) => todo!(),
-            Decl::Name(_) => todo!(),
+            Decl::Mutable(_, _) => todo!(),
+            Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::Func(f) => {
                 defs.insert(&f.sig.path, f.sig.ty.as_ref());
@@ -257,9 +253,26 @@ pub struct Impl {
 impl std::fmt::Display for Decl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Decl::Extern(ext) => write!(f, "(extern {})", ext),
-            Decl::Mutable(n) => write!(f, "(mut {})", n),
-            Decl::Name(n) => write!(f, "(declare {})", n),
+            Decl::Mutable(n, mods) => write!(
+                f,
+                "({}mut {})",
+                n,
+                if !mods.is_empty() {
+                    format!("{} ", join(mods, " "))
+                } else {
+                    String::new()
+                }
+            ),
+            Decl::Name(n, mods) => write!(
+                f,
+                "({}declare {})",
+                n,
+                if !mods.is_empty() {
+                    format!("{} ", join(mods, " "))
+                } else {
+                    String::new()
+                }
+            ),
             Decl::Declare(a) => write!(f, "(declare {})", a),
             Decl::TypeAlias(n, ty) => write!(f, "(type {} = {})", n, ty),
             Decl::Func(func) => write!(f, "{}", func),
@@ -351,8 +364,7 @@ impl std::fmt::Display for Decl {
 impl Decl {
     pub fn get_name(&self) -> Option<String> {
         match &self {
-            Decl::Extern(e) => e.decl.get_name(),
-            Decl::Mutable(n) | Decl::Name(n) => Some(n.path.to_string()),
+            Decl::Mutable(n, _) | Decl::Name(n, _) => Some(n.path.to_string()),
             Decl::Func(f) => f.sig.path.name(),
             Decl::FnSig(sig) => sig.path.name(),
             Decl::Struct(s) => s.path.name(),

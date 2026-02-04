@@ -1108,7 +1108,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     let impl_path = ItemPath::new(module_path, vec![impl_type_name]);
 
     // Extract method info with resolved types
-    let methods = extract_impl_methods_resolved(
+    let methods = extract_impl_methods(
         db,
         im,
         &parse_result.defs,
@@ -1127,86 +1127,11 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     })
 }
 
-/// Extract method info from an impl block.
-#[allow(dead_code)]
-fn extract_impl_methods(im: &Impl, defs: &[DefHeader], parent_path: &ItemPath) -> Vec<MethodInfo> {
-    let mut methods = Vec::new();
-
-    if let Some(funcs) = &im.funcs {
-        for decl in funcs {
-            let Decl::Func(func) = &decl.value else {
-                unreachable!("impl funcs should only contain Decl::Func");
-            };
-            let def_id = match defs.iter().find(|h| h.root_node == decl.id) {
-                Some(h) => h.def_id,
-                None => continue,
-            };
-            let target = DefTarget::Workspace(def_id);
-            if let Some(name) = func.sig.path.name() {
-                let path = parent_path.with_item(&name);
-                let is_static = func
-                    .sig
-                    .modifiers
-                    .iter()
-                    .any(|m| matches!(m, Modifier::Static));
-                let recv_mode = compute_receiver_mode(&func.sig, is_static);
-                let scheme = func.sig.extract_scheme(None);
-                methods.push(MethodInfo {
-                    target,
-                    path,
-                    name: name.to_string(),
-                    is_static,
-                    recv_mode,
-                    scheme,
-                });
-            }
-        }
-    }
-
-    if let Some(externs) = &im.externs {
-        for ext_node in externs {
-            let def_id = match defs.iter().find(|h| h.root_node == ext_node.id) {
-                Some(h) => h.def_id,
-                None => continue,
-            };
-            let target = DefTarget::Workspace(def_id);
-            if let Decl::Extern(ext) = &ext_node.value {
-                if let Some(name) = ext.decl().get_name() {
-                    let path = parent_path.with_item(&name);
-                    // Extern methods - check the inner FnSig
-                    let inner_decl = ext.decl_node();
-                    let (is_static, recv_mode, scheme) = if let Decl::FnSig(sig) = &inner_decl.value
-                    {
-                        let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
-                        (
-                            is_static,
-                            compute_receiver_mode(sig, is_static),
-                            sig.extract_scheme(None),
-                        )
-                    } else {
-                        (false, ReceiverMode::Value, TyScheme::from_mono(Ty::Any))
-                    };
-                    methods.push(MethodInfo {
-                        target,
-                        path,
-                        name,
-                        is_static,
-                        recv_mode,
-                        scheme,
-                    });
-                }
-            }
-        }
-    }
-
-    methods
-}
-
 /// Extract method info from an impl block with resolved types.
 ///
 /// This version combines the parent impl's var_map with each method's own var_map
 /// to properly resolve inherited type parameters.
-fn extract_impl_methods_resolved<F>(
+fn extract_impl_methods<F>(
     db: &Database,
     im: &Impl,
     defs: &[DefHeader],
@@ -1263,54 +1188,6 @@ where
                     recv_mode,
                     scheme,
                 });
-            }
-        }
-    }
-
-    if let Some(externs) = &im.externs {
-        for ext_node in externs {
-            let def_id = match defs.iter().find(|h| h.root_node == ext_node.id) {
-                Some(h) => h.def_id,
-                None => continue,
-            };
-            let target = DefTarget::Workspace(def_id);
-
-            // Get the extern method's own type mappings
-            let method_mapping = mapped_def_types(db, def_id);
-
-            // Combine parent var_map with method var_map
-            let mut combined_var_map = parent_var_map.clone();
-            combined_var_map.extend(method_mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
-
-            if let Decl::Extern(ext) = &ext_node.value {
-                if let Some(name) = ext.decl().get_name() {
-                    let path = parent_path.with_item(&name);
-                    let inner_decl = ext.decl_node();
-                    let (is_static, recv_mode, scheme) = if let Decl::FnSig(sig) = &inner_decl.value
-                    {
-                        let is_static = sig.modifiers.iter().any(|m| matches!(m, Modifier::Static));
-                        (
-                            is_static,
-                            compute_receiver_mode(sig, is_static),
-                            extract_method_scheme_resolved(
-                                sig,
-                                resolutions,
-                                &combined_var_map,
-                                get_item_path,
-                            ),
-                        )
-                    } else {
-                        (false, ReceiverMode::Value, TyScheme::from_mono(Ty::Any))
-                    };
-                    methods.push(MethodInfo {
-                        target,
-                        path,
-                        name,
-                        is_static,
-                        recv_mode,
-                        scheme,
-                    });
-                }
             }
         }
     }

@@ -339,13 +339,12 @@ fn compute_signature_status(decl: &Node<Decl>) -> SignatureStatus {
     match &decl.value {
         Decl::Func(func) => compute_func_signature_status(func),
         Decl::FnSig(sig) => compute_fn_sig_signature_status(sig),
-        Decl::Extern(ext) => compute_signature_status(ext.decl_node()),
         // These always have explicit type information
         Decl::Struct(_) | Decl::Trait(_) | Decl::Impl(_) | Decl::TypeAlias(_, _) => {
             SignatureStatus::FullyAnnotated
         }
         // Variable declarations
-        Decl::Name(name) | Decl::Mutable(name) => {
+        Decl::Name(name, _) | Decl::Mutable(name, _) => {
             if name.value.ty.is_some() {
                 SignatureStatus::FullyAnnotated
             } else {
@@ -516,9 +515,6 @@ where
         Decl::FnSig(sig) => {
             compute_func_scheme_resolved(sig, var_map, resolutions, get_item_path, status)
         }
-        Decl::Extern(ext) => {
-            compute_scheme_resolved(ext.decl_node(), var_map, resolutions, get_item_path, status)
-        }
         // For non-function definitions, we don't compute schemes here
         // (structs/traits/impls have their own type representations)
         _ => None,
@@ -631,8 +627,7 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
             // (any type vars in the aliased type are free)
             vec![]
         }
-        Decl::Extern(ext) => extract_type_param_names(ext.decl_node()),
-        Decl::Name(_) | Decl::Mutable(_) | Decl::Declare(_) | Decl::FileMain(_) => vec![],
+        Decl::Name(_, _) | Decl::Mutable(_, _) | Decl::Declare(_) | Decl::FileMain(_) => vec![],
     }
 }
 

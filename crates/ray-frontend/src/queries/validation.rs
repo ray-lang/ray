@@ -6,7 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use ray_core::{
-    ast::{Assign, Decl, Expr, Func, FuncSig, Node, Pattern, WalkItem, WalkScopeKind, walk_decl},
+    ast::{
+        Assign, Decl, Expr, Func, FuncSig, Node, PathBinding, Pattern, WalkItem, WalkScopeKind,
+        walk_decl,
+    },
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
 };
@@ -104,10 +107,6 @@ fn validate_function(
     let (sig, body) = match &decl.value {
         Decl::Func(func) => (&func.sig, &func.body),
         Decl::FnSig(sig) => (sig, &None),
-        Decl::Extern(ext) => {
-            validate_function(db, ext.decl_node(), file_id, filepath, srcmap, errors);
-            return;
-        }
         _ => return,
     };
 
@@ -320,7 +319,7 @@ impl MutabilityCtx {
     fn register_pattern(&mut self, pattern: &Node<Pattern>, is_mut: bool) {
         if let Some(current_scope) = self.scope_stack.last_mut() {
             for node in pattern.paths() {
-                let (path, _) = node.value;
+                let PathBinding { path, .. } = node.value;
                 current_scope.insert(path.clone(), BindingInfo { is_mut });
             }
         }
@@ -429,7 +428,7 @@ fn validate_assignment(
 ) {
     // Check each path in the LHS pattern
     for node in assign.lhs.paths() {
-        let (path, is_lvalue) = node.value;
+        let PathBinding { path, is_lvalue } = node.value;
 
         // is_lvalue means it's a dereference like *ptr, not a simple name
         // When is_lvalue is true, we're not checking mutability of the name itself

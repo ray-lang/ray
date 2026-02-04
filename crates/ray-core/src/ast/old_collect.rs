@@ -101,13 +101,13 @@ impl CollectDeclarations for Node<Decl> {
                 // B = (∅,∅,•) Σ = [x1 :σ,...,xn :σ]
                 let mut env = SchemeEnv::new();
                 let (fqn, ty_scheme) = match ext.decl() {
-                    Decl::Mutable(_) => {
+                    Decl::Mutable(_, _) => {
                         todo!()
                         // let ty = n.ty.as_deref().unwrap().clone();
                         // let fqn = n.path.clone();
                         // (fqn, ty)
                     }
-                    Decl::Name(_) => {
+                    Decl::Name(_, _) => {
                         todo!()
                         // let ty = n.ty.as_deref().unwrap().clone();
                         // let fqn = n.path.clone();

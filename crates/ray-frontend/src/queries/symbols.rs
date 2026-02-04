@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use ray_core::ast::{CurlyElement, Decl, Expr, WalkItem, walk_file};
+use ray_core::ast::{CurlyElement, Decl, Expr, PathBinding, WalkItem, walk_file};
 use ray_query_macros::query;
 use ray_shared::{
     def::DefId,
@@ -272,15 +272,15 @@ pub fn definition_identities(db: &Database, file_id: FileId) -> HashMap<NodeId, 
                     Decl::TypeAlias(name, _) => {
                         identities.insert(name.id, def_identity);
                     }
-                    Decl::Mutable(name) | Decl::Name(name) => {
+                    Decl::Mutable(name, _) | Decl::Name(name, _) => {
                         identities.insert(name.id, def_identity);
                     }
-                    Decl::Extern(_) | Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) => {}
+                    Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) => {}
                 }
             }
             WalkItem::Pattern(pattern) => {
                 for node in pattern.paths().into_iter() {
-                    let (_path, is_lvalue) = node.value;
+                    let PathBinding { is_lvalue, .. } = node.value;
                     if is_lvalue {
                         continue;
                     }

@@ -136,18 +136,6 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
                 }
             }
         }
-        Decl::Extern(ext) => {
-            // Recurse into the inner declaration
-            let inner_decl = ext.decl_mut();
-            match inner_decl {
-                Decl::Func(func) => {
-                    if let Some(body) = &mut func.body {
-                        transform_expr(body, ctx);
-                    }
-                }
-                _ => {}
-            }
-        }
         Decl::FileMain(stmts) => {
             // Transform all top-level statements
             for stmt in stmts {
@@ -158,8 +146,8 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
         Decl::Struct(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)
-        | Decl::Mutable(_)
-        | Decl::Name(_)
+        | Decl::Mutable(_, _)
+        | Decl::Name(_, _)
         | Decl::Declare(_) => {}
     }
 }

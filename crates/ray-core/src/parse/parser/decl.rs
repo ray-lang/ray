@@ -202,9 +202,17 @@ impl Parser<'_> {
 
                 let annotated = name_node.ty.is_some();
                 let decl = if mutable {
-                    parser.mk_decl(Decl::Mutable(name_node), span, ctx.path.clone())
+                    parser.mk_decl(
+                        Decl::Mutable(name_node, vec![Modifier::Extern]),
+                        span,
+                        ctx.path.clone(),
+                    )
                 } else {
-                    parser.mk_decl(Decl::Name(name_node), span, ctx.path.clone())
+                    parser.mk_decl(
+                        Decl::Name(name_node, vec![Modifier::Extern]),
+                        span,
+                        ctx.path.clone(),
+                    )
                 };
 
                 parser.defs.push(DefHeader {
@@ -220,15 +228,7 @@ impl Parser<'_> {
                 Ok(decl)
             })?,
         };
-        let decl_span = self.srcmap.get(&decl).span.unwrap();
-        Ok(self.mk_decl(
-            Decl::Extern(Extern::new(decl)),
-            Span {
-                start,
-                end: decl_span.end,
-            },
-            ctx.path.clone(),
-        ))
+        Ok(decl)
     }
 
     pub(crate) fn parse_extern_fn_sig(
@@ -243,7 +243,8 @@ impl Parser<'_> {
         let decl = match parser.must_peek_kind()? {
             TokenKind::Fn | TokenKind::Modifier(_) => {
                 parser.enter_def::<DeclResult>(|parser, def_id| {
-                    let sig = parser.parse_fn_sig(ctx)?;
+                    let mut sig = parser.parse_fn_sig(ctx)?;
+                    sig.modifiers.insert(0, Modifier::Extern);
                     let span = sig.span;
                     let path = sig.path.value.clone();
 
@@ -278,12 +279,7 @@ impl Parser<'_> {
             }
         };
 
-        let end = parser.srcmap.span_of(&decl).end;
-        Ok(parser.mk_decl(
-            Decl::Extern(Extern::new(decl)),
-            Span { start, end },
-            ctx.path.clone(),
-        ))
+        Ok(decl)
     }
 
     pub(crate) fn parse_local(&mut self, is_extern: bool, ctx: &ParseContext) -> ExprResult {

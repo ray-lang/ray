@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
+    node_id::NodeId,
     pathlib::{ItemPath, Path},
     resolution::DefTarget,
     ty::Ty,
@@ -82,6 +83,13 @@ pub trait TypecheckEnv {
     /// This is used during lowering to convert resolved names (stored as DefTarget)
     /// into their canonical paths for use in the type system.
     fn def_item_path(&self, target: &DefTarget) -> Option<ItemPath>;
+
+    /// Get all NodeId → LocalBindingId mappings for the current binding group.
+    ///
+    /// This is used by the copy step after type inference to populate `node_tys`
+    /// from `local_tys`. Returns all nodes in the current group that resolve to
+    /// local bindings (parameters, let-bindings, closure captures, etc.).
+    fn local_bindings_for_group(&self) -> HashMap<NodeId, LocalBindingId>;
 }
 
 #[derive(

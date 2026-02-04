@@ -194,19 +194,48 @@ impl Pattern {
     }
 }
 
+pub struct PathBinding<'a> {
+    pub path: &'a Path,
+    pub is_lvalue: bool,
+}
+
+impl<'a> PathBinding<'a> {
+    pub fn new(path: &'a Path, is_lvalue: bool) -> Self {
+        Self { path, is_lvalue }
+    }
+}
+
+pub struct PathBindingMut<'a> {
+    pub path: &'a mut Path,
+    pub is_lvalue: bool,
+}
+
+impl<'a> PathBindingMut<'a> {
+    pub fn new(path: &'a mut Path, is_lvalue: bool) -> Self {
+        Self { path, is_lvalue }
+    }
+}
+
 impl Node<Pattern> {
-    pub fn paths(&self) -> Vec<Node<(&Path, bool)>> {
+    pub fn paths(&self) -> Vec<Node<PathBinding<'_>>> {
         match &self.value {
-            Pattern::Name(n) => vec![Node::with_id(self.id, (&n.path, false))],
-            Pattern::Deref(n) => vec![Node::with_id(self.id, (&n.path, true))],
+            Pattern::Name(n) => vec![Node::with_id(self.id, PathBinding::new(&n.path, false))],
+            Pattern::Deref(n) => vec![Node::with_id(self.id, PathBinding::new(&n.path, true))],
             Pattern::Dot(lhs, n) => lhs
                 .paths()
                 .into_iter()
-                .chain(std::iter::once(Node::with_id(n.id, (&n.path, true))))
+                .map(|mut node| {
+                    node.is_lvalue = true; // Mark LHS paths as lvalue
+                    node
+                })
+                .chain(std::iter::once(Node::with_id(
+                    n.id,
+                    PathBinding::new(&n.path, true),
+                )))
                 .collect(),
             Pattern::Index(lhs, _, _) => match &lhs.value {
-                Pattern::Name(n) => vec![Node::with_id(lhs.id, (&n.path, true))],
-                Pattern::Deref(n) => vec![Node::with_id(lhs.id, (&n.path, true))],
+                Pattern::Name(n) => vec![Node::with_id(lhs.id, PathBinding::new(&n.path, true))],
+                Pattern::Deref(n) => vec![Node::with_id(lhs.id, PathBinding::new(&n.path, true))],
                 _ => lhs.paths(),
             },
             Pattern::Some(inner) => inner.paths(),
@@ -217,20 +246,30 @@ impl Node<Pattern> {
         }
     }
 
-    pub fn paths_mut(&mut self) -> Vec<Node<(&mut Path, bool)>> {
+    pub fn paths_mut(&mut self) -> Vec<Node<PathBindingMut<'_>>> {
         match &mut self.value {
-            Pattern::Name(n) => vec![Node::with_id(self.id, (&mut n.path, false))],
-            Pattern::Deref(n) => vec![Node::with_id(n.id, (&mut n.path, true))],
+            Pattern::Name(n) => vec![Node::with_id(
+                self.id,
+                PathBindingMut::new(&mut n.path, false),
+            )],
+            Pattern::Deref(n) => vec![Node::with_id(n.id, PathBindingMut::new(&mut n.path, true))],
             Pattern::Dot(lhs, n) => lhs
                 .paths_mut()
                 .into_iter()
-                .chain(std::iter::once(Node::with_id(n.id, (&mut n.path, true))))
+                .map(|mut node| {
+                    node.is_lvalue = true; // Mark LHS paths as lvalue
+                    node
+                })
+                .chain(std::iter::once(Node::with_id(
+                    n.id,
+                    PathBindingMut::new(&mut n.path, true),
+                )))
                 .collect(),
             Pattern::Index(lhs, _, _) => lhs
                 .paths_mut()
                 .into_iter()
                 .map(|mut node| {
-                    node.value.1 = true;
+                    node.is_lvalue = true;
                     node
                 })
                 .collect(),

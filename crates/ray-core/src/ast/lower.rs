@@ -12,7 +12,7 @@ use ray_shared::{
 };
 use ray_typing::{constraints::Predicate, tyctx::TyCtx, types::TyScheme};
 
-use crate::sourcemap::SourceMap;
+use crate::{ast::PathBinding, sourcemap::SourceMap};
 use crate::{
     ast::{self, Impl},
     errors::{RayError, RayErrorKind, RayResult},
@@ -294,10 +294,7 @@ impl LowerAST for Node<Decl> {
         let src = ctx.srcmap.get(self);
         let decl = &mut self.value;
         match decl {
-            Decl::Extern(decl) => {
-                Sourced(decl, &src).lower(ctx)?;
-            }
-            Decl::Mutable(n) | Decl::Name(n) => {
+            Decl::Mutable(n, _) | Decl::Name(n, _) => {
                 if let Some(ty) = n.ty.as_deref_mut() {
                     let scopes = ctx.get_scopes(&src);
                     ty.resolve_fqns(scopes, ctx.ncx);
@@ -329,8 +326,8 @@ impl LowerAST for Sourced<'_, Extern> {
     fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<()> {
         let (ext, src) = self.unpack_mut();
         match ext.decl_mut() {
-            Decl::Mutable(_) => todo!(),
-            Decl::Name(_) => todo!(),
+            Decl::Mutable(_, _) => todo!(),
+            Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
             Decl::FnSig(sig) => {
                 let _name = sig
@@ -1056,7 +1053,7 @@ impl LowerAST for ast::Assign {
     fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<()> {
         // check each identifier for mutability
         for node in self.lhs.paths() {
-            let (path, is_lvalue) = node.value;
+            let PathBinding { path, is_lvalue } = node.value;
             match ctx.identifiers.get(path) {
                 Some(ident) if !ident.is_mut && ident.in_current_scope => {
                     let src = ctx.srcmap.get(&node);

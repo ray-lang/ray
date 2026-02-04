@@ -26,8 +26,6 @@ pub struct FrontendPassManager<'a> {
     srcmap: &'a SourceMap,
     tcx: &'a mut TyCtx,
     resolutions: &'a HashMap<NodeId, Resolution>,
-    binding_output: Option<BindingPassOutput>,
-    closure_output: Option<ClosurePassOutput>,
     lowered_input: Option<TypeCheckInput>,
     typecheck_result: Option<TypeCheckResult>,
 }
@@ -44,48 +42,26 @@ impl<'a> FrontendPassManager<'a> {
             srcmap,
             tcx,
             resolutions,
-            binding_output: None,
-            closure_output: None,
             lowered_input: None,
             typecheck_result: None,
         }
     }
 
     fn ensure_binding_output(&mut self) {
-        if self.binding_output.is_none() {
-            let mut seed = BindingPassOutput::empty();
-            extern_bindings::inject_extern_bindings(&mut seed, self.tcx.schemes());
-            let output =
-                binding::run_binding_pass(self.module, self.srcmap, &self.tcx.global_env, seed);
-            self.binding_output = Some(output);
-        }
+        unreachable!()
     }
 
     /// Ensure the binding pass has been executed and return its results.
     pub fn binding_output(&mut self) -> &BindingPassOutput {
-        self.ensure_binding_output();
-        self.binding_output
-            .as_ref()
-            .expect("binding pass output should exist")
+        unreachable!()
     }
 
     fn ensure_closure_output(&mut self) {
-        if self.closure_output.is_none() {
-            self.ensure_binding_output();
-            let binding_output = self
-                .binding_output
-                .as_ref()
-                .expect("binding pass output should exist");
-            let output = closure::run_closure_pass(self.module, binding_output);
-            self.closure_output = Some(output);
-        }
+        unreachable!()
     }
 
     pub fn closure_output(&mut self) -> &ClosurePassOutput {
-        self.ensure_closure_output();
-        self.closure_output
-            .as_ref()
-            .expect("closure pass output should exist")
+        unreachable!()
     }
 
     fn ensure_typecheck(&mut self, ncx: &NameContext, options: TypecheckOptions) {
@@ -139,13 +115,6 @@ impl<'a> FrontendPassManager<'a> {
         self.ensure_binding_output();
         self.ensure_closure_output();
         self.ensure_typecheck(ncx, options);
-        (
-            self.binding_output
-                .expect("binding pass output should exist"),
-            self.closure_output
-                .expect("closure pass output should exist"),
-            self.typecheck_result
-                .expect("typecheck result should exist"),
-        )
+        unreachable!()
     }
 }
