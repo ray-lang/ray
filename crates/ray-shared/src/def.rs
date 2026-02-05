@@ -37,7 +37,7 @@ pub struct LibraryDefId {
     pub index: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DefHeader {
     pub def_id: DefId,
     pub root_node: NodeId,

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{
     collections::HashMap,
-    hash::Hasher,
+    hash::{Hash, Hasher},
     sync::{Mutex, OnceLock},
 };
 
@@ -85,9 +85,8 @@ impl NodeId {
 impl std::fmt::LowerHex for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut hasher = fnv::FnvHasher::default();
-        hasher.write_u32(self.owner.file.0);
-        hasher.write_u32(self.owner.index);
-        hasher.write_u32(self.index);
+        self.owner.hash(&mut hasher);
+        self.index.hash(&mut hasher);
         let out = hasher.finish();
         write!(f, "{:x}", out)
     }

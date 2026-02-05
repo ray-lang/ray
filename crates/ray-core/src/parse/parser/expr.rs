@@ -198,10 +198,17 @@ impl Parser<'_> {
                 }
 
                 if expect_if!(self, TokenKind::DoubleColon) {
-                    let p =
-                        self.parse_path_with((n.value.to_string(), self.srcmap.span_of(&n)), ctx)?;
-                    let span = self.srcmap.span_of(&p);
-                    Ok(self.mk_expr(Expr::Path(p.value), span, ctx.path.clone()))
+                    // Create the first segment node from the Name
+                    let first_span = self.srcmap.span_of(&n);
+                    let first_segment = self.mk_node(n.value.to_string(), first_span, ctx.path.clone());
+                    let segments = self.parse_expr_path_segments(first_segment, ctx)?;
+                    // Calculate total span from first to last segment
+                    let last_span = self.srcmap.span_of(segments.last().unwrap());
+                    let span = Span {
+                        start: first_span.start,
+                        end: last_span.end,
+                    };
+                    Ok(self.mk_expr(Expr::Path(segments), span, ctx.path.clone()))
                 } else {
                     let span = self.srcmap.span_of(&n);
                     Ok(self.mk_expr(Expr::Name(n.value), span, ctx.path.clone()))
@@ -261,9 +268,16 @@ impl Parser<'_> {
                 && self.peek_double_colon_after_brackets(256)
             {
                 let base_span = self.srcmap.span_of(&ex);
-                let Expr::Path(path) = &ex.value else {
+                let Expr::Path(segments) = &ex.value else {
                     unreachable!()
                 };
+
+                // Convert Vec<Node<String>> to ItemPath string
+                let path_str = segments
+                    .iter()
+                    .map(|s| s.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
 
                 let ty_params = self.parse_ty_params(ctx)?;
                 let mut synth_ids = vec![];
@@ -288,7 +302,7 @@ impl Parser<'_> {
                 synth_ids.insert(0, base_synth_id);
 
                 let mut parsed_ty = Parsed::new(
-                    TyScheme::from_mono(Ty::with_tys(path.clone(), tys)),
+                    TyScheme::from_mono(Ty::with_tys(path_str.as_str(), tys)),
                     self.mk_src(Span {
                         start: base_span.start,
                         end,

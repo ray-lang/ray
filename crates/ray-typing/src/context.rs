@@ -29,10 +29,18 @@ pub enum Pattern {
     /// Wildcard `_`.
     Wild,
     /// Plain binding pattern `x`.
-    Binding(LocalBindingId),
+    Binding {
+        node_id: NodeId,
+        local_id: LocalBindingId,
+    },
     /// `some(x)` pattern for nilable types (used by pattern-if and
     /// pattern-while, see the spec's "Pattern-if" and "Pattern-while").
-    Some(LocalBindingId),
+    /// Contains the outer some pattern's node ID and the inner binding's info.
+    Some {
+        outer_node_id: NodeId,
+        inner_node_id: NodeId,
+        local_id: LocalBindingId,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -288,8 +296,8 @@ pub enum AssignLhs {
 // For now this holds just enough structure to make the intended shape of the
 // context obvious, without committing to any frontend details.
 pub struct SolverContext<'a> {
-    /// Inferred or expected mono types for expressions.
-    pub expr_types: HashMap<NodeId, Ty>,
+    /// Inferred or expected mono types for nodes.
+    pub node_tys: HashMap<NodeId, Ty>,
 
     /// Schemes associated with bindings (both local and top-level definitions).
     pub binding_schemes: HashMap<BindingTarget, TyScheme>,
@@ -373,7 +381,7 @@ impl<'a> MetaAllocator for SolverContext<'a> {
 impl<'a> SolverContext<'a> {
     pub fn new(schema_allocator: &'a mut SchemaVarAllocator, env: &'a dyn TypecheckEnv) -> Self {
         SolverContext {
-            expr_types: HashMap::new(),
+            node_tys: HashMap::new(),
             binding_schemes: HashMap::new(),
             explicitly_annotated: HashSet::new(),
             skolemized_schemes: HashMap::new(),
@@ -418,7 +426,7 @@ impl<'a> SolverContext<'a> {
 
     /// Apply a type substitution to all tracked types and schemes.
     pub fn apply_subst(&mut self, subst: &Subst) {
-        for ty in self.expr_types.values_mut() {
+        for ty in self.node_tys.values_mut() {
             ty.apply_subst(subst);
         }
         for scheme in self.binding_schemes.values_mut() {
@@ -463,11 +471,11 @@ impl<'a> SolverContext<'a> {
     /// not been seen before. This helper centralizes the common "if ty
     /// exists else fresh" pattern used throughout constraint generation.
     pub fn expr_ty_or_fresh(&mut self, expr: NodeId) -> Ty {
-        if let Some(ty) = self.expr_types.get(&expr) {
+        if let Some(ty) = self.node_tys.get(&expr) {
             ty.clone()
         } else {
             let ty = self.fresh_meta();
-            self.expr_types.insert(expr, ty.clone());
+            self.node_tys.insert(expr, ty.clone());
             ty
         }
     }

@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use ray_core::{
     ast::{
-        CurlyElement, Decl, Expr, File, FnParam, FuncSig, Node, Trait,
+        CurlyElement, Decl, Expr, File, FnParam, FuncSig, Name, Node, ScopedAccess, Trait,
+        token::{Token, TokenKind},
         transform::{convert_func_to_closure, desugar_compound_assignment, expand_curly_shorthand},
     },
     errors::{RayError, RayErrorKind},
@@ -16,18 +17,22 @@ use ray_core::{
 };
 use ray_query_macros::query;
 use ray_shared::{
-    def::DefHeader,
+    def::{DefHeader, DefKind},
     file_id::FileId,
     node_id::NodeId,
-    pathlib::FilePath,
-    resolution::Resolution,
-    span::{Source, parsed::Parsed},
+    pathlib::{FilePath, ItemPath},
+    resolution::{DefTarget, Resolution},
+    span::{parsed::Parsed, Source},
     ty::Ty,
 };
 use ray_typing::types::TyScheme;
 
 use crate::{
-    queries::{parse::parse_file, resolve::name_resolutions},
+    queries::{
+        defs::def_header,
+        parse::parse_file,
+        resolve::{file_scope, name_resolutions},
+    },
     query::{Database, Query},
 };
 
@@ -75,6 +80,8 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
 
     // Create a context for transformations
     let mut ctx = TransformContext {
+        db,
+        file_id,
         source_map: &mut source_map,
         errors: &mut errors,
         resolutions: &resolutions,
@@ -96,6 +103,8 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
 
 /// Context for AST transformations.
 struct TransformContext<'a> {
+    db: &'a Database,
+    file_id: FileId,
     source_map: &'a mut SourceMap,
     errors: &'a mut Vec<RayError>,
     resolutions: &'a HashMap<NodeId, Resolution>,
@@ -226,8 +235,109 @@ fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
                 }
             }
         }
+        Expr::ScopedAccess(scoped_access) => {
+            // Convert Name to Type when the LHS resolves to a type definition.
+            // This handles parameterized types like `T[...]::method` where T is parsed as Name.
+            if let Expr::Name(name) = &scoped_access.lhs.value {
+                let name_node_id = scoped_access.lhs.id;
+                if let Some(Resolution::Def(def_target)) = ctx.resolutions.get(&name_node_id) {
+                    if is_type_def(ctx.db, def_target) {
+                        let item_path: ItemPath = (&name.path).into();
+                        let lhs_src = ctx.source_map.get(&scoped_access.lhs);
+                        scoped_access.lhs.value = Expr::Type(make_type_expr(item_path, lhs_src));
+                    }
+                }
+            }
+        }
+        Expr::Path(segments) => {
+            // Convert paths like `Counter::create` or `std::collections::HashMap::new`
+            // to ScopedAccess when the prefix resolves to a type definition.
+            //
+            // Name resolution resolves segments up to and including the type, but not
+            // method names. We use the resolutions to find the type boundary.
+            if segments.len() >= 2 {
+                // Find the type boundary: the last segment that has a resolution
+                // pointing to a type definition.
+                let mut type_boundary_idx: Option<usize> = None;
+
+                for (i, segment) in segments.iter().enumerate() {
+                    if let Some(Resolution::Def(def_target)) = ctx.resolutions.get(&segment.id) {
+                        if is_type_def(ctx.db, def_target) {
+                            type_boundary_idx = Some(i);
+                            // Don't break - keep looking for the last type resolution
+                            // (in case there are nested types, though rare)
+                        }
+                    }
+                }
+
+                // Also check file_scope for the first segment (local types like `Counter::create`)
+                // Name resolution may have resolved this, but let's be sure
+                if type_boundary_idx.is_none() {
+                    let first_name = &segments[0].value;
+                    let scope = file_scope(ctx.db, ctx.file_id);
+                    if let Some(def_target) = scope.get(first_name) {
+                        if is_type_def(ctx.db, def_target) {
+                            type_boundary_idx = Some(0);
+                        }
+                    }
+                }
+
+                // If we found a type boundary and there's at least one segment after it
+                // (the method name), convert to ScopedAccess
+                if let Some(type_idx) = type_boundary_idx {
+                    if type_idx + 1 < segments.len() {
+                        // Extract data before borrowing expr
+                        let type_path_str = segments[..=type_idx]
+                            .iter()
+                            .map(|s| s.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::");
+                        let type_node_id = segments[type_idx].id;
+                        let member_name = segments[type_idx + 1].value.clone();
+                        let member_node_id = segments[type_idx + 1].id;
+
+                        let item_path = ItemPath::from(type_path_str.as_str());
+                        let expr_src = ctx.source_map.get(expr);
+                        let parsed_ty = make_type_expr(item_path, expr_src);
+
+                        // Use the type segment's NodeId for the LHS type expression
+                        let lhs_node = Node::with_id(type_node_id, Expr::Type(parsed_ty));
+                        let rhs_node =
+                            Node::with_id(member_node_id, Name::new(member_name.as_str()));
+                        let sep_tok = Token::new(TokenKind::DoubleColon);
+
+                        expr.value = Expr::ScopedAccess(ScopedAccess {
+                            lhs: Box::new(lhs_node),
+                            rhs: rhs_node,
+                            sep: sep_tok,
+                        });
+
+                        // TODO: If there are more segments after method (e.g., chained calls),
+                        // we'd need to handle them here. For now we only handle single method.
+                    }
+                }
+            }
+        }
         _ => {}
     }
+}
+
+/// Check if a DefTarget refers to a type definition (struct or trait).
+fn is_type_def(db: &Database, def_target: &DefTarget) -> bool {
+    match def_target {
+        DefTarget::Workspace(def_id) => def_header(db, *def_id)
+            .map(|h| matches!(h.kind, DefKind::Struct | DefKind::Trait))
+            .unwrap_or(false),
+        DefTarget::Library(_) => true,
+        DefTarget::Primitive(_) => true,
+    }
+}
+
+/// Create a Parsed<TyScheme> for a type expression from an ItemPath and source.
+fn make_type_expr(item_path: ItemPath, src: Source) -> Parsed<TyScheme> {
+    let ty = Ty::Const(item_path);
+    let ty_scheme = TyScheme::from_mono(ty);
+    Parsed::new(ty_scheme, src)
 }
 
 /// Recursively transform child expressions.
@@ -887,6 +997,86 @@ fn foo() { p = Point { x: 1, y: 2 } }
             struct_errors.is_empty(),
             "Expected no struct-related errors, got: {:?}",
             struct_errors
+        );
+    }
+
+    #[test]
+    fn file_ast_transforms_scoped_access_name_to_type() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Define a struct and use scoped access on it
+        let source = r#"
+struct Counter { value: u32 }
+
+impl object Counter {
+    fn create() -> Counter {
+        Counter { value: 0u32 }
+    }
+}
+
+fn main() -> Counter {
+    Counter::create()
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let result = file_ast(&db, file_id);
+
+        // Find the main function
+        use ray_core::ast::{Decl, Expr};
+        let main_fn = result.ast.decls.iter().find(|d| {
+            if let Decl::Func(f) = &d.value {
+                f.sig.path.name() == Some("main".to_string())
+            } else {
+                false
+            }
+        });
+
+        let main_fn = main_fn.expect("should have main function");
+        let Decl::Func(func) = &main_fn.value else {
+            panic!("expected Func decl");
+        };
+
+        // The body should contain a Call with ScopedAccess callee
+        let body = func.body.as_ref().expect("should have body");
+
+        // Find the Call expression in the body
+        fn find_scoped_access(
+            expr: &ray_core::ast::Node<Expr>,
+        ) -> Option<&ray_core::ast::ScopedAccess> {
+            match &expr.value {
+                Expr::Call(call) => {
+                    if let Expr::ScopedAccess(sa) = &call.callee.value {
+                        return Some(sa);
+                    }
+                    find_scoped_access(&call.callee)
+                }
+                Expr::Block(block) => {
+                    for stmt in &block.stmts {
+                        if let Some(sa) = find_scoped_access(stmt) {
+                            return Some(sa);
+                        }
+                    }
+                    None
+                }
+                Expr::Return(Some(ret)) => find_scoped_access(ret),
+                _ => None,
+            }
+        }
+
+        let scoped_access = find_scoped_access(body).expect("should have ScopedAccess in body");
+
+        // The LHS should now be Expr::Type, not Expr::Name
+        assert!(
+            matches!(scoped_access.lhs.value, Expr::Type(_)),
+            "Expected ScopedAccess LHS to be Expr::Type after transform, got: {:?}",
+            scoped_access.lhs.value
         );
     }
 }

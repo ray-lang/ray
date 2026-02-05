@@ -113,21 +113,32 @@ fn apply_pattern_guard_with_ty(
     info: &TypeSystemInfo,
 ) {
     match pattern {
-        Pattern::Some(local_id) => {
+        Pattern::Some {
+            outer_node_id,
+            inner_node_id,
+            local_id,
+        } => {
             let inner_ty = ctx.fresh_meta();
             let nilable_ty = Ty::nilable(inner_ty.clone());
             node.wanteds
-                .push(Constraint::eq(scrut_ty, nilable_ty, info.clone()));
+                .push(Constraint::eq(scrut_ty.clone(), nilable_ty.clone(), info.clone()));
 
             ctx.binding_schemes
                 .entry((*local_id).into())
-                .or_insert_with(|| TyScheme::from_mono(inner_ty));
+                .or_insert_with(|| TyScheme::from_mono(inner_ty.clone()));
+
+            // Record types for pattern nodes
+            ctx.node_tys.insert(*outer_node_id, nilable_ty);
+            ctx.node_tys.insert(*inner_node_id, inner_ty);
         }
-        Pattern::Binding(local_id) => {
+        Pattern::Binding { node_id, local_id } => {
             // Simple binding pattern `x = e`: record a mono scheme x : Te.
             ctx.binding_schemes
                 .entry((*local_id).into())
-                .or_insert_with(|| TyScheme::from_mono(scrut_ty));
+                .or_insert_with(|| TyScheme::from_mono(scrut_ty.clone()));
+
+            // Record type for pattern node
+            ctx.node_tys.insert(*node_id, scrut_ty);
         }
         Pattern::Wild => {
             // `_` does not introduce bindings or additional constraints.
@@ -210,7 +221,7 @@ fn apply_lhs_pattern(
     info: &TypeSystemInfo,
 ) -> Vec<LocalBindingId> {
     let mut bindings = vec![];
-    ctx.expr_types.insert(pattern_id, expected_ty.clone());
+    ctx.node_tys.insert(pattern_id, expected_ty.clone());
     match pat {
         LhsPattern::Binding(local_id) => {
             // Variable pattern `x`:
@@ -570,10 +581,12 @@ pub fn prepare_binding_context(
                 }
 
                 let synthesized: Vec<_> = params.iter().map(|_| ctx.fresh_meta()).collect();
-                for ty in synthesized.iter() {
+                for (local_id, ty) in params.iter().zip(synthesized.iter()) {
                     if let Ty::Var(v) = ty {
                         metas.push(v.clone());
                     }
+                    ctx.binding_schemes
+                        .insert((*local_id).into(), TyScheme::from_mono(ty.clone()));
                 }
 
                 binding_ty = Ty::func(synthesized.clone(), ret.clone());
@@ -842,7 +855,8 @@ fn generate_constraints_for_expr(
                 // body's expression type as the result type.
                 let mut param_tys = Vec::with_capacity(params.len());
                 for param in params {
-                    param_tys.push(ctx.binding_ty_or_fresh(*param));
+                    let param_ty = ctx.binding_ty_or_fresh(*param);
+                    param_tys.push(param_ty);
                 }
                 let body_ty = ctx.expr_ty_or_fresh(*body);
                 let fn_ty = Ty::func(param_tys, body_ty.clone());
@@ -1384,7 +1398,7 @@ fn generate_constraints_for_expr(
                         let container_ty = ctx.expr_ty_or_fresh(*container);
                         let index_ty = ctx.expr_ty_or_fresh(*index);
                         let elem_ty = ctx.fresh_meta();
-                        ctx.expr_types.insert(*lhs_pattern, elem_ty.clone());
+                        ctx.node_tys.insert(*lhs_pattern, elem_ty.clone());
 
                         let index_fqn = ctx.env().resolve_builtin("Index");
                         node.wanteds.push(Constraint::class(
@@ -1433,7 +1447,7 @@ fn generate_constraints_for_expr(
                         // exist.
                         let ptr_ty = ctx.binding_ty_or_fresh(*binding);
                         let cell_ty = ctx.fresh_meta();
-                        ctx.expr_types.insert(*lhs_pattern, cell_ty.clone());
+                        ctx.node_tys.insert(*lhs_pattern, cell_ty.clone());
                         node.wanteds.push(Constraint::class(
                             ctx.env().resolve_builtin("Deref"),
                             vec![ptr_ty, cell_ty.clone()],
@@ -1456,7 +1470,7 @@ fn generate_constraints_for_expr(
                         let recv_ty = ctx.binding_ty_or_fresh(*recv);
                         let field_ty = ctx.fresh_meta();
 
-                        ctx.expr_types.insert(*lhs_pattern, field_ty.clone());
+                        ctx.node_tys.insert(*lhs_pattern, field_ty.clone());
                         node.wanteds.push(Constraint::has_field(
                             recv_ty,
                             field.clone(),
@@ -1467,7 +1481,7 @@ fn generate_constraints_for_expr(
                             .push(Constraint::eq(rhs_ty, field_ty, info.clone()));
                     }
                     AssignLhs::ErrorPlaceholder => {
-                        ctx.expr_types.insert(*lhs_pattern, Ty::unit());
+                        ctx.node_tys.insert(*lhs_pattern, Ty::unit());
                     }
                 }
             }
@@ -1750,7 +1764,7 @@ fn generate_constraints_for_expr(
                     callee_arg_tys.push(recv_param_ty);
                     callee_arg_tys.extend(explicit_arg_tys.iter().cloned());
                     let expected_fn_ty = Ty::Func(callee_arg_tys, Box::new(expr_ty.clone()));
-                    ctx.expr_types.insert(*callee, expected_fn_ty.clone());
+                    ctx.node_tys.insert(*callee, expected_fn_ty.clone());
 
                     // Do not attempt to resolve methods during constraint generation.
                     //
@@ -1811,7 +1825,7 @@ fn generate_constraints_for_expr(
                     //
                     let expected_fn_ty =
                         Ty::Func(explicit_arg_tys.clone(), Box::new(expr_ty.clone()));
-                    ctx.expr_types.insert(*callee, expected_fn_ty.clone());
+                    ctx.node_tys.insert(*callee, expected_fn_ty.clone());
 
                     let receiver_subst = skolem_subst.and_then(|skolem_subst| {
                         let mut lhs_vars = HashSet::new();
@@ -2296,6 +2310,8 @@ mod tests {
         let then_expr = NodeId::new();
         let else_expr = NodeId::new();
         let expr_id = NodeId::new();
+        let outer_pattern_id = NodeId::new();
+        let inner_pattern_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(scrutinee, ExprKind::Nil);
@@ -2305,7 +2321,11 @@ mod tests {
             expr_id,
             ExprKind::IfPattern {
                 scrutinee,
-                pattern: Pattern::Some(local_binding_id),
+                pattern: Pattern::Some {
+                    outer_node_id: outer_pattern_id,
+                    inner_node_id: inner_pattern_id,
+                    local_id: local_binding_id,
+                },
                 then_branch: then_expr,
                 else_branch: Some(else_expr),
             },
@@ -2449,6 +2469,7 @@ mod tests {
         let iter_expr = NodeId::new();
         let body_expr = NodeId::new();
         let expr_id = NodeId::new();
+        let pattern_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(iter_expr, ExprKind::LiteralInt);
@@ -2456,7 +2477,10 @@ mod tests {
         kinds.insert(
             expr_id,
             ExprKind::For {
-                pattern: Pattern::Binding(local_binding_id),
+                pattern: Pattern::Binding {
+                    node_id: pattern_id,
+                    local_id: local_binding_id,
+                },
                 iter_expr,
                 body: body_expr,
             },

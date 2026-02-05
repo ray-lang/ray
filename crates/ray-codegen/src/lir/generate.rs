@@ -1987,14 +1987,16 @@ impl<'a> GenCtx<'a> {
                 );
                 Ok(())
             }
-            Pattern::Deref(Node { id, value: name }) => {
+            Pattern::Deref(Node { value: name, .. }) => {
                 let Some(rhs_loc) = rhs_loc else {
                     log::debug!("  SKIP assign: rhs is unit");
                     return Ok(());
                 };
 
                 let lhs_ty = self.ty_of(lhs_pat.id);
-                let binding = self.binding_for_node(*id).unwrap_or_else(|| {
+                // Look up binding at the deref pattern's NodeId (lhs_pat.id),
+                // which is where type lowering recorded it.
+                let binding = self.binding_for_node(lhs_pat.id).unwrap_or_else(|| {
                     panic!(
                         "missing binding for pattern {:#x} ({})",
                         lhs_pat.id, lhs_pat
@@ -2463,14 +2465,16 @@ impl LirGen<GenResult> for Node<Expr> {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
         let ty = ctx.ty_of(self.id);
         Ok(match &self.value {
-            Expr::Path(path) => {
+            Expr::Path(segments) => {
+                // Convert Vec<Node<String>> to Path
+                let path = Path::from(segments.iter().map(|s| s.value.clone()).collect::<Vec<_>>());
                 if let Some(fn_ty) = ctx.maybe_direct_function(self.id) {
                     let var = ctx.build_fn_handle_for_function(path.clone(), fn_ty);
                     lir::Value::new(var)
                 } else {
                     let binding = ctx.binding_for_node(self.id);
                     if let Some(binding) = binding {
-                        if let Some(global) = ctx.global_var_for_binding(binding, path) {
+                        if let Some(global) = ctx.global_var_for_binding(binding, &path) {
                             return Ok(global.into());
                         }
                         let debug_name = path
@@ -2479,7 +2483,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         let loc = ctx.ensure_local_for_binding(binding, debug_name, ty.clone());
                         lir::Value::new(lir::Variable::Local(loc))
                     } else {
-                        (path, &ty).lir_gen(ctx)?
+                        (&path, &ty).lir_gen(ctx)?
                     }
                 }
             }
@@ -3942,6 +3946,1038 @@ pub fn main() -> u32 {
         assert!(
             saw_next,
             "expected `for` lowering to call Iter::next\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_unary_operator() {
+        let src = r#"
+@intrinsic extern fn bool_not(a: bool) -> bool
+
+trait Not['a] {
+    fn !(a: 'a) -> 'a
+}
+
+impl Not[bool] {
+    fn !(a: bool) -> bool => bool_not(a)
+}
+
+pub fn main() -> bool {
+    x = true
+    !x
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_not_call = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, value) = inst {
+                    if let Value::Call(call) = value {
+                        let name = call.fn_name.to_string();
+                        if name.contains("Not::!") {
+                            saw_not_call = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_not_call,
+            "expected unary `!` to call Not::!\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_method_call_on_struct() {
+        let src = r#"
+struct Counter { value: u32 }
+
+impl object Counter {
+    fn get(self: *Counter) -> u32 {
+        self.value
+    }
+}
+
+pub fn main() -> u32 {
+    c = Counter { value: 42u32 }
+    c.get()
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        // Verify the Counter::get method was generated
+        let get_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.to_string().contains("Counter::get"));
+        assert!(
+            get_func.is_some(),
+            "expected Counter::get function to be generated\n--- LIR Program ---\n{}",
+            prog
+        );
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we have a call to the get method (mangled name contains "get")
+        let mut saw_method_call = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, value) = inst {
+                    if let Value::Call(call) = value {
+                        let name = call.fn_name.to_string();
+                        // The call is mangled but includes "get" with type params
+                        if name.contains("get") {
+                            saw_method_call = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_method_call,
+            "expected method call to get\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_if_else_expression() {
+        let src = r#"
+pub fn main() -> u32 {
+    x = 1u32
+    y = if true { x } else { 0u32 }
+    y
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we have a conditional branch (Inst::If)
+        let mut saw_if = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::If(_)) {
+                    saw_if = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_if,
+            "expected if-else to generate Inst::If\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_closure_capturing_variable() {
+        let src = r#"
+@intrinsic extern fn u32_add(a: u32, b: u32) -> u32
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+impl Add[u32, u32, u32] {
+    fn +(lhs: u32, rhs: u32) -> u32 => u32_add(lhs, rhs)
+}
+
+pub fn main() -> u32 {
+    captured = 10u32
+    f = (x) => x + captured
+    f(5u32)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        // Find the closure function
+        let closure_func = prog
+            .funcs
+            .iter()
+            .find(|func| func.name.to_string().contains("$closure_"));
+
+        assert!(
+            closure_func.is_some(),
+            "expected closure function to be generated\n--- LIR Program ---\n{}",
+            prog
+        );
+
+        // Check that we have a closure env struct type
+        let has_closure_env = prog
+            .struct_types
+            .keys()
+            .any(|path| path.to_string().contains("__closure_env_"));
+
+        assert!(
+            has_closure_env,
+            "expected closure env struct type\n--- Struct Types ---\n{:?}",
+            prog.struct_types.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generates_nil_value() {
+        let src = r#"
+pub fn main() -> u32? {
+    nil
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we generate a StructInit for nilable
+        let mut saw_nilable_init = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::StructInit(_, struct_ty) = inst {
+                    if struct_ty.path.to_string().contains("nilable") {
+                        saw_nilable_init = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_nilable_init,
+            "expected nil to generate nilable StructInit\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_some_value() {
+        let src = r#"
+pub fn main() -> u32? {
+    some(42u32)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we generate a StructInit for nilable with is_some = true
+        let mut saw_nilable_init = false;
+        let mut saw_is_some_field = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                match inst {
+                    Inst::StructInit(_, struct_ty) => {
+                        if struct_ty.path.to_string().contains("nilable") {
+                            saw_nilable_init = true;
+                        }
+                    }
+                    Inst::SetField(set_field) => {
+                        if set_field.field == "is_some" {
+                            saw_is_some_field = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            saw_nilable_init,
+            "expected some() to generate nilable StructInit\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_is_some_field,
+            "expected some() to set is_some field\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_nested_binary_ops() {
+        let src = r#"
+@intrinsic extern fn u32_add(a: u32, b: u32) -> u32
+@intrinsic extern fn u32_mul(a: u32, b: u32) -> u32
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+trait Mul['a, 'b, 'c] {
+    fn *(lhs: 'a, rhs: 'b) -> 'c
+}
+
+impl Add[u32, u32, u32] {
+    fn +(lhs: u32, rhs: u32) -> u32 => u32_add(lhs, rhs)
+}
+
+impl Mul[u32, u32, u32] {
+    fn *(lhs: u32, rhs: u32) -> u32 => u32_mul(lhs, rhs)
+}
+
+pub fn main() -> u32 {
+    a = 1u32
+    b = 2u32
+    c = 3u32
+    a + b * c
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_add = false;
+        let mut saw_mul = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, value) = inst {
+                    if let Value::Call(call) = value {
+                        let name = call.fn_name.to_string();
+                        if name.contains("Add::+") {
+                            saw_add = true;
+                        }
+                        if name.contains("Mul::*") {
+                            saw_mul = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_add && saw_mul,
+            "expected nested binary ops to call both Add::+ and Mul::*\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_float_literal() {
+        let src = r#"
+pub fn main() -> f64 {
+    3.14
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we have a float constant
+        let mut saw_float = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, value) = inst {
+                    if let Value::Atom(atom) = value {
+                        if matches!(atom, ray_lir::Atom::FloatConst(..)) {
+                            saw_float = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_float,
+            "expected float literal to generate FloatConst\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_string_literal() {
+        let src = r#"
+pub fn main() -> *u8 {
+    "hello"
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        // Check that we have data for the string
+        assert!(
+            !prog.data.is_empty(),
+            "expected string literal to add data entry\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_tuple() {
+        let src = r#"
+pub fn main() -> (u32, bool) {
+    (42u32, true)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we generate Insert instructions for tuple elements
+        let mut saw_insert = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::Insert(_)) {
+                    saw_insert = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_insert,
+            "expected tuple to generate Insert instructions\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_range_expression() {
+        // Test the Expr::Range code path using arrow function syntax.
+        // Range expressions use `..<` for exclusive ranges and `..=` for inclusive.
+        let src = r#"
+fn make_range(a: u32, b: u32) -> range[u32] => a..<b
+
+pub fn main() -> bool {
+    r = make_range(1u32, 10u32)
+    r.inclusive
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        // Find the make_range function which contains the range expression
+        let range_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.to_string().contains("make_range"))
+            .expect("expected make_range function to be generated");
+
+        // Check that we set start, end, and inclusive fields for range
+        let mut saw_start = false;
+        let mut saw_end = false;
+        let mut saw_inclusive = false;
+        for block in &range_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetField(sf) = inst {
+                    match sf.field.as_str() {
+                        "start" => saw_start = true,
+                        "end" => saw_end = true,
+                        "inclusive" => saw_inclusive = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_start && saw_end && saw_inclusive,
+            "expected range expression to set start, end, and inclusive fields\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_ref_and_deref() {
+        let src = r#"
+pub fn main() -> u32 {
+    x = 42u32
+    p = &x
+    *p
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Lea (address-of) and Load (dereference)
+        let mut saw_lea = false;
+        let mut saw_load = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, value) = inst {
+                    match value {
+                        Value::Lea(_) => saw_lea = true,
+                        Value::Load(_) => saw_load = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_lea,
+            "expected &x to generate Lea\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_load,
+            "expected *p to generate Load\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_list_literal() {
+        let src = r#"
+struct list['el] {
+    values: *'el,
+    len: uint,
+    capacity: uint
+}
+
+pub fn main() -> list[u32] {
+    [1u32, 2u32, 3u32]
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Malloc (for values array) and StructInit for list
+        let mut saw_malloc = false;
+        let mut saw_list_init = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                match inst {
+                    Inst::SetLocal(_, Value::Malloc(_)) => saw_malloc = true,
+                    Inst::StructInit(_, struct_ty) => {
+                        if struct_ty.path.to_string().contains("list") {
+                            saw_list_init = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            saw_malloc,
+            "expected list literal to allocate memory for values\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_list_init,
+            "expected list literal to generate StructInit for list\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_boxed_expression() {
+        let src = r#"
+pub fn main() -> *u32 {
+    box 42u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Malloc (heap allocation) and Store (storing value)
+        let mut saw_malloc = false;
+        let mut saw_store = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                match inst {
+                    Inst::SetLocal(_, Value::Malloc(_)) => saw_malloc = true,
+                    Inst::Store(_) => saw_store = true,
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            saw_malloc,
+            "expected `box` to allocate memory\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_store,
+            "expected `box` to store value into allocated memory\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_return_statement() {
+        let src = r#"
+pub fn main() -> u32 {
+    if true {
+        return 1u32
+    }
+    2u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Count number of Ret instructions (should have at least 2 - one from return and one from implicit)
+        let ret_count = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::Return(_)))
+            .count();
+
+        assert!(
+            ret_count >= 2,
+            "expected at least 2 Ret instructions (explicit return + implicit)\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_continue_statement() {
+        let src = r#"
+pub fn main() -> u32 {
+    mut x = 0u32
+    while true {
+        x = 1u32
+        continue
+    }
+    x
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we have a loop header
+        let has_loop = main_func.blocks.iter().any(|block| block.is_loop_header());
+
+        assert!(
+            has_loop,
+            "expected continue to be in a loop\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_if_some_pattern() {
+        let src = r#"
+fn get_value() -> u32? {
+    some(42u32)
+}
+
+pub fn main() -> u32 {
+    if some(x) = get_value() {
+        x
+    } else {
+        0u32
+    }
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we read the is_some field (for condition) and payload field (for binding)
+        let mut saw_is_some = false;
+        let mut saw_payload = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::GetField(gf)) = inst {
+                    match gf.field.as_str() {
+                        "is_some" => saw_is_some = true,
+                        "payload" => saw_payload = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_is_some,
+            "expected if some() to check is_some field\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_payload,
+            "expected if some(x) to extract payload field\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_function_as_value() {
+        let src = r#"
+fn add_one(x: u32) -> u32 {
+    x
+}
+
+pub fn main() -> u32 {
+    f = add_one
+    f(1u32)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        // Check that we have a function handle struct type and wrapper function
+        let has_fn_handle = prog
+            .struct_types
+            .keys()
+            .any(|path| path.to_string().contains("__fn_handle"));
+
+        let has_wrapper = prog
+            .funcs
+            .iter()
+            .any(|f| f.name.to_string().contains("$fn_handle"));
+
+        assert!(
+            has_fn_handle,
+            "expected function-as-value to create __fn_handle struct type\n--- Struct Types ---\n{:?}",
+            prog.struct_types.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            has_wrapper,
+            "expected function-as-value to create $fn_handle wrapper\n--- Functions ---\n{:?}",
+            prog.funcs.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generates_scoped_access_call_impl_object() {
+        let src = r#"
+struct Counter { value: u32 }
+
+impl object Counter {
+    fn create() -> Counter {
+        Counter { value: 0u32 }
+    }
+}
+
+pub fn main() -> Counter {
+    Counter::create()
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we call Counter::create
+        let mut saw_create_call = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::Call(call)) = inst {
+                    if call.fn_name.to_string().contains("create") {
+                        saw_create_call = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_create_call,
+            "expected Type::method() to call the method\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_scoped_access_call_trait() {
+        let src = r#"
+trait Factory['t] {
+    fn create() -> 't
+}
+
+struct Widget { id: u32 }
+
+impl Factory[Widget] {
+    fn create() -> Widget {
+        Widget { id: 1u32 }
+    }
+}
+
+pub fn main() -> Widget {
+    Factory[Widget]::create()
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we call Factory::create
+        let mut saw_create_call = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::Call(call)) = inst {
+                    if call.fn_name.to_string().contains("create") {
+                        saw_create_call = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_create_call,
+            "expected Trait[Type]::method() to call the method\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_new_expression() {
+        // Note: `new` requires parentheses around the type: new(Type)
+        let src = r#"
+pub fn main() -> *u32 {
+    new(u32)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Malloc instruction
+        let mut saw_malloc = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::SetLocal(_, Value::Malloc(_))) {
+                    saw_malloc = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_malloc,
+            "expected `new` to generate Malloc\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_cast_expression() {
+        let src = r#"
+pub fn main() -> u64 {
+    x = 42u32
+    x as u64
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Cast instruction
+        let mut saw_cast = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::SetLocal(_, Value::Cast(_))) {
+                    saw_cast = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_cast,
+            "expected `as` to generate Cast\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_for_loop_with_some_pattern() {
+        let src = r#"
+trait Iter['it, 'el] {
+    fn next(self: *'it) -> 'el?
+}
+
+trait Iterable['c, 'it, 'el] {
+    fn iter(self: *'c) -> 'it
+}
+
+struct MaybeIter { done: bool }
+
+impl Iterable[MaybeIter, MaybeIter, u32?] {
+    fn iter(self: *MaybeIter) -> MaybeIter {
+        MaybeIter { done: false }
+    }
+}
+
+impl Iter[MaybeIter, u32?] {
+    fn next(self: *MaybeIter) -> (u32?)? {
+        nil
+    }
+}
+
+pub fn main() -> u32 {
+    m = MaybeIter { done: false }
+    for some(x) in m {
+        y = x
+    }
+    0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check that we have a loop
+        let has_loop = main_func.blocks.iter().any(|b| b.is_loop_header());
+
+        assert!(
+            has_loop,
+            "expected for loop with some pattern\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_deref_assignment() {
+        // This test exercises assignment through a dereferenced pointer: *p = value
+        let src = r#"
+pub fn main() -> u32 {
+    x = 42u32
+    p = &x
+    *p = 100u32
+    x
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Store instruction (writing through pointer)
+        let mut saw_store = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::Store(_)) {
+                    saw_store = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_store,
+            "expected *p = value to generate Store\n--- LIR Program ---\n{}",
             prog
         );
     }

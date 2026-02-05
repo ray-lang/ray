@@ -633,8 +633,10 @@ impl<'a> BindingPassCtx<'a> {
                     }
                 }
             }
-            Expr::Path(path) => {
-                if let Some(target) = self.resolve_binding(path) {
+            Expr::Path(segments) => {
+                // Convert Vec<Node<String>> to Path for binding resolution
+                let path = Path::from(segments.iter().map(|s| s.value.clone()).collect::<Vec<_>>());
+                if let Some(target) = self.resolve_binding(&path) {
                     self.node_bindings
                         .entry(expr.id)
                         .or_insert(NodeBinding::Use(target));

@@ -216,6 +216,19 @@ impl fmt::Display for Token {
     }
 }
 
+impl Token {
+    /// Creates a new Token with the given TokenKind.
+    ///
+    /// It is recommend to use a struct literal to construct a Token to specify
+    /// a Span. Otherwise, if an empty Span is intented, use this method.
+    pub fn new(kind: TokenKind) -> Self {
+        Self {
+            kind,
+            span: Span::new(),
+        }
+    }
+}
+
 impl TokenKind {
     pub fn desc(&self) -> &str {
         match self {

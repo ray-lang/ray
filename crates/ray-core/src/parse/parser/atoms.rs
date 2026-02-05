@@ -85,6 +85,28 @@ impl Parser<'_> {
         Ok(self.mk_node(Path::from(parts), span, ctx.path.clone()))
     }
 
+    /// Parse path segments for Expr::Path, where each segment gets its own NodeId.
+    /// The first segment is provided (already parsed as a Name node).
+    /// Returns a Vec of Node<String> where each has a unique NodeId.
+    pub(crate) fn parse_expr_path_segments(
+        &mut self,
+        first: Node<String>,
+        ctx: &ParseContext,
+    ) -> ParseResult<Vec<Node<String>>> {
+        // This assumes that the double colon after `first` has been consumed
+        let mut segments = vec![first];
+        loop {
+            let (id, sp) = self.expect_id(ctx)?;
+            let segment_node = self.mk_node(id, sp, ctx.path.clone());
+            segments.push(segment_node);
+
+            if !expect_if!(self, TokenKind::DoubleColon) {
+                break;
+            }
+        }
+        Ok(segments)
+    }
+
     pub(crate) fn parse_pattern_with_stop(
         &mut self,
         stop: Option<&TokenKind>,

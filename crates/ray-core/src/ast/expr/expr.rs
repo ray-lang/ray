@@ -38,7 +38,9 @@ pub enum Expr {
     Missing(Missing),
     Name(Name),
     New(New),
-    Path(Path),
+    /// A qualified path like `std::collections::HashMap`.
+    /// Each segment is a Node with its own NodeId for name resolution.
+    Path(Vec<Node<String>>),
     Pattern(Pattern),
     Paren(Box<Node<Expr>>),
     Range(Range),
@@ -103,7 +105,11 @@ impl std::fmt::Display for Expr {
                 Expr::Missing(ex) => ex.to_string(),
                 Expr::Name(ex) => ex.to_string(),
                 Expr::New(ex) => ex.to_string(),
-                Expr::Path(ex) => ex.to_string(),
+                Expr::Path(segments) => segments
+                    .iter()
+                    .map(|s| s.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::"),
                 Expr::Pattern(ex) => ex.to_string(),
                 Expr::Paren(ex) => ex.to_string(),
                 Expr::Range(ex) => ex.to_string(),
@@ -178,8 +184,8 @@ impl Expr {
             Expr::Name(n) => Some(&n.path),
             Expr::Func(f) => Some(&f.sig.path.value),
             Expr::Pattern(p) => p.path(),
-            Expr::Path(p) => Some(p),
             Expr::Assign(_)
+            | Expr::Path(_)
             | Expr::BinOp(_)
             | Expr::Block(_)
             | Expr::Boxed(_)
@@ -224,7 +230,13 @@ impl Expr {
             Expr::Name(n) => Some(n.path.to_string()),
             Expr::Func(f) => f.sig.path.name(),
             Expr::Pattern(p) => p.get_name(),
-            Expr::Path(p) => Some(p.to_string()),
+            Expr::Path(segments) => Some(
+                segments
+                    .iter()
+                    .map(|s| s.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            ),
             Expr::Assign(_)
             | Expr::BinOp(_)
             | Expr::Block(_)

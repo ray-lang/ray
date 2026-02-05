@@ -136,6 +136,9 @@ pub enum PatternKind {
     Index { container: NodeId, index: NodeId },
     /// Dereference pattern `*x`.
     Deref { binding: LocalBindingId },
+    /// `some(x)` pattern for guard patterns (for-loops, if-let).
+    /// The binding is the inner pattern's LocalBindingId.
+    Some { binding: LocalBindingId },
     /// Placeholder for unsupported or missing patterns so we can still
     /// assign a type to the node.
     Missing,
@@ -798,7 +801,7 @@ pub fn typecheck(
         solve_groups(input, groups, &mut ctx, env, Some(&pretty_subst));
 
     let binding_schemes = mem::take(&mut ctx.binding_schemes);
-    let mut node_tys = mem::take(&mut ctx.expr_types);
+    let mut node_tys = mem::take(&mut ctx.node_tys);
     let method_resolutions = mem::take(&mut ctx.method_resolutions);
 
     // At this point, solving + defaulting should have eliminated all unresolved
@@ -834,15 +837,26 @@ pub fn typecheck(
     // Copy pattern binding types to node_tys so that ty_of(node_id) works for
     // pattern nodes (parameters, let-bindings, etc.), not just expression nodes.
     for (node_id, pattern_record) in &input.pattern_records {
-        let binding_id = match &pattern_record.kind {
-            PatternKind::Binding { binding } => Some(*binding),
-            PatternKind::Deref { binding } => Some(*binding),
-            _ => None,
-        };
-        if let Some(binding_id) = binding_id {
-            if let Some(ty) = local_tys.get(&binding_id) {
-                node_tys.insert(*node_id, ty.clone());
+        match &pattern_record.kind {
+            PatternKind::Binding { binding } | PatternKind::Deref { binding } => {
+                if let Some(ty) = local_tys.get(binding) {
+                    node_tys.insert(*node_id, ty.clone());
+                }
             }
+            PatternKind::Some { binding } => {
+                // The `some(x)` pattern's type is nilable(inner_binding_ty)
+                if let Some(inner_ty) = local_tys.get(binding) {
+                    eprintln!(
+                        "FOUND INNER TYPE FOR SOME BINDING: {:?} = {}",
+                        binding, inner_ty
+                    );
+                    let nilable_ty = Ty::nilable(inner_ty.clone());
+                    node_tys.insert(*node_id, nilable_ty);
+                } else {
+                    eprintln!("COULD NOT FIND INNER TYPE FOR SOME BINDING: {:?}", binding);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1047,19 +1061,40 @@ pub fn typecheck_group<'a>(
         }
     }
 
-    let mut node_tys = mem::take(&mut ctx.expr_types);
-    let method_resolutions = mem::take(&mut ctx.method_resolutions);
+    // Populate node_tys for binding nodes from binding_schemes.
+    // This mimics the legacy node_bindings loop that populated node_schemes.
+    // We need both DEF sites (from pattern_records) and USE sites (from local_bindings_for_group).
 
-    // Copy local binding types to node_tys so that ty_of(node_id) works for
-    // pattern nodes (parameters, let-bindings, closure params, for-loop bindings, etc.),
-    // not just expression nodes. We use name_resolutions via TypecheckEnv to get the
-    // complete NodeId → LocalBindingId mapping, which is more reliable than pattern_records
-    // since it includes all binding sites regardless of the lowering code path.
-    for (node_id, local_id) in env.local_bindings_for_group() {
-        if let Some(ty) = local_tys.get(&local_id) {
-            node_tys.insert(node_id, ty.clone());
+    // DEF sites: pattern definitions (parameters, let-bindings, etc.)
+    // Note: PatternKind::Some is handled during constraint generation
+    // (apply_pattern_guard_with_ty) which correctly sets both outer and inner
+    // types. We skip it here to avoid overwriting the outer type.
+    for (node_id, record) in &input.pattern_records {
+        let local_id = match &record.kind {
+            PatternKind::Binding { binding } => Some(*binding),
+            PatternKind::Deref { binding } => Some(*binding),
+            PatternKind::Some { .. } => None, // handled during constraint generation
+            PatternKind::Tuple { .. }
+            | PatternKind::Field { .. }
+            | PatternKind::Index { .. }
+            | PatternKind::Missing => None,
+        };
+        if let Some(local_id) = local_id {
+            if let Some(scheme) = ctx.binding_schemes.get(&local_id.into()) {
+                ctx.node_tys.insert(*node_id, scheme.ty.clone());
+            }
         }
     }
+
+    // USE sites: references to local bindings (e.g., using a variable in an expression)
+    for (node_id, local_id) in env.local_bindings_for_group() {
+        if let Some(scheme) = ctx.binding_schemes.get(&local_id.into()) {
+            ctx.node_tys.insert(node_id, scheme.ty.clone());
+        }
+    }
+
+    let node_tys = mem::take(&mut ctx.node_tys);
+    let method_resolutions = mem::take(&mut ctx.method_resolutions);
 
     TypeCheckResult {
         schemes,
@@ -1120,7 +1155,7 @@ fn solve_single_group(
     push_defaulting_outcome_errors(
         &mut errors,
         input,
-        &ctx.expr_types,
+        &ctx.node_tys,
         &ctx.generalized_metas,
         &log,
     );
@@ -1676,6 +1711,8 @@ mod tests {
         let then_expr = NodeId::new();
         let else_expr = NodeId::new();
         let expr_id = NodeId::new();
+        let outer_pattern_id = NodeId::new();
+        let inner_pattern_id = NodeId::new();
 
         let mut kinds = HashMap::new();
         kinds.insert(scrutinee, ExprKind::Nil);
@@ -1685,7 +1722,11 @@ mod tests {
             expr_id,
             ExprKind::IfPattern {
                 scrutinee,
-                pattern: Pattern::Some(local_binding_id),
+                pattern: Pattern::Some {
+                    outer_node_id: outer_pattern_id,
+                    inner_node_id: inner_pattern_id,
+                    local_id: local_binding_id,
+                },
                 then_branch: then_expr,
                 else_branch: Some(else_expr),
             },
@@ -2313,7 +2354,7 @@ mod tests {
 
         // The literal should be defaulted to `uint`.
         let lit_ty = ctx
-            .expr_types
+            .node_tys
             .get(&lit_10)
             .cloned()
             .unwrap_or_else(|| panic!("expected a type for literal node {:?}", lit_10));

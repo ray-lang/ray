@@ -1001,7 +1001,7 @@ impl LowerAST for Node<Expr> {
             Expr::Name(n) => Sourced(n, &src).lower(ctx),
             Expr::New(n) => Sourced(n, &src).lower(ctx),
             Expr::Pattern(p) => Sourced(p, &src).lower(ctx),
-            Expr::Path(p) => Sourced(p, &src).lower(ctx),
+            Expr::Path(_) => Ok(()), // Path segments are strings, no lowering needed
             Expr::Paren(ex) => ex.lower(ctx),
             Expr::Range(r) => r.lower(ctx),
             Expr::Ref(r) => r.lower(ctx),

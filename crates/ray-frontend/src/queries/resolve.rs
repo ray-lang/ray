@@ -54,12 +54,10 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
         }
     }
 
-    // Create closure to look up exports for an import alias
-    let import_exports = |alias: &str| -> Option<HashMap<String, DefTarget>> {
-        let module_path = imports_map.get(alias)?;
-
+    // Create closure to look up exports for a module path
+    let module_exports = |module_path: &ModulePath| -> Option<HashMap<String, DefTarget>> {
         // Check if this is a library import or workspace import
-        if libraries.library_for_module(&module_path).is_some() {
+        if libraries.library_for_module(module_path).is_some() {
             // Library import - get exports from library
             Some(get_library_exports(&libraries, module_path))
         } else {
@@ -73,7 +71,7 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
         &parse_result.ast,
         &imports_map,
         &combined_exports,
-        import_exports,
+        module_exports,
     )
 }
 
@@ -1000,6 +998,194 @@ mod tests {
         assert!(
             matches!(result, Some(DefTarget::Workspace(_))),
             "Workspace definition should shadow library import"
+        );
+    }
+
+    #[test]
+    fn name_resolutions_resolves_nested_module_path() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with core::collections module containing "HashMap"
+        let mut libraries = LoadedLibraries::default();
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::collections"));
+
+        // Create a LibraryDefId for HashMap
+        let hashmap_def_id = LibraryDefId {
+            module: ModulePath::from("core::collections"),
+            index: 0,
+        };
+        let hashmap_path = ItemPath::new(
+            ModulePath::from("core::collections"),
+            vec!["HashMap".into()],
+        );
+
+        // Add the name -> def_id mapping
+        core_lib.names.insert(hashmap_path, hashmap_def_id.clone());
+
+        // Add a scheme for HashMap
+        core_lib.schemes.insert(
+            hashmap_def_id,
+            TyScheme {
+                vars: vec![],
+                qualifiers: vec![],
+                ty: Ty::unit(),
+            },
+        );
+        libraries.add(ModulePath::from("core"), core_lib);
+        db.set_input::<LoadedLibraries>((), libraries);
+        setup_no_core(&db);
+
+        // Import core and use nested path: core::collections::HashMap
+        // This tests 3-segment path resolution
+        FileSource::new(
+            &db,
+            main_file,
+            "import core\nfn main() { core::collections::HashMap }".to_string(),
+        );
+
+        let resolutions = name_resolutions(&db, main_file);
+
+        // Should have a Def resolution for core::collections::HashMap
+        let library_resolutions: Vec<_> = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(DefTarget::Library(_))))
+            .collect();
+
+        assert!(
+            !library_resolutions.is_empty(),
+            "Should resolve nested module path 'core::collections::HashMap' to DefTarget::Library. Got resolutions: {:?}",
+            resolutions
+        );
+    }
+
+    #[test]
+    fn name_resolutions_resolves_deeply_nested_module_path() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with std::collections::hash_map module containing "HashMap"
+        let mut libraries = LoadedLibraries::default();
+        let mut std_lib = LibraryData::default();
+        std_lib.modules.push(ModulePath::from("std::collections"));
+        std_lib.modules.push(ModulePath::from("std::collections::hash_map"));
+
+        // Create a LibraryDefId for HashMap in the deeply nested module
+        let hashmap_def_id = LibraryDefId {
+            module: ModulePath::from("std::collections::hash_map"),
+            index: 0,
+        };
+        let hashmap_path = ItemPath::new(
+            ModulePath::from("std::collections::hash_map"),
+            vec!["HashMap".into()],
+        );
+
+        // Add the name -> def_id mapping
+        std_lib.names.insert(hashmap_path, hashmap_def_id.clone());
+
+        // Add a scheme for HashMap
+        std_lib.schemes.insert(
+            hashmap_def_id,
+            TyScheme {
+                vars: vec![],
+                qualifiers: vec![],
+                ty: Ty::unit(),
+            },
+        );
+        libraries.add(ModulePath::from("std"), std_lib);
+        db.set_input::<LoadedLibraries>((), libraries);
+        setup_no_core(&db);
+
+        // Import std and use deeply nested path: std::collections::hash_map::HashMap
+        // This tests 4-segment path resolution
+        FileSource::new(
+            &db,
+            main_file,
+            "import std\nfn main() { std::collections::hash_map::HashMap }".to_string(),
+        );
+
+        let resolutions = name_resolutions(&db, main_file);
+
+        // Should have a Def resolution for std::collections::hash_map::HashMap
+        let library_resolutions: Vec<_> = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(DefTarget::Library(_))))
+            .collect();
+
+        assert!(
+            !library_resolutions.is_empty(),
+            "Should resolve deeply nested path 'std::collections::hash_map::HashMap' to DefTarget::Library. Got resolutions: {:?}",
+            resolutions
+        );
+    }
+
+    #[test]
+    fn name_resolutions_resolves_relative_path_from_submodule_import() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let main_file = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        // Set up a library with std::collections::hash_map module containing "HashMap"
+        let mut libraries = LoadedLibraries::default();
+        let mut std_lib = LibraryData::default();
+        std_lib.modules.push(ModulePath::from("std::collections"));
+        std_lib.modules.push(ModulePath::from("std::collections::hash_map"));
+
+        // Create a LibraryDefId for HashMap in the deeply nested module
+        let hashmap_def_id = LibraryDefId {
+            module: ModulePath::from("std::collections::hash_map"),
+            index: 0,
+        };
+        let hashmap_path = ItemPath::new(
+            ModulePath::from("std::collections::hash_map"),
+            vec!["HashMap".into()],
+        );
+
+        // Add the name -> def_id mapping
+        std_lib.names.insert(hashmap_path, hashmap_def_id.clone());
+
+        // Add a scheme for HashMap
+        std_lib.schemes.insert(
+            hashmap_def_id,
+            TyScheme {
+                vars: vec![],
+                qualifiers: vec![],
+                ty: Ty::unit(),
+            },
+        );
+        libraries.add(ModulePath::from("std"), std_lib);
+        db.set_input::<LoadedLibraries>((), libraries);
+        setup_no_core(&db);
+
+        // Import std::collections (submodule) and use relative path: collections::hash_map::HashMap
+        // This tests that importing a submodule allows relative paths from that submodule
+        FileSource::new(
+            &db,
+            main_file,
+            "import std::collections\nfn main() { collections::hash_map::HashMap }".to_string(),
+        );
+
+        let resolutions = name_resolutions(&db, main_file);
+
+        // Should have a Def resolution for collections::hash_map::HashMap
+        let library_resolutions: Vec<_> = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(DefTarget::Library(_))))
+            .collect();
+
+        assert!(
+            !library_resolutions.is_empty(),
+            "Should resolve 'collections::hash_map::HashMap' (relative to imported submodule std::collections) to DefTarget::Library. Got resolutions: {:?}",
+            resolutions
         );
     }
 }

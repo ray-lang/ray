@@ -29,7 +29,7 @@ use crate::{
 pub struct ResolveContext<'a> {
     imports: &'a HashMap<String, ModulePath>,
     exports: &'a HashMap<String, DefTarget>,
-    import_exports: &'a dyn Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    module_exports: &'a dyn Fn(&ModulePath) -> Option<HashMap<String, DefTarget>>,
     current_def: Option<DefId>,
     local_counter: u32,
     local_scopes: Vec<HashMap<String, LocalBindingId>>,
@@ -45,12 +45,12 @@ impl<'a> ResolveContext<'a> {
     fn new(
         imports: &'a HashMap<String, ModulePath>,
         exports: &'a HashMap<String, DefTarget>,
-        import_exports: &'a dyn Fn(&str) -> Option<HashMap<String, DefTarget>>,
+        module_exports: &'a dyn Fn(&ModulePath) -> Option<HashMap<String, DefTarget>>,
     ) -> ResolveContext<'a> {
         ResolveContext {
             imports,
             exports,
-            import_exports,
+            module_exports,
             current_def: None,
             local_counter: 0,
             local_scopes: Vec::new(),
@@ -118,14 +118,14 @@ impl<'a> ResolveContext<'a> {
 ///   the key is "io" and the value is the module path.
 /// - `exports`: Combined exports visible to this file (module exports, sibling exports,
 ///   and selective imports, already merged with correct priority)
-/// - `import_exports`: Callback to get exports for an imported module by alias
+/// - `module_exports`: Callback to get exports for a module path
 pub fn resolve_names_in_file(
     ast: &File,
     imports: &HashMap<String, ModulePath>,
     exports: &HashMap<String, DefTarget>,
-    import_exports: impl Fn(&str) -> Option<HashMap<String, DefTarget>>,
+    module_exports: impl Fn(&ModulePath) -> Option<HashMap<String, DefTarget>>,
 ) -> HashMap<NodeId, Resolution> {
-    let mut ctx = ResolveContext::new(imports, exports, &import_exports);
+    let mut ctx = ResolveContext::new(imports, exports, &module_exports);
 
     for item in walk_file(ast) {
         match item {
@@ -180,35 +180,76 @@ pub fn resolve_names_in_file(
                             ctx.resolutions.insert(expr.id, res);
                         }
                     }
-                    Expr::Path(path) if path.len() == 1 => {
-                        let name_str = path.name().unwrap_or_default();
+                    Expr::Path(segments) if segments.len() == 1 => {
+                        // Single-segment path: resolve both the segment and the expression
+                        let name_str = segments[0].value.clone();
                         let resolution = ctx
                             .lookup_local(&name_str)
                             .map(Resolution::Local)
                             .or_else(|| exports.get(&name_str).cloned().map(Resolution::Def));
                         if let Some(res) = resolution {
+                            // Resolve both: segment ID (for consistency) and expr ID (for lookups)
+                            ctx.resolutions.insert(segments[0].id, res.clone());
                             ctx.resolutions.insert(expr.id, res);
                         }
                     }
-                    Expr::Path(path) if path.len() >= 2 => {
-                        // Qualified path like `io::read` or `std::io::read`
-                        // Try to resolve via imports first
-                        let name_vec = path.to_name_vec();
-                        let first_segment = name_vec.first().cloned().unwrap_or_default();
-                        if imports.contains_key(&first_segment) {
-                            // Look up the exports for this import alias
-                            if let Some(imported_exports) = import_exports(&first_segment) {
-                                // For now, only handle two-segment paths like `io::read`
-                                if path.len() == 2 {
-                                    let second_segment =
-                                        name_vec.get(1).cloned().unwrap_or_default();
-                                    if let Some(target) = imported_exports.get(&second_segment) {
+                    Expr::Path(segments) if segments.len() >= 2 => {
+                        // Multi-segment path like `io::read`, `std::collections::HashMap`,
+                        // `Counter::create`, or `std::collections::HashMap::new`
+                        //
+                        // Strategy: resolve each segment to its NodeId until we hit a type
+                        // or run out of resolvable segments. Method names are NOT resolved.
+
+                        let first_name = &segments[0].value;
+
+                        // Case 1: First segment is an import alias (like `std` in `std::collections::HashMap`)
+                        if let Some(base_module) = imports.get(first_name) {
+                            // Note: We don't resolve segment 0 to anything because modules
+                            // don't have a DefTarget - only their exports do.
+
+                            let mut current_module = base_module.clone();
+
+                            // Walk through remaining segments, trying to resolve each
+                            for segment in segments.iter().skip(1) {
+                                let segment_name = &segment.value;
+
+                                // Look up exports for current module
+                                if let Some(module_exports) = (ctx.module_exports)(&current_module) {
+                                    if let Some(target) = module_exports.get(segment_name) {
+                                        // Found an export - resolve this segment
                                         ctx.resolutions
-                                            .insert(expr.id, Resolution::Def(target.clone()));
+                                            .insert(segment.id, Resolution::Def(target.clone()));
+                                        // After finding an export, remaining segments are methods
+                                        // (methods aren't in exports, so the next iteration would fail anyway)
+                                        break;
+                                    } else {
+                                        // Not found in exports - might be a submodule
+                                        let submodule = ModulePath::from(
+                                            format!("{}::{}", current_module, segment_name).as_str(),
+                                        );
+                                        // Check if this submodule has exports
+                                        if (ctx.module_exports)(&submodule).is_some() {
+                                            current_module = submodule;
+                                            // Don't resolve submodule segments (no DefTarget for modules)
+                                        } else {
+                                            // Not a submodule either - stop resolving
+                                            break;
+                                        }
                                     }
+                                } else {
+                                    break;
                                 }
                             }
                         }
+                        // Case 2: First segment is a local type (like `Counter` in `Counter::create`)
+                        else if let Some(target) = exports.get(first_name) {
+                            // Resolve segment 0 to the type
+                            ctx.resolutions
+                                .insert(segments[0].id, Resolution::Def(target.clone()));
+                            // Don't resolve segment 1+ (method names)
+                        }
+                        // Otherwise: first segment is neither an import nor an export.
+                        // This is likely an undefined name - leave unresolved for diagnostics.
                     }
                     Expr::Closure(closure) => {
                         // Bind closure parameters
@@ -668,7 +709,7 @@ fn resolve_type_name(
 
     // 2. Check imports
     if let Some(module_path) = ctx.imports.get(name) {
-        if let Some(exports) = (ctx.import_exports)(&module_path.to_string()) {
+        if let Some(exports) = (ctx.module_exports)(module_path) {
             if let Some(target) = exports.get(name) {
                 return Resolution::Def(target.clone());
             }
@@ -682,7 +723,7 @@ fn resolve_type_name(
 
     // 4. Check imported module exports (qualified imports)
     for (_alias, module_path) in ctx.imports {
-        if let Some(exports) = (ctx.import_exports)(&module_path.to_string()) {
+        if let Some(exports) = (ctx.module_exports)(module_path) {
             if let Some(target) = exports.get(name) {
                 return Resolution::Def(target.clone());
             }
@@ -985,17 +1026,17 @@ impl NameResolve for Node<Expr> {
                 // Otherwise resolve as a definition (defer DefTarget recording for now)
                 Sourced(name, &src).resolve_names(ctx)
             }
-            Expr::Path(path) => {
+            Expr::Path(segments) => {
                 // Check if this is a local binding first (single-segment paths only)
-                if path.len() == 1 {
-                    let name_str = path.name().unwrap_or_default();
+                if segments.len() == 1 {
+                    let name_str = segments[0].value.clone();
                     if let Some(local_id) = ctx.lookup_local(&name_str) {
                         ctx.record_resolution(node_id, Resolution::Local(local_id));
                         return Ok(());
                     }
                 }
-                // Otherwise resolve as a definition (defer DefTarget recording for now)
-                Sourced(path, &src).resolve_names(ctx)
+                // Path segments are strings, no further name resolution needed within them
+                Ok(())
             }
             _ => Sourced(&mut self.value, &src).resolve_names(ctx),
         }
@@ -1186,7 +1227,7 @@ impl NameResolve for Sourced<'_, Expr> {
             Expr::Loop(loop_) => Sourced(loop_, src).resolve_names(ctx),
             Expr::Name(name) => Sourced(name, src).resolve_names(ctx),
             Expr::New(new) => Sourced(new, src).resolve_names(ctx),
-            Expr::Path(path) => Sourced(path, src).resolve_names(ctx),
+            Expr::Path(_) => Ok(()), // Path segments are strings, no name resolution needed
             Expr::Pattern(pattern) => Sourced(pattern, src).resolve_names(ctx),
             Expr::Paren(paren) => Sourced(paren, src).resolve_names(ctx),
             Expr::Range(range) => Sourced(range, src).resolve_names(ctx),

@@ -322,4 +322,29 @@ mod tests {
 
         assert!(doc.is_none());
     }
+
+    #[test]
+    fn parses_path_with_type_arguments() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(
+            FilePath::from("test.ray"),
+            ray_shared::pathlib::Path::from("test"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        let src = r#"
+map = std::collections::HashMap[u32, string]::create()
+"#;
+        FileSource::new(&db, file_id, src.to_string());
+        let parse_result = parse_file(&db, file_id);
+
+        assert!(
+            parse_result.errors.is_empty(),
+            "expected no errors: {:?}",
+            parse_result.errors
+        );
+
+        eprintln!("{:?}", parse_result.ast.decls);
+    }
 }

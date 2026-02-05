@@ -459,7 +459,7 @@ impl Ty {
                     format!("{}[{}]", path, args_str)
                 }
             }
-            Ty::Var(v) => v.0.to_string(),
+            Ty::Var(v) => v.to_string(),
             Ty::Func(params, ret) => {
                 let params_str = params
                     .iter()

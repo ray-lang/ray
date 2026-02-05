@@ -459,12 +459,17 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
         AstPattern::Name(_) | AstPattern::Sequence(_) | AstPattern::Tuple(_) => {
             AssignLhs::Pattern(lower_pattern(ctx, pat))
         }
-        AstPattern::Deref(_) => {
-            // Get LocalBindingId from resolutions
-            let local_id = match ctx.resolutions.get(&pat.id) {
+        AstPattern::Deref(inner_name) => {
+            // Get LocalBindingId from resolutions.
+            // Name resolution records at the inner name's NodeId (via paths_mut()),
+            // not the deref pattern's NodeId.
+            let local_id = match ctx.resolutions.get(&inner_name.id) {
                 Some(Resolution::Local(local_id)) => *local_id,
                 _ => {
-                    log::debug!("Deref pattern {:?} not found in resolutions", pat.id);
+                    log::debug!(
+                        "Deref pattern inner name {:?} not found in resolutions",
+                        inner_name.id
+                    );
                     ctx.record_pattern(pat, PatternKind::Missing);
                     return AssignLhs::ErrorPlaceholder;
                 }
@@ -1173,7 +1178,12 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
                     return Pattern::Wild;
                 }
             };
-            Pattern::Binding(local_id)
+            // Record the pattern so ty_of(node_id) works
+            ctx.record_pattern(pat, PatternKind::Binding { binding: local_id });
+            Pattern::Binding {
+                node_id: pat.id,
+                local_id,
+            }
         }
         AstPattern::Some(inner) => match &inner.value {
             AstPattern::Name(_) => {
@@ -1185,7 +1195,15 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
                         return Pattern::Wild;
                     }
                 };
-                Pattern::Some(local_id)
+                // Record the inner binding pattern
+                ctx.record_pattern(inner, PatternKind::Binding { binding: local_id });
+                // Record the outer `some(x)` pattern - its type is nilable(inner_ty)
+                ctx.record_pattern(pat, PatternKind::Some { binding: local_id });
+                Pattern::Some {
+                    outer_node_id: pat.id,
+                    inner_node_id: inner.id,
+                    local_id,
+                }
             }
             _ => {
                 todo!("lowering for complex `some(...)` patterns into Pattern")
