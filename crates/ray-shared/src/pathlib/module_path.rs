@@ -57,6 +57,35 @@ impl ModulePath {
     /// Check if this module path starts with the given prefix.
     ///
     /// Returns true if the first segments of this path match all segments of the prefix.
+    /// Resolve `super` segments relative to the given current module.
+    ///
+    /// Each `super` segment pops one level off `current_module` and is removed
+    /// from the path. The remaining segments are appended to the resolved parent.
+    ///
+    /// Example: if current module is `core::io` and path is `super`,
+    /// the result is `core`.
+    pub fn resolve_super(&self, current_module: &ModulePath) -> ModulePath {
+        let mut parent = current_module.0.clone();
+        let mut remaining = Vec::new();
+        for seg in &self.0 {
+            if seg == "super" {
+                parent.pop();
+            } else {
+                remaining.push(seg.clone());
+            }
+        }
+        parent.extend(remaining);
+        ModulePath(parent)
+    }
+
+    /// Returns true if this path contains a `super` segment.
+    pub fn has_super(&self) -> bool {
+        self.0.iter().any(|s| s == "super")
+    }
+
+    /// Check if this module path starts with the given prefix.
+    ///
+    /// Returns true if the first segments of this path match all segments of the prefix.
     pub fn starts_with(&self, prefix: &str) -> bool {
         let prefix_segments: Vec<&str> = if prefix.is_empty() {
             vec![]

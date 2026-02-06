@@ -1,5 +1,4 @@
-import super::ToStr
-import super::sizeof
+import super with ToStr, sizeof, string
 
 fn print(v: 'a) -> () where ToStr['a] {
     s = v.to_str()

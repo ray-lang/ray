@@ -398,7 +398,9 @@ impl Ty {
             // Float types
             | "float" | "f32" | "f64" | "f128"
             // Other primitives
-            | "bool" | "char" => true,
+            | "bool" | "char"
+            // Builtin type constructors (no struct definition, intrinsic to the type system)
+            | "nilable" | "type" => true,
             _ => false,
         }
     }

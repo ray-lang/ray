@@ -1,3 +1,5 @@
+import super with string
+
 extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) -> uint
 
 struct IOVec {

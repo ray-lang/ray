@@ -1,4 +1,4 @@
-import super::foo
+import super with foo
 
 fn bar() -> () => ()
 

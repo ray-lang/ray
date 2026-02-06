@@ -71,15 +71,18 @@ pub fn resolved_imports(
     let libraries = db.get_input::<LoadedLibraries>(());
     let global_no_core = db.get_input_or_default::<CompilerOptions>(()).no_core;
 
-    let mut result = resolve_imports(&imports, &workspace, &libraries);
+    let file_module = workspace
+        .file_info(file_id)
+        .map(|info| info.module_path.clone());
+    let mut result = resolve_imports(&imports, &workspace, &libraries, file_module.as_ref());
 
     // Inject implicit core imports unless no_core is set globally or per-file
     let per_file_no_core = file_no_core(db, file_id);
     if !global_no_core && !per_file_no_core {
-        let file_module = workspace.file_info(file_id).map(|info| &info.module_path);
 
         // Don't inject core imports into files that are part of core itself
         let is_core_file = file_module
+            .as_ref()
             .map(|mp| mp.starts_with("core"))
             .unwrap_or(false);
 
@@ -123,7 +126,7 @@ fn inject_implicit_imports(
     // Only if user hasn't explicitly imported something with alias "core"
     if !result.contains_key("core") {
         let core_path = ModulePath::from("core");
-        if let Ok(mp) = resolve_module_path(&core_path, workspace, libraries) {
+        if let Ok(mp) = resolve_module_path(&core_path, workspace, libraries, None) {
             result.insert(
                 "core".to_string(),
                 Ok(ResolvedImport {
@@ -138,7 +141,7 @@ fn inject_implicit_imports(
     // Only if user hasn't explicitly imported something with alias "io"
     if !result.contains_key("io") {
         let io_path = ModulePath::from("core::io");
-        if let Ok(mp) = resolve_module_path(&io_path, workspace, libraries) {
+        if let Ok(mp) = resolve_module_path(&io_path, workspace, libraries, None) {
             result.insert(
                 "io".to_string(),
                 Ok(ResolvedImport {
@@ -151,10 +154,13 @@ fn inject_implicit_imports(
 }
 
 /// Resolve a list of imports against a workspace and loaded libraries.
+///
+/// `current_module` is the module containing the imports, used to resolve `super`.
 fn resolve_imports(
     imports: &[Import],
     workspace: &WorkspaceSnapshot,
     libraries: &LoadedLibraries,
+    current_module: Option<&ModulePath>,
 ) -> HashMap<String, Result<ResolvedImport, ImportError>> {
     let mut result = HashMap::new();
 
@@ -166,12 +172,11 @@ fn resolve_imports(
                 let alias = path.to_short_name();
                 let module_path = ModulePath::from(path);
                 let resolution =
-                    resolve_module_path(&module_path, workspace, libraries).map(|mp| {
-                        ResolvedImport {
+                    resolve_module_path(&module_path, workspace, libraries, current_module)
+                        .map(|mp| ResolvedImport {
                             module_path: mp,
                             names: ImportNames::Namespace,
-                        }
-                    });
+                        });
                 result.insert(alias, resolution);
             }
             ImportKind::Names(path_node, names) => {
@@ -181,12 +186,11 @@ fn resolve_imports(
                 let module_path = ModulePath::from(path);
                 let name_strings: Vec<String> = names.iter().map(|n| n.to_string()).collect();
                 let resolution =
-                    resolve_module_path(&module_path, workspace, libraries).map(|mp| {
-                        ResolvedImport {
+                    resolve_module_path(&module_path, workspace, libraries, current_module)
+                        .map(|mp| ResolvedImport {
                             module_path: mp,
                             names: ImportNames::Selective(name_strings),
-                        }
-                    });
+                        });
                 result.insert(alias, resolution);
             }
             ImportKind::Glob(path_node) => {
@@ -195,12 +199,11 @@ fn resolve_imports(
                 let alias = path.to_short_name();
                 let module_path = ModulePath::from(path);
                 let resolution =
-                    resolve_module_path(&module_path, workspace, libraries).map(|mp| {
-                        ResolvedImport {
+                    resolve_module_path(&module_path, workspace, libraries, current_module)
+                        .map(|mp| ResolvedImport {
                             module_path: mp,
                             names: ImportNames::Glob,
-                        }
-                    });
+                        });
                 result.insert(alias, resolution);
             }
             ImportKind::CImport(name, _) => {
@@ -214,23 +217,38 @@ fn resolve_imports(
 }
 
 /// Resolve a single module path against the workspace and loaded libraries.
+///
+/// If the path contains `super` segments, they are resolved relative to
+/// `current_module` before lookup.
 fn resolve_module_path(
     module_path: &ModulePath,
     workspace: &WorkspaceSnapshot,
     libraries: &LoadedLibraries,
+    current_module: Option<&ModulePath>,
 ) -> Result<ModulePath, ImportError> {
+    // Resolve `super` segments if present
+    let resolved = if module_path.has_super() {
+        if let Some(current) = current_module {
+            module_path.resolve_super(current)
+        } else {
+            return Err(ImportError::UnknownModule(module_path.to_string()));
+        }
+    } else {
+        module_path.clone()
+    };
+
     // Check if the module exists in the workspace
-    if workspace.module_info(module_path).is_some() {
-        return Ok(module_path.clone());
+    if workspace.module_info(&resolved).is_some() {
+        return Ok(resolved);
     }
 
     // Check if the module exists in loaded libraries
-    if libraries.has_module(&module_path) {
-        return Ok(module_path.clone());
+    if libraries.has_module(&resolved) {
+        return Ok(resolved);
     }
 
     // Module not found
-    Err(ImportError::UnknownModule(module_path.to_string()))
+    Err(ImportError::UnknownModule(resolved.to_string()))
 }
 
 #[cfg(test)]
