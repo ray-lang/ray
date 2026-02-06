@@ -80,12 +80,12 @@ pub fn def_deps(db: &Database, def_id: DefId) -> Vec<DefId> {
 /// Annotated definitions (edges omitted):
 /// - Structs, traits, impls, type aliases (always have explicit types)
 /// - Methods (always have explicit signature from trait or explicit)
-/// - Functions with `FullyAnnotated` or `ReturnElided` signature status
+/// - Functions with `FullyAnnotated`, `ReturnElided`, or `ImplicitUnit` signature status
 fn is_unannotated(kind: DefKind) -> bool {
     match kind {
         DefKind::FileMain => true,
         // Only Unannotated functions create inference edges
-        // FullyAnnotated and ReturnElided are both considered "annotated"
+        // FullyAnnotated, ReturnElided, and ImplicitUnit are all considered "annotated"
         DefKind::Function { signature } => signature == SignatureStatus::Unannotated,
         DefKind::Binding { annotated, .. } => !annotated,
         DefKind::AssociatedConst { annotated } => !annotated,
@@ -724,7 +724,7 @@ fn caller() -> int {
     }
 
     #[test]
-    fn binding_graph_includes_edge_to_block_body_missing_return() {
+    fn binding_graph_excludes_edge_to_block_body_missing_return() {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -736,8 +736,8 @@ fn caller() -> int {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // helper uses block body {} without return annotation - this is Unannotated
-        // (params are vacuously annotated, but missing return type with block = unannotated)
+        // helper uses block body {} without return annotation - this is ImplicitUnit
+        // (params are vacuously annotated, return type is implicitly ())
         FileSource::new(
             &db,
             file_id,
@@ -767,14 +767,14 @@ fn caller() -> int {
 
         let graph = binding_graph(&db, module_path);
 
-        // caller -> helper edge SHOULD exist (block body without return = Unannotated)
-        let caller_edges = graph
+        // caller -> helper edge should NOT exist (ImplicitUnit is considered annotated)
+        let has_edge = graph
             .edges
             .get(&caller_def.def_id)
-            .expect("caller in graph");
+            .map_or(false, |edges| edges.contains(&helper_def.def_id));
         assert!(
-            caller_edges.contains(&helper_def.def_id),
-            "caller should have edge to block-body helper without return annotation (Unannotated)"
+            !has_edge,
+            "caller should NOT have edge to block-body helper (ImplicitUnit)"
         );
     }
 

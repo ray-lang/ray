@@ -6,7 +6,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::{ModulePath, Path},
+    pathlib::{ItemPath, ModulePath, Path},
     resolution::{DefTarget, NameKind, Resolution},
     span::{Sourced, parsed::Parsed},
     ty::{Ty, TyVar},
@@ -728,6 +728,12 @@ fn resolve_type_name(
                 return Resolution::Def(target.clone());
             }
         }
+    }
+
+    // 5. Check if it's a primitive/builtin type (int, bool, i32, etc.)
+    // These are built into the language and don't require imports.
+    if Ty::is_builtin_name(name) {
+        return Resolution::Def(DefTarget::Primitive(ItemPath::from(name)));
     }
 
     Resolution::Error {

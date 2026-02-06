@@ -67,5 +67,6 @@ pub enum DefKind {
 pub enum SignatureStatus {
     FullyAnnotated, // All parameter and return types explicit
     ReturnElided,   // Parameters annotated, return type inferred from => body
+    ImplicitUnit,   // Parameters annotated, block body, no return type (implicit ())
     Unannotated,    // Missing parameter or return type annotations
 }

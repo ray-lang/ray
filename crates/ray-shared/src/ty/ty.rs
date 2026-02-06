@@ -392,8 +392,13 @@ impl Ty {
     /// made available via the prelude.
     pub fn is_builtin_name(name: &str) -> bool {
         match name {
-            "char" | "bool" | "int" | "uint" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16"
-            | "u32" | "u64" => true,
+            // Integer types
+            "int" | "uint" | "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32"
+            | "u64" | "u128"
+            // Float types
+            | "float" | "f32" | "f64" | "f128"
+            // Other primitives
+            | "bool" | "char" => true,
             _ => false,
         }
     }

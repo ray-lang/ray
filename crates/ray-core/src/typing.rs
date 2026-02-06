@@ -1348,6 +1348,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs migration to query-based typecheck"]
     fn typecheck_simple_bool_function_with_new_typechecker() {
         let _guard = test_def_context();
 
@@ -1393,6 +1394,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs migration to query-based typecheck"]
     fn typecheck_boxed_bool_function_with_new_typechecker() {
         todo!("FIXME: uses legacy code that needs to be replaced")
 

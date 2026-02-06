@@ -181,29 +181,6 @@ fn validate_annotation_policy(
         }
     }
 
-    // Check return type for methods with block bodies when params are annotated
-    // If params are annotated but return type is missing with a block body, that's an error
-    let all_annotated = annotated_count == non_self_param_count && non_self_param_count > 0;
-    if all_annotated && sig.ret_ty.is_none() && !method_allows_inferred_return(body) {
-        errors.push(RayError {
-            msg: "method must have a return type annotation unless using `=>`".to_string(),
-            src: vec![Source {
-                span: Some(sig.span),
-                filepath: filepath.clone(),
-                ..Default::default()
-            }],
-            kind: RayErrorKind::Type,
-            context: Some("annotation policy validation".to_string()),
-        });
-    }
-}
-
-/// Check if a method body allows inferred return type (arrow body).
-fn method_allows_inferred_return(body: &Option<Box<Node<Expr>>>) -> bool {
-    match body {
-        Some(b) => !matches!(b.value, Expr::Block(_)),
-        None => true, // No body = signature only (trait method)
-    }
 }
 
 /// Validate that all qualifiers (where clauses) reference existing traits.
@@ -855,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_def_error_for_missing_return_with_block_body() {
+    fn validate_def_no_error_for_missing_return_with_block_body() {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -864,25 +841,22 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // Block body with annotated params but no return type
-        FileSource::new(&db, file_id, r#"fn bad(x: int) { x * 2 }"#.to_string());
+        // Block body with annotated params but no return type is allowed.
+        // The return type is implicitly () (ImplicitUnit status).
+        FileSource::new(&db, file_id, r#"fn ok(x: int) { x * 2 }"#.to_string());
 
         let parse_result = parse_file(&db, file_id);
-        let bad_def = parse_result
+        let ok_def = parse_result
             .defs
             .iter()
-            .find(|d| d.name == "bad")
-            .expect("should find bad function");
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
 
-        let errors = validate_def(&db, bad_def.def_id);
+        let errors = validate_def(&db, ok_def.def_id);
         assert!(
-            !errors.is_empty(),
-            "Expected error for missing return type with block body"
-        );
-        assert!(
-            errors[0].msg.contains("return type annotation"),
-            "Error message should mention return type: {}",
-            errors[0].msg
+            errors.is_empty(),
+            "Expected no validation error for block body with implicit unit return, got: {:?}",
+            errors
         );
     }
 

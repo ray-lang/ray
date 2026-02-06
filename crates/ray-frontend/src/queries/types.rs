@@ -378,16 +378,16 @@ fn compute_func_signature_status(func: &Func) -> SignatureStatus {
     }
 
     // Check if body is an arrow expression (not a block)
-    // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided
-    // Block body: fn foo(x: int) { x + 1 } -> Unannotated
+    // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided (infer return from expr)
+    // Block body: fn foo(x: int) { x + 1 } -> ImplicitUnit (return type is ())
     let body_is_block = func
         .body
         .as_ref()
         .map(|b| matches!(b.value, Expr::Block(_)))
-        .unwrap_or(true); // No body = treat as block (unannotated)
+        .unwrap_or(true); // No body = treat as block
 
     if body_is_block {
-        SignatureStatus::Unannotated
+        SignatureStatus::ImplicitUnit
     } else {
         SignatureStatus::ReturnElided
     }

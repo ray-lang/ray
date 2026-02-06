@@ -135,18 +135,17 @@ impl Func {
             return SignatureStatus::FullyAnnotated;
         }
 
-        // Check if body is an arrow expression (not a block)
-        // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided (annotated)
-        // Block body: fn foo(x: int) { x + 1 } -> Unannotated (missing return type is an error)
+        // All params annotated but return type missing.
+        // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided (infer return from expr)
+        // Block body: fn foo(x: int) { x + 1 } -> ImplicitUnit (return type is ())
         let body_is_block = self
             .body
             .as_ref()
             .map(|b| matches!(b.value, Expr::Block(_)))
-            .unwrap_or(true); // No body = treat as block (unannotated)
+            .unwrap_or(true); // No body = treat as block
 
         if body_is_block {
-            // Block body without return type annotation is unannotated
-            SignatureStatus::Unannotated
+            SignatureStatus::ImplicitUnit
         } else {
             // Arrow body (=>) - return type inferred from expression
             SignatureStatus::ReturnElided

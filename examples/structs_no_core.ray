@@ -1,3 +1,5 @@
+//![no-core]
+
 struct A {
     x: i32
 }
