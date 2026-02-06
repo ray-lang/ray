@@ -454,7 +454,7 @@ mod tests {
         },
         query::Database,
     };
-    use ray_core::ast::{Decl, Expr, WalkItem, walk_file};
+    use ray_core::ast::{CurlyElement, Decl, Expr, WalkItem, walk_file};
 
     fn setup_test_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
         let db = Database::new();
@@ -1176,7 +1176,7 @@ fn test() -> Point {
                 continue;
             };
             for elem in &curly.elements {
-                if let ray_core::ast::CurlyElement::Labeled(field_name, value_expr) = &elem.value {
+                if let CurlyElement::Labeled(field_name, value_expr) = &elem.value {
                     if field_name.path.name().as_deref() == Some("x") {
                         value_expr_id = Some(value_expr.id);
                         break;
@@ -1237,7 +1237,7 @@ fn test() -> Point {
                 continue;
             };
             for elem in &curly.elements {
-                if let ray_core::ast::CurlyElement::Name(name) = &elem.value {
+                if let CurlyElement::Name(name) = &elem.value {
                     if name.path.name().as_deref() == Some("x") {
                         shorthand_elem_id = Some(elem.id);
                         break;

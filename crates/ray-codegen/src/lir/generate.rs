@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::Deref,
     rc::Rc,
 };
@@ -1565,7 +1565,7 @@ impl<'a> GenCtx<'a> {
                 _ => continue,
             };
 
-            let mut poly_vars = std::collections::HashSet::new();
+            let mut poly_vars = HashSet::new();
             for v in impl_container_ty
                 .free_vars()
                 .into_iter()

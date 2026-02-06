@@ -4,7 +4,7 @@
 //! and the workspace as a whole. It aggregates errors from parsing, transformation,
 //! name resolution, validation, and type checking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ray_core::{
     errors::{RayError, RayErrorKind},
@@ -73,7 +73,7 @@ pub fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
 
     // Collect type errors (triggers typechecking)
     // Track which groups we've already processed to avoid duplicates
-    let mut processed_groups = std::collections::HashSet::new();
+    let mut processed_groups = HashSet::new();
 
     for def_header in &file_ast_result.defs {
         let group_id = binding_group_for_def(db, def_header.def_id);

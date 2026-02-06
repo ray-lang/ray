@@ -139,6 +139,14 @@ impl TyVar {
     pub fn is_rigid(&self) -> bool {
         self.is_schema() || self.is_skolem()
     }
+
+    /// Returns true if this is a user-written type variable (e.g. `'a`, `'b`).
+    pub fn is_user_var(&self) -> bool {
+        if let Some(name) = self.path().name().as_ref() {
+            return name.starts_with('\'');
+        }
+        false
+    }
 }
 
 impl std::fmt::Display for TyVar {

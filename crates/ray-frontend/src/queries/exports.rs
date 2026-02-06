@@ -176,7 +176,7 @@ fn merge_exports(
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::pathlib::{FilePath, ModulePath};
+    use ray_shared::pathlib::{FilePath, ModulePath, Path};
 
     use crate::{
         queries::{
@@ -191,10 +191,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "".to_string());
 
@@ -208,10 +205,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
 
@@ -227,10 +221,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nfn bar() {}".to_string());
 
@@ -246,10 +237,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
 
@@ -265,10 +253,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -288,10 +273,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "extern x: int".to_string());
 
@@ -307,10 +289,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "x = 42".to_string());
 
@@ -326,10 +305,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -362,7 +338,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let module_path = ray_shared::pathlib::Path::from("mymodule");
+        let module_path = Path::from("mymodule");
         let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nstruct Bar {}".to_string());
@@ -379,7 +355,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let module_path = ray_shared::pathlib::Path::from("mymodule");
+        let module_path = Path::from("mymodule");
         let file1 = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
         let file2 = workspace.add_file(FilePath::from("mymodule/utils.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
@@ -398,7 +374,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let module_path = ray_shared::pathlib::Path::from("mymodule");
+        let module_path = Path::from("mymodule");
         let file1 = workspace.add_file(FilePath::from("mymodule/a.ray"), module_path.clone());
         let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
@@ -421,7 +397,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let module_path = ray_shared::pathlib::Path::from("mymodule");
+        let module_path = Path::from("mymodule");
         let file1 = workspace.add_file(FilePath::from("mymodule/a.ray"), module_path.clone());
         let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
         let file3 = workspace.add_file(FilePath::from("mymodule/c.ray"), module_path.clone());
@@ -443,7 +419,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let module_path = ray_shared::pathlib::Path::from("mymodule");
+        let module_path = Path::from("mymodule");
         let file1 = workspace.add_file(FilePath::from("mymodule/a.ray"), module_path.clone());
         let file2 = workspace.add_file(FilePath::from("mymodule/b.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);

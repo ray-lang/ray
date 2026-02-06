@@ -617,8 +617,8 @@ fn extract_and_map_types(def_id: DefId, decl: &Node<Decl>) -> MappedDefTypes {
 /// implicit ones from the signature (`fn foo(x: 'a)`).
 fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
     match &decl.value {
-        Decl::Func(func) => collect_func_type_params(func),
-        Decl::FnSig(sig) => collect_sig_type_params(sig),
+        Decl::Func(func) => sig_type_param_names(&func.sig),
+        Decl::FnSig(sig) => sig_type_param_names(sig),
         Decl::Struct(st) => collect_struct_type_params(st),
         Decl::Trait(tr) => extract_type_params_from_parsed_ty(&tr.ty),
         Decl::Impl(im) => extract_type_params_from_parsed_ty(&im.ty),
@@ -631,120 +631,38 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
     }
 }
 
-/// Collect type parameters from a function (explicit + implicit from signature).
-fn collect_func_type_params(func: &Func) -> Vec<String> {
-    collect_sig_type_params(&func.sig)
+/// Collect type parameter names from a function signature using the canonical
+/// `FuncSig::all_type_vars()` method.
+fn sig_type_param_names(sig: &FuncSig) -> Vec<String> {
+    sig.all_type_vars()
+        .into_iter()
+        .filter_map(|tv| tv.path().name())
+        .collect()
 }
 
-/// Collect type parameters from a function signature.
-///
-/// First collects explicit type params from ty_params, then discovers
-/// implicit ones from parameter types, return type, and qualifiers.
-fn collect_sig_type_params(sig: &FuncSig) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut params = Vec::new();
-
-    // First, explicit type params (if any)
-    if let Some(tp) = &sig.ty_params {
-        for parsed_ty in &tp.tys {
-            if let Ty::Var(ty_var) = parsed_ty.value() {
-                if let Some(name) = ty_var.path().name() {
-                    if seen.insert(name.clone()) {
-                        params.push(name);
-                    }
-                }
-            }
-        }
-    }
-
-    // Then, collect from parameter types
-    for param in &sig.params {
-        if let Some(ty) = param.value.ty() {
-            collect_type_vars_from_ty(ty, &mut seen, &mut params);
-        }
-    }
-
-    // Collect from return type
-    if let Some(parsed_ty) = &sig.ret_ty {
-        collect_type_vars_from_ty(parsed_ty.value(), &mut seen, &mut params);
-    }
-
-    // Collect from qualifiers
-    for qual in &sig.qualifiers {
-        collect_type_vars_from_ty(qual.value(), &mut seen, &mut params);
-    }
-
-    params
-}
-
-/// Collect type parameters from a struct definition.
-///
-/// Checks explicit ty_params and field types.
+/// Collect type parameters from a struct definition (explicit only).
 fn collect_struct_type_params(st: &ray_core::ast::Struct) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut params = Vec::new();
-
-    // Explicit type params
-    if let Some(tp) = &st.ty_params {
-        for parsed_ty in &tp.tys {
-            if let Ty::Var(ty_var) = parsed_ty.value() {
-                if let Some(name) = ty_var.path().name() {
-                    if seen.insert(name.clone()) {
-                        params.push(name);
-                    }
-                }
-            }
-        }
-    }
-
-    // Field types
-    if let Some(fields) = &st.fields {
-        for field in fields {
-            if let Some(parsed_ty) = &field.value.ty {
-                collect_type_vars_from_ty(parsed_ty.value().mono(), &mut seen, &mut params);
-            }
-        }
-    }
-
-    params
+    extract_type_params_from_parsed_tys(st.ty_params.as_ref())
 }
 
-/// Recursively collect type variable names from a type.
-fn collect_type_vars_from_ty(
-    ty: &Ty,
-    seen: &mut std::collections::HashSet<String>,
-    params: &mut Vec<String>,
-) {
-    match ty {
-        Ty::Var(ty_var) => {
-            if let Some(name) = ty_var.path().name() {
-                // Only collect user type variables (starting with ')
-                if name.starts_with('\'') && seen.insert(name.clone()) {
-                    params.push(name);
-                }
-            }
-        }
-        Ty::Proj(_path, args) => {
-            for arg in args {
-                collect_type_vars_from_ty(arg, seen, params);
-            }
-        }
-        Ty::Func(param_tys, ret_ty) => {
-            for param_ty in param_tys {
-                collect_type_vars_from_ty(param_ty, seen, params);
-            }
-            collect_type_vars_from_ty(ret_ty, seen, params);
-        }
-        Ty::Tuple(tys) => {
-            for t in tys {
-                collect_type_vars_from_ty(t, seen, params);
-            }
-        }
-        Ty::Ref(inner) | Ty::RawPtr(inner) | Ty::Array(inner, _) => {
-            collect_type_vars_from_ty(inner, seen, params);
-        }
-        _ => {}
-    }
+/// Extract type parameter names from an optional TypeParams.
+fn extract_type_params_from_parsed_tys(
+    ty_params: Option<&ray_core::ast::TypeParams>,
+) -> Vec<String> {
+    ty_params
+        .map(|tp| {
+            tp.tys
+                .iter()
+                .filter_map(|parsed_ty| {
+                    if let Ty::Var(ty_var) = parsed_ty.value() {
+                        ty_var.path().name()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Extract type parameter names from a Parsed<Ty> (e.g., `Eq['a]` → `["'a"]`).
@@ -1006,7 +924,7 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        FileSource::new(&db, file_id, "struct Box { value: 'a }".to_string());
+        FileSource::new(&db, file_id, "struct Box['a] { value: 'a }".to_string());
 
         let parse_result = parse_file(&db, file_id);
         let box_def = parse_result
@@ -1441,7 +1359,7 @@ mod tests {
         let parsed_ty = make_parsed_ty(Ty::Const(original_path), vec![node_id]);
 
         let def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 42,
         };
         let target = DefTarget::Workspace(def_id);
@@ -1472,7 +1390,7 @@ mod tests {
         let parsed_ty = make_parsed_ty(Ty::Var(original_var), vec![node_id]);
 
         let def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 0,
         };
         let type_param_id = TypeParamId {
@@ -1537,14 +1455,14 @@ mod tests {
         );
 
         let def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 1,
         };
         let list_target = DefTarget::Workspace(def_id);
 
         let type_param_id = TypeParamId {
             owner: DefId {
-                file: ray_shared::file_id::FileId::default(),
+                file: FileId::default(),
                 index: 0,
             },
             index: 0,
@@ -1590,11 +1508,11 @@ mod tests {
         );
 
         let int_def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 10,
         };
         let bool_def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 20,
         };
 
@@ -1638,11 +1556,11 @@ mod tests {
         );
 
         let int_def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 10,
         };
         let string_def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 20,
         };
 
@@ -1684,7 +1602,7 @@ mod tests {
         let parsed_ty = make_parsed_ty(Ty::Ref(Box::new(Ty::Const(inner_path))), vec![inner_id]);
 
         let point_def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 5,
         };
 
@@ -1747,7 +1665,7 @@ mod tests {
         let parsed_ty = make_parsed_ty(Ty::Const(original_path), vec![node_id]);
 
         let def_id = DefId {
-            file: ray_shared::file_id::FileId::default(),
+            file: FileId::default(),
             index: 0,
         };
         let type_param_id = TypeParamId {

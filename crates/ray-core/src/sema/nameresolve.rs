@@ -350,12 +350,14 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
 
-            // Push function's type params for expressions in the body
-            let ty_vars = extract_ty_vars_from_type_params(&func.sig.ty_params);
+            // Collect all type vars (explicit + implicit) once
+            let ty_vars = func.sig.all_type_vars();
             let scope = build_type_param_scope(decl.id.owner, &ty_vars);
-            ctx.type_param_scopes.push(scope);
 
-            resolve_names_in_func_sig(decl.id.owner, &func.sig, ctx);
+            // Push for body expressions and resolve signature types
+            ctx.type_param_scopes.push(scope.clone());
+            resolve_names_in_func_params(&func.sig, ctx);
+            resolve_func_sig(&func.sig, &scope, ctx);
         }
         Decl::FnSig(sig) => {
             // Skip if already resolved by parent (trait method or extern function)
@@ -365,9 +367,13 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             }
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
-            // FnSig has no body, so no type param scope needed for expressions.
-            // The signature's type refs are resolved in resolve_names_in_func_sig.
-            resolve_names_in_func_sig(decl.id.owner, sig, ctx);
+
+            // Collect all type vars (explicit + implicit) once
+            let ty_vars = sig.all_type_vars();
+            let scope = build_type_param_scope(decl.id.owner, &ty_vars);
+
+            resolve_names_in_func_params(sig, ctx);
+            resolve_func_sig(sig, &scope, ctx);
         }
         Decl::Struct(struct_decl) => {
             // Resolve type references in struct field types
@@ -422,14 +428,6 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
     }
 }
 
-fn resolve_names_in_func_sig(owner_def_id: DefId, sig: &FuncSig, ctx: &mut ResolveContext<'_>) {
-    // Bind function parameters
-    resolve_names_in_func_params(sig, ctx);
-
-    // Resolve type references in function signature
-    resolve_func_type_refs(owner_def_id, sig, ctx);
-}
-
 fn resolve_names_in_func_params(sig: &FuncSig, ctx: &mut ResolveContext<'_>) {
     ctx.bind_locals(sig.params.iter().filter_map(|param| {
         if let Some(name) = param.name().name() {
@@ -481,12 +479,10 @@ fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveC
     // doesn't re-process them without the trait's type params in scope
     for field in &trait_decl.fields {
         if let Decl::FnSig(sig) = &field.value {
-            resolve_func_sig(
-                field.id.owner,
-                sig,
-                &type_params, // Trait's type params are in scope
-                ctx,
-            );
+            // Collect method's own implicit type vars, filtering out parent's
+            let method_type_params =
+                build_method_type_params(field.id.owner, sig, &type_params);
+            resolve_func_sig(sig, &method_type_params, ctx);
             // Mark this FnSig as already resolved
             ctx.resolved_fnsigs.insert(field.id);
         }
@@ -523,30 +519,12 @@ fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_
             let Decl::Func(func) = &decl.value else {
                 unreachable!("impl funcs should only contain Decl::Func");
             };
-            resolve_func_sig(
-                decl.id.owner,
-                &func.sig,
-                &type_params, // Impl's type params are in scope for methods
-                ctx,
-            );
+            // Collect method's own implicit type vars, filtering out parent's
+            let method_type_params =
+                build_method_type_params(decl.id.owner, &func.sig, &type_params);
+            resolve_func_sig(&func.sig, &method_type_params, ctx);
         }
     }
-}
-
-/// Resolve type references in a top-level function definition.
-///
-/// For `fn foo['a](x: 'a, y: Bar): List['a]`, this resolves:
-/// - Type parameters to their TypeParamIds
-/// - Parameter types (e.g., `Bar` to its definition)
-/// - Return type (e.g., `List` to its definition)
-/// - Qualifier/where-clause types
-fn resolve_func_type_refs(def_id: DefId, sig: &FuncSig, ctx: &mut ResolveContext<'_>) {
-    // Build type parameter scope from function's type params
-    let ty_vars = extract_ty_vars_from_type_params(&sig.ty_params);
-    let type_params = build_type_param_scope(def_id, &ty_vars);
-
-    // Use resolve_func_sig to handle the signature resolution
-    resolve_func_sig(def_id, &sig, &type_params, ctx);
 }
 
 /// Resolve type references in a type alias definition.
@@ -603,6 +581,32 @@ pub fn build_type_param_scope(owner: DefId, params: &[TyVar]) -> HashMap<String,
         .collect()
 }
 
+/// Build the complete type parameter scope for a method, combining parent
+/// type params with the method's own type vars (explicit + implicit).
+///
+/// Type vars already present in the parent scope are not re-declared at the
+/// method level — they resolve to the parent's TypeParamId.
+fn build_method_type_params(
+    method_def_id: DefId,
+    sig: &FuncSig,
+    parent_type_params: &HashMap<String, TypeParamId>,
+) -> HashMap<String, TypeParamId> {
+    let mut type_params = parent_type_params.clone();
+    let method_vars: Vec<TyVar> = sig
+        .all_type_vars()
+        .into_iter()
+        .filter(|tv| {
+            tv.path()
+                .name()
+                .map(|n| !parent_type_params.contains_key(&n))
+                .unwrap_or(false)
+        })
+        .collect();
+    let method_params = build_type_param_scope(method_def_id, &method_vars);
+    type_params.extend(method_params);
+    type_params
+}
+
 /// Extract type variables from TypeParams.
 ///
 /// TypeParams contains `Vec<Parsed<Ty>>` where each Ty should be a `Ty::Var`.
@@ -632,35 +636,28 @@ fn extract_ty_vars_from_type_params(ty_params: &Option<crate::ast::TypeParams>) 
 /// - Return type (`FuncSig.ret_ty`)
 /// - Qualifier/where-clause types (`FuncSig.qualifiers`)
 ///
-/// The method's own type parameters are combined with parent type parameters
-/// to form the complete scope for resolution.
+/// The caller is responsible for providing the complete set of type parameters
+/// in scope (parent type params + the function/method's own type params).
 pub fn resolve_func_sig(
-    method_def_id: DefId,
     sig: &FuncSig,
-    parent_type_params: &HashMap<String, TypeParamId>,
+    type_params: &HashMap<String, TypeParamId>,
     ctx: &mut ResolveContext<'_>,
 ) {
-    // Method may have its own type parameters
-    let mut type_params = parent_type_params.clone();
-    let method_ty_vars = extract_ty_vars_from_type_params(&sig.ty_params);
-    let method_params = build_type_param_scope(method_def_id, &method_ty_vars);
-    type_params.extend(method_params);
-
     // Resolve parameter types
     for param in &sig.params {
         if let Some(parsed_ty_scheme) = param.value.parsed_ty() {
-            collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
+            collect_type_resolutions_from_scheme(parsed_ty_scheme, type_params, ctx);
         }
     }
 
     // Resolve return type
     if let Some(parsed_ty) = &sig.ret_ty {
-        collect_type_resolutions(parsed_ty, &type_params, ctx);
+        collect_type_resolutions(parsed_ty, type_params, ctx);
     }
 
     // Resolve where clause / qualifiers
     for qualifier in &sig.qualifiers {
-        collect_type_resolutions(qualifier, &type_params, ctx);
+        collect_type_resolutions(qualifier, type_params, ctx);
     }
 }
 
@@ -2109,12 +2106,12 @@ mod tests {
         let _guard = NodeId::enter_def(def_id);
 
         let sig = make_func_sig("test::f");
-        let parent_type_params = HashMap::new();
+        let type_params = HashMap::new();
         let imports = HashMap::new();
         let exports = HashMap::new();
         let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
+        resolve_func_sig(&sig, &type_params, &mut ctx);
 
         // Empty signature should produce no resolutions
         assert!(ctx.resolutions.is_empty());
@@ -2139,11 +2136,11 @@ mod tests {
         let mut exports = HashMap::new();
         exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
 
-        let parent_type_params = HashMap::new();
+        let type_params = HashMap::new();
         let imports = HashMap::new();
         let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
+        resolve_func_sig(&sig, &type_params, &mut ctx);
 
         assert_eq!(
             ctx.resolutions.get(&ret_node_id),
@@ -2172,18 +2169,18 @@ mod tests {
         let mut exports = HashMap::new();
         exports.insert("ToStr".to_string(), DefTarget::Workspace(tostr_def_id));
 
-        // Set up parent type params for 'a
-        let mut parent_type_params = HashMap::new();
+        // Set up type params for 'a
+        let mut type_params = HashMap::new();
         let a_type_param_id = TypeParamId {
             owner: def_id,
             index: 0,
         };
-        parent_type_params.insert("'a".to_string(), a_type_param_id);
+        type_params.insert("'a".to_string(), a_type_param_id);
 
         let imports = HashMap::new();
         let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
+        resolve_func_sig(&sig, &type_params, &mut ctx);
 
         assert_eq!(
             ctx.resolutions.get(&tostr_node_id),
@@ -2220,11 +2217,11 @@ mod tests {
         let mut exports = HashMap::new();
         exports.insert("Point".to_string(), DefTarget::Workspace(point_def_id));
 
-        let parent_type_params = HashMap::new();
+        let type_params = HashMap::new();
         let imports = HashMap::new();
         let mut ctx = ResolveContext::new(&imports, &exports, &|_| None);
 
-        resolve_func_sig(def_id, &sig, &parent_type_params, &mut ctx);
+        resolve_func_sig(&sig, &type_params, &mut ctx);
 
         assert_eq!(
             ctx.resolutions.get(&param_node_id),

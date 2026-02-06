@@ -51,6 +51,7 @@ pub fn find_at_position(db: &Database, file_id: FileId, line: usize, col: usize)
 mod tests {
     use ray_shared::{
         def::DefId,
+        file_id::FileId,
         node_id::NodeId,
         pathlib::{FilePath, ModulePath},
     };
@@ -64,7 +65,7 @@ mod tests {
         query::Database,
     };
 
-    fn setup_test_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_test_db(source: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
         let module_path = ModulePath::from("test");
@@ -220,7 +221,7 @@ fn distance(p: Point) -> int {
         // Note: We don't create FileSource, so parse will fail
 
         // Create a fake file ID that doesn't exist
-        let fake_file_id = ray_shared::file_id::FileId(999);
+        let fake_file_id = FileId(999);
 
         let node_id = find_at_position(&db, fake_file_id, 0, 0);
         assert!(

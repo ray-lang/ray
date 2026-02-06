@@ -64,7 +64,11 @@ impl<'db> QueryEnv<'db> {
     /// The file_id determines what imports are in scope for builtin resolution.
     /// Use `with_group` when you need `local_bindings_for_group` functionality.
     pub fn new(db: &'db Database, file_id: FileId) -> Self {
-        QueryEnv { db, file_id, group_id: None }
+        QueryEnv {
+            db,
+            file_id,
+            group_id: None,
+        }
     }
 
     /// Create a new QueryEnv with a binding group context.
@@ -72,7 +76,11 @@ impl<'db> QueryEnv<'db> {
     /// The file_id determines what imports are in scope for builtin resolution.
     /// The group_id enables `local_bindings_for_group` to return bindings for the group.
     pub fn with_group(db: &'db Database, file_id: FileId, group_id: BindingGroupId) -> Self {
-        QueryEnv { db, file_id, group_id: Some(group_id) }
+        QueryEnv {
+            db,
+            file_id,
+            group_id: Some(group_id),
+        }
     }
 }
 
@@ -1152,7 +1160,7 @@ fn identity(x: int) -> int => x
         // The parameter is annotated as `int`, so we expect that type
         assert_eq!(
             local_ty.unwrap(),
-            ray_shared::ty::Ty::int(),
+            Ty::int(),
             "Parameter should have type int"
         );
     }
@@ -1248,12 +1256,12 @@ fn bar(b: bool) -> bool => b
 
         assert_eq!(
             foo_param_ty.unwrap(),
-            ray_shared::ty::Ty::int(),
+            Ty::int(),
             "foo's parameter should be int"
         );
         assert_eq!(
             bar_param_ty.unwrap(),
-            ray_shared::ty::Ty::bool(),
+            Ty::bool(),
             "bar's parameter should be bool"
         );
     }
@@ -1313,7 +1321,7 @@ fn get_flag() -> bool {
         );
         assert_eq!(
             x_ty.unwrap(),
-            ray_shared::ty::Ty::bool(),
+            Ty::bool(),
             "x should have type bool (from the literal true)"
         );
     }
@@ -1335,7 +1343,7 @@ x = true
         FileSource::new(&db, file_id, source.to_string());
 
         // FileMain has def_id index 0
-        let file_main_def_id = ray_shared::def::DefId::new(file_id, 0);
+        let file_main_def_id = DefId::new(file_id, 0);
 
         // Get resolutions to find x's LocalBindingId
         let resolutions = name_resolutions(&db, file_id);

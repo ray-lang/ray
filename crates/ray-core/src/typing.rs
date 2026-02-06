@@ -7,6 +7,7 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::ItemPath,
     resolution::{DefTarget, Resolution},
+    span::parsed::Parsed,
     ty::Ty,
 };
 use ray_typing::{
@@ -15,6 +16,7 @@ use ray_typing::{
     context::{AssignLhs, ExprKind, LhsPattern, Pattern},
     env::TypecheckEnv,
     info::TypeSystemInfo,
+    types::TyScheme,
 };
 
 use crate::{
@@ -100,10 +102,7 @@ impl<'a> TyLowerCtx<'a> {
     /// Uses the resolutions map and the env's `def_item_path` method to convert
     /// unqualified type paths (e.g., `Math`) to their fully qualified form
     /// (e.g., `test::Math`).
-    fn resolve_type_scheme(
-        &self,
-        parsed: &ray_shared::span::parsed::Parsed<ray_typing::types::TyScheme>,
-    ) -> Ty {
+    fn resolve_type_scheme(&self, parsed: &Parsed<TyScheme>) -> Ty {
         let synthetic_ids = parsed.synthetic_ids();
         let ty = parsed.mono();
         let mut id_iter = synthetic_ids.iter();
@@ -113,7 +112,7 @@ impl<'a> TyLowerCtx<'a> {
     /// Recursively resolve a type, consuming synthetic IDs in flatten order.
     fn resolve_ty<'b>(&self, ty: &Ty, id_iter: &mut impl Iterator<Item = &'b NodeId>) -> Ty {
         match ty {
-            Ty::Const(original_path) => {
+            Ty::Const(_original_path) => {
                 if let Some(node_id) = id_iter.next() {
                     if let Some(Resolution::Def(target)) = self.resolutions.get(node_id) {
                         if let Some(resolved_path) = self.env.def_item_path(target) {

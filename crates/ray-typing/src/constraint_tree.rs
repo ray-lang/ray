@@ -120,8 +120,11 @@ fn apply_pattern_guard_with_ty(
         } => {
             let inner_ty = ctx.fresh_meta();
             let nilable_ty = Ty::nilable(inner_ty.clone());
-            node.wanteds
-                .push(Constraint::eq(scrut_ty.clone(), nilable_ty.clone(), info.clone()));
+            node.wanteds.push(Constraint::eq(
+                scrut_ty.clone(),
+                nilable_ty.clone(),
+                info.clone(),
+            ));
 
             ctx.binding_schemes
                 .entry((*local_id).into())
@@ -1935,7 +1938,7 @@ mod tests {
         ExprRecord, TypeCheckInput,
         binding_groups::{BindingGraph, BindingGroup},
         constraint_tree::{ConstraintNode, build_constraint_tree_for_group, walk_tree},
-        constraints::ConstraintKind,
+        constraints::{ConstraintKind, InstantiateTarget},
         context::{ExprKind, Pattern, SolverContext},
         mocks::MockTypecheckEnv,
         types::TyScheme,
@@ -2038,7 +2041,7 @@ mod tests {
             binding_node
                 .wanteds
                 .iter()
-                .any(|c| matches!(c.kind, crate::constraints::ConstraintKind::Class(_)))
+                .any(|c| matches!(c.kind, ConstraintKind::Class(_)))
         );
     }
 
@@ -2064,7 +2067,7 @@ mod tests {
             binding_node
                 .wanteds
                 .iter()
-                .any(|c| matches!(c.kind, crate::constraints::ConstraintKind::Class(_)))
+                .any(|c| matches!(c.kind, ConstraintKind::Class(_)))
         );
     }
 
@@ -2174,7 +2177,7 @@ mod tests {
         // BindingRef now generates an InstantiateConstraint for local bindings
         assert!(binding_node.wanteds.iter().any(|c| match &c.kind {
             ConstraintKind::Instantiate(inst) => {
-                matches!(inst.target, crate::constraints::InstantiateTarget::Local(bid) if bid == local_binding_id)
+                matches!(inst.target, InstantiateTarget::Local(bid) if bid == local_binding_id)
             }
             _ => false,
         }));

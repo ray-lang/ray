@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::{Deref as _, DerefMut as _};
 
 use ray_shared::{
@@ -228,6 +229,60 @@ impl FuncSig {
             qual.resolve_fqns(scopes, ncx);
         }
         Ok(())
+    }
+
+    /// Collect all type variables from this signature: explicit (from `ty_params`)
+    /// and implicit (discovered from param types, return type, and qualifiers).
+    ///
+    /// Returns unique type vars in discovery order (explicit first, then implicit).
+    pub fn all_type_vars(&self) -> Vec<TyVar> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+
+        // 1. Explicit type params first
+        if let Some(tp) = &self.ty_params {
+            for parsed_ty in &tp.tys {
+                if let Ty::Var(tv) = parsed_ty.value() {
+                    if let Some(name) = tv.path().name() {
+                        if seen.insert(name) {
+                            out.push(tv.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect user type vars from a Ty using existing free_vars()
+        let mut collect = |ty: &Ty| {
+            for tv in ty.free_vars() {
+                if tv.is_user_var() {
+                    if let Some(name) = tv.path().name() {
+                        if seen.insert(name) {
+                            out.push(tv.clone());
+                        }
+                    }
+                }
+            }
+        };
+
+        // 2. From param types
+        for param in &self.params {
+            if let Some(ty) = param.value.ty() {
+                collect(ty);
+            }
+        }
+
+        // 3. From return type
+        if let Some(ret) = &self.ret_ty {
+            collect(ret.value());
+        }
+
+        // 4. From qualifiers
+        for qual in &self.qualifiers {
+            collect(qual.value());
+        }
+
+        out
     }
 
     /// Extract a type scheme from a function signature.
