@@ -475,6 +475,13 @@ fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveC
         collect_type_resolutions(super_trait, &type_params, ctx);
     }
 
+    // Resolve directive types (e.g., default type)
+    for directive in &trait_decl.directives {
+        for arg in &directive.value().args {
+            collect_type_resolutions(arg, &type_params, ctx);
+        }
+    }
+
     // Resolve method signatures and mark them as resolved so the walker
     // doesn't re-process them without the trait's type params in scope
     for field in &trait_decl.fields {

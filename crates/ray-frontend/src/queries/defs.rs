@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node};
+use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefHeader, DefId, DefKind, LibraryDefId},
@@ -794,6 +794,22 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
                     get_item_path,
                 );
 
+                // Extract default type from directives (e.g., `default (int)`)
+                let default_ty = tr.directives.iter().find_map(|directive| {
+                    if matches!(directive.value().kind, TraitDirectiveKind::Default) {
+                        directive.value().args.first().map(|arg| {
+                            apply_type_resolutions(
+                                arg,
+                                &resolutions,
+                                &mapping.var_map,
+                                get_item_path,
+                            )
+                        })
+                    } else {
+                        None
+                    }
+                });
+
                 return Some(TraitDef {
                     target: DefTarget::Workspace(def_id),
                     path,
@@ -801,7 +817,7 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
                     type_params: schema_vars,
                     super_traits,
                     methods,
-                    default_ty: None,
+                    default_ty,
                 });
             }
         }
