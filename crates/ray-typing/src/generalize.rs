@@ -139,7 +139,12 @@ pub fn generalize_group(
             loop {
                 let mut grew = false;
                 for (idx, c) in residuals.iter().enumerate() {
-                    if matches!(c.kind, ConstraintKind::Eq(_)) {
+                    if matches!(
+                        c.kind,
+                        ConstraintKind::Eq(_)
+                            | ConstraintKind::Instantiate(_)
+                            | ConstraintKind::ResolveMember(_)
+                    ) {
                         continue;
                     }
 

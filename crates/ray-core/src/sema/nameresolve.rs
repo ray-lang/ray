@@ -380,8 +380,11 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             resolve_struct_type_refs(decl.id.owner, struct_decl, ctx);
         }
         Decl::Trait(trait_decl) => {
-            // Push trait's type params for method signatures
-            let ty_vars = trait_decl.ty.value().type_params();
+            // Collect all type vars (explicit + implicit) from trait type and super trait
+            let ty_vars = collect_all_type_vars(
+                std::iter::once(trait_decl.ty.value())
+                    .chain(trait_decl.super_trait.iter().map(|s| s.value())),
+            );
             let scope = build_type_param_scope(decl.id.owner, &ty_vars);
             ctx.type_param_scopes.push(scope);
 
@@ -389,8 +392,11 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             resolve_trait_type_refs(decl.id.owner, trait_decl, ctx);
         }
         Decl::Impl(imp) => {
-            // Push impl's type params for method bodies
-            let ty_vars = imp.ty.value().type_params();
+            // Collect all type vars (explicit + implicit) from impl type and qualifiers
+            let ty_vars = collect_all_type_vars(
+                std::iter::once(imp.ty.value())
+                    .chain(imp.qualifiers.iter().map(|q| q.value())),
+            );
             let scope = build_type_param_scope(decl.id.owner, &ty_vars);
             ctx.type_param_scopes.push(scope);
 
@@ -466,8 +472,12 @@ fn resolve_struct_type_refs(def_id: DefId, struct_decl: &Struct, ctx: &mut Resol
 ///
 /// Type parameters from the trait (e.g., `'a`) are in scope for all resolutions.
 fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveContext<'_>) {
-    // Build type parameter scope from trait's type (e.g., Eq['a] -> {'a: TypeParamId})
-    let ty_vars = trait_decl.ty.value().type_params();
+    // Collect all type vars (explicit + implicit) from trait type and super trait.
+    // This handles cases like `trait Foo[Bar['a]]` where 'a is nested.
+    let ty_vars = collect_all_type_vars(
+        std::iter::once(trait_decl.ty.value())
+            .chain(trait_decl.super_trait.iter().map(|s| s.value())),
+    );
     let type_params = build_type_param_scope(def_id, &ty_vars);
 
     // Resolve super trait if present
@@ -506,9 +516,13 @@ fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveC
 ///
 /// For `impl object Point`, resolves the implementing type and methods.
 fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_>) {
-    // Build type parameter scope from impl's type (e.g., impl Eq['a] -> {'a: TypeParamId})
-    // For most impls like `impl ToStr[Point]`, there are no type params at impl level
-    let ty_vars = imp.ty.value().type_params();
+    // Collect all type vars (explicit + implicit) from impl type and qualifiers.
+    // This handles cases like `impl Iterable[dict['k, 'v], ...]` where 'k, 'v are
+    // nested inside type arguments rather than being direct Ty::Var args.
+    let ty_vars = collect_all_type_vars(
+        std::iter::once(imp.ty.value())
+            .chain(imp.qualifiers.iter().map(|q| q.value())),
+    );
     let type_params = build_type_param_scope(def_id, &ty_vars);
 
     // Resolve the impl type (trait and implementing type) with ALL nested type args
@@ -612,6 +626,27 @@ fn build_method_type_params(
     let method_params = build_type_param_scope(method_def_id, &method_vars);
     type_params.extend(method_params);
     type_params
+}
+
+/// Collect all user type variables (explicit + implicit) from a sequence of types.
+///
+/// Uses `free_vars()` to recursively discover type variables and filters for
+/// user-written ones (starting with `'`). Returns unique type vars in discovery order.
+fn collect_all_type_vars<'a>(types: impl Iterator<Item = &'a Ty>) -> Vec<TyVar> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for ty in types {
+        for tv in ty.free_vars() {
+            if tv.is_user_var() {
+                if let Some(name) = tv.path().name() {
+                    if seen.insert(name) {
+                        out.push(tv.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Extract type variables from TypeParams.

@@ -4,7 +4,7 @@
 //! primary AST representation used by most downstream queries. It applies
 //! syntactic and structural transformations that prepare the AST for typechecking.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use ray_core::{
     ast::{
@@ -22,7 +22,7 @@ use ray_shared::{
     node_id::NodeId,
     pathlib::{FilePath, ItemPath},
     resolution::{DefTarget, Resolution},
-    span::{parsed::Parsed, Source},
+    span::{Source, parsed::Parsed},
     ty::Ty,
 };
 use ray_typing::types::TyScheme;
@@ -70,7 +70,7 @@ pub struct FileAst {
 /// Exceptions include `file_imports`, `file_exports`, and `name_resolutions`
 /// which operate on the raw parse result.
 #[query]
-pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
+pub fn file_ast(db: &Database, file_id: FileId) -> Arc<FileAst> {
     let parse_result = parse_file(db, file_id);
     let resolutions = name_resolutions(db, file_id);
 
@@ -93,12 +93,12 @@ pub fn file_ast(db: &Database, file_id: FileId) -> FileAst {
         transform_decl(decl, &mut ctx);
     }
 
-    FileAst {
+    Arc::new(FileAst {
         ast,
         source_map,
-        defs: parse_result.defs,
+        defs: parse_result.defs.clone(),
         errors,
-    }
+    })
 }
 
 /// Context for AST transformations.

@@ -336,9 +336,12 @@ fn build_impls_by_trait(db: &Database) -> BTreeMap<ItemPath, Vec<ImplTy>> {
             let impl_targets = impls_for_trait(db, trait_target);
 
             let impls: Vec<ImplTy> = impl_targets
-                .into_iter()
+                .iter()
                 .filter_map(|impl_target| {
-                    impl_def(db, impl_target).map(|def| def.convert_to_impl_ty())
+                    impl_def(db, impl_target.clone())
+                        .deref()
+                        .as_ref()
+                        .map(|def| def.convert_to_impl_ty())
                 })
                 .collect();
 
@@ -1543,8 +1546,9 @@ impl<'a> GenCtx<'a> {
         // Get all impls for this trait
         let impl_targets = impls_for_trait(self.db, trait_target);
 
-        for impl_target in impl_targets {
-            let Some(impl_def) = impl_def(self.db, impl_target) else {
+        for impl_target in impl_targets.iter() {
+            let impl_def = impl_def(self.db, impl_target.clone());
+            let Some(impl_def) = impl_def.deref() else {
                 continue;
             };
             let impl_ty = impl_def.convert_to_impl_ty();

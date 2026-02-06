@@ -1,5 +1,7 @@
 //! Parse query infrastructure for the incremental compiler.
 
+use std::sync::Arc;
+
 use ray_core::{
     ast::{Decorator, File},
     errors::RayError,
@@ -24,7 +26,7 @@ pub struct ParseResult {
 }
 
 #[query]
-pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
+pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
     let source = db.get_input::<FileSource>(file_id);
     let workspace = db.get_input::<WorkspaceSnapshot>(());
     let file_info = workspace.file_info(file_id).expect("file not in workspace");
@@ -39,7 +41,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
     let (ast, defs, source_map, errors) =
         Parser::parse_to_result(file_id, source.as_str(), options);
 
-    ParseResult {
+    Arc::new(ParseResult {
         ast: ast.unwrap_or_else(|| File {
             path: file_info.module_path.to_path(),
             stmts: vec![],
@@ -52,7 +54,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> ParseResult {
         defs,
         source_map,
         errors,
-    }
+    })
 }
 
 /// Returns the decorators attached to a definition.

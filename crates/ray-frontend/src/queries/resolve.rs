@@ -1,6 +1,6 @@
 //! Name resolution query for the incremental compiler.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use ray_core::sema::resolve_names_in_file;
 use ray_query_macros::query;
@@ -33,7 +33,7 @@ use crate::{
 /// - Library imports -> Resolution::Def with DefTarget::Library
 /// - Unresolved names -> not in the map (or Resolution::Error for diagnostics)
 #[query]
-pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resolution> {
+pub fn name_resolutions(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, Resolution>> {
     let parse_result = parse_file(db, file_id);
     let resolved = resolved_imports(db, file_id);
     let libraries = db.get_input::<LoadedLibraries>(());
@@ -67,12 +67,12 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> HashMap<NodeId, Resol
         }
     };
 
-    resolve_names_in_file(
+    Arc::new(resolve_names_in_file(
         &parse_result.ast,
         &imports_map,
         &combined_exports,
         module_exports,
-    )
+    ))
 }
 
 /// The top-level scope for a file: names that are visible without qualification.
@@ -329,7 +329,7 @@ mod tests {
         // The exact count depends on how the parser assigns NodeIds
         assert!(!resolutions.is_empty());
         // All resolutions should be Local (parameter reference)
-        for (_, res) in &resolutions {
+        for (_, res) in resolutions.iter() {
             assert!(matches!(res, Resolution::Local(_)));
         }
     }
@@ -448,7 +448,7 @@ mod tests {
         let resolutions = name_resolutions(&db, file2);
 
         // All resolutions for x should be Local, not Def
-        for (_, res) in &resolutions {
+        for (_, res) in resolutions.iter() {
             if matches!(res, Resolution::Local(_)) {
                 // This is expected - local shadows export
             } else if matches!(res, Resolution::Def(_)) {
@@ -474,7 +474,7 @@ mod tests {
         // Should have resolutions for y binding and y usage
         assert!(!resolutions.is_empty());
         // Should all be Local
-        for (_, res) in &resolutions {
+        for (_, res) in resolutions.iter() {
             assert!(matches!(res, Resolution::Local(_)));
         }
     }
@@ -1075,7 +1075,9 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let mut std_lib = LibraryData::default();
         std_lib.modules.push(ModulePath::from("std::collections"));
-        std_lib.modules.push(ModulePath::from("std::collections::hash_map"));
+        std_lib
+            .modules
+            .push(ModulePath::from("std::collections::hash_map"));
 
         // Create a LibraryDefId for HashMap in the deeply nested module
         let hashmap_def_id = LibraryDefId {
@@ -1138,7 +1140,9 @@ mod tests {
         let mut libraries = LoadedLibraries::default();
         let mut std_lib = LibraryData::default();
         std_lib.modules.push(ModulePath::from("std::collections"));
-        std_lib.modules.push(ModulePath::from("std::collections::hash_map"));
+        std_lib
+            .modules
+            .push(ModulePath::from("std::collections::hash_map"));
 
         // Create a LibraryDefId for HashMap in the deeply nested module
         let hashmap_def_id = LibraryDefId {

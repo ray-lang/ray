@@ -95,7 +95,7 @@ pub fn resolved_imports(
 #[query]
 pub fn file_imports(db: &Database, file_id: FileId) -> Vec<Import> {
     let parse_result = parse_file(db, file_id);
-    parse_result.ast.imports
+    parse_result.ast.imports.clone()
 }
 
 /// Check if a file has the `//![no-core]` directive in its doc comment.

@@ -46,10 +46,7 @@ pub fn closures_in_def(db: &Database, def_id: DefId) -> Vec<ClosureInfo> {
         None => return Vec::new(),
     };
 
-    // Convert resolutions to the format expected by closure::closures_in_def
-    let resolutions_map: HashMap<NodeId, Resolution> = resolutions;
-
-    closure::closures_in_def(def_id, def_ast, &resolutions_map)
+    closure::closures_in_def(def_id, def_ast, &resolutions)
 }
 
 /// Look up closure information for a specific closure expression.

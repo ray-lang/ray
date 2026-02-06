@@ -3,7 +3,10 @@
 //! This module provides semantic validation that doesn't require full type inference.
 //! These errors are caught early, before typechecking begins.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+};
 
 use ray_core::{
     ast::{
@@ -180,7 +183,6 @@ fn validate_annotation_policy(
             });
         }
     }
-
 }
 
 /// Validate that all qualifiers (where clauses) reference existing traits.
@@ -462,7 +464,8 @@ fn validate_impl(
     // The walker emits WalkItem::Func for each method, so this covers all methods
     validate_mutability(decl, filepath, srcmap, errors);
 
-    let Some(impl_definition) = impl_def(db, DefTarget::Workspace(def_id)) else {
+    let impl_definition = impl_def(db, DefTarget::Workspace(def_id));
+    let Some(impl_definition) = impl_definition.deref() else {
         return;
     };
 

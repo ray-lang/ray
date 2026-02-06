@@ -4,7 +4,11 @@ use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
     hash::Hasher,
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, RwLock,
+    },
+    time::Instant,
 };
 
 use ray_shared::pathlib::FilePath;
@@ -61,6 +65,10 @@ pub struct CachedValue {
     pub value: Arc<dyn Any + Send + Sync>,
     pub input_deps: Vec<InputDep>,
     pub query_deps: Vec<QueryKey>,
+    /// The input revision at which this entry was last validated.
+    /// If this matches `Database::revision`, the cached value is known-valid
+    /// without needing to walk the dependency tree.
+    pub validated_at: AtomicU64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -75,6 +83,14 @@ pub struct InputRegistryKey {
     pub value_type: TypeId,
 }
 
+/// Per-query-name aggregate stats for profiling.
+#[derive(Default)]
+struct QueryStats {
+    hits: u64,
+    misses: u64,
+    total_ns: u64,
+}
+
 pub struct Database {
     cache: RwLock<HashMap<QueryKey, CachedValue>>,
     inputs: RwLock<HashMap<InputKey, Arc<dyn Any + Send + Sync>>>,
@@ -82,6 +98,14 @@ pub struct Database {
     active_stack: Mutex<Vec<QueryKey>>,
     active_inputs: Mutex<Vec<Vec<InputDep>>>,
     active_query_deps: Mutex<Vec<Vec<QueryKey>>>,
+    /// Monotonically increasing counter, bumped on every `set_input` call.
+    /// Cached values whose `validated_at` matches this are known-valid without
+    /// needing a full dependency-tree walk.
+    revision: AtomicU64,
+    /// When true, per-query timing stats are collected. Off by default.
+    profiling: AtomicBool,
+    /// Profiling stats per query name. Only populated when profiling is enabled.
+    stats: Mutex<HashMap<&'static str, QueryStats>>,
 }
 
 impl Database {
@@ -93,7 +117,37 @@ impl Database {
             active_stack: Mutex::new(Vec::new()),
             active_inputs: Mutex::new(Vec::new()),
             active_query_deps: Mutex::new(Vec::new()),
+            revision: AtomicU64::new(0),
+            profiling: AtomicBool::new(false),
+            stats: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Enable per-query profiling stats collection.
+    pub fn enable_profiling(&self) {
+        self.profiling.store(true, Ordering::Relaxed);
+    }
+
+    /// Print aggregate query profiling stats to stderr, sorted by total time.
+    /// No-op if profiling was never enabled.
+    pub fn dump_stats(&self) {
+        if !self.profiling.load(Ordering::Relaxed) {
+            return;
+        }
+        let stats = self.stats.lock().expect("stats lock poisoned");
+        let mut entries: Vec<_> = stats.iter().collect();
+        entries.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
+        eprintln!("\n{:<35} {:>8} {:>8} {:>12}", "QUERY", "HITS", "MISSES", "TOTAL TIME");
+        eprintln!("{}", "-".repeat(67));
+        for (name, s) in &entries {
+            let ms = s.total_ns as f64 / 1_000_000.0;
+            eprintln!("{:<35} {:>8} {:>8} {:>10.1}ms", name, s.hits, s.misses, ms);
+        }
+        let total_ms: f64 = entries.iter().map(|(_, s)| s.total_ns as f64 / 1_000_000.0).sum();
+        let total_hits: u64 = entries.iter().map(|(_, s)| s.hits).sum();
+        let total_misses: u64 = entries.iter().map(|(_, s)| s.misses).sum();
+        eprintln!("{}", "-".repeat(67));
+        eprintln!("{:<35} {:>8} {:>8} {:>10.1}ms", "TOTAL", total_hits, total_misses, total_ms);
     }
 
     pub fn query<Q: Query>(&self, key: Q::Key) -> Q::Value {
@@ -115,6 +169,8 @@ impl Database {
             }
         }
 
+        let profiling = self.profiling.load(Ordering::Relaxed);
+        let call_start = if profiling { Some(Instant::now()) } else { None };
         if let Some(cached) = self.cache.read().expect("cache lock poisoned").get(&qkey) {
             if self.cached_valid(&qkey, cached) {
                 if let Some(parent_deps) = self
@@ -128,11 +184,19 @@ impl Database {
                     }
                 }
 
-                return cached
+                let value = cached
                     .value
                     .downcast_ref::<Q::Value>()
                     .expect("type mismatch in query cache")
                     .clone();
+                if let Some(start) = call_start {
+                    let elapsed = start.elapsed().as_nanos() as u64;
+                    let mut stats = self.stats.lock().expect("stats lock poisoned");
+                    let entry = stats.entry(Q::NAME).or_default();
+                    entry.hits += 1;
+                    entry.total_ns += elapsed;
+                }
+                return value;
             }
         }
 
@@ -185,8 +249,17 @@ impl Database {
                 value: Arc::new(value.clone()),
                 input_deps,
                 query_deps,
+                validated_at: AtomicU64::new(self.revision.load(Ordering::SeqCst)),
             },
         );
+
+        if let Some(start) = call_start {
+            let elapsed = start.elapsed().as_nanos() as u64;
+            let mut stats = self.stats.lock().expect("stats lock poisoned");
+            let entry = stats.entry(Q::NAME).or_default();
+            entry.misses += 1;
+            entry.total_ns += elapsed;
+        }
 
         value
     }
@@ -201,6 +274,7 @@ impl Database {
             .write()
             .expect("inputs lock poisoned")
             .insert(ikey, Arc::new(value));
+        self.revision.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn get_input<I: Input>(&self, key: I::Key) -> I::Value {
@@ -277,7 +351,23 @@ impl Database {
     }
 
     fn cached_valid(&self, key: &QueryKey, cached: &CachedValue) -> bool {
-        self.inputs_match(&cached.input_deps) && self.query_deps_match(key, &cached.query_deps)
+        let current_rev = self.revision.load(Ordering::SeqCst);
+        if cached.validated_at.load(Ordering::SeqCst) == current_rev {
+            return true;
+        }
+
+        if !self.inputs_match(&cached.input_deps) {
+            return false;
+        }
+        let mut visited = HashSet::new();
+        visited.insert(key.clone());
+        let mut fingerprint_count = 0u32;
+        let result =
+            self.query_deps_match_with_visited(&cached.query_deps, &mut visited, &mut fingerprint_count);
+        if result {
+            cached.validated_at.store(current_rev, Ordering::SeqCst);
+        }
+        result
     }
 
     fn inputs_match(&self, deps: &[InputDep]) -> bool {
@@ -309,16 +399,11 @@ impl Database {
         true
     }
 
-    fn query_deps_match(&self, key: &QueryKey, deps: &[QueryKey]) -> bool {
-        let mut visited = HashSet::new();
-        visited.insert(key.clone());
-        self.query_deps_match_with_visited(deps, &mut visited)
-    }
-
     fn query_deps_match_with_visited(
         &self,
         deps: &[QueryKey],
         visited: &mut HashSet<QueryKey>,
+        fingerprint_count: &mut u32,
     ) -> bool {
         let cache = self.cache.read().expect("cache lock poisoned");
         for dep_key in deps {
@@ -330,11 +415,12 @@ impl Database {
                 return false;
             };
 
+            *fingerprint_count += dep_cached.input_deps.len() as u32;
             if !self.inputs_match(&dep_cached.input_deps) {
                 return false;
             }
 
-            if !self.query_deps_match_with_visited(&dep_cached.query_deps, visited) {
+            if !self.query_deps_match_with_visited(&dep_cached.query_deps, visited, fingerprint_count) {
                 return false;
             }
         }

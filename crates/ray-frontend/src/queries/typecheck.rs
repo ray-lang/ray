@@ -6,7 +6,7 @@
 //! the query system) and the incremental frontend (which uses queries for
 //! definition lookups).
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
 use ray_core::{
     ast::{Decl, Node},
@@ -101,7 +101,7 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
     fn all_traits(&self) -> Vec<TraitTy> {
         all_traits(self.db)
-            .into_iter()
+            .iter()
             .map(|trait_def| trait_def.convert_to_trait_ty())
             .collect()
     }
@@ -115,8 +115,15 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
         let impl_targets = impls_for_trait(self.db, target);
 
         impl_targets
-            .into_iter()
-            .filter_map(|impl_target| Some(impl_def(self.db, impl_target)?.convert_to_impl_ty()))
+            .iter()
+            .filter_map(|impl_target| {
+                Some(
+                    impl_def(self.db, impl_target.clone())
+                        .deref()
+                        .as_ref()?
+                        .convert_to_impl_ty(),
+                )
+            })
             .collect()
     }
 
@@ -130,8 +137,15 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
         impls_result
             .inherent
-            .into_iter()
-            .filter_map(|impl_target| Some(impl_def(self.db, impl_target)?.convert_to_impl_ty()))
+            .iter()
+            .filter_map(|impl_target| {
+                Some(
+                    impl_def(self.db, impl_target.clone())
+                        .deref()
+                        .as_ref()?
+                        .convert_to_impl_ty(),
+                )
+            })
             .collect()
     }
 
@@ -146,9 +160,16 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
         // Combine both inherent and trait impls
         impls_result
             .inherent
-            .into_iter()
-            .chain(impls_result.trait_impls.into_iter())
-            .filter_map(|impl_target| Some(impl_def(self.db, impl_target)?.convert_to_impl_ty()))
+            .iter()
+            .chain(impls_result.trait_impls.iter())
+            .filter_map(|impl_target| {
+                Some(
+                    impl_def(self.db, impl_target.clone())
+                        .deref()
+                        .as_ref()?
+                        .convert_to_impl_ty(),
+                )
+            })
             .collect()
     }
 

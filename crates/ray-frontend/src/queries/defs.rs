@@ -1,6 +1,6 @@
 //! Definition lookup queries for the incremental compiler.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind};
 use ray_query_macros::query;
@@ -987,7 +987,7 @@ fn extract_library_trait(db: &Database, lib_def_id: &LibraryDefId) -> Option<Tra
 /// Finds all traits in the workspace and library definitions
 ///
 #[query]
-pub fn all_traits(db: &Database) -> Vec<TraitDef> {
+pub fn all_traits(db: &Database) -> Arc<Vec<TraitDef>> {
     let mut traits = Vec::new();
 
     // Collect workspace traits
@@ -1009,14 +1009,14 @@ pub fn all_traits(db: &Database) -> Vec<TraitDef> {
         }
     }
 
-    traits
+    Arc::new(traits)
 }
 
 /// Look up trait methods in the workspace.
 #[query]
 pub fn trait_methods_for_name(db: &Database, method_name: &String) -> Vec<(TraitDef, MethodInfo)> {
     all_traits(db)
-        .into_iter()
+        .iter()
         .filter_map(|trait_def| {
             trait_def.methods.iter().find_map(|method_info| {
                 if method_info.name == method_name {
@@ -1040,12 +1040,12 @@ pub fn trait_methods_for_name(db: &Database, method_name: &String) -> Vec<(Trait
 ///
 /// Returns `None` if the target doesn'a correspond to an impl.
 #[query]
-pub fn impl_def(db: &Database, target: DefTarget) -> Option<ImplDef> {
-    match target {
+pub fn impl_def(db: &Database, target: DefTarget) -> Arc<Option<ImplDef>> {
+    Arc::new(match target {
         DefTarget::Workspace(def_id) => extract_workspace_impl(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_impl(db, &lib_def_id),
         DefTarget::Primitive(_) => None, // Primitives don't have impl definitions
-    }
+    })
 }
 
 /// Extract an impl definition from the workspace AST.
@@ -1390,7 +1390,7 @@ pub fn trait_impl_for_type(
 
     // Find the impl whose trait_ty matches the target trait
     for impl_target in trait_impls {
-        if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
+        if let Some(impl_definition) = impl_def(db, impl_target.clone()).deref() {
             if let Some(trait_ty) = &impl_definition.trait_ty {
                 // Check if the trait type's path matches the target trait path
                 if let Some(impl_trait_path) = trait_ty.item_path() {
@@ -1421,7 +1421,7 @@ fn collect_workspace_impls_for_type(
         for impl_id in impl_ids {
             // Get the impl definition
             let impl_target = DefTarget::Workspace(impl_id);
-            if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
+            if let Some(impl_definition) = impl_def(db, impl_target.clone()).deref() {
                 // Check if this impl's implementing_type matches the target.
                 let matches =
                     type_matches_target(&impl_definition.implementing_type, type_target, db);
@@ -1473,7 +1473,7 @@ fn collect_library_impls_for_type(
 /// Searches both workspace and library impls, returning all impls where
 /// `trait_ref` matches the given trait.
 #[query]
-pub fn impls_for_trait(db: &Database, trait_target: DefTarget) -> Vec<DefTarget> {
+pub fn impls_for_trait(db: &Database, trait_target: DefTarget) -> Arc<Vec<DefTarget>> {
     let mut result = Vec::new();
 
     // Search workspace impls
@@ -1482,7 +1482,7 @@ pub fn impls_for_trait(db: &Database, trait_target: DefTarget) -> Vec<DefTarget>
     // Search library impls
     collect_library_impls_for_trait(db, &trait_target, &mut result);
 
-    result
+    Arc::new(result)
 }
 
 /// Collect workspace impls that implement the target trait.
@@ -1500,7 +1500,7 @@ fn collect_workspace_impls_for_trait(
         for impl_id in impl_ids {
             // Get the impl definition
             let impl_target = DefTarget::Workspace(impl_id);
-            if let Some(impl_definition) = impl_def(db, impl_target.clone()) {
+            if let Some(impl_definition) = impl_def(db, impl_target.clone()).deref() {
                 // Check if this impl's trait_ty matches the target trait
                 if let Some(ref impl_trait_ty) = impl_definition.trait_ty {
                     if trait_ty_matches_target(impl_trait_ty, trait_target, db) {
@@ -1697,7 +1697,7 @@ fn workspace_method_receiver_mode(db: &Database, method_def_id: DefId) -> Receiv
     let parent_target = DefTarget::Workspace(parent_def_id);
 
     // Try impl first
-    if let Some(impl_def) = impl_def(db, parent_target.clone()) {
+    if let Some(impl_def) = impl_def(db, parent_target.clone()).deref() {
         if let Some(method_info) = impl_def.find_method(method_name) {
             return method_info.recv_mode;
         }
@@ -1758,7 +1758,7 @@ fn library_method_receiver_mode(db: &Database, lib_def_id: &LibraryDefId) -> Rec
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, ops::Deref};
 
     use ray_shared::{
         def::{DefKind, LibraryDefId},
@@ -3885,7 +3885,10 @@ impl object List {
 
         assert!(!impls.inherent.is_empty(), "should have inherent impl");
         let impl_target = &impls.inherent[0];
-        let impl_definition = impl_def(&db, impl_target.clone()).expect("impl should exist");
+        let impl_definition = impl_def(&db, impl_target.clone())
+            .deref()
+            .clone()
+            .expect("impl should exist");
 
         assert!(!impl_definition.methods.is_empty(), "should have method");
         let method_target = impl_definition.methods[0].target.clone();

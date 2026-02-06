@@ -286,6 +286,7 @@ impl Driver {
 
         // Check for errors using the query
         let errors = workspace_diagnostics(&workspace.db, ());
+        workspace.db.dump_stats();
         if !errors.is_empty() {
             return Err(errors);
         }

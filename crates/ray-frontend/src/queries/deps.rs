@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use ray_query_macros::query;
 use ray_shared::{
@@ -128,9 +128,9 @@ pub fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
 
     for &file_id in &module_info.files {
         let parse_result = parse_file(db, file_id);
-        for def_header in parse_result.defs {
+        for def_header in &parse_result.defs {
             def_kinds.insert(def_header.def_id, def_header.kind);
-            all_defs.push(def_header);
+            all_defs.push(def_header.clone());
         }
     }
 
@@ -170,7 +170,7 @@ pub fn binding_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
 /// Returns group IDs in topological order: dependencies come before dependents.
 /// Every definition in the module appears in exactly one group.
 #[query]
-pub fn binding_groups(db: &Database, module: ModulePath) -> BindingGroupsResult {
+pub fn binding_groups(db: &Database, module: ModulePath) -> Arc<BindingGroupsResult> {
     let graph = binding_graph(db, module.clone());
     let sccs = graph.compute_binding_groups(); // Tarjan's algorithm
 
@@ -183,7 +183,7 @@ pub fn binding_groups(db: &Database, module: ModulePath) -> BindingGroupsResult 
 
     let members: Vec<Vec<DefId>> = sccs.into_iter().map(|group| group.bindings).collect();
 
-    BindingGroupsResult { group_ids, members }
+    Arc::new(BindingGroupsResult { group_ids, members })
 }
 
 /// Get the members of a binding group.
