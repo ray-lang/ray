@@ -5,8 +5,8 @@ use std::{
     hash::Hash,
     hash::Hasher,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -137,17 +137,26 @@ impl Database {
         let stats = self.stats.lock().expect("stats lock poisoned");
         let mut entries: Vec<_> = stats.iter().collect();
         entries.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
-        eprintln!("\n{:<35} {:>8} {:>8} {:>12}", "QUERY", "HITS", "MISSES", "TOTAL TIME");
+        eprintln!(
+            "\n{:<35} {:>8} {:>8} {:>12}",
+            "QUERY", "HITS", "MISSES", "TOTAL TIME"
+        );
         eprintln!("{}", "-".repeat(67));
         for (name, s) in &entries {
             let ms = s.total_ns as f64 / 1_000_000.0;
             eprintln!("{:<35} {:>8} {:>8} {:>10.1}ms", name, s.hits, s.misses, ms);
         }
-        let total_ms: f64 = entries.iter().map(|(_, s)| s.total_ns as f64 / 1_000_000.0).sum();
+        let total_ms: f64 = entries
+            .iter()
+            .map(|(_, s)| s.total_ns as f64 / 1_000_000.0)
+            .sum();
         let total_hits: u64 = entries.iter().map(|(_, s)| s.hits).sum();
         let total_misses: u64 = entries.iter().map(|(_, s)| s.misses).sum();
         eprintln!("{}", "-".repeat(67));
-        eprintln!("{:<35} {:>8} {:>8} {:>10.1}ms", "TOTAL", total_hits, total_misses, total_ms);
+        eprintln!(
+            "{:<35} {:>8} {:>8} {:>10.1}ms",
+            "TOTAL", total_hits, total_misses, total_ms
+        );
     }
 
     pub fn query<Q: Query>(&self, key: Q::Key) -> Q::Value {
@@ -170,7 +179,11 @@ impl Database {
         }
 
         let profiling = self.profiling.load(Ordering::Relaxed);
-        let call_start = if profiling { Some(Instant::now()) } else { None };
+        let call_start = if profiling {
+            Some(Instant::now())
+        } else {
+            None
+        };
         if let Some(cached) = self.cache.read().expect("cache lock poisoned").get(&qkey) {
             if self.cached_valid(&qkey, cached) {
                 if let Some(parent_deps) = self
@@ -362,8 +375,11 @@ impl Database {
         let mut visited = HashSet::new();
         visited.insert(key.clone());
         let mut fingerprint_count = 0u32;
-        let result =
-            self.query_deps_match_with_visited(&cached.query_deps, &mut visited, &mut fingerprint_count);
+        let result = self.query_deps_match_with_visited(
+            &cached.query_deps,
+            &mut visited,
+            &mut fingerprint_count,
+        );
         if result {
             cached.validated_at.store(current_rev, Ordering::SeqCst);
         }
@@ -420,7 +436,11 @@ impl Database {
                 return false;
             }
 
-            if !self.query_deps_match_with_visited(&dep_cached.query_deps, visited, fingerprint_count) {
+            if !self.query_deps_match_with_visited(
+                &dep_cached.query_deps,
+                visited,
+                fingerprint_count,
+            ) {
                 return false;
             }
         }

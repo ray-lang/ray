@@ -79,7 +79,6 @@ pub fn resolved_imports(
     // Inject implicit core imports unless no_core is set globally or per-file
     let per_file_no_core = file_no_core(db, file_id);
     if !global_no_core && !per_file_no_core {
-
         // Don't inject core imports into files that are part of core itself
         let is_core_file = file_module
             .as_ref()
@@ -172,11 +171,12 @@ fn resolve_imports(
                 let alias = path.to_short_name();
                 let module_path = ModulePath::from(path);
                 let resolution =
-                    resolve_module_path(&module_path, workspace, libraries, current_module)
-                        .map(|mp| ResolvedImport {
+                    resolve_module_path(&module_path, workspace, libraries, current_module).map(
+                        |mp| ResolvedImport {
                             module_path: mp,
                             names: ImportNames::Namespace,
-                        });
+                        },
+                    );
                 result.insert(alias, resolution);
             }
             ImportKind::Names(path_node, names) => {
@@ -186,11 +186,12 @@ fn resolve_imports(
                 let module_path = ModulePath::from(path);
                 let name_strings: Vec<String> = names.iter().map(|n| n.to_string()).collect();
                 let resolution =
-                    resolve_module_path(&module_path, workspace, libraries, current_module)
-                        .map(|mp| ResolvedImport {
+                    resolve_module_path(&module_path, workspace, libraries, current_module).map(
+                        |mp| ResolvedImport {
                             module_path: mp,
                             names: ImportNames::Selective(name_strings),
-                        });
+                        },
+                    );
                 result.insert(alias, resolution);
             }
             ImportKind::Glob(path_node) => {
@@ -199,11 +200,12 @@ fn resolve_imports(
                 let alias = path.to_short_name();
                 let module_path = ModulePath::from(path);
                 let resolution =
-                    resolve_module_path(&module_path, workspace, libraries, current_module)
-                        .map(|mp| ResolvedImport {
+                    resolve_module_path(&module_path, workspace, libraries, current_module).map(
+                        |mp| ResolvedImport {
                             module_path: mp,
                             names: ImportNames::Glob,
-                        });
+                        },
+                    );
                 result.insert(alias, resolution);
             }
             ImportKind::CImport(name, _) => {

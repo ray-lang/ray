@@ -771,9 +771,9 @@ pub fn collect_definitions(db: &Database) -> Vec<DefinitionInfo> {
 
             // Get the filepath for the definition
             let definition_filepath = match def_target {
-                DefTarget::Workspace(def_id) => {
-                    workspace.file_info(def_id.file).map(|info| info.path.clone())
-                }
+                DefTarget::Workspace(def_id) => workspace
+                    .file_info(def_id.file)
+                    .map(|info| info.path.clone()),
                 DefTarget::Library(_) | DefTarget::Primitive(_) => None,
             };
 

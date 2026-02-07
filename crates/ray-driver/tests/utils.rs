@@ -8,7 +8,9 @@ use ray_core::{
 };
 use ray_driver::*;
 use ray_frontend::{
-    queries::{defs::def_path, parse::parse_file, resolve::name_resolutions, workspace::WorkspaceSnapshot},
+    queries::{
+        defs::def_path, parse::parse_file, resolve::name_resolutions, workspace::WorkspaceSnapshot,
+    },
     query::Database,
 };
 use ray_shared::resolution::{DefTarget, Resolution};
@@ -141,8 +143,8 @@ pub fn find_impl(db: &Database, trait_path: &Path, impl_ty: &Ty) -> Impl {
                 };
 
                 // Get the resolved path for the trait
-                let Some(resolved_trait_path) = def_path(db, DefTarget::Workspace(*trait_def_id))
-                    .map(|ip| ip.to_path())
+                let Some(resolved_trait_path) =
+                    def_path(db, DefTarget::Workspace(*trait_def_id)).map(|ip| ip.to_path())
                 else {
                     continue;
                 };

@@ -1912,4 +1912,63 @@ fn foo() -> bool => true
         // Should return None for a non-existent node
         assert!(ty.is_none(), "Should return None for an invalid NodeId");
     }
+
+    #[test]
+    fn typecheck_impl_method_with_parent_where_clause() {
+        // This tests the full pipeline for a method inside an impl with where-clauses.
+        // The method body calls `self.check()` which requires the solver to know that
+        // Check['a] is given by the parent impl's where-clause.
+        //
+        // Intentionally avoids tuple destructuring to isolate the where-clause issue.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Check['a] {
+    fn check(self: 'a) -> bool
+}
+
+trait Showable['a] {
+    fn show(self: 'a) -> bool
+}
+
+impl Showable['a] where Check['a] {
+    fn show(self: 'a) -> bool => self.check()
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Find the impl method `show`
+        let file_result = file_ast(&db, file_id);
+        let method_def = file_result
+            .defs
+            .iter()
+            .find(|d| {
+                d.name == "show"
+                    && d.parent.map_or(false, |parent_id| {
+                        file_result
+                            .defs
+                            .iter()
+                            .any(|p| p.def_id == parent_id && matches!(p.kind, DefKind::Impl))
+                    })
+            })
+            .expect("Should find impl method show");
+
+        // Typecheck the method's binding group
+        let group_id = binding_group_for_def(&db, method_def.def_id);
+        let result = typecheck_group(&db, group_id);
+
+        // The method should typecheck without errors if parent where-clause
+        // predicates are correctly propagated as givens.
+        assert!(
+            result.errors.is_empty(),
+            "impl method with parent where-clause should typecheck without errors, got: {:?}",
+            result.errors
+        );
+    }
 }

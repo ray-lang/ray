@@ -333,7 +333,9 @@ impl<'a> SymbolBuildContext<'a> {
                     }
                     Expr::Path(segments) => {
                         // Convert Vec<Node<String>> to Path for symbol recording
-                        let path = Path::from(segments.iter().map(|s| s.value.clone()).collect::<Vec<_>>());
+                        let path = Path::from(
+                            segments.iter().map(|s| s.value.clone()).collect::<Vec<_>>(),
+                        );
                         self.record_reference(expr.id, &path);
                     }
                     Expr::ScopedAccess(scoped_access) => self.record_scoped_access(scoped_access),

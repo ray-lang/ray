@@ -36,9 +36,10 @@ pub struct ResolveContext<'a> {
     /// Stack of type parameter scopes (impl, trait, function can all introduce type params)
     type_param_scopes: Vec<HashMap<String, TypeParamId>>,
     resolutions: HashMap<NodeId, Resolution>,
-    /// NodeIds of FnSig decls that have been resolved by their parent (trait/extern)
-    /// to avoid re-processing when walked as standalone items
-    resolved_fnsigs: HashSet<NodeId>,
+    /// NodeIds of declarations whose type references have been resolved by their
+    /// parent (trait methods, impl methods) to avoid re-processing when walked
+    /// as standalone items — the parent-aware resolution must not be overwritten.
+    resolved_by_parent: HashSet<NodeId>,
 }
 
 impl<'a> ResolveContext<'a> {
@@ -56,7 +57,7 @@ impl<'a> ResolveContext<'a> {
             local_scopes: Vec::new(),
             type_param_scopes: Vec::new(),
             resolutions: HashMap::new(),
-            resolved_fnsigs: HashSet::new(),
+            resolved_by_parent: HashSet::new(),
         }
     }
 
@@ -214,7 +215,8 @@ pub fn resolve_names_in_file(
                                 let segment_name = &segment.value;
 
                                 // Look up exports for current module
-                                if let Some(module_exports) = (ctx.module_exports)(&current_module) {
+                                if let Some(module_exports) = (ctx.module_exports)(&current_module)
+                                {
                                     if let Some(target) = module_exports.get(segment_name) {
                                         // Found an export - resolve this segment
                                         ctx.resolutions
@@ -225,7 +227,8 @@ pub fn resolve_names_in_file(
                                     } else {
                                         // Not found in exports - might be a submodule
                                         let submodule = ModulePath::from(
-                                            format!("{}::{}", current_module, segment_name).as_str(),
+                                            format!("{}::{}", current_module, segment_name)
+                                                .as_str(),
                                         );
                                         // Check if this submodule has exports
                                         if (ctx.module_exports)(&submodule).is_some() {
@@ -350,19 +353,28 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
 
-            // Collect all type vars (explicit + implicit) once
-            let ty_vars = func.sig.all_type_vars();
-            let scope = build_type_param_scope(decl.id.owner, &ty_vars);
+            if ctx.resolved_by_parent.contains(&decl.id) {
+                // Signature was already resolved by the parent (impl/trait) with
+                // correct parent-aware type params. Push an empty scope for the
+                // body — parent type params are already visible on the scope stack.
+                // The method's own NEW type params (if any) were already added to
+                // the parent's scope by build_method_type_params.
+                ctx.type_param_scopes.push(HashMap::new());
+                resolve_names_in_func_params(&func.sig, ctx);
+            } else {
+                let ty_vars = func.sig.all_type_vars();
+                let scope = build_type_param_scope(decl.id.owner, &ty_vars);
 
-            // Push for body expressions and resolve signature types
-            ctx.type_param_scopes.push(scope.clone());
-            resolve_names_in_func_params(&func.sig, ctx);
-            resolve_func_sig(&func.sig, &scope, ctx);
+                // Push for body expressions and resolve signature types
+                ctx.type_param_scopes.push(scope.clone());
+                resolve_names_in_func_params(&func.sig, ctx);
+                resolve_func_sig(&func.sig, &scope, ctx);
+            }
         }
         Decl::FnSig(sig) => {
             // Skip if already resolved by parent (trait method or extern function)
             // to avoid overwriting resolutions that were done with parent's type params
-            if ctx.resolved_fnsigs.contains(&decl.id) {
+            if ctx.resolved_by_parent.contains(&decl.id) {
                 return;
             }
             ctx.current_def = Some(decl.id.owner);
@@ -394,8 +406,7 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
         Decl::Impl(imp) => {
             // Collect all type vars (explicit + implicit) from impl type and qualifiers
             let ty_vars = Ty::all_user_type_vars(
-                std::iter::once(imp.ty.value())
-                    .chain(imp.qualifiers.iter().map(|q| q.value())),
+                std::iter::once(imp.ty.value()).chain(imp.qualifiers.iter().map(|q| q.value())),
             );
             let scope = build_type_param_scope(decl.id.owner, &ty_vars);
             ctx.type_param_scopes.push(scope);
@@ -507,11 +518,10 @@ fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveC
     for field in &trait_decl.fields {
         if let Decl::FnSig(sig) = &field.value {
             // Collect method's own implicit type vars, filtering out parent's
-            let method_type_params =
-                build_method_type_params(field.id.owner, sig, &type_params);
+            let method_type_params = build_method_type_params(field.id.owner, sig, &type_params);
             resolve_func_sig(sig, &method_type_params, ctx);
             // Mark this FnSig as already resolved
-            ctx.resolved_fnsigs.insert(field.id);
+            ctx.resolved_by_parent.insert(field.id);
         }
     }
 }
@@ -530,8 +540,7 @@ fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_
     // This handles cases like `impl Iterable[dict['k, 'v], ...]` where 'k, 'v are
     // nested inside type arguments rather than being direct Ty::Var args.
     let ty_vars = Ty::all_user_type_vars(
-        std::iter::once(imp.ty.value())
-            .chain(imp.qualifiers.iter().map(|q| q.value())),
+        std::iter::once(imp.ty.value()).chain(imp.qualifiers.iter().map(|q| q.value())),
     );
     let type_params = build_type_param_scope(def_id, &ty_vars);
 
@@ -554,6 +563,7 @@ fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_
             let method_type_params =
                 build_method_type_params(decl.id.owner, &func.sig, &type_params);
             resolve_func_sig(&func.sig, &method_type_params, ctx);
+            ctx.resolved_by_parent.insert(decl.id);
         }
     }
 }

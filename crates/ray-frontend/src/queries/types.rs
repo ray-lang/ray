@@ -415,13 +415,22 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
     // Find the AST node for this definition
     let def_ast = find_def_ast(&file_result.ast.decls, def_header.root_node)?;
 
-    compute_scheme_resolved(
+    let mut scheme = compute_scheme_resolved(
         def_ast,
         &combined_var_map,
         &resolutions,
         get_item_path,
         status,
-    )
+    )?;
+
+    // For methods inside impl/trait blocks, include the parent's where-clause predicates.
+    let parent_predicates =
+        get_parent_qualifiers(db, def_id, &resolutions, &combined_var_map, get_item_path);
+    if !parent_predicates.is_empty() {
+        scheme.qualifiers_mut().extend(parent_predicates);
+    }
+
+    Some(scheme)
 }
 
 /// Get the parent definition's var_map for nested definitions.
@@ -443,6 +452,53 @@ pub fn get_parent_var_map(db: &Database, def_id: DefId) -> HashMap<TypeParamId, 
     // Get the parent's var_map
     let parent_mapping = mapped_def_types(db, parent_def_id);
     parent_mapping.var_map
+}
+
+/// Get the parent definition's where-clause predicates for nested definitions.
+///
+/// For impl methods, this resolves the parent impl's `where` clause qualifiers
+/// into predicates using schema vars. For example, if the parent is
+/// `impl Eq[list['a]] where Eq['a]`, this returns `[Eq[?s0]]`.
+fn get_parent_qualifiers<F>(
+    db: &Database,
+    def_id: DefId,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Vec<Predicate>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    let Some(header) = def_header(db, def_id) else {
+        return vec![];
+    };
+    let Some(parent_def_id) = header.parent else {
+        return vec![];
+    };
+
+    // Find the parent's AST node to access its qualifiers
+    let parse_result = parse_file(db, parent_def_id.file);
+    let Some(parent_header) = parse_result.defs.iter().find(|h| h.def_id == parent_def_id) else {
+        return vec![];
+    };
+    let Some(parent_ast) = find_def_ast(&parse_result.ast.decls, parent_header.root_node) else {
+        return vec![];
+    };
+
+    // Extract qualifiers from the parent declaration
+    let qualifiers = match &parent_ast.value {
+        Decl::Impl(im) => &im.qualifiers,
+        // TODO: trait-level qualifiers if needed
+        _ => return vec![],
+    };
+
+    qualifiers
+        .iter()
+        .filter_map(|qual| {
+            let qual_ty = apply_type_resolutions(qual, resolutions, var_map, get_item_path);
+            Predicate::from_ty(&qual_ty)
+        })
+        .collect()
 }
 
 /// Compute the type scheme for a declaration with resolved types.
@@ -569,15 +625,13 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
         Decl::FnSig(sig) => sig_type_param_names(sig),
         Decl::Struct(st) => collect_struct_type_params(st),
         Decl::Trait(tr) => Ty::all_user_type_vars(
-            std::iter::once(tr.ty.value())
-                .chain(tr.super_trait.iter().map(|s| s.value())),
+            std::iter::once(tr.ty.value()).chain(tr.super_trait.iter().map(|s| s.value())),
         )
         .into_iter()
         .filter_map(|tv| tv.path().name())
         .collect(),
         Decl::Impl(im) => Ty::all_user_type_vars(
-            std::iter::once(im.ty.value())
-                .chain(im.qualifiers.iter().map(|q| q.value())),
+            std::iter::once(im.ty.value()).chain(im.qualifiers.iter().map(|q| q.value())),
         )
         .into_iter()
         .filter_map(|tv| tv.path().name())
@@ -678,7 +732,7 @@ mod tests {
     use std::collections::HashMap;
 
     use ray_shared::{
-        def::{DefId, LibraryDefId, SignatureStatus},
+        def::{DefId, DefKind, LibraryDefId, SignatureStatus},
         file_id::FileId,
         node_id::NodeId,
         pathlib::{FilePath, ItemPath, ModulePath, Path},
@@ -1920,5 +1974,90 @@ impl object Foo {
 
         assert_eq!(result_never, Ty::Never);
         assert_eq!(result_any, Ty::Any);
+    }
+
+    #[test]
+    fn annotated_scheme_for_impl_method_includes_parent_where_clauses() {
+        // Given: impl ToStr[('a, 'b)] where ToStr['a], ToStr['b]
+        // When: annotated_scheme is called for the `to_str` method
+        // Then: the method's TyScheme.qualifiers should include ToStr[?s0] and ToStr[?s1]
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
+    fn to_str(self: ('a, 'b)) -> string => "todo"
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the to_str method inside the impl (not the one in the trait definition)
+        let to_str_def = parse_result
+            .defs
+            .iter()
+            .find(|d| {
+                d.name == "to_str"
+                    && d.parent.map_or(false, |parent_id| {
+                        parse_result
+                            .defs
+                            .iter()
+                            .any(|p| p.def_id == parent_id && matches!(p.kind, DefKind::Impl))
+                    })
+            })
+            .expect("should find to_str method in impl block");
+
+        let scheme = annotated_scheme(&db, to_str_def.def_id)
+            .expect("Should return a scheme for the impl method");
+
+        // The method scheme should include the parent impl's where-clause predicates.
+        // The where-clause `where ToStr['a], ToStr['b]` should produce 2 predicates
+        // with schema vars (not user vars).
+        assert!(
+            scheme.qualifiers.len() >= 2,
+            "Method scheme should include at least 2 predicates from parent impl's where-clause, got: {:?}",
+            scheme.qualifiers,
+        );
+
+        // Each predicate should be a Class predicate with path ending in "ToStr"
+        for pred in &scheme.qualifiers {
+            match pred {
+                ray_typing::constraints::Predicate::Class(cp) => {
+                    assert!(
+                        cp.path.item_name() == Some("ToStr"),
+                        "Predicate path should be ToStr, got: {:?}",
+                        cp.path,
+                    );
+                    // The arg should be a schema var (starts with ?s), not a user var ('a/'b)
+                    assert_eq!(cp.args.len(), 1, "ToStr predicate should have 1 arg");
+                    match &cp.args[0] {
+                        Ty::Var(v) => {
+                            let name = v.path().name().unwrap_or_default();
+                            assert!(
+                                name.starts_with("?s"),
+                                "Predicate arg should be a schema var, got: {}",
+                                name,
+                            );
+                        }
+                        other => panic!("Expected Ty::Var in predicate arg, got: {:?}", other),
+                    }
+                }
+                other => panic!("Expected Class predicate, got: {:?}", other),
+            }
+        }
     }
 }

@@ -14,9 +14,12 @@ use ray_shared::{
     ty::{Ty, TyVar},
     type_param_id::TypeParamId,
 };
-use ray_typing::types::{
-    FieldKind, ImplField, ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, TraitField,
-    TraitTy, TyScheme,
+use ray_typing::{
+    constraints::Predicate,
+    types::{
+        FieldKind, ImplField, ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, TraitField,
+        TraitTy, TyScheme,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -165,6 +168,9 @@ pub struct ImplDef {
     pub implementing_type: Ty,
     /// The trait being implemented as a type, if this is a trait impl (e.g., `Eq['a]`).
     pub trait_ty: Option<Ty>,
+    /// Where-clause predicates for this impl (e.g., `where Eq['a]` → `[Eq[?s0]]`).
+    #[serde(default)]
+    pub predicates: Vec<Predicate>,
     /// Methods defined in this impl.
     pub methods: Vec<MethodInfo>,
 }
@@ -194,7 +200,7 @@ impl ImplDef {
 
         ImplTy {
             kind,
-            predicates: vec![],
+            predicates: self.predicates.clone(),
             fields: self
                 .methods
                 .iter()
@@ -778,12 +784,8 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
             let trait_name = tr.ty.name();
             if trait_name == def_header.name {
                 // Resolve the trait type (e.g., Eq['a] → Eq[?s0])
-                let ty = apply_type_resolutions(
-                    &tr.ty,
-                    &resolutions,
-                    &mapping.var_map,
-                    get_item_path,
-                );
+                let ty =
+                    apply_type_resolutions(&tr.ty, &resolutions, &mapping.var_map, get_item_path);
                 let schema_vars = ty.unique_free_vars();
 
                 // Get super traits with resolved types
@@ -1131,6 +1133,17 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
     let impl_type_name = implementing_type.name();
     let impl_path = ItemPath::new(module_path, vec![impl_type_name]);
 
+    // Resolve where-clause qualifiers into predicates
+    let predicates: Vec<Predicate> = im
+        .qualifiers
+        .iter()
+        .filter_map(|qual| {
+            let qual_ty =
+                apply_type_resolutions(qual, &resolutions, &mapping.var_map, get_item_path);
+            Predicate::from_ty(&qual_ty)
+        })
+        .collect();
+
     // Extract method info with resolved types
     let methods = extract_impl_methods(
         db,
@@ -1147,6 +1160,7 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
         type_params: schema_vars,
         implementing_type,
         trait_ty,
+        predicates,
         methods,
     })
 }
@@ -1774,7 +1788,10 @@ mod tests {
         resolution::DefTarget,
         ty::Ty,
     };
-    use ray_typing::types::{ReceiverMode, TyScheme};
+    use ray_typing::{
+        constraints::Predicate,
+        types::{ReceiverMode, TyScheme},
+    };
 
     use crate::{
         queries::{
@@ -2127,10 +2144,7 @@ impl object List {
                     }
                 }
             }
-            _ => panic!(
-                "Expected Ty::Proj for generic struct, got: {:?}",
-                sd.ty.ty
-            ),
+            _ => panic!("Expected Ty::Proj for generic struct, got: {:?}", sd.ty.ty),
         }
 
         // Field types should also be correctly ordered: first → var0, second → var1
@@ -2524,7 +2538,10 @@ impl Add[rawptr['a], uint, rawptr['a]] {
         assert_eq!(impls.len(), 1, "Should find 1 impl for Add");
 
         let impl_result = impl_def(&db, impls[0].clone());
-        let id = impl_result.as_ref().as_ref().expect("impl_def should succeed");
+        let id = impl_result
+            .as_ref()
+            .as_ref()
+            .expect("impl_def should succeed");
 
         // Should have exactly 1 schema var (format: ?s:{hash}:0 for 'a)
         assert_eq!(id.type_params.len(), 1, "Should have 1 schema var for 'a");
@@ -2552,6 +2569,123 @@ impl Add[rawptr['a], uint, rawptr['a]] {
                 other
             ),
         }
+    }
+
+    #[test]
+    fn impl_def_stores_where_clause_predicates() {
+        // Given: impl Eq[list['a]] where Eq['a]
+        // When: impl_def is called
+        // Then: ImplDef should have 1 predicate: Eq[?s0]
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Eq['a] {
+    fn ==(a: 'a, b: 'a) -> bool
+}
+
+struct list['a] { len: int }
+
+impl Eq[list['a]] where Eq['a] {
+    fn ==(a: list['a], b: list['a]) -> bool => true
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Find the impl via impls_for_trait
+        let trait_path = ItemPath::new(module_path, vec!["Eq".into()]);
+        let trait_target = def_for_path(&db, trait_path).expect("trait should be found");
+        let impls = impls_for_trait(&db, trait_target);
+        assert_eq!(impls.len(), 1, "Should find 1 impl for Eq");
+
+        let impl_result = impl_def(&db, impls[0].clone());
+        let id = impl_result
+            .as_ref()
+            .as_ref()
+            .expect("impl_def should succeed");
+
+        // ImplDef should have predicates from the where-clause
+        assert_eq!(
+            id.predicates.len(),
+            1,
+            "ImplDef should have 1 predicate from `where Eq['a]`, got: {:?}",
+            id.predicates,
+        );
+
+        // The predicate should be Eq[?s0] (schema var, not user var)
+        match &id.predicates[0] {
+            Predicate::Class(cp) => {
+                assert!(
+                    cp.path.item_name() == Some("Eq"),
+                    "Predicate path should be Eq, got: {:?}",
+                    cp.path,
+                );
+                assert_eq!(cp.args.len(), 1, "Eq predicate should have 1 arg");
+                match &cp.args[0] {
+                    Ty::Var(v) => {
+                        let name = v.path().name().unwrap_or_default();
+                        assert!(
+                            name.starts_with("?s"),
+                            "Predicate arg should be a schema var, got: {}",
+                            name,
+                        );
+                    }
+                    other => panic!("Expected Ty::Var in predicate arg, got: {:?}", other),
+                }
+            }
+            other => panic!("Expected Class predicate, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn impl_def_convert_to_impl_ty_passes_predicates() {
+        // Given: an ImplDef with predicates
+        // When: convert_to_impl_ty is called
+        // Then: the resulting ImplTy should have those predicates
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Eq['a] {
+    fn ==(a: 'a, b: 'a) -> bool
+}
+
+struct list['a] { len: int }
+
+impl Eq[list['a]] where Eq['a] {
+    fn ==(a: list['a], b: list['a]) -> bool => true
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let trait_path = ItemPath::new(module_path, vec!["Eq".into()]);
+        let trait_target = def_for_path(&db, trait_path).expect("trait should be found");
+        let impls = impls_for_trait(&db, trait_target);
+        assert_eq!(impls.len(), 1);
+
+        let impl_result = impl_def(&db, impls[0].clone());
+        let id = impl_result
+            .as_ref()
+            .as_ref()
+            .expect("impl_def should succeed");
+
+        // Convert to ImplTy and verify predicates are passed through
+        let impl_ty = id.convert_to_impl_ty();
+        assert!(
+            !impl_ty.predicates.is_empty(),
+            "ImplTy.predicates should not be empty — where-clause predicates should be passed through from ImplDef, got: {:?}",
+            impl_ty.predicates,
+        );
     }
 
     // method_receiver_mode tests

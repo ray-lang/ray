@@ -200,7 +200,8 @@ impl Parser<'_> {
                 if expect_if!(self, TokenKind::DoubleColon) {
                     // Create the first segment node from the Name
                     let first_span = self.srcmap.span_of(&n);
-                    let first_segment = self.mk_node(n.value.to_string(), first_span, ctx.path.clone());
+                    let first_segment =
+                        self.mk_node(n.value.to_string(), first_span, ctx.path.clone());
                     let segments = self.parse_expr_path_segments(first_segment, ctx)?;
                     // Calculate total span from first to last segment
                     let last_span = self.srcmap.span_of(segments.last().unwrap());

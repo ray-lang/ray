@@ -35,8 +35,7 @@ pub fn main() -> u32 {
         frontend.errors
     );
 
-    let mut program =
-        lir::generate(&frontend.db, false).expect("lir generation should succeed");
+    let mut program = lir::generate(&frontend.db, false).expect("lir generation should succeed");
     lir::monomorphize(&mut program);
 
     eprintln!("---------- LIR ----------\n{}", program);

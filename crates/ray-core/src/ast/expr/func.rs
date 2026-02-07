@@ -187,9 +187,10 @@ impl FuncSig {
     /// `has_block_body` — whether the body is a block (`{ ... }`) vs an arrow (`=> ...`).
     ///   Used to distinguish `ImplicitUnit` from `ReturnElided` when return type is missing.
     pub fn to_sig_status(&self, has_implicit_self: bool, has_block_body: bool) -> SignatureStatus {
-        let all_params_annotated = self.params.iter().all(|p| {
-            p.value.ty().is_some() || (has_implicit_self && p.value.name().is_self())
-        });
+        let all_params_annotated = self
+            .params
+            .iter()
+            .all(|p| p.value.ty().is_some() || (has_implicit_self && p.value.name().is_self()));
         if !all_params_annotated {
             return SignatureStatus::Unannotated;
         }
