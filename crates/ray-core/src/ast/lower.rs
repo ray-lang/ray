@@ -1053,7 +1053,7 @@ impl LowerAST for ast::Assign {
     fn lower(&mut self, ctx: &mut AstLowerCtx) -> RayResult<()> {
         // check each identifier for mutability
         for node in self.lhs.paths() {
-            let PathBinding { path, is_lvalue } = node.value;
+            let PathBinding { path, is_bindable } = node.value;
             match ctx.identifiers.get(path) {
                 Some(ident) if !ident.is_mut && ident.in_current_scope => {
                     let src = ctx.srcmap.get(&node);
@@ -1064,7 +1064,7 @@ impl LowerAST for ast::Assign {
                         context: Some("lower assignment".to_string()),
                     });
                 }
-                Some(_) if is_lvalue => { /* do nothing */ }
+                Some(_) if !is_bindable => { /* do nothing */ }
                 _ => {
                     ctx.identifiers.insert(
                         path.clone(),

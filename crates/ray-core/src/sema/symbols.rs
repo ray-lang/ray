@@ -128,8 +128,8 @@ impl<'a> SymbolBuildContext<'a> {
 
     fn record_assign(&mut self, assign: &Assign) {
         for node in assign.lhs.paths() {
-            let PathBinding { path, is_lvalue } = node.value;
-            if !is_lvalue {
+            let PathBinding { path, is_bindable } = node.value;
+            if is_bindable {
                 let source = self.srcmap.get_by_id(node.id).unwrap();
                 self.record_definition(node.id, &path, &source);
             } else {

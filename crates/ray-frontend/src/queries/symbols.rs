@@ -280,8 +280,8 @@ pub fn definition_identities(db: &Database, file_id: FileId) -> HashMap<NodeId, 
             }
             WalkItem::Pattern(pattern) => {
                 for node in pattern.paths().into_iter() {
-                    let PathBinding { is_lvalue, .. } = node.value;
-                    if is_lvalue {
+                    let PathBinding { is_bindable, .. } = node.value;
+                    if !is_bindable {
                         continue;
                     }
                     if let Some(Resolution::Local(local_id)) = resolutions.get(&node.id) {

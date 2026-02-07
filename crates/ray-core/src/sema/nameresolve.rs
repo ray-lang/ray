@@ -306,13 +306,13 @@ pub fn resolve_names_in_file(
                 // Handle assignment patterns - create new bindings for new names,
                 // resolve existing bindings for lvalues
                 for node in pat.paths().into_iter() {
-                    let PathBinding { path, is_lvalue } = node.value;
+                    let PathBinding { path, is_bindable } = node.value;
                     let Some(name) = path.name() else {
                         continue;
                     };
 
-                    if is_lvalue {
-                        // For lvalues (e.g., `l` in `l[0] = 42`), look up the existing
+                    if !is_bindable {
+                        // For non-bindable paths (e.g., `l` in `l[0] = 42`), look up the existing
                         // binding and record a resolution without creating a new binding
                         if let Some(local_id) = ctx.lookup_local(&name) {
                             ctx.resolutions.insert(node.id, Resolution::Local(local_id));
@@ -1304,14 +1304,14 @@ impl NameResolve for Sourced<'_, Assign> {
     fn resolve_names(&mut self, ctx: &mut LegacyResolveContext) -> RayResult<()> {
         let (assign, src) = self.unpack_mut();
         for node in assign.lhs.paths_mut() {
-            let PathBindingMut { path, is_lvalue } = node.value;
+            let PathBindingMut { path, is_bindable } = node.value;
             let base_scope = ctx.current_scope_or(&src.path.with_names_only());
             let name_str = path.name();
             let full_path = base_scope.append_path(path.clone());
             *path = full_path.clone();
 
-            if is_lvalue {
-                // For lvalues (e.g., `l` in `l[0] = 42`), look up the existing
+            if !is_bindable {
+                // For non-bindable bindings (e.g., `l` in `l[0] = 42`), look up the existing
                 // binding and record a resolution without creating a new binding
                 if let Some(n) = name_str {
                     if let Some(local_id) = ctx.lookup_local(&n) {
@@ -1465,8 +1465,8 @@ impl NameResolve for Sourced<'_, For> {
         ctx.push_scope_path(for_scope.clone());
         ctx.local_scopes.push(HashMap::new());
         for node in self.pat.paths_mut() {
-            let PathBindingMut { path, is_lvalue } = node.value;
-            if is_lvalue {
+            let PathBindingMut { path, is_bindable } = node.value;
+            if !is_bindable {
                 continue;
             }
             let name_str = path.name();

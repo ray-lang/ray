@@ -311,6 +311,17 @@ impl MutabilityCtx {
         }
     }
 
+    /// Register new bindings from an assignment pattern.
+    /// Only registers bindable paths that are not already in scope.
+    fn register_new_bindings(&mut self, pattern: &Node<Pattern>, is_mut: bool) {
+        for node in pattern.paths() {
+            let PathBinding { path, is_bindable } = node.value;
+            if is_bindable && self.is_mutable(path).is_none() {
+                self.register_name(path, is_mut);
+            }
+        }
+    }
+
     /// Check if a path refers to a mutable binding (searches all scopes).
     fn is_mutable(&self, path: &Path) -> Option<bool> {
         // Search from innermost to outermost scope
@@ -370,7 +381,8 @@ fn validate_mutability(
             }
             WalkItem::Expr(expr) => match &expr.value {
                 Expr::Assign(assign) => {
-                    validate_assignment(assign, &mut ctx, filepath, srcmap, errors);
+                    validate_assignment(assign, &ctx, filepath, srcmap, errors);
+                    ctx.register_new_bindings(&assign.lhs, assign.is_mut);
                 }
                 Expr::For(for_expr) => {
                     // For loops introduce a binding for the loop variable
@@ -398,45 +410,31 @@ fn validate_mutability(
 }
 
 /// Validate a single assignment for mutability.
+/// New bindings must be registered before calling this function.
 fn validate_assignment(
     assign: &Assign,
-    ctx: &mut MutabilityCtx,
+    ctx: &MutabilityCtx,
     filepath: &FilePath,
     srcmap: &SourceMap,
     errors: &mut Vec<RayError>,
 ) {
-    // Check each path in the LHS pattern
     for node in assign.lhs.paths() {
-        let PathBinding { path, is_lvalue } = node.value;
-
-        // is_lvalue means it's a dereference like *ptr, not a simple name
-        // When is_lvalue is true, we're not checking mutability of the name itself
-        if is_lvalue {
+        let PathBinding { path, is_bindable } = node.value;
+        if !is_bindable {
             continue;
         }
 
-        match ctx.is_mutable(path) {
-            Some(is_mut) => {
-                // Known binding - check mutability
-                if !is_mut {
-                    // Assigning to an immutable binding is an error
-                    errors.push(RayError {
-                        msg: format!("cannot assign to immutable identifier `{}`", path),
-                        src: vec![Source {
-                            span: Some(srcmap.span_of(&assign.lhs)),
-                            filepath: filepath.clone(),
-                            ..Default::default()
-                        }],
-                        kind: RayErrorKind::Type,
-                        context: Some("mutability validation".to_string()),
-                    });
-                }
-                // Mutable binding - OK
-            }
-            None => {
-                // New binding - register it in current scope
-                ctx.register_pattern(&assign.lhs, assign.is_mut);
-            }
+        if let Some(false) = ctx.is_mutable(path) {
+            errors.push(RayError {
+                msg: format!("cannot assign to immutable identifier `{}`", path),
+                src: vec![Source {
+                    span: Some(srcmap.span_of(&assign.lhs)),
+                    filepath: filepath.clone(),
+                    ..Default::default()
+                }],
+                kind: RayErrorKind::Type,
+                context: Some("mutability validation".to_string()),
+            });
         }
     }
 }
@@ -1505,6 +1503,107 @@ impl object Point {
         assert!(
             errors.is_empty(),
             "Expected no errors for mutable variable in impl method, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_no_error_for_tuple_destructuring() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"fn foo() -> int {
+            a, b = (1, 2)
+            a
+        }"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "foo")
+            .expect("should find foo function");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for tuple destructuring, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_no_error_for_tuple_destructuring_with_discard() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"fn foo() -> int {
+            _, b = (1, 2)
+            b
+        }"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "foo")
+            .expect("should find foo function");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for tuple destructuring with discard, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_error_for_reassign_tuple_to_immutable() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // a and b are immutable from the first assignment, second should error
+        let source = r#"fn foo() -> int {
+            a, b = (1, 2)
+            a, b = (3, 4)
+            a
+        }"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "foo")
+            .expect("should find foo function");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected errors for reassignment to immutable tuple bindings"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.msg.contains("cannot assign to immutable")),
+            "Error should mention immutable assignment: {:?}",
             errors
         );
     }
