@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use ray_core::ast::{walk_file, Decl, Expr, FuncSig, Node, WalkItem};
+use ray_core::ast::{Decl, Expr, FuncSig, Node, WalkItem, walk_file};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind, SignatureStatus},
@@ -633,10 +633,11 @@ where
     // Extract schema vars from the resolved function type and qualifier types.
     // Filter out return placeholders (%r) — they must remain as unification
     // variables so the body's return type can be inferred, not skolemized.
-    let vars: Vec<TyVar> = Ty::unique_free_vars_from(std::iter::once(&func_ty).chain(qual_tys.iter()))
-        .into_iter()
-        .filter(|v| !v.is_ret_placeholder())
-        .collect();
+    let vars: Vec<TyVar> =
+        Ty::unique_free_vars_from(std::iter::once(&func_ty).chain(qual_tys.iter()))
+            .into_iter()
+            .filter(|v| !v.is_ret_placeholder())
+            .collect();
 
     // Build the scheme
     let scheme = if vars.is_empty() && predicates.is_empty() {
@@ -813,7 +814,7 @@ mod tests {
             parse::parse_file,
             types::{
                 annotated_scheme, apply_type_resolutions, def_signature_status, expr_type_refs,
-            mapped_def_types, resolved_ty,
+                mapped_def_types, resolved_ty,
             },
             workspace::{FileSource, WorkspaceSnapshot},
         },
@@ -2228,7 +2229,10 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
 
         // resolved_ty should map 'a to a schema var
         let resolved = resolved_ty(&db, *cast_node_id);
-        assert!(resolved.is_some(), "resolved_ty should return Some for a cast expression");
+        assert!(
+            resolved.is_some(),
+            "resolved_ty should return Some for a cast expression"
+        );
 
         let resolved = resolved.unwrap();
         match &resolved {
@@ -2289,11 +2293,7 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
         setup_empty_libraries(&db);
 
         // Arrow body function — return type should be inferred, not skolemized
-        FileSource::new(
-            &db,
-            file_id,
-            r#"fn double(x: int) => x * 2"#.to_string(),
-        );
+        FileSource::new(&db, file_id, r#"fn double(x: int) => x * 2"#.to_string());
 
         let parse_result = parse_file(&db, file_id);
         let double_def = parse_result
