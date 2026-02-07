@@ -381,7 +381,7 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
         }
         Decl::Trait(trait_decl) => {
             // Collect all type vars (explicit + implicit) from trait type and super trait
-            let ty_vars = collect_all_type_vars(
+            let ty_vars = Ty::all_user_type_vars(
                 std::iter::once(trait_decl.ty.value())
                     .chain(trait_decl.super_trait.iter().map(|s| s.value())),
             );
@@ -393,7 +393,7 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
         }
         Decl::Impl(imp) => {
             // Collect all type vars (explicit + implicit) from impl type and qualifiers
-            let ty_vars = collect_all_type_vars(
+            let ty_vars = Ty::all_user_type_vars(
                 std::iter::once(imp.ty.value())
                     .chain(imp.qualifiers.iter().map(|q| q.value())),
             );
@@ -454,6 +454,13 @@ fn resolve_struct_type_refs(def_id: DefId, struct_decl: &Struct, ctx: &mut Resol
     let ty_vars = extract_ty_vars_from_type_params(&struct_decl.ty_params);
     let type_params = build_type_param_scope(def_id, &ty_vars);
 
+    // Resolve the struct's own type params (e.g., Pair['a, 'b] → resolves 'a, 'b to TypeParam)
+    if let Some(tp) = &struct_decl.ty_params {
+        for parsed_ty in &tp.tys {
+            collect_type_resolutions(parsed_ty, &type_params, ctx);
+        }
+    }
+
     // Resolve each field type
     if let Some(fields) = &struct_decl.fields {
         for field in fields {
@@ -474,11 +481,14 @@ fn resolve_struct_type_refs(def_id: DefId, struct_decl: &Struct, ctx: &mut Resol
 fn resolve_trait_type_refs(def_id: DefId, trait_decl: &Trait, ctx: &mut ResolveContext<'_>) {
     // Collect all type vars (explicit + implicit) from trait type and super trait.
     // This handles cases like `trait Foo[Bar['a]]` where 'a is nested.
-    let ty_vars = collect_all_type_vars(
+    let ty_vars = Ty::all_user_type_vars(
         std::iter::once(trait_decl.ty.value())
             .chain(trait_decl.super_trait.iter().map(|s| s.value())),
     );
     let type_params = build_type_param_scope(def_id, &ty_vars);
+
+    // Resolve the trait's own type (e.g., Container['a] → resolves 'a to TypeParam)
+    collect_type_resolutions(&trait_decl.ty, &type_params, ctx);
 
     // Resolve super trait if present
     if let Some(super_trait) = &trait_decl.super_trait {
@@ -519,7 +529,7 @@ fn resolve_impl_type_refs(def_id: DefId, imp: &Impl, ctx: &mut ResolveContext<'_
     // Collect all type vars (explicit + implicit) from impl type and qualifiers.
     // This handles cases like `impl Iterable[dict['k, 'v], ...]` where 'k, 'v are
     // nested inside type arguments rather than being direct Ty::Var args.
-    let ty_vars = collect_all_type_vars(
+    let ty_vars = Ty::all_user_type_vars(
         std::iter::once(imp.ty.value())
             .chain(imp.qualifiers.iter().map(|q| q.value())),
     );
@@ -626,27 +636,6 @@ fn build_method_type_params(
     let method_params = build_type_param_scope(method_def_id, &method_vars);
     type_params.extend(method_params);
     type_params
-}
-
-/// Collect all user type variables (explicit + implicit) from a sequence of types.
-///
-/// Uses `free_vars()` to recursively discover type variables and filters for
-/// user-written ones (starting with `'`). Returns unique type vars in discovery order.
-fn collect_all_type_vars<'a>(types: impl Iterator<Item = &'a Ty>) -> Vec<TyVar> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for ty in types {
-        for tv in ty.free_vars() {
-            if tv.is_user_var() {
-                if let Some(name) = tv.path().name() {
-                    if seen.insert(name) {
-                        out.push(tv.clone());
-                    }
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Extract type variables from TypeParams.
@@ -2337,7 +2326,9 @@ mod tests {
 
         // Create type parameter 'a
         let ty_param = Ty::var("'a");
-        let ty_param_parsed = Parsed::new(ty_param, Source::default());
+        let ty_param_node_id = NodeId::new();
+        let mut ty_param_parsed = Parsed::new(ty_param, Source::default());
+        ty_param_parsed.set_synthetic_ids(vec![ty_param_node_id]);
 
         // Create struct declaration with type parameter
         let struct_decl = Struct {
@@ -2390,7 +2381,9 @@ mod tests {
 
         // Create type parameter 'a
         let ty_param = Ty::var("'a");
-        let ty_param_parsed = Parsed::new(ty_param, Source::default());
+        let ty_param_node_id = NodeId::new();
+        let mut ty_param_parsed = Parsed::new(ty_param, Source::default());
+        ty_param_parsed.set_synthetic_ids(vec![ty_param_node_id]);
 
         // Create struct declaration with type parameter
         let struct_decl = Struct {
@@ -2495,7 +2488,10 @@ mod tests {
 
         // Create trait type: Eq['a]
         let trait_ty = Ty::proj("Eq", vec![Ty::var("'a")]);
-        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        let eq_node_id = NodeId::new();
+        let trait_a_node_id = NodeId::new();
+        let mut parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        parsed_trait_ty.set_synthetic_ids(vec![eq_node_id, trait_a_node_id]);
 
         // Create trait declaration
         let trait_decl = Trait {
@@ -2571,7 +2567,10 @@ mod tests {
 
         // Create trait type: Eq['a]
         let trait_ty = Ty::proj("Eq", vec![Ty::var("'a")]);
-        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        let eq_name_node_id = NodeId::new();
+        let trait_a_node_id = NodeId::new();
+        let mut parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        parsed_trait_ty.set_synthetic_ids(vec![eq_name_node_id, trait_a_node_id]);
 
         // Create trait declaration
         let trait_decl = Trait {
@@ -2633,7 +2632,10 @@ mod tests {
 
         // Create trait type: ToStr['a]
         let trait_ty = Ty::proj("ToStr", vec![Ty::var("'a")]);
-        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        let tostr_name_node_id = NodeId::new();
+        let trait_a_node_id = NodeId::new();
+        let mut parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        parsed_trait_ty.set_synthetic_ids(vec![tostr_name_node_id, trait_a_node_id]);
 
         // Create trait declaration
         let trait_decl = Trait {
@@ -2693,7 +2695,9 @@ mod tests {
 
         // Create trait type: Empty (no type params - Ty::Const)
         let trait_ty = Ty::con("Empty");
-        let parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        let empty_name_node_id = NodeId::new();
+        let mut parsed_trait_ty = Parsed::new(trait_ty, Source::default());
+        parsed_trait_ty.set_synthetic_ids(vec![empty_name_node_id]);
 
         // Create trait declaration
         let trait_decl = Trait {

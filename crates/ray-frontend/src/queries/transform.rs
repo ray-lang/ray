@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use ray_core::{
     ast::{
-        CurlyElement, Decl, Expr, File, FnParam, FuncSig, Name, Node, ScopedAccess, Trait,
+        CurlyElement, Decl, Expr, File, FnParam, FuncSig, Impl, Name, Node, ScopedAccess, Trait,
         token::{Token, TokenKind},
         transform::{convert_func_to_closure, desugar_compound_assignment, expand_curly_shorthand},
     },
@@ -120,6 +120,9 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
             }
         }
         Decl::Impl(im) => {
+            // Annotate self parameters with the implementing type
+            annotate_impl_self_params(im, ctx.source_map);
+
             // Transform functions in impl blocks
             if let Some(funcs) = &mut im.funcs {
                 for decl in funcs {
@@ -511,6 +514,30 @@ fn annotate_trait_self_params(tr: &mut Trait, srcmap: &mut SourceMap) {
                 annotate_self_param_if_missing(&mut func.sig, &self_ty, srcmap);
             }
             _ => {}
+        }
+    }
+}
+
+/// Annotate bare `self` parameters in impl methods with the implementing type.
+///
+/// For `impl object T`, the self type is `T`.
+/// For `impl Trait[T, ...]`, the self type is the first type argument `T`.
+fn annotate_impl_self_params(im: &mut Impl, srcmap: &mut SourceMap) {
+    let impl_ty = im.ty.clone_value();
+    let self_ty: Ty = if im.is_object {
+        impl_ty
+    } else {
+        match impl_ty.type_argument_at(0) {
+            Some(ty) => ty.clone(),
+            None => return,
+        }
+    };
+
+    if let Some(funcs) = &mut im.funcs {
+        for decl in funcs {
+            if let Decl::Func(func) = &mut decl.value {
+                annotate_self_param_if_missing(&mut func.sig, &self_ty, srcmap);
+            }
         }
     }
 }

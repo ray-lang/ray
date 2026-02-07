@@ -124,33 +124,13 @@ impl Func {
         }
     }
 
-    pub fn to_sig_status(&self) -> SignatureStatus {
-        // Check if all parameters have type annotations
-        let all_params_annotated = self.sig.params.iter().all(|p| p.value.ty().is_some());
-        if !all_params_annotated {
-            return SignatureStatus::Unannotated;
-        }
-
-        // All params are annotated, check return type
-        if self.sig.ret_ty.is_some() {
-            return SignatureStatus::FullyAnnotated;
-        }
-
-        // All params annotated but return type missing.
-        // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided (infer return from expr)
-        // Block body: fn foo(x: int) { x + 1 } -> ImplicitUnit (return type is ())
-        let body_is_block = self
+    pub fn to_sig_status(&self, has_implicit_self: bool) -> SignatureStatus {
+        let has_block_body = self
             .body
             .as_ref()
             .map(|b| matches!(b.value, Expr::Block(_)))
             .unwrap_or(true); // No body = treat as block
-
-        if body_is_block {
-            SignatureStatus::ImplicitUnit
-        } else {
-            // Arrow body (=>) - return type inferred from expression
-            SignatureStatus::ReturnElided
-        }
+        self.sig.to_sig_status(has_implicit_self, has_block_body)
     }
 }
 
@@ -201,6 +181,30 @@ impl std::fmt::Display for Func {
 }
 
 impl FuncSig {
+    /// Compute the signature status for this function signature.
+    ///
+    /// `has_implicit_self` — bare `self` is implicitly typed (e.g. in impl/trait methods).
+    /// `has_block_body` — whether the body is a block (`{ ... }`) vs an arrow (`=> ...`).
+    ///   Used to distinguish `ImplicitUnit` from `ReturnElided` when return type is missing.
+    pub fn to_sig_status(&self, has_implicit_self: bool, has_block_body: bool) -> SignatureStatus {
+        let all_params_annotated = self.params.iter().all(|p| {
+            p.value.ty().is_some() || (has_implicit_self && p.value.name().is_self())
+        });
+        if !all_params_annotated {
+            return SignatureStatus::Unannotated;
+        }
+
+        if self.ret_ty.is_some() {
+            return SignatureStatus::FullyAnnotated;
+        }
+
+        if has_block_body {
+            SignatureStatus::ImplicitUnit
+        } else {
+            SignatureStatus::ReturnElided
+        }
+    }
+
     pub fn resolve_signature(
         &mut self,
         scopes: &Vec<Scope>,

@@ -700,10 +700,9 @@ fn generate_constraints_for_expr(
                 node.wanteds.push(Constraint::eq(expr_ty, Ty::bool(), info));
             }
             ExprKind::LiteralString => {
-                // String literals have fixed type `string` (modeled here as
-                // a primitive constant type).
+                let string_path = ctx.env().resolve_builtin("string");
                 node.wanteds
-                    .push(Constraint::eq(expr_ty, Ty::string(), info));
+                    .push(Constraint::eq(expr_ty, Ty::Const(string_path), info));
             }
             ExprKind::LiteralByteString => {
                 // Byte-string literals have fixed type `bytes` (modeled as
@@ -720,10 +719,9 @@ fn generate_constraints_for_expr(
                 node.wanteds.push(Constraint::eq(expr_ty, Ty::char(), info));
             }
             ExprKind::LiteralUnicodeEsc => {
-                // Unicode escape sequence literals are treated as `string`
-                // for typing purposes.
+                let string_path = ctx.env().resolve_builtin("string");
                 node.wanteds
-                    .push(Constraint::eq(expr_ty, Ty::string(), info));
+                    .push(Constraint::eq(expr_ty, Ty::Const(string_path), info));
             }
             ExprKind::Type { ty } => {
                 // Meta-type expressions `T` have type `type[T]`.

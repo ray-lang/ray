@@ -276,6 +276,15 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    /// Convert a type to a predicate (for where clauses).
+    pub fn from_ty(ty: &Ty) -> Option<Predicate> {
+        match ty {
+            Ty::Proj(path, args) => Some(Predicate::class(path.clone(), args.clone())),
+            Ty::Const(path) => Some(Predicate::class(path.clone(), vec![])),
+            _ => None,
+        }
+    }
+
     pub fn class(path: impl Into<ItemPath>, args: Vec<Ty>) -> Predicate {
         Predicate::Class(ClassPredicate {
             path: path.into(),

@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, Expr, Func, FuncSig, Node};
+use ray_core::ast::{Decl, FuncSig, Node};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, SignatureStatus},
+    def::{DefId, DefKind, SignatureStatus},
     node_id::NodeId,
     pathlib::ItemPath,
     resolution::{DefTarget, Resolution},
@@ -19,7 +19,12 @@ use ray_typing::{
 };
 
 use crate::{
-    queries::{defs::def_path, parse::parse_file, resolve::name_resolutions, transform::file_ast},
+    queries::{
+        defs::{def_header, def_path},
+        parse::parse_file,
+        resolve::name_resolutions,
+        transform::file_ast,
+    },
     query::{Database, Query},
 };
 
@@ -285,20 +290,17 @@ where
 /// - `types`: Mapped types indexed by their AST NodeId
 #[query]
 pub fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
-    // Use parse_file instead of file_ast to avoid cycle:
-    // file_ast -> struct_def -> mapped_def_types -> file_ast
-    let parse_result = parse_file(db, def_id.file);
-
     // Find the DefHeader for this definition
-    let def_header = match parse_result.defs.iter().find(|h| h.def_id == def_id) {
-        Some(header) => header,
-        None => return MappedDefTypes::default(),
+    let Some(header) = def_header(db, def_id) else {
+        return MappedDefTypes::default();
     };
 
     // Find the AST node for this definition
-    let def_ast = match find_def_ast(&parse_result.ast.decls, def_header.root_node) {
-        Some(ast) => ast,
-        None => return MappedDefTypes::default(),
+    // Use parse_file instead of file_ast to avoid cycle:
+    // file_ast -> struct_def -> mapped_def_types -> file_ast
+    let parse_result = parse_file(db, def_id.file);
+    let Some(def_ast) = find_def_ast(&parse_result.ast.decls, header.root_node) else {
+        return MappedDefTypes::default();
     };
 
     // Extract and map type annotations based on definition kind
@@ -310,35 +312,41 @@ pub fn mapped_def_types(db: &Database, def_id: DefId) -> MappedDefTypes {
 /// This query determines whether a definition has:
 /// - `FullyAnnotated`: All parameter and return types explicit
 /// - `ReturnElided`: Parameters annotated, return type inferred from => body
+/// - `ImplicitUnit`: Parameters annotated, return type elided but implicitly `()`
 /// - `Unannotated`: Missing parameter or return type annotations
 ///
 /// Non-function definitions (structs, traits, impls, type aliases) are always
 /// considered `FullyAnnotated` since they require explicit type information.
 #[query]
 pub fn def_signature_status(db: &Database, def_id: DefId) -> SignatureStatus {
-    // Use parse_file to avoid cycle with file_ast
-    let parse_result = parse_file(db, def_id.file);
-
     // Find the DefHeader for this definition
-    let def_header = match parse_result.defs.iter().find(|h| h.def_id == def_id) {
-        Some(header) => header,
-        None => return SignatureStatus::Unannotated,
+    let Some(header) = def_header(db, def_id) else {
+        return SignatureStatus::Unannotated;
     };
+
+    // In impl/trait methods, bare `self` is implicitly typed by the parent block.
+    // The transform pass annotates it, but we read the pre-transform AST here.
+    let has_implicit_self = header
+        .parent
+        .and_then(|parent_def_id| def_header(db, parent_def_id))
+        .is_some_and(|parent_header| matches!(parent_header.kind, DefKind::Impl | DefKind::Trait));
 
     // Find the AST node for this definition
-    let def_ast = match find_def_ast(&parse_result.ast.decls, def_header.root_node) {
-        Some(ast) => ast,
-        None => return SignatureStatus::Unannotated,
+    // Use parse_file to avoid cycle with file_ast
+    let parse_result = parse_file(db, def_id.file);
+    let Some(def_ast) = find_def_ast(&parse_result.ast.decls, header.root_node) else {
+        return SignatureStatus::Unannotated;
     };
 
-    compute_signature_status(def_ast)
+    compute_signature_status(def_ast, has_implicit_self)
 }
 
 /// Compute the signature status for a declaration.
-fn compute_signature_status(decl: &Node<Decl>) -> SignatureStatus {
+fn compute_signature_status(decl: &Node<Decl>, has_implicit_self: bool) -> SignatureStatus {
     match &decl.value {
-        Decl::Func(func) => compute_func_signature_status(func),
-        Decl::FnSig(sig) => compute_fn_sig_signature_status(sig),
+        Decl::Func(func) => func.to_sig_status(has_implicit_self),
+        // Standalone signatures (trait methods) have no body — treat as block
+        Decl::FnSig(sig) => sig.to_sig_status(has_implicit_self, true),
         // These always have explicit type information
         Decl::Struct(_) | Decl::Trait(_) | Decl::Impl(_) | Decl::TypeAlias(_, _) => {
             SignatureStatus::FullyAnnotated
@@ -361,52 +369,6 @@ fn compute_signature_status(decl: &Node<Decl>) -> SignatureStatus {
         }
         // FileMain doesn't have a signature - it's a container for statements
         Decl::FileMain(_) => SignatureStatus::FullyAnnotated,
-    }
-}
-
-/// Compute signature status for a function.
-fn compute_func_signature_status(func: &Func) -> SignatureStatus {
-    // Check if all parameters have type annotations
-    let all_params_annotated = func.sig.params.iter().all(|p| p.value.ty().is_some());
-    if !all_params_annotated {
-        return SignatureStatus::Unannotated;
-    }
-
-    // All params are annotated, check return type
-    if func.sig.ret_ty.is_some() {
-        return SignatureStatus::FullyAnnotated;
-    }
-
-    // Check if body is an arrow expression (not a block)
-    // Arrow body: fn foo(x: int) => x + 1  -> ReturnElided (infer return from expr)
-    // Block body: fn foo(x: int) { x + 1 } -> ImplicitUnit (return type is ())
-    let body_is_block = func
-        .body
-        .as_ref()
-        .map(|b| matches!(b.value, Expr::Block(_)))
-        .unwrap_or(true); // No body = treat as block
-
-    if body_is_block {
-        SignatureStatus::ImplicitUnit
-    } else {
-        SignatureStatus::ReturnElided
-    }
-}
-
-/// Compute signature status for a standalone function signature (trait method).
-fn compute_fn_sig_signature_status(sig: &FuncSig) -> SignatureStatus {
-    // Check if all parameters have type annotations
-    let all_params_annotated = sig.params.iter().all(|p| p.value.ty().is_some());
-    if !all_params_annotated {
-        return SignatureStatus::Unannotated;
-    }
-
-    // Check return type
-    if sig.ret_ty.is_some() {
-        SignatureStatus::FullyAnnotated
-    } else {
-        // For standalone signatures without bodies, missing return type = unannotated
-        SignatureStatus::Unannotated
     }
 }
 
@@ -439,7 +401,7 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
     let def_header = file_result.defs.iter().find(|h| h.def_id == def_id)?;
 
     // Get parent var_map if this is a nested definition (trait method, impl method)
-    let parent_var_map = get_parent_var_map(db, def_id, &file_result.defs);
+    let parent_var_map = get_parent_var_map(db, def_id);
 
     // Combine parent var_map with own var_map
     let mut combined_var_map = parent_var_map;
@@ -462,34 +424,20 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
     )
 }
 
-/// Convert a type to a predicate (for where clauses).
-fn ty_to_predicate(ty: &Ty) -> Option<Predicate> {
-    match ty {
-        Ty::Proj(path, args) => Some(Predicate::class(path.clone(), args.clone())),
-        Ty::Const(path) => Some(Predicate::class(path.clone(), vec![])),
-        _ => None,
-    }
-}
-
 /// Get the parent definition's var_map for nested definitions.
 ///
 /// For trait methods and impl methods, we need to include the parent's type parameters
 /// so that references to them can be resolved correctly.
-fn get_parent_var_map(
-    db: &Database,
-    def_id: DefId,
-    defs: &[ray_shared::def::DefHeader],
-) -> HashMap<TypeParamId, TyVar> {
+#[query]
+pub fn get_parent_var_map(db: &Database, def_id: DefId) -> HashMap<TypeParamId, TyVar> {
     // Find the DefHeader for this definition
-    let def_header = match defs.iter().find(|h| h.def_id == def_id) {
-        Some(h) => h,
-        None => return HashMap::new(),
+    let Some(header) = def_header(db, def_id) else {
+        return HashMap::new();
     };
 
     // Check if this definition has a parent
-    let parent_def_id = match def_header.parent {
-        Some(parent_id) => parent_id,
-        None => return HashMap::new(),
+    let Some(parent_def_id) = header.parent else {
+        return HashMap::new();
     };
 
     // Get the parent's var_map
@@ -556,18 +504,18 @@ where
     let func_ty = Ty::Func(param_tys, Box::new(ret_ty));
 
     // Extract and resolve qualifiers (where clauses)
+    let mut qual_tys = Vec::with_capacity(sig.qualifiers.len());
     let mut predicates = Vec::with_capacity(sig.qualifiers.len());
     for qual in &sig.qualifiers {
         let qual_ty = apply_type_resolutions(qual, resolutions, var_map, get_item_path);
-        if let Some(pred) = ty_to_predicate(&qual_ty) {
+        if let Some(pred) = Predicate::from_ty(&qual_ty) {
             predicates.push(pred);
         }
+        qual_tys.push(qual_ty);
     }
 
-    // Collect type variables (schema vars) from the var_map
-    let mut vars: Vec<TyVar> = var_map.values().cloned().collect();
-    vars.sort();
-    vars.dedup();
+    // Extract schema vars from the resolved function type and qualifier types
+    let vars = Ty::unique_free_vars_from(std::iter::once(&func_ty).chain(qual_tys.iter()));
 
     // Build the scheme
     let scheme = if vars.is_empty() && predicates.is_empty() {
@@ -620,8 +568,20 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
         Decl::Func(func) => sig_type_param_names(&func.sig),
         Decl::FnSig(sig) => sig_type_param_names(sig),
         Decl::Struct(st) => collect_struct_type_params(st),
-        Decl::Trait(tr) => extract_type_params_from_parsed_ty(&tr.ty),
-        Decl::Impl(im) => extract_type_params_from_parsed_ty(&im.ty),
+        Decl::Trait(tr) => Ty::all_user_type_vars(
+            std::iter::once(tr.ty.value())
+                .chain(tr.super_trait.iter().map(|s| s.value())),
+        )
+        .into_iter()
+        .filter_map(|tv| tv.path().name())
+        .collect(),
+        Decl::Impl(im) => Ty::all_user_type_vars(
+            std::iter::once(im.ty.value())
+                .chain(im.qualifiers.iter().map(|q| q.value())),
+        )
+        .into_iter()
+        .filter_map(|tv| tv.path().name())
+        .collect(),
         Decl::TypeAlias(_name, _parsed_ty) => {
             // Type aliases don't have their own type parameters
             // (any type vars in the aliased type are free)
@@ -665,18 +625,6 @@ fn extract_type_params_from_parsed_tys(
         .unwrap_or_default()
 }
 
-/// Extract type parameter names from a Parsed<Ty> (e.g., `Eq['a]` → `["'a"]`).
-fn extract_type_params_from_parsed_ty(
-    parsed_ty: &ray_shared::span::parsed::Parsed<Ty>,
-) -> Vec<String> {
-    parsed_ty
-        .value()
-        .type_params()
-        .iter()
-        .filter_map(|ty_var| ty_var.path().name())
-        .collect()
-}
-
 /// Find a declaration AST node by its root NodeId.
 fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
     for decl in decls {
@@ -715,8 +663,7 @@ fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>
             if let Some(funcs) = &im.funcs {
                 for func in funcs {
                     if func.id == root_node {
-                        // funcs is Vec<Node<Func>>, not Vec<Node<Decl>>
-                        // This case is handled differently - impl methods are found via their own DefId
+                        return Some(func);
                     }
                 }
             }
@@ -1180,6 +1127,87 @@ mod tests {
             1,
             "Generic function should have one type variable"
         );
+    }
+
+    #[test]
+    fn annotated_scheme_preserves_type_param_order() {
+        // Verifies that fn pair(x: 'a, y: 'b) -> ('a, 'b) produces schema vars
+        // [?s0, ?s1] in declaration order, and the function type uses them correctly.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn pair(x: 'a, y: 'b) -> ('a, 'b) { (x, y) }"#.to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let pair_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "pair")
+            .expect("should find pair function");
+
+        let scheme = annotated_scheme(&db, pair_def.def_id)
+            .expect("Should return a scheme for generic function");
+
+        // Should have 2 type variables
+        assert_eq!(scheme.vars.len(), 2, "Should have 2 type variables");
+
+        // Capture actual schema var names (format: ?s:{hash}:{index})
+        let var_names: Vec<String> = scheme
+            .vars
+            .iter()
+            .map(|v| v.path().name().unwrap().to_string())
+            .collect();
+        for (i, name) in var_names.iter().enumerate() {
+            assert!(
+                name.starts_with("?s") && name.ends_with(&format!(":{}", i)),
+                "Schema var at index {} should end with :{}, got: {}",
+                i,
+                i,
+                name,
+            );
+        }
+
+        // The function type should be fn(var0, var1) -> (var0, var1)
+        match &scheme.ty {
+            Ty::Func(params, ret) => {
+                assert_eq!(params.len(), 2);
+                // First param should be var0 (for 'a)
+                match &params[0] {
+                    Ty::Var(v) => assert_eq!(v.path().name().unwrap(), var_names[0]),
+                    other => panic!("Expected Ty::Var for first param, got: {:?}", other),
+                }
+                // Second param should be var1 (for 'b)
+                match &params[1] {
+                    Ty::Var(v) => assert_eq!(v.path().name().unwrap(), var_names[1]),
+                    other => panic!("Expected Ty::Var for second param, got: {:?}", other),
+                }
+                // Return type should be (var0, var1)
+                match ret.as_ref() {
+                    Ty::Tuple(elems) => {
+                        assert_eq!(elems.len(), 2);
+                        match &elems[0] {
+                            Ty::Var(v) => assert_eq!(v.path().name().unwrap(), var_names[0]),
+                            other => panic!("Expected Ty::Var for tuple[0], got: {:?}", other),
+                        }
+                        match &elems[1] {
+                            Ty::Var(v) => assert_eq!(v.path().name().unwrap(), var_names[1]),
+                            other => panic!("Expected Ty::Var for tuple[1], got: {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Ty::Tuple for return type, got: {:?}", other),
+                }
+            }
+            other => panic!("Expected Ty::Func, got: {:?}", other),
+        }
     }
 
     #[test]
@@ -1689,6 +1717,191 @@ mod tests {
             }
             _ => panic!("Expected Ty::Var, got {:?}", result),
         }
+    }
+
+    // Tests for impl method lookup in find_def_ast / def_signature_status
+
+    #[test]
+    fn def_signature_status_fully_annotated_impl_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Foo { x: int }
+impl object Foo {
+    fn get_x(self: *Foo) -> int { self.x }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let get_x_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "get_x")
+            .expect("should find get_x method in impl block");
+
+        let status = def_signature_status(&db, get_x_def.def_id);
+        assert_eq!(
+            status,
+            SignatureStatus::FullyAnnotated,
+            "Fully annotated impl method should have FullyAnnotated status"
+        );
+    }
+
+    #[test]
+    fn def_signature_status_bare_self_impl_method_is_implicit_unit() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Foo { x: int }
+impl object Foo {
+    fn get_x(self) { self.x }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let get_x_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "get_x")
+            .expect("should find get_x method in impl block");
+
+        let status = def_signature_status(&db, get_x_def.def_id);
+        assert_eq!(
+            status,
+            SignatureStatus::ImplicitUnit,
+            "Bare self in impl method should be implicitly typed (block body = ImplicitUnit)"
+        );
+    }
+
+    #[test]
+    fn def_signature_status_return_elided_impl_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Foo { x: int }
+impl object Foo {
+    fn get_x(self: *Foo) => self.x
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let get_x_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "get_x")
+            .expect("should find get_x method in impl block");
+
+        let status = def_signature_status(&db, get_x_def.def_id);
+        assert_eq!(
+            status,
+            SignatureStatus::ReturnElided,
+            "Impl method with arrow body and no return annotation should be ReturnElided"
+        );
+    }
+
+    #[test]
+    fn annotated_scheme_returns_scheme_for_impl_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Foo { x: int }
+impl object Foo {
+    fn get_x(self: *Foo) -> int { self.x }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let get_x_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "get_x")
+            .expect("should find get_x method in impl block");
+
+        let scheme = annotated_scheme(&db, get_x_def.def_id);
+        assert!(
+            scheme.is_some(),
+            "Should return a scheme for fully annotated impl method"
+        );
+    }
+
+    #[test]
+    fn annotated_scheme_returns_scheme_for_bare_self_impl_method() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+struct Foo { x: int }
+impl object Foo {
+    fn get_x(self) { self.x }
+}
+"#
+            .to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let get_x_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "get_x")
+            .expect("should find get_x method in impl block");
+
+        let scheme = annotated_scheme(&db, get_x_def.def_id);
+        assert!(
+            scheme.is_some(),
+            "Bare self in impl method should produce a scheme (self is implicitly typed)"
+        );
     }
 
     #[test]

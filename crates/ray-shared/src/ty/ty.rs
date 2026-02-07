@@ -795,6 +795,48 @@ impl Ty {
         }
     }
 
+    /// Collect all unique user-written type variables from multiple types, recursively.
+    /// Deduplicates by name, preserving discovery order.
+    pub fn all_user_type_vars<'a>(types: impl Iterator<Item = &'a Ty>) -> Vec<TyVar> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for ty in types {
+            for tv in ty.free_vars() {
+                if tv.is_user_var() {
+                    if let Some(name) = tv.path().name() {
+                        if seen.insert(name) {
+                            out.push(tv.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Collect all unique type variables from this type in left-to-right traversal order.
+    /// Deduplicates by name, preserving discovery order.
+    pub fn unique_free_vars(&self) -> Vec<TyVar> {
+        Ty::unique_free_vars_from(std::iter::once(self))
+    }
+
+    /// Collect all unique type variables from multiple types in left-to-right traversal order.
+    /// Deduplicates by name, preserving discovery order.
+    pub fn unique_free_vars_from<'a>(types: impl Iterator<Item = &'a Ty>) -> Vec<TyVar> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for ty in types {
+            for tv in ty.free_vars() {
+                if let Some(name) = tv.path().name() {
+                    if seen.insert(name) {
+                        out.push(tv.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn free_vars(&self) -> Vec<&TyVar> {
         match self {
             Ty::Never | Ty::Any | Ty::Const(_) => vec![],

@@ -585,8 +585,27 @@ fn extract_workspace_struct(db: &Database, def_id: DefId) -> Option<StructDef> {
         if let Decl::Struct(st) = &decl.value {
             // Match by name
             if st.path.name() == Some(def_header.name.clone()) {
-                // Get schema vars from the mapping
-                let schema_vars: Vec<TyVar> = mapping.var_map.values().cloned().collect();
+                // Get schema vars by applying type resolutions to declared type params
+                let schema_vars: Vec<TyVar> = st
+                    .ty_params
+                    .as_ref()
+                    .map(|tp| {
+                        tp.tys
+                            .iter()
+                            .filter_map(|parsed_ty| {
+                                match apply_type_resolutions(
+                                    parsed_ty,
+                                    &resolutions,
+                                    &mapping.var_map,
+                                    get_item_path,
+                                ) {
+                                    Ty::Var(tv) => Some(tv),
+                                    _ => None,
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
                 // Build the struct's own type using schema vars: e.g., Box[?s0]
                 let struct_ty = if schema_vars.is_empty() {
@@ -758,16 +777,14 @@ fn extract_workspace_trait(db: &Database, def_id: DefId) -> Option<TraitDef> {
             // Match by name - trait name comes from tr.ty which is the trait type like `Eq['a]`
             let trait_name = tr.ty.name();
             if trait_name == def_header.name {
-                // Get schema vars from the mapping
-                let schema_vars: Vec<TyVar> = mapping.var_map.values().cloned().collect();
-
-                // Build the trait's own type using schema vars: e.g., Eq[?s0]
-                let ty = if schema_vars.is_empty() {
-                    Ty::Const(path.clone())
-                } else {
-                    let ty_args: Vec<Ty> = schema_vars.iter().map(|v| Ty::Var(v.clone())).collect();
-                    Ty::Proj(path.clone(), ty_args)
-                };
+                // Resolve the trait type (e.g., Eq['a] → Eq[?s0])
+                let ty = apply_type_resolutions(
+                    &tr.ty,
+                    &resolutions,
+                    &mapping.var_map,
+                    get_item_path,
+                );
+                let schema_vars = ty.unique_free_vars();
 
                 // Get super traits with resolved types
                 let super_traits: Vec<Ty> = tr
@@ -947,8 +964,8 @@ where
     // Build the function type
     let func_ty = Ty::Func(param_tys, Box::new(ret_ty));
 
-    // Get schema vars from var_map (these are the quantified variables)
-    let schema_vars: Vec<TyVar> = var_map.values().cloned().collect();
+    // Extract schema vars from the resolved function type
+    let schema_vars = func_ty.unique_free_vars();
 
     // TODO: Handle qualifiers when we support where-clauses on methods
     TyScheme::new(schema_vars, vec![], func_ty)
@@ -1084,37 +1101,28 @@ fn extract_workspace_impl(db: &Database, def_id: DefId) -> Option<ImplDef> {
             _ => None,
         })?;
 
-    // Get schema vars from the mapping
-    let schema_vars: Vec<TyVar> = mapping.var_map.values().cloned().collect();
+    // Resolve the impl type once and extract schema vars from it
+    let resolved_impl_ty =
+        apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
+    let schema_vars = resolved_impl_ty.unique_free_vars();
 
     // Handle the two forms of impl:
     // 1. `impl object Point { ... }` - inherent impl, is_object=true
     // 2. `impl ToStr[Point] { ... }` - trait impl, is_object=false
     let (implementing_type, trait_ty) = if im.is_object {
-        // Inherent impl: the implementing type is im.ty directly
-        let impl_ty = apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
-        (impl_ty, None)
+        (resolved_impl_ty, None)
     } else {
-        // Trait impl: im.ty is Ty::Proj(trait_path, [implementing_type, ...])
-        // e.g., `impl Eq[Point]` -> trait_ty = Eq[Point], implementing_type = Point
-        match &*im.ty {
-            Ty::Proj(_trait_path, args) if !args.is_empty() => {
-                // First argument is the implementing type
-                // Create a parsed view of just the first arg with its synthetic IDs
-                // For now, resolve the inner type directly
-                let impl_ty = resolve_ty_with_scope(db, &args[0], def_id.file, &module_path);
-
-                // Resolve the full trait type using resolutions
-                let trait_type =
-                    apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
-
-                (impl_ty, Some(trait_type))
-            }
-            _ => {
+        // Trait impl: resolved_impl_ty is Ty::Proj(trait_path, [implementing_type, ...])
+        // Extract implementing type from first arg before consuming resolved_impl_ty
+        let first_arg = match &resolved_impl_ty {
+            Ty::Proj(_, args) if !args.is_empty() => Some(args[0].clone()),
+            _ => None,
+        };
+        match first_arg {
+            Some(impl_ty) => (impl_ty, Some(resolved_impl_ty)),
+            None => {
                 // Fallback: treat as inherent
-                let impl_ty =
-                    apply_type_resolutions(&im.ty, &resolutions, &mapping.var_map, get_item_path);
-                (impl_ty, None)
+                (resolved_impl_ty, None)
             }
         }
     };
@@ -2060,6 +2068,93 @@ impl object List {
     }
 
     #[test]
+    fn struct_def_preserves_type_param_order() {
+        // Verifies that struct Pair['a, 'b] produces Pair[?s0, ?s1], NOT Pair[?s1, ?s0].
+        // With HashMap-based var_map, ordering was non-deterministic.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            "struct Pair['a, 'b] { first: 'a, second: 'b }".to_string(),
+        );
+
+        let path = ItemPath::new(module_path, vec!["Pair".into()]);
+        let target = def_for_path(&db, path).expect("struct should be found");
+        let sd = struct_def(&db, target).expect("struct_def should succeed");
+
+        // Should have 2 type params
+        assert_eq!(sd.ty.vars.len(), 2);
+
+        // Capture actual schema var names (format: ?s:{hash}:{index})
+        let var_names: Vec<String> = sd
+            .ty
+            .vars
+            .iter()
+            .map(|v| v.path().name().unwrap().to_string())
+            .collect();
+        for (i, name) in var_names.iter().enumerate() {
+            assert!(
+                name.starts_with("?s") && name.ends_with(&format!(":{}", i)),
+                "Schema var at index {} should end with :{}, got: {}",
+                i,
+                i,
+                name,
+            );
+        }
+
+        // The struct type should be Pair[var0, var1] with args in declaration order
+        match &sd.ty.ty {
+            Ty::Proj(_, args) => {
+                assert_eq!(args.len(), 2);
+                for (i, arg) in args.iter().enumerate() {
+                    match arg {
+                        Ty::Var(v) => {
+                            assert_eq!(
+                                v.path().name().unwrap(),
+                                var_names[i],
+                                "Type arg at position {} should match schema var",
+                                i,
+                            );
+                        }
+                        _ => panic!("Expected Ty::Var at position {}, got: {:?}", i, arg),
+                    }
+                }
+            }
+            _ => panic!(
+                "Expected Ty::Proj for generic struct, got: {:?}",
+                sd.ty.ty
+            ),
+        }
+
+        // Field types should also be correctly ordered: first → var0, second → var1
+        assert_eq!(sd.fields.len(), 2);
+        for (i, field) in sd.fields.iter().enumerate() {
+            match &field.ty.ty {
+                Ty::Var(v) => {
+                    assert_eq!(
+                        v.path().name().unwrap(),
+                        var_names[i],
+                        "Field '{}' should use schema var at index {}",
+                        field.name,
+                        i,
+                    );
+                }
+                other => panic!(
+                    "Expected Ty::Var for field '{}', got: {:?}",
+                    field.name, other
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn struct_def_returns_none_for_function() {
         let db = Database::new();
 
@@ -2189,6 +2284,69 @@ trait Eq['a] {
         assert_eq!(trait_def.methods[0].name, "eq");
         assert!(!trait_def.methods[0].is_static);
         assert_eq!(trait_def.methods[0].recv_mode, ReceiverMode::Value);
+    }
+
+    #[test]
+    fn trait_def_preserves_type_param_order() {
+        // Verifies that trait Add['a, 'b, 'c] produces schema vars [?s0, ?s1, ?s2] in order.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Add['a, 'b, 'c] {
+    fn +(a: 'a, b: 'b) -> 'c
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        let path = ItemPath::new(module_path, vec!["Add".into()]);
+        let target = def_for_path(&db, path).expect("trait should be found");
+        let td = trait_def(&db, target).expect("trait_def should succeed");
+
+        // Should have 3 type params in order
+        assert_eq!(td.type_params.len(), 3);
+
+        // Capture actual schema var names (format: ?s:{hash}:{index})
+        let var_names: Vec<String> = td
+            .type_params
+            .iter()
+            .map(|v| v.path().name().unwrap().to_string())
+            .collect();
+        for (i, name) in var_names.iter().enumerate() {
+            assert!(
+                name.starts_with("?s") && name.ends_with(&format!(":{}", i)),
+                "Schema var at index {} should end with :{}, got: {}",
+                i,
+                i,
+                name,
+            );
+        }
+
+        // The trait type should also have args in order: Add[var0, var1, var2]
+        match &td.ty {
+            Ty::Proj(_, args) => {
+                assert_eq!(args.len(), 3);
+                for (i, arg) in args.iter().enumerate() {
+                    match arg {
+                        Ty::Var(v) => {
+                            assert_eq!(
+                                v.path().name().unwrap(),
+                                var_names[i],
+                                "Trait type arg at position {} should match schema var",
+                                i,
+                            );
+                        }
+                        _ => panic!("Expected Ty::Var at position {}, got: {:?}", i, arg),
+                    }
+                }
+            }
+            _ => panic!("Expected Ty::Proj for generic trait, got: {:?}", td.ty),
+        }
     }
 
     #[test]
@@ -2334,6 +2492,66 @@ impl object Point {
 
         let result = impl_def(&db, target);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn impl_def_preserves_schema_vars_for_polymorphic_impl() {
+        // Verifies that impl Add[rawptr['a], uint, rawptr['a]] correctly extracts
+        // schema var ?s0 for 'a, and that implementing_type is rawptr[?s0].
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Add['a, 'b, 'c] {
+    fn +(a: 'a, b: 'b) -> 'c
+}
+
+impl Add[rawptr['a], uint, rawptr['a]] {
+    fn +(a: rawptr['a], b: uint) -> rawptr['a] => a
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+
+        // Find the impl via impls_for_trait
+        let trait_path = ItemPath::new(module_path, vec!["Add".into()]);
+        let trait_target = def_for_path(&db, trait_path).expect("trait should be found");
+        let impls = impls_for_trait(&db, trait_target);
+        assert_eq!(impls.len(), 1, "Should find 1 impl for Add");
+
+        let impl_result = impl_def(&db, impls[0].clone());
+        let id = impl_result.as_ref().as_ref().expect("impl_def should succeed");
+
+        // Should have exactly 1 schema var (format: ?s:{hash}:0 for 'a)
+        assert_eq!(id.type_params.len(), 1, "Should have 1 schema var for 'a");
+        let var_name = id.type_params[0].path().name().unwrap_or_default();
+        assert!(
+            var_name.starts_with("?s") && var_name.ends_with(":0"),
+            "Type param should be a schema var ending with :0, got: {}",
+            var_name,
+        );
+
+        // The implementing type should be rawptr[?s0]
+        match &id.implementing_type {
+            Ty::RawPtr(inner) => match inner.deref() {
+                Ty::Var(v) => {
+                    assert_eq!(
+                        v.path().name().unwrap(),
+                        var_name,
+                        "rawptr inner var should match the schema var"
+                    );
+                }
+                other => panic!("Expected Ty::Var inside rawptr, got: {:?}", other),
+            },
+            other => panic!(
+                "Expected Ty::RawPtr for implementing_type, got: {:?}",
+                other
+            ),
+        }
     }
 
     // method_receiver_mode tests
