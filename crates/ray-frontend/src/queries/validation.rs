@@ -23,7 +23,7 @@ use ray_shared::{
     file_id::FileId,
     node_id::NodeId,
     pathlib::{FilePath, ItemPath},
-    resolution::DefTarget,
+    resolution::{DefTarget, Resolution},
     span::Source,
     ty::Ty,
 };
@@ -31,6 +31,7 @@ use ray_shared::{
 use crate::{
     queries::{
         defs::{def_for_path, impl_def, trait_def},
+        resolve::name_resolutions,
         transform::file_ast,
         workspace::WorkspaceSnapshot,
     },
@@ -197,36 +198,26 @@ fn validate_qualifiers(
     _srcmap: &SourceMap,
     errors: &mut Vec<RayError>,
 ) {
-    // Get the module path for this file to resolve unqualified names
-    let workspace = db.get_input::<WorkspaceSnapshot>(());
-    let module_path = match workspace.files.get(&file_id) {
-        Some(info) => info.module_path.clone(),
-        None => return,
-    };
+    let resolutions = name_resolutions(db, file_id);
 
     for qual in &sig.qualifiers {
-        let qual_ty = qual.clone_value();
         let qual_span = qual.span();
 
-        // Extract the path from the qualifier type
-        let path = match &qual_ty {
-            Ty::Proj(path, _) => path.clone(),
-            Ty::Const(path) => path.clone(),
-            _ => {
-                // Not a valid trait reference - this would be caught elsewhere
-                continue;
-            }
+        // Extract the path for error messages
+        let path = match qual.value() {
+            Ty::Proj(path, _) | Ty::Const(path) => path.clone(),
+            _ => continue,
         };
 
-        // Build ItemPath - if unqualified (single name), use current module
-        let mut item_path = ItemPath::from(path.clone());
-        if item_path.module.is_empty() {
-            // Unqualified name - look up in current module
-            item_path.module = module_path.clone();
-        }
-
-        // Try to find the definition
-        let target = def_for_path(db, item_path);
+        // Use name resolutions to find the actual definition target.
+        // The first synthetic ID corresponds to the qualifier's base path.
+        let target = qual
+            .synthetic_ids()
+            .first()
+            .and_then(|id| match resolutions.get(id) {
+                Some(Resolution::Def(target)) => Some(target.clone()),
+                _ => None,
+            });
 
         match target {
             Some(t) => {
