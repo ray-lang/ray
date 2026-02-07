@@ -125,4 +125,8 @@ impl TypecheckEnv for MockTypecheckEnv {
         // Mock doesn't track local bindings
         HashMap::new()
     }
+
+    fn resolved_expr_ty(&self, _node_id: NodeId) -> Option<Ty> {
+        None
+    }
 }

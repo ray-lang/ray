@@ -36,7 +36,7 @@ use crate::{
         operators::{lookup_infix_op, lookup_prefix_op},
         resolve::{name_resolutions, resolve_builtin},
         transform::file_ast,
-        types::annotated_scheme,
+        types::{annotated_scheme, resolved_ty},
     },
     query::{Database, Query},
 };
@@ -222,6 +222,10 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
             Some(group_id) => local_bindings_for_group(self.db, group_id.clone()),
             None => HashMap::new(),
         }
+    }
+
+    fn resolved_expr_ty(&self, node_id: NodeId) -> Option<Ty> {
+        resolved_ty(self.db, node_id)
     }
 }
 

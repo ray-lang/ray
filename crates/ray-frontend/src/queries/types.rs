@@ -2,10 +2,13 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, FuncSig, Node};
+use std::sync::Arc;
+
+use ray_core::ast::{walk_file, Decl, Expr, FuncSig, Node, WalkItem};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind, SignatureStatus},
+    file_id::FileId,
     node_id::NodeId,
     pathlib::ItemPath,
     resolution::{DefTarget, Resolution},
@@ -454,6 +457,63 @@ pub fn get_parent_var_map(db: &Database, def_id: DefId) -> HashMap<TypeParamId, 
     parent_mapping.var_map
 }
 
+/// Collect all expression-level type references from the AST.
+///
+/// Maps expression NodeIds to their embedded `Parsed<Ty>` for expressions
+/// that contain type references: `Cast` (e.g., `x as rawptr['k]`), `New`
+/// (e.g., `new(T, n)`), and `Type` (e.g., `sizeof('a)`).
+#[query]
+pub fn expr_type_refs(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, Parsed<Ty>>> {
+    let file_result = file_ast(db, file_id);
+    let mut map = HashMap::new();
+    for item in walk_file(&file_result.ast) {
+        if let WalkItem::Expr(node) = item {
+            match &node.value {
+                Expr::Cast(cast) => {
+                    map.insert(node.id, cast.ty.clone());
+                }
+                Expr::New(new) => {
+                    map.insert(node.id, new.ty.value.clone());
+                }
+                Expr::Type(scheme) => {
+                    map.insert(node.id, scheme.clone().map(|s| s.ty));
+                }
+                _ => {}
+            }
+        }
+    }
+    Arc::new(map)
+}
+
+/// Resolve an expression-level type reference.
+///
+/// Given the NodeId of an expression that contains a type (Cast, New, Type),
+/// applies name resolutions and type parameter mappings to produce a fully
+/// resolved type.
+#[query]
+pub fn resolved_ty(db: &Database, node_id: NodeId) -> Option<Ty> {
+    let file_id = node_id.owner.file;
+    let type_refs = expr_type_refs(db, file_id);
+    let parsed_ty = type_refs.get(&node_id)?;
+    let resolutions = name_resolutions(db, file_id);
+    let mapping = mapped_def_types(db, node_id.owner);
+    let parent_var_map = get_parent_var_map(db, node_id.owner);
+
+    let mut combined_var_map = parent_var_map;
+    combined_var_map.extend(mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
+
+    let get_item_path = |target: &DefTarget| {
+        def_path(db, target.clone()).expect("DefTarget should have a valid path")
+    };
+
+    Some(apply_type_resolutions(
+        parsed_ty,
+        &resolutions,
+        &combined_var_map,
+        get_item_path,
+    ))
+}
+
 /// Get the parent definition's where-clause predicates for nested definitions.
 ///
 /// For impl methods, this resolves the parent impl's `where` clause qualifiers
@@ -570,8 +630,13 @@ where
         qual_tys.push(qual_ty);
     }
 
-    // Extract schema vars from the resolved function type and qualifier types
-    let vars = Ty::unique_free_vars_from(std::iter::once(&func_ty).chain(qual_tys.iter()));
+    // Extract schema vars from the resolved function type and qualifier types.
+    // Filter out return placeholders (%r) — they must remain as unification
+    // variables so the body's return type can be inferred, not skolemized.
+    let vars: Vec<TyVar> = Ty::unique_free_vars_from(std::iter::once(&func_ty).chain(qual_tys.iter()))
+        .into_iter()
+        .filter(|v| !v.is_ret_placeholder())
+        .collect();
 
     // Build the scheme
     let scheme = if vars.is_empty() && predicates.is_empty() {
@@ -747,7 +812,8 @@ mod tests {
             libraries::LoadedLibraries,
             parse::parse_file,
             types::{
-                annotated_scheme, apply_type_resolutions, def_signature_status, mapped_def_types,
+                annotated_scheme, apply_type_resolutions, def_signature_status, expr_type_refs,
+            mapped_def_types, resolved_ty,
             },
             workspace::{FileSource, WorkspaceSnapshot},
         },
@@ -2058,6 +2124,196 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
                 }
                 other => panic!("Expected Class predicate, got: {:?}", other),
             }
+        }
+    }
+
+    // Tests for expr_type_refs and resolved_ty
+
+    #[test]
+    fn expr_type_refs_collects_cast_expression() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with a cast expression
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn foo(x: int) -> int { x as int }"#.to_string(),
+        );
+
+        let type_refs = expr_type_refs(&db, file_id);
+
+        // Should have at least one entry for the cast expression
+        assert!(
+            !type_refs.is_empty(),
+            "expr_type_refs should collect the cast expression's type"
+        );
+    }
+
+    #[test]
+    fn expr_type_refs_empty_for_no_casts() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with no cast/new/type expressions
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
+        );
+
+        let type_refs = expr_type_refs(&db, file_id);
+
+        assert!(
+            type_refs.is_empty(),
+            "expr_type_refs should be empty when no cast/new/type expressions exist"
+        );
+    }
+
+    #[test]
+    fn resolved_ty_resolves_type_param_in_cast() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Function with a type parameter used in a cast target
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn to_ptr(x: 'a) -> rawptr['a] { x as rawptr['a] }"#.to_string(),
+        );
+
+        let type_refs = expr_type_refs(&db, file_id);
+
+        // Should have one entry for the cast
+        assert_eq!(
+            type_refs.len(),
+            1,
+            "Should have exactly one cast type ref, got {}",
+            type_refs.len(),
+        );
+
+        // Get the cast's NodeId and resolve it
+        let (cast_node_id, parsed_ty) = type_refs.iter().next().unwrap();
+
+        // The unresolved type should contain the user var 'a
+        let unresolved = parsed_ty.value();
+        match unresolved {
+            Ty::RawPtr(inner) => match inner.as_ref() {
+                Ty::Var(v) => {
+                    assert_eq!(
+                        v.to_string(),
+                        "'a",
+                        "Unresolved cast type should have user var 'a"
+                    );
+                }
+                other => panic!("Expected Ty::Var inside RawPtr, got: {:?}", other),
+            },
+            other => panic!("Expected Ty::RawPtr, got: {:?}", other),
+        }
+
+        // resolved_ty should map 'a to a schema var
+        let resolved = resolved_ty(&db, *cast_node_id);
+        assert!(resolved.is_some(), "resolved_ty should return Some for a cast expression");
+
+        let resolved = resolved.unwrap();
+        match &resolved {
+            Ty::RawPtr(inner) => match inner.as_ref() {
+                Ty::Var(v) => {
+                    let name = v.path().name().unwrap_or_default();
+                    assert!(
+                        name.starts_with("?s"),
+                        "Resolved type should have schema var, got: {}",
+                        name,
+                    );
+                }
+                other => panic!("Expected Ty::Var inside resolved RawPtr, got: {:?}", other),
+            },
+            other => panic!("Expected Ty::RawPtr from resolved_ty, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolved_ty_returns_none_for_non_cast_expr() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let add_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "add")
+            .expect("should find add function");
+
+        // Use the function's root node — not a cast expression
+        let result = resolved_ty(&db, add_def.root_node);
+        assert!(
+            result.is_none(),
+            "resolved_ty should return None for a non-cast/new/type node"
+        );
+    }
+
+    #[test]
+    fn annotated_scheme_return_elided_does_not_quantify_placeholder() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Arrow body function — return type should be inferred, not skolemized
+        FileSource::new(
+            &db,
+            file_id,
+            r#"fn double(x: int) => x * 2"#.to_string(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let double_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "double")
+            .expect("should find double function");
+
+        let scheme = annotated_scheme(&db, double_def.def_id)
+            .expect("Should return a scheme for return-elided function");
+
+        // The return placeholder (%r) must NOT appear in scheme.vars —
+        // otherwise it would be skolemized during annotation checking,
+        // making the return type rigid and unable to unify with the body.
+        for var in &scheme.vars {
+            assert!(
+                !var.is_ret_placeholder(),
+                "Return placeholder should not be quantified in scheme vars, found: {}",
+                var,
+            );
         }
     }
 }

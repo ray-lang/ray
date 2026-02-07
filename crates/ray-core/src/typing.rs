@@ -689,7 +689,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         //       its well-formedness.
         Expr::Cast(cast) => {
             let expr = lower_expr(ctx, &cast.lhs);
-            let ty = cast.ty.value().clone();
+            let ty = ctx
+                .env
+                .resolved_expr_ty(node.id)
+                .unwrap_or_else(|| cast.ty.value().clone());
             ctx.record_expr(node, ExprKind::Cast { expr, ty })
         }
         Expr::Closure(closure) => {
@@ -1069,7 +1072,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             ctx.record_expr(node, ExprKind::Tuple { elems })
         }
         Expr::Type(ty) => {
-            let ty = ty.value().mono().clone();
+            let ty = ctx
+                .env
+                .resolved_expr_ty(node.id)
+                .unwrap_or_else(|| ty.value().mono().clone());
             ctx.record_expr(node, ExprKind::Type { ty })
         }
         Expr::TypeAnnotated(value, _) => {

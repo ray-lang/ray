@@ -90,6 +90,12 @@ pub trait TypecheckEnv {
     /// from `local_tys`. Returns all nodes in the current group that resolve to
     /// local bindings (parameters, let-bindings, closure captures, etc.).
     fn local_bindings_for_group(&self) -> HashMap<NodeId, LocalBindingId>;
+
+    /// Resolve the type embedded in an expression (e.g., the target type of a cast).
+    ///
+    /// This applies name resolutions and type parameter mappings to produce a
+    /// fully resolved type from expression-level type references like `x as rawptr['k]`.
+    fn resolved_expr_ty(&self, node_id: NodeId) -> Option<Ty>;
 }
 
 #[derive(
