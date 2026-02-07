@@ -589,7 +589,7 @@ fn annotate_self_param_if_missing(sig: &mut FuncSig, self_ty: &Ty, srcmap: &Sour
 mod tests {
     use std::collections::HashMap;
 
-    use ray_core::ast::{CurlyElement, Decl, Expr};
+    use ray_core::ast::{CurlyElement, Decl, Expr, InfixOp};
     use ray_shared::pathlib::{FilePath, ModulePath, Path};
 
     use crate::{
@@ -673,12 +673,12 @@ fn main() {
                 if let Expr::Assign(assign) = &block.stmts[1].value {
                     // After desugaring, op should be Assign (not AssignOp)
                     assert!(
-                        matches!(assign.op, ray_core::ast::InfixOp::Assign),
+                        matches!(assign.op, InfixOp::Assign),
                         "Expected op to be Assign after desugaring"
                     );
                     // RHS should be a BinOp (x + 1)
                     assert!(
-                        matches!(&assign.rhs.value, ray_core::ast::Expr::BinOp(_)),
+                        matches!(&assign.rhs.value, Expr::BinOp(_)),
                         "Expected RHS to be BinOp after desugaring"
                     );
                 }
@@ -796,7 +796,7 @@ fn main() {
                 if let Expr::Assign(assign) = &stmt.value {
                     // RHS should now be a Closure (not Func)
                     assert!(
-                        matches!(&assign.rhs.value, ray_core::ast::Expr::Closure(_)),
+                        matches!(&assign.rhs.value, Expr::Closure(_)),
                         "Expected RHS to be Closure after transformation, got {:?}",
                         assign.rhs.value
                     );

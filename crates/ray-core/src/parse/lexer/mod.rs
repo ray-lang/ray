@@ -661,7 +661,7 @@ pub fn lexemes(src: &str) -> Vec<Lexeme> {
 
 #[cfg(test)]
 mod lexer_tests {
-    use crate::ast::token::{CommentKind, TokenKind};
+    use crate::ast::token::{CommentKind, IntegerBase, TokenKind};
 
     use super::{Lexer, Preceding, lexemes};
 
@@ -721,7 +721,7 @@ mod lexer_tests {
         assert!(matches!(
             tokens[9].token.kind,
             TokenKind::Integer { ref value, base, .. }
-                if value == "42" && matches!(base, crate::ast::token::IntegerBase::Decimal)
+                if value == "42" && matches!(base, IntegerBase::Decimal)
         ));
         assert!(matches!(tokens[10].token.kind, TokenKind::RightCurly));
         assert!(matches!(tokens.last().unwrap().token.kind, TokenKind::EOF));

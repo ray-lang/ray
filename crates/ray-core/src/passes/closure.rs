@@ -368,7 +368,7 @@ impl<L: BindingLookup> ClosureCtx<L> {
 mod tests {
     use super::*;
     use crate::ast::{
-        Assign, Block, Closure as AstClosure, Expr, Func, Literal, Name, Node,
+        Assign, Block, Closure as AstClosure, Expr, Func, InfixOp, Literal, Name, Node,
         Pattern as AstPattern, Sequence,
     };
     use crate::passes::binding;
@@ -433,7 +433,7 @@ mod tests {
             rhs: Box::new(rhs_expr.clone()),
             is_mut: false,
             mut_span: None,
-            op: crate::ast::InfixOp::Assign,
+            op: InfixOp::Assign,
             op_span: Span::new(),
         };
         let assign_expr = Node::new(Expr::Assign(assign));
@@ -525,7 +525,7 @@ mod tests {
             rhs: Box::new(rhs_expr.clone()),
             is_mut: false,
             mut_span: None,
-            op: crate::ast::InfixOp::Assign,
+            op: InfixOp::Assign,
             op_span: Span::new(),
         };
         let assign_expr = Node::new(Expr::Assign(assign));

@@ -437,9 +437,9 @@ mod tests {
     use std::collections::HashMap;
 
     use ray_shared::{
+        def::DefKind,
         pathlib::{FilePath, ModulePath},
-        resolution::DefTarget,
-        resolution::Resolution,
+        resolution::{DefTarget, Resolution},
         symbol::{SymbolIdentity, SymbolRole},
     };
 
@@ -997,9 +997,7 @@ fn get_x(p: Point) -> int => p.x
         let field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "x" && matches!(def.kind, DefKind::StructField))
             .expect("expected x field def");
 
         // Find the dot expression `p.x` in the function body
@@ -1055,9 +1053,7 @@ fn get_x(p: *Point) -> int => p.x
         let field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "x" && matches!(def.kind, DefKind::StructField))
             .expect("expected x field def");
 
         // Find the dot expression `p.x` in the function body
@@ -1161,9 +1157,7 @@ fn test() -> Point {
         let field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "x" && matches!(def.kind, DefKind::StructField))
             .expect("expected x field def");
 
         // Find the curly element value expression (the `value` in `x: value`)
@@ -1222,9 +1216,7 @@ fn test() -> Point {
         let field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "x" && matches!(def.kind, DefKind::StructField))
             .expect("expected x field def");
 
         // Find the shorthand curly element `x` in `Point { x, y }`
@@ -1290,7 +1282,7 @@ struct Point { x: int, y: int }
         let struct_def = parse_result
             .defs
             .iter()
-            .find(|def| def.name == "Point" && matches!(def.kind, ray_shared::def::DefKind::Struct))
+            .find(|def| def.name == "Point" && matches!(def.kind, DefKind::Struct))
             .expect("expected Point struct def");
 
         // Find the struct name node in the AST
@@ -1334,7 +1326,7 @@ trait Greet['t] {
         let trait_def = parse_result
             .defs
             .iter()
-            .find(|def| def.name == "Greet" && matches!(def.kind, ray_shared::def::DefKind::Trait))
+            .find(|def| def.name == "Greet" && matches!(def.kind, DefKind::Trait))
             .expect("expected Greet trait def");
 
         // Find the trait name node in the AST
@@ -1373,9 +1365,7 @@ type IntPair = (int, int)
         let alias_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "IntPair" && matches!(def.kind, ray_shared::def::DefKind::TypeAlias)
-            })
+            .find(|def| def.name == "IntPair" && matches!(def.kind, DefKind::TypeAlias))
             .expect("expected IntPair type alias def");
 
         // Find the type alias name node in the AST
@@ -1508,7 +1498,7 @@ fn identity(p: Point) -> Point => p
         let struct_def = parse_result
             .defs
             .iter()
-            .find(|def| def.name == "Point" && matches!(def.kind, ray_shared::def::DefKind::Struct))
+            .find(|def| def.name == "Point" && matches!(def.kind, DefKind::Struct))
             .expect("expected Point struct def");
 
         let resolutions = name_resolutions(&db, file_id);
@@ -1567,18 +1557,14 @@ fn get_x(o: Outer) -> int => o.inner.x
         let x_field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "x" && matches!(def.kind, DefKind::StructField))
             .expect("expected x field def");
 
         // Find the struct field definition for `inner` in Outer
         let inner_field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "inner" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "inner" && matches!(def.kind, DefKind::StructField))
             .expect("expected inner field def");
 
         // Find both dot expressions - we need to walk the nested structure
@@ -1648,9 +1634,7 @@ struct Point { x: int, y: int }
         let field_def = parse_result
             .defs
             .iter()
-            .find(|def| {
-                def.name == "x" && matches!(def.kind, ray_shared::def::DefKind::StructField)
-            })
+            .find(|def| def.name == "x" && matches!(def.kind, DefKind::StructField))
             .expect("expected x field def");
 
         // Find the field name node in the AST

@@ -9,7 +9,12 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
-use ray_shared::{def::DefHeader, def::DefId, file_id::FileId, pathlib::Path};
+use ray_shared::{
+    def::{DefHeader, DefId},
+    file_id::FileId,
+    pathlib::Path,
+    span::Span,
+};
 
 use crate::{
     queries::workspace::{FileSource, WorkspaceSnapshot},
@@ -49,7 +54,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
             imports: vec![],
             doc_comment: None,
             filepath: file_info.path.clone(),
-            span: ray_shared::span::Span::default(),
+            span: Span::default(),
         }),
         defs,
         source_map,
@@ -101,7 +106,7 @@ pub fn doc_comment(db: &Database, def_id: DefId) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::pathlib::FilePath;
+    use ray_shared::pathlib::{FilePath, Path};
 
     use crate::{
         queries::{
@@ -116,10 +121,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
 
@@ -135,10 +137,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nfn bar() {}".to_string());
 
@@ -157,10 +156,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main( {".to_string());
 
@@ -174,10 +170,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -204,10 +197,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
 
@@ -228,10 +218,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -255,10 +242,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
 
@@ -277,10 +261,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(
             &db,
@@ -306,10 +287,7 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn undocumented() {}".to_string());
 
@@ -329,10 +307,7 @@ mod tests {
     fn parses_path_with_type_arguments() {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
-        let file_id = workspace.add_file(
-            FilePath::from("test.ray"),
-            ray_shared::pathlib::Path::from("test"),
-        );
+        let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
 
         let src = r#"

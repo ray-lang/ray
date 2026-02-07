@@ -5,7 +5,7 @@ use std::{collections::HashMap, ops::Deref, sync::Arc};
 use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefHeader, DefId, DefKind, LibraryDefId},
+    def::{DefHeader, DefId, DefKind, LibraryDefId, SignatureStatus},
     file_id::FileId,
     node_id::NodeId,
     pathlib::{FilePath, ItemPath, ModulePath},
@@ -520,7 +520,7 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
             } else {
                 // Default to function for definitions in schemes but not in other collections
                 DefKind::Function {
-                    signature: ray_shared::def::SignatureStatus::FullyAnnotated,
+                    signature: SignatureStatus::FullyAnnotated,
                 }
             };
 

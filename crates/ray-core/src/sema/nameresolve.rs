@@ -1595,7 +1595,7 @@ mod tests {
     use crate::{
         ast::{
             Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, Extern,
-            File, FnParam, Func, FuncSig, Impl, Literal, Modifier, Name, New, Node,
+            File, FnParam, Func, FuncSig, Impl, InfixOp, Literal, Modifier, Name, New, Node,
             Pattern as AstPattern, ScopedAccess, Sequence, Struct, Trait, TypeParams,
             token::{Token, TokenKind},
         },
@@ -1623,7 +1623,7 @@ mod tests {
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
 
-        let param = Node::new(crate::ast::FnParam::Name(Name::new("x")));
+        let param = Node::new(FnParam::Name(Name::new("x")));
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
             stmts: vec![body_name.clone()],
@@ -1715,7 +1715,7 @@ mod tests {
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
 
-        let param = Node::new(crate::ast::FnParam::Name(Name::new("x")));
+        let param = Node::new(FnParam::Name(Name::new("x")));
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
             stmts: vec![body_name.clone()],
@@ -1754,7 +1754,7 @@ mod tests {
             rhs: Box::new(rhs_expr),
             is_mut: false,
             mut_span: None,
-            op: crate::ast::InfixOp::Assign,
+            op: InfixOp::Assign,
             op_span: Span::new(),
         };
         let assign_expr = Node::new(Expr::Assign(assign));
@@ -3433,7 +3433,7 @@ mod tests {
             rhs: Box::new(rhs),
             is_mut: false,
             mut_span: None,
-            op: crate::ast::InfixOp::Assign,
+            op: InfixOp::Assign,
             op_span: Span::new(),
         };
         let declare_decl = Node::new(Decl::Declare(assign));

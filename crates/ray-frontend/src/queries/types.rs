@@ -807,6 +807,7 @@ mod tests {
         ty::{Ty, TyVar},
         type_param_id::TypeParamId,
     };
+    use ray_typing::constraints::Predicate;
 
     use crate::{
         queries::{
@@ -2103,7 +2104,7 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
         // Each predicate should be a Class predicate with path ending in "ToStr"
         for pred in &scheme.qualifiers {
             match pred {
-                ray_typing::constraints::Predicate::Class(cp) => {
+                Predicate::Class(cp) => {
                     assert!(
                         cp.path.item_name() == Some("ToStr"),
                         "Predicate path should be ToStr, got: {:?}",

@@ -771,9 +771,8 @@ impl<'a> GenCtx<'a> {
             return Some(binding);
         }
         // Fall back to name_resolutions (for name usage sites)
-        let resolutions = name_resolutions(self.db, self.file_id);
-        if let Some(ray_shared::resolution::Resolution::Local(binding)) = resolutions.get(&node_id)
-        {
+        let resolutions = name_resolutions(self.db, node_id.owner.file);
+        if let Some(Resolution::Local(binding)) = resolutions.get(&node_id) {
             return Some(*binding);
         }
         None
@@ -820,7 +819,7 @@ impl<'a> GenCtx<'a> {
         }
 
         // Use existing name resolution for this node
-        let resolutions = name_resolutions(self.db, self.file_id);
+        let resolutions = name_resolutions(self.db, node_id.owner.file);
         let Resolution::Def(DefTarget::Workspace(def_id)) = resolutions.get(&node_id)? else {
             return None; // Library defs, locals, type params, primitives
         };
@@ -2404,7 +2403,7 @@ impl LirGen<GenResult> for (&Call, &Source) {
             .map(|resolved| resolved.poly_callee_ty.clone())
             .or_else(|| {
                 // If no call resolution, try to get the callee's definition scheme
-                let resolutions = name_resolutions(ctx.db, ctx.file_id);
+                let resolutions = name_resolutions(ctx.db, call.callee.id.owner.file);
                 if let Some(Resolution::Def(DefTarget::Workspace(def_id))) =
                     resolutions.get(&call.callee.id)
                 {
@@ -4982,6 +4981,60 @@ pub fn main() -> u32 {
         assert!(
             saw_store,
             "expected *p = value to generate Store\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    /// Regression test: when a workspace has multiple files, LIR generation
+    /// must look up name resolutions using the node's owning file, not the
+    /// entry file. Otherwise, function calls in non-entry files panic with
+    /// "missing binding for name expr".
+    #[test]
+    fn generates_cross_file_function_call() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+
+        let module_path = ModulePath::from("test");
+        let entry_file = workspace.add_file(FilePath::from("test/entry.ray"), module_path.clone());
+        let helper_file =
+            workspace.add_file(FilePath::from("test/helper.ray"), module_path.clone());
+        workspace.entry = Some(entry_file);
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+
+        FileSource::new(&db, entry_file, "pub fn main() -> u32 { 0u32 }".to_string());
+        FileSource::new(
+            &db,
+            helper_file,
+            r#"
+fn helper() -> u32 { 42u32 }
+fn caller() -> u32 { helper() }
+"#
+            .to_string(),
+        );
+
+        let prog = generate(&db, false)
+            .expect("lir generation should succeed for multi-file workspace with cross-file calls");
+
+        // Verify both helper and caller functions were generated
+        let has_helper = prog
+            .funcs
+            .iter()
+            .any(|f| f.name.to_string().contains("helper"));
+        let has_caller = prog
+            .funcs
+            .iter()
+            .any(|f| f.name.to_string().contains("caller"));
+        assert!(
+            has_helper,
+            "expected helper function to be generated\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            has_caller,
+            "expected caller function to be generated\n--- LIR Program ---\n{}",
             prog
         );
     }
