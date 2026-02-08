@@ -4,10 +4,10 @@
 use std::collections::HashSet;
 
 use ray_shared::{
-    def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
     pathlib::ItemPath,
+    resolution::DefTarget,
     ty::{Ty, TyVar},
 };
 use serde::{Deserialize, Serialize};
@@ -111,11 +111,11 @@ impl EqConstraint {
 // Instantiate constraint: instantiate a definition's or binding's scheme.
 
 /// Target of an instantiation constraint - either a top-level definition
-/// or a local binding.
+/// (workspace or library) or a local binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstantiateTarget {
-    /// A top-level definition (functions, structs, etc.)
-    Def(DefId),
+    /// A top-level definition (workspace or library).
+    Def(DefTarget),
     /// A local binding (parameters, let-bindings, etc.)
     Local(LocalBindingId),
 }
@@ -241,9 +241,9 @@ impl ResolveMemberConstraint {
 }
 
 impl InstantiateConstraint {
-    pub fn new_def(def_id: DefId, ty: Ty) -> Self {
+    pub fn new_def(target: DefTarget, ty: Ty) -> Self {
         InstantiateConstraint {
-            target: InstantiateTarget::Def(def_id),
+            target: InstantiateTarget::Def(target),
             ty,
             receiver_subst: None,
         }
@@ -257,9 +257,9 @@ impl InstantiateConstraint {
         }
     }
 
-    pub fn new_def_with_receiver_subst(def_id: DefId, ty: Ty, receiver_subst: Subst) -> Self {
+    pub fn new_def_with_receiver_subst(target: DefTarget, ty: Ty, receiver_subst: Subst) -> Self {
         InstantiateConstraint {
-            target: InstantiateTarget::Def(def_id),
+            target: InstantiateTarget::Def(target),
             ty,
             receiver_subst: Some(receiver_subst),
         }
@@ -372,9 +372,9 @@ impl Constraint {
         }
     }
 
-    pub fn inst(def_id: DefId, ty: Ty, info: TypeSystemInfo) -> Self {
+    pub fn inst(target: DefTarget, ty: Ty, info: TypeSystemInfo) -> Self {
         Constraint {
-            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_def(def_id, ty)),
+            kind: ConstraintKind::Instantiate(InstantiateConstraint::new_def(target, ty)),
             info,
         }
     }
@@ -387,14 +387,14 @@ impl Constraint {
     }
 
     pub fn inst_with_receiver_subst(
-        def_id: DefId,
+        target: DefTarget,
         ty: Ty,
         receiver_subst: Subst,
         info: TypeSystemInfo,
     ) -> Self {
         Constraint {
             kind: ConstraintKind::Instantiate(InstantiateConstraint::new_def_with_receiver_subst(
-                def_id,
+                target,
                 ty,
                 receiver_subst,
             )),

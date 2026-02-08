@@ -389,20 +389,28 @@ pub fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypeCheckResu
     // External scheme lookup via query.
     // For definitions outside this group, we look up their scheme.
     // This works because queries are processed in topological order.
-    let external_schemes = |def_id: DefId| -> Option<TyScheme> {
-        // First try annotated scheme (no typecheck computation needed)
-        if let Some(scheme) = annotated_scheme(db, def_id) {
-            return Some(scheme);
+    let external_schemes = |target: &DefTarget| -> Option<TyScheme> {
+        match target {
+            DefTarget::Workspace(def_id) => {
+                // First try annotated scheme (no typecheck computation needed)
+                if let Some(scheme) = annotated_scheme(db, *def_id) {
+                    return Some(scheme);
+                }
+                // Fall back to inferred scheme from typechecking, but ONLY for
+                // definitions outside the current group to avoid cycles.
+                if members.contains(def_id) {
+                    // Definition is in current group - no external scheme available
+                    return None;
+                }
+                // This triggers typecheck of the dependency's binding group,
+                // which is safe because binding groups are processed in topological order.
+                def_scheme(db, target.clone())
+            }
+            _ => {
+                // Library and primitive defs: look up via def_scheme query
+                def_scheme(db, target.clone())
+            }
         }
-        // Fall back to inferred scheme from typechecking, but ONLY for
-        // definitions outside the current group to avoid cycles.
-        if members.contains(&def_id) {
-            // Definition is in current group - no external scheme available
-            return None;
-        }
-        // This triggers typecheck of the dependency's binding group,
-        // which is safe because binding groups are processed in topological order.
-        def_scheme(db, DefTarget::Workspace(def_id))
     };
 
     // Use QueryEnv for TypecheckEnv (pick file from first member)

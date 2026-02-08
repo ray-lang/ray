@@ -39,8 +39,8 @@ use ray_frontend::{
         calls::call_resolution,
         closures::closure_info,
         defs::{
-            def_for_path, def_header, def_path, impl_def, impls_for_trait, method_receiver_mode,
-            struct_def, trait_def,
+            def_for_path, def_header, def_path, definition_record, impl_def, impls_for_trait,
+            method_receiver_mode, struct_def, trait_def,
         },
         libraries::{LoadedLibraries, library_lir},
         parse::parse_file,
@@ -818,6 +818,7 @@ impl<'a> GenCtx<'a> {
 
     fn maybe_direct_function(&self, node_id: NodeId) -> Option<TyScheme> {
         let ty = ty_of(self.db, node_id)?;
+
         let scheme = TyScheme::from_mono(ty);
         if !matches!(scheme.mono(), Ty::Func(_, _)) {
             return None;
@@ -825,13 +826,13 @@ impl<'a> GenCtx<'a> {
 
         // Use existing name resolution for this node
         let resolutions = name_resolutions(self.db, node_id.owner.file);
-        let Resolution::Def(DefTarget::Workspace(def_id)) = resolutions.get(&node_id)? else {
-            return None; // Library defs, locals, type params, primitives
+        let Some(Resolution::Def(def_target)) = resolutions.get(&node_id) else {
+            return None; // locals, type params, primitives
         };
 
-        // Check if it's a function/method definition
-        let header = def_header(self.db, *def_id)?;
-        if matches!(header.kind, DefKind::Function { .. } | DefKind::Method) {
+        // Check if it's a function/method definition (works for both workspace and library defs)
+        let record = definition_record(self.db, def_target.clone())?;
+        if matches!(record.kind, DefKind::Function { .. } | DefKind::Method) {
             Some(scheme)
         } else {
             None
@@ -2511,9 +2512,13 @@ impl LirGen<GenResult> for Node<Expr> {
                     let var = ctx.build_fn_handle_for_function(n.path.clone(), fn_ty);
                     lir::Value::new(var)
                 } else {
-                    let binding = ctx
-                        .binding_for_node(self.id)
-                        .unwrap_or_else(|| panic!("missing binding for name expr {:#x}", self.id));
+                    let binding = ctx.binding_for_node(self.id).unwrap_or_else(|| {
+                        let src = ctx.srcmap.get_by_id(self.id);
+                        panic!(
+                            "missing binding for name expr {:?} ({:#x}: {:?})",
+                            n, self.id, src
+                        )
+                    });
                     if let Some(global) = ctx.global_var_for_binding(binding, &n.path) {
                         return Ok(global.into());
                     }

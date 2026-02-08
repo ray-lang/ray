@@ -820,11 +820,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Local(local_id) => {
                         ctx.record_expr(node, ExprKind::LocalRef(*local_id))
                     }
-                    Resolution::Def(DefTarget::Workspace(def_id)) => {
-                        ctx.record_expr(node, ExprKind::DefRef(*def_id))
-                    }
-                    Resolution::Def(DefTarget::Library(_)) => {
-                        todo!("FIXME: name resolved to library reference")
+                    Resolution::Def(target @ DefTarget::Workspace(_))
+                    | Resolution::Def(target @ DefTarget::Library(_)) => {
+                        ctx.record_expr(node, ExprKind::DefRef(target.clone()))
                     }
                     Resolution::Def(DefTarget::Primitive(_)) => {
                         // Primitive type names (int, bool, etc.) used as values
@@ -860,12 +858,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     Resolution::Local(local_id) => {
                         ctx.record_expr(node, ExprKind::LocalRef(*local_id))
                     }
-                    Resolution::Def(DefTarget::Workspace(def_id)) => {
-                        ctx.record_expr(node, ExprKind::DefRef(*def_id))
-                    }
-                    Resolution::Def(DefTarget::Library(_)) => {
-                        // External references (from libraries)
-                        todo!("FIXME: path resolved to library reference")
+                    Resolution::Def(target @ DefTarget::Workspace(_))
+                    | Resolution::Def(target @ DefTarget::Library(_)) => {
+                        ctx.record_expr(node, ExprKind::DefRef(target.clone()))
                     }
                     Resolution::Def(DefTarget::Primitive(_)) => {
                         // Primitive type names (int, bool, etc.) used as values

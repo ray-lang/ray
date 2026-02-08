@@ -8,6 +8,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
+    resolution::DefTarget,
     ty::{Ty, TyVar},
     utils::{join, map_join},
 };
@@ -543,7 +544,8 @@ pub fn prepare_binding_context(
     let mut givens = vec![];
     let mut metas = vec![];
     let mut skolem_subst = None;
-    let mut binding_ty = if let Some(scheme) = ctx.lookup_def_scheme(def_id) {
+    let mut binding_ty = if let Some(scheme) = ctx.lookup_def_scheme(&DefTarget::Workspace(def_id))
+    {
         if !scheme.vars.is_empty() || !scheme.qualifiers.is_empty() {
             let skolemized = skolemize_annotated_scheme(ctx, def_id, &scheme, binding_info);
             if !skolemized.skolems.is_empty() {
@@ -740,10 +742,11 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::inst_local(*local_id, expr_ty, info));
             }
-            ExprKind::DefRef(def_id) => {
+            ExprKind::DefRef(target) => {
                 // Top-level definition references are handled by instantiating
                 // the definition's scheme and equating with the expression type.
-                node.wanteds.push(Constraint::inst(*def_id, expr_ty, info));
+                node.wanteds
+                    .push(Constraint::inst(target.clone(), expr_ty, info));
             }
             ExprKind::ScopedAccess {
                 member_name,

@@ -67,12 +67,13 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, R
         }
     };
 
-    Arc::new(resolve_names_in_file(
+    let result = resolve_names_in_file(
         &parse_result.ast,
         &imports_map,
         &combined_exports,
         module_exports,
-    ))
+    );
+    Arc::new(result)
 }
 
 /// The top-level scope for a file: names that are visible without qualification.
@@ -111,13 +112,13 @@ pub fn file_scope(db: &Database, file_id: FileId) -> HashMap<String, DefTarget> 
         if let Ok(resolved_import) = import_result {
             let module_path = &resolved_import.module_path;
 
-            let imported_exports = if libraries.library_for_module(&module_path).is_some() {
+            let is_lib = libraries.library_for_module(&module_path).is_some();
+            let imported_exports = if is_lib {
                 get_library_exports(&libraries, module_path)
             } else {
                 let imported_module_index = module_def_index(db, module_path.clone());
                 convert_to_def_targets(&imported_module_index)
             };
-
             match &resolved_import.names {
                 ImportNames::Selective(names) => {
                     // Bring only the specified names into scope
@@ -1205,10 +1206,8 @@ mod tests {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
-        let core_file =
-            workspace.add_file(FilePath::from("core/core.ray"), Path::from("core"));
-        let io_file =
-            workspace.add_file(FilePath::from("core/io/mod.ray"), Path::from("core::io"));
+        let core_file = workspace.add_file(FilePath::from("core/core.ray"), Path::from("core"));
+        let io_file = workspace.add_file(FilePath::from("core/io/mod.ray"), Path::from("core::io"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         setup_no_core(&db);
@@ -1225,10 +1224,7 @@ mod tests {
         // First, verify the import itself resolves (not just the implicit fallback)
         let imports = resolved_imports(&db, core_file);
         let io_import = imports.get("io");
-        assert!(
-            io_import.is_some(),
-            "Should have an import entry for 'io'"
-        );
+        assert!(io_import.is_some(), "Should have an import entry for 'io'");
         assert!(
             io_import.unwrap().is_ok(),
             "Import 'io' should resolve successfully to core::io, got: {:?}",

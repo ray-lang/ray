@@ -5,10 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use ray_shared::{
     binding_target::BindingTarget,
-    def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
     pathlib::{ItemPath, Path},
+    resolution::DefTarget,
     ty::{SKOLEM_PREFIX, SchemaVarAllocator, Ty, TyVar},
 };
 
@@ -47,8 +47,8 @@ pub enum Pattern {
 pub enum ExprKind {
     /// A reference to a local binding (parameter, let-binding, etc.).
     LocalRef(LocalBindingId),
-    /// A reference to a top-level definition.
-    DefRef(DefId),
+    /// A reference to a top-level definition (workspace or library).
+    DefRef(DefTarget),
     /// A scoped access `T::member`.
     ///
     /// Note: any type arguments in `T[...]::member` belong to the left-hand
@@ -357,7 +357,7 @@ pub struct SolverContext<'a> {
 
     /// Optional callback for looking up external schemes (e.g., from previously-checked
     /// binding groups in incremental compilation).
-    external_schemes: Option<Box<dyn Fn(DefId) -> Option<TyScheme> + 'a>>,
+    external_schemes: Option<Box<dyn Fn(&DefTarget) -> Option<TyScheme> + 'a>>,
 
     /// Resolved method calls accumulated during solving, keyed by call site NodeId.
     pub method_resolutions: HashMap<NodeId, MethodResolutionInfo>,
@@ -617,27 +617,36 @@ impl<'a> SolverContext<'a> {
 
     /// Set the external schemes callback for looking up schemes from
     /// previously-checked binding groups.
-    pub fn set_external_schemes(&mut self, callback: impl Fn(DefId) -> Option<TyScheme> + 'a) {
+    pub fn set_external_schemes(&mut self, callback: impl Fn(&DefTarget) -> Option<TyScheme> + 'a) {
         self.external_schemes = Some(Box::new(callback));
     }
 
-    /// Lookup a scheme for a top-level definition.
+    /// Lookup a scheme for a definition target (workspace or library).
     ///
-    /// Checks in order:
+    /// For workspace defs, checks in order:
     /// 1. `binding_schemes` (schemes from the current/previous binding groups)
     /// 2. `external_schemes` callback (for incremental compilation)
     /// 3. `env.external_scheme()` (for externally-defined schemes)
-    pub fn lookup_def_scheme(&self, def_id: DefId) -> Option<TyScheme> {
-        if let Some(scheme) = self.binding_schemes.get(&def_id.into()) {
-            return Some(scheme.clone());
+    ///
+    /// For library defs, delegates to the `external_schemes` callback which
+    /// routes through `def_scheme` in the query system.
+    pub fn lookup_def_scheme(&self, target: &DefTarget) -> Option<TyScheme> {
+        // Only workspace defs can appear in binding_schemes
+        if let DefTarget::Workspace(def_id) = target {
+            if let Some(scheme) = self.binding_schemes.get(&(*def_id).into()) {
+                return Some(scheme.clone());
+            }
         }
         if let Some(callback) = &self.external_schemes {
-            if let Some(scheme) = callback(def_id) {
+            if let Some(scheme) = callback(target) {
                 return Some(scheme);
             }
         }
         // Fall back to the environment (e.g., for extern declarations)
-        self.env.external_scheme(def_id)
+        if let DefTarget::Workspace(def_id) = target {
+            return self.env.external_scheme(*def_id);
+        }
+        None
     }
 }
 

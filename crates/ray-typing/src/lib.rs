@@ -27,6 +27,7 @@ use ray_shared::{
     local_binding::LocalBindingId,
     node_id::NodeId,
     pathlib::Path,
+    resolution::DefTarget,
     span::Source,
     ty::{SchemaVarAllocator, Ty, TyVar},
 };
@@ -1024,7 +1025,7 @@ fn push_defaulting_outcome_errors(
 pub fn typecheck_group<'a>(
     input: &TypeCheckInput,
     group: &BindingGroup<DefId>,
-    external_schemes: impl Fn(DefId) -> Option<TyScheme> + 'a,
+    external_schemes: impl Fn(&DefTarget) -> Option<TyScheme> + 'a,
     env: &'a dyn TypecheckEnv,
 ) -> TypeCheckResult {
     let mut schema_allocator = SchemaVarAllocator::new();
@@ -1297,9 +1298,9 @@ fn instantiate_wanteds_into_equalities(
         };
 
         let scheme = match &inst.target {
-            InstantiateTarget::Def(def_id) => ctx
-                .lookup_def_scheme(*def_id)
-                .unwrap_or_else(|| panic!("cannot find scheme for def: {:?}", def_id)),
+            InstantiateTarget::Def(target) => ctx
+                .lookup_def_scheme(target)
+                .unwrap_or_else(|| panic!("cannot find scheme for def: {:?}", target)),
             InstantiateTarget::Local(binding_id) => {
                 // First check local binding_schemes (same SCC)
                 if let Some(scheme) = ctx.binding_schemes.get(&(*binding_id).into()).cloned() {
@@ -1598,6 +1599,7 @@ mod tests {
         local_binding::LocalBindingId,
         node_id::NodeId,
         pathlib::ItemPath,
+        resolution::DefTarget,
         ty::{SchemaVarAllocator, Ty},
     };
 
@@ -2192,7 +2194,10 @@ mod tests {
         let mut kinds: HashMap<NodeId, ExprKind> = HashMap::new();
 
         // fn main() { malloc(10) } where 10 is an unsized int literal that must be uint.
-        kinds.insert(malloc_callee, ExprKind::DefRef(malloc_def));
+        kinds.insert(
+            malloc_callee,
+            ExprKind::DefRef(DefTarget::Workspace(malloc_def)),
+        );
         kinds.insert(len_arg, ExprKind::LiteralInt);
         kinds.insert(
             main_root,

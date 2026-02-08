@@ -14,7 +14,7 @@ use ray_core::{
 use ray_frontend::{
     queries::{
         diagnostics::workspace_diagnostics,
-        libraries::{LibraryData, LoadedLibraries},
+        libraries::{LoadedLibraries, build_library_data},
         transform::file_ast,
         workspace::{WorkspaceSnapshot, workspace_source_map},
     },
@@ -333,16 +333,19 @@ impl Driver {
             modules.sort();
             log::debug!("modules: {:?}", modules);
 
-            // TODO: build_library_data() should populate LibraryData from queries
-            // For now, create a minimal LibraryData with just modules and source_map
-            let lib_data = LibraryData {
-                modules: modules
-                    .into_iter()
-                    .map(|p| ModulePath::from(p.to_string().as_str()))
-                    .collect(),
-                source_map: srcmap.clone(),
-                ..Default::default()
-            };
+            let module_paths_vec = modules
+                .into_iter()
+                .map(|p| ModulePath::from(p.to_string().as_str()))
+                .collect();
+            let lib_data = build_library_data(db, module_paths_vec, srcmap.clone());
+            log::debug!(
+                "library data: names={} schemes={} structs={} traits={} impls={}",
+                lib_data.names.len(),
+                lib_data.schemes.len(),
+                lib_data.structs.len(),
+                lib_data.traits.len(),
+                lib_data.impls.len(),
+            );
             let lib = libgen::serialize(lib_data, program);
             let path = output_path("raylib");
 

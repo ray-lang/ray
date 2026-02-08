@@ -3,11 +3,12 @@ use std::{
     fs::File,
     hash::{Hash, Hasher},
     io,
+    sync::Arc,
 };
 
 use ray_query_macros::{input, query};
 use ray_shared::{
-    def::LibraryDefId,
+    def::{DefId, DefKind, LibraryDefId},
     pathlib::{FilePath, ItemPath, ModulePath},
     resolution::DefTarget,
     ty::{SCHEMA_PREFIX, SchemaVarAllocator, Ty, TyVar},
@@ -21,7 +22,15 @@ use serde::{Deserialize, Serialize};
 use ray_core::sourcemap::SourceMap;
 
 use crate::{
-    queries::defs::{DefinitionRecord, ImplDef, StructDef, TraitDef},
+    queries::{
+        defs::{
+            DefinitionRecord, ImplDef, StructDef, TraitDef, def_path, impl_def, struct_def,
+            trait_def,
+        },
+        parse::parse_file,
+        typecheck::def_scheme,
+        workspace::WorkspaceSnapshot,
+    },
     query::{Database, Input, Query},
 };
 
@@ -257,10 +266,10 @@ impl LoadedLibraries {
 /// The `LoadedLibraries` input stores all libraries; this query provides
 /// convenient per-module access.
 #[query]
-pub fn library_data(db: &Database, module_path: ModulePath) -> Option<LibraryData> {
+pub fn library_data(db: &Database, module_path: ModulePath) -> Option<Arc<LibraryData>> {
     let libraries = db.get_input::<LoadedLibraries>(());
     let lib_path = libraries.library_for_module(&module_path)?;
-    libraries.get(lib_path).cloned()
+    libraries.get(lib_path).cloned().map(|data| Arc::new(data))
 }
 
 /// Find the library root path for a module path.
@@ -541,6 +550,171 @@ fn collect_vars_from_predicate(subst: &mut Subst, pred: &Predicate, offset: u32)
 
     for var in free_vars {
         add_var_to_subst(subst, &var, offset);
+    }
+}
+
+/// Build LibraryData from the query database by collecting all definitions,
+/// type schemes, structs, traits, and impls from workspace files.
+///
+/// Known gaps:
+/// - Top-level locals (e.g. `x = 42`) inside FileMain are not exported.
+///   This is a pre-existing limitation: `exported_item_to_def_target` in
+///   resolve.rs also drops `ExportedItem::Local` items. Fixing this requires
+///   extending the resolution model to support library locals.
+/// - Operator index is not populated. Operator traits/methods are serialized
+///   in `traits` and `impls`, but the `operators` shortcut index is empty.
+/// - Definition records (for IDE go-to-definition) are not populated.
+pub fn build_library_data(
+    db: &Database,
+    modules: Vec<ModulePath>,
+    srcmap: SourceMap,
+) -> LibraryData {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    // Phase 1: Allocate LibraryDefIds for all defs and build DefId -> LibraryDefId mapping
+    let mut module_counters: HashMap<ModulePath, u32> = HashMap::new();
+    let mut def_id_to_lib: HashMap<DefId, LibraryDefId> = HashMap::new();
+
+    for file_id in workspace.all_file_ids() {
+        let file_info = match workspace.file_info(file_id) {
+            Some(info) => info,
+            None => continue,
+        };
+        let module_path = file_info.module_path.clone();
+        let parse_result = parse_file(db, file_id);
+
+        for def_header in &parse_result.defs {
+            if matches!(def_header.kind, DefKind::FileMain | DefKind::StructField) {
+                continue;
+            }
+
+            let counter = module_counters.entry(module_path.clone()).or_insert(0);
+            let lib_def_id = LibraryDefId {
+                module: module_path.clone(),
+                index: *counter,
+            };
+            *counter += 1;
+
+            def_id_to_lib.insert(def_header.def_id, lib_def_id);
+        }
+    }
+
+    // Phase 2: Populate library data using queries
+    let mut names = HashMap::new();
+    let mut schemes = HashMap::new();
+    let mut structs_map = HashMap::new();
+    let mut traits_map = HashMap::new();
+    let mut impls_map = HashMap::new();
+    let mut impls_by_type: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
+    let mut impls_by_trait_map: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
+
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+
+        for def_header in &parse_result.defs {
+            let lib_def_id = match def_id_to_lib.get(&def_header.def_id) {
+                Some(id) => id.clone(),
+                None => continue, // FileMain, StructField — skipped
+            };
+
+            let target = DefTarget::Workspace(def_header.def_id);
+
+            // Get type scheme for all defs that have one
+            if let Some(scheme) = def_scheme(db, target.clone()) {
+                schemes.insert(lib_def_id.clone(), scheme);
+            }
+
+            match def_header.kind {
+                DefKind::Function { .. }
+                | DefKind::TypeAlias
+                | DefKind::AssociatedConst { .. }
+                | DefKind::Binding { .. } => {
+                    // Named export (only top-level, not methods)
+                    if def_header.parent.is_none() {
+                        if let Some(path) = def_path(db, target) {
+                            names.insert(path, lib_def_id);
+                        }
+                    }
+                }
+                DefKind::Struct => {
+                    if let Some(path) = def_path(db, target.clone()) {
+                        names.insert(path, lib_def_id.clone());
+                    }
+                    if let Some(mut sdef) = struct_def(db, target) {
+                        sdef.target = remap_def_target(&sdef.target, &def_id_to_lib);
+                        structs_map.insert(lib_def_id, sdef);
+                    }
+                }
+                DefKind::Trait => {
+                    if let Some(path) = def_path(db, target.clone()) {
+                        names.insert(path, lib_def_id.clone());
+                    }
+                    if let Some(mut tdef) = trait_def(db, target) {
+                        tdef.target = remap_def_target(&tdef.target, &def_id_to_lib);
+                        for method in &mut tdef.methods {
+                            method.target = remap_def_target(&method.target, &def_id_to_lib);
+                        }
+                        traits_map.insert(lib_def_id, tdef);
+                    }
+                }
+                DefKind::Impl => {
+                    if let Some(mut idef) = (*impl_def(db, target)).clone() {
+                        idef.target = remap_def_target(&idef.target, &def_id_to_lib);
+                        for method in &mut idef.methods {
+                            method.target = remap_def_target(&method.target, &def_id_to_lib);
+                        }
+                        if let Some(type_path) = idef.implementing_type.item_path() {
+                            impls_by_type
+                                .entry(type_path.clone())
+                                .or_default()
+                                .push(lib_def_id.clone());
+                        }
+                        if let Some(ref trait_ty) = idef.trait_ty {
+                            if let Some(trait_path) = trait_ty.item_path() {
+                                impls_by_trait_map
+                                    .entry(trait_path.clone())
+                                    .or_default()
+                                    .push(lib_def_id.clone());
+                            }
+                        }
+                        impls_map.insert(lib_def_id, idef);
+                    }
+                }
+                DefKind::Method => {
+                    // Method schemes already added above; they're accessed
+                    // through their parent trait/impl, not via names
+                }
+                DefKind::FileMain | DefKind::StructField | DefKind::Primitive => {}
+            }
+        }
+    }
+
+    LibraryData {
+        names,
+        schemes,
+        structs: structs_map,
+        traits: traits_map,
+        impls: impls_map,
+        impls_by_type,
+        impls_by_trait: impls_by_trait_map,
+        operators: HashMap::new(),
+        modules,
+        definitions: HashMap::new(),
+        source_map: srcmap,
+    }
+}
+
+/// Remap a DefTarget from workspace to library form.
+fn remap_def_target(target: &DefTarget, mapping: &HashMap<DefId, LibraryDefId>) -> DefTarget {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            if let Some(lib_id) = mapping.get(def_id) {
+                DefTarget::Library(lib_id.clone())
+            } else {
+                target.clone()
+            }
+        }
+        other => other.clone(),
     }
 }
 
