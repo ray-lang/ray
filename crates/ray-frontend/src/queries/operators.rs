@@ -60,7 +60,7 @@ fn infer_arity(scheme: &TyScheme) -> OperatorArity {
 #[query]
 pub fn operator_index(db: &Database) -> OperatorIndex {
     let workspace = db.get_input::<WorkspaceSnapshot>(());
-    let mut index: HashMap<String, OperatorEntry> = HashMap::new();
+    let mut index: HashMap<(String, OperatorArity), OperatorEntry> = HashMap::new();
 
     // Scan workspace traits
     for module_path in workspace.all_module_paths() {
@@ -71,15 +71,18 @@ pub fn operator_index(db: &Database) -> OperatorIndex {
             if let Some(trait_definition) = trait_def(db, trait_target.clone()) {
                 for method in &trait_definition.methods {
                     if is_operator_name(&method.name) {
+                        let arity = infer_arity(&method.scheme);
                         let entry = OperatorEntry {
                             trait_def: trait_target.clone(),
                             method_def: method.target.clone(),
-                            arity: infer_arity(&method.scheme),
+                            arity,
                         };
 
-                        // Insert if not already present (first definition wins)
-                        // TODO: Track conflicts for error reporting
-                        index.entry(method.name.clone()).or_insert(entry);
+                        // Key by (symbol, arity) so that both infix `-` (Sub)
+                        // and prefix `-` (Neg) can coexist.
+                        index
+                            .entry((method.name.clone(), arity))
+                            .or_insert(entry);
                     }
                 }
             }
@@ -89,9 +92,11 @@ pub fn operator_index(db: &Database) -> OperatorIndex {
     // Include library operators
     let libraries = db.get_input::<LoadedLibraries>(());
     for (_lib_path, lib_data) in &libraries.libraries {
-        for (symbol, entry) in &lib_data.operators {
+        for ((symbol, arity), entry) in &lib_data.operators {
             // Library operators don't override workspace operators
-            index.entry(symbol.clone()).or_insert_with(|| entry.clone());
+            index
+                .entry((symbol.clone(), *arity))
+                .or_insert_with(|| entry.clone());
         }
     }
 
@@ -105,10 +110,7 @@ pub fn operator_index(db: &Database) -> OperatorIndex {
 #[query]
 pub fn lookup_infix_op(db: &Database, symbol: String) -> Option<OperatorEntry> {
     let index = operator_index(db);
-    index
-        .get(&symbol)
-        .filter(|entry| entry.arity == OperatorArity::Infix)
-        .cloned()
+    index.get(&(symbol, OperatorArity::Infix)).cloned()
 }
 
 /// Look up a prefix (unary) operator by symbol.
@@ -118,10 +120,7 @@ pub fn lookup_infix_op(db: &Database, symbol: String) -> Option<OperatorEntry> {
 #[query]
 pub fn lookup_prefix_op(db: &Database, symbol: String) -> Option<OperatorEntry> {
     let index = operator_index(db);
-    index
-        .get(&symbol)
-        .filter(|entry| entry.arity == OperatorArity::Prefix)
-        .cloned()
+    index.get(&(symbol, OperatorArity::Prefix)).cloned()
 }
 
 #[cfg(test)]
@@ -212,8 +211,13 @@ trait Add['a] {
 
         let index = operator_index(&db);
 
-        assert!(index.contains_key("+"), "Should find + operator");
-        let entry = index.get("+").unwrap();
+        assert!(
+            index.contains_key(&("+".to_string(), OperatorArity::Infix)),
+            "Should find + operator"
+        );
+        let entry = index
+            .get(&("+".to_string(), OperatorArity::Infix))
+            .unwrap();
         assert!(
             matches!(entry.trait_def, DefTarget::Workspace(_)),
             "Should be from workspace"
@@ -249,9 +253,18 @@ trait Mul['a] {
 
         let index = operator_index(&db);
 
-        assert!(index.contains_key("+"), "Should find + operator");
-        assert!(index.contains_key("-"), "Should find - operator");
-        assert!(index.contains_key("*"), "Should find * operator");
+        assert!(
+            index.contains_key(&("+".to_string(), OperatorArity::Infix)),
+            "Should find + operator"
+        );
+        assert!(
+            index.contains_key(&("-".to_string(), OperatorArity::Infix)),
+            "Should find - operator"
+        );
+        assert!(
+            index.contains_key(&("*".to_string(), OperatorArity::Infix)),
+            "Should find * operator"
+        );
     }
 
     #[test]
@@ -282,12 +295,30 @@ trait Ord['a] {
 
         let index = operator_index(&db);
 
-        assert!(index.contains_key("=="), "Should find == operator");
-        assert!(index.contains_key("!="), "Should find != operator");
-        assert!(index.contains_key("<"), "Should find < operator");
-        assert!(index.contains_key(">"), "Should find > operator");
-        assert!(index.contains_key("<="), "Should find <= operator");
-        assert!(index.contains_key(">="), "Should find >= operator");
+        assert!(
+            index.contains_key(&("==".to_string(), OperatorArity::Infix)),
+            "Should find == operator"
+        );
+        assert!(
+            index.contains_key(&("!=".to_string(), OperatorArity::Infix)),
+            "Should find != operator"
+        );
+        assert!(
+            index.contains_key(&("<".to_string(), OperatorArity::Infix)),
+            "Should find < operator"
+        );
+        assert!(
+            index.contains_key(&(">".to_string(), OperatorArity::Infix)),
+            "Should find > operator"
+        );
+        assert!(
+            index.contains_key(&("<=".to_string(), OperatorArity::Infix)),
+            "Should find <= operator"
+        );
+        assert!(
+            index.contains_key(&(">=".to_string(), OperatorArity::Infix)),
+            "Should find >= operator"
+        );
     }
 
     #[test]
@@ -312,11 +343,11 @@ trait Display['a] {
         let index = operator_index(&db);
 
         assert!(
-            !index.contains_key("to_string"),
+            !index.contains_key(&("to_string".to_string(), OperatorArity::Prefix)),
             "Should not treat to_string as operator"
         );
         assert!(
-            !index.contains_key("format"),
+            !index.contains_key(&("format".to_string(), OperatorArity::Prefix)),
             "Should not treat format as operator"
         );
         assert!(index.is_empty(), "Index should be empty");
@@ -358,7 +389,7 @@ trait Display['a] {
         };
 
         core_lib.operators.insert(
-            "+".to_string(),
+            ("+".to_string(), OperatorArity::Infix),
             OperatorEntry {
                 trait_def: DefTarget::Library(add_trait_id),
                 method_def: DefTarget::Library(add_method_id),
@@ -371,8 +402,13 @@ trait Display['a] {
 
         let index = operator_index(&db);
 
-        assert!(index.contains_key("+"), "Should find library + operator");
-        let entry = index.get("+").unwrap();
+        assert!(
+            index.contains_key(&("+".to_string(), OperatorArity::Infix)),
+            "Should find library + operator"
+        );
+        let entry = index
+            .get(&("+".to_string(), OperatorArity::Infix))
+            .unwrap();
         assert!(
             matches!(entry.trait_def, DefTarget::Library(_)),
             "Should be from library"
@@ -403,7 +439,7 @@ trait Display['a] {
         };
 
         core_lib.operators.insert(
-            "+".to_string(),
+            ("+".to_string(), OperatorArity::Infix),
             OperatorEntry {
                 trait_def: DefTarget::Library(lib_trait_id),
                 method_def: DefTarget::Library(lib_method_id),
@@ -424,8 +460,10 @@ trait Add['a] {
 
         let index = operator_index(&db);
 
-        assert!(index.contains_key("+"));
-        let entry = index.get("+").unwrap();
+        assert!(index.contains_key(&("+".to_string(), OperatorArity::Infix)));
+        let entry = index
+            .get(&("+".to_string(), OperatorArity::Infix))
+            .unwrap();
         // Workspace operator should take precedence
         assert!(
             matches!(entry.trait_def, DefTarget::Workspace(_)),
@@ -453,8 +491,13 @@ trait Not['a] {
 
         let index = operator_index(&db);
 
-        assert!(index.contains_key("!"), "Should find ! operator");
-        let entry = index.get("!").unwrap();
+        assert!(
+            index.contains_key(&("!".to_string(), OperatorArity::Prefix)),
+            "Should find ! operator"
+        );
+        let entry = index
+            .get(&("!".to_string(), OperatorArity::Prefix))
+            .unwrap();
         assert_eq!(entry.arity, OperatorArity::Prefix);
     }
 

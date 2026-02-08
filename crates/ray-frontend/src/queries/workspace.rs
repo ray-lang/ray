@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io;
 
@@ -65,9 +65,9 @@ pub struct WorkspaceSnapshot {
     /// Entry point file for this compilation.
     pub entry: Option<FileId>,
     /// Module path -> module information.
-    pub modules: HashMap<ModulePath, ModuleInfo>,
+    pub modules: BTreeMap<ModulePath, ModuleInfo>,
     /// File ID -> file information.
-    pub files: HashMap<FileId, FileInfo>,
+    pub files: BTreeMap<FileId, FileInfo>,
     /// File path -> File ID (for reverse lookup).
     pub path_to_id: HashMap<FilePath, FileId>,
     /// Search paths for resolving imports (library directories).

@@ -725,8 +725,13 @@ impl<'a> GenCtx<'a> {
         operator_id: NodeId,
         args: &[&Node<Expr>],
     ) -> RayResult<GenResult> {
-        let resolved = call_resolution(self.db, operator_id)
-            .unwrap_or_else(|| panic!("missing call resolution for operator {:?}", operator_id));
+        let resolved = call_resolution(self.db, operator_id).unwrap_or_else(|| {
+            let source = self.srcmap.get_by_id(operator_id);
+            panic!(
+                "missing call resolution for operator {:?} ({:?})",
+                operator_id, source,
+            )
+        });
 
         let mut call_args: Vec<lir::Variable> = Vec::with_capacity(args.len());
         for arg in args {
@@ -2107,7 +2112,11 @@ impl LirGen<GenResult> for (&Path, &TyScheme) {
             return Ok(lir::Variable::Global(ctx.path(), global).into());
         }
 
-        panic!("unresolved value path `{}` (expected global)", full_name)
+        panic!(
+            "unresolved value path `{}` (expected global)\n  available globals: {:?}",
+            full_name,
+            ctx.global_idx.keys().collect::<Vec<_>>(),
+        )
     }
 }
 
@@ -2486,7 +2495,14 @@ impl LirGen<GenResult> for Node<Expr> {
                         let loc = ctx.ensure_local_for_binding(binding, debug_name, ty.clone());
                         lir::Value::new(lir::Variable::Local(loc))
                     } else {
-                        (&path, &ty).lir_gen(ctx)?
+                        let owner_path = def_path(ctx.db, DefTarget::Workspace(self.id.owner));
+                        let source = ctx.srcmap.get_by_id(self.id);
+                        let resolutions = name_resolutions(ctx.db, self.id.owner.file);
+                        let resolution = resolutions.get(&self.id);
+                        panic!(
+                            "unresolved Expr::Path `{}`\n  source: {:?}\n  in function: {:?}\n  node_id: {:?}\n  resolution: {:?}\n  ty: {}",
+                            path, source, owner_path, self.id, resolution, ty,
+                        );
                     }
                 }
             }
@@ -3605,6 +3621,12 @@ mod tests {
 
     use crate::lir::generate;
 
+    struct TestWorkspaceFile {
+        filepath: String,
+        module_path: String,
+        source: String,
+    }
+
     fn setup_test_workspace(src: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
@@ -3617,6 +3639,30 @@ mod tests {
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         FileSource::new(&db, file_id, src.to_string());
         (db, file_id)
+    }
+
+    fn setup_test_workspace_with_files(files: Vec<TestWorkspaceFile>) -> (Database, Vec<FileId>) {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+
+        let mut file_ids = vec![];
+        for (idx, file) in files.into_iter().enumerate() {
+            let file_id = workspace.add_file(
+                FilePath::from(file.filepath),
+                ModulePath::from(file.module_path),
+            );
+            if idx == 0 {
+                workspace.entry = Some(file_id);
+            }
+
+            FileSource::new(&db, file_id, file.source.to_string());
+            file_ids.push(file_id);
+        }
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        (db, file_ids)
     }
 
     #[test]
@@ -4985,6 +5031,119 @@ pub fn main() -> u32 {
         );
     }
 
+    /// Regression test: compound assignment desugaring (`i += 1` → `i = i + 1`)
+    /// must produce correct LIR. The desugared BinOp expression needs a valid
+    /// call_resolution so call_from_op can look up the operator implementation.
+    #[test]
+    fn generates_compound_assignment_in_while_loop() {
+        let src = r#"
+@intrinsic extern fn u32_add(a: u32, b: u32) -> u32
+@intrinsic extern fn u32_lt(a: u32, b: u32) -> bool
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+trait Lt['a, 'b] {
+    fn <(a: 'a, b: 'b) -> bool
+}
+
+impl Add[u32, u32, u32] {
+    fn +(lhs: u32, rhs: u32) -> u32 => u32_add(lhs, rhs)
+}
+
+impl Lt[u32, u32] {
+    fn <(a: u32, b: u32) -> bool => u32_lt(a, b)
+}
+
+pub fn main() -> u32 {
+    mut i = 0u32
+    while i < 10u32 {
+        i += 1u32
+    }
+    i
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false)
+            .expect("lir generation should succeed for compound assignment in while loop");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let _main_func = &prog.funcs[user_main_idx];
+    }
+
+    /// Regression test: compound assignment desugaring (`i += 1` → `i = i + 1`)
+    /// across multiple files. The operator trait is defined in one file and the
+    /// function using `+=` is in another file.
+    #[test]
+    fn generates_compound_assignment_cross_file() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+
+        let module_path = ModulePath::from("test");
+        let entry_file = workspace.add_file(FilePath::from("test/entry.ray"), module_path.clone());
+        let ops_file = workspace.add_file(FilePath::from("test/ops.ray"), module_path.clone());
+        workspace.entry = Some(entry_file);
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+
+        FileSource::new(
+            &db,
+            ops_file,
+            r#"
+@intrinsic extern fn u32_add(a: u32, b: u32) -> u32
+@intrinsic extern fn u32_lt(a: u32, b: u32) -> bool
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+trait Lt['a, 'b] {
+    fn <(a: 'a, b: 'b) -> bool
+}
+
+impl Add[u32, u32, u32] {
+    fn +(lhs: u32, rhs: u32) -> u32 => u32_add(lhs, rhs)
+}
+
+impl Lt[u32, u32] {
+    fn <(a: u32, b: u32) -> bool => u32_lt(a, b)
+}
+"#
+            .to_string(),
+        );
+
+        FileSource::new(
+            &db,
+            entry_file,
+            r#"
+pub fn main() -> u32 {
+    mut i = 0u32
+    while i < 10u32 {
+        i += 1u32
+    }
+    i
+}
+"#
+            .to_string(),
+        );
+
+        let prog = generate(&db, false)
+            .expect("lir generation should succeed for compound assignment across files");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let _main_func = &prog.funcs[user_main_idx];
+    }
+
     /// Regression test: when a workspace has multiple files, LIR generation
     /// must look up name resolutions using the node's owning file, not the
     /// entry file. Otherwise, function calls in non-entry files panic with
@@ -5037,5 +5196,32 @@ fn caller() -> u32 { helper() }
             "expected caller function to be generated\n--- LIR Program ---\n{}",
             prog
         );
+    }
+
+    #[test]
+    fn generates_generic_operator_call_from_bounds() {
+        let (db, _files) = setup_test_workspace_with_files(vec![
+            TestWorkspaceFile {
+                filepath: "mod.ray".to_string(),
+                module_path: "test".to_string(),
+                source: r#"
+                fn invert(a: 'a) -> 'a where Neg['a, 'a] {
+                    -a
+                }
+            "#
+                .to_string(),
+            },
+            TestWorkspaceFile {
+                filepath: "ops.ray".to_string(),
+                module_path: "test".to_string(),
+                source: r#"
+                trait Sub['a, 'b, 'c] { fn -(self: 'a, other: 'b) -> 'c }
+                trait Neg['a, 'b] { fn -(self: 'a) -> 'b }
+            "#
+                .to_string(),
+            },
+        ]);
+
+        let _prog = generate(&db, true).expect("lir generation should succeed");
     }
 }

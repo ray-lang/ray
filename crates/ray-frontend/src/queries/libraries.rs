@@ -95,7 +95,7 @@ impl LibraryData {
 }
 
 /// Operator index mapping operator symbols to their definitions.
-pub type OperatorIndex = HashMap<String, OperatorEntry>;
+pub type OperatorIndex = HashMap<(String, OperatorArity), OperatorEntry>;
 
 /// An operator entry from a library.
 ///
@@ -111,7 +111,7 @@ pub struct OperatorEntry {
 }
 
 /// Operator arity (unary vs binary).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum OperatorArity {
     /// Unary prefix operator: -x, !x
     Prefix,
