@@ -36,9 +36,10 @@ pub fn desugar_compound_assignment(
         }),
     })?;
 
-    // Find the current DefId so any new NodeIds are scoped properly
+    // Resume the DefId context so new NodeIds continue from where parsing left off
+    // (not reset to 1, which would collide with existing nodes).
     let def_id = assign.lhs.id.owner;
-    let _guard = NodeId::enter_def(def_id);
+    let _guard = NodeId::resume_def(def_id);
 
     let new_op = Node::new(InfixOp::Assign);
     let op_src = srcmap.get(op);
@@ -156,7 +157,7 @@ pub fn normalize_curly(
 
     param_map.sort_by_key(|(i, ..)| *i);
 
-    let _guard = NodeId::enter_def(def_id);
+    let _guard = NodeId::resume_def(def_id);
     let mut elements = vec![];
     for (_, n, el) in param_map.into_iter() {
         let src = srcmap.get(&el);
@@ -176,7 +177,7 @@ pub fn normalize_curly(
 /// This is used when we can't look up the struct definition to reorder fields,
 /// but still need to expand shorthand for downstream passes (e.g., type checking).
 pub fn expand_curly_shorthand(curly: &mut Curly, srcmap: &mut SourceMap, def_id: DefId) {
-    let _guard = NodeId::enter_def(def_id);
+    let _guard = NodeId::resume_def(def_id);
 
     for elem in &mut curly.elements {
         if let CurlyElement::Name(name) = &elem.value {

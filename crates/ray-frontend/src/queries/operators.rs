@@ -80,9 +80,7 @@ pub fn operator_index(db: &Database) -> OperatorIndex {
 
                         // Key by (symbol, arity) so that both infix `-` (Sub)
                         // and prefix `-` (Neg) can coexist.
-                        index
-                            .entry((method.name.clone(), arity))
-                            .or_insert(entry);
+                        index.entry((method.name.clone(), arity)).or_insert(entry);
                     }
                 }
             }
@@ -215,9 +213,7 @@ trait Add['a] {
             index.contains_key(&("+".to_string(), OperatorArity::Infix)),
             "Should find + operator"
         );
-        let entry = index
-            .get(&("+".to_string(), OperatorArity::Infix))
-            .unwrap();
+        let entry = index.get(&("+".to_string(), OperatorArity::Infix)).unwrap();
         assert!(
             matches!(entry.trait_def, DefTarget::Workspace(_)),
             "Should be from workspace"
@@ -406,9 +402,7 @@ trait Display['a] {
             index.contains_key(&("+".to_string(), OperatorArity::Infix)),
             "Should find library + operator"
         );
-        let entry = index
-            .get(&("+".to_string(), OperatorArity::Infix))
-            .unwrap();
+        let entry = index.get(&("+".to_string(), OperatorArity::Infix)).unwrap();
         assert!(
             matches!(entry.trait_def, DefTarget::Library(_)),
             "Should be from library"
@@ -461,9 +455,7 @@ trait Add['a] {
         let index = operator_index(&db);
 
         assert!(index.contains_key(&("+".to_string(), OperatorArity::Infix)));
-        let entry = index
-            .get(&("+".to_string(), OperatorArity::Infix))
-            .unwrap();
+        let entry = index.get(&("+".to_string(), OperatorArity::Infix)).unwrap();
         // Workspace operator should take precedence
         assert!(
             matches!(entry.trait_def, DefTarget::Workspace(_)),

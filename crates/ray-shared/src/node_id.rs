@@ -69,6 +69,26 @@ impl NodeId {
         NodeIdGuard { prev_def_id }
     }
 
+    /// Like `enter_def`, but does NOT reset the counter.
+    /// Use this when creating additional nodes for an already-parsed definition
+    /// (e.g. during AST desugaring/transformation passes).
+    pub fn resume_def(def_id: DefId) -> NodeIdGuard {
+        let prev_def_id = CURRENT_DEF_ID
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(def_id);
+
+        // Ensure counter exists but do NOT reset it
+        let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
+        counters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(def_id)
+            .or_insert(1);
+
+        NodeIdGuard { prev_def_id }
+    }
+
     pub fn enter_namespace(_path: &Path) -> NodeIdGuard {
         unreachable!()
         // let namespace = Self::namespace_from_path(path);
