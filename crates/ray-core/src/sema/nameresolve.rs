@@ -218,9 +218,11 @@ pub fn resolve_names_in_file(
                                 if let Some(module_exports) = (ctx.module_exports)(&current_module)
                                 {
                                     if let Some(target) = module_exports.get(segment_name) {
-                                        // Found an export - resolve this segment
-                                        ctx.resolutions
-                                            .insert(segment.id, Resolution::Def(target.clone()));
+                                        // Found an export - resolve both the segment and the
+                                        // parent expression so codegen can look up by expr.id
+                                        let res = Resolution::Def(target.clone());
+                                        ctx.resolutions.insert(segment.id, res.clone());
+                                        ctx.resolutions.insert(expr.id, res);
                                         // After finding an export, remaining segments are methods
                                         // (methods aren't in exports, so the next iteration would fail anyway)
                                         break;

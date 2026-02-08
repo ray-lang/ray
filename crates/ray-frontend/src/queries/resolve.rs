@@ -612,15 +612,16 @@ mod tests {
 
         let resolutions = name_resolutions(&db, main_file);
 
-        // Count Def resolutions - should be 2 (both qualified accesses resolve)
+        // Count Def resolutions - should be 4: for each of `utils::foo` and `utils::bar`,
+        // both the segment NodeId and the expression NodeId get resolved.
         let def_count = resolutions
             .values()
             .filter(|res| matches!(res, Resolution::Def(_)))
             .count();
 
-        // Both utils::foo and utils::bar should resolve
+        // Both utils::foo and utils::bar should resolve (segment + expr = 2 each)
         assert_eq!(
-            def_count, 2,
+            def_count, 4,
             "Plain import should allow qualified access to 'utils::foo' and 'utils::bar'"
         );
     }
@@ -746,7 +747,8 @@ mod tests {
 
         let resolutions = name_resolutions(&db, main_file);
 
-        // Should have a Def resolution for io::read() pointing to a Library target
+        // Should have Def resolutions for io::read() pointing to a Library target.
+        // Both the segment NodeId and the expression NodeId get resolved.
         let library_resolutions: Vec<_> = resolutions
             .values()
             .filter(|res| matches!(res, Resolution::Def(DefTarget::Library(_))))
@@ -754,8 +756,8 @@ mod tests {
 
         assert_eq!(
             library_resolutions.len(),
-            1,
-            "Should resolve qualified library import 'io::read' to DefTarget::Library"
+            2,
+            "Should resolve qualified library import 'io::read' to DefTarget::Library (segment + expr)"
         );
     }
 
@@ -1189,6 +1191,62 @@ mod tests {
         assert!(
             !library_resolutions.is_empty(),
             "Should resolve 'collections::hash_map::HashMap' (relative to imported submodule std::collections) to DefTarget::Library. Got resolutions: {:?}",
+            resolutions
+        );
+    }
+
+    #[test]
+    fn name_resolutions_explicit_submodule_import_from_parent() {
+        // A file in module `core` writes `import io` to access `core::io`.
+        // This tests whether the import system resolves bare child module names
+        // relative to the current module.
+        use crate::queries::imports::resolved_imports;
+
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let core_file =
+            workspace.add_file(FilePath::from("core/core.ray"), Path::from("core"));
+        let io_file =
+            workspace.add_file(FilePath::from("core/io/mod.ray"), Path::from("core::io"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        // core::io exports a `print` function
+        FileSource::new(&db, io_file, "fn print(v: int) {}".to_string());
+        // core.ray imports io and uses qualified access
+        FileSource::new(
+            &db,
+            core_file,
+            "import io\nfn main() { io::print(42) }".to_string(),
+        );
+
+        // First, verify the import itself resolves (not just the implicit fallback)
+        let imports = resolved_imports(&db, core_file);
+        let io_import = imports.get("io");
+        assert!(
+            io_import.is_some(),
+            "Should have an import entry for 'io'"
+        );
+        assert!(
+            io_import.unwrap().is_ok(),
+            "Import 'io' should resolve successfully to core::io, got: {:?}",
+            io_import
+        );
+
+        // Then verify the name resolution works end-to-end
+        let resolutions = name_resolutions(&db, core_file);
+
+        // io::print should resolve to a Def
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert!(
+            def_count > 0,
+            "Explicit `import io` from core module should resolve `io::print` to a Def. Got resolutions: {:?}",
             resolutions
         );
     }

@@ -249,6 +249,22 @@ fn resolve_module_path(
         return Ok(resolved);
     }
 
+    // Try relative child resolution: if the current module is `core` and the import
+    // is `io`, try resolving `core::io`.
+    if let Some(current) = current_module {
+        let mut child_segments = current.segments().to_vec();
+        child_segments.extend(resolved.segments().iter().cloned());
+        let child_path = ModulePath::new(child_segments);
+
+        if workspace.module_info(&child_path).is_some() {
+            return Ok(child_path);
+        }
+
+        if libraries.has_module(&child_path) {
+            return Ok(child_path);
+        }
+    }
+
     // Module not found
     Err(ImportError::UnknownModule(resolved.to_string()))
 }

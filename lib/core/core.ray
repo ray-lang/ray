@@ -1,5 +1,7 @@
 //! This is the core library for Ray
 
+import io
+
 extern fn malloc(size: uint) -> rawptr[u8]
 
 @inline
