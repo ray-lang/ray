@@ -18,9 +18,9 @@ use crate::ast::{PathBinding, PathBindingMut};
 use crate::{
     ast::{
         Assign, BinOp, Block, Boxed, Call, Cast, Closure, Curly, CurlyElement, Decl, Deref, Dict,
-        Dot, Expr, Extern, File, FnParam, For, Func, FuncSig, If, Impl, Index, List, Literal, Loop,
-        Module, Name, New, Node, Pattern, Range, Ref, ScopedAccess, Sequence, Set, Struct, Trait,
-        Tuple, UnaryOp, WalkItem, WalkScopeKind, While, walk_file,
+        Dot, Expr, Extern, File, FnParam, For, Func, FuncSig, If, Impl, Index, InfixOp, List,
+        Literal, Loop, Module, Name, New, Node, Pattern, Range, Ref, ScopedAccess, Sequence, Set,
+        Struct, Trait, Tuple, UnaryOp, WalkItem, WalkScopeKind, While, walk_file,
     },
     errors::{RayError, RayErrorKind, RayResult},
     sourcemap::SourceMap,
@@ -300,6 +300,25 @@ pub fn resolve_names_in_file(
                             &type_params,
                             &mut ctx,
                         );
+                    }
+                    Expr::Assign(assign) => {
+                        // Compound assignments (+=, -=, etc.) are mutations of existing
+                        // bindings, not new binding declarations. Resolve the LHS names
+                        // to their existing bindings here. The later WalkItem::Pattern
+                        // handler will skip these because bind_local is a no-op for
+                        // nodes that already have a resolution.
+                        if matches!(assign.op, InfixOp::AssignOp(_)) {
+                            for node in assign.lhs.paths() {
+                                let PathBinding { path, is_bindable: _ } = node.value;
+                                let Some(name) = path.name() else {
+                                    continue;
+                                };
+                                if let Some(local_id) = ctx.lookup_local(&name) {
+                                    ctx.resolutions
+                                        .insert(node.id, Resolution::Local(local_id));
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }

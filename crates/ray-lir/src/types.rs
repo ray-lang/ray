@@ -1037,7 +1037,7 @@ pub struct Program {
     pub externs: Vec<Extern>,
     pub extern_map: HashMap<Path, usize>,
     pub trait_member_set: HashSet<Path>,
-    pub poly_fn_map: HashMap<Path, usize>,
+    pub poly_fn_map: HashMap<Path, Vec<usize>>,
     /// Side table of available impls keyed by trait FQN.
     ///
     /// This is populated from the typing context and extended across linked
@@ -1111,16 +1111,23 @@ impl Program {
     }
 
     pub fn extend(&mut self, other: Program) {
-        for (p, i) in other.poly_fn_map {
-            // offset the function indices
-            self.poly_fn_map.insert(p, self.funcs.len() + i);
+        let func_offset = self.funcs.len();
+        for (p, indices) in other.poly_fn_map {
+            let offset_indices: Vec<usize> = indices.into_iter().map(|i| func_offset + i).collect();
+            self.poly_fn_map.entry(p).or_default().extend(offset_indices);
         }
 
         self.globals.extend(other.globals);
         self.data.extend(other.data);
         self.funcs.extend(other.funcs);
+
+        // Offset extern indices before extending
+        let extern_offset = self.externs.len();
         self.externs.extend(other.externs);
-        self.extern_map.extend(other.extern_map);
+        for (path, idx) in other.extern_map {
+            self.extern_map.insert(path, extern_offset + idx);
+        }
+
         self.trait_member_set.extend(other.trait_member_set);
         self.struct_types.extend(other.struct_types);
         for (trait_name, bucket) in other.impls_by_trait {

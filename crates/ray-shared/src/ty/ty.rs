@@ -531,9 +531,10 @@ impl Ty {
             Ty::Tuple(_) => str!("tuple"),
             Ty::Var(v) => v.path().name().unwrap(),
             Ty::Const(path) | Ty::Proj(path, _) => path.to_string(),
-            Ty::Array(..) | Ty::Ref(_) | Ty::RawPtr(_) | Ty::Func(_, _) => {
-                str!("")
-            }
+            Ty::Array(..) => str!("array"),
+            Ty::Ref(_) => str!("ref"),
+            Ty::RawPtr(_) => str!("rawptr"),
+            Ty::Func(_, _) => str!("func"),
         }
     }
 

@@ -47,6 +47,7 @@ use ray_frontend::{
         resolve::{name_resolutions, resolve_builtin},
         transform::file_ast,
         typecheck::{def_scheme, inferred_local_type, ty_of},
+        types::resolved_ty,
         workspace::WorkspaceSnapshot,
     },
     query::Database,
@@ -87,14 +88,27 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
     })?;
     let path = entry_info.module_path.to_path();
 
-    // Build combined SourceMap and collect all decls from all files
+    // Build combined SourceMap and collect all decls from all files.
+    // Extern declarations are collected separately so they can be registered
+    // before any function bodies are generated (which may reference them).
     let mut combined_srcmap = SourceMap::new();
+    let mut extern_decls: Vec<Node<Decl>> = Vec::new();
     let mut all_decls: Vec<Node<Decl>> = Vec::new();
 
     for file_id in workspace.all_file_ids() {
         let file_ast_result = file_ast(db, file_id);
         combined_srcmap.extend_with(file_ast_result.source_map.clone());
-        all_decls.extend(file_ast_result.ast.decls.clone());
+        for decl in file_ast_result.ast.decls.clone() {
+            match &decl.value {
+                Decl::FnSig(sig) if sig.modifiers.contains(&Modifier::Extern) => {
+                    extern_decls.push(decl);
+                }
+                Decl::Mutable(_, m) | Decl::Name(_, m) if m.contains(&Modifier::Extern) => {
+                    extern_decls.push(decl);
+                }
+                _ => all_decls.push(decl),
+            }
+        }
     }
 
     // Find user main function
@@ -103,6 +117,7 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
     // Create program and generate LIR for all decls
     let prog = Rc::new(RefCell::new(lir::Program::new(path)));
     let mut ctx = GenCtx::new(db, entry_file_id, Rc::clone(&prog), &combined_srcmap);
+    extern_decls.lir_gen(&mut ctx)?;
     all_decls.lir_gen(&mut ctx)?;
 
     let (module_main_path, user_main_base_path) = {
@@ -535,7 +550,7 @@ impl<'a> GenCtx<'a> {
         let idx = prog.funcs.len();
         if func.ty.is_polymorphic() {
             log::debug!("adding function to poly_fn_map: {}", func.name);
-            prog.poly_fn_map.insert(func.name.clone(), idx);
+            prog.poly_fn_map.entry(func.name.clone()).or_default().push(idx);
         }
 
         prog.funcs.push(func);
@@ -2184,13 +2199,18 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 // create a `string` struct
                 //  - raw_ptr: *u8
                 //  - len: usize
-                let loc = ctx.local(Ty::string().into());
+                let string_target = resolve_builtin(ctx.db, ctx.file_id, "string".to_string())
+                    .expect("string type not in scope");
+                let string_fqn =
+                    def_path(ctx.db, string_target).expect("missing def_path for string");
+                let string_ty = Ty::Const(string_fqn.clone());
+                let loc = ctx.local(string_ty.clone().into());
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(loc),
                     StructTy {
                         kind: NominalKind::Struct,
-                        path: "string".into(),
-                        ty: Ty::string().into(),
+                        path: string_fqn,
+                        ty: string_ty.into(),
                         fields: vec![
                             (str!("raw_ptr"), Ty::ref_of(Ty::u8()).into()),
                             (str!("len"), Ty::uint().into()),
@@ -2262,9 +2282,9 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
     }
 }
 
-impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
+impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme, Option<&Path>) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
-        let &(func, fn_ty) = self;
+        let &(func, fn_ty, base_override) = self;
 
         ctx.with_builder(Builder::new());
 
@@ -2313,19 +2333,21 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
         let builder = ctx.builder.take().unwrap();
         let (params, locals, blocks, symbols, cfg) = builder.done();
 
-        let base = &func.sig.path;
+        let base = base_override
+            .cloned()
+            .unwrap_or_else(|| func.sig.path.value.clone());
         log::debug!("base function path: {}", base);
         log::debug!("function type: {}", fn_ty);
         let name = if !fn_ty.is_polymorphic() {
-            mangle::fn_name(base, fn_ty)
+            mangle::fn_name(&base, fn_ty)
         } else {
-            base.value.clone()
+            base.clone()
         };
 
         log::debug!("function name: {}", name);
         let source_id = func.id;
         let mut func = lir::Func::new(
-            base.value.clone(),
+            base.clone(),
             fn_ty.clone(),
             func.sig.modifiers.clone(),
             symbols,
@@ -2343,15 +2365,14 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme) {
     }
 }
 
-impl LirGen<GenResult> for (&Call, &Source) {
+impl LirGen<GenResult> for (NodeId, &Call, &Source) {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
-        let &(call, src) = self;
+        let &(call_expr_id, call, src) = self;
         let callee_is_direct_fn = call
             .callee
             .path()
             .and_then(|_path| ctx.maybe_direct_function(call.callee.id))
             .is_some();
-
         let mut arg_exprs: Vec<(&Node<Expr>, TyScheme)> = Vec::new();
         let mut base: Option<Path> = if let Expr::Dot(dot) = &call.callee.value {
             let self_ty = ctx.ty_of(dot.lhs.id);
@@ -2372,12 +2393,21 @@ impl LirGen<GenResult> for (&Call, &Source) {
                 None
             }
         } else if callee_is_direct_fn {
-            call.callee.path().cloned()
+            // Use fully qualified path from name resolution when available,
+            // falling back to the raw AST path. Without this, same-module
+            // references (e.g. `writev_stdout` called from `print` in core::io)
+            // would remain unqualified and fail during monomorphization.
+            let resolutions = name_resolutions(ctx.db, call.callee.id.owner.file);
+            if let Some(Resolution::Def(target)) = resolutions.get(&call.callee.id) {
+                def_path(ctx.db, target.clone()).map(|ip| ip.to_path())
+            } else {
+                call.callee.path().cloned()
+            }
         } else {
             None
         };
 
-        let resolved = call_resolution(ctx.db, call.callee.id);
+        let resolved = call_resolution(ctx.db, call_expr_id);
         let fn_ty = if let Some(resolved) = &resolved {
             let target = resolved.target().expect("call resolution missing target");
             base = Some(
@@ -2414,10 +2444,8 @@ impl LirGen<GenResult> for (&Call, &Source) {
             .or_else(|| {
                 // If no call resolution, try to get the callee's definition scheme
                 let resolutions = name_resolutions(ctx.db, call.callee.id.owner.file);
-                if let Some(Resolution::Def(DefTarget::Workspace(def_id))) =
-                    resolutions.get(&call.callee.id)
-                {
-                    def_scheme(ctx.db, DefTarget::Workspace(*def_id))
+                if let Some(Resolution::Def(target)) = resolutions.get(&call.callee.id) {
+                    def_scheme(ctx.db, target.clone())
                 } else {
                     None
                 }
@@ -2437,7 +2465,6 @@ impl LirGen<GenResult> for (&Call, &Source) {
 
         let fn_name = if resolved.is_none() {
             base.clone().map(|base| {
-                log::debug!("base_name: {}", base);
                 if ctx.is_extern(&base) {
                     ctx.extern_link_name(&base).unwrap_or(base)
                 } else {
@@ -2571,13 +2598,16 @@ impl LirGen<GenResult> for Node<Expr> {
                     }
                     _ => lir::Atom::uptr(1),
                 };
-                lir::Malloc::new(new.ty.deref().deref().clone().into(), count)
+                let ty = resolved_ty(ctx.db, new.ty.id).unwrap_or_else(|| new.ty.clone_value());
+                lir::Malloc::new(ty.into(), count)
             }
             Expr::Cast(c) => {
                 let src = c.lhs.lir_gen(ctx)?;
                 let lhs_ty = ctx.ty_of(c.lhs.id);
                 let loc = ctx.get_or_set_local(src, lhs_ty).unwrap();
-                lir::Cast::new(lir::Variable::Local(loc), c.ty.deref().clone())
+                let rhs_ty = resolved_ty(ctx.db, c.ty.root_id().unwrap())
+                    .unwrap_or_else(|| c.ty.deref().clone());
+                lir::Cast::new(lir::Variable::Local(loc), rhs_ty)
             }
             Expr::Range(range) => {
                 // create a `range` struct
@@ -2587,11 +2617,15 @@ impl LirGen<GenResult> for Node<Expr> {
                 let loc = ctx.local(ty.clone());
                 let el_ty = ctx.ty_of(range.start.id);
 
+                let range_target = resolve_builtin(ctx.db, ctx.file_id, "range".to_string())
+                    .expect("range type not in scope");
+                let range_fqn = def_path(ctx.db, range_target).expect("missing def_path for range");
+
                 ctx.push(lir::Inst::StructInit(
                     lir::Variable::Local(loc),
                     StructTy {
                         kind: NominalKind::Struct,
-                        path: "range".into(),
+                        path: range_fqn,
                         ty: Ty::range(el_ty.mono().clone()).into(),
                         fields: vec![
                             ("start".to_string(), el_ty.clone()),
@@ -2928,7 +2962,7 @@ impl LirGen<GenResult> for Node<Expr> {
             }
             Expr::Call(call) => {
                 let src = ctx.srcmap.get(self);
-                (call, &src).lir_gen(ctx)?
+                (self.id, call, &src).lir_gen(ctx)?
             }
             Expr::BinOp(binop) => {
                 // Pass the expression node's ID (self.id), not the operator token's ID (binop.op.id),
@@ -3386,7 +3420,12 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Variable::Local(set_loc).into()
             }
             Expr::Tuple(tuple) => ctx.emit_tuple(&ty, &tuple.seq.items)?,
-            Expr::Type(ty) => lir::Value::Type(ty.clone_value()),
+            Expr::Type(ty) => {
+                let scheme = resolved_ty(ctx.db, ty.root_id().unwrap())
+                    .map(|ty| TyScheme::from_mono(ty))
+                    .unwrap_or_else(|| ty.clone_value());
+                lir::Value::Type(scheme)
+            }
             Expr::UnaryOp(unop) => {
                 // Pass the expression node's ID (self.id), not the operator token's ID (unop.op.id),
                 // because method_resolutions is keyed by the UnaryOp expression node.
@@ -3493,7 +3532,7 @@ impl LirGen<GenResult> for Node<Decl> {
                 let node = Node::with_id(self.id, func);
                 let ty = def_scheme(ctx.db, DefTarget::Workspace(self.id.owner))
                     .unwrap_or_else(|| ctx.raw_ty_of(self.id));
-                return (&node, &ty).lir_gen(ctx);
+                return (&node, &ty, None).lir_gen(ctx);
             }
             Decl::Mutable(name, modifiers) | Decl::Name(name, modifiers) => {
                 if modifiers.contains(&Modifier::Extern) {
@@ -3536,6 +3575,21 @@ impl LirGen<GenResult> for Node<Decl> {
                     }
                 }
 
+                // For trait impls, compute the trait-qualified base path
+                // (e.g., core::ToStr) so methods are named core::ToStr::to_str.
+                // For inherent impls (impl object), use None to keep the AST path.
+                let trait_base: Option<Path> = if !imp.is_object {
+                    let impl_target = DefTarget::Workspace(self.id.owner);
+                    impl_def(ctx.db, impl_target)
+                        .as_ref()
+                        .as_ref()
+                        .and_then(|def| def.trait_ty.as_ref())
+                        .and_then(|trait_ty| trait_ty.item_path())
+                        .map(|ip| ip.to_path())
+                } else {
+                    None
+                };
+
                 if let Some(funcs) = &imp.funcs {
                     for decl in funcs {
                         let Decl::Func(func) = &decl.value else {
@@ -3547,12 +3601,19 @@ impl LirGen<GenResult> for Node<Decl> {
                         };
                         let ty = def_scheme(ctx.db, DefTarget::Workspace(decl.id.owner))
                             .unwrap_or_else(|| ctx.ty_of(decl.id));
+
+                        // Build trait-qualified method path: trait_path::method_name
+                        let base_override = trait_base.as_ref().and_then(|trait_path| {
+                            func.sig.path.name().map(|name| trait_path.append(name))
+                        });
+
                         log::debug!(
-                            "[lir_gen] generate impl func: ty = {}, sig = {:?}",
+                            "[lir_gen] generate impl func: ty = {}, base_override = {:?}, sig = {:?}",
                             ty,
+                            base_override,
                             func.sig
                         );
-                        (&func_node, &ty).lir_gen(ctx)?;
+                        (&func_node, &ty, base_override.as_ref()).lir_gen(ctx)?;
                     }
                 }
             }
@@ -4388,7 +4449,12 @@ pub fn main() -> f64 {
     #[test]
     fn generates_string_literal() {
         let src = r#"
-pub fn main() -> *u8 {
+struct string {
+    raw_ptr: *u8
+    len: uint
+}
+
+pub fn main() -> string {
     "hello"
 }
 "#;
@@ -4443,6 +4509,12 @@ pub fn main() -> (u32, bool) {
         // Test the Expr::Range code path using arrow function syntax.
         // Range expressions use `..<` for exclusive ranges and `..=` for inclusive.
         let src = r#"
+struct range['a] {
+    start: 'a
+    end: 'a
+    inclusive: bool
+}
+
 fn make_range(a: u32, b: u32) -> range[u32] => a..<b
 
 pub fn main() -> bool {
@@ -4877,7 +4949,6 @@ pub fn main() -> Widget {
 
     #[test]
     fn generates_new_expression() {
-        // Note: `new` requires parentheses around the type: new(Type)
         let src = r#"
 pub fn main() -> *u32 {
     new(u32)
@@ -4899,6 +4970,50 @@ pub fn main() -> *u32 {
             for inst in block.iter() {
                 if matches!(inst, Inst::SetLocal(_, Value::Malloc(_))) {
                     saw_malloc = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_malloc,
+            "expected `new` to generate Malloc\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_resolved_ty_in_new_expression() {
+        let src = r#"
+struct A {}
+
+pub fn main() -> *A {
+    new(A)
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Check for Malloc instruction
+        let mut saw_malloc = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::Malloc(malloc)) = inst {
+                    saw_malloc = true;
+                    let path = malloc.ty.mono().item_path();
+                    assert!(
+                        path.is_some(),
+                        "expected path for malloc type: {:?}",
+                        malloc
+                    );
+                    assert_eq!(path.unwrap().to_string(), "test::A".to_string());
+                    break;
                 }
             }
         }

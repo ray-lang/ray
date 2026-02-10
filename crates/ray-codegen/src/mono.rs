@@ -73,8 +73,7 @@ pub struct Monomorphizer<'p> {
     program: Rc<RefCell<&'p mut lir::Program>>,
     extern_set: HashSet<Path>,
     name_set: HashSet<Path>,
-    poly_fn_map: HashMap<Path, lir::Func>, // polymorphic functions
-    poly_groups: HashMap<Path, Vec<Path>>, // names-only -> candidate poly function names
+    poly_fn_map: HashMap<Path, Vec<lir::Func>>, // polymorphic functions (multiple impls per key)
     impls_by_trait: BTreeMap<ItemPath, Vec<ImplTy>>,
     trait_member_set: HashSet<Path>,
     poly_mono_fn_idx: HashMap<Path, Vec<(Path, Ty)>>, // a mapping of polymorphic functions to monomorphizations
@@ -84,17 +83,17 @@ pub struct Monomorphizer<'p> {
 impl<'p> Monomorphizer<'p> {
     pub fn new(program: &'p mut lir::Program) -> Monomorphizer<'p> {
         // TODO: don't clone these into the Monomorphizer (reference them outside)
-        let poly_fn_map: HashMap<Path, lir::Func> = program
+        let poly_fn_map: HashMap<Path, Vec<lir::Func>> = program
             .poly_fn_map
             .iter()
-            .map(|(n, &i)| (n.clone(), program.funcs[i].clone()))
+            .map(|(name, indices)| {
+                let funcs: Vec<lir::Func> = indices
+                    .iter()
+                    .map(|&i| program.funcs[i].clone())
+                    .collect();
+                (name.clone(), funcs)
+            })
             .collect();
-
-        let mut poly_groups: HashMap<Path, Vec<Path>> = HashMap::new();
-        for name in poly_fn_map.keys() {
-            let key = name.with_names_only();
-            poly_groups.entry(key).or_default().push(name.clone());
-        }
 
         let name_set = program.funcs.iter().map(|f| f.name.clone()).collect();
         log::debug!("[monomorphize] name set: {:#?}", name_set);
@@ -110,7 +109,6 @@ impl<'p> Monomorphizer<'p> {
         Monomorphizer {
             program: Rc::new(RefCell::new(program)),
             poly_fn_map,
-            poly_groups,
             name_set,
             extern_set,
             impls_by_trait,
@@ -348,6 +346,34 @@ impl<'p> Monomorphizer<'p> {
         return false;
     }
 
+    /// Resolve a trait method call to its concrete impl function name.
+    ///
+    /// When a polymorphic function calls a trait method (e.g., `core::Neq::!=`),
+    /// the concrete implementation is named by the impl path (e.g., `core::uint::!=`).
+    /// This method bridges that naming gap by searching `impls_by_trait` for a
+    /// matching impl field and checking if the mangled name exists in `name_set`.
+    fn resolve_trait_method_name(
+        &self,
+        poly_fqn: &Path,
+        callee_ty: &TyScheme,
+    ) -> Option<Path> {
+        let trait_path = ItemPath::from(&poly_fqn.parent());
+        let method_name = poly_fqn.name()?;
+        let impls = self.impls_by_trait.get(&trait_path)?;
+        for impl_ty in impls {
+            for field in &impl_ty.fields {
+                if field.path.item_name() != Some(&method_name) {
+                    continue;
+                }
+                let candidate = mangle::fn_name(&field.path.to_path(), callee_ty);
+                if self.name_set.contains(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
     fn monomorphize_call(
         &mut self,
         call: &mut lir::Call,
@@ -441,6 +467,30 @@ impl<'p> Monomorphizer<'p> {
             return (poly_name, mono_name, callee_ty.clone(), false);
         }
 
+        // Fast path: trait member calls where the concrete impl already exists.
+        // Polymorphic functions reference trait methods (e.g., `core::Neq::!=`) but
+        // the actual functions are named by their impl path (e.g., `core::uint::!=`).
+        // Resolve the trait method name to the concrete impl name via impls_by_trait.
+        let trait_key = poly_fqn.with_names_only();
+        if self.trait_member_set.contains(&trait_key) {
+            if let Some(resolved_mono) = self.resolve_trait_method_name(&poly_fqn, callee_ty) {
+                let poly_name = mangle::fn_name(&poly_fqn.with_names_only(), poly_ty);
+                log::debug!(
+                    "[monomorphize] fast-path trait member: poly_name={} mono_name={}",
+                    poly_name,
+                    resolved_mono
+                );
+                self.mono_poly_fn_idx
+                    .insert(poly_name.clone(), resolved_mono.clone());
+                self.add_mono_fn_mapping(
+                    &poly_name,
+                    &resolved_mono,
+                    callee_ty.clone().into_mono(),
+                );
+                return (poly_name, resolved_mono, callee_ty.clone(), false);
+            }
+        }
+
         // check that the callee function type is monomorphic
         if callee_ty.is_polymorphic() {
             log::debug!(
@@ -482,53 +532,72 @@ impl<'p> Monomorphizer<'p> {
         let poly_base_name = poly_fqn.clone();
         let poly_name = mangle::fn_name(&poly_base_name, poly_ty);
 
-        // pick a concrete polymorphic implementation matching the callee type
+        // Pick a concrete polymorphic implementation matching the callee type.
+        // Collect candidate keys: start with poly_fqn, and if it's a trait member,
+        // also try the impl field paths from impls_by_trait.
         let mut subst = Subst::new();
-        let mut poly_impl_key: Option<Path> = None;
-        if let Some(cands) = self.poly_groups.get(&poly_fqn) {
-            for cand_key in cands {
-                if let Some(cand_fn) = self.poly_fn_map.get(cand_key) {
-                    let Some(s) = match_scheme_vars(&cand_fn.ty, callee_ty) else {
-                        continue;
-                    };
+        let mut selected_fn: Option<lir::Func> = None;
 
-                    if let Some(unsatisfied_predicates) =
-                        self.candidate_is_applicable(&cand_fn.ty, &s)
-                    {
-                        log::debug!(
-                            "[monomorphize] rejected impl {} for {} due to unsatisfied qualifiers: [{}]",
-                            cand_key,
-                            poly_fqn,
-                            join(&unsatisfied_predicates, ", ")
-                        );
-                        continue;
+        let mut candidate_keys = vec![poly_fqn.clone()];
+        let trait_key = poly_fqn.with_names_only();
+        if self.trait_member_set.contains(&trait_key) {
+            if let Some(method_name) = poly_fqn.name() {
+                let trait_path = ItemPath::from(&poly_fqn.parent());
+                if let Some(impls) = self.impls_by_trait.get(&trait_path) {
+                    for impl_ty in impls {
+                        for field in &impl_ty.fields {
+                            if field.path.item_name() == Some(&method_name) {
+                                let impl_method_path = field.path.to_path();
+                                if impl_method_path != poly_fqn {
+                                    candidate_keys.push(impl_method_path);
+                                }
+                            }
+                        }
                     }
-
-                    log::debug!("[monomorphize] selected impl {} for {}", cand_key, poly_fqn);
-                    subst = s;
-                    poly_impl_key = Some(cand_key.clone());
-                    break;
                 }
             }
         }
 
-        if poly_impl_key.is_none() {
+        for cand_key in &candidate_keys {
+            let Some(cand_fns) = self.poly_fn_map.get(cand_key) else {
+                continue;
+            };
+            for cand_fn in cand_fns {
+                let Some(s) = match_scheme_vars(&cand_fn.ty, callee_ty) else {
+                    continue;
+                };
+
+                if let Some(unsatisfied_predicates) =
+                    self.candidate_is_applicable(&cand_fn.ty, &s)
+                {
+                    log::debug!(
+                        "[monomorphize] rejected impl {} for {} due to unsatisfied qualifiers: [{}]",
+                        cand_key,
+                        poly_fqn,
+                        join(&unsatisfied_predicates, ", ")
+                    );
+                    continue;
+                }
+
+                log::debug!("[monomorphize] selected impl {} for {}", cand_fn.name, poly_fqn);
+                subst = s;
+                selected_fn = Some(cand_fn.clone());
+                break;
+            }
+            if selected_fn.is_some() {
+                break;
+            }
+        }
+
+        if selected_fn.is_none() {
             let s = match_scheme_vars(poly_ty, callee_ty).unwrap_or_default();
             log::debug!(
-                "[monomorphize] fallback impl for {} using subst = {:#?}",
+                "[monomorphize] fallback for {} using subst = {:#?}",
                 poly_fqn,
                 s
             );
             subst = s;
-            poly_impl_key = Some(poly_fqn.clone());
         }
-
-        let poly_impl_key = poly_impl_key.unwrap();
-        log::debug!(
-            "[monomorphize] using poly impl {} for {}",
-            poly_impl_key,
-            poly_fqn
-        );
 
         // get the monomorphized name using the callee type
         log::debug!("[monomorphize] subst = {:#?}", subst);
@@ -542,33 +611,12 @@ impl<'p> Monomorphizer<'p> {
         let (resolved_poly_name, resolved_mono_name) = if self.name_set.contains(&mono_name) {
             (poly_base_name, mono_name.clone())
         } else {
-            let mut mono_fn = match self.poly_fn_map.get(&poly_impl_key).cloned() {
+            let mut mono_fn = match selected_fn {
                 Some(f) => f,
                 None => {
-                    let trait_member_key = poly_impl_key.with_names_only();
-                    let is_trait_member = self.trait_member_set.contains(&trait_member_key);
-                    log::debug!(
-                        "[monomorphize] trait_member_key = {}, is_trait_member = {}",
-                        trait_member_key,
-                        is_trait_member
-                    );
-                    if is_trait_member {
-                        let subst = match_scheme_vars(poly_ty, callee_ty).unwrap_or_default();
-                        let mut qs = poly_ty.qualifiers.clone();
-                        qs.apply_subst(&subst);
-                        for q in qs {
-                            let Predicate::Class(cp) = q else {
-                                continue;
-                            };
-                            if cp.is_ground() {
-                                panic!("no implementation for predicate {}", cp);
-                            }
-                        }
-                    }
-
                     panic!(
                         "polymorphic function `{}` is undefined. here are the defined functions:\n{}",
-                        poly_impl_key,
+                        poly_fqn,
                         self.poly_fn_map
                             .keys()
                             .map(|a| format!("  {}", a))

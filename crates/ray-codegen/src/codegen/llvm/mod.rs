@@ -1548,6 +1548,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
                     .intrinsic_kind
                     .expect("intrinsic extern missing kind metadata");
                 ctx.intrinsics.insert(ext.name.clone(), kind);
+                log::debug!("insert intrinsic: {} (kind = {:?})", ext.name, kind);
                 continue;
             }
 

@@ -610,9 +610,10 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         //       its well-formedness.
         Expr::Cast(cast) => {
             let expr = lower_expr(ctx, &cast.lhs);
-            let ty = ctx
-                .env
-                .resolved_expr_ty(node.id)
+            let ty = cast
+                .ty
+                .root_id()
+                .and_then(|id| ctx.env.resolved_expr_ty(id))
                 .unwrap_or_else(|| cast.ty.value().clone());
             ctx.record_expr(node, ExprKind::Cast { expr, ty })
         }
@@ -954,9 +955,9 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 // Resolve the type via the query system to get fully qualified paths
                 // AND map type variables to schema vars. This is needed for impl/trait
                 // method lookup during constraint solving.
-                let lhs_ty = ctx
-                    .env
-                    .resolved_expr_ty(scoped_access.lhs.id)
+                let lhs_ty = ty
+                    .root_id()
+                    .and_then(|id| ctx.env.resolved_expr_ty(id))
                     .unwrap_or_else(|| ty.value().mono().clone());
 
                 // Record the scoped access with the resolved type info. Method resolution
@@ -991,11 +992,11 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             }
             ctx.record_expr(node, ExprKind::Tuple { elems })
         }
-        Expr::Type(ty) => {
-            let ty = ctx
-                .env
-                .resolved_expr_ty(node.id)
-                .unwrap_or_else(|| ty.value().mono().clone());
+        Expr::Type(ty_scheme) => {
+            let ty = ty_scheme
+                .root_id()
+                .and_then(|id| ctx.env.resolved_expr_ty(id))
+                .unwrap_or_else(|| ty_scheme.value().mono().clone());
             ctx.record_expr(node, ExprKind::Type { ty })
         }
         Expr::TypeAnnotated(value, _) => {

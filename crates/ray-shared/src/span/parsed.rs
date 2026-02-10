@@ -130,6 +130,12 @@ impl<T> Parsed<T> {
         self.synthetic_ids = ids;
     }
 
+    /// Returns the root NodeId (synthetic_ids[0]) for this parsed node.
+    /// This is the NodeId of the top-level type in the type tree.
+    pub fn root_id(&self) -> Option<NodeId> {
+        self.synthetic_ids.first().copied()
+    }
+
     pub fn take(self) -> (T, Source, Vec<NodeId>) {
         (self.value, self.src, self.synthetic_ids)
     }

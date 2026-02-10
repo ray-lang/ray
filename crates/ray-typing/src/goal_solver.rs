@@ -843,10 +843,12 @@ fn solve_resolve_member(
                             impl_target: method.target.clone(),
                             poly_scheme: method.scheme.clone(),
                         },
-                        ChosenMethod::Trait(method) => MethodResolutionInfo {
-                            trait_target: method.field.target.clone(),
-                            impl_target: method.impl_target.clone(),
-                            poly_scheme: method.field.ty.clone(),
+                        ChosenMethod::Trait(method) => {
+                            MethodResolutionInfo {
+                                trait_target: method.field.target.clone(),
+                                impl_target: method.impl_target.clone(),
+                                poly_scheme: method.field.ty.clone(),
+                            }
                         },
                     };
 

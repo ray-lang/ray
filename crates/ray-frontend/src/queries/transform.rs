@@ -29,9 +29,10 @@ use ray_typing::types::TyScheme;
 
 use crate::{
     queries::{
-        defs::def_header,
+        defs::{def_header, def_path},
         parse::parse_file,
         resolve::{file_scope, name_resolutions},
+        types::apply_type_resolutions,
     },
     query::{Database, Query},
 };
@@ -121,7 +122,7 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
         }
         Decl::Impl(im) => {
             // Annotate self parameters with the implementing type
-            annotate_impl_self_params(im, ctx.source_map);
+            annotate_impl_self_params(im, ctx.source_map, ctx.resolutions, ctx.db);
 
             // Transform functions in impl blocks
             if let Some(funcs) = &mut im.funcs {
@@ -522,12 +523,22 @@ fn annotate_trait_self_params(tr: &mut Trait, srcmap: &mut SourceMap) {
 ///
 /// For `impl object T`, the self type is `T`.
 /// For `impl Trait[T, ...]`, the self type is the first type argument `T`.
-fn annotate_impl_self_params(im: &mut Impl, srcmap: &mut SourceMap) {
-    let impl_ty = im.ty.clone_value();
+fn annotate_impl_self_params(
+    im: &mut Impl,
+    srcmap: &mut SourceMap,
+    resolutions: &HashMap<NodeId, Resolution>,
+    db: &Database,
+) {
+    // Resolve the impl type using name resolutions so that types like
+    // `string` become fully-qualified `core::string`.
+    let get_item_path =
+        |target: &DefTarget| def_path(db, target.clone()).expect("def should have a path");
+    let resolved_impl_ty =
+        apply_type_resolutions(&im.ty, resolutions, &HashMap::new(), get_item_path);
     let self_ty: Ty = if im.is_object {
-        impl_ty
+        resolved_impl_ty
     } else {
-        match impl_ty.type_argument_at(0) {
+        match resolved_impl_ty.type_argument_at(0) {
             Some(ty) => ty.clone(),
             None => return,
         }

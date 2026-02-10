@@ -459,9 +459,11 @@ pub fn get_parent_var_map(db: &Database, def_id: DefId) -> HashMap<TypeParamId, 
 
 /// Collect all expression-level type references from the AST.
 ///
-/// Maps expression NodeIds to their embedded `Parsed<Ty>` for expressions
-/// that contain type references: `Cast` (e.g., `x as rawptr['k]`), `New`
-/// (e.g., `new(T, n)`), and `Type` (e.g., `sizeof('a)`).
+/// Maps type NodeIds to their `Parsed<Ty>` for expressions that contain
+/// type references: `Cast` (e.g., `x as rawptr['k]`), `New` (e.g., `new(T, n)`),
+/// and `Type` (e.g., `sizeof('a)`).
+///
+/// The key is the NodeId of the type itself (from Node wrapper or root synthetic ID).
 #[query]
 pub fn expr_type_refs(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, Parsed<Ty>>> {
     let file_result = file_ast(db, file_id);
@@ -470,13 +472,21 @@ pub fn expr_type_refs(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, Par
         if let WalkItem::Expr(node) = item {
             match &node.value {
                 Expr::Cast(cast) => {
-                    map.insert(node.id, cast.ty.clone());
+                    // Cast.ty is Parsed<Ty>, use root synthetic ID
+                    if let Some(root_id) = cast.ty.root_id() {
+                        map.insert(root_id, cast.ty.clone());
+                    }
                 }
                 Expr::New(new) => {
-                    map.insert(node.id, new.ty.value.clone());
+                    // New.ty is Node<Parsed<Ty>>, use Node's ID
+                    map.insert(new.ty.id, new.ty.value.clone());
                 }
                 Expr::Type(scheme) => {
-                    map.insert(node.id, scheme.clone().map(|s| s.ty));
+                    // scheme is Parsed<TyScheme>, extract Ty while preserving Source/synthetic_ids
+                    let parsed_ty = scheme.clone().map(|s| s.ty);
+                    if let Some(root_id) = parsed_ty.root_id() {
+                        map.insert(root_id, parsed_ty);
+                    }
                 }
                 _ => {}
             }
@@ -487,7 +497,7 @@ pub fn expr_type_refs(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, Par
 
 /// Resolve an expression-level type reference.
 ///
-/// Given the NodeId of an expression that contains a type (Cast, New, Type),
+/// Given the NodeId of a type reference (from Cast.ty, New.ty, or Type.ty),
 /// applies name resolutions and type parameter mappings to produce a fully
 /// resolved type.
 #[query]
