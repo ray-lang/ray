@@ -5074,9 +5074,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: expected_type_at query
 
-- [ ] Define `expected_type_at(FileId, Position)` query
-- [ ] Return expected type at cursor (for smart completion)
-- [ ] **Validate**: Unit test
+- [x] Define `expected_type_at(FileId, Position)` query
+- [x] Return expected type at cursor (for smart completion)
+- [x] **Validate**: Unit test
 
 ##### Step 4: completion_context query
 
