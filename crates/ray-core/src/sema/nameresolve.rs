@@ -309,13 +309,15 @@ pub fn resolve_names_in_file(
                         // nodes that already have a resolution.
                         if matches!(assign.op, InfixOp::AssignOp(_)) {
                             for node in assign.lhs.paths() {
-                                let PathBinding { path, is_bindable: _ } = node.value;
+                                let PathBinding {
+                                    path,
+                                    is_bindable: _,
+                                } = node.value;
                                 let Some(name) = path.name() else {
                                     continue;
                                 };
                                 if let Some(local_id) = ctx.lookup_local(&name) {
-                                    ctx.resolutions
-                                        .insert(node.id, Resolution::Local(local_id));
+                                    ctx.resolutions.insert(node.id, Resolution::Local(local_id));
                                 }
                             }
                         }

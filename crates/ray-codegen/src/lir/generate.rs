@@ -550,7 +550,10 @@ impl<'a> GenCtx<'a> {
         let idx = prog.funcs.len();
         if func.ty.is_polymorphic() {
             log::debug!("adding function to poly_fn_map: {}", func.name);
-            prog.poly_fn_map.entry(func.name.clone()).or_default().push(idx);
+            prog.poly_fn_map
+                .entry(func.name.clone())
+                .or_default()
+                .push(idx);
         }
 
         prog.funcs.push(func);

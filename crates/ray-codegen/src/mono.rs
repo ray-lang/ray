@@ -87,10 +87,8 @@ impl<'p> Monomorphizer<'p> {
             .poly_fn_map
             .iter()
             .map(|(name, indices)| {
-                let funcs: Vec<lir::Func> = indices
-                    .iter()
-                    .map(|&i| program.funcs[i].clone())
-                    .collect();
+                let funcs: Vec<lir::Func> =
+                    indices.iter().map(|&i| program.funcs[i].clone()).collect();
                 (name.clone(), funcs)
             })
             .collect();
@@ -352,11 +350,7 @@ impl<'p> Monomorphizer<'p> {
     /// the concrete implementation is named by the impl path (e.g., `core::uint::!=`).
     /// This method bridges that naming gap by searching `impls_by_trait` for a
     /// matching impl field and checking if the mangled name exists in `name_set`.
-    fn resolve_trait_method_name(
-        &self,
-        poly_fqn: &Path,
-        callee_ty: &TyScheme,
-    ) -> Option<Path> {
+    fn resolve_trait_method_name(&self, poly_fqn: &Path, callee_ty: &TyScheme) -> Option<Path> {
         let trait_path = ItemPath::from(&poly_fqn.parent());
         let method_name = poly_fqn.name()?;
         let impls = self.impls_by_trait.get(&trait_path)?;
@@ -482,11 +476,7 @@ impl<'p> Monomorphizer<'p> {
                 );
                 self.mono_poly_fn_idx
                     .insert(poly_name.clone(), resolved_mono.clone());
-                self.add_mono_fn_mapping(
-                    &poly_name,
-                    &resolved_mono,
-                    callee_ty.clone().into_mono(),
-                );
+                self.add_mono_fn_mapping(&poly_name, &resolved_mono, callee_ty.clone().into_mono());
                 return (poly_name, resolved_mono, callee_ty.clone(), false);
             }
         }
@@ -567,8 +557,7 @@ impl<'p> Monomorphizer<'p> {
                     continue;
                 };
 
-                if let Some(unsatisfied_predicates) =
-                    self.candidate_is_applicable(&cand_fn.ty, &s)
+                if let Some(unsatisfied_predicates) = self.candidate_is_applicable(&cand_fn.ty, &s)
                 {
                     log::debug!(
                         "[monomorphize] rejected impl {} for {} due to unsatisfied qualifiers: [{}]",
@@ -579,7 +568,11 @@ impl<'p> Monomorphizer<'p> {
                     continue;
                 }
 
-                log::debug!("[monomorphize] selected impl {} for {}", cand_fn.name, poly_fqn);
+                log::debug!(
+                    "[monomorphize] selected impl {} for {}",
+                    cand_fn.name,
+                    poly_fqn
+                );
                 subst = s;
                 selected_fn = Some(cand_fn.clone());
                 break;

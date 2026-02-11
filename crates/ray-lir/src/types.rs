@@ -1114,7 +1114,10 @@ impl Program {
         let func_offset = self.funcs.len();
         for (p, indices) in other.poly_fn_map {
             let offset_indices: Vec<usize> = indices.into_iter().map(|i| func_offset + i).collect();
-            self.poly_fn_map.entry(p).or_default().extend(offset_indices);
+            self.poly_fn_map
+                .entry(p)
+                .or_default()
+                .extend(offset_indices);
         }
 
         self.globals.extend(other.globals);
