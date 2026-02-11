@@ -324,6 +324,23 @@ impl TokenKind {
         }
     }
 
+    /// Returns true if this keyword can be used as a name in member positions
+    /// (e.g. method names, struct fields, dot access, scoped access).
+    pub fn is_keyword_name(&self) -> bool {
+        matches!(
+            self,
+            TokenKind::Default
+                | TokenKind::Is
+                | TokenKind::As
+                | TokenKind::Where
+                | TokenKind::With
+                | TokenKind::Object
+                | TokenKind::In
+                | TokenKind::Bx
+                | TokenKind::New
+        )
+    }
+
     pub fn similar_to(&self, other: &TokenKind) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }

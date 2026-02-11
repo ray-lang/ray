@@ -93,10 +93,13 @@ impl Parser<'_> {
         first: Node<String>,
         ctx: &ParseContext,
     ) -> ParseResult<Vec<Node<String>>> {
-        // This assumes that the double colon after `first` has been consumed
+        // This assumes that the double colon after `first` has been consumed.
+        // Allow keyword names in continuation segments (e.g. `Foo::new`).
+        let mut member_ctx = ctx.clone();
+        member_ctx.restrictions |= Restrictions::ALLOW_KEYWORD_NAMES;
         let mut segments = vec![first];
         loop {
-            match self.expect_id(ctx) {
+            match self.expect_id(&member_ctx) {
                 Ok((id, sp)) => {
                     let segment_node = self.mk_node(id, sp, ctx.path.clone());
                     segments.push(segment_node);

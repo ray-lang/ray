@@ -507,7 +507,7 @@ fn resolve_struct_type_refs(def_id: DefId, struct_decl: &Struct, ctx: &mut Resol
 
 /// Resolve type references in a trait definition.
 ///
-/// For `trait Eq['a] extends Hash['a] { fn eq(self, other: 'a): bool }`, this resolves:
+/// For `trait Eq['a] extends Hash['a] { fn eq(self, other: 'a) -> bool }`, this resolves:
 /// - Super trait `Hash['a]` type references
 /// - Method signature type references (parameters, return types, qualifiers)
 ///
@@ -2565,7 +2565,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_trait_method_signature() {
-        // trait Eq['a] { fn eq(self, other: 'a): bool }
+        // trait Eq['a] { fn eq(self, other: 'a) -> bool }
         // 'a in method signature should resolve to trait's TypeParam
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -2635,7 +2635,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_trait_method_return_type() {
-        // trait ToStr['a] { fn to_str(self): String }
+        // trait ToStr['a] { fn to_str(self) -> String }
         // String should resolve to export
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -2698,7 +2698,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_trait_no_type_params() {
-        // trait Empty { fn foo(self): Bar }
+        // trait Empty { fn foo(self) -> Bar }
         // Trait without type parameters should still resolve method types
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -2884,7 +2884,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_impl_method_signature() {
-        // impl ToStr[Point] { fn to_str(self): String }
+        // impl ToStr[Point] { fn to_str(self) -> String }
         // String in method return type should resolve
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -2951,7 +2951,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_object_impl() {
-        // impl object Point { fn foo(self): Bar }
+        // impl object Point { fn foo(self) -> Bar }
         // Point and Bar should resolve
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -3070,7 +3070,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_func_return_type() {
-        // fn foo(): String {}
+        // fn foo() -> String {}
         // String in return type should resolve to export
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -3105,7 +3105,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_func_type_param() {
-        // fn foo['a](x: 'a): 'a {}
+        // fn foo['a](x: 'a) -> 'a {}
         // 'a should resolve to TypeParam in both parameter and return type
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -3526,7 +3526,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_extern_fn_param_type() {
-        // extern fn read(fd: int, buf: String): int
+        // extern fn read(fd: int, buf: String) -> int
         // String should resolve to export
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -3577,7 +3577,7 @@ mod tests {
 
     #[test]
     fn resolve_names_in_file_resolves_extern_fn_return_type() {
-        // extern fn malloc(size: int): RawPtr[u8]
+        // extern fn malloc(size: int) -> RawPtr[u8]
         // RawPtr and u8 should resolve to exports
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);

@@ -1881,3 +1881,190 @@ fn decorator_newline_optional_for_extern_fn() {
     assert_eq!(decorators.len(), 1);
     assert_eq!(decorators[0].path.value, Path::from("intrinsic"));
 }
+
+// ============================================================================
+// Keyword-as-name tests
+// ============================================================================
+
+#[test]
+fn keyword_as_instance_method_name_in_impl() {
+    let src = r#"
+struct Foo { x: int }
+
+impl object Foo {
+    fn default(self) -> Foo => Foo { x: 0 }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword `default` as method name to parse without errors, got: {:?}",
+        errors
+    );
+    assert!(file.decls.len() >= 2, "expected struct + impl declarations");
+}
+
+#[test]
+fn keyword_as_static_method_name_in_impl() {
+    let src = r#"
+struct Foo { x: int }
+
+impl object Foo {
+    static fn new(x: int) -> Foo => Foo { x }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword `new` as static method name to parse without errors, got: {:?}",
+        errors
+    );
+    assert!(file.decls.len() >= 2, "expected struct + impl declarations");
+}
+
+#[test]
+fn keyword_as_struct_field_name() {
+    let src = r#"
+struct Config { default: int, is: bool }
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword fields to parse without errors, got: {:?}",
+        errors
+    );
+    let decl = file.decls.first().expect("expected struct declaration");
+    let st = match &decl.value {
+        Decl::Struct(st) => st,
+        other => panic!("expected struct declaration, got {:?}", other),
+    };
+    let fields = st.fields.as_ref().expect("expected fields");
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].value.path.to_string(), "default");
+    assert_eq!(fields[1].value.path.to_string(), "is");
+}
+
+#[test]
+fn keyword_in_struct_literal() {
+    let src = r#"
+fn main() {
+    x = Config { default: 42, is: true }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword fields in struct literal to parse without errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    assert!(!block.stmts.is_empty());
+}
+
+#[test]
+fn keyword_in_dot_access() {
+    let src = r#"
+fn main() {
+    x = config.default
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword in dot access to parse without errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assignment, got {:?}", other),
+    };
+    let dot = match &assign.rhs.value {
+        Expr::Dot(d) => d,
+        other => panic!("expected dot expression, got {:?}", other),
+    };
+    assert_eq!(dot.rhs.value.path.to_string(), "default");
+}
+
+#[test]
+fn keyword_in_scoped_access() {
+    let src = r#"
+fn main() {
+    x = Foo::new
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword in scoped access to parse without errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    assert!(!block.stmts.is_empty());
+}
+
+#[test]
+fn keyword_in_trait_method_name() {
+    let src = r#"
+trait HasDefault {
+    fn default(self: 'a) -> 'a
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected keyword `default` as trait method name to parse without errors, got: {:?}",
+        errors
+    );
+    let decl = file.decls.first().expect("expected trait declaration");
+    let tr = match &decl.value {
+        Decl::Trait(tr) => tr,
+        other => panic!("expected trait declaration, got {:?}", other),
+    };
+    assert_eq!(tr.fields.len(), 1);
+    let field = &tr.fields[0];
+    match &field.value {
+        Decl::FnSig(sig) => {
+            let name = sig.path.to_short_name();
+            assert_eq!(name, "default");
+        }
+        other => panic!("expected function signature in trait, got {:?}", other),
+    }
+}
+
+#[test]
+fn keyword_as_top_level_fn_name_fails() {
+    // Keywords should NOT be allowed as top-level function names
+    let src = r#"
+fn new() -> int => 42
+"#;
+    let (_file, errors) = parse_source(src);
+    assert!(
+        !errors.is_empty(),
+        "expected parse error when using keyword `new` as top-level function name"
+    );
+}
+
+#[test]
+fn multiple_keyword_names_in_impl() {
+    let src = r#"
+struct Foo { x: int }
+
+impl object Foo {
+    static fn new(x: int) -> Foo => Foo { x }
+    static fn default() -> Foo => Foo { x: 0 }
+    fn is(self) -> bool => self.x > 0
+    fn as(self) -> int => self.x
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected multiple keyword method names to parse without errors, got: {:?}",
+        errors
+    );
+    assert!(file.decls.len() >= 2, "expected struct + impl declarations");
+}

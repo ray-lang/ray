@@ -982,7 +982,7 @@ impl ToStr[Point] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn new(x: int, y: int): Point => Point { x, y }
+    fn new(x: int, y: int) -> Point => Point { x, y }
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());

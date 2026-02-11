@@ -52,6 +52,7 @@ impl Parser<'_> {
         let parser = &mut self
             .with_scope(ctx)
             .with_description("parse impl body")
+            .with_restrictions(Restrictions::ALLOW_KEYWORD_NAMES)
             .with_newline_mode(NewlineMode::Emit);
         let ctx = &parser.ctx_clone();
 
@@ -358,7 +359,8 @@ impl Parser<'_> {
 
             let parser = &mut parser
                 .with_scope(&ctx)
-                .with_description("parse trait fields");
+                .with_description("parse trait fields")
+                .with_restrictions(Restrictions::ALLOW_KEYWORD_NAMES);
             let ctx = &parser.ctx_clone();
 
             (|| {
@@ -748,14 +750,17 @@ impl Parser<'_> {
 
     fn parse_fields(&mut self, ctx: &ParseContext) -> ParseResult<Vec<Node<Name>>> {
         let mut fields = Vec::new();
+        let mut field_ctx = ctx.clone();
+        field_ctx.restrictions |= Restrictions::ALLOW_KEYWORD_NAMES;
         loop {
             self.consume_newlines(ctx)?;
-            if !peek!(self, TokenKind::Identifier { .. }) {
+            let kind = self.peek_kind();
+            if !matches!(kind, TokenKind::Identifier(_)) && !kind.is_keyword_name() {
                 break;
             }
 
             let field = self
-                .parse_name_with_type(Some(&TokenKind::RightCurly), ctx)
+                .parse_name_with_type(Some(&TokenKind::RightCurly), &field_ctx)
                 .map(Some)
                 .recover_with_ctx(
                     self,

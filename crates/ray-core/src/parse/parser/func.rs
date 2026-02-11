@@ -141,7 +141,9 @@ impl Parser<'_> {
         &mut self,
         ctx: &ParseContext,
     ) -> ParseResult<Option<(String, Span)>> {
-        if peek!(self, TokenKind::Identifier { .. }) {
+        let kind = self.peek_kind();
+        let allow_kw = ctx.restrictions.contains(Restrictions::ALLOW_KEYWORD_NAMES);
+        if matches!(kind, TokenKind::Identifier(_)) || (allow_kw && kind.is_keyword_name()) {
             return Ok(Some(self.expect_id(ctx)?));
         }
 

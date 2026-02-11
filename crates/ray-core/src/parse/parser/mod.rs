@@ -98,6 +98,8 @@ bitflags::bitflags! {
         const IN_PAREN      = 1 << 7;
         /// The parsing is at the top-level
         const AT_TOP_LEVEL  = 1 << 8;
+        /// Allow certain keywords to be used as names (e.g. in member positions).
+        const ALLOW_KEYWORD_NAMES = 1 << 9;
     }
 }
 
@@ -1507,14 +1509,17 @@ impl<'src> Parser<'src> {
     fn expect_id(&mut self, ctx: &ParseContext) -> ParseResult<(String, Span)> {
         let parser = &mut self.with_scope(ctx).with_description("expect identifier");
         let ctx = &parser.ctx_clone();
-        let tok = parser.peek();
-        match tok.kind {
-            TokenKind::Identifier(_) | TokenKind::Struct | TokenKind::Underscore => {
-                let tok = parser.token()?;
-                let span = tok.span;
-                Ok((tok.kind.to_string(), span))
-            }
-            _ => Err(parser.unexpected_token(&tok, "identifier", ctx)),
+        let kind = parser.peek_kind();
+        let allow_kw = ctx.restrictions.contains(Restrictions::ALLOW_KEYWORD_NAMES);
+        if matches!(kind, TokenKind::Identifier(_) | TokenKind::Underscore)
+            || (allow_kw && kind.is_keyword_name())
+        {
+            let tok = parser.token()?;
+            let span = tok.span;
+            Ok((tok.kind.to_string(), span))
+        } else {
+            let tok = parser.peek();
+            Err(parser.unexpected_token(&tok, "identifier", ctx))
         }
     }
 

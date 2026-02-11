@@ -2413,8 +2413,8 @@ trait Add['a, 'b, 'c] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn new(x: int, y: int): Point => Point { x, y }
-    fn distance(self): int => self.x + self.y
+    fn new(x: int, y: int) -> Point => Point { x, y }
+    fn distance(self) -> int => self.x + self.y
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -2819,7 +2819,7 @@ impl object Point {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn new(x: int, y: int): Point => Point { x, y }
+    fn new(x: int, y: int) -> Point => Point { x, y }
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -2933,8 +2933,8 @@ trait Ord['a] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn new(x: int, y: int): Point => Point { x, y }
-    fn distance(self): int => self.x + self.y
+    fn new(x: int, y: int) -> Point => Point { x, y }
+    fn distance(self) -> int => self.x + self.y
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -3023,7 +3023,7 @@ trait ToStr['a] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn new(x: int, y: int): Point => Point { x, y }
+    fn new(x: int, y: int) -> Point => Point { x, y }
 }
 
 impl ToStr[Point] {
@@ -3159,7 +3159,7 @@ trait ToStr['a] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn new(x: int, y: int): Point => Point { x, y }
+    fn new(x: int, y: int) -> Point => Point { x, y }
 }
 
 impl ToStr[Point] {
@@ -3203,7 +3203,7 @@ impl ToStr[Point] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn origin(): Point => Point { x: 0, y: 0 }
+    fn origin() -> Point => Point { x: 0, y: 0 }
 }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());

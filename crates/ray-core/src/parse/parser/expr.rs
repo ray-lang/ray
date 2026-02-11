@@ -163,7 +163,7 @@ impl Parser<'_> {
                     ))
                 }
             }
-            TokenKind::Identifier(_) | TokenKind::Struct | TokenKind::Underscore => {
+            TokenKind::Identifier(_) | TokenKind::Underscore => {
                 let n = self.parse_name(ctx)?;
                 if peek!(self, TokenKind::FatArrow) {
                     // closure expression
@@ -182,7 +182,9 @@ impl Parser<'_> {
                     let ty = self.parse_ty_with_name(n.value.to_string(), base_span, ctx)?;
                     let sep_tok = self.expect(TokenKind::DoubleColon, ctx)?;
 
-                    let rhs = self.parse_name(ctx)?;
+                    let mut member_ctx = ctx.clone();
+                    member_ctx.restrictions |= Restrictions::ALLOW_KEYWORD_NAMES;
+                    let rhs = self.parse_name(&member_ctx)?;
                     let rhs_span = self.srcmap.span_of(&rhs);
                     let span = base_span.extend_to(&rhs_span);
                     let lhs = self.mk_expr(Expr::Type(ty), base_span, ctx.path.clone());
@@ -240,7 +242,9 @@ impl Parser<'_> {
             if peek!(self, TokenKind::DoubleColon) {
                 // expr::member
                 let sep_tok = self.expect(TokenKind::DoubleColon, ctx)?;
-                let rhs = match self.parse_name(ctx) {
+                let mut member_ctx = ctx.clone();
+                member_ctx.restrictions |= Restrictions::ALLOW_KEYWORD_NAMES;
+                let rhs = match self.parse_name(&member_ctx) {
                     Ok(name) => name,
                     Err(err) => {
                         // Error recovery: emit a ScopedAccess node with an empty-name
@@ -381,7 +385,9 @@ impl Parser<'_> {
         ctx: &ParseContext,
     ) -> ExprResult {
         let start = self.srcmap.span_of(&lhs).start;
-        let rhs = match self.parse_name_with_type(None, ctx) {
+        let mut member_ctx = ctx.clone();
+        member_ctx.restrictions |= Restrictions::ALLOW_KEYWORD_NAMES;
+        let rhs = match self.parse_name_with_type(None, &member_ctx) {
             Ok(name) => name,
             Err(err) => {
                 // Error recovery: emit a Dot node with an empty-name RHS so that
@@ -584,8 +590,9 @@ impl Parser<'_> {
                         while matches!(parser.peek_kind(), TokenKind::NewLine) {
                             let _ = parser.token()?;
                         }
-                        let tok = parser.peek();
-                        if !matches!(tok.kind, TokenKind::Identifier(_)) {
+                        let kind = parser.peek_kind();
+                        if !matches!(kind, TokenKind::Identifier(_)) && !kind.is_keyword_name() {
+                            let tok = parser.peek();
                             return Err(parser.unexpected_token(
                                 &tok,
                                 "identifier or labeled expression",
@@ -593,6 +600,7 @@ impl Parser<'_> {
                             ));
                         }
                         let mut label_ctx = ctx.clone();
+                        label_ctx.restrictions |= Restrictions::ALLOW_KEYWORD_NAMES;
                         label_ctx.stop_token = stop.clone();
                         parser.parse_labeled_expr(&label_ctx)
                     },

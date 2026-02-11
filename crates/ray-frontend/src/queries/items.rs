@@ -86,8 +86,8 @@ mod tests {
 struct Point { x: int, y: int }
 
 impl object Point {
-    static fn create(x: int, y: int): Point => Point { x, y }
-    static fn origin(): Point => Point { x: 0, y: 0 }
+    static fn create(x: int, y: int) -> Point => Point { x, y }
+    static fn origin() -> Point => Point { x: 0, y: 0 }
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -115,7 +115,7 @@ impl object Point {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn distance(self): int => self.x + self.y
+    fn distance(self) -> int => self.x + self.y
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -144,7 +144,7 @@ trait Zeroed['a] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    static fn origin(): Point => Point { x: 0, y: 0 }
+    static fn origin() -> Point => Point { x: 0, y: 0 }
 }
 
 impl Zeroed[Point] {
@@ -176,8 +176,8 @@ impl Zeroed[Point] {
 struct Point { x: int, y: int }
 
 impl object Point {
-    static fn create(x: int, y: int): Point => Point { x, y }
-    fn distance(self): int => self.x + self.y
+    static fn create(x: int, y: int) -> Point => Point { x, y }
+    fn distance(self) -> int => self.x + self.y
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -218,7 +218,7 @@ impl object Point {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        let source = "fn helper(): int => 42";
+        let source = "fn helper() -> int => 42";
         FileSource::new(&db, file_id, source.to_string());
 
         // Find the function def (not a struct)
@@ -376,7 +376,7 @@ impl Zeroed[Point] {
 
         let source = r#"
 impl object int {
-    static fn from_str(s: string): int => 0
+    static fn from_str(s: string) -> int => 0
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
