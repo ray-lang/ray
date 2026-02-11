@@ -11,6 +11,7 @@ pub mod node_id;
 pub mod optlevel;
 pub mod pathlib;
 pub mod resolution;
+pub mod scope;
 pub mod span;
 pub mod symbol;
 pub mod ty;

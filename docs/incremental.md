@@ -5061,7 +5061,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: scope_at query
 
-- [ ] Define `scope_at(FileId, Position)` query:
+- [x] Define `scope_at(FileId, Position)` query:
   ```rust
   #[query]
   fn scope_at(db: &Database, file_id: FileId, pos: Position) -> Vec<(String, ScopeEntry)> {
@@ -5069,8 +5069,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       compute_scope_at_position(&file_ast.ast, &file_ast.resolutions, pos)
   }
   ```
-- [ ] Return visible bindings at position (for completion)
-- [ ] **Validate**: Unit test scope computation
+- [x] Return visible bindings at position (for completion)
+- [x] **Validate**: Unit test scope computation
 
 ##### Step 3: expected_type_at query
 

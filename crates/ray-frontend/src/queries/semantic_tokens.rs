@@ -52,7 +52,10 @@ mod tests {
     use std::collections::HashMap;
 
     use ray_core::ide::semantic_tokens::{SemanticTokenKind, SemanticTokenModifier};
-    use ray_shared::pathlib::{FilePath, Path};
+    use ray_shared::{
+        file_id::FileId,
+        pathlib::{FilePath, Path},
+    };
 
     use crate::{
         queries::{
@@ -63,7 +66,7 @@ mod tests {
         query::Database,
     };
 
-    fn setup_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_db(source: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));

@@ -11,6 +11,7 @@ pub mod locations;
 pub mod operators;
 pub mod parse;
 pub mod resolve;
+pub mod scope;
 pub mod semantic_tokens;
 pub mod symbols;
 pub mod transform;
