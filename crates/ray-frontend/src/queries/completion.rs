@@ -466,6 +466,7 @@ mod tests {
     use ray_shared::{
         file_id::FileId,
         pathlib::{FilePath, Path},
+        resolution::DefTarget,
         scope::ScopeEntry,
         span::Pos,
         ty::Ty,
@@ -545,9 +546,13 @@ fn bar(x: Foo) {
         let ctx =
             completion_context(&db, file_id, pos).expect("should return completion after dot");
         assert_eq!(ctx.kind, CompletionKind::Member);
+        let receiver = ctx
+            .receiver_type
+            .expect("dot completion should have receiver type");
         assert!(
-            ctx.receiver_type.is_some(),
-            "dot completion should have receiver type"
+            matches!(&receiver, Ty::Const(p) if p.to_string().contains("Foo")),
+            "receiver should be Foo, got: {:?}",
+            receiver
         );
     }
 
@@ -564,11 +569,15 @@ fn main() {
         let (db, file_id) = setup_db(source);
         let pos = pos_after(source, "Point::");
         let ctx = completion_context(&db, file_id, pos).expect("should return completion after ::");
-        assert!(
-            matches!(ctx.kind, CompletionKind::TypeMember(_)),
-            "Point:: should be TypeMember, got: {:?}",
-            ctx.kind
-        );
+        match &ctx.kind {
+            CompletionKind::TypeMember(DefTarget::Workspace(def_id)) => {
+                assert_eq!(
+                    def_id.file, file_id,
+                    "TypeMember should reference a def in the same file"
+                );
+            }
+            other => panic!("Point:: should be TypeMember(Workspace), got: {:?}", other),
+        }
     }
 
     #[test]
@@ -590,11 +599,16 @@ fn main() {
         let pos = pos_after(source_main, "utils::");
         let ctx = completion_context(&db, file_main, pos)
             .expect("should return completion after module::");
-        assert!(
-            matches!(ctx.kind, CompletionKind::ModuleMember(_)),
-            "utils:: should be ModuleMember, got: {:?}",
-            ctx.kind
-        );
+        match &ctx.kind {
+            CompletionKind::ModuleMember(module_path) => {
+                assert_eq!(
+                    module_path.to_string(),
+                    "utils",
+                    "ModuleMember should reference the utils module"
+                );
+            }
+            other => panic!("utils:: should be ModuleMember, got: {:?}", other),
+        }
     }
 
     #[test]
@@ -612,6 +626,16 @@ fn bar(x: Foo) {
         let ctx = completion_context(&db, file_id, pos)
             .expect("should return completion for chained dot");
         assert_eq!(ctx.kind, CompletionKind::Member);
+        // Receiver is `x.y` where `y` doesn't exist on Foo — type is an unresolved
+        // inference variable. We still get Member kind thanks to parser error recovery.
+        let receiver = ctx
+            .receiver_type
+            .expect("chained dot should still have a receiver type (unresolved)");
+        assert!(
+            matches!(&receiver, Ty::Var(_)),
+            "receiver of x.y. (nonexistent field) should be an unresolved type var, got: {:?}",
+            receiver
+        );
     }
 
     #[test]
@@ -633,6 +657,16 @@ fn main() {
             ctx.kind,
             CompletionKind::Member,
             "p. after broken line should still be Member"
+        );
+        // `p` is assigned from broken code — its type is an unresolved inference variable.
+        // The important thing is we still get Member kind for dot completion.
+        let receiver = ctx
+            .receiver_type
+            .expect("p. should still have a receiver type (unresolved)");
+        assert!(
+            matches!(&receiver, Ty::Var(_)),
+            "receiver of p. (from broken assignment) should be an unresolved type var, got: {:?}",
+            receiver
         );
     }
 
@@ -680,11 +714,18 @@ fn main() {
         let pos = pos_after(source, "Point::cr");
         let ctx = completion_context(&db, file_id, pos)
             .expect("should return completion for partial scoped access");
-        assert!(
-            matches!(ctx.kind, CompletionKind::TypeMember(_)),
-            "Point::cr should be TypeMember, got: {:?}",
-            ctx.kind
-        );
+        match &ctx.kind {
+            CompletionKind::TypeMember(DefTarget::Workspace(def_id)) => {
+                assert_eq!(
+                    def_id.file, file_id,
+                    "TypeMember should reference a def in the same file"
+                );
+            }
+            other => panic!(
+                "Point::cr should be TypeMember(Workspace), got: {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
@@ -706,11 +747,16 @@ fn main() {
         let pos = pos_after(source_main, "utils::hel");
         let ctx = completion_context(&db, file_main, pos)
             .expect("should return completion for partial module access");
-        assert!(
-            matches!(ctx.kind, CompletionKind::ModuleMember(_)),
-            "utils::hel should be ModuleMember, got: {:?}",
-            ctx.kind
-        );
+        match &ctx.kind {
+            CompletionKind::ModuleMember(module_path) => {
+                assert_eq!(
+                    module_path.to_string(),
+                    "utils",
+                    "ModuleMember should reference the utils module"
+                );
+            }
+            other => panic!("utils::hel should be ModuleMember, got: {:?}", other),
+        }
     }
 
     // ---------------------------------------------------------------
@@ -758,6 +804,7 @@ fn main() {
         let (db, file_id) = setup_db(source);
         let pos = pos_of(source, "c\n}");
         let ctx = completion_context(&db, file_id, pos).expect("should return Scope completion");
+        assert_eq!(ctx.kind, CompletionKind::Scope);
         let local_names: Vec<&str> = ctx
             .scope
             .iter()
