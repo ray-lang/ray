@@ -1582,65 +1582,6 @@ fn path_for_target(target: &DefTarget, db: &Database) -> Option<ItemPath> {
     }
 }
 
-/// Resolve a Ty using file scope, falling back to module qualification.
-///
-/// For types without Parsed wrapper (like nested type args), we look up the type
-/// name in the file's scope (which includes module exports and selective imports).
-fn resolve_ty_with_scope(db: &Database, ty: &Ty, file_id: FileId, module_path: &ModulePath) -> Ty {
-    let scope = file_scope(db, file_id);
-
-    match ty {
-        Ty::Const(path) if path.module.is_empty() => {
-            // Local reference - try to look up in file scope
-            if let Some(item_name) = path.item_name() {
-                // Check if this is a primitive/builtin type - these should NOT be module-qualified
-                if Ty::is_builtin_name(item_name) {
-                    return ty.clone();
-                }
-
-                if let Some(target) = scope.get(item_name) {
-                    if let Some(resolved_path) = path_for_target(target, db) {
-                        return Ty::Const(resolved_path);
-                    }
-                }
-            }
-            // Fallback: qualify with current module
-            let qualified = ItemPath::new(module_path.clone(), path.item.clone());
-            Ty::Const(qualified)
-        }
-        Ty::Proj(path, args) if path.module.is_empty() => {
-            // Local reference with type args - try to look up in file scope
-            let resolved_path = if let Some(item_name) = path.item_name() {
-                if let Some(target) = scope.get(item_name) {
-                    path_for_target(target, db)
-                        .unwrap_or_else(|| ItemPath::new(module_path.clone(), path.item.clone()))
-                } else {
-                    ItemPath::new(module_path.clone(), path.item.clone())
-                }
-            } else {
-                ItemPath::new(module_path.clone(), path.item.clone())
-            };
-
-            // Resolve nested types in args too
-            let resolved_args: Vec<Ty> = args
-                .iter()
-                .map(|arg| resolve_ty_with_scope(db, arg, file_id, module_path))
-                .collect();
-            Ty::Proj(resolved_path, resolved_args)
-        }
-        Ty::Proj(path, args) => {
-            // Already qualified, but still resolve nested args
-            let resolved_args: Vec<Ty> = args
-                .iter()
-                .map(|arg| resolve_ty_with_scope(db, arg, file_id, module_path))
-                .collect();
-            Ty::Proj(path.clone(), resolved_args)
-        }
-        // For other types, return as-is
-        _ => ty.clone(),
-    }
-}
-
 /// Check if a trait type matches a DefTarget.
 ///
 /// This checks if the type refers to the same definition as the target.

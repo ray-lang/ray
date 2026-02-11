@@ -390,7 +390,7 @@ pub fn dot_field_index(db: &Database, file_id: FileId) -> HashMap<NodeId, DefId>
 
         // Get the struct path from the type (handling references)
         let struct_path = match lhs_ty {
-            Ty::Ref(inner) | Ty::RawPtr(inner) => inner.item_path().cloned(),
+            Ty::Ref(inner) => inner.item_path().cloned(),
             ref ty => ty.item_path().cloned(),
         };
 

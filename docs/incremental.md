@@ -5094,9 +5094,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 5: methods_for_type query
 
-- [ ] Define `methods_for_type(Ty)` query
-- [ ] Return available methods for a type (inherent + trait)
-- [ ] **Validate**: Unit test
+- [x] Define `methods_for_type(Ty)` query
+- [x] Return available methods for a type (inherent + trait)
+- [x] **Validate**: Unit test
 
 ##### Step 6: associated_items query
 
