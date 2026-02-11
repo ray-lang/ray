@@ -5047,7 +5047,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: semantic_tokens query
 
-- [ ] Define `semantic_tokens(FileId)` query:
+- [x] Define `semantic_tokens(FileId)` query:
   ```rust
   #[query]
   fn semantic_tokens(db: &Database, file_id: FileId) -> SemanticTokens {
@@ -5056,8 +5056,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
       compute_semantic_tokens(&file_ast.ast, resolutions)
   }
   ```
-- [ ] Classify tokens: keyword, function, variable, type, etc.
-- [ ] **Validate**: Unit test token classification
+- [x] Classify tokens: keyword, function, variable, type, etc.
+- [x] **Validate**: Unit test token classification
 
 ##### Step 2: scope_at query
 
