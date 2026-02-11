@@ -1,6 +1,7 @@
 pub mod bindings;
 pub mod calls;
 pub mod closures;
+pub mod completion;
 pub mod defs;
 pub mod deps;
 pub mod diagnostics;

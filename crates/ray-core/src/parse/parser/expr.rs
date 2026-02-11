@@ -5,8 +5,8 @@ use ray_shared::{
 use ray_typing::types::TyScheme;
 
 use crate::ast::{
-    Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, New, Node, ScopedAccess,
-    Sequence, TrailingPolicy, ValueKind,
+    Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, Name, New, Node,
+    ScopedAccess, Sequence, TrailingPolicy, ValueKind,
     token::{Token, TokenKind},
 };
 use crate::parse::{lexer::NewlineMode, parser::Recover};
@@ -240,7 +240,17 @@ impl Parser<'_> {
             if peek!(self, TokenKind::DoubleColon) {
                 // expr::member
                 let sep_tok = self.expect(TokenKind::DoubleColon, ctx)?;
-                let rhs = self.parse_name(ctx)?;
+                let rhs = match self.parse_name(ctx) {
+                    Ok(name) => name,
+                    Err(err) => {
+                        // Error recovery: emit a ScopedAccess node with an empty-name
+                        // RHS so that downstream consumers (e.g. completion) can
+                        // still detect `Point::`.
+                        self.record_parse_error(err);
+                        let sep_end = sep_tok.span.end;
+                        self.mk_node(Name::new(""), Span::at(sep_end), ctx.path.clone())
+                    }
+                };
                 let start = self.srcmap.span_of(&ex).start;
                 let end = self.srcmap.span_of(&rhs).end;
                 ex = self.mk_expr(
@@ -371,7 +381,16 @@ impl Parser<'_> {
         ctx: &ParseContext,
     ) -> ExprResult {
         let start = self.srcmap.span_of(&lhs).start;
-        let rhs = self.parse_name_with_type(None, ctx)?;
+        let rhs = match self.parse_name_with_type(None, ctx) {
+            Ok(name) => name,
+            Err(err) => {
+                // Error recovery: emit a Dot node with an empty-name RHS so that
+                // downstream consumers (e.g. completion) can still detect `x.`.
+                self.record_parse_error(err);
+                let dot_end = dot_tok.span.end;
+                self.mk_node(Name::new(""), Span::at(dot_end), ctx.path.clone())
+            }
+        };
         let end = self.srcmap.span_of(&rhs).end;
         Ok(self.mk_expr(
             Expr::Dot(Dot {

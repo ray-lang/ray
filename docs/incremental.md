@@ -5080,7 +5080,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 4: completion_context query
 
-- [ ] Define `completion_context(FileId, Position)` query:
+- [x] Define `completion_context(FileId, Position)` query:
   ```rust
   #[query]
   fn completion_context(db: &Database, file_id: FileId, pos: Position) -> Option<CompletionContext> {
@@ -5090,7 +5090,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
       // ...
   }
   ```
-- [ ] **Validate**: Unit test various completion contexts
+- [x] **Validate**: Unit test various completion contexts
 
 ##### Step 5: methods_for_type query
 

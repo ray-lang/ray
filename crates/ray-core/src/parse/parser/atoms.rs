@@ -96,9 +96,21 @@ impl Parser<'_> {
         // This assumes that the double colon after `first` has been consumed
         let mut segments = vec![first];
         loop {
-            let (id, sp) = self.expect_id(ctx)?;
-            let segment_node = self.mk_node(id, sp, ctx.path.clone());
-            segments.push(segment_node);
+            match self.expect_id(ctx) {
+                Ok((id, sp)) => {
+                    let segment_node = self.mk_node(id, sp, ctx.path.clone());
+                    segments.push(segment_node);
+                }
+                Err(err) => {
+                    // Error recovery: emit an empty segment so that `Expr::Path`
+                    // is still created for `Point::` — enables completion.
+                    self.record_parse_error(err);
+                    let pos = self.lex.position();
+                    let segment_node = self.mk_node(String::new(), Span::at(pos), ctx.path.clone());
+                    segments.push(segment_node);
+                    break;
+                }
+            }
 
             if !expect_if!(self, TokenKind::DoubleColon) {
                 break;

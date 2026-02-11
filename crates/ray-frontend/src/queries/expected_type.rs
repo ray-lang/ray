@@ -8,7 +8,7 @@
 //! be inferred (e.g. no interesting context, type errors, or incomplete code).
 
 use ray_core::{
-    ast::{CurlyElement, Decl, Expr, Node},
+    ast::{CurlyElement, Decl, Expr, File, Node},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
@@ -123,11 +123,7 @@ fn callee_declared_type(db: &Database, callee_id: &NodeId) -> Option<Ty> {
 /// Tracks the enclosing function's NodeId for resolving return expressions.
 /// At each "context-setting" parent (Call, Assign, Return, List), records the
 /// context and recurses. The innermost (deepest) context wins.
-fn find_context(
-    file: &ray_core::ast::File,
-    srcmap: &SourceMap,
-    pos: &Pos,
-) -> Option<ExpectedTypeContext> {
+fn find_context(file: &File, srcmap: &SourceMap, pos: &Pos) -> Option<ExpectedTypeContext> {
     for decl in &file.decls {
         if let Some(ctx) = find_context_in_decl(decl, srcmap, pos, None) {
             return Some(ctx);
