@@ -5100,9 +5100,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 6: associated_items query
 
-- [ ] Define `associated_items(DefTarget)` query
-- [ ] Return associated constants, types, methods for a type
-- [ ] **Validate**: Unit test
+- [x] Define `associated_items(DefTarget)` query
+- [x] Return associated constants, types, methods for a type
+- [x] **Validate**: Unit test
 
 ---
 

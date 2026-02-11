@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod expected_type;
 pub mod exports;
 pub mod imports;
+pub mod items;
 pub mod libraries;
 pub mod locations;
 pub mod methods;
