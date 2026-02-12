@@ -22,13 +22,15 @@ pub struct Dependency {
 /// On-disk format for a cached query result.
 ///
 /// Stores the serialized key (for collision detection), serialized value,
-/// a fingerprint of the value, and the list of dependencies.
+/// a fingerprint of the value, and dependency lists for inputs and queries
+/// (kept separate because they require different validation strategies).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub key_bytes: Vec<u8>,
     pub value_bytes: Vec<u8>,
     pub fingerprint: u64,
-    pub dependencies: Vec<Dependency>,
+    pub input_deps: Vec<Dependency>,
+    pub query_deps: Vec<Dependency>,
 }
 
 /// A staged write to be flushed to disk at the end of a successful build.
@@ -352,18 +354,16 @@ mod tests {
             key_bytes: vec![1, 2, 3],
             value_bytes: vec![4, 5, 6, 7],
             fingerprint: 0xDEADBEEF,
-            dependencies: vec![
-                Dependency {
-                    query_name: "input_a".to_string(),
-                    key_hash: 42,
-                    fingerprint: 100,
-                },
-                Dependency {
-                    query_name: "query_b".to_string(),
-                    key_hash: 99,
-                    fingerprint: 200,
-                },
-            ],
+            input_deps: vec![Dependency {
+                query_name: "input_a".to_string(),
+                key_hash: 42,
+                fingerprint: 100,
+            }],
+            query_deps: vec![Dependency {
+                query_name: "query_b".to_string(),
+                key_hash: 99,
+                fingerprint: 200,
+            }],
         };
 
         let bytes = bincode::serialize(&entry).unwrap();
@@ -372,11 +372,14 @@ mod tests {
         assert_eq!(restored.key_bytes, entry.key_bytes);
         assert_eq!(restored.value_bytes, entry.value_bytes);
         assert_eq!(restored.fingerprint, entry.fingerprint);
-        assert_eq!(restored.dependencies.len(), 2);
-        assert_eq!(restored.dependencies[0].query_name, "input_a");
-        assert_eq!(restored.dependencies[0].key_hash, 42);
-        assert_eq!(restored.dependencies[0].fingerprint, 100);
-        assert_eq!(restored.dependencies[1].query_name, "query_b");
+        assert_eq!(restored.input_deps.len(), 1);
+        assert_eq!(restored.input_deps[0].query_name, "input_a");
+        assert_eq!(restored.input_deps[0].key_hash, 42);
+        assert_eq!(restored.input_deps[0].fingerprint, 100);
+        assert_eq!(restored.query_deps.len(), 1);
+        assert_eq!(restored.query_deps[0].query_name, "query_b");
+        assert_eq!(restored.query_deps[0].key_hash, 99);
+        assert_eq!(restored.query_deps[0].fingerprint, 200);
     }
 
     #[test]
