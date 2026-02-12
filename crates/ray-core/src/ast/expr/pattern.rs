@@ -1,16 +1,16 @@
 use std::{convert::TryFrom, ops::Deref};
 
-use ray_shared::{pathlib::Path, utils::join};
+use ray_shared::{pathlib::Path, span::Span, utils::join};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{self, Missing, Node, PrefixOp, Tuple},
     errors::{RayError, RayErrorKind},
 };
-use ray_shared::span::Span;
 
 use super::{Expr, Name, Sequence};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pattern {
     Deref(Node<Name>),
     Dot(Box<Node<Pattern>>, Node<Name>),

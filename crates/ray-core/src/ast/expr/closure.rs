@@ -1,7 +1,9 @@
-use crate::ast::{Expr, Node, Sequence};
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use crate::ast::{Expr, Node, Sequence};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Closure {
     pub args: Sequence,
     pub body: Box<Node<Expr>>,

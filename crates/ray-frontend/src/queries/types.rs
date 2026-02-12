@@ -20,6 +20,7 @@ use ray_typing::{
     constraints::Predicate,
     types::{Subst, TyScheme},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
@@ -38,7 +39,7 @@ use crate::{
 ///
 /// This is used by downstream queries like `annotated_scheme` to consistently
 /// map type parameters to schema variables for typechecking.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MappedDefTypes {
     /// Maps type parameter IDs to schema variables.
     /// TypeParamId { owner: struct_id, index: 0 } → TyVar("?s0")

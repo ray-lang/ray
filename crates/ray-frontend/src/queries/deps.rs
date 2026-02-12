@@ -7,6 +7,7 @@ use ray_shared::{
     resolution::{DefTarget, Resolution},
 };
 use ray_typing::binding_groups::BindingGraph;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{parse::parse_file, resolve, workspace::WorkspaceSnapshot},
@@ -22,7 +23,7 @@ use crate::{
 /// Note: BindingGroupId is stable within a given `binding_groups(module)` result,
 /// but the index may change if the binding graph changes (e.g., due to edits
 /// that add/remove definitions or change dependencies).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BindingGroupId {
     pub module: ModulePath,
     pub index: u32, // SCC index in topological order
@@ -32,7 +33,7 @@ pub struct BindingGroupId {
 ///
 /// Contains both the group IDs and the actual members, allowing
 /// `binding_group_members` to do a direct lookup by index.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BindingGroupsResult {
     /// Group IDs in topological order (dependencies before dependents).
     pub group_ids: Vec<BindingGroupId>,

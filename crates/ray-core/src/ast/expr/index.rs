@@ -1,7 +1,9 @@
-use crate::ast::{Expr, Node};
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::ast::{Expr, Node};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Index {
     pub lhs: Box<Node<Expr>>,
     pub index: Box<Node<Expr>>,

@@ -1,7 +1,9 @@
-use crate::ast::{Expr, Node, Pattern};
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::ast::{Expr, Node, Pattern};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct For {
     pub pat: Node<Pattern>,
     pub expr: Box<Node<Expr>>,

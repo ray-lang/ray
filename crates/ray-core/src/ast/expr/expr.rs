@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use ray_shared::{pathlib::Path, span::parsed::Parsed};
+use serde::{Deserialize, Serialize};
 
 use crate::ast::{Boxed, Node, Ref, expr::deref::Deref};
 use ray_typing::types::TyScheme;
@@ -11,7 +12,7 @@ use super::{
     While,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expr {
     Assign(Assign),
     BinOp(BinOp),
@@ -58,13 +59,13 @@ pub enum Expr {
     While(While),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ValueKind {
     LValue,
     RValue,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TrailingPolicy {
     Allow,
     Forbid,

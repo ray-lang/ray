@@ -1,13 +1,17 @@
-use ray_shared::{pathlib::Path, utils::join};
+use ray_shared::{
+    pathlib::Path,
+    span::{Span, parsed::Parsed},
+    utils::join,
+};
+use ray_typing::types::TyScheme;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{Expr, Name, Node},
     strutils::indent_lines,
 };
-use ray_shared::span::{Span, parsed::Parsed};
-use ray_typing::types::TyScheme;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CurlyElement {
     Name(Name),
     Labeled(Name, Node<Expr>),
@@ -22,7 +26,7 @@ impl std::fmt::Display for CurlyElement {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Curly {
     pub lhs: Option<Parsed<Path>>,
     pub elements: Vec<Node<CurlyElement>>,

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use ray_core::{
     ast::{Decorator, File},
     errors::RayError,
@@ -22,7 +24,7 @@ use crate::{
 };
 
 /// Result of parsing a single source file.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ParseResult {
     pub ast: File,
     pub defs: Vec<DefHeader>,

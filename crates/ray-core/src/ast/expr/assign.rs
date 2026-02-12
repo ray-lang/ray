@@ -1,8 +1,9 @@
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
 use crate::ast::{Expr, InfixOp, Node, Pattern};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assign {
     pub lhs: Node<Pattern>,
     pub rhs: Box<Node<Expr>>,

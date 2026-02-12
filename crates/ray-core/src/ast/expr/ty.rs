@@ -1,11 +1,12 @@
+use std::fmt;
+
 use ray_shared::{
     span::{Span, parsed::Parsed},
     ty::Ty,
 };
+use serde::{Deserialize, Serialize};
 
-use std::fmt;
-
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TypeParams {
     pub tys: Vec<Parsed<Ty>>,
     pub lb_span: Span,

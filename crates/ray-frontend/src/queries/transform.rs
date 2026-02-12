@@ -6,6 +6,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use serde::{Deserialize, Serialize};
+
 use ray_core::{
     ast::{
         CurlyElement, Decl, Expr, File, FnParam, FuncSig, Impl, Name, Node, ScopedAccess, Trait,
@@ -41,7 +43,7 @@ use crate::{
 ///
 /// Contains the transformed AST, source map (updated for synthetic nodes),
 /// definition headers, and any transformation errors.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FileAst {
     /// The transformed AST.
     pub ast: File,

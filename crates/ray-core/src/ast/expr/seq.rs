@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{Expr, Node};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sequence {
     pub items: Vec<Node<Expr>>,
     pub trailing: bool, // trailing comma

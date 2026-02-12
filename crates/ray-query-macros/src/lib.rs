@@ -169,7 +169,7 @@ pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
     // The compute implementation uses the user body.
     // It destructures the key into local variables, then runs the user block.
     let query_impl = quote! {
-        #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+        #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
         struct #key_ident {
             #(#key_field_idents: #key_field_types),*
         }

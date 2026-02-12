@@ -14,13 +14,15 @@ use ray_typing::{
     types::{Subst, Substitutable, TyScheme},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::sourcemap::SourceMap;
 use crate::{
     ast::{Expr, Missing, Modifier, Name, Node, TypeParams},
     errors::RayError,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnParam {
     Name(Name),
     DefaultValue(Box<Node<FnParam>>, Box<Node<Expr>>),
@@ -81,7 +83,7 @@ impl FnParam {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FuncSig {
     pub path: Node<Path>,
     pub params: Vec<Node<FnParam>>,
@@ -97,7 +99,7 @@ pub struct FuncSig {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Func {
     pub sig: FuncSig,
     pub body: Option<Box<Node<Expr>>>,

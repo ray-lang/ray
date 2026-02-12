@@ -5,6 +5,7 @@ use ray_shared::{
     ty::Ty,
 };
 use ray_typing::types::TyScheme;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{
@@ -18,7 +19,7 @@ use crate::{
 /// A coarse-grained set of semantic token kinds. These intentionally mirror the
 /// token categories exposed by the Language Server Protocol, but the list can
 /// grow over time as the highlighter matures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenKind {
     Type,
     Trait,
@@ -35,7 +36,7 @@ pub enum SemanticTokenKind {
 }
 
 /// Modifiers that decorate a semantic token (e.g. declaration vs. usage).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenModifier {
     Declaration,
     Definition,
@@ -43,7 +44,7 @@ pub enum SemanticTokenModifier {
 }
 
 /// Result of the semantic walk.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticToken {
     pub span: Span,
     pub kind: SemanticTokenKind,

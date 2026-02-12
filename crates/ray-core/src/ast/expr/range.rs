@@ -1,7 +1,9 @@
-use crate::ast::{Expr, Node};
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+use crate::ast::{Expr, Node};
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RangeLimits {
     Inclusive,
     Exclusive,
@@ -20,7 +22,7 @@ impl std::fmt::Display for RangeLimits {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Range {
     pub start: Box<Node<Expr>>,
     pub end: Box<Node<Expr>>,

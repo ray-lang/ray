@@ -10,6 +10,7 @@ use std::sync::Arc;
 use ray_core::ide::semantic_tokens::{self as core_semantic_tokens, SemanticToken};
 use ray_query_macros::query;
 use ray_shared::file_id::FileId;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::parse::parse_file,
@@ -21,7 +22,7 @@ use crate::{
 /// Contains a sorted list of span-based semantic tokens suitable for
 /// syntax highlighting. Tokens cover keywords, functions, variables,
 /// types, comments, and other syntactic constructs.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SemanticTokens {
     pub data: Vec<SemanticToken>,
 }

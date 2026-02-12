@@ -24,10 +24,8 @@ pub enum CyclePolicy {
 }
 
 pub trait Query {
-    // NOTE: Serialize + DeserializeOwned bounds will be added at the end of Phase 3
-    // once all key/value types have serde derives.
-    type Key: Clone + Eq + Hash + Send + Sync + 'static;
-    type Value: Clone + Send + Sync + 'static;
+    type Key: Clone + Eq + Hash + Send + Sync + Serialize + DeserializeOwned + 'static;
+    type Value: Clone + Send + Sync + Serialize + DeserializeOwned + 'static;
 
     const NAME: &'static str;
     const CYCLE_POLICY: CyclePolicy = CyclePolicy::Panic;

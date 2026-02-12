@@ -1,12 +1,12 @@
 use std::{fmt::Display, ops::Deref};
 
 use itertools::Itertools;
-use ray_shared::pathlib::Path;
+use ray_shared::{pathlib::Path, span::Span};
+use serde::{Deserialize, Serialize};
 
 use crate::ast::Node;
-use ray_shared::span::Span;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportKind {
     /// `import core::io` - namespace handle, access via `io::NAME`
     Path(Node<Path>),
@@ -18,7 +18,7 @@ pub enum ImportKind {
     CImport(String, Span), // second value is the span of the string
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Import {
     pub kind: ImportKind,
     pub span: Span,

@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ast::Sequence;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tuple {
     pub seq: Sequence,
 }

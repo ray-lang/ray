@@ -7,6 +7,7 @@ use ray_shared::node_id::NodeId;
 use ray_shared::resolution::Resolution;
 use ray_typing::NodeBinding;
 use ray_typing::binding_groups::BindingId;
+use serde::{Deserialize, Serialize};
 
 use crate::ast::{
     Closure, Decl, Expr, FnParam, Module, Node, WalkItem, WalkScopeKind, walk_decl, walk_module,
@@ -14,7 +15,7 @@ use crate::ast::{
 use crate::passes::binding::BindingPassOutput;
 
 /// Information about a single closure expression (new API).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClosureInfo {
     pub parent_def: DefId,
     pub captures: Vec<LocalBindingId>,

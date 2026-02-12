@@ -2,10 +2,11 @@ use ray_shared::{
     span::{Span, parsed::Parsed},
     ty::Ty,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::ast::{Expr, Node};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cast {
     pub lhs: Box<Node<Expr>>,
     pub ty: Parsed<Ty>,

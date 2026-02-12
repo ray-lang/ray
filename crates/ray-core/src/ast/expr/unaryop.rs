@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{Expr, Node, PrefixOp};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnaryOp {
     pub expr: Box<Node<Expr>>,
     pub op: Node<PrefixOp>,

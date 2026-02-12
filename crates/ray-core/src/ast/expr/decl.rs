@@ -11,13 +11,14 @@ use ray_shared::{
     utils::{join, map_join},
 };
 use ray_typing::types::{NominalKind, TyScheme};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{Assign, Expr, Func, FuncSig, Modifier, Name, Node, TypeParams},
     strutils,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Extern {
     decl: Box<Node<Decl>>,
     src: Option<String>,
@@ -62,7 +63,7 @@ impl Extern {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Decl {
     Mutable(Node<Name>, Vec<Modifier>),
     Name(Node<Name>, Vec<Modifier>),
@@ -211,7 +212,7 @@ impl Decl {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Struct {
     pub kind: NominalKind,
     pub path: Node<Path>,
@@ -219,7 +220,7 @@ pub struct Struct {
     pub fields: Option<Vec<Node<Name>>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trait {
     pub path: Node<Path>,
     pub ty: Parsed<Ty>,
@@ -228,18 +229,18 @@ pub struct Trait {
     pub directives: Vec<Parsed<TraitDirective>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TraitDirectiveKind {
     Default,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitDirective {
     pub kind: TraitDirectiveKind,
     pub args: Vec<Parsed<Ty>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Impl {
     pub ty: Parsed<Ty>,
     pub qualifiers: Vec<Parsed<Ty>>,

@@ -1,17 +1,18 @@
 pub mod type_error;
 
-use ray_shared::span::Source;
-
-use colored::*;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::num::ParseFloatError;
 use std::{fmt, num::ParseIntError};
 
+use colored::*;
+use ray_shared::span::Source;
+use serde::{Deserialize, Serialize};
+
 pub type RayResult<T = ()> = Result<T, RayError>;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum RayErrorKind {
     Parse,
     UnexpectedToken,
@@ -43,7 +44,7 @@ impl fmt::Display for RayErrorKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RayError {
     pub msg: String,
     pub src: Vec<Source>,

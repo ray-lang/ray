@@ -1,4 +1,8 @@
-use ray_shared::pathlib::{FilePath, Path};
+use ray_shared::{
+    pathlib::{FilePath, Path},
+    span::Source,
+};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{
@@ -7,9 +11,8 @@ use crate::{
     },
     errors::{RayError, RayErrorKind, RayResult},
 };
-use ray_shared::span::Source;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Literal {
     Integer {
         value: String,

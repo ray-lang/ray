@@ -516,7 +516,7 @@ impl Substitutable for StructTy {
 /// This captures which method was selected for a call expression, allowing
 /// the `call_resolution` query to build the full `CallResolution` with types
 /// and substitutions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MethodResolutionInfo {
     /// The trait method target, if this is a trait method call.
     pub trait_target: Option<DefTarget>,

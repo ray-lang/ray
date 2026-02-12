@@ -3,6 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use ray_shared::{
     binding_target::BindingTarget,
     local_binding::LocalBindingId,
@@ -24,7 +26,7 @@ use crate::{
 ///
 /// This is intentionally tiny and decoupled from the real frontend AST; the
 /// frontend will translate its own nodes into this shape for the typechecker.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Pattern {
     /// Wildcard `_`.
     Wild,
@@ -43,7 +45,7 @@ pub enum Pattern {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExprKind {
     /// A reference to a local binding (parameter, let-binding, etc.).
     LocalRef(LocalBindingId),
@@ -243,7 +245,7 @@ pub enum ExprKind {
 /// Pattern subtree for binding/destructuring assignment on the left-hand
 /// side of `lhs = rhs`, corresponding to the pattern typing judgment
 /// in docs/type-system.md A.7.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum LhsPattern {
     /// Simple variable pattern `x`, which binds or reuses a single name.
     Binding(LocalBindingId),
@@ -264,7 +266,7 @@ pub enum LhsPattern {
 /// Simplified shape of assignment left-hand sides for constraint generation,
 /// corresponding to the cases in docs/type-system.md A.8. This separates
 /// binding/destructuring patterns from mutation-specific forms.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AssignLhs {
     /// Binding/destructuring pattern `lhs`, interpreted via the general
     /// pattern typing judgment Γ ⊢ lhs : Trhs ⇝ (Δ, Cp) from A.7/A.8.

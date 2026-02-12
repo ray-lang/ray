@@ -2,10 +2,11 @@ use ray_shared::{
     span::{Span, parsed::Parsed},
     ty::Ty,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::ast::{Expr, Node};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct New {
     pub ty: Node<Parsed<Ty>>,
     pub count: Option<Box<Node<Expr>>>,

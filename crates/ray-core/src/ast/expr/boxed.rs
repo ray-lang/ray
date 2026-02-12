@@ -1,8 +1,9 @@
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
 use crate::ast::{Expr, Node};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Boxed {
     pub inner: Box<Node<Expr>>,
     pub box_span: Span,

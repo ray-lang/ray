@@ -10,6 +10,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use serde::{Deserialize, Serialize};
+
 use ray_core::{
     ast::{CurlyElement, Decl, Expr, File, Literal, Node},
     sourcemap::SourceMap,
@@ -34,7 +36,7 @@ use crate::{
 };
 
 /// What kind of completion is appropriate at the cursor position.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompletionKind {
     /// After `.` — complete methods/fields on receiver.
     Member,
@@ -50,7 +52,7 @@ pub enum CompletionKind {
 ///
 /// Produced by the `completion_context` query and consumed by the LSP
 /// completion handler.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionContext {
     pub kind: CompletionKind,
     pub scope: Vec<(String, ScopeEntry)>,

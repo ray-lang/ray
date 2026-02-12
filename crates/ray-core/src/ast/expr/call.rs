@@ -1,7 +1,9 @@
-use crate::ast::{Expr, Node, Sequence};
 use ray_shared::{node_id::NodeId, span::Span};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::ast::{Expr, Node, Sequence};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
     pub callee: Box<Node<Expr>>,
     pub args: Sequence,

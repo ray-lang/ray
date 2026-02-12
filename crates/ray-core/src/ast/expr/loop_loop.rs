@@ -1,7 +1,9 @@
-use crate::ast::{Expr, Node};
 use ray_shared::span::Span;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use crate::ast::{Expr, Node};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Loop {
     pub body: Box<Node<Expr>>,
     pub loop_span: Span,

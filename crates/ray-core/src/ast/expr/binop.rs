@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{Expr, InfixOp, Node};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinOp {
     pub lhs: Box<Node<Expr>>,
     pub rhs: Box<Node<Expr>>,

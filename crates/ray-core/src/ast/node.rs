@@ -36,7 +36,7 @@ pub trait HasDoc {
     fn doc(&self) -> Option<String>;
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceInfo {
     pub src: Source,
     pub path: Path,

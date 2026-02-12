@@ -1,8 +1,10 @@
 use std::{fmt, ops::Deref};
 
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{Node, token::TokenKind};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Associativity {
     /// The operator is left-associative
     Left,
@@ -12,7 +14,7 @@ pub enum Associativity {
     None,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PrefixOp {
     /// +
     Positive,
@@ -30,7 +32,7 @@ pub enum PrefixOp {
     Receive,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum InfixOp {
     /// ==
     Eq,

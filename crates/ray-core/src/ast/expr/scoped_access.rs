@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{Expr, Name, Node, token::Token};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedAccess {
     pub lhs: Box<Node<Expr>>,
     pub rhs: Node<Name>,

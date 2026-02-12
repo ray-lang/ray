@@ -21,6 +21,8 @@ use std::{
     mem,
 };
 
+use serde::{Deserialize, Serialize};
+
 use ray_shared::{
     binding_target::BindingTarget,
     def::DefId,
@@ -49,7 +51,7 @@ use crate::{
 
 /// Associates a frontend node with a binding, distinguishing between
 /// definition sites (binders) and use sites (references).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeBinding {
     Def(BindingId),
     Use(BindingId),
@@ -65,7 +67,7 @@ impl NodeBinding {
 
 /// Describes what a particular binding represents so later phases can
 /// interpret its scheme and expression subtree correctly.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BindingKind {
     /// A function binding with parameters and a result type (`Ty::Func`).
     Function {
@@ -79,7 +81,7 @@ pub enum BindingKind {
 }
 
 /// Consolidated metadata for a binding introduced by the frontend.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BindingRecord {
     /// Fully-qualified path for diagnostics and `TyCtx` lookups.
     pub path: Option<Path>,
@@ -118,14 +120,14 @@ impl BindingRecord {
 }
 
 /// Normalized metadata for AST patterns that participate in typing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PatternRecord {
     pub kind: PatternKind,
     pub source: Option<Source>,
 }
 
 /// Simplified shapes of patterns recorded during lowering.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PatternKind {
     /// Simple binding like `x`.
     Binding { binding: LocalBindingId },
@@ -146,13 +148,13 @@ pub enum PatternKind {
 }
 
 /// Metadata for expressions emitted by the lowering pipeline.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExprRecord {
     pub kind: ExprKind,
     pub source: Option<Source>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TypeCheckInput {
     pub bindings: BindingGraph<DefId>,
     /// Mapping from DefId to the root NodeId of its body expression.
@@ -361,7 +363,7 @@ impl Default for TypecheckOptions {
 ///
 /// This is closely modeled on the existing type system's error representation,
 /// but pared down slightly until we wire in richer info structures.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypeErrorKind {
     /// Free-form message for errors that do not yet have a more structured
     /// representation.
@@ -410,7 +412,7 @@ pub enum TypeErrorKind {
     Unification,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeError {
     pub kind: TypeErrorKind,
     pub info: TypeSystemInfo,
@@ -741,7 +743,7 @@ pub struct BindingGroupResult {
 }
 
 /// Result of typechecking.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TypeCheckResult {
     /// Type schemes for every definition from the input
     pub schemes: HashMap<DefId, TyScheme>,

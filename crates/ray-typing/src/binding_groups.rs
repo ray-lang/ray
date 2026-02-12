@@ -22,7 +22,8 @@ impl std::fmt::Display for BindingId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "T: Serialize", deserialize = "T: Deserialize<'de>"))]
 pub struct BindingGroup<T> {
     pub bindings: Vec<T>,
 }
@@ -50,7 +51,11 @@ pub type LegacyBindingGroup = BindingGroup<BindingId>;
 
 /// A dependency graph between bindings. An edge `from -> to` means that the
 /// definition of `from` refers to `to`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T: Serialize + Ord",
+    deserialize = "T: Deserialize<'de> + Ord"
+))]
 pub struct BindingGraph<T> {
     pub edges: BTreeMap<T, Vec<T>>,
 }
