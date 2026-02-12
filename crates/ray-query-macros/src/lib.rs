@@ -10,8 +10,28 @@ use syn::{
 };
 
 #[proc_macro_attribute]
-pub fn query(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
     let f = parse_macro_input!(item as ItemFn);
+
+    // Parse optional `skip_persist` attribute: #[query(skip_persist)]
+    let skip_persist = if !attr.is_empty() {
+        let meta = syn::parse::<Ident>(attr);
+        match meta {
+            Ok(ident) if ident == "skip_persist" => true,
+            Ok(ident) => {
+                return syn::Error::new(
+                    ident.span(),
+                    format!("unknown query attribute `{ident}`, expected `skip_persist`"),
+                )
+                .to_compile_error()
+                .into();
+            }
+            Err(e) => return e.to_compile_error().into(),
+        }
+    } else {
+        false
+    };
+    let persist_value = !skip_persist;
 
     // Only free functions for now.
     let vis = &f.vis;
@@ -161,6 +181,7 @@ pub fn query(_attr: TokenStream, item: TokenStream) -> TokenStream {
             type Value = #ret_ty;
 
             const NAME: &'static str = #fn_name_str;
+            const PERSIST: bool = #persist_value;
 
             fn compute(#db_ident: #db_ty, key: Self::Key) -> Self::Value {
                 #key_destructure

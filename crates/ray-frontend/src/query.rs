@@ -13,6 +13,9 @@ use std::{
 
 use fnv::FnvHasher;
 use ray_shared::pathlib::FilePath;
+use serde::{Serialize, de::DeserializeOwned};
+
+use crate::cache::DiskCache;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum CyclePolicy {
@@ -21,11 +24,16 @@ pub enum CyclePolicy {
 }
 
 pub trait Query {
+    // NOTE: Serialize + DeserializeOwned bounds will be added at the end of Phase 3
+    // once all key/value types have serde derives.
     type Key: Clone + Eq + Hash + Send + Sync + 'static;
     type Value: Clone + Send + Sync + 'static;
 
     const NAME: &'static str;
     const CYCLE_POLICY: CyclePolicy = CyclePolicy::Panic;
+    /// Whether this query's results should be persisted to the on-disk cache.
+    /// Set to `false` via `#[query(skip_persist)]`.
+    const PERSIST: bool = true;
 
     fn compute(db: &Database, key: Self::Key) -> Self::Value;
 
@@ -70,6 +78,10 @@ pub struct CachedValue {
     /// If this matches `Database::revision`, the cached value is known-valid
     /// without needing to walk the dependency tree.
     pub validated_at: AtomicU64,
+    /// FNV hash of the serialized value bytes. `None` for non-cacheable queries.
+    /// Used for early-exit: if recomputation produces the same fingerprint,
+    /// downstream queries don't need revalidation.
+    pub fingerprint: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -107,6 +119,8 @@ pub struct Database {
     profiling: AtomicBool,
     /// Profiling stats per query name. Only populated when profiling is enabled.
     stats: Mutex<HashMap<&'static str, QueryStats>>,
+    /// Persistent on-disk cache. `None` when no workspace root is detected.
+    disk_cache: Option<DiskCache>,
 }
 
 impl Database {
@@ -121,7 +135,38 @@ impl Database {
             revision: AtomicU64::new(0),
             profiling: AtomicBool::new(false),
             stats: Mutex::new(HashMap::new()),
+            disk_cache: None,
         }
+    }
+
+    /// Create a Database with a persistent on-disk cache at the given directory.
+    pub fn with_disk_cache(cache_dir: std::path::PathBuf) -> Self {
+        Self {
+            disk_cache: Some(DiskCache::new(cache_dir)),
+            ..Self::new()
+        }
+    }
+
+    /// Flush all staged cache entries to disk.
+    ///
+    /// Should be called at the end of a successful build. No-op if there is
+    /// no disk cache configured.
+    pub fn flush_cache(&self) -> std::io::Result<()> {
+        if let Some(ref dc) = self.disk_cache {
+            dc.flush()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns whether this database has a disk cache configured.
+    pub fn has_disk_cache(&self) -> bool {
+        self.disk_cache.is_some()
+    }
+
+    /// Returns a reference to the disk cache, if configured.
+    pub fn disk_cache(&self) -> Option<&DiskCache> {
+        self.disk_cache.as_ref()
     }
 
     /// Enable per-query profiling stats collection.
@@ -264,6 +309,7 @@ impl Database {
                 input_deps,
                 query_deps,
                 validated_at: AtomicU64::new(self.revision.load(Ordering::SeqCst)),
+                fingerprint: None,
             },
         );
 
@@ -494,10 +540,11 @@ mod tests {
     use std::hash::{Hash, Hasher};
 
     use ray_query_macros::{input, query};
+    use serde::{Deserialize, Serialize};
 
     use crate::query::{CyclePolicy, Database, Input, Query};
 
-    #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+    #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
     struct IntKey(u64);
 
     #[allow(dead_code)]
@@ -725,5 +772,43 @@ mod tests {
         assert_eq!(retrieved.0, "test");
         assert_eq!(retrieved.1, 100);
         assert_eq!(retrieved.2, true);
+    }
+
+    #[test]
+    fn new_database_has_no_disk_cache() {
+        let db = Database::new();
+        assert!(!db.has_disk_cache());
+        assert!(db.disk_cache().is_none());
+    }
+
+    #[test]
+    fn with_disk_cache_enables_disk_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::with_disk_cache(dir.path().join("cache"));
+        assert!(db.has_disk_cache());
+        assert!(db.disk_cache().is_some());
+    }
+
+    #[test]
+    fn flush_cache_noop_without_disk_cache() {
+        let db = Database::new();
+        // Should succeed silently with no disk cache configured
+        assert!(db.flush_cache().is_ok());
+    }
+
+    #[test]
+    fn flush_cache_delegates_to_disk_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let db = Database::with_disk_cache(cache_dir.clone());
+
+        // Stage a write via the underlying disk cache, then flush via Database
+        db.disk_cache()
+            .unwrap()
+            .stage_write("q", 1, b"data".to_vec());
+        db.flush_cache().unwrap();
+
+        // Verify the file was written
+        assert!(cache_dir.join("q/0000000000000001.bin").exists());
     }
 }
