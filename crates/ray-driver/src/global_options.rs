@@ -30,4 +30,13 @@ pub struct GlobalOptions {
         global = true
     )]
     pub profile: bool,
+
+    #[arg(
+        long = "config-path",
+        value_name = "CONFIG_PATH",
+        help = "Path to ray.toml project configuration file",
+        long_help = "Explicitly specify the path to a ray.toml file. When provided, the directory containing this file is used as the workspace root for disk caching. If not provided, ray.toml is looked for in the current directory.",
+        global = true
+    )]
+    pub config_path: Option<FilePath>,
 }

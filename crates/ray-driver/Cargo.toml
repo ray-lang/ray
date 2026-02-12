@@ -9,6 +9,7 @@ fern = { version = "0.6" }
 inkwell = { version = "0.6", features = ["llvm17-0"] }
 itertools = "0.14"
 log = "0.4"
+ray-cfg = { path = "../ray-cfg" }
 ray-codegen = { path = "../ray-codegen" }
 ray-core = { path = "../ray-core" }
 ray-frontend = { path = "../ray-frontend" }

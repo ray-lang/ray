@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
+    path::PathBuf,
 };
 
 use ray_codegen::{
@@ -89,15 +90,40 @@ pub struct FrontendResult {
 #[derive(Debug)]
 pub struct Driver {
     ray_paths: RayPaths,
+    workspace_root: Option<PathBuf>,
     pub errors_emitted: usize,
 }
 
 impl Driver {
-    pub fn new(ray_paths: RayPaths) -> Driver {
+    /// Create a new Driver.
+    ///
+    /// If `config_path` points to a `ray.toml` file, its parent directory is
+    /// used as the workspace root for disk caching. Otherwise, the current
+    /// working directory is checked for a `ray.toml`.
+    pub fn new(ray_paths: RayPaths, config_path: Option<&std::path::Path>) -> Driver {
+        let workspace_root = Self::resolve_workspace_root(config_path);
+        if let Some(ref root) = workspace_root {
+            log::info!("workspace root: {}", root.display());
+        }
         Driver {
             ray_paths,
+            workspace_root,
             errors_emitted: 0,
         }
+    }
+
+    fn resolve_workspace_root(config_path: Option<&std::path::Path>) -> Option<PathBuf> {
+        let config = if let Some(path) = config_path {
+            if path.exists() {
+                Some(path.to_path_buf())
+            } else {
+                log::warn!("--config-path {:?} does not exist", path);
+                None
+            }
+        } else {
+            ray_cfg::find_project_config()
+        };
+        config.and_then(|p| p.parent().map(|d| d.to_path_buf()))
     }
 
     pub fn analyze(&mut self, options: AnalyzeOptions) -> AnalysisReport {
@@ -128,6 +154,11 @@ impl Driver {
                 let definitions = collect_definitions(&workspace.db);
                 let types = collect_types(&workspace.db);
                 let module_path = workspace.entry_module_path();
+
+                if let Err(e) = workspace.db.flush_cache() {
+                    log::warn!("failed to flush cache: {}", e);
+                }
+
                 AnalysisReport::new(
                     format,
                     input_path,
@@ -170,8 +201,17 @@ impl Driver {
             search_paths.extend(link_paths.iter().cloned());
         }
 
-        // Create database
-        let db = Database::new();
+        // Create database (with disk cache if workspace root is known)
+        let db = if let Some(ref ws_root) = self.workspace_root {
+            let cache_dir = ws_root.join(".ray").join("cache");
+            log::info!(
+                "[init_workspace] disk cache enabled at {}",
+                cache_dir.display()
+            );
+            Database::with_disk_cache(cache_dir)
+        } else {
+            Database::new()
+        };
 
         // Run discovery to populate workspace and libraries
         let discovery_options = discovery::DiscoveryOptions {
@@ -287,6 +327,13 @@ impl Driver {
         // Check for errors using the query
         let errors = workspace_diagnostics(&workspace.db, ());
         workspace.db.dump_stats();
+
+        // Flush cache regardless of errors — individual query results are
+        // still valid and will speed up the next build.
+        if let Err(e) = workspace.db.flush_cache() {
+            log::warn!("failed to flush cache: {}", e);
+        }
+
         if !errors.is_empty() {
             return Err(errors);
         }

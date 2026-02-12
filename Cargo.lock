@@ -1174,6 +1174,7 @@ dependencies = [
  "inkwell",
  "itertools",
  "log",
+ "ray-cfg",
  "ray-codegen",
  "ray-core",
  "ray-frontend",

@@ -97,6 +97,11 @@ impl BuildOptions {
             args.push(root_path.to_string().into());
         }
 
+        if let Some(config_path) = globals.config_path {
+            args.push("--config-path".into());
+            args.push(config_path.to_string().into());
+        }
+
         args.push("--log-level".into());
         args.push(globals.log_level.to_string().to_lowercase().into());
 

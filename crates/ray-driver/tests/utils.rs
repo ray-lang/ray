@@ -44,7 +44,7 @@ pub fn test_build_with_options(
     test_options: TestBuildOptions,
 ) -> Result<FrontendResult, Vec<RayError>> {
     let filepath = FilePath::from("test.ray");
-    let driver = Driver::new(RayPaths::default());
+    let driver = Driver::new(RayPaths::default(), None);
     let options = BuildOptions {
         input_path: filepath.clone(),
         no_core: true,

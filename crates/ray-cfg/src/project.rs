@@ -11,7 +11,7 @@ pub struct ProjectCfg {
 
 impl ProjectCfg {
     pub fn read() -> anyhow::Result<ProjectCfg> {
-        let Some(path) = project_path() else {
+        let Some(path) = find_project_config() else {
             return Ok(ProjectCfg::default());
         };
 
@@ -20,17 +20,11 @@ impl ProjectCfg {
     }
 }
 
-fn project_path() -> Option<std::path::PathBuf> {
-    let mut dir = std::env::current_dir().expect("cwd");
-    loop {
-        let path = dir.join("ray.toml");
-        if path.exists() {
-            return Some(path);
-        }
-
-        if !dir.pop() {
-            // nothing found
-            return None;
-        }
-    }
+/// Look for `ray.toml` in the current working directory.
+///
+/// Returns the full path to `ray.toml` if it exists in CWD, or `None`.
+/// Does NOT walk up parent directories — the file must be in the exact CWD.
+pub fn find_project_config() -> Option<std::path::PathBuf> {
+    let path = std::env::current_dir().ok()?.join("ray.toml");
+    path.exists().then_some(path)
 }

@@ -84,6 +84,7 @@ pub fn run() {
 
     // get the ray_path
     let explicit_root = cli.global_options.root_path.clone();
+    let config_path = cli.global_options.config_path;
     let discovered_paths = RayPaths::discover(explicit_root.clone(), None);
     let ray_paths = discovered_paths
         .clone()
@@ -104,7 +105,7 @@ pub fn run() {
                 );
                 process::exit(1);
             });
-            let mut driver = Driver::new(ray_paths);
+            let mut driver = Driver::new(ray_paths, config_path.as_ref().map(AsRef::as_ref));
             build::action(&mut driver, options);
         }
         Command::Analyze(options) => {
@@ -114,7 +115,7 @@ pub fn run() {
                 );
                 process::exit(1);
             });
-            let mut driver = Driver::new(ray_paths);
+            let mut driver = Driver::new(ray_paths, config_path.as_ref().map(AsRef::as_ref));
             analyze::action(&mut driver, options);
         }
         Command::Lsp(options) => lsp::action(options),

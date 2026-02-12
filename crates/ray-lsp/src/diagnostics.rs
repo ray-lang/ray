@@ -172,7 +172,7 @@ fn collect_semantic_errors(
         no_core,
         ..Default::default()
     };
-    let driver = Driver::new(ray_paths);
+    let driver = Driver::new(ray_paths, None);
     let workspace = match driver.init_workspace(&build_options, Some(overlays)) {
         Ok(workspace) => workspace,
         Err(errors) => return Ok((errors, None)),
