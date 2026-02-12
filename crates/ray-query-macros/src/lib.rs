@@ -303,7 +303,7 @@ pub fn input(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             fn fingerprint(value: &Self::Value) -> u64 {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                let mut hasher = fnv::FnvHasher::default();
                 value.hash(&mut hasher);
                 hasher.finish()
             }
@@ -391,7 +391,7 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
     } else {
         quote! {
             fn fingerprint(value: &Self::Value) -> u64 {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                let mut hasher = fnv::FnvHasher::default();
                 value.hash(&mut hasher);
                 hasher.finish()
             }

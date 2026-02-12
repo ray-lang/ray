@@ -5110,11 +5110,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: ray build with queries
 
-- [ ] Create `Database` from workspace directory
-- [ ] Set `FileSource` inputs for all files
-- [ ] Query `file_diagnostics` for each file
-- [ ] Collect and report errors
-- [ ] **Validate**: `ray build` on test project matches legacy output
+- [x] Create `Database` from workspace directory
+- [x] Set `FileSource` inputs for all files
+- [x] Query `file_diagnostics` for each file
+- [x] Collect and report errors
+- [x] **Validate**: `ray build` on test project matches legacy output
 
 ##### Step 2: Persistent cache
 

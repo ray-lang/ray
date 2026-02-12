@@ -1,4 +1,6 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
+
+use fnv::FnvHasher;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +28,7 @@ impl std::fmt::Display for LocalBindingId {
 
 impl std::fmt::LowerHex for LocalBindingId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut state = DefaultHasher::new();
+        let mut state = FnvHasher::default();
         self.owner.hash(&mut state);
         self.index.hash(&mut state);
         let out = state.finish();

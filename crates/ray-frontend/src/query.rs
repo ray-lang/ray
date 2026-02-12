@@ -11,6 +11,7 @@ use std::{
     time::Instant,
 };
 
+use fnv::FnvHasher;
 use ray_shared::pathlib::FilePath;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -474,7 +475,7 @@ impl Database {
 
 impl KeyId {
     pub fn new<T: Hash + 'static>(key: &T) -> Self {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = FnvHasher::default();
         key.hash(&mut hasher);
         Self {
             type_id: TypeId::of::<T>(),

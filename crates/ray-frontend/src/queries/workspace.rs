@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io;
 
+use fnv::FnvHasher;
 use ray_core::sourcemap::SourceMap;
 use ray_query_macros::{input, query};
 use ray_shared::file_id::FileId;
@@ -279,7 +280,7 @@ impl Input for WorkspaceSnapshot {
     const NAME: &'static str = "WorkspaceSnapshot";
 
     fn fingerprint(value: &Self::Value) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = FnvHasher::default();
         value.hash(&mut hasher);
         hasher.finish()
     }

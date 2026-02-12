@@ -1,11 +1,10 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+use std::hash::{Hash, Hasher};
+
+use fnv::FnvHasher;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pathlib::Path;
+use crate::{def::DefId, pathlib::Path};
 
 pub const SCHEMA_PREFIX: &'static str = "?s";
 pub const SKOLEM_PREFIX: &'static str = "?k";
@@ -38,8 +37,8 @@ impl SchemaVarAllocator {
     /// Produces deterministic variable names like `?s:{hex_hash}:{index}` where
     /// the hex hash is derived from the DefId. This ensures uniqueness across
     /// definitions without requiring global mutable state.
-    pub fn with_def_scope(def_id: crate::def::DefId) -> Self {
-        let mut hasher = DefaultHasher::new();
+    pub fn with_def_scope(def_id: DefId) -> Self {
+        let mut hasher = FnvHasher::default();
         def_id.hash(&mut hasher);
         let hash = hasher.finish();
         let prefix = format!("{}:{:x}:", SCHEMA_PREFIX, hash);
