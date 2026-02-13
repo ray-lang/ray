@@ -609,7 +609,7 @@ mod tests {
         queries::{
             libraries::LoadedLibraries,
             transform::file_ast,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -627,6 +627,12 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -655,6 +661,12 @@ fn main() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
         );
 
         let result = file_ast(&db, file_id);
@@ -724,6 +736,12 @@ fn main() {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            module_path.clone(),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -782,6 +800,12 @@ fn main() {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -827,6 +851,12 @@ fn main() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn main( {".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -860,6 +890,12 @@ fn main() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let result = file_ast(&db, file_id);
@@ -939,6 +975,12 @@ trait Eq['a] {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -990,6 +1032,12 @@ trait Eq['a] {
         // Use an undefined struct type
         let source = r#"fn foo() { p = UndefinedStruct { x: 1 } }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -1024,6 +1072,12 @@ struct Point { x: int, y: int }
 fn foo() { p = Point { x: 1, y: 2 } }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = file_ast(&db, file_id);
 
@@ -1065,6 +1119,12 @@ fn main() -> Counter {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = file_ast(&db, file_id);
 

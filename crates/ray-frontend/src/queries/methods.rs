@@ -60,7 +60,7 @@ mod tests {
         queries::{
             libraries::LoadedLibraries,
             methods::methods_for_type,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -89,6 +89,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
         let methods = methods_for_type(&db, ty);
@@ -120,6 +126,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
         let methods = methods_for_type(&db, ty);
@@ -154,6 +166,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
         let methods = methods_for_type(&db, ty);
@@ -183,6 +201,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
         let methods = methods_for_type(&db, ty);
@@ -209,6 +233,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Pass Ty::Ref wrapping the Point type — should auto-deref
         let inner = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
@@ -237,6 +267,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Pass Ty::RawPtr wrapping the Point type — should NOT auto-deref
         let inner = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
@@ -257,6 +293,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(module_path, vec!["Point".into()]));
         let methods = methods_for_type(&db, ty);
@@ -313,6 +355,12 @@ impl object Point {
 struct Point { x: int, y: int }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("module_a/mod.ray"),
+            module_a.clone(),
+        );
 
         let source_b = r#"
 import module_a with Point
@@ -326,6 +374,12 @@ impl Stringify[Point] {
 }
 "#;
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("module_b/mod.ray"),
+            module_b.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(module_a, vec!["Point".into()]));
         let methods = methods_for_type(&db, ty);
@@ -351,6 +405,12 @@ impl object int {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let ty = Ty::Const(ItemPath::new(ModulePath::root(), vec!["int".into()]));
         let methods = methods_for_type(&db, ty);
@@ -380,11 +440,23 @@ impl object Vec2 {
 }
 "#;
         FileSource::new(&db, file_types, source_types.to_string());
+        FileMetadata::new(
+            &db,
+            file_types,
+            FilePath::from("types/mod.ray"),
+            module_types.clone(),
+        );
 
         let source_main = r#"
 import types with Vec2
 "#;
         FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("main/mod.ray"),
+            module_main.clone(),
+        );
 
         // Query using the canonical type path (types::Vec2)
         let ty = Ty::Const(ItemPath::new(module_types, vec!["Vec2".into()]));

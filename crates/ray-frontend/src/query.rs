@@ -96,16 +96,26 @@ struct QueryStats {
     total_ns: u64,
 }
 
-/// Per-query function pointers for type-erased recompute and key deserialization.
+/// Per-query function pointers for type-erased recompute.
 /// Registered lazily on first `db.query::<Q>()` invocation.
+///
+/// The `recompute` function is used by the **in-memory** early-exit path
+/// (`force_validate_query_deps`) to force-recompute a dep and check whether
+/// its fingerprint changed. This is needed when an input has actually changed
+/// within a running process (e.g., LSP file edit).
+///
+/// Disk validation does NOT use `recompute` — it uses metadata-only fingerprint
+/// checks instead (see `validate_disk_query_deps`).
+///
+/// This struct also serves as a name registry: the `HashMap<&'static str, QueryFns>`
+/// lets us look up `&'static str` names from owned `String` names on disk entries
+/// (via `get_key_value`).
 #[derive(Clone, Copy)]
 struct QueryFns {
     /// Force-recompute: takes the type-erased key, calls `db.query::<Q>(key)`,
-    /// and returns the new fingerprint.
+    /// and returns the new fingerprint. Used ONLY by the in-memory early-exit
+    /// path, NOT by disk validation.
     recompute: fn(&Database, Arc<dyn Any + Send + Sync>) -> Option<u64>,
-    /// Deserialize a key from disk bytes into a type-erased `Arc`.
-    /// Used by disk-loaded dependency validation before calling `recompute`.
-    deserialize_key: fn(&[u8]) -> Option<Arc<dyn Any + Send + Sync>>,
 }
 
 pub struct Database {
@@ -530,7 +540,7 @@ impl Database {
             return None;
         }
 
-        // Validate query deps (with early-exit force-recompute)
+        // Validate query deps (metadata-only recursive fingerprint check)
         let mut visited = HashSet::new();
         if !self.validate_disk_query_deps(&entry.query_deps, &mut visited) {
             return None;
@@ -774,9 +784,36 @@ impl Database {
         cache.get(&qkey).and_then(|cv| cv.fingerprint)
     }
 
-    /// Validate query dependencies from a disk cache entry using early-exit.
-    /// For each dep: check in-memory fingerprint, or load from disk and
-    /// force-recompute via the registered recompute function.
+    /// Validate query dependencies from a disk cache entry using **metadata-only**
+    /// fingerprint checking — NO force-recompute, NO value deserialization.
+    ///
+    /// # Why metadata-only (not force-recompute)?
+    ///
+    /// Disk validation happens on a fresh process start (or first access after
+    /// startup). At this point, NO inputs have changed since the cache was
+    /// written — we're just confirming the world hasn't changed. We can verify
+    /// this by recursively checking that:
+    ///
+    ///   1. Each dep's stored fingerprint matches the on-disk entry's fingerprint.
+    ///   2. Each dep's own input deps still match the current live inputs.
+    ///   3. Each dep's own query deps are recursively valid (same algorithm).
+    ///
+    /// This is fundamentally different from the **in-memory** early-exit path
+    /// (`force_validate_query_deps`), which runs after an input has actually
+    /// changed within a long-running process (e.g., LSP file edit). In that
+    /// case, force-recomputing deps via `db.query()` is necessary because the
+    /// output may have genuinely changed.
+    ///
+    /// The two paths complement each other:
+    /// - **Disk validation** (this method): confirms identity on cold start.
+    ///   Metadata-only — never calls `db.query()`, never deserializes values.
+    /// - **In-memory early-exit** (`force_validate_query_deps`): propagates
+    ///   changes within a running process. Force-recomputes deps to compare
+    ///   fingerprints.
+    ///
+    /// Once a disk entry passes validation here and is loaded into the in-memory
+    /// cache (by `try_load_from_disk`), all subsequent revalidation uses the
+    /// in-memory path — disk validation is never revisited for that entry.
     fn validate_disk_query_deps(
         &self,
         deps: &[Dependency],
@@ -785,10 +822,13 @@ impl Database {
         for dep in deps {
             let key = (dep.query_name.clone(), dep.key_hash);
             if !visited.insert(key) {
+                // Already validated this dep in this validation walk — skip to
+                // avoid infinite recursion on diamond-shaped dep graphs.
                 continue;
             }
 
-            // Check in-memory cache first
+            // Fast path: if this dep is already in the in-memory cache (e.g.,
+            // loaded by a prior query in this session), just compare fingerprints.
             if let Some(fp) =
                 self.find_cached_fingerprint_by_name_hash(&dep.query_name, dep.key_hash)
             {
@@ -799,7 +839,8 @@ impl Database {
                 }
             }
 
-            // Try to force-recompute from disk key_bytes
+            // Not in memory — load the dep's CacheEntry from disk (metadata only,
+            // we do NOT deserialize the value).
             let Some(dc) = &self.disk_cache else {
                 return false;
             };
@@ -810,31 +851,18 @@ impl Database {
                 return false;
             };
 
-            // Try force-recompute via query_fns (deserialize key, then recompute)
-            let fns = {
-                let qfns = self.query_fns.read().expect("query_fns lock poisoned");
-                qfns.get(dep.query_name.as_str()).copied()
-            };
-            if let Some(fns) = fns {
-                let Some(key_arc) = (fns.deserialize_key)(&entry.key_bytes) else {
-                    return false;
-                };
-                match (fns.recompute)(self, key_arc) {
-                    Some(new_fp) if new_fp == dep.fingerprint => continue,
-                    _ => return false,
-                }
-            } else {
-                // No recompute function registered for this query.
-                // Fall back to recursive metadata-only validation.
-                if entry.fingerprint != dep.fingerprint {
-                    return false;
-                }
-                if !self.validate_disk_input_deps(&entry.input_deps) {
-                    return false;
-                }
-                if !self.validate_disk_query_deps(&entry.query_deps, visited) {
-                    return false;
-                }
+            // Metadata-only validation:
+            // 1. Check that the dep's stored fingerprint matches what we expect.
+            if entry.fingerprint != dep.fingerprint {
+                return false;
+            }
+            // 2. Verify the dep's input deps against current live inputs.
+            if !self.validate_disk_input_deps(&entry.input_deps) {
+                return false;
+            }
+            // 3. Recursively validate the dep's own query deps (same algorithm).
+            if !self.validate_disk_query_deps(&entry.query_deps, visited) {
+                return false;
             }
         }
         true
@@ -925,18 +953,12 @@ impl Database {
             cache.get(&qkey).and_then(|cv| cv.fingerprint)
         }
 
-        fn deserialize_key<Q: Query>(key_bytes: &[u8]) -> Option<Arc<dyn Any + Send + Sync>> {
-            let key: Q::Key = bincode::deserialize(key_bytes).ok()?;
-            Some(Arc::new(key))
-        }
-
         self.query_fns
             .write()
             .expect("query_fns lock poisoned")
             .entry(Q::NAME)
             .or_insert(QueryFns {
                 recompute: recompute_fn::<Q>,
-                deserialize_key: deserialize_key::<Q>,
             });
     }
 }

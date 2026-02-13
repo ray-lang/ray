@@ -450,7 +450,7 @@ mod tests {
             parse::parse_file,
             resolve::name_resolutions,
             symbols::{definition_identities, symbol_targets},
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -463,6 +463,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
         (db, file_id)
     }
 

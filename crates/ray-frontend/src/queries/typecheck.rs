@@ -525,7 +525,7 @@ mod tests {
                 QueryEnv, def_scheme, inferred_local_type, ty_of, typecheck_def_input,
                 typecheck_group, typecheck_group_input,
             },
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -545,6 +545,12 @@ mod tests {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let env = QueryEnv::new(&db, file_id);
         let path = ItemPath::new(module_path, vec!["Point".into()]);
@@ -572,6 +578,12 @@ trait Eq['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let env = QueryEnv::new(&db, file_id);
         let path = ItemPath::new(module_path, vec!["Eq".into()]);
@@ -606,6 +618,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let env = QueryEnv::new(&db, file_id);
         let trait_path = ItemPath::new(module_path, vec!["ToStr".into()]);
@@ -633,6 +651,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let env = QueryEnv::new(&db, file_id);
         let type_path = ItemPath::new(module_path, vec!["Point".into()]);
@@ -652,6 +676,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let env = QueryEnv::new(&db, file_id);
 
@@ -680,6 +710,12 @@ trait Ord['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let env = QueryEnv::new(&db, file_id);
 
@@ -702,6 +738,12 @@ trait Ord['a] {
 fn add(x: int, y: int) -> int => x + y
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the def_id for the function
         let file_result = file_ast(&db, file_id);
@@ -735,6 +777,12 @@ let x = 42
 let y = x + 1
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // FileMain is always at index 0 for any file
         let file_main_def_id = DefId::new(file_id, 0);
@@ -762,6 +810,12 @@ let y = x + 1
 struct Point { x: int, y: int }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the def_id for the struct
         let file_result = file_ast(&db, file_id);
@@ -799,6 +853,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the def_id for the method
         let file_result = file_ast(&db, file_id);
@@ -840,6 +900,12 @@ fn is_odd(n) {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get binding groups for the module
         let groups_result = binding_groups(&db, module_path.clone());
@@ -922,6 +988,12 @@ fn is_odd(n) {
 fn double(x: int) -> int => x
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -966,6 +1038,12 @@ fn double(x: int) -> int => x
 fn answer() -> int => 42
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
         let answer_def = file_result
@@ -1007,6 +1085,12 @@ fn is_odd(n) {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
         let is_even_def = file_result
@@ -1058,6 +1142,12 @@ fn foo(x: int) -> int => x
 fn bar(y: int) -> int => foo(y)
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
         let foo_def = file_result
@@ -1115,6 +1205,12 @@ fn b(x: int) -> int => a(x)
 fn c(x: int) -> int => b(x)
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
         let c_def = file_result
@@ -1154,6 +1250,12 @@ fn c(x: int) -> int => b(x)
 fn identity(x: int) -> int => x
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1216,6 +1318,12 @@ fn foo(a: int) -> int => a
 fn bar(b: bool) -> bool => b
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
         let foo_def = file_result
@@ -1317,6 +1425,12 @@ fn get_flag() -> bool {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
         let func_def = file_result
@@ -1374,6 +1488,12 @@ fn get_flag() -> bool {
 x = true
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // FileMain has def_id index 0
         let file_main_def_id = DefId::new(file_id, 0);
@@ -1435,6 +1555,12 @@ flag = true
 fn get_flag() -> bool => flag
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let file_result = file_ast(&db, file_id);
 
@@ -1565,6 +1691,12 @@ fn get_flag() -> bool => flag
 fn add(x: int, y: int) -> int => x
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1606,6 +1738,12 @@ fn add(x: int, y: int) -> int => x
 fn get_true() => true
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1641,6 +1779,12 @@ fn get_true() => true
 fn identity['a](x: 'a) -> 'a => x
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1687,6 +1831,12 @@ impl Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the impl's def (not the method, but the impl block itself)
         let file_result = file_ast(&db, file_id);
@@ -1723,6 +1873,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the method's def
         let file_result = file_ast(&db, file_id);
@@ -1754,6 +1910,12 @@ impl object Point {
 fn identity(x: int) -> int => x
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1806,6 +1968,12 @@ fn identity(x: int) -> int => x
 fn get_true() -> bool => true
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1857,6 +2025,12 @@ fn get_true() -> bool => true
 x = true
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // FileMain is always at index 0
         let file_main_def_id = DefId::new(file_id, 0);
@@ -1903,6 +2077,12 @@ x = true
 fn foo() -> bool => true
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the function's def
         let file_result = file_ast(&db, file_id);
@@ -1954,6 +2134,12 @@ impl Showable['a] where Check['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl method `show`
         let file_result = file_ast(&db, file_id);

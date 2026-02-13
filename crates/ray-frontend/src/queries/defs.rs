@@ -1744,7 +1744,7 @@ mod tests {
             },
             libraries::{LibraryData, LoadedLibraries},
             parse::parse_file,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -1778,6 +1778,12 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["helper".into()]);
         let result = def_for_path(&db, path);
@@ -1810,6 +1816,12 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path.clone(), vec!["Point".into()]);
         let result = def_for_path(&db, path.clone());
@@ -1904,6 +1916,12 @@ mod tests {
         setup_empty_libraries(&db);
         // Top-level binding becomes ExportedItem::Local, not Def
         FileSource::new(&db, file_id, "x = 42".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["x".into()]);
         let result = def_for_path(&db, path);
@@ -1922,6 +1940,12 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create ItemPath from a full Path
         let module = ModulePath::from("mymodule");
@@ -1962,6 +1986,12 @@ impl object List {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Nested paths (methods) are not resolved by def_for_path
         let method_path = ItemPath::new(module_path, vec!["List".into(), "push".into()]);
@@ -1985,6 +2015,12 @@ impl object List {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // First get the DefTarget for the struct
         let path = ItemPath::new(module_path, vec!["Point".into()]);
@@ -2011,6 +2047,12 @@ impl object List {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Box['a] { value: 'a }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Box".into()]);
         let target = def_for_path(&db, path).expect("struct should be found");
@@ -2041,6 +2083,12 @@ impl object List {
             &db,
             file_id,
             "struct Pair['a, 'b] { first: 'a, second: 'b }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
         );
 
         let path = ItemPath::new(module_path, vec!["Pair".into()]);
@@ -2119,6 +2167,12 @@ impl object List {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["helper".into()]);
         let target = def_for_path(&db, path).expect("function should be found");
@@ -2225,6 +2279,12 @@ trait Eq['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Eq".into()]);
         let target = def_for_path(&db, path).expect("trait should be found");
@@ -2258,6 +2318,12 @@ trait Add['a, 'b, 'c] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Add".into()]);
         let target = def_for_path(&db, path).expect("trait should be found");
@@ -2389,6 +2455,12 @@ trait Add['a, 'b, 'c] {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Point".into()]);
         let target = def_for_path(&db, path).expect("struct should be found");
@@ -2418,6 +2490,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the impl DefTarget - impls are exported by their implementing type name
         let path = ItemPath::new(module_path, vec!["Point".into()]);
@@ -2441,6 +2519,12 @@ impl object Point {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["helper".into()]);
         let target = def_for_path(&db, path).expect("function should be found");
@@ -2471,6 +2555,12 @@ impl Add[rawptr['a], uint, rawptr['a]] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl via impls_for_trait
         let trait_path = ItemPath::new(module_path, vec!["Add".into()]);
@@ -2537,6 +2627,12 @@ impl Eq[list['a]] where Eq['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl via impls_for_trait
         let trait_path = ItemPath::new(module_path, vec!["Eq".into()]);
@@ -2608,6 +2704,12 @@ impl Eq[list['a]] where Eq['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let trait_path = ItemPath::new(module_path, vec!["Eq".into()]);
         let trait_target = def_for_path(&db, trait_path).expect("trait should be found");
@@ -2650,6 +2752,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the method's DefId from the parsed file
         let parse_result = parse_file(&db, file_id);
@@ -2684,6 +2792,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the method's DefId from the parsed file
         let parse_result = parse_file(&db, file_id);
@@ -2718,6 +2832,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the method's DefId from the parsed file
         let parse_result = parse_file(&db, file_id);
@@ -2744,6 +2864,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the function's DefId from the parsed file
         let parse_result = parse_file(&db, file_id);
@@ -2774,6 +2900,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "typealias IntPair = (int, int)".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["IntPair".into()]);
         let target = def_for_path(&db, path).expect("type alias should be found");
@@ -2795,6 +2927,12 @@ impl object Point {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Point".into()]);
         let target = def_for_path(&db, path).expect("struct should be found");
@@ -2823,6 +2961,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let impls = impls_in_module(&db, module_path);
 
@@ -2840,6 +2984,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let impls = impls_in_module(&db, module_path);
 
@@ -2881,6 +3031,12 @@ trait Ord['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let traits = traits_in_module(&db, module_path);
 
@@ -2898,6 +3054,12 @@ trait Ord['a] {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let traits = traits_in_module(&db, module_path);
 
@@ -2938,6 +3100,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the struct's DefTarget
         let path = ItemPath::new(module_path, vec!["Point".into()]);
@@ -2960,6 +3128,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Point".into()]);
         let target = def_for_path(&db, path).expect("struct should be found");
@@ -2994,6 +3168,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the struct's DefTarget
         let path = ItemPath::new(module_path, vec!["Point".into()]);
@@ -3031,6 +3211,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Point".into()]);
         let target = def_for_path(&db, path).expect("struct should be found");
@@ -3065,6 +3251,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the trait's DefTarget
         let trait_path = ItemPath::new(module_path, vec!["ToStr".into()]);
@@ -3103,6 +3295,12 @@ impl ToStr[Rect] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the trait's DefTarget
         let trait_path = ItemPath::new(module_path, vec!["ToStr".into()]);
@@ -3131,6 +3329,12 @@ trait ToStr['a] {
 struct Point { x: int, y: int }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the trait's DefTarget
         let trait_path = ItemPath::new(module_path, vec!["ToStr".into()]);
@@ -3167,6 +3371,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the trait's DefTarget
         let trait_path = ItemPath::new(module_path, vec!["ToStr".into()]);
@@ -3207,12 +3417,24 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("module_a/mod.ray"),
+            module_a.clone(),
+        );
 
         // Module B also has Point but NO impl
         let source_b = r#"
 struct Point { a: string, b: string }
 "#;
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("module_b/mod.ray"),
+            module_b.clone(),
+        );
 
         // Get DefTargets for both Points
         let point_a_path = ItemPath::new(module_a, vec!["Point".into()]);
@@ -3278,6 +3500,12 @@ impl Show[Foo] {
 }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("module_a/mod.ray"),
+            module_a.clone(),
+        );
 
         // Module B has trait Show but NO impl
         let source_b = r#"
@@ -3286,6 +3514,12 @@ trait Show['a] {
 }
 "#;
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("module_b/mod.ray"),
+            module_b.clone(),
+        );
 
         // Get DefTargets for both Show traits
         let show_a_path = ItemPath::new(module_a, vec!["Show".into()]);
@@ -3339,6 +3573,12 @@ trait Display['a] {
 }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("module_a/mod.ray"),
+            module_a.clone(),
+        );
 
         // Module B imports Display from module_a and implements it
         let source_b = r#"
@@ -3351,6 +3591,12 @@ impl Display[Bar] {
 }
 "#;
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("module_b/mod.ray"),
+            module_b.clone(),
+        );
 
         // Get the trait's DefTarget from module_a
         let display_path = ItemPath::new(module_a, vec!["Display".into()]);
@@ -3402,6 +3648,12 @@ impl Display[Bar] {
 struct Foo { value: int }
 "#;
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("module_b/mod.ray"),
+            module_b.clone(),
+        );
 
         // Module A defines trait and impl for Foo (imported from B)
         let source_a = r#"
@@ -3416,6 +3668,12 @@ impl Stringify[Foo] {
 }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("module_a/mod.ray"),
+            module_a.clone(),
+        );
 
         // Get the trait's DefTarget from module_a
         let stringify_path = ItemPath::new(module_a, vec!["Stringify".into()]);
@@ -3511,6 +3769,12 @@ impl Display[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the library trait's DefTarget
         let library_trait_target = DefTarget::Library(display_def_id);
@@ -3598,6 +3862,12 @@ impl Stringify[Option] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the library type's DefTarget
         let library_type_target = DefTarget::Library(option_def_id);
@@ -3642,6 +3912,12 @@ trait Container['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the trait definition
         let path = ItemPath::new(module_path, vec!["Container".into()]);
@@ -3730,6 +4006,12 @@ trait Container['a] {
 struct Box['a] { value: 'a }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Verify struct field types use schema vars
         let struct_path = ItemPath::new(module_path, vec!["Box".into()]);
@@ -3840,6 +4122,12 @@ struct Box['a] { value: 'a }
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct MyInt { value: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // "MyInt" in root module should not be found (it's in mymodule)
         let path = ItemPath::new(ModulePath::root(), vec!["MyInt".into()]);
@@ -3890,6 +4178,12 @@ struct Box['a] { value: 'a }
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn helper() -> int => 42".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path.clone(), vec!["helper".into()]);
         let target = def_for_path(&db, path.clone()).expect("function should be found");
@@ -3914,6 +4208,12 @@ struct Box['a] { value: 'a }
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path.clone(), vec!["Point".into()]);
         let target = def_for_path(&db, path.clone()).expect("struct should be found");
@@ -4005,6 +4305,12 @@ trait ToStr['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let results = trait_methods_for_name(&db, &"to_str".to_string());
 
@@ -4038,6 +4344,12 @@ trait Debug['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let results = trait_methods_for_name(&db, &"show".to_string());
 
@@ -4071,6 +4383,12 @@ trait ToStr['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let results = trait_methods_for_name(&db, &"nonexistent".to_string());
 
@@ -4096,6 +4414,12 @@ trait Printable['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let results = trait_methods_for_name(&db, &"print".to_string());
 
@@ -4126,6 +4450,12 @@ trait Printable['a] {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["helper".into()]);
         let target = def_for_path(&db, path).expect("function should be found");
@@ -4144,6 +4474,12 @@ trait Printable['a] {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Point".into()]);
         let target = def_for_path(&db, path).expect("struct should be found");
@@ -4170,6 +4506,12 @@ impl object List {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Get the impl to find the method
         let list_path = ItemPath::new(module_path.clone(), vec!["List".into()]);
@@ -4247,6 +4589,12 @@ impl object List {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["helper".into()]);
         let target = def_for_path(&db, path.clone()).expect("function should be found");
@@ -4275,6 +4623,12 @@ impl object List {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Point".into()]);
         let target = def_for_path(&db, path.clone()).expect("struct should be found");
@@ -4305,6 +4659,12 @@ trait Eq['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let path = ItemPath::new(module_path, vec!["Eq".into()]);
         let target = def_for_path(&db, path.clone()).expect("trait should be found");

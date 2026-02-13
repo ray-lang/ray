@@ -250,7 +250,7 @@ mod tests {
             },
             libraries::LoadedLibraries,
             parse::parse_file,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -282,6 +282,12 @@ fn standalone() -> int {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -327,6 +333,12 @@ fn caller() -> int {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let helper_def = parse_result
@@ -371,6 +383,12 @@ fn make_point() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -419,6 +437,12 @@ fn main() -> int {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -470,6 +494,12 @@ fn with_local() -> int {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let with_local_def = parse_result
@@ -509,6 +539,12 @@ fn identity(x: int) -> int {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -550,6 +586,12 @@ fn bar() -> int { 2 }
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let graph = binding_graph(&db, module_path);
 
@@ -586,6 +628,12 @@ fn caller() -> int {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -640,6 +688,12 @@ fn caller() -> int {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -698,6 +752,12 @@ fn caller() -> int {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let helper_def = parse_result
@@ -753,6 +813,12 @@ fn caller() -> int {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let helper_def = parse_result
@@ -804,6 +870,12 @@ fn make_point() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -858,6 +930,12 @@ fn is_odd(n) {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -950,6 +1028,12 @@ fn bar() -> int { 2 }
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = binding_groups(&db, module_path.clone());
 
@@ -992,6 +1076,12 @@ fn bar() -> int { foo() }
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = binding_groups(&db, module_path);
 
@@ -1029,6 +1119,12 @@ fn is_odd(n) {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1083,6 +1179,12 @@ fn helper(x) { x }
 fn caller(y) { helper(y) }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1143,6 +1245,12 @@ fn helper(x) { x }
 fn caller() -> int { helper(42) }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1235,6 +1343,12 @@ fn bar() -> int { 2 }
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let groups_result = binding_groups(&db, module_path.clone());
 
@@ -1268,6 +1382,12 @@ fn bar() -> int { 2 }
 fn annotated() -> int { 42 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1312,6 +1432,12 @@ fn is_odd(n) {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let is_even_def = parse_result
@@ -1352,6 +1478,12 @@ fn is_odd(n) {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn foo() -> int { 1 }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create a group ID with an invalid index
         let invalid_group_id = BindingGroupId {
@@ -1402,6 +1534,12 @@ fn foo() -> int { 1 }
 fn bar() -> int { 2 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1454,6 +1592,12 @@ fn is_odd(n) {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let is_even_def = parse_result
@@ -1498,6 +1642,12 @@ fn caller() -> int { helper(42) }
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
 
@@ -1527,6 +1677,12 @@ fn caller() -> int { helper(42) }
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn foo() -> int { 1 }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create a DefId that doesn't exist in the module
         let fake_def_id = ray_shared::def::DefId {

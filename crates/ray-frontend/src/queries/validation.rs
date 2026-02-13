@@ -703,7 +703,7 @@ mod tests {
             libraries::LoadedLibraries,
             parse::parse_file,
             validation::validate_def,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -727,6 +727,12 @@ mod tests {
             &db,
             file_id,
             r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -752,6 +758,12 @@ mod tests {
 
         // Completely unannotated function (OK - will be inferred)
         FileSource::new(&db, file_id, r#"fn foo(x, y) { x + y }"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -779,6 +791,12 @@ mod tests {
 
         // Partially annotated function (ERROR)
         FileSource::new(&db, file_id, r#"fn bad(x: int, y) { x + y }"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let bad_def = parse_result
@@ -808,6 +826,12 @@ mod tests {
 
         // Arrow body function - return type elided is OK
         FileSource::new(&db, file_id, r#"fn double(x: int) => x * 2"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let double_def = parse_result
@@ -836,6 +860,12 @@ mod tests {
         // Block body with annotated params but no return type is allowed.
         // The return type is implicitly () (ImplicitUnit status).
         FileSource::new(&db, file_id, r#"fn ok(x: int) { x * 2 }"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let ok_def = parse_result
@@ -874,6 +904,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -913,6 +949,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -953,6 +995,12 @@ impl ToStr[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -986,6 +1034,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -1013,6 +1067,12 @@ impl object Point {
         // Function with qualifier referencing undefined trait
         let source = r#"fn foo['a](x: 'a) -> 'a where UndefinedTrait['a] { x }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1049,6 +1109,12 @@ trait Show['a] {
 fn display['a](x: 'a) -> string where Show['a] { x.show() }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let display_def = parse_result
@@ -1082,6 +1148,12 @@ struct Point { x: int, y: int }
 fn foo['a](x: 'a) -> 'a where Point['a] { x }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1125,6 +1197,12 @@ impl Show[Point, int] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -1168,6 +1246,12 @@ impl Show[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -1195,6 +1279,12 @@ impl Show[Point] {
         // Function that tries to assign to immutable parameter
         let source = r#"fn foo(x: int) -> int { x = 5; x }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1230,6 +1320,12 @@ impl Show[Point] {
         // Function that declares mutable and assigns
         let source = r#"fn foo(x: int) -> int { mut y = x; y = 5; y }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1260,6 +1356,12 @@ impl Show[Point] {
         // In Ray, `x = 5` creates an immutable binding, `x = 10` tries to reassign
         let source = r#"fn foo() -> int { x = 5; x = 10; x }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1300,6 +1402,12 @@ impl Show[Point] {
             inner(x)
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let outer_def = parse_result
@@ -1333,6 +1441,12 @@ impl Show[Point] {
             inner(5)
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let outer_def = parse_result
@@ -1372,6 +1486,12 @@ impl Show[Point] {
             inner(x)
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let outer_def = parse_result
@@ -1404,6 +1524,12 @@ impl Show[Point] {
             inner(5)
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let outer_def = parse_result
@@ -1445,6 +1571,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -1484,6 +1616,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the impl using impls_in_module
         let impls = impls_in_module(&db, module_path);
@@ -1513,6 +1651,12 @@ impl object Point {
             a
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1544,6 +1688,12 @@ impl object Point {
             b
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1577,6 +1727,12 @@ impl object Point {
             a
         }"#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result

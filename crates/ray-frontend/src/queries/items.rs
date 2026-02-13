@@ -51,7 +51,7 @@ mod tests {
             items::associated_items,
             libraries::{LibraryData, LoadedLibraries},
             parse::parse_file,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -91,6 +91,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = find_struct_def_target(&db, file_id, "Point");
         let items = associated_items(&db, target);
@@ -119,6 +125,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = find_struct_def_target(&db, file_id, "Point");
         let items = associated_items(&db, target);
@@ -152,6 +164,12 @@ impl Zeroed[Point] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = find_struct_def_target(&db, file_id, "Point");
         let items = associated_items(&db, target);
@@ -181,6 +199,12 @@ impl object Point {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = find_struct_def_target(&db, file_id, "Point");
         let items = associated_items(&db, target);
@@ -201,6 +225,12 @@ impl object Point {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = find_struct_def_target(&db, file_id, "Point");
         let items = associated_items(&db, target);
@@ -220,6 +250,12 @@ impl object Point {
 
         let source = "fn helper() -> int => 42";
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         // Find the function def (not a struct)
         let parse_result = parse_file(&db, file_id);
@@ -267,6 +303,12 @@ impl object Point {
 struct Point { x: int, y: int }
 "#;
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("module_a/mod.ray"),
+            module_a.clone(),
+        );
 
         let source_b = r#"
 import module_a with Point
@@ -280,6 +322,12 @@ impl Zeroed[Point] {
 }
 "#;
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("module_b/mod.ray"),
+            module_b.clone(),
+        );
 
         let target = find_struct_def_target(&db, file_a, "Point");
         let items = associated_items(&db, target);
@@ -380,6 +428,12 @@ impl object int {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = DefTarget::Primitive(ItemPath::new(ModulePath::root(), vec!["int".into()]));
         let items = associated_items(&db, target);
@@ -437,6 +491,12 @@ impl Zeroed[Option] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let target = DefTarget::Library(option_def_id);
         let items = associated_items(&db, target);

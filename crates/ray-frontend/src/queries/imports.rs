@@ -280,7 +280,7 @@ mod tests {
         queries::{
             imports::{ImportError, ImportNames, file_imports, file_no_core, resolved_imports},
             libraries::{LibraryData, LoadedLibraries},
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -308,6 +308,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let imports = file_imports(&db, file_id);
 
@@ -322,6 +328,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "import std::io\nfn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let imports = file_imports(&db, file_id);
 
@@ -339,6 +351,12 @@ mod tests {
             &db,
             file_id,
             "import std::io\nimport std::collections\nfn main() {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
         );
 
         let imports = file_imports(&db, file_id);
@@ -358,6 +376,12 @@ mod tests {
             file_id,
             "import std::io with File, Read\nfn main() {}".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let imports = file_imports(&db, file_id);
 
@@ -375,6 +399,12 @@ mod tests {
             &db,
             file_id,
             "import std::io with *\nfn main() {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
         );
 
         let imports = file_imports(&db, file_id);
@@ -400,7 +430,19 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
+        FileMetadata::new(
+            &db,
+            io_file,
+            FilePath::from("std/io/mod.ray"),
+            ModulePath::from("std::io"),
+        );
         FileSource::new(&db, file_id, "import std::io with *".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -422,6 +464,12 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -442,7 +490,19 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         FileSource::new(&db, file_id, "import utils".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -464,6 +524,12 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, file_id, "import nonexistent".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -490,7 +556,19 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
+        FileMetadata::new(
+            &db,
+            io_file,
+            FilePath::from("std/io/mod.ray"),
+            ModulePath::from("std::io"),
+        );
         FileSource::new(&db, file_id, "import std::io".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -517,7 +595,19 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
+        FileMetadata::new(
+            &db,
+            io_file,
+            FilePath::from("std/io/mod.ray"),
+            ModulePath::from("std::io"),
+        );
         FileSource::new(&db, file_id, "import std::io with File, Read".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -551,11 +641,29 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, io_file, "fn read() {}".to_string());
+        FileMetadata::new(
+            &db,
+            io_file,
+            FilePath::from("std/io/mod.ray"),
+            ModulePath::from("std::io"),
+        );
         FileSource::new(&db, collections_file, "struct List {}".to_string());
+        FileMetadata::new(
+            &db,
+            collections_file,
+            FilePath::from("std/collections/mod.ray"),
+            ModulePath::from("std::collections"),
+        );
         FileSource::new(
             &db,
             file_id,
             "import std::io\nimport std::collections".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let result = resolved_imports(&db, file_id);
@@ -582,6 +690,12 @@ mod tests {
         db.set_input::<LoadedLibraries>((), libraries);
 
         FileSource::new(&db, file_id, "import core::io".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -608,6 +722,12 @@ mod tests {
         db.set_input::<LoadedLibraries>((), libraries);
 
         FileSource::new(&db, file_id, "import core".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -639,6 +759,12 @@ mod tests {
 
         // File has no explicit imports
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -681,6 +807,12 @@ mod tests {
 
         // File has no explicit imports
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -709,6 +841,12 @@ mod tests {
 
         // Core file has no explicit imports
         FileSource::new(&db, file_id, "struct string {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -738,6 +876,12 @@ mod tests {
         setup_with_core(&db); // no_core = false
 
         FileSource::new(&db, file_id, "fn print() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("core/io/mod.ray"),
+            ModulePath::from("core::io"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -768,8 +912,20 @@ mod tests {
         setup_with_core(&db);
 
         FileSource::new(&db, user_io_file, "fn custom_read() {}".to_string());
+        FileMetadata::new(
+            &db,
+            user_io_file,
+            FilePath::from("myproject/io/mod.ray"),
+            ModulePath::from("myproject::io"),
+        );
         // Explicitly import myproject::io (alias is "io")
         FileSource::new(&db, file_id, "import myproject::io".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("myproject"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -798,6 +954,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         assert!(!file_no_core(&db, file_id));
     }
@@ -814,6 +976,12 @@ mod tests {
             file_id,
             "//! This is just a normal doc comment\nfn main() {}".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         assert!(!file_no_core(&db, file_id));
     }
@@ -826,6 +994,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "//![no-core]\nfn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         assert!(file_no_core(&db, file_id));
     }
@@ -841,6 +1015,12 @@ mod tests {
             &db,
             file_id,
             "//! Module documentation\n//![no-core]\n//! More docs\nfn main() {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
         );
 
         assert!(file_no_core(&db, file_id));
@@ -865,6 +1045,12 @@ mod tests {
 
         // File has [no-core] directive
         FileSource::new(&db, file_id, "//![no-core]\nfn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolved_imports(&db, file_id);
 
@@ -894,11 +1080,23 @@ mod tests {
         setup_with_core(&db); // Global no_core = false
 
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // File has [no-core] but explicit import
         FileSource::new(
             &db,
             file_id,
             "//![no-core]\nimport utils\nfn main() {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let result = resolved_imports(&db, file_id);

@@ -36,6 +36,21 @@ impl FileSource {
     }
 }
 
+/// Per-file metadata: the file's path and module path.
+///
+/// Keyed by `FileId` so that queries can depend on file identity without
+/// depending on the entire `WorkspaceSnapshot`. This is important for the
+/// disk cache: `WorkspaceSnapshot` is set incrementally during discovery,
+/// so queries that depend on it get intermediate fingerprints that
+/// invalidate on every rebuild. `FileMetadata` is set once per file and
+/// never changes, making disk cache entries stable.
+#[input(key = "FileId")]
+#[derive(Clone, Debug, Hash)]
+pub struct FileMetadata {
+    pub path: FilePath,
+    pub module_path: ModulePath,
+}
+
 /// Information about a single file in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FileInfo {

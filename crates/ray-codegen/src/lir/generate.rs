@@ -3675,7 +3675,7 @@ mod tests {
     use ray_frontend::{
         queries::{
             libraries::LoadedLibraries,
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -3707,6 +3707,12 @@ mod tests {
         db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         FileSource::new(&db, file_id, src.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         (db, file_id)
     }
 
@@ -3716,15 +3722,15 @@ mod tests {
 
         let mut file_ids = vec![];
         for (idx, file) in files.into_iter().enumerate() {
-            let file_id = workspace.add_file(
-                FilePath::from(file.filepath),
-                ModulePath::from(file.module_path),
-            );
+            let fp = FilePath::from(file.filepath);
+            let mp = ModulePath::from(file.module_path);
+            let file_id = workspace.add_file(fp.clone(), mp.clone());
             if idx == 0 {
                 workspace.entry = Some(file_id);
             }
 
             FileSource::new(&db, file_id, file.source.to_string());
+            FileMetadata::new(&db, file_id, fp, mp);
             file_ids.push(file_id);
         }
 
@@ -5241,6 +5247,12 @@ impl Lt[u32, u32] {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            ops_file,
+            FilePath::from("test/ops.ray"),
+            module_path.clone(),
+        );
 
         FileSource::new(
             &db,
@@ -5255,6 +5267,12 @@ pub fn main() -> u32 {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            entry_file,
+            FilePath::from("test/entry.ray"),
+            module_path.clone(),
         );
 
         let prog = generate(&db, false)
@@ -5287,6 +5305,12 @@ pub fn main() -> u32 {
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
 
         FileSource::new(&db, entry_file, "pub fn main() -> u32 { 0u32 }".to_string());
+        FileMetadata::new(
+            &db,
+            entry_file,
+            FilePath::from("test/entry.ray"),
+            module_path.clone(),
+        );
         FileSource::new(
             &db,
             helper_file,
@@ -5295,6 +5319,12 @@ fn helper() -> u32 { 42u32 }
 fn caller() -> u32 { helper() }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            helper_file,
+            FilePath::from("test/helper.ray"),
+            module_path.clone(),
         );
 
         let prog = generate(&db, false)

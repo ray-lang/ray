@@ -167,7 +167,7 @@ mod tests {
         queries::{
             diagnostics::{file_diagnostics, workspace_diagnostics},
             libraries::LoadedLibraries,
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -189,6 +189,12 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
         (db, file_id)
     }
 

@@ -181,7 +181,7 @@ mod tests {
     use crate::{
         queries::{
             exports::{ExportedItem, file_exports, module_def_index},
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -194,6 +194,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -208,6 +214,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -224,6 +236,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nfn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -240,6 +258,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -260,6 +284,12 @@ mod tests {
             file_id,
             "trait Foo['a] { fn bar(self: 'a) -> int }".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -276,6 +306,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "extern x: int".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -292,6 +328,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "x = 42".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let exports = file_exports(&db, file_id);
 
@@ -311,6 +353,12 @@ mod tests {
             &db,
             file_id,
             "struct Foo { x: int }\nimpl object Foo { fn bar(self) => self.x }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
         );
 
         let exports = file_exports(&db, file_id);
@@ -342,6 +390,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nstruct Bar {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let index = module_def_index(&db, ModulePath::from(module_path));
 
@@ -360,7 +414,19 @@ mod tests {
         let file2 = workspace.add_file(FilePath::from("mymodule/utils.ray"), module_path.clone());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file1, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/mod.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         FileSource::new(&db, file2, "fn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/utils.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let index = module_def_index(&db, ModulePath::from(module_path));
 
@@ -380,7 +446,19 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         // Both files define "helper"
         FileSource::new(&db, file1, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/a.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         FileSource::new(&db, file2, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/b.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let index = module_def_index(&db, ModulePath::from(module_path));
 
@@ -404,8 +482,26 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         // All three files define "x"
         FileSource::new(&db, file1, "x = 1".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/a.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         FileSource::new(&db, file2, "x = 2".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/b.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         FileSource::new(&db, file3, "x = 3".to_string());
+        FileMetadata::new(
+            &db,
+            file3,
+            FilePath::from("mymodule/c.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let index = module_def_index(&db, ModulePath::from(module_path));
 
@@ -425,7 +521,19 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         // file1 has foo and helper, file2 has bar and helper (collision on helper)
         FileSource::new(&db, file1, "fn foo() {}\nfn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/a.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         FileSource::new(&db, file2, "fn bar() {}\nfn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/b.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let index = module_def_index(&db, ModulePath::from(module_path));
 

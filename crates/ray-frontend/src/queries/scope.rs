@@ -439,7 +439,7 @@ mod tests {
 
     use ray_shared::{
         file_id::FileId,
-        pathlib::{FilePath, Path},
+        pathlib::{FilePath, ModulePath, Path},
         scope::ScopeEntry,
         span::Pos,
     };
@@ -448,7 +448,7 @@ mod tests {
         queries::{
             libraries::LoadedLibraries,
             scope::scope_at,
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -461,6 +461,12 @@ mod tests {
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         (db, file_id)
     }
 
@@ -691,7 +697,19 @@ mod tests {
         let source_a = "fn main() { x = 1 }";
         let source_b = "fn helper() {}";
         FileSource::new(&db, file_a, source_a.to_string());
+        FileMetadata::new(
+            &db,
+            file_a,
+            FilePath::from("mymod/a.ray"),
+            ModulePath::from("mymod"),
+        );
         FileSource::new(&db, file_b, source_b.to_string());
+        FileMetadata::new(
+            &db,
+            file_b,
+            FilePath::from("mymod/b.ray"),
+            ModulePath::from("mymod"),
+        );
 
         // Position inside main's body in file a
         let pos = pos_of(source_a, "x = 1");
@@ -724,7 +742,19 @@ mod tests {
         let source_main = "import utils\nfn main() { x = 1 }";
         let source_utils = "fn helper() {}";
         FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         FileSource::new(&db, file_utils, source_utils.to_string());
+        FileMetadata::new(
+            &db,
+            file_utils,
+            FilePath::from("utils.ray"),
+            ModulePath::from("utils"),
+        );
 
         let pos = pos_of(source_main, "x = 1");
         let scope = scope_at(&db, file_main, pos);
@@ -758,7 +788,19 @@ mod tests {
         let source_main = "import utils with helper\nfn main() { x = 1 }";
         let source_utils = "fn helper() {}";
         FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         FileSource::new(&db, file_utils, source_utils.to_string());
+        FileMetadata::new(
+            &db,
+            file_utils,
+            FilePath::from("utils.ray"),
+            ModulePath::from("utils"),
+        );
 
         let pos = pos_of(source_main, "x = 1");
         let scope = scope_at(&db, file_main, pos);

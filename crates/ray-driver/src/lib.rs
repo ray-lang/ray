@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
 };
 
+use ray_cfg::ProjectCfg;
 use ray_codegen::{
     codegen::{CodegenOptions, llvm},
     libgen, lir,
@@ -17,7 +18,7 @@ use ray_frontend::{
         diagnostics::workspace_diagnostics,
         libraries::{LoadedLibraries, build_library_data},
         transform::file_ast,
-        workspace::{WorkspaceSnapshot, workspace_source_map},
+        workspace::{CompilerOptions, WorkspaceSnapshot, workspace_source_map},
     },
     query::Database,
 };
@@ -91,6 +92,7 @@ pub struct FrontendResult {
 pub struct Driver {
     ray_paths: RayPaths,
     workspace_root: Option<PathBuf>,
+    project_cfg: ProjectCfg,
     pub errors_emitted: usize,
 }
 
@@ -101,19 +103,20 @@ impl Driver {
     /// used as the workspace root for disk caching. Otherwise, the current
     /// working directory is checked for a `ray.toml`.
     pub fn new(ray_paths: RayPaths, config_path: Option<&std::path::Path>) -> Driver {
-        let workspace_root = Self::resolve_workspace_root(config_path);
+        let (workspace_root, project_cfg) = Self::resolve_config(config_path);
         if let Some(ref root) = workspace_root {
             log::info!("workspace root: {}", root.display());
         }
         Driver {
             ray_paths,
             workspace_root,
+            project_cfg,
             errors_emitted: 0,
         }
     }
 
-    fn resolve_workspace_root(config_path: Option<&std::path::Path>) -> Option<PathBuf> {
-        let config = if let Some(path) = config_path {
+    fn resolve_config(config_path: Option<&std::path::Path>) -> (Option<PathBuf>, ProjectCfg) {
+        let config_file = if let Some(path) = config_path {
             if path.exists() {
                 Some(path.to_path_buf())
             } else {
@@ -123,7 +126,27 @@ impl Driver {
         } else {
             ray_cfg::find_project_config()
         };
-        config.and_then(|p| p.parent().map(|d| d.to_path_buf()))
+
+        let project_cfg = config_file
+            .as_ref()
+            .and_then(|p| {
+                ProjectCfg::read_from(p)
+                    .map_err(|e| log::warn!("failed to read {:?}: {}", p, e))
+                    .ok()
+            })
+            .unwrap_or_default();
+
+        let workspace_root = config_file.and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        (workspace_root, project_cfg)
+    }
+
+    /// Apply project config settings to build options.
+    ///
+    /// Config values are OR'd with CLI flags — if either the config or the
+    /// CLI flag enables a feature, it stays enabled.
+    fn apply_project_config(&self, options: &mut BuildOptions) {
+        options.no_core = options.no_core || self.project_cfg.no_core();
+        options.build_lib = options.build_lib || self.project_cfg.is_lib();
     }
 
     pub fn analyze(&mut self, options: AnalyzeOptions) -> AnalysisReport {
@@ -132,7 +155,7 @@ impl Driver {
             format,
             no_core,
         } = options;
-        let build_options = BuildOptions {
+        let mut build_options = BuildOptions {
             input_path: input_path.clone(),
             to_stdout: false,
             write_assembly: false,
@@ -147,6 +170,7 @@ impl Driver {
             build_lib: false,
             no_core,
         };
+        self.apply_project_config(&mut build_options);
 
         match self.init_workspace(&build_options, None) {
             Ok(workspace) => {
@@ -204,14 +228,22 @@ impl Driver {
         // Create database (with disk cache if workspace root is known)
         let db = if let Some(ref ws_root) = self.workspace_root {
             let cache_dir = ws_root.join(".ray").join("cache");
-            log::info!(
-                "[init_workspace] disk cache enabled at {}",
-                cache_dir.display()
-            );
+            log::info!("disk cache enabled at {}", cache_dir.display());
             Database::with_disk_cache(cache_dir)
         } else {
             Database::new()
         };
+
+        // Set CompilerOptions before any queries run. Without this, queries
+        // that access CompilerOptions via get_input_or_default will record a
+        // dependency but no stored fingerprint, causing disk cache validation
+        // to fail for every entry that transitively depends on it.
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: options.no_core,
+            },
+        );
 
         // Run discovery to populate workspace and libraries
         let discovery_options = discovery::DiscoveryOptions {
@@ -321,7 +353,8 @@ impl Driver {
         }
     }
 
-    pub fn build(&self, options: BuildOptions) -> Result<(), Vec<RayError>> {
+    pub fn build(&self, mut options: BuildOptions) -> Result<(), Vec<RayError>> {
+        self.apply_project_config(&mut options);
         let workspace = self.init_workspace(&options, None)?;
 
         // Check for errors using the query

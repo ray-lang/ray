@@ -122,7 +122,7 @@ mod tests {
             closures::{closure_info, closures_in_def},
             libraries::LoadedLibraries,
             parse::parse_file,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -154,6 +154,12 @@ fn outer() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -196,6 +202,12 @@ fn outer() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -240,6 +252,12 @@ fn outer() {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let outer_def = parse_result
@@ -272,6 +290,12 @@ fn simple(x: int) -> int { x + 1 }
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let simple_def = parse_result
@@ -296,6 +320,12 @@ fn simple(x: int) -> int { x + 1 }
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let point_def = parse_result
@@ -320,6 +350,12 @@ fn simple(x: int) -> int { x + 1 }
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create a fake DefId that doesn't exist
         let fake_def_id = ray_shared::def::DefId {
@@ -354,6 +390,12 @@ fn outer() {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -393,6 +435,12 @@ fn outer() {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create a fake NodeId that doesn't correspond to a closure
         let fake_def_id = DefId {
@@ -422,6 +470,12 @@ fn outer() {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create a NodeId with a non-existent owner DefId
         let fake_def_id = DefId {

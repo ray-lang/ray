@@ -467,7 +467,7 @@ mod tests {
 
     use ray_shared::{
         file_id::FileId,
-        pathlib::{FilePath, Path},
+        pathlib::{FilePath, ModulePath, Path},
         resolution::DefTarget,
         scope::ScopeEntry,
         span::Pos,
@@ -478,7 +478,7 @@ mod tests {
         queries::{
             completion::{CompletionKind, completion_context},
             libraries::LoadedLibraries,
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -491,6 +491,12 @@ mod tests {
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         (db, file_id)
     }
 
@@ -596,7 +602,19 @@ fn main() {
         let source_main = "import utils\nfn main() {\n    utils::\n}";
         let source_utils = "fn helper() {}";
         FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         FileSource::new(&db, file_utils, source_utils.to_string());
+        FileMetadata::new(
+            &db,
+            file_utils,
+            FilePath::from("utils.ray"),
+            ModulePath::from("utils"),
+        );
 
         let pos = pos_after(source_main, "utils::");
         let ctx = completion_context(&db, file_main, pos)
@@ -744,7 +762,19 @@ fn main() {
         let source_main = "import utils\nfn main() { utils::hel }";
         let source_utils = "fn helper() {}";
         FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         FileSource::new(&db, file_utils, source_utils.to_string());
+        FileMetadata::new(
+            &db,
+            file_utils,
+            FilePath::from("utils.ray"),
+            ModulePath::from("utils"),
+        );
 
         let pos = pos_after(source_main, "utils::hel");
         let ctx = completion_context(&db, file_main, pos)

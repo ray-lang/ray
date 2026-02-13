@@ -60,7 +60,7 @@ mod tests {
         queries::{
             locations::{find_at_position, span_of},
             parse::parse_file,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -72,6 +72,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
         (db, file_id)
     }
 
@@ -233,6 +239,12 @@ fn distance(p: Point) -> int {
         // This should still work (return None) because file_info exists
         // but we need to add the source for parse to work
         FileSource::new(&db, file_id, "".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
         let node_id = find_at_position(&db, file_id, 0, 0);
         // Empty file has no nodes at position 0,0
         assert!(

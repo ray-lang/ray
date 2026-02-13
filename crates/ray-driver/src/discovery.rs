@@ -23,7 +23,7 @@ use ray_core::{
 use ray_frontend::queries::{
     libraries::{LoadedLibraries, load_library},
     parse::parse_file,
-    workspace::{FileSource, WorkspaceSnapshot},
+    workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
 };
 use ray_shared::{
     pathlib::{FilePath, ModulePath},
@@ -118,6 +118,11 @@ pub fn discover_workspace(
             std::fs::read_to_string(&file_path)?
         };
         FileSource::new(db, file_id, content);
+
+        // Set per-file metadata so parse_file can depend on stable file identity
+        // without depending on the volatile WorkspaceSnapshot (which is set
+        // incrementally during discovery and would produce unstable fingerprints).
+        FileMetadata::new(db, file_id, file_path.clone(), module_path.clone());
 
         // We need to set the workspace snapshot before parsing so the query works
         db.set_input::<WorkspaceSnapshot>((), snapshot.clone());

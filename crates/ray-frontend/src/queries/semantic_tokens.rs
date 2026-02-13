@@ -55,14 +55,14 @@ mod tests {
     use ray_core::ide::semantic_tokens::{SemanticTokenKind, SemanticTokenModifier};
     use ray_shared::{
         file_id::FileId,
-        pathlib::{FilePath, Path},
+        pathlib::{FilePath, ModulePath, Path},
     };
 
     use crate::{
         queries::{
             libraries::LoadedLibraries,
             semantic_tokens::semantic_tokens,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -74,6 +74,12 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         (db, file_id)
     }
 

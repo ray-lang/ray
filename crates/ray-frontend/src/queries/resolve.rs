@@ -281,7 +281,7 @@ mod tests {
         queries::{
             libraries::{LibraryData, LoadedLibraries},
             resolve::{name_resolutions, resolve_builtin},
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -306,6 +306,12 @@ mod tests {
         setup_empty_libraries(&db);
         setup_no_core(&db);
         FileSource::new(&db, file_id, "".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let resolutions = name_resolutions(&db, file_id);
 
@@ -323,6 +329,12 @@ mod tests {
         setup_no_core(&db);
         // fn f(x) { x }
         FileSource::new(&db, file_id, "fn f(x) { x }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let resolutions = name_resolutions(&db, file_id);
 
@@ -350,8 +362,20 @@ mod tests {
 
         // file1 defines helper
         FileSource::new(&db, file1, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/a.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         // file2 uses helper
         FileSource::new(&db, file2, "fn main() { helper() }".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/b.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let resolutions = name_resolutions(&db, file2);
 
@@ -377,11 +401,23 @@ mod tests {
         setup_no_core(&db);
 
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // Use qualified access: utils::helper()
         FileSource::new(
             &db,
             main_file,
             "import utils\nfn main() { utils::helper() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -410,11 +446,23 @@ mod tests {
         setup_no_core(&db);
 
         FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // Selective import: `import utils with helper` enables bare `helper()`
         FileSource::new(
             &db,
             main_file,
             "import utils with helper\nfn main() { helper() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -443,8 +491,20 @@ mod tests {
 
         // file1 defines x as a function
         FileSource::new(&db, file1, "fn x() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/a.ray"),
+            ModulePath::from(module_path.clone()),
+        );
         // file2 has local x parameter that should shadow the sibling export
         FileSource::new(&db, file2, "fn f(x) { x }".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/b.ray"),
+            ModulePath::from(module_path.clone()),
+        );
 
         let resolutions = name_resolutions(&db, file2);
 
@@ -469,6 +529,12 @@ mod tests {
         setup_no_core(&db);
         // fn f() { y = 1; y }
         FileSource::new(&db, file_id, "fn f() { y = 1\n y }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let resolutions = name_resolutions(&db, file_id);
 
@@ -495,11 +561,23 @@ mod tests {
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // main imports only foo, then tries to use both foo and bar unqualified
         FileSource::new(
             &db,
             main_file,
             "import utils with foo\nfn main() { foo()\n bar() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -531,11 +609,23 @@ mod tests {
         setup_no_core(&db);
 
         FileSource::new(&db, utils_file, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // Selective import: `import utils with foo` does NOT enable `utils::foo`
         FileSource::new(
             &db,
             main_file,
             "import utils with foo\nfn main() { utils::foo() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -567,11 +657,23 @@ mod tests {
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // main plain imports utils, then tries to use foo and bar unqualified (should NOT resolve)
         FileSource::new(
             &db,
             main_file,
             "import utils\nfn main() { foo()\n bar() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -604,11 +706,23 @@ mod tests {
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // main plain imports utils, then uses qualified access
         FileSource::new(
             &db,
             main_file,
             "import utils\nfn main() { utils::foo()\n utils::bar() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -642,11 +756,23 @@ mod tests {
 
         // utils has foo and bar
         FileSource::new(&db, utils_file, "fn foo() {}\nfn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // main glob imports utils, then uses both foo and bar unqualified
         FileSource::new(
             &db,
             main_file,
             "import utils with *\nfn main() { foo()\n bar() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -679,11 +805,23 @@ mod tests {
 
         // utils has foo
         FileSource::new(&db, utils_file, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
         // Glob import: `import utils with *` should NOT enable `utils::foo`
         FileSource::new(
             &db,
             main_file,
             "import utils with *\nfn main() { utils::foo() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -744,6 +882,12 @@ mod tests {
             &db,
             main_file,
             "import core::io\nfn main() { io::read() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -824,6 +968,12 @@ mod tests {
             main_file,
             "import core::io with read\nfn main() { read()\n write() }".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let resolutions = name_resolutions(&db, main_file);
 
@@ -852,6 +1002,12 @@ mod tests {
 
         // Define a struct named "list"
         FileSource::new(&db, file_id, "struct list { items: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let result = resolve_builtin(&db, file_id, "list".to_string());
         assert!(
@@ -901,6 +1057,12 @@ mod tests {
             main_file,
             "import core::collections with list\nfn main() {}".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolve_builtin(&db, main_file, "list".to_string());
         assert!(
@@ -924,6 +1086,12 @@ mod tests {
         setup_no_core(&db);
 
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let result = resolve_builtin(&db, file_id, "list".to_string());
         assert!(result.is_none(), "Should return None for name not in scope");
@@ -944,8 +1112,20 @@ mod tests {
 
         // file1 defines MyType
         FileSource::new(&db, file1, "struct MyType {}".to_string());
+        FileMetadata::new(
+            &db,
+            file1,
+            FilePath::from("mymodule/a.ray"),
+            module_path.clone(),
+        );
         // file2 can see MyType from sibling
         FileSource::new(&db, file2, "fn use_it(x: MyType) {}".to_string());
+        FileMetadata::new(
+            &db,
+            file2,
+            FilePath::from("mymodule/b.ray"),
+            module_path.clone(),
+        );
 
         // From file2's perspective, MyType should be resolvable
         let result = resolve_builtin(&db, file2, "MyType".to_string());
@@ -993,6 +1173,12 @@ mod tests {
             &db,
             file_id,
             "import core::collections with list\nstruct list {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
         );
 
         let result = resolve_builtin(&db, file_id, "list".to_string());
@@ -1049,6 +1235,12 @@ mod tests {
             &db,
             main_file,
             "import core\nfn main() { core::collections::HashMap }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
         );
 
         let resolutions = name_resolutions(&db, main_file);
@@ -1115,6 +1307,12 @@ mod tests {
             main_file,
             "import std\nfn main() { std::collections::hash_map::HashMap }".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let resolutions = name_resolutions(&db, main_file);
 
@@ -1180,6 +1378,12 @@ mod tests {
             main_file,
             "import std::collections\nfn main() { collections::hash_map::HashMap }".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
 
         let resolutions = name_resolutions(&db, main_file);
 
@@ -1214,11 +1418,23 @@ mod tests {
 
         // core::io exports a `print` function
         FileSource::new(&db, io_file, "fn print(v: int) {}".to_string());
+        FileMetadata::new(
+            &db,
+            io_file,
+            FilePath::from("core/io/mod.ray"),
+            ModulePath::from("core::io"),
+        );
         // core.ray imports io and uses qualified access
         FileSource::new(
             &db,
             core_file,
             "import io\nfn main() { io::print(42) }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            core_file,
+            FilePath::from("core/core.ray"),
+            ModulePath::from("core"),
         );
 
         // First, verify the import itself resolves (not just the implicit fallback)

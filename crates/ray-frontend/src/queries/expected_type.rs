@@ -436,7 +436,7 @@ mod tests {
 
     use ray_shared::{
         file_id::FileId,
-        pathlib::{FilePath, Path},
+        pathlib::{FilePath, ModulePath, Path},
         span::Pos,
         ty::Ty,
     };
@@ -445,7 +445,7 @@ mod tests {
         queries::{
             expected_type::expected_type_at,
             libraries::LoadedLibraries,
-            workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -458,6 +458,12 @@ mod tests {
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         (db, file_id)
     }
 

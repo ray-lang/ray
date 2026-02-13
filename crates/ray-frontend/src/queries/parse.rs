@@ -19,7 +19,7 @@ use ray_shared::{
 };
 
 use crate::{
-    queries::workspace::{FileSource, WorkspaceSnapshot},
+    queries::workspace::{FileMetadata, FileSource},
     query::{Database, Query},
 };
 
@@ -35,13 +35,14 @@ pub struct ParseResult {
 #[query]
 pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
     let source = db.get_input::<FileSource>(file_id);
-    let workspace = db.get_input::<WorkspaceSnapshot>(());
-    let file_info = workspace.file_info(file_id).expect("file not in workspace");
+    // Use FileMetadata (per-file, stable) instead of WorkspaceSnapshot (global,
+    // mutated during discovery) so that disk cache entries have stable fingerprints.
+    let metadata = db.get_input::<FileMetadata>(file_id);
 
     let options = ParseOptions {
-        module_path: file_info.module_path.to_path(),
-        filepath: file_info.path.clone(),
-        original_filepath: file_info.path.clone(),
+        module_path: metadata.module_path.to_path(),
+        filepath: metadata.path.clone(),
+        original_filepath: metadata.path.clone(),
         use_stdin: false,
     };
 
@@ -50,12 +51,12 @@ pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
 
     Arc::new(ParseResult {
         ast: ast.unwrap_or_else(|| File {
-            path: file_info.module_path.to_path(),
+            path: metadata.module_path.to_path(),
             stmts: vec![],
             decls: vec![],
             imports: vec![],
             doc_comment: None,
-            filepath: file_info.path.clone(),
+            filepath: metadata.path.clone(),
             span: Span::default(),
         }),
         defs,
@@ -108,12 +109,12 @@ pub fn doc_comment(db: &Database, def_id: DefId) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::pathlib::{FilePath, Path};
+    use ray_shared::pathlib::{FilePath, ModulePath, Path};
 
     use crate::{
         queries::{
             parse::{decorators, doc_comment, has_decorator, parse_file},
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -126,6 +127,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = parse_file(&db, file_id);
 
@@ -142,6 +149,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn foo() {}\nfn bar() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result1 = parse_file(&db, file_id);
         let result2 = parse_file(&db, file_id);
@@ -161,6 +174,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main( {".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let result = parse_file(&db, file_id);
 
@@ -178,6 +197,12 @@ mod tests {
             &db,
             file_id,
             "@inline\nfn double(x: int) -> int => x * 2".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -202,6 +227,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let fn_def = parse_result
@@ -227,6 +258,12 @@ mod tests {
             file_id,
             "@inline\nfn double(x: int) -> int => x * 2".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let fn_def = parse_result
@@ -247,6 +284,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let fn_def = parse_result
@@ -270,6 +313,12 @@ mod tests {
             file_id,
             "/// This is a documented function.\nfn documented() {}".to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let fn_def = parse_result
@@ -292,6 +341,12 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         FileSource::new(&db, file_id, "fn undocumented() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let fn_def = parse_result
@@ -316,6 +371,12 @@ mod tests {
 map = std::collections::HashMap[u32, string]::create()
 "#;
         FileSource::new(&db, file_id, src.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
         let parse_result = parse_file(&db, file_id);
 
         assert!(

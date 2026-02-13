@@ -828,7 +828,7 @@ mod tests {
                 annotated_scheme, apply_type_resolutions, def_signature_status, expr_type_refs,
                 mapped_def_types, resolved_ty,
             },
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -880,6 +880,12 @@ mod tests {
             file_id,
             r#"fn identity(x: 'a) -> 'a { x }"#.to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let identity_def = parse_result
@@ -916,6 +922,12 @@ mod tests {
 
         // Function without type annotations
         FileSource::new(&db, file_id, r#"fn foo() { 42 }"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -946,6 +958,12 @@ mod tests {
             &db,
             file_id,
             r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -979,6 +997,12 @@ mod tests {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let point_def = parse_result
@@ -1005,6 +1029,12 @@ mod tests {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "struct Box['a] { value: 'a }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let box_def = parse_result
@@ -1039,6 +1069,12 @@ mod tests {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, "fn foo() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         // Create a fake DefId that doesn't exist
         let fake_def_id = ray_shared::def::DefId {
@@ -1070,6 +1106,12 @@ mod tests {
             file_id,
             r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let add_def = parse_result
@@ -1094,6 +1136,12 @@ mod tests {
 
         // Function with params annotated but arrow body (return elided)
         FileSource::new(&db, file_id, r#"fn double(x: int) => x * 2"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let double_def = parse_result
@@ -1118,6 +1166,12 @@ mod tests {
 
         // Function with no annotations
         FileSource::new(&db, file_id, r#"fn foo(x) { x }"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1142,6 +1196,12 @@ mod tests {
 
         // Struct is always considered fully annotated
         FileSource::new(&db, file_id, "struct Point { x: int, y: int }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let point_def = parse_result
@@ -1170,6 +1230,12 @@ mod tests {
             &db,
             file_id,
             r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1208,6 +1274,12 @@ mod tests {
         setup_empty_libraries(&db);
 
         FileSource::new(&db, file_id, r#"fn foo(x) { x }"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let foo_def = parse_result
@@ -1238,6 +1310,12 @@ mod tests {
             &db,
             file_id,
             r#"fn identity(x: 'a) -> 'a { x }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1278,6 +1356,12 @@ mod tests {
             &db,
             file_id,
             r#"fn pair(x: 'a, y: 'b) -> ('a, 'b) { (x, y) }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1355,6 +1439,12 @@ mod tests {
 
         // Arrow body function with elided return type
         FileSource::new(&db, file_id, r#"fn double(x: int) => x * 2"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let double_def = parse_result
@@ -1387,6 +1477,12 @@ mod tests {
             &db,
             file_id,
             r#"fn pair(x: 'a, y: 'b) -> ('a, 'b) { (x, y) }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1441,6 +1537,12 @@ mod tests {
             file_id,
             r#"fn identity(x: 'a) -> 'a { x }"#.to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let identity_def = parse_result
@@ -1486,6 +1588,12 @@ mod tests {
             &db,
             file_id,
             r#"fn identity(x: 'a) -> 'a { x }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1875,6 +1983,12 @@ impl object Foo {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let get_x_def = parse_result
@@ -1911,6 +2025,12 @@ impl object Foo {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -1949,6 +2069,12 @@ impl object Foo {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let get_x_def = parse_result
@@ -1986,6 +2112,12 @@ impl object Foo {
 "#
             .to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let get_x_def = parse_result
@@ -2021,6 +2153,12 @@ impl object Foo {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -2081,6 +2219,12 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
 }
 "#
             .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let parse_result = parse_file(&db, file_id);
@@ -2158,6 +2302,12 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
             file_id,
             r#"fn foo(x: int) -> int { x as int }"#.to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let type_refs = expr_type_refs(&db, file_id);
 
@@ -2184,6 +2334,12 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
             file_id,
             r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let type_refs = expr_type_refs(&db, file_id);
 
@@ -2208,6 +2364,12 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
             &db,
             file_id,
             r#"fn to_ptr(x: 'a) -> rawptr['a] { x as rawptr['a] }"#.to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
         );
 
         let type_refs = expr_type_refs(&db, file_id);
@@ -2278,6 +2440,12 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
             file_id,
             r#"fn add(x: int, y: int) -> int { x + y }"#.to_string(),
         );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let add_def = parse_result
@@ -2306,6 +2474,12 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
 
         // Arrow body function — return type should be inferred, not skolemized
         FileSource::new(&db, file_id, r#"fn double(x: int) => x * 2"#.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
 
         let parse_result = parse_file(&db, file_id);
         let double_def = parse_result

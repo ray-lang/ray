@@ -134,7 +134,7 @@ mod tests {
     use crate::queries::{
         libraries::{LibraryData, LoadedLibraries, OperatorArity, OperatorEntry},
         operators::{is_operator_name, lookup_infix_op, lookup_prefix_op, operator_index},
-        workspace::{FileSource, WorkspaceSnapshot},
+        workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
     };
     use crate::query::Database;
 
@@ -206,6 +206,12 @@ trait Add['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let index = operator_index(&db);
 
@@ -246,6 +252,12 @@ trait Mul['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let index = operator_index(&db);
 
@@ -288,6 +300,12 @@ trait Ord['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let index = operator_index(&db);
 
@@ -335,6 +353,12 @@ trait Display['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let index = operator_index(&db);
 
@@ -451,6 +475,12 @@ trait Add['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let index = operator_index(&db);
 
@@ -480,6 +510,12 @@ trait Not['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let index = operator_index(&db);
 
@@ -509,6 +545,12 @@ trait Add['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let entry = lookup_infix_op(&db, "+".to_string());
         assert!(entry.is_some(), "Should find + as infix operator");
@@ -531,6 +573,12 @@ trait Not['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let entry = lookup_infix_op(&db, "!".to_string());
         assert!(entry.is_none(), "Should not find ! as infix operator");
@@ -552,6 +600,12 @@ trait Not['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let entry = lookup_prefix_op(&db, "!".to_string());
         assert!(entry.is_some(), "Should find ! as prefix operator");
@@ -574,6 +628,12 @@ trait Add['a] {
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
 
         let entry = lookup_prefix_op(&db, "+".to_string());
         assert!(entry.is_none(), "Should not find + as prefix operator");

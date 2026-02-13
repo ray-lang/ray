@@ -100,7 +100,7 @@ mod tests {
             libraries::LoadedLibraries,
             transform::{FileAst, file_ast},
             typecheck::typecheck_group_input,
-            workspace::{FileSource, WorkspaceSnapshot},
+            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -117,6 +117,12 @@ mod tests {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
         FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
         (db, file_id)
     }
 
