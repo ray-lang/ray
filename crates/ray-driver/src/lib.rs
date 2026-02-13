@@ -14,7 +14,7 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_frontend::{
-    persistence::file_backend::FileBackend,
+    persistence::redb_backend::RedbBackend,
     queries::{
         diagnostics::workspace_diagnostics,
         libraries::{LoadedLibraries, build_library_data},
@@ -228,9 +228,18 @@ impl Driver {
 
         // Create database (with persistence if workspace root is known)
         let db = if let Some(ref ws_root) = self.workspace_root {
-            let cache_dir = ws_root.join(".ray").join("cache");
-            log::info!("persistence enabled at {}", cache_dir.display());
-            Database::with_persistence(Box::new(FileBackend::new(cache_dir)))
+            let cache_path = ws_root.join(".ray").join("cache.redb");
+            log::info!("persistence enabled at {}", cache_path.display());
+            match RedbBackend::new(cache_path) {
+                Ok(backend) => Database::with_persistence(Box::new(backend)),
+                Err(e) => {
+                    log::warn!(
+                        "failed to open cache: {}, proceeding without persistence",
+                        e
+                    );
+                    Database::new()
+                }
+            }
         } else {
             Database::new()
         };

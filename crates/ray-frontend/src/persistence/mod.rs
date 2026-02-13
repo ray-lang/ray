@@ -1,4 +1,5 @@
 pub mod file_backend;
+pub mod redb_backend;
 
 use std::io;
 

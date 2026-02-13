@@ -50,13 +50,13 @@ pub trait Input {
     fn fingerprint(value: &Self::Value) -> u64;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct InputKey {
     pub name: &'static str,
     pub key: KeyId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct QueryKey {
     pub name: &'static str,
     pub key: KeyId,
@@ -85,7 +85,7 @@ pub struct CachedValue {
     pub fingerprint: Option<u64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct KeyId {
     pub hash: u64,
 }
@@ -147,6 +147,15 @@ pub struct Database {
     /// from the persistence backend. Used for dep validation without loading
     /// full values.
     meta_cache: RwLock<HashMap<(QueryId, u64), EntryMetadata>>,
+    /// Cached input fingerprints, keyed by InputKey. Populated in `set_input`
+    /// so that `current_input_fingerprint` (called thousands of times during
+    /// persisted dep validation) avoids recomputing expensive hashes.
+    input_fp_cache: RwLock<HashMap<InputKey, u64>>,
+    /// Session-level set of `(query_id, key_hash)` pairs whose persisted
+    /// metadata has already been validated. Avoids redundant recursive
+    /// validation when multiple queries share overlapping dep trees.
+    /// Cleared on `set_input` to ensure correctness when inputs change.
+    validated_persisted: RwLock<HashSet<(u32, u64)>>,
 }
 
 impl Database {
@@ -166,6 +175,8 @@ impl Database {
             id_to_name: RwLock::new(HashMap::new()),
             name_to_id: RwLock::new(HashMap::new()),
             meta_cache: RwLock::new(HashMap::new()),
+            input_fp_cache: RwLock::new(HashMap::new()),
+            validated_persisted: RwLock::new(HashSet::new()),
         }
     }
 
@@ -637,10 +648,19 @@ impl Database {
             key: KeyId::new(&key),
         };
         self.register_input::<I>();
+        let fp = I::fingerprint(&value);
+        self.input_fp_cache
+            .write()
+            .expect("input_fp_cache lock poisoned")
+            .insert(ikey, fp);
         self.inputs
             .write()
             .expect("inputs lock poisoned")
             .insert(ikey, Arc::new(value));
+        self.validated_persisted
+            .write()
+            .expect("validated_persisted lock poisoned")
+            .clear();
         self.revision.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -689,15 +709,28 @@ impl Database {
         self.register_input::<I>();
         let inputs = self.inputs.read().expect("inputs lock poisoned");
 
-        let value = match inputs.get(&ikey) {
-            Some(v) => v
-                .downcast_ref::<I::Value>()
-                .expect("input type mismatch")
-                .clone(),
-            None => I::Value::default(),
+        let (value, from_default) = match inputs.get(&ikey) {
+            Some(v) => (
+                v.downcast_ref::<I::Value>()
+                    .expect("input type mismatch")
+                    .clone(),
+                false,
+            ),
+            None => (I::Value::default(), true),
         };
 
         let fp = I::fingerprint(&value);
+
+        // Cache fingerprint for defaults that weren't explicitly set_input'd
+        if from_default {
+            drop(inputs);
+            self.input_fp_cache
+                .write()
+                .expect("input_fp_cache lock poisoned")
+                .entry(ikey)
+                .or_insert(fp);
+        }
+
         if let Some(frame) = self
             .active_inputs
             .lock()
@@ -780,20 +813,27 @@ impl Database {
 
     /// Look up the current fingerprint of an input by name and key hash.
     /// Used for validating persisted entries whose deps reference inputs.
+    ///
+    /// Returns the cached fingerprint computed at `set_input` time, avoiding
+    /// expensive recomputation (e.g., hashing PathBufs in WorkspaceSnapshot).
     fn current_input_fingerprint(&self, name: &str, key_hash: u64) -> Option<u64> {
         let fingerprints = self
             .input_fingerprints
             .read()
             .expect("input_fingerprints lock poisoned");
-        let (&static_name, &fingerprint_fn) = fingerprints.get_key_value(name)?;
+        let (&static_name, _) = fingerprints.get_key_value(name)?;
 
         let ikey = InputKey {
             name: static_name,
             key: KeyId { hash: key_hash },
         };
-        let inputs = self.inputs.read().expect("inputs lock poisoned");
-        let value = inputs.get(&ikey)?;
-        Some(fingerprint_fn(value.as_ref()))
+
+        // Use cached fingerprint from set_input
+        let fp_cache = self
+            .input_fp_cache
+            .read()
+            .expect("input_fp_cache lock poisoned");
+        fp_cache.get(&ikey).copied()
     }
 
     /// Validate input dependencies from a persisted entry.
@@ -892,12 +932,26 @@ impl Database {
                 continue;
             }
 
+            // Session-level cache: skip if already validated in a prior call.
+            if self
+                .validated_persisted
+                .read()
+                .expect("validated_persisted lock poisoned")
+                .contains(&key)
+            {
+                continue;
+            }
+
             let query_id = QueryId(dep.query_id);
 
             // Fast path: if this dep is already in the in-memory cache (e.g.,
             // loaded by a prior query in this session), just compare fingerprints.
             if let Some(fp) = self.find_cached_fingerprint_by_id(query_id, dep.key_hash) {
                 if fp == dep.fingerprint {
+                    self.validated_persisted
+                        .write()
+                        .expect("validated_persisted lock poisoned")
+                        .insert(key);
                     continue;
                 } else {
                     return false;
@@ -922,6 +976,11 @@ impl Database {
             if !self.validate_persisted_deps(&metadata.query_deps, visited) {
                 return false;
             }
+
+            self.validated_persisted
+                .write()
+                .expect("validated_persisted lock poisoned")
+                .insert(key);
         }
         true
     }
