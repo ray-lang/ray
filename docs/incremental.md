@@ -5125,8 +5125,8 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: ray analyze with queries
 
-- [ ] Use queries for type information in `ray analyze` output
-- [ ] **Validate**: `ray analyze` matches legacy output
+- [x] Use queries for type information in `ray analyze` output
+- [x] **Validate**: `ray analyze` matches legacy output
 
 ---
 
