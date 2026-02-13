@@ -5145,11 +5145,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 2: Document event handlers
 
-- [ ] `didOpen`: Add file to workspace if needed
-- [ ] `didChange`: Apply overlay with new content
-- [ ] `didClose`: Remove overlay (revert to disk)
-- [ ] `didSave`: Update disk content, clear overlay
-- [ ] **Validate**: Unit tests for each event
+- [x] `didOpen`: Add file to workspace if needed
+- [x] `didChange`: Apply overlay with new content
+- [x] `didClose`: Remove overlay (revert to disk)
+- [x] `didSave`: Update disk content, clear overlay
+- [x] **Validate**: Unit tests for each event
 
 ##### Step 3: Hover handler
 

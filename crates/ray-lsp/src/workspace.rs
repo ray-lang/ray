@@ -1,3 +1,4 @@
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use ray_frontend::{
     persistence::redb_backend::RedbBackend,
     queries::{
         libraries::LoadedLibraries,
-        workspace::{CompilerOptions, FileSource, WorkspaceSnapshot},
+        workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
     },
     query::Database,
 };
@@ -48,6 +49,46 @@ impl LspWorkspace {
     pub fn file_id(&self, path: &FilePath) -> Option<FileId> {
         let snapshot = self.db.get_input::<WorkspaceSnapshot>(());
         snapshot.file_id(path)
+    }
+
+    /// Add a new file to this workspace that wasn't found during discovery.
+    ///
+    /// Creates a `FileId`, updates the `WorkspaceSnapshot`, and sets
+    /// `FileMetadata` and `FileSource` inputs. Returns the new `FileId`.
+    pub fn add_file(&self, path: &FilePath, content: String) -> FileId {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let module_path = discovery::discover_module_for_file(&canonical);
+
+        let mut snapshot = self.db.get_input::<WorkspaceSnapshot>(());
+        let file_id = snapshot.add_file(canonical.clone(), module_path.clone());
+        self.db.set_input::<WorkspaceSnapshot>((), snapshot);
+
+        FileMetadata::new(&self.db, file_id, canonical, module_path);
+        self.db
+            .set_input::<FileSource>(file_id, FileSource(content));
+
+        file_id
+    }
+
+    /// Revert a file to its on-disk content, removing the editor overlay.
+    ///
+    /// If the file no longer exists on disk, sets `FileSource` to an empty
+    /// string (the closest to "clearing" since inputs cannot be removed).
+    pub fn revert_to_disk(&self, file_id: FileId) -> Result<(), io::Error> {
+        let metadata = self.db.get_input::<FileMetadata>(file_id);
+        let content = std::fs::read_to_string(metadata.path.as_ref()).unwrap_or_default();
+        self.db
+            .set_input::<FileSource>(file_id, FileSource(content));
+        Ok(())
+    }
+
+    /// Flush the database persistence backend to disk.
+    ///
+    /// No-op if this workspace has no persistence backend (i.e., no `ray.toml`).
+    pub fn flush(&self) {
+        if let Err(e) = self.db.flush_persistence() {
+            log::warn!("failed to flush persistence for {}: {}", self.root, e);
+        }
     }
 }
 
@@ -95,6 +136,16 @@ impl WorkspaceManager {
                 log::warn!("failed to initialize workspace at {}: {}", toml_path, e);
             }
         }
+    }
+
+    /// Look up the workspace and FileId for a given file path.
+    ///
+    /// Combines `workspace_for_file` and `file_id` into one call, avoiding
+    /// nested if-let chains in event handlers.
+    pub fn lookup_file(&self, path: &FilePath) -> Option<(&LspWorkspace, FileId)> {
+        let ws = self.workspace_for_file(path)?;
+        let file_id = ws.file_id(path)?;
+        Some((ws, file_id))
     }
 
     /// Find the workspace that contains the given file path.
@@ -498,5 +549,149 @@ mod tests {
         let ws = manager.workspace_for_file(&file).unwrap();
         let canonical = file.canonicalize().unwrap();
         assert!(ws.file_id(&canonical).is_some());
+    }
+
+    #[test]
+    fn add_file_to_workspace() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn hello() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        let ws = &manager.workspaces[0];
+
+        // Create a new file on disk that wasn't part of initial discovery
+        let new_file = ws_dir.join("new_helper.ray");
+        fs::write(&new_file, "fn helper() {}").unwrap();
+        let new_path = FilePath::from(new_file).canonicalize().unwrap();
+
+        // The file shouldn't exist in the workspace yet
+        assert!(ws.file_id(&new_path).is_none());
+
+        // Add it via add_file
+        let file_id = ws.add_file(&new_path, "fn helper() {}".to_string());
+
+        // Now the file should be discoverable
+        assert_eq!(ws.file_id(&new_path), Some(file_id));
+
+        // FileSource should be set
+        let source = ws.db.get_input::<FileSource>(file_id);
+        assert_eq!(source.0, "fn helper() {}");
+
+        // FileMetadata should be set
+        let metadata = ws.db.get_input::<FileMetadata>(file_id);
+        assert_eq!(metadata.path, new_path);
+    }
+
+    #[test]
+    fn revert_to_disk_restores_content() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn disk_version() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        let ws = &manager.workspaces[0];
+        let mod_path = FilePath::from(ws_dir.join("mod.ray"))
+            .canonicalize()
+            .unwrap();
+        let file_id = ws.file_id(&mod_path).unwrap();
+
+        // Apply an overlay (simulating didChange)
+        ws.apply_overlay(file_id, "fn editor_version() {}".to_string());
+        assert_eq!(
+            ws.db.get_input::<FileSource>(file_id).0,
+            "fn editor_version() {}"
+        );
+
+        // Revert to disk (simulating didClose)
+        ws.revert_to_disk(file_id).unwrap();
+        assert_eq!(
+            ws.db.get_input::<FileSource>(file_id).0,
+            "fn disk_version() {}"
+        );
+    }
+
+    #[test]
+    fn revert_to_disk_clears_when_file_missing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn temp() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        let ws = &manager.workspaces[0];
+        let mod_path = FilePath::from(ws_dir.join("mod.ray"))
+            .canonicalize()
+            .unwrap();
+        let file_id = ws.file_id(&mod_path).unwrap();
+
+        // Delete the file from disk
+        fs::remove_file(ws_dir.join("mod.ray")).unwrap();
+
+        // Revert should set to empty string
+        ws.revert_to_disk(file_id).unwrap();
+        assert_eq!(ws.db.get_input::<FileSource>(file_id).0, "");
+    }
+
+    #[test]
+    fn flush_delegates_to_persistence() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn hello() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        let ws = &manager.workspaces[0];
+
+        // Workspace with ray.toml should have persistence.
+        // flush() should not panic or error.
+        assert!(ws.db.has_persistence());
+        ws.flush();
+
+        // Verify the cache file was created
+        let cache_path = ws_dir.join(".ray").join("cache.redb");
+        assert!(cache_path.exists());
     }
 }

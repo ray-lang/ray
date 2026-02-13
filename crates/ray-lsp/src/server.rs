@@ -13,17 +13,18 @@ use tower_lsp::{
     jsonrpc::Result,
     lsp_types::{
         DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-        HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
-        Location, MarkupContent, MarkupKind, MessageType, Position, SemanticTokens,
-        SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-        SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-        TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
+        DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams,
+        InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind, MessageType,
+        Position, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+        SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
     },
 };
 
 use ray_codegen::libgen;
 use ray_codegen::libgen::DefinitionKind;
+use ray_shared::file_id::FileId;
 use ray_shared::pathlib::RayPaths;
 use ray_shared::span::Span;
 use ray_shared::{node_id::NodeId, pathlib::FilePath};
@@ -36,7 +37,7 @@ use crate::{
     },
     semantic_tokens::{self, pretty_dump},
     symbols::{ResolvedSymbol, resolve_symbol_at_position},
-    workspace::WorkspaceManager,
+    workspace::{LspWorkspace, WorkspaceManager},
 };
 
 #[derive(Clone)]
@@ -87,7 +88,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                 change: Some(tower_lsp::lsp_types::TextDocumentSyncKind::FULL),
                 will_save: Some(false),
                 will_save_wait_until: Some(false),
-                save: Some(tower_lsp::lsp_types::TextDocumentSyncSaveOptions::Supported(false)),
+                save: Some(tower_lsp::lsp_types::TextDocumentSyncSaveOptions::Supported(true)),
             },
         ));
 
@@ -129,10 +130,28 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let text = params.text_document.text;
         let version = Some(params.text_document.version);
 
-        self.documents
-            .write()
-            .await
-            .insert(uri.clone(), DocumentData::new(text, version));
+        self.store_document(&uri, text.clone(), version).await;
+
+        // Apply overlay to incremental workspace
+        if let Some(canonical) = Self::resolve_file_path(&uri) {
+            let mut manager = self.workspace_manager.write().await;
+            match manager.workspace_for_file_or_create(&canonical) {
+                Ok(ws) => {
+                    if let Some(file_id) = ws.file_id(&canonical) {
+                        ws.apply_overlay(file_id, text.clone());
+                    } else {
+                        ws.add_file(&canonical, text.clone());
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "didOpen: failed to find/create workspace for {}: {}",
+                        uri,
+                        e
+                    );
+                }
+            }
+        }
 
         let message = format!("Opened document {uri}");
         let _ = self.client.log_message(MessageType::INFO, message).await;
@@ -143,48 +162,70 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.into_iter().last() {
-            let mut documents = self.documents.write().await;
-            let entry = documents
-                .entry(params.text_document.uri.clone())
-                .or_insert_with(|| {
-                    DocumentData::new(String::new(), Some(params.text_document.version))
-                });
-            entry.text = change.text;
-            entry.version = Some(params.text_document.version);
+            let uri = params.text_document.uri.clone();
+            let version = Some(params.text_document.version);
 
-            let msg = format!(
+            self.store_document(&uri, change.text.clone(), version)
+                .await;
+
+            self.log(format!(
                 "[server] did_change: version={} len={}",
-                entry.version.unwrap_or_default(),
-                entry.text.len()
-            );
-            self.log(msg).await;
+                version.unwrap_or_default(),
+                change.text.len()
+            ))
+            .await;
 
-            drop(documents);
+            // Apply overlay to incremental workspace
+            self.with_workspace_file(&uri, |ws: &LspWorkspace, file_id| {
+                ws.apply_overlay(file_id, change.text);
+            })
+            .await;
+
             self.publish_diagnostics(&params.text_document.uri).await;
             self.schedule_semantic_tokens_refresh().await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = &params.text_document.uri;
+
         {
-            self.documents
-                .write()
-                .await
-                .remove(&params.text_document.uri);
+            self.documents.write().await.remove(uri);
         }
         {
-            self.diagnostics_published_version
-                .write()
-                .await
-                .remove(&params.text_document.uri);
+            self.diagnostics_published_version.write().await.remove(uri);
         }
+
+        // Revert overlay to disk content in the incremental workspace
+        self.with_workspace_file(uri, |ws: &LspWorkspace, file_id| {
+            if let Err(e) = ws.revert_to_disk(file_id) {
+                log::warn!("didClose: failed to revert {}: {}", uri, e);
+            }
+        })
+        .await;
 
         // Clear diagnostics for the closed document
         let _ = self
             .client
-            .publish_diagnostics(params.text_document.uri.clone(), Vec::new(), None)
+            .publish_diagnostics(uri.clone(), Vec::new(), None)
             .await;
 
+        self.schedule_semantic_tokens_refresh().await;
+    }
+
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        let uri = &params.text_document.uri;
+
+        // Re-read from disk to capture post-save hooks/formatters, then flush cache.
+        self.with_workspace_file(uri, |ws: &LspWorkspace, file_id| {
+            if let Err(e) = ws.revert_to_disk(file_id) {
+                log::warn!("didSave: failed to re-read {}: {}", uri, e);
+            }
+            ws.flush();
+        })
+        .await;
+
+        self.publish_diagnostics(uri).await;
         self.schedule_semantic_tokens_refresh().await;
     }
 
@@ -589,6 +630,31 @@ impl RayLanguageServer {
             .client
             .log_message(MessageType::INFO, message.to_string())
             .await;
+    }
+
+    /// Resolve a URI to a canonical file path.
+    fn resolve_file_path(uri: &Url) -> Option<FilePath> {
+        let filepath = uri_to_filepath(uri)?;
+        Some(filepath.canonicalize().unwrap_or(filepath))
+    }
+
+    /// Store a document's text and version in the in-memory document map.
+    async fn store_document(&self, uri: &Url, text: String, version: Option<i32>) {
+        self.documents
+            .write()
+            .await
+            .insert(uri.clone(), DocumentData::new(text, version));
+    }
+
+    /// Resolve a URI, acquire a read lock on the workspace manager, look up
+    /// the workspace and FileId, and pass them to a closure.
+    async fn with_workspace_file(&self, uri: &Url, f: impl FnOnce(&LspWorkspace, FileId)) {
+        if let Some(canonical) = Self::resolve_file_path(uri) {
+            let manager = self.workspace_manager.read().await;
+            if let Some((ws, file_id)) = manager.lookup_file(&canonical) {
+                f(ws, file_id);
+            }
+        }
     }
 
     async fn update_workspace_root(&self, params: &InitializeParams) {
