@@ -5121,7 +5121,7 @@ This is the largest migration. Do it incrementally, running tests after each ste
 - [x] Implement cache serialization to `.ray/cache/`
 - [x] Store query results with fingerprints
 - [x] Load cache on startup, validate fingerprints
-- [ ] **Validate**: Build, modify file, rebuild — verify cache hits
+- [x] **Validate**: Build, modify file, rebuild — verify cache hits
 
 ##### Step 3: ray analyze with queries
 
