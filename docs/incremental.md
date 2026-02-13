@@ -5134,14 +5134,14 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 1: LSP state management
 
-- [ ] Create `Database` per workspace
-- [ ] Implement document overlay for unsaved changes:
+- [x] Create `Database` per workspace
+- [x] Implement document overlay for unsaved changes:
   ```rust
   fn apply_overlay(&mut self, file_id: FileId, content: String) {
       self.set_input::<FileSource>(file_id, FileSource(content));
   }
   ```
-- [ ] **Validate**: Edit file in memory, verify queries see changes
+- [x] **Validate**: Edit file in memory, verify queries see changes
 
 ##### Step 2: Document event handlers
 

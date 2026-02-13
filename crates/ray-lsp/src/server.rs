@@ -24,6 +24,7 @@ use tower_lsp::{
 
 use ray_codegen::libgen;
 use ray_codegen::libgen::DefinitionKind;
+use ray_shared::pathlib::RayPaths;
 use ray_shared::span::Span;
 use ray_shared::{node_id::NodeId, pathlib::FilePath};
 use serde_json::Value;
@@ -35,6 +36,7 @@ use crate::{
     },
     semantic_tokens::{self, pretty_dump},
     symbols::{ResolvedSymbol, resolve_symbol_at_position},
+    workspace::WorkspaceManager,
 };
 
 #[derive(Clone)]
@@ -56,6 +58,7 @@ pub(crate) struct RayLanguageServer {
     analysis_cache: RwLock<HashMap<Url, AnalysisSnapshot>>,
     workspace_root: RwLock<Option<FilePath>>,
     toolchain_root: RwLock<Option<FilePath>>,
+    workspace_manager: RwLock<WorkspaceManager>,
     missing_toolchain_warning_emitted: AtomicBool,
     semantic_refresh_pending: Arc<AtomicBool>,
     semantic_compute: Arc<Semaphore>,
@@ -76,6 +79,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         self.update_workspace_root(&params).await;
         self.update_toolchain_root(params.initialization_options.as_ref())
             .await;
+        self.init_workspaces().await;
 
         let text_sync = Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
@@ -555,6 +559,7 @@ impl RayLanguageServer {
             analysis_cache: RwLock::new(HashMap::new()),
             workspace_root: RwLock::new(None),
             toolchain_root: RwLock::new(None),
+            workspace_manager: RwLock::new(WorkspaceManager::new()),
             missing_toolchain_warning_emitted: AtomicBool::new(false),
             semantic_refresh_pending: Arc::new(AtomicBool::new(false)),
             semantic_compute: Arc::new(Semaphore::new(1)), // limit concurrent semantic token computations
@@ -604,6 +609,38 @@ impl RayLanguageServer {
             let mut root = self.workspace_root.write().await;
             *root = Some(FilePath::from(path));
         }
+    }
+
+    /// Initialize incremental workspaces by scanning for ray.toml files.
+    ///
+    /// Called during `initialize` after workspace root and toolchain root are known.
+    /// Discovers RayPaths from the toolchain root, then scans the workspace root
+    /// for ray.toml files, creating a Database-backed workspace for each.
+    async fn init_workspaces(&self) {
+        let workspace_root = self.workspace_root.read().await.clone();
+        let toolchain_root = self.toolchain_root.read().await.clone();
+
+        let Some(ws_root) = workspace_root else {
+            log::info!("no workspace root; skipping workspace initialization");
+            return;
+        };
+
+        let ray_paths = match RayPaths::discover(toolchain_root, Some(&ws_root)) {
+            Some(paths) => paths,
+            None => {
+                log::warn!("RayPaths not found; skipping workspace initialization");
+                return;
+            }
+        };
+
+        let mut manager = self.workspace_manager.write().await;
+        manager.initialize(&ws_root, ray_paths);
+
+        log::info!(
+            "initialized {} workspace(s) under {}",
+            manager.workspace_count(),
+            ws_root
+        );
     }
 
     async fn update_toolchain_root(&self, value: Option<&Value>) {

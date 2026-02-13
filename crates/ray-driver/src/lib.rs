@@ -33,7 +33,7 @@ use ray_typing::{tyctx::TyCtx, types::Substitutable};
 
 mod analyze;
 mod build;
-mod discovery;
+pub mod discovery;
 mod global_options;
 
 pub use analyze::{
