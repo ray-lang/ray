@@ -14,7 +14,7 @@ use fnv::FnvHasher;
 use ray_shared::pathlib::FilePath;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::cache::{CacheEntry, Dependency, DiskCache};
+use crate::persistence::{DepRecord, EntryMetadata, PersistenceBackend, QueryId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum CyclePolicy {
@@ -27,8 +27,9 @@ pub trait Query {
     type Value: Clone + Send + Sync + Serialize + DeserializeOwned + 'static;
 
     const NAME: &'static str;
+    const ID: QueryId;
     const CYCLE_POLICY: CyclePolicy = CyclePolicy::Panic;
-    /// Whether this query's results should be persisted to the on-disk cache.
+    /// Whether this query's results should be persisted to the persistent cache.
     /// Set to `false` via `#[query(skip_persist)]`.
     const PERSIST: bool = true;
 
@@ -44,6 +45,7 @@ pub trait Input {
     type Value: Clone + Send + Sync + 'static;
 
     const NAME: &'static str;
+    const ID: QueryId;
 
     fn fingerprint(value: &Self::Value) -> u64;
 }
@@ -104,12 +106,8 @@ struct QueryStats {
 /// its fingerprint changed. This is needed when an input has actually changed
 /// within a running process (e.g., LSP file edit).
 ///
-/// Disk validation does NOT use `recompute` — it uses metadata-only fingerprint
-/// checks instead (see `validate_disk_query_deps`).
-///
-/// This struct also serves as a name registry: the `HashMap<&'static str, QueryFns>`
-/// lets us look up `&'static str` names from owned `String` names on disk entries
-/// (via `get_key_value`).
+/// Persisted validation does NOT use `recompute` — it uses metadata-only
+/// fingerprint checks instead (see `validate_persisted_deps`).
 #[derive(Clone, Copy)]
 struct QueryFns {
     /// Force-recompute: takes the type-erased key, calls `db.query::<Q>(key)`,
@@ -134,11 +132,21 @@ pub struct Database {
     profiling: AtomicBool,
     /// Profiling stats per query name. Only populated when profiling is enabled.
     stats: Mutex<HashMap<&'static str, QueryStats>>,
-    /// Persistent on-disk cache. `None` when no workspace root is detected.
-    disk_cache: Option<DiskCache>,
+    /// Persistent cache backend. `None` when no workspace root is detected.
+    persistence: Option<Box<dyn PersistenceBackend>>,
     /// Type-erased recompute + deserialization functions for early-exit validation.
     /// Keyed by query name. Registered lazily on first query call.
     query_fns: RwLock<HashMap<&'static str, QueryFns>>,
+    /// Maps QueryId → &'static str name. Populated during registration.
+    /// Used for collision detection and converting DepRecord IDs to names.
+    id_to_name: RwLock<HashMap<QueryId, &'static str>>,
+    /// Maps &'static str name → QueryId. Populated during registration.
+    /// Used for converting in-memory dep names to DepRecord IDs.
+    name_to_id: RwLock<HashMap<&'static str, QueryId>>,
+    /// Session-level metadata cache for persisted entries. Populated lazily
+    /// from the persistence backend. Used for dep validation without loading
+    /// full values.
+    meta_cache: RwLock<HashMap<(QueryId, u64), EntryMetadata>>,
 }
 
 impl Database {
@@ -153,39 +161,37 @@ impl Database {
             revision: AtomicU64::new(0),
             profiling: AtomicBool::new(false),
             stats: Mutex::new(HashMap::new()),
-            disk_cache: None,
+            persistence: None,
             query_fns: RwLock::new(HashMap::new()),
+            id_to_name: RwLock::new(HashMap::new()),
+            name_to_id: RwLock::new(HashMap::new()),
+            meta_cache: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Create a Database with a persistent on-disk cache at the given directory.
-    pub fn with_disk_cache(cache_dir: std::path::PathBuf) -> Self {
+    /// Create a Database with a persistent cache backend.
+    pub fn with_persistence(backend: Box<dyn PersistenceBackend>) -> Self {
         Self {
-            disk_cache: Some(DiskCache::new(cache_dir)),
+            persistence: Some(backend),
             ..Self::new()
         }
     }
 
-    /// Flush all staged cache entries to disk.
+    /// Flush all staged cache entries to the persistence backend.
     ///
     /// Should be called at the end of a successful build. No-op if there is
-    /// no disk cache configured.
-    pub fn flush_cache(&self) -> std::io::Result<()> {
-        if let Some(ref dc) = self.disk_cache {
-            dc.flush()
+    /// no persistence backend configured.
+    pub fn flush_persistence(&self) -> std::io::Result<()> {
+        if let Some(ref p) = self.persistence {
+            p.flush()
         } else {
             Ok(())
         }
     }
 
-    /// Returns whether this database has a disk cache configured.
-    pub fn has_disk_cache(&self) -> bool {
-        self.disk_cache.is_some()
-    }
-
-    /// Returns a reference to the disk cache, if configured.
-    pub fn disk_cache(&self) -> Option<&DiskCache> {
-        self.disk_cache.as_ref()
+    /// Returns whether this database has a persistence backend configured.
+    pub fn has_persistence(&self) -> bool {
+        self.persistence.is_some()
     }
 
     /// Enable per-query profiling stats collection.
@@ -264,9 +270,9 @@ impl Database {
         }
         self.clear_active_frames();
 
-        // Try disk cache
+        // Try persistent cache
         if Q::PERSIST {
-            if let Some(value) = self.try_load_from_disk::<Q>(&qkey, &key) {
+            if let Some(value) = self.try_load_persisted::<Q>(&qkey, &key) {
                 self.pop_active_frames();
                 self.record_stat(Q::NAME, call_start, true);
                 return value;
@@ -328,11 +334,11 @@ impl Database {
     }
 
     /// Compute a query from scratch, store the result in cache, and
-    /// optionally stage a disk write if persistence is enabled.
+    /// optionally stage a persistent write if persistence is enabled.
     ///
     /// Pops the active frames internally (needs the collected deps).
     fn compute_and_store<Q: Query>(&self, qkey: &QueryKey, key: Q::Key) -> Q::Value {
-        let key_bytes_for_disk = if Q::PERSIST && self.has_disk_cache() {
+        let key_bytes_for_persist = if Q::PERSIST && self.has_persistence() {
             bincode::serialize(&key).ok()
         } else {
             None
@@ -351,10 +357,9 @@ impl Database {
         };
 
         if let (Some(key_bytes), Some(fingerprint), Some(value_bytes)) =
-            (key_bytes_for_disk, fingerprint, value_bytes)
+            (key_bytes_for_persist, fingerprint, value_bytes)
         {
-            self.stage_disk_write(
-                Q::NAME,
+            self.stage_persist::<Q>(
                 qkey.key.hash,
                 key_bytes,
                 value_bytes,
@@ -458,14 +463,13 @@ impl Database {
         self.inputs_match(input_deps) && self.force_validate_query_deps(query_deps)
     }
 
-    /// Stage a computed query result for writing to the disk cache.
+    /// Stage a computed query result for writing to the persistence backend.
     ///
-    /// Converts in-memory `InputDep`/`QueryKey` deps to the on-disk
-    /// `Dependency` format (with fingerprints), builds a `CacheEntry`,
-    /// and stages it for batch writing on the next `flush_cache()`.
-    fn stage_disk_write(
+    /// Converts in-memory `InputDep`/`QueryKey` deps to `DepRecord` format
+    /// (with QueryId + fingerprints), builds `EntryMetadata`, and stages
+    /// key/metadata/value separately for batch writing on `flush_persistence()`.
+    fn stage_persist<Q: Query>(
         &self,
-        query_name: &'static str,
         key_hash: u64,
         key_bytes: Vec<u8>,
         value_bytes: Vec<u8>,
@@ -473,86 +477,119 @@ impl Database {
         input_deps: &[InputDep],
         query_deps: &[QueryKey],
     ) {
-        let Some(dc) = &self.disk_cache else {
+        let Some(ref backend) = self.persistence else {
             return;
         };
 
-        let disk_input_deps: Vec<Dependency> = input_deps
-            .iter()
-            .map(|dep| Dependency {
-                query_name: dep.key.name.to_string(),
-                key_hash: dep.key.key.hash,
-                fingerprint: dep.fingerprint,
-            })
-            .collect();
+        let (input_dep_records, query_dep_records) = {
+            let name_to_id = self.name_to_id.read().expect("name_to_id lock poisoned");
 
-        let disk_query_deps: Vec<Dependency> = {
-            let cache = self.cache.read().expect("cache lock poisoned");
-            query_deps
+            let input_dep_records: Vec<DepRecord> = input_deps
                 .iter()
-                .filter_map(|qk| {
-                    let fp = cache.get(qk)?.fingerprint?;
-                    Some(Dependency {
-                        query_name: qk.name.to_string(),
-                        key_hash: qk.key.hash,
-                        fingerprint: fp,
+                .filter_map(|dep| {
+                    let &id = name_to_id.get(dep.key.name)?;
+                    Some(DepRecord {
+                        query_id: id.0,
+                        key_hash: dep.key.key.hash,
+                        fingerprint: dep.fingerprint,
                     })
                 })
-                .collect()
+                .collect();
+
+            let query_dep_records: Vec<DepRecord> = {
+                let cache = self.cache.read().expect("cache lock poisoned");
+                query_deps
+                    .iter()
+                    .filter_map(|qk| {
+                        let fp = cache.get(qk)?.fingerprint?;
+                        let &id = name_to_id.get(qk.name)?;
+                        Some(DepRecord {
+                            query_id: id.0,
+                            key_hash: qk.key.hash,
+                            fingerprint: fp,
+                        })
+                    })
+                    .collect()
+            };
+
+            (input_dep_records, query_dep_records)
         };
 
-        let entry = CacheEntry {
-            key_bytes,
-            value_bytes,
+        let metadata = EntryMetadata {
             fingerprint,
-            input_deps: disk_input_deps,
-            query_deps: disk_query_deps,
+            input_deps: input_dep_records,
+            query_deps: query_dep_records,
         };
 
-        match bincode::serialize(&entry) {
-            Ok(data) => dc.stage_write(query_name, key_hash, data),
-            Err(e) => log::warn!("failed to serialize cache entry for {}: {}", query_name, e),
+        let metadata_bytes = match bincode::serialize(&metadata) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::warn!("failed to serialize metadata for {}: {}", Q::NAME, e);
+                return;
+            }
+        };
+
+        if let Err(e) = backend.stage_write(Q::ID, key_hash, key_bytes, metadata_bytes, value_bytes)
+        {
+            log::warn!("failed to stage write for {}: {}", Q::NAME, e);
+            return;
         }
+
+        // Insert into meta_cache so subsequent dep validation sees the new entry
+        self.meta_cache
+            .write()
+            .expect("meta_cache lock poisoned")
+            .insert((Q::ID, key_hash), metadata);
     }
 
-    /// Try to load a query result from the disk cache.
+    /// Try to load a query result from the persistence backend.
     ///
-    /// Loads the raw `CacheEntry`, verifies the key matches (collision check),
-    /// validates input and query deps, converts disk deps to in-memory format,
-    /// and inserts the result into the in-memory cache.
+    /// Loads metadata, verifies the key matches (collision check),
+    /// validates input and query deps, then loads the value on success.
+    /// Converts persisted deps to in-memory format and inserts the result
+    /// into the in-memory cache.
     ///
     /// Returns `Some(value)` on success, `None` on any failure (missing entry,
     /// deserialization error, stale deps). The caller should fall through to
     /// recomputation on `None`.
-    fn try_load_from_disk<Q: Query>(&self, qkey: &QueryKey, key: &Q::Key) -> Option<Q::Value> {
-        let dc = self.disk_cache.as_ref()?;
-        let raw = dc.load_raw(Q::NAME, qkey.key.hash)?;
-        let entry: CacheEntry = bincode::deserialize(&raw).ok()?;
+    fn try_load_persisted<Q: Query>(&self, qkey: &QueryKey, key: &Q::Key) -> Option<Q::Value> {
+        let backend = self.persistence.as_ref()?;
+        let cache_meta = backend.load_meta(Q::ID, qkey.key.hash).ok()??;
 
         // Collision check: verify the serialized key matches
         let key_bytes = bincode::serialize(key).ok()?;
-        if entry.key_bytes != key_bytes {
+        if cache_meta.key_bytes != key_bytes {
             return None;
         }
 
+        // Deserialize the entry metadata
+        let metadata: EntryMetadata = bincode::deserialize(&cache_meta.metadata_bytes).ok()?;
+
         // Validate input deps
-        if !self.validate_disk_input_deps(&entry.input_deps) {
+        if !self.validate_persisted_input_deps(&metadata.input_deps) {
             return None;
         }
 
         // Validate query deps (metadata-only recursive fingerprint check)
         let mut visited = HashSet::new();
-        if !self.validate_disk_query_deps(&entry.query_deps, &mut visited) {
+        if !self.validate_persisted_deps(&metadata.query_deps, &mut visited) {
             return None;
         }
 
-        // Deserialize the value
-        let value: Q::Value = bincode::deserialize(&entry.value_bytes).ok()?;
+        // Load the value (only after validation passes)
+        let value_bytes = backend.load_value(Q::ID, qkey.key.hash).ok()??;
+        let value: Q::Value = bincode::deserialize(&value_bytes).ok()?;
 
-        // Convert disk deps to in-memory format so future revalidation
-        // uses the single unified path (no more disk_deps branching).
-        let input_deps = self.convert_disk_input_deps(&entry.input_deps);
-        let query_deps = self.convert_disk_query_deps(&entry.query_deps);
+        // Insert metadata into meta_cache for dep validation of downstream queries
+        self.meta_cache
+            .write()
+            .expect("meta_cache lock poisoned")
+            .insert((Q::ID, qkey.key.hash), metadata.clone());
+
+        // Convert persisted deps to in-memory format so future revalidation
+        // uses the single unified path.
+        let input_deps = self.convert_persisted_input_deps(&metadata.input_deps);
+        let query_deps = self.convert_persisted_query_deps(&metadata.query_deps);
 
         let key_arc: Arc<dyn Any + Send + Sync> = Arc::new(key.clone());
         self.cache.write().expect("cache lock poisoned").insert(
@@ -563,7 +600,7 @@ impl Database {
                 input_deps,
                 query_deps,
                 validated_at: AtomicU64::new(self.revision.load(Ordering::SeqCst)),
-                fingerprint: Some(entry.fingerprint),
+                fingerprint: Some(metadata.fingerprint),
             },
         );
 
@@ -742,7 +779,7 @@ impl Database {
     }
 
     /// Look up the current fingerprint of an input by name and key hash.
-    /// Used for validating disk-loaded entries whose deps use string names.
+    /// Used for validating persisted entries whose deps reference inputs.
     fn current_input_fingerprint(&self, name: &str, key_hash: u64) -> Option<u64> {
         let fingerprints = self
             .input_fingerprints
@@ -759,10 +796,14 @@ impl Database {
         Some(fingerprint_fn(value.as_ref()))
     }
 
-    /// Validate input dependencies from a disk cache entry.
-    fn validate_disk_input_deps(&self, deps: &[Dependency]) -> bool {
+    /// Validate input dependencies from a persisted entry.
+    fn validate_persisted_input_deps(&self, deps: &[DepRecord]) -> bool {
+        let id_to_name = self.id_to_name.read().expect("id_to_name lock poisoned");
         for dep in deps {
-            match self.current_input_fingerprint(&dep.query_name, dep.key_hash) {
+            let Some(&name) = id_to_name.get(&QueryId(dep.query_id)) else {
+                return false;
+            };
+            match self.current_input_fingerprint(name, dep.key_hash) {
                 Some(fp) if fp == dep.fingerprint => continue,
                 _ => return false,
             }
@@ -770,31 +811,54 @@ impl Database {
         true
     }
 
-    /// Look up a cached query's fingerprint by name and key hash.
-    fn find_cached_fingerprint_by_name_hash(&self, name: &str, hash: u64) -> Option<u64> {
-        let static_name = {
-            let qfns = self.query_fns.read().expect("query_fns lock poisoned");
-            qfns.get_key_value(name).map(|(&k, _)| k)
-        }?;
+    /// Look up a cached query's fingerprint by QueryId and key hash.
+    fn find_cached_fingerprint_by_id(&self, query_id: QueryId, key_hash: u64) -> Option<u64> {
+        let name = {
+            let map = self.id_to_name.read().expect("id_to_name lock poisoned");
+            *map.get(&query_id)?
+        };
         let qkey = QueryKey {
-            name: static_name,
-            key: KeyId { hash },
+            name,
+            key: KeyId { hash: key_hash },
         };
         let cache = self.cache.read().expect("cache lock poisoned");
         cache.get(&qkey).and_then(|cv| cv.fingerprint)
     }
 
-    /// Validate query dependencies from a disk cache entry using **metadata-only**
+    /// Load entry metadata from the meta_cache or persistence backend.
+    fn load_entry_metadata(&self, query_id: QueryId, key_hash: u64) -> Option<EntryMetadata> {
+        // Check meta_cache first
+        {
+            let cache = self.meta_cache.read().expect("meta_cache lock poisoned");
+            if let Some(meta) = cache.get(&(query_id, key_hash)) {
+                return Some(meta.clone());
+            }
+        }
+
+        // Load from backend
+        let backend = self.persistence.as_ref()?;
+        let cache_meta = backend.load_meta(query_id, key_hash).ok()??;
+        let metadata: EntryMetadata = bincode::deserialize(&cache_meta.metadata_bytes).ok()?;
+
+        self.meta_cache
+            .write()
+            .expect("meta_cache lock poisoned")
+            .insert((query_id, key_hash), metadata.clone());
+
+        Some(metadata)
+    }
+
+    /// Validate query dependencies from a persisted entry using **metadata-only**
     /// fingerprint checking — NO force-recompute, NO value deserialization.
     ///
     /// # Why metadata-only (not force-recompute)?
     ///
-    /// Disk validation happens on a fresh process start (or first access after
-    /// startup). At this point, NO inputs have changed since the cache was
+    /// Persisted validation happens on a fresh process start (or first access
+    /// after startup). At this point, NO inputs have changed since the cache was
     /// written — we're just confirming the world hasn't changed. We can verify
     /// this by recursively checking that:
     ///
-    ///   1. Each dep's stored fingerprint matches the on-disk entry's fingerprint.
+    ///   1. Each dep's stored fingerprint matches the persisted entry's fingerprint.
     ///   2. Each dep's own input deps still match the current live inputs.
     ///   3. Each dep's own query deps are recursively valid (same algorithm).
     ///
@@ -805,33 +869,34 @@ impl Database {
     /// output may have genuinely changed.
     ///
     /// The two paths complement each other:
-    /// - **Disk validation** (this method): confirms identity on cold start.
+    /// - **Persisted validation** (this method): confirms identity on cold start.
     ///   Metadata-only — never calls `db.query()`, never deserializes values.
     /// - **In-memory early-exit** (`force_validate_query_deps`): propagates
     ///   changes within a running process. Force-recomputes deps to compare
     ///   fingerprints.
     ///
-    /// Once a disk entry passes validation here and is loaded into the in-memory
-    /// cache (by `try_load_from_disk`), all subsequent revalidation uses the
-    /// in-memory path — disk validation is never revisited for that entry.
-    fn validate_disk_query_deps(
+    /// Once a persisted entry passes validation here and is loaded into the
+    /// in-memory cache (by `try_load_persisted`), all subsequent revalidation
+    /// uses the in-memory path — persisted validation is never revisited for
+    /// that entry.
+    fn validate_persisted_deps(
         &self,
-        deps: &[Dependency],
-        visited: &mut HashSet<(String, u64)>,
+        deps: &[DepRecord],
+        visited: &mut HashSet<(u32, u64)>,
     ) -> bool {
         for dep in deps {
-            let key = (dep.query_name.clone(), dep.key_hash);
+            let key = (dep.query_id, dep.key_hash);
             if !visited.insert(key) {
                 // Already validated this dep in this validation walk — skip to
                 // avoid infinite recursion on diamond-shaped dep graphs.
                 continue;
             }
 
+            let query_id = QueryId(dep.query_id);
+
             // Fast path: if this dep is already in the in-memory cache (e.g.,
             // loaded by a prior query in this session), just compare fingerprints.
-            if let Some(fp) =
-                self.find_cached_fingerprint_by_name_hash(&dep.query_name, dep.key_hash)
-            {
+            if let Some(fp) = self.find_cached_fingerprint_by_id(query_id, dep.key_hash) {
                 if fp == dep.fingerprint {
                     continue;
                 } else {
@@ -839,51 +904,41 @@ impl Database {
                 }
             }
 
-            // Not in memory — load the dep's CacheEntry from disk (metadata only,
-            // we do NOT deserialize the value).
-            let Some(dc) = &self.disk_cache else {
-                return false;
-            };
-            let Some(raw) = dc.load_raw(&dep.query_name, dep.key_hash) else {
-                return false;
-            };
-            let Ok(entry) = bincode::deserialize::<CacheEntry>(&raw) else {
+            // Not in memory — load the dep's metadata from meta_cache or backend.
+            let Some(metadata) = self.load_entry_metadata(query_id, dep.key_hash) else {
                 return false;
             };
 
             // Metadata-only validation:
             // 1. Check that the dep's stored fingerprint matches what we expect.
-            if entry.fingerprint != dep.fingerprint {
+            if metadata.fingerprint != dep.fingerprint {
                 return false;
             }
             // 2. Verify the dep's input deps against current live inputs.
-            if !self.validate_disk_input_deps(&entry.input_deps) {
+            if !self.validate_persisted_input_deps(&metadata.input_deps) {
                 return false;
             }
             // 3. Recursively validate the dep's own query deps (same algorithm).
-            if !self.validate_disk_query_deps(&entry.query_deps, visited) {
+            if !self.validate_persisted_deps(&metadata.query_deps, visited) {
                 return false;
             }
         }
         true
     }
 
-    /// Convert disk input deps to in-memory `InputDep` format.
+    /// Convert persisted input deps to in-memory `InputDep` format.
     ///
-    /// Looks up `&'static str` names from the input fingerprints registry.
-    /// Deps whose names aren't registered are silently dropped (shouldn't
+    /// Looks up `&'static str` names from the ID-to-name registry.
+    /// Deps whose IDs aren't registered are silently dropped (shouldn't
     /// happen after successful validation).
-    fn convert_disk_input_deps(&self, deps: &[Dependency]) -> Vec<InputDep> {
-        let fingerprints = self
-            .input_fingerprints
-            .read()
-            .expect("input_fingerprints lock poisoned");
+    fn convert_persisted_input_deps(&self, deps: &[DepRecord]) -> Vec<InputDep> {
+        let id_to_name = self.id_to_name.read().expect("id_to_name lock poisoned");
         deps.iter()
             .filter_map(|dep| {
-                let (&static_name, _) = fingerprints.get_key_value(dep.query_name.as_str())?;
+                let &name = id_to_name.get(&QueryId(dep.query_id))?;
                 Some(InputDep {
                     key: InputKey {
-                        name: static_name,
+                        name,
                         key: KeyId { hash: dep.key_hash },
                     },
                     fingerprint: dep.fingerprint,
@@ -892,18 +947,18 @@ impl Database {
             .collect()
     }
 
-    /// Convert disk query deps to in-memory `QueryKey` format.
+    /// Convert persisted query deps to in-memory `QueryKey` format.
     ///
-    /// Looks up `&'static str` names from the query functions registry.
-    /// Deps whose names aren't registered are silently dropped (shouldn't
-    /// happen after successful validation, which force-recomputes all deps).
-    fn convert_disk_query_deps(&self, deps: &[Dependency]) -> Vec<QueryKey> {
-        let qfns = self.query_fns.read().expect("query_fns lock poisoned");
+    /// Looks up `&'static str` names from the ID-to-name registry.
+    /// Deps whose IDs aren't registered are silently dropped (shouldn't
+    /// happen after successful validation).
+    fn convert_persisted_query_deps(&self, deps: &[DepRecord]) -> Vec<QueryKey> {
+        let id_to_name = self.id_to_name.read().expect("id_to_name lock poisoned");
         deps.iter()
             .filter_map(|dep| {
-                let (&static_name, _) = qfns.get_key_value(dep.query_name.as_str())?;
+                let &name = id_to_name.get(&QueryId(dep.query_id))?;
                 Some(QueryKey {
-                    name: static_name,
+                    name,
                     key: KeyId { hash: dep.key_hash },
                 })
             })
@@ -911,13 +966,35 @@ impl Database {
     }
 
     fn register_input<I: Input>(&self) {
-        let mut registry = self
-            .input_fingerprints
-            .write()
-            .expect("input_fingerprints lock poisoned");
-        if registry.contains_key(I::NAME) {
-            return;
+        {
+            let registry = self
+                .input_fingerprints
+                .read()
+                .expect("input_fingerprints lock poisoned");
+            if registry.contains_key(I::NAME) {
+                return;
+            }
         }
+
+        // Collision detection and ID registration
+        {
+            let mut id_map = self.id_to_name.write().expect("id_to_name lock poisoned");
+            if let Some(&existing) = id_map.get(&I::ID) {
+                if existing != I::NAME {
+                    panic!(
+                        "QueryId collision: {} and {} both hash to {:?}",
+                        existing,
+                        I::NAME,
+                        I::ID
+                    );
+                }
+            }
+            id_map.insert(I::ID, I::NAME);
+        }
+        self.name_to_id
+            .write()
+            .expect("name_to_id lock poisoned")
+            .insert(I::NAME, I::ID);
 
         fn fingerprint_any<I: Input>(value: &dyn Any) -> u64 {
             let value = value
@@ -926,7 +1003,10 @@ impl Database {
             I::fingerprint(value)
         }
 
-        registry.insert(I::NAME, fingerprint_any::<I>);
+        self.input_fingerprints
+            .write()
+            .expect("input_fingerprints lock poisoned")
+            .insert(I::NAME, fingerprint_any::<I>);
     }
 
     /// Register type-erased recompute and key deserialization functions for query Q.
@@ -938,6 +1018,26 @@ impl Database {
                 return;
             }
         }
+
+        // Collision detection and ID registration
+        {
+            let mut id_map = self.id_to_name.write().expect("id_to_name lock poisoned");
+            if let Some(&existing) = id_map.get(&Q::ID) {
+                if existing != Q::NAME {
+                    panic!(
+                        "QueryId collision: {} and {} both hash to {:?}",
+                        existing,
+                        Q::NAME,
+                        Q::ID
+                    );
+                }
+            }
+            id_map.insert(Q::ID, Q::NAME);
+        }
+        self.name_to_id
+            .write()
+            .expect("name_to_id lock poisoned")
+            .insert(Q::NAME, Q::ID);
 
         fn recompute_fn<Q: Query>(
             db: &Database,
@@ -980,13 +1080,18 @@ pub struct FileInputKey {
 
 #[cfg(test)]
 mod tests {
-    use std::hash::{Hash, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        hash::{Hash, Hasher},
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use ray_query_macros::{input, query};
     use serde::{Deserialize, Serialize};
 
-    use crate::query::{CyclePolicy, Database, Input, Query};
+    use crate::{
+        persistence::{QueryId, file_backend::FileBackend},
+        query::{CyclePolicy, Database, Input, Query},
+    };
 
     #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
     struct IntKey(u64);
@@ -1003,6 +1108,7 @@ mod tests {
         type Value = u64;
 
         const NAME: &'static str = "ReadInt";
+        const ID: QueryId = QueryId(0x1);
 
         fn compute(db: &Database, key: Self::Key) -> Self::Value {
             db.get_input::<IntInput>(key).0
@@ -1016,6 +1122,7 @@ mod tests {
         type Value = u64;
 
         const NAME: &'static str = "AddOne";
+        const ID: QueryId = QueryId(0x2);
 
         fn compute(db: &Database, key: Self::Key) -> Self::Value {
             db.query::<ReadInt>(key) + 1
@@ -1029,6 +1136,7 @@ mod tests {
         type Value = u64;
 
         const NAME: &'static str = "CycleQuery";
+        const ID: QueryId = QueryId(0x3);
         const CYCLE_POLICY: CyclePolicy = CyclePolicy::Error;
 
         fn compute(db: &Database, key: Self::Key) -> Self::Value {
@@ -1219,138 +1327,140 @@ mod tests {
     }
 
     #[test]
-    fn new_database_has_no_disk_cache() {
+    fn new_database_has_no_persistence() {
         let db = Database::new();
-        assert!(!db.has_disk_cache());
-        assert!(db.disk_cache().is_none());
+        assert!(!db.has_persistence());
     }
 
     #[test]
-    fn with_disk_cache_enables_disk_cache() {
+    fn with_persistence_enables_persistence() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Database::with_disk_cache(dir.path().join("cache"));
-        assert!(db.has_disk_cache());
-        assert!(db.disk_cache().is_some());
+        let db = Database::with_persistence(Box::new(FileBackend::new(dir.path().join("cache"))));
+        assert!(db.has_persistence());
     }
 
     #[test]
-    fn flush_cache_noop_without_disk_cache() {
+    fn flush_persistence_noop_without_backend() {
         let db = Database::new();
-        // Should succeed silently with no disk cache configured
-        assert!(db.flush_cache().is_ok());
+        // Should succeed silently with no persistence configured
+        assert!(db.flush_persistence().is_ok());
     }
 
     #[test]
-    fn flush_cache_delegates_to_disk_cache() {
+    fn flush_persistence_delegates_to_backend() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let db = Database::with_disk_cache(cache_dir.clone());
+        let db = Database::with_persistence(Box::new(FileBackend::new(cache_dir.clone())));
 
-        // Stage a write via the underlying disk cache, then flush via Database
-        db.disk_cache()
-            .unwrap()
-            .stage_write("q", 1, b"data".to_vec());
-        db.flush_cache().unwrap();
+        // Compute a query to stage a write, then flush
+        let key = IntKey(200);
+        IntInput::new(&db, key.clone(), 42);
+        let _ = db.query::<ReadInt>(key);
+        db.flush_persistence().unwrap();
 
-        // Verify the file was written
-        assert!(cache_dir.join("q/0000000000000001.bin").exists());
+        // Verify files were written to the cache directory
+        assert!(cache_dir.exists());
     }
 
-    // --- Disk cache integration tests ---
+    // --- Persistence integration tests ---
 
-    /// Helper: create a Database with disk cache, set input, compute, flush.
-    fn setup_disk_db(cache_dir: &std::path::Path, key: IntKey, input_value: u64) -> Database {
-        let db = Database::with_disk_cache(cache_dir.to_path_buf());
+    fn new_persist_db(cache_dir: &std::path::Path) -> Database {
+        Database::with_persistence(Box::new(FileBackend::new(cache_dir.to_path_buf())))
+    }
+
+    /// Helper: create a Database with persistence, set input, compute, flush.
+    fn setup_persist_db(cache_dir: &std::path::Path, key: IntKey, input_value: u64) -> Database {
+        let db = new_persist_db(cache_dir);
         IntInput::new(&db, key.clone(), input_value);
         let _ = db.query::<ReadInt>(key);
-        db.flush_cache().unwrap();
+        db.flush_persistence().unwrap();
         db
     }
 
     #[test]
-    fn disk_cache_write_and_load_roundtrip() {
+    fn persist_write_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let key = IntKey(100);
 
-        // Build 1: compute and flush to disk
-        let db1 = setup_disk_db(&cache_dir, key.clone(), 42);
+        // Build 1: compute and flush
+        let db1 = setup_persist_db(&cache_dir, key.clone(), 42);
         assert_eq!(db1.query::<ReadInt>(key.clone()), 42);
 
-        // Build 2: fresh database with same inputs, should load from disk
-        let db2 = Database::with_disk_cache(cache_dir);
+        // Build 2: fresh database with same inputs, should load from persistence
+        let db2 = new_persist_db(&cache_dir);
         IntInput::new(&db2, key.clone(), 42);
         let result = db2.query::<ReadInt>(key);
         assert_eq!(result, 42);
     }
 
     #[test]
-    fn disk_cache_invalidated_on_input_change() {
+    fn persist_invalidated_on_input_change() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let key = IntKey(101);
 
         // Build 1: input=10
-        setup_disk_db(&cache_dir, key.clone(), 10);
+        setup_persist_db(&cache_dir, key.clone(), 10);
 
-        // Build 2: input changed to 20 — disk entry should be invalidated
-        let db2 = Database::with_disk_cache(cache_dir);
+        // Build 2: input changed to 20 — persisted entry should be invalidated
+        let db2 = new_persist_db(&cache_dir);
         IntInput::new(&db2, key.clone(), 20);
         let result = db2.query::<ReadInt>(key);
         assert_eq!(result, 20);
     }
 
     #[test]
-    fn disk_cache_with_query_dependencies() {
+    fn persist_with_query_dependencies() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let key = IntKey(102);
 
         // Build 1: compute AddOne (depends on ReadInt) and flush
-        let db1 = Database::with_disk_cache(cache_dir.clone());
+        let db1 = new_persist_db(&cache_dir);
         IntInput::new(&db1, key.clone(), 5);
         assert_eq!(db1.query::<AddOne>(key.clone()), 6);
-        db1.flush_cache().unwrap();
+        db1.flush_persistence().unwrap();
 
-        // Build 2: same inputs — both should load from disk
-        let db2 = Database::with_disk_cache(cache_dir);
+        // Build 2: same inputs — both should load from persistence
+        let db2 = new_persist_db(&cache_dir);
         IntInput::new(&db2, key.clone(), 5);
         assert_eq!(db2.query::<AddOne>(key), 6);
     }
 
     #[test]
-    fn disk_cache_corrupted_entry_falls_back_to_compute() {
+    fn persist_corrupted_entry_falls_back_to_compute() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let key = IntKey(103);
 
         // Build 1: compute and flush
-        setup_disk_db(&cache_dir, key.clone(), 99);
+        setup_persist_db(&cache_dir, key.clone(), 99);
 
-        // Corrupt the cache entry
-        let query_dir = cache_dir.join("ReadInt");
+        // Corrupt the cache entries — ReadInt has QueryId(0x1), directory "1"
+        let query_dir = cache_dir.join("1");
         for entry in std::fs::read_dir(&query_dir).unwrap() {
             let path = entry.unwrap().path();
             std::fs::write(&path, b"corrupted data").unwrap();
         }
 
-        // Build 2: should fall back to compute despite corrupted disk entry
-        let db2 = Database::with_disk_cache(cache_dir);
+        // Build 2: should fall back to compute despite corrupted entry
+        let db2 = new_persist_db(&cache_dir);
         IntInput::new(&db2, key.clone(), 99);
         assert_eq!(db2.query::<ReadInt>(key), 99);
     }
 
     #[test]
-    fn disk_cache_revalidation_after_revision_bump() {
+    fn persist_revalidation_after_revision_bump() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let key = IntKey(104);
 
         // Build 1: compute and flush
-        setup_disk_db(&cache_dir, key.clone(), 50);
+        setup_persist_db(&cache_dir, key.clone(), 50);
 
-        // Build 2: load from disk, then set_input with same value (bumps revision)
-        let db2 = Database::with_disk_cache(cache_dir);
+        // Build 2: load from persistence, then set_input with same value (bumps revision)
+        let db2 = new_persist_db(&cache_dir);
         IntInput::new(&db2, key.clone(), 50);
         let first = db2.query::<ReadInt>(key.clone());
         assert_eq!(first, 50);
@@ -1370,6 +1480,7 @@ mod tests {
             type Key = IntKey;
             type Value = u64;
             const NAME: &'static str = "CountedAddOne";
+            const ID: QueryId = QueryId(0x4);
             fn compute(db: &Database, key: Self::Key) -> Self::Value {
                 COMPUTE_COUNT.fetch_add(1, Ordering::SeqCst);
                 db.query::<ReadInt>(key) + 1
@@ -1382,11 +1493,9 @@ mod tests {
         // changes ReadInt's output. So we test the early-exit path by
         // keeping the input the same after a revision bump.
 
-        let dir = tempfile::tempdir().unwrap();
-        let cache_dir = dir.path().join("cache");
+        let db = Database::new();
         let key = IntKey(105);
 
-        let db = Database::with_disk_cache(cache_dir);
         IntInput::new(&db, key.clone(), 10);
 
         COMPUTE_COUNT.store(0, Ordering::SeqCst);
@@ -1411,17 +1520,16 @@ mod tests {
             type Key = IntKey;
             type Value = u64;
             const NAME: &'static str = "TrackedAddOne";
+            const ID: QueryId = QueryId(0x5);
             fn compute(db: &Database, key: Self::Key) -> Self::Value {
                 RECOMPUTE_COUNT.fetch_add(1, Ordering::SeqCst);
                 db.query::<ReadInt>(key) + 1
             }
         }
 
-        let dir = tempfile::tempdir().unwrap();
-        let cache_dir = dir.path().join("cache");
+        let db = Database::new();
         let key = IntKey(106);
 
-        let db = Database::with_disk_cache(cache_dir);
         IntInput::new(&db, key.clone(), 10);
 
         RECOMPUTE_COUNT.store(0, Ordering::SeqCst);
@@ -1435,19 +1543,19 @@ mod tests {
     }
 
     #[test]
-    fn disk_loaded_entry_revalidates_after_input_change() {
+    fn persist_loaded_entry_revalidates_after_input_change() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let key = IntKey(107);
 
         // Build 1: compute AddOne chain and flush
-        let db1 = Database::with_disk_cache(cache_dir.clone());
+        let db1 = new_persist_db(&cache_dir);
         IntInput::new(&db1, key.clone(), 5);
         assert_eq!(db1.query::<AddOne>(key.clone()), 6);
-        db1.flush_cache().unwrap();
+        db1.flush_persistence().unwrap();
 
-        // Build 2: different input — disk entries should be invalidated
-        let db2 = Database::with_disk_cache(cache_dir);
+        // Build 2: different input — persisted entries should be invalidated
+        let db2 = new_persist_db(&cache_dir);
         IntInput::new(&db2, key.clone(), 15);
         assert_eq!(db2.query::<AddOne>(key), 16);
     }

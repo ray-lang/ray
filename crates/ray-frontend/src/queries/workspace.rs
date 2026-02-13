@@ -293,6 +293,17 @@ impl Input for WorkspaceSnapshot {
     type Value = WorkspaceSnapshot;
 
     const NAME: &'static str = "WorkspaceSnapshot";
+    const ID: crate::persistence::QueryId = crate::persistence::QueryId({
+        let bytes = b"WorkspaceSnapshot";
+        let mut hash: u32 = 0x811c_9dc5;
+        let mut i = 0;
+        while i < bytes.len() {
+            hash ^= bytes[i] as u32;
+            hash = hash.wrapping_mul(0x0100_0193);
+            i += 1;
+        }
+        hash
+    });
 
     fn fingerprint(value: &Self::Value) -> u64 {
         let mut hasher = FnvHasher::default();

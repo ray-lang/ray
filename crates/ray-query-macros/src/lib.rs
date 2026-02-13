@@ -144,6 +144,9 @@ pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
     let key_ident = format_ident!("Key{}", camel);
     let query_ident = format_ident!("Query{}", camel);
 
+    // Compute QueryId as FNV-1a 32-bit hash of the function name.
+    let query_id_value = fnv1a_32(fn_name_str.as_bytes());
+
     // Rebuild the original function as an inner compute function.
     // We will keep the body unchanged, but it will take (db, key) where key destructures fields.
     let body = &f.block;
@@ -181,6 +184,7 @@ pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
             type Value = #ret_ty;
 
             const NAME: &'static str = #fn_name_str;
+            const ID: crate::persistence::QueryId = crate::persistence::QueryId(#query_id_value);
             const PERSIST: bool = #persist_value;
 
             fn compute(#db_ident: #db_ty, key: Self::Key) -> Self::Value {
@@ -292,6 +296,7 @@ pub fn input(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
     }
 
+    let input_id_value = fnv1a_32(fn_name_str.as_bytes());
     let input_ident = format_ident!("Input{}", fn_name_str);
     let db_ty = db_arg.ty.as_ref();
     let getter_fn = quote! {
@@ -339,6 +344,7 @@ pub fn input(attr: TokenStream, item: TokenStream) -> TokenStream {
             type Value = #ret_ty;
 
             const NAME: &'static str = #fn_name_str;
+            const ID: crate::persistence::QueryId = crate::persistence::QueryId(#input_id_value);
 
             #fingerprint_impl
         }
@@ -402,6 +408,7 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
 
     let has_key_override = key_ty.is_some();
     let key_ty = key_ty.unwrap_or_else(|| syn::parse_quote!(#ident));
+    let struct_id_value = fnv1a_32(name_str.as_bytes());
 
     let fingerprint_impl = if let Some(path) = fingerprint_path {
         quote! {
@@ -444,6 +451,7 @@ fn input_struct(attr: TokenStream, s: ItemStruct) -> TokenStream {
             type Value = #ident;
 
             const NAME: &'static str = #name_str;
+            const ID: crate::persistence::QueryId = crate::persistence::QueryId(#struct_id_value);
 
             #fingerprint_impl
         }
@@ -523,4 +531,14 @@ fn get_string_lit(value: Expr, name: &'static str) -> Result<LitStr, syn::Error>
     };
 
     Ok(lit)
+}
+
+/// FNV-1a 32-bit hash, computed at macro expansion time.
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
 }

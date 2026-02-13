@@ -14,6 +14,7 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_frontend::{
+    persistence::file_backend::FileBackend,
     queries::{
         diagnostics::workspace_diagnostics,
         libraries::{LoadedLibraries, build_library_data},
@@ -179,7 +180,7 @@ impl Driver {
                 let types = collect_types(&workspace.db);
                 let module_path = workspace.entry_module_path();
 
-                if let Err(e) = workspace.db.flush_cache() {
+                if let Err(e) = workspace.db.flush_persistence() {
                     log::warn!("failed to flush cache: {}", e);
                 }
 
@@ -225,11 +226,11 @@ impl Driver {
             search_paths.extend(link_paths.iter().cloned());
         }
 
-        // Create database (with disk cache if workspace root is known)
+        // Create database (with persistence if workspace root is known)
         let db = if let Some(ref ws_root) = self.workspace_root {
             let cache_dir = ws_root.join(".ray").join("cache");
-            log::info!("disk cache enabled at {}", cache_dir.display());
-            Database::with_disk_cache(cache_dir)
+            log::info!("persistence enabled at {}", cache_dir.display());
+            Database::with_persistence(Box::new(FileBackend::new(cache_dir)))
         } else {
             Database::new()
         };
@@ -363,7 +364,7 @@ impl Driver {
 
         // Flush cache regardless of errors — individual query results are
         // still valid and will speed up the next build.
-        if let Err(e) = workspace.db.flush_cache() {
+        if let Err(e) = workspace.db.flush_persistence() {
             log::warn!("failed to flush cache: {}", e);
         }
 
