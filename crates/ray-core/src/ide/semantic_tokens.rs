@@ -1,7 +1,7 @@
 use ray_shared::{
     file_id::FileId,
     pathlib::FilePath,
-    span::{Pos, Span, parsed::Parsed},
+    span::{Span, parsed::Parsed},
     ty::Ty,
 };
 use ray_typing::types::TyScheme;
@@ -91,7 +91,7 @@ pub fn collect_from_source(source: &str) -> Vec<SemanticToken> {
         return Vec::new();
     };
 
-    let mut tokens = SemanticTokenCollector::collect_with_source(&file, &srcmap, Some(source));
+    let mut tokens = SemanticTokenCollector::collect(&file, &srcmap);
     append_trivia_tokens(&mut tokens, &srcmap);
     sort_tokens(&mut tokens);
 
@@ -100,23 +100,13 @@ pub fn collect_from_source(source: &str) -> Vec<SemanticToken> {
 
 struct SemanticTokenCollector<'a> {
     srcmap: &'a SourceMap,
-    source: Option<&'a str>,
     tokens: Vec<SemanticToken>,
 }
 
 impl<'a> SemanticTokenCollector<'a> {
     fn collect(file: &'a ast::File, srcmap: &'a SourceMap) -> Vec<SemanticToken> {
-        Self::collect_with_source(file, srcmap, None)
-    }
-
-    fn collect_with_source(
-        file: &'a ast::File,
-        srcmap: &'a SourceMap,
-        source: Option<&'a str>,
-    ) -> Vec<SemanticToken> {
         let mut collector = SemanticTokenCollector {
             srcmap,
-            source,
             tokens: Vec::new(),
         };
         collector.visit_file(file);
@@ -274,8 +264,6 @@ impl<'a> SemanticTokenCollector<'a> {
     fn visit_fn_sig(&mut self, sig: &FuncSig, modifiers: &[SemanticTokenModifier]) {
         if let Some(span) = self.function_name_span(sig) {
             self.emit_span(span, SemanticTokenKind::Function, modifiers);
-        } else if sig.span.len() != 0 {
-            self.emit_span(sig.span, SemanticTokenKind::Function, modifiers);
         }
 
         if let Some(params) = &sig.ty_params {
@@ -678,48 +666,11 @@ impl<'a> SemanticTokenCollector<'a> {
         }
     }
 
-    fn emit_parsed_path(
-        &mut self,
-        path: &Parsed<ray_shared::pathlib::Path>,
-        kind: SemanticTokenKind,
-    ) {
-        if let Some(span) = path.span().copied() {
-            self.emit_span(span, kind, &[]);
-        }
-    }
-
     fn function_name_span(&self, sig: &FuncSig) -> Option<Span> {
         if sig.is_anon {
             return None;
         }
-
-        let source = self.source?;
-        let name = sig.path.name()?;
-        if name.is_empty() || sig.span.len() == 0 {
-            return None;
-        }
-
-        let start_offset = sig.span.start.offset.min(source.len());
-        let end_offset = sig.span.end.offset.min(source.len());
-        if start_offset >= end_offset {
-            return None;
-        }
-
-        let slice = &source[start_offset..end_offset];
-        let rel_start = slice.find(&name)?;
-        let name_start = start_offset + rel_start;
-        let name_end = name_start + name.len();
-
-        let prefix = &source[start_offset..name_start];
-        let name_text = &source[name_start..name_end];
-
-        let start_pos = advance_pos(sig.span.start, prefix);
-        let end_pos = advance_pos(start_pos, name_text);
-
-        Some(Span {
-            start: start_pos,
-            end: end_pos,
-        })
+        self.srcmap.get_by_id(sig.path.id).and_then(|src| src.span)
     }
 
     fn emit_span(
@@ -734,19 +685,6 @@ impl<'a> SemanticTokenCollector<'a> {
         let token = SemanticToken::new(span, kind).with_modifiers(modifiers);
         self.tokens.push(token);
     }
-}
-
-fn advance_pos(mut pos: Pos, text: &str) -> Pos {
-    for ch in text.chars() {
-        pos.offset += ch.len_utf8();
-        if ch == '\n' {
-            pos.lineno += 1;
-            pos.col = 0;
-        } else {
-            pos.col += 1;
-        }
-    }
-    pos
 }
 
 fn append_trivia_tokens(tokens: &mut Vec<SemanticToken>, srcmap: &SourceMap) {

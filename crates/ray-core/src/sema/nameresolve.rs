@@ -172,13 +172,21 @@ pub fn resolve_names_in_file(
                 match &expr.value {
                     Expr::Name(name) => {
                         let name_str = name.path.name().unwrap_or_default();
-                        // Check locals first
+                        // Check locals first, then top-level exports
                         let resolution = ctx
                             .lookup_local(&name_str)
                             .map(Resolution::Local)
                             .or_else(|| exports.get(&name_str).cloned().map(Resolution::Def));
                         if let Some(res) = resolution {
                             ctx.resolutions.insert(expr.id, res);
+                        } else if !name_str.is_empty() {
+                            ctx.resolutions.insert(
+                                expr.id,
+                                Resolution::Error {
+                                    name: name_str.to_string(),
+                                    kind: NameKind::Value,
+                                },
+                            );
                         }
                     }
                     Expr::Path(segments) if segments.len() == 1 => {
@@ -192,6 +200,13 @@ pub fn resolve_names_in_file(
                             // Resolve both: segment ID (for consistency) and expr ID (for lookups)
                             ctx.resolutions.insert(segments[0].id, res.clone());
                             ctx.resolutions.insert(expr.id, res);
+                        } else if !name_str.is_empty() {
+                            let err = Resolution::Error {
+                                name: name_str,
+                                kind: NameKind::Value,
+                            };
+                            ctx.resolutions.insert(segments[0].id, err.clone());
+                            ctx.resolutions.insert(expr.id, err);
                         }
                     }
                     Expr::Path(segments) if segments.len() >= 2 => {
@@ -1848,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_names_in_file_unresolved_name_not_in_map() {
+    fn resolve_names_in_file_unresolved_name_produces_error() {
         // fn f() { unknown }  where unknown is nowhere
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
@@ -1866,8 +1881,18 @@ mod tests {
 
         let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
 
-        // Unknown name should not be in the resolution map
-        assert!(!resolutions.contains_key(&body_name.id));
+        // Unknown name should produce a Resolution::Error with NameKind::Value
+        assert!(
+            matches!(
+                resolutions.get(&body_name.id),
+                Some(Resolution::Error {
+                    kind: NameKind::Value,
+                    ..
+                })
+            ),
+            "Unresolved value name should produce Resolution::Error, got: {:?}",
+            resolutions.get(&body_name.id)
+        );
     }
 
     #[test]

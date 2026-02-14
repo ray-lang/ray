@@ -1222,7 +1222,6 @@ dependencies = [
  "log",
  "pretty_assertions",
  "ray-cfg",
- "ray-codegen",
  "ray-core",
  "ray-driver",
  "ray-frontend",

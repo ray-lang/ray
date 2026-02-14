@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
-        defs::{def_header, def_path, impl_def, struct_def, trait_def},
+        defs::{ImplDef, def_header, def_path, impl_def, struct_def, trait_def},
         libraries::library_data,
         parse::parse_file,
         typecheck::def_scheme,
@@ -88,7 +88,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
             }
 
             let sig_str = if let Some(node) = ast_node {
-                format_func_from_ast(db, def_id, node)
+                format_func_from_ast(db, def_id, node, None)
             } else {
                 format_func_from_scheme(db, &target, &header.name)
             };
@@ -103,18 +103,25 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
                 Some(DefKind::Impl) => {
                     // Method in an impl block
                     let parent_target = DefTarget::Workspace(parent_def_id);
-                    if let Some(impl_info) = impl_def(db, parent_target.clone()).as_ref() {
+                    let impl_arc = impl_def(db, parent_target.clone());
+                    let impl_info_opt = impl_arc.as_ref().as_ref();
+
+                    if let Some(impl_info) = impl_info_opt {
                         // Apply reverse map for user-facing type variable names
                         let impl_ty = display_ty(db, def_id, &impl_info.implementing_type);
+                        let display_preds = display_predicates(db, def_id, &impl_info.predicates);
 
                         if let Some(ref trait_ty) = impl_info.trait_ty {
-                            // Trait impl method: Type, impl Trait[Type], fn sig
+                            // Trait impl method: impl Trait[Type] where ..., fn sig
                             let display_trait_ty = display_ty(db, def_id, trait_ty);
-                            signatures.push(impl_ty.to_string());
-                            signatures.push(format_impl_sig(&impl_ty, Some(&display_trait_ty)));
+                            signatures.push(format_impl_sig(
+                                &impl_ty,
+                                Some(&display_trait_ty),
+                                &display_preds,
+                            ));
                         } else {
-                            // Inherent impl method: impl object Type, fn sig
-                            signatures.push(format_impl_sig(&impl_ty, None));
+                            // Inherent impl method: impl object Type where ..., fn sig
+                            signatures.push(format_impl_sig(&impl_ty, None, &display_preds));
                         }
                     }
 
@@ -122,7 +129,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
                     let sig_str = if let Some(parent_node) =
                         find_def_ast(&parse_result.ast.decls, parent_root)
                     {
-                        find_method_in_parent(db, def_id, parent_node)
+                        find_method_in_parent(db, def_id, parent_node, impl_info_opt)
                     } else {
                         None
                     };
@@ -151,7 +158,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
                     }
 
                     let sig_str =
-                        parent_ast.and_then(|node| find_method_in_parent(db, def_id, node));
+                        parent_ast.and_then(|node| find_method_in_parent(db, def_id, node, None));
                     signatures.push(
                         sig_str
                             .unwrap_or_else(|| format_func_from_scheme(db, &target, &header.name)),
@@ -160,7 +167,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
                 _ => {
                     // Fallback: just show the method signature
                     let sig_str = if let Some(node) = ast_node {
-                        format_func_from_ast(db, def_id, node)
+                        format_func_from_ast(db, def_id, node, None)
                     } else {
                         format_func_from_scheme(db, &target, &header.name)
                     };
@@ -191,8 +198,6 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
             // Struct field: struct ParentName[ty_params], field: type
             if let Some(parent_def_id) = header.parent {
                 let parent_target = DefTarget::Workspace(parent_def_id);
-
-                // Get the parent struct signature from AST for user-facing type params
                 let parent_header = def_header(db, parent_def_id);
                 let parent_name = parent_header
                     .as_ref()
@@ -214,17 +219,15 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
 
                 signatures.push(format!("struct {}{}", parent_name, parent_ty_params));
 
-                // Look up field type from struct_def.fields
-                if let Some(sdef) = struct_def(db, parent_target) {
-                    if let Some(field) = sdef.fields.iter().find(|f| f.name == header.name) {
-                        let field_ty = display_ty(db, def_id, &field.ty.ty);
-                        signatures.push(format!("{}: {}", header.name, field_ty));
-                    } else {
-                        signatures.push(format!("{}: ?", header.name));
-                    }
-                } else {
-                    signatures.push(format!("{}: ?", header.name));
-                }
+                let field_ty_str = struct_def(db, parent_target)
+                    .and_then(|sdef| {
+                        sdef.fields
+                            .iter()
+                            .find(|f| f.name == header.name)
+                            .map(|field| display_ty(db, def_id, &field.ty.ty).to_string())
+                    })
+                    .unwrap_or_else(|| "?".to_string());
+                signatures.push(format!("{}: {}", header.name, field_ty_str));
             } else {
                 signatures.push(format!("{}: ?", header.name));
             }
@@ -269,7 +272,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
         }
 
         DefKind::Impl => {
-            // Impl block: impl [Trait[]]Type
+            // Impl block: impl Trait['a, 'b, ...] or impl object Type
             let impl_target = DefTarget::Workspace(def_id);
             if let Some(impl_info) = impl_def(db, impl_target).as_ref() {
                 let impl_ty = display_ty(db, def_id, &impl_info.implementing_type);
@@ -277,7 +280,12 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
                     .trait_ty
                     .as_ref()
                     .map(|ty| display_ty(db, def_id, ty));
-                signatures.push(format_impl_sig(&impl_ty, trait_display_ty.as_ref()));
+                let display_preds = display_predicates(db, def_id, &impl_info.predicates);
+                signatures.push(format_impl_sig(
+                    &impl_ty,
+                    trait_display_ty.as_ref(),
+                    &display_preds,
+                ));
             } else {
                 signatures.push(format!("impl {}", header.name));
             }
@@ -309,7 +317,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
         DefKind::Function { .. } => {
             // Function with parent (shouldn't happen, but handle gracefully)
             let sig_str = if let Some(node) = ast_node {
-                format_func_from_ast(db, def_id, node)
+                format_func_from_ast(db, def_id, node, None)
             } else {
                 format_func_from_scheme(db, &target, &header.name)
             };
@@ -364,12 +372,20 @@ fn library_display_info(db: &Database, target: &DefTarget) -> Option<DefDisplayI
 }
 
 /// Format a function signature from an AST node containing a Decl.
-fn format_func_from_ast(db: &Database, def_id: DefId, node: &Node<Decl>) -> String {
+///
+/// When `parent_impl` is provided, inherited type vars and qualifiers are
+/// stripped from the method signature.
+fn format_func_from_ast(
+    db: &Database,
+    def_id: DefId,
+    node: &Node<Decl>,
+    parent_impl: Option<&ImplDef>,
+) -> String {
     let target = DefTarget::Workspace(def_id);
 
     match &node.value {
-        Decl::Func(func) => format_func_sig(db, &target, &func.sig),
-        Decl::FnSig(sig) => format_func_sig(db, &target, sig),
+        Decl::Func(func) => format_func_sig(db, &target, &func.sig, parent_impl),
+        Decl::FnSig(sig) => format_func_sig(db, &target, sig, parent_impl),
         _ => format_func_from_scheme(db, &target, "?"),
     }
 }
@@ -379,6 +395,7 @@ fn find_method_in_parent(
     db: &Database,
     method_def_id: DefId,
     parent_node: &Node<Decl>,
+    parent_impl: Option<&ImplDef>,
 ) -> Option<String> {
     let header = def_header(db, method_def_id)?;
     let root_node = header.root_node;
@@ -388,14 +405,24 @@ fn find_method_in_parent(
             if let Some(funcs) = &im.funcs {
                 for func_node in funcs {
                     if func_node.id == root_node {
-                        return Some(format_func_from_ast(db, method_def_id, func_node));
+                        return Some(format_func_from_ast(
+                            db,
+                            method_def_id,
+                            func_node,
+                            parent_impl,
+                        ));
                     }
                 }
             }
             if let Some(externs) = &im.externs {
                 for ext_node in externs {
                     if ext_node.id == root_node {
-                        return Some(format_func_from_ast(db, method_def_id, ext_node));
+                        return Some(format_func_from_ast(
+                            db,
+                            method_def_id,
+                            ext_node,
+                            parent_impl,
+                        ));
                     }
                 }
             }
@@ -403,7 +430,7 @@ fn find_method_in_parent(
         Decl::Trait(tr) => {
             for field_node in &tr.fields {
                 if field_node.id == root_node {
-                    return Some(format_func_from_ast(db, method_def_id, field_node));
+                    return Some(format_func_from_ast(db, method_def_id, field_node, None));
                 }
             }
         }
@@ -418,7 +445,16 @@ fn find_method_in_parent(
 /// Uses `def_scheme` for resolved types, then applies `mapped_def_types.reverse_map`
 /// to substitute internal type variable names (like `?s:...`) with user-facing
 /// names (like `'a`).
-fn format_func_sig(db: &Database, target: &DefTarget, sig: &FuncSig) -> String {
+///
+/// When `parent_impl` is provided, type vars and qualifiers inherited from the
+/// parent impl block are stripped from the method signature (they are already
+/// shown on the impl line).
+fn format_func_sig(
+    db: &Database,
+    target: &DefTarget,
+    sig: &FuncSig,
+    parent_impl: Option<&ImplDef>,
+) -> String {
     let scheme = get_display_scheme(db, target);
 
     let mut parts = Vec::new();
@@ -435,9 +471,31 @@ fn format_func_sig(db: &Database, target: &DefTarget, sig: &FuncSig) -> String {
 
     // Build the type params, params, and return type from the scheme
     if let Some(ref scheme) = scheme {
-        let vars_str = format_ty_vars(&scheme.vars);
+        // Strip parent impl vars and qualifiers from the method scheme
+        let (vars, qualifiers) = if let Some(impl_info) = parent_impl {
+            let parent_vars: Vec<_> = impl_info.type_params.iter().collect();
+            let filtered_vars: Vec<_> = scheme
+                .vars
+                .iter()
+                .filter(|v| !parent_vars.contains(v))
+                .cloned()
+                .collect();
+            let parent_qual_strs: Vec<_> =
+                impl_info.predicates.iter().map(|p| p.to_string()).collect();
+            let filtered_quals: Vec<_> = scheme
+                .qualifiers
+                .iter()
+                .filter(|q| !parent_qual_strs.contains(&q.to_string()))
+                .cloned()
+                .collect();
+            (filtered_vars, filtered_quals)
+        } else {
+            (scheme.vars.clone(), scheme.qualifiers.clone())
+        };
+
+        let vars_str = format_ty_vars(&vars);
         let (params_str, ret_str) = format_func_ty_parts(sig, &scheme.ty);
-        let quals_str = format_qualifiers(&scheme.qualifiers);
+        let quals_str = format_qualifiers(&qualifiers);
 
         let sig_str = format!("{}{}{}{}", name, vars_str, params_str, ret_str);
         parts.push(sig_str);
@@ -541,6 +599,23 @@ pub fn display_ty(db: &Database, owner: DefId, ty: &Ty) -> Ty {
     result
 }
 
+/// Apply the reverse variable mapping to a list of predicates for display.
+fn display_predicates(db: &Database, owner: DefId, predicates: &[Predicate]) -> Vec<Predicate> {
+    let reverse_map = collect_reverse_map(db, owner);
+    if reverse_map.is_empty() {
+        return predicates.to_vec();
+    }
+    let subst = build_rename_subst(&reverse_map);
+    predicates
+        .iter()
+        .map(|p| {
+            let mut p = p.clone();
+            p.apply_subst(&subst);
+            p
+        })
+        .collect()
+}
+
 /// Look up the display reverse map for a library definition.
 fn library_reverse_map(db: &Database, lib_def_id: &LibraryDefId) -> Option<HashMap<TyVar, TyVar>> {
     let data = library_data(db, lib_def_id.module.clone())?;
@@ -599,7 +674,13 @@ fn format_func_ty_parts(sig: &FuncSig, ty: &Ty) -> (String, String) {
                 .map(|(param, ty)| {
                     let name = param.value.name().to_short_name();
                     if name == "self" {
-                        "self".to_string()
+                        // Show `self: Type` when the type is informative (e.g. a type variable)
+                        let ty_str = ty.to_string();
+                        if ty_str == "self" {
+                            "self".to_string()
+                        } else {
+                            format!("self: {}", ty)
+                        }
                     } else {
                         format!("{}: {}", name, ty)
                     }
@@ -672,11 +753,21 @@ fn format_trait_sig(path: &ItemPath, type_params: &[TyVar]) -> String {
     format!("trait {}{}", name, vars)
 }
 
-/// Format an impl signature.
-fn format_impl_sig(implementing_type: &Ty, trait_ty: Option<&Ty>) -> String {
-    match trait_ty {
+/// Format an impl signature, including where-clause predicates if any.
+fn format_impl_sig(
+    implementing_type: &Ty,
+    trait_ty: Option<&Ty>,
+    predicates: &[Predicate],
+) -> String {
+    let base = match trait_ty {
         Some(trait_ty) => format!("impl {}", trait_ty),
         None => format!("impl object {}", implementing_type),
+    };
+    let quals_str = format_qualifiers(predicates);
+    if quals_str.is_empty() {
+        base
+    } else {
+        format!("{} where {}", base, quals_str)
     }
 }
 

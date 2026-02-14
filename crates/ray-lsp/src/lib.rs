@@ -6,7 +6,6 @@ mod diagnostics;
 mod helpers;
 mod semantic_tokens;
 mod server;
-mod symbols;
 mod workspace;
 
 use server::RayLanguageServer;

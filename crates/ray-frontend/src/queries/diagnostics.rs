@@ -379,8 +379,6 @@ fn foo(x: S) -> S { x = S {}; x }
     #[test]
     fn workspace_diagnostics_aggregates_file_errors() {
         // Use type mismatch which does produce type errors
-        // Note: undefined value names (like `undefined_name()`) don't currently
-        // produce Resolution::Error, only undefined type names do
         let source = r#"
 struct A {}
 struct B {}
@@ -408,6 +406,76 @@ fn foo() -> A => B {}
             errors.is_empty(),
             "Valid code should produce no errors, got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn file_diagnostics_collects_name_resolution_errors() {
+        // Using an undefined value name should produce a name resolution error
+        let source = r#"
+struct S {}
+fn foo() -> S => hack
+"#;
+        let (db, file_id) = setup_test_db(source);
+
+        let errors = file_diagnostics(&db, file_id);
+
+        assert!(!errors.is_empty(), "Should have name resolution errors");
+        assert!(
+            errors.iter().any(|e| e.kind == RayErrorKind::Name),
+            "Should have a name error, got: {:?}",
+            errors
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.msg.contains("hack") && e.msg.contains("not defined")),
+            "Should mention undefined name 'hack': {:?}",
+            errors
+        );
+
+        // Verify the error has source location info
+        let name_error = errors
+            .iter()
+            .find(|e| e.kind == RayErrorKind::Name)
+            .unwrap();
+        assert!(
+            !name_error.src.is_empty(),
+            "Name error should have source info"
+        );
+        assert!(
+            name_error.src[0].span.is_some(),
+            "Name error should have span info"
+        );
+    }
+
+    #[test]
+    fn file_diagnostics_recomputes_after_file_source_change() {
+        // Simulate the LSP overlay pattern:
+        // 1. File has an error → diagnostics should report it
+        // 2. File source changes (error removed) → diagnostics should clear
+        let bad_source = "struct S {}\nfn foo() -> S => hack";
+        let (db, file_id) = setup_test_db(bad_source);
+
+        let errors_before = file_diagnostics(&db, file_id);
+        assert!(
+            errors_before.iter().any(|e| e.kind == RayErrorKind::Name),
+            "Should have name error before fix: {:?}",
+            errors_before
+        );
+
+        // Simulate overlay: change file source to remove the error
+        let good_source = "struct S {}\nfn foo() -> S => S {}";
+        db.set_input::<FileSource>(file_id, FileSource(good_source.to_string()));
+
+        let errors_after = file_diagnostics(&db, file_id);
+        let has_hack_error = errors_after
+            .iter()
+            .any(|e| e.kind == RayErrorKind::Name && e.msg.contains("hack"));
+        assert!(
+            !has_hack_error,
+            "Name error for 'hack' should be gone after fix, got: {:?}",
+            errors_after
         );
     }
 }

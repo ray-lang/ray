@@ -2014,7 +2014,7 @@ impl<'a> GenCtx<'a> {
                 );
                 Ok(())
             }
-            Pattern::Deref(Node { value: name, .. }) => {
+            Pattern::Deref(inner) => {
                 let Some(rhs_loc) = rhs_loc else {
                     log::debug!("  SKIP assign: rhs is unit");
                     return Ok(());
@@ -2023,13 +2023,15 @@ impl<'a> GenCtx<'a> {
                 let lhs_ty = self.ty_of(lhs_pat.id);
                 // Look up binding at the deref pattern's NodeId (lhs_pat.id),
                 // which is where type lowering recorded it.
-                let binding = self.binding_for_node(lhs_pat.id).unwrap_or_else(|| {
+                let binding = self.binding_for_node(inner.id).unwrap_or_else(|| {
                     panic!(
                         "missing binding for pattern {:#x} ({})",
                         lhs_pat.id, lhs_pat
                     )
                 });
-                let debug_name = name
+
+                let debug_name = inner
+                    .value
                     .path
                     .name()
                     .unwrap_or_else(|| self.fallback_binding_name(binding));

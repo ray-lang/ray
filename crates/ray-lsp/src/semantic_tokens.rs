@@ -1,10 +1,7 @@
 //! Semantic token support for `ray-lsp`.
 
-use std::fmt::Write as _;
-
 use ray_core::ide::semantic_tokens::{
-    self as semantic, SemanticToken as RayToken, SemanticTokenKind as RayKind,
-    SemanticTokenModifier as RayModifier,
+    SemanticToken as RayToken, SemanticTokenKind as RayKind, SemanticTokenModifier as RayModifier,
 };
 use tower_lsp::lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
@@ -54,13 +51,7 @@ pub fn legend() -> SemanticTokensLegend {
     }
 }
 
-/// Produces semantic tokens for the provided Ray source.
-pub fn semantic_tokens(source: &str) -> SemanticTokens {
-    let tokens = semantic::collect_from_source(source);
-    encode_tokens(&tokens, source)
-}
-
-fn encode_tokens(tokens: &[RayToken], source: &str) -> SemanticTokens {
+pub(crate) fn encode_tokens(tokens: &[RayToken], source: &str) -> SemanticTokens {
     let line_starts = compute_line_starts(source);
 
     // Collect absolute tokens as (line, col_utf16, len_utf16, type, mods).
@@ -322,62 +313,17 @@ fn utf16_len(text: &str) -> u32 {
     text.chars().map(|c| c.len_utf16() as u32).sum()
 }
 
-pub fn pretty_dump(data: &[SemanticToken], source: &str, legend: &SemanticTokensLegend) -> String {
-    // Split text into lines for previewing token slices
-    let lines: Vec<&str> = source.split_inclusive('\n').collect();
-
-    let mut out = String::new();
-    let mut abs_line: u32 = 0;
-    let mut abs_col: u32 = 0;
-
-    for tok in data {
-        abs_line += tok.delta_line;
-        abs_col = if tok.delta_line == 0 {
-            abs_col + tok.delta_start
-        } else {
-            tok.delta_start
-        };
-
-        let type_name = legend
-            .token_types
-            .get(tok.token_type as usize)
-            .map(|t| t.as_str())
-            .unwrap_or("unknown");
-
-        // Decode modifier bitset using legend ordering
-        let mut mods: Vec<&str> = Vec::new();
-        for (bit, m) in legend.token_modifiers.iter().enumerate() {
-            if (tok.token_modifiers_bitset & (1 << bit)) != 0 {
-                mods.push(m.as_str());
-            }
-        }
-        let mods_joined = if mods.is_empty() {
-            "-".to_string()
-        } else {
-            mods.join(",")
-        };
-
-        let line_txt = lines.get(abs_line as usize).copied().unwrap_or_default();
-        let start = abs_col as usize;
-        let text = line_txt
-            .chars()
-            .skip(start)
-            .take(tok.length as usize)
-            .collect::<String>();
-
-        let _ = writeln!(
-            &mut out,
-            "L{}:{} len={} type={} mods={} text=\"{}\"",
-            abs_line, abs_col, tok.length, type_name, mods_joined, text
-        );
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ray_core::ide::semantic_tokens as semantic;
     use std::path::PathBuf;
+
+    /// Parse + encode semantic tokens for a source string (test helper).
+    fn tokens_for_source(source: &str) -> SemanticTokens {
+        let ray_tokens = semantic::collect_from_source(source);
+        encode_tokens(&ray_tokens, source)
+    }
 
     fn decode_tokens(tokens: &SemanticTokens) -> Vec<(u32, u32, u32, u32)> {
         let mut line = 0u32;
@@ -410,7 +356,7 @@ fn make(value: int) -> Foo {
 }
 "#;
 
-        let tokens = semantic_tokens(source);
+        let tokens = tokens_for_source(source);
         assert!(!tokens.data.is_empty());
 
         let decoded = decode_tokens(&tokens);
@@ -474,7 +420,7 @@ fn make(value: int) -> Foo {
             .join("lib/core/core.ray");
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-        let tokens = semantic_tokens(&source);
+        let tokens = tokens_for_source(&source);
         assert!(
             !tokens.data.is_empty(),
             "expected semantic tokens for {}, got empty result",
@@ -494,7 +440,7 @@ fn make(value: int) -> Foo {
     Foo { value } // trailing comment
 }
 "#;
-        let tokens = semantic_tokens(source);
+        let tokens = tokens_for_source(source);
         let mut saw_type = false;
         let mut saw_function = false;
         let mut saw_parameter = false;

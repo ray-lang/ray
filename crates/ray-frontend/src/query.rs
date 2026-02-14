@@ -68,13 +68,19 @@ pub struct InputDep {
     pub fingerprint: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct QueryDep {
+    pub key: QueryKey,
+    pub fingerprint: u64,
+}
+
 pub struct CachedValue {
     /// The original key, type-erased. Used by the early-exit recompute
     /// registry to recover the concrete key for force-recomputation.
     pub key: Arc<dyn Any + Send + Sync>,
     pub value: Arc<dyn Any + Send + Sync>,
     pub input_deps: Vec<InputDep>,
-    pub query_deps: Vec<QueryKey>,
+    pub query_deps: Vec<QueryDep>,
     /// The input revision at which this entry was last validated.
     /// If this matches `Database::revision`, the cached value is known-valid
     /// without needing to walk the dependency tree.
@@ -321,7 +327,7 @@ impl Database {
     /// Caller must have already pushed active frames (for cycle detection
     /// during force-recompute).
     fn try_revalidate<Q: Query>(&self, qkey: &QueryKey) -> Option<Q::Value> {
-        let (input_deps, query_deps) = {
+        let (input_deps, query_deps): (Vec<InputDep>, Vec<QueryDep>) = {
             let cache = self.cache.read().expect("cache lock poisoned");
             let cached = cache.get(qkey)?;
             (cached.input_deps.clone(), cached.query_deps.clone())
@@ -396,6 +402,8 @@ impl Database {
     }
 
     /// Record `qkey` as a dependency of the currently-computing parent query.
+    /// Only the key is recorded here; fingerprints are resolved later in
+    /// `pop_active_frames` after all child queries have been computed and cached.
     fn record_parent_dep(&self, qkey: &QueryKey) {
         if let Some(parent_deps) = self
             .active_query_deps
@@ -403,7 +411,7 @@ impl Database {
             .expect("active_query_deps lock poisoned")
             .last_mut()
         {
-            if !parent_deps.contains(qkey) {
+            if !parent_deps.iter().any(|dep| *dep == *qkey) {
                 parent_deps.push(qkey.clone());
             }
         }
@@ -428,14 +436,19 @@ impl Database {
     }
 
     /// Pop the active stack and dependency frames, returning the collected deps.
-    fn pop_active_frames(&self) -> (Vec<InputDep>, Vec<QueryKey>) {
+    ///
+    /// Query dep fingerprints are resolved here (not in `record_parent_dep`)
+    /// because child queries may not yet be in the cache when `record_parent_dep`
+    /// runs (it fires before the child computes). By the time this method runs,
+    /// all child queries have completed and their results are cached.
+    fn pop_active_frames(&self) -> (Vec<InputDep>, Vec<QueryDep>) {
         let input_deps = self
             .active_inputs
             .lock()
             .expect("active_inputs lock poisoned")
             .pop()
             .unwrap_or_default();
-        let query_deps = self
+        let query_keys: Vec<QueryKey> = self
             .active_query_deps
             .lock()
             .expect("active_query_deps lock poisoned")
@@ -445,6 +458,17 @@ impl Database {
             .lock()
             .expect("active_stack lock poisoned")
             .pop();
+
+        // Resolve fingerprints from cache now that all child queries have completed
+        let cache = self.cache.read().expect("cache lock poisoned");
+        let query_deps = query_keys
+            .into_iter()
+            .map(|key| {
+                let fingerprint = cache.get(&key).and_then(|cv| cv.fingerprint).unwrap_or(0);
+                QueryDep { key, fingerprint }
+            })
+            .collect();
+
         (input_deps, query_deps)
     }
 
@@ -470,7 +494,7 @@ impl Database {
     ///
     /// Caller must have already pushed active frames (for cycle detection
     /// during force-recompute). The cache read lock must NOT be held.
-    fn try_validate_cached(&self, input_deps: &[InputDep], query_deps: &[QueryKey]) -> bool {
+    fn try_validate_cached(&self, input_deps: &[InputDep], query_deps: &[QueryDep]) -> bool {
         self.inputs_match(input_deps) && self.force_validate_query_deps(query_deps)
     }
 
@@ -486,7 +510,7 @@ impl Database {
         value_bytes: Vec<u8>,
         fingerprint: u64,
         input_deps: &[InputDep],
-        query_deps: &[QueryKey],
+        query_deps: &[QueryDep],
     ) {
         let Some(ref backend) = self.persistence else {
             return;
@@ -507,21 +531,17 @@ impl Database {
                 })
                 .collect();
 
-            let query_dep_records: Vec<DepRecord> = {
-                let cache = self.cache.read().expect("cache lock poisoned");
-                query_deps
-                    .iter()
-                    .filter_map(|qk| {
-                        let fp = cache.get(qk)?.fingerprint?;
-                        let &id = name_to_id.get(qk.name)?;
-                        Some(DepRecord {
-                            query_id: id.0,
-                            key_hash: qk.key.hash,
-                            fingerprint: fp,
-                        })
+            let query_dep_records: Vec<DepRecord> = query_deps
+                .iter()
+                .filter_map(|dep| {
+                    let &id = name_to_id.get(dep.key.name)?;
+                    Some(DepRecord {
+                        query_id: id.0,
+                        key_hash: dep.key.key.hash,
+                        fingerprint: dep.fingerprint,
                     })
-                    .collect()
-            };
+                })
+                .collect();
 
             (input_dep_records, query_dep_records)
         };
@@ -775,20 +795,24 @@ impl Database {
 
     /// Force-validate query dependencies using the early-exit algorithm.
     /// For each dep, force-recompute via the registered recompute function
-    /// and compare the new fingerprint with the stored one. If the fingerprint
-    /// is unchanged, the dependent is still valid (green).
-    fn force_validate_query_deps(&self, deps: &[QueryKey]) -> bool {
-        for dep_key in deps {
-            // Read old fingerprint and key from cache (then release lock)
-            let (old_fp, key_arc) = {
+    /// and compare the new fingerprint with the one recorded when the parent
+    /// query was originally computed. If the fingerprint is unchanged, the
+    /// dependent is still valid (green).
+    fn force_validate_query_deps(&self, deps: &[QueryDep]) -> bool {
+        for dep in deps {
+            let dep_key = &dep.key;
+            // Use the fingerprint recorded when the parent query was computed,
+            // NOT the current cache fingerprint (which may have been updated
+            // by an earlier recomputation in this validation pass).
+            let old_fp = dep.fingerprint;
+
+            // Read the type-erased key from cache for recomputation
+            let key_arc = {
                 let cache = self.cache.read().expect("cache lock poisoned");
                 let Some(dep_cached) = cache.get(dep_key) else {
                     return false;
                 };
-                let Some(old_fp) = dep_cached.fingerprint else {
-                    return false;
-                };
-                (old_fp, dep_cached.key.clone())
+                dep_cached.key.clone()
             };
 
             // Get recompute function
@@ -1006,19 +1030,22 @@ impl Database {
             .collect()
     }
 
-    /// Convert persisted query deps to in-memory `QueryKey` format.
+    /// Convert persisted query deps to in-memory `QueryDep` format.
     ///
     /// Looks up `&'static str` names from the ID-to-name registry.
     /// Deps whose IDs aren't registered are silently dropped (shouldn't
     /// happen after successful validation).
-    fn convert_persisted_query_deps(&self, deps: &[DepRecord]) -> Vec<QueryKey> {
+    fn convert_persisted_query_deps(&self, deps: &[DepRecord]) -> Vec<QueryDep> {
         let id_to_name = self.id_to_name.read().expect("id_to_name lock poisoned");
         deps.iter()
             .filter_map(|dep| {
                 let &name = id_to_name.get(&QueryId(dep.query_id))?;
-                Some(QueryKey {
-                    name,
-                    key: KeyId { hash: dep.key_hash },
+                Some(QueryDep {
+                    key: QueryKey {
+                        name,
+                        key: KeyId { hash: dep.key_hash },
+                    },
+                    fingerprint: dep.fingerprint,
                 })
             })
             .collect()
@@ -1599,6 +1626,193 @@ mod tests {
         IntInput::new(&db, key.clone(), 20);
         assert_eq!(db.query::<TrackedAddOne>(key), 21);
         assert_eq!(RECOMPUTE_COUNT.load(Ordering::SeqCst), 2);
+    }
+
+    /// Diamond dependency graph: Top → {Left, Right} → Bottom → input.
+    ///
+    /// When the input changes:
+    /// 1. Top revalidation force-recomputes Left, which recomputes Bottom
+    /// 2. Left's fingerprint changed → Top recomputes from scratch
+    /// 3. During Top's recompute, Left is a fast-path hit (already revalidated)
+    /// 4. Right tries to revalidate — Bottom's cache is already updated
+    ///
+    /// Old bug: Right read Bottom's NEW fingerprint from the live cache,
+    /// compared to the recomputed NEW fingerprint → "unchanged" → stale Right.
+    ///
+    /// Fix: Right's recorded fingerprint for Bottom is the OLD one,
+    /// so the comparison correctly detects the change.
+    #[test]
+    fn diamond_dep_invalidation_recomputes_both_branches() {
+        static RIGHT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+        struct Bottom;
+        impl Query for Bottom {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "DiamondBottom";
+            const ID: QueryId = QueryId(0x10);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                db.get_input::<IntInput>(key).0
+            }
+        }
+
+        struct Left;
+        impl Query for Left {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "DiamondLeft";
+            const ID: QueryId = QueryId(0x11);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                db.query::<Bottom>(key) * 2
+            }
+        }
+
+        struct Right;
+        impl Query for Right {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "DiamondRight";
+            const ID: QueryId = QueryId(0x12);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                RIGHT_COUNT.fetch_add(1, Ordering::SeqCst);
+                db.query::<Bottom>(key) * 3
+            }
+        }
+
+        struct Top;
+        impl Query for Top {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "DiamondTop";
+            const ID: QueryId = QueryId(0x13);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                db.query::<Left>(key.clone()) + db.query::<Right>(key)
+            }
+        }
+
+        let db = Database::new();
+        let key = IntKey(200);
+
+        IntInput::new(&db, key.clone(), 5);
+        RIGHT_COUNT.store(0, Ordering::SeqCst);
+
+        // Initial: Bottom=5, Left=10, Right=15, Top=25
+        assert_eq!(db.query::<Top>(key.clone()), 25);
+        assert_eq!(RIGHT_COUNT.load(Ordering::SeqCst), 1);
+
+        // Change input: 5 → 7
+        IntInput::new(&db, key.clone(), 7);
+
+        // Bottom=7, Left=14, Right=21, Top=35
+        // Right MUST recompute (not be falsely revalidated with stale value 15)
+        assert_eq!(db.query::<Top>(key.clone()), 35);
+        assert_eq!(
+            RIGHT_COUNT.load(Ordering::SeqCst),
+            2,
+            "Right must recompute after shared dep change"
+        );
+    }
+
+    /// Three-deep chain: ChainTop → Mid → ReadInt → input.
+    /// Verifies invalidation propagates through multiple query levels.
+    #[test]
+    fn three_deep_chain_invalidation() {
+        static TOP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+        struct Mid;
+        impl Query for Mid {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "ChainMid";
+            const ID: QueryId = QueryId(0x20);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                db.query::<ReadInt>(key) + 10
+            }
+        }
+
+        struct ChainTop;
+        impl Query for ChainTop {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "ChainTop";
+            const ID: QueryId = QueryId(0x21);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                TOP_COUNT.fetch_add(1, Ordering::SeqCst);
+                db.query::<Mid>(key) * 2
+            }
+        }
+
+        let db = Database::new();
+        let key = IntKey(300);
+
+        IntInput::new(&db, key.clone(), 5);
+        TOP_COUNT.store(0, Ordering::SeqCst);
+
+        // ReadInt=5, Mid=15, ChainTop=30
+        assert_eq!(db.query::<ChainTop>(key.clone()), 30);
+        assert_eq!(TOP_COUNT.load(Ordering::SeqCst), 1);
+
+        // Change input: 5 → 8
+        IntInput::new(&db, key.clone(), 8);
+
+        // ReadInt=8, Mid=18, ChainTop=36
+        assert_eq!(db.query::<ChainTop>(key.clone()), 36);
+        assert_eq!(TOP_COUNT.load(Ordering::SeqCst), 2);
+    }
+
+    /// True early-exit: input changes but intermediate query produces the
+    /// same output. The downstream query should NOT be recomputed.
+    ///
+    /// This differs from `early_exit_dep_unchanged_skips_recompute` which
+    /// tests an *unrelated* input bump. Here, the dep's own input truly
+    /// changes, but the dep's output is stable (parity of 10 == parity of 12).
+    #[test]
+    fn true_early_exit_unchanged_intermediate_skips_downstream() {
+        static DOWNSTREAM_COUNT: AtomicU64 = AtomicU64::new(0);
+
+        struct Parity;
+        impl Query for Parity {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "Parity";
+            const ID: QueryId = QueryId(0x30);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                db.get_input::<IntInput>(key).0 % 2
+            }
+        }
+
+        struct Downstream;
+        impl Query for Downstream {
+            type Key = IntKey;
+            type Value = u64;
+            const NAME: &'static str = "ParityDownstream";
+            const ID: QueryId = QueryId(0x31);
+            fn compute(db: &Database, key: Self::Key) -> Self::Value {
+                DOWNSTREAM_COUNT.fetch_add(1, Ordering::SeqCst);
+                db.query::<Parity>(key) + 100
+            }
+        }
+
+        let db = Database::new();
+        let key = IntKey(400);
+
+        IntInput::new(&db, key.clone(), 10); // parity = 0
+        DOWNSTREAM_COUNT.store(0, Ordering::SeqCst);
+
+        assert_eq!(db.query::<Downstream>(key.clone()), 100);
+        assert_eq!(DOWNSTREAM_COUNT.load(Ordering::SeqCst), 1);
+
+        // Change input 10 → 12: parity is still 0
+        IntInput::new(&db, key.clone(), 12);
+
+        // Parity recomputes (input changed) but produces same value (0).
+        // Downstream should NOT recompute (early-exit: dep fingerprint unchanged).
+        assert_eq!(db.query::<Downstream>(key.clone()), 100);
+        assert_eq!(
+            DOWNSTREAM_COUNT.load(Ordering::SeqCst),
+            1,
+            "Downstream should not recompute when intermediate output is unchanged"
+        );
     }
 
     #[test]

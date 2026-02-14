@@ -10,7 +10,6 @@ tower-lsp = "0.20"
 log = "0.4"
 env_logger = "0.10"
 ray-cfg = { path = "../ray-cfg" }
-ray-codegen = { path = "../ray-codegen" }
 ray-core = { path = "../ray-core" }
 ray-driver = { path = "../ray-driver" }
 ray-frontend = { path = "../ray-frontend" }

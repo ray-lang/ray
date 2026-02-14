@@ -7,7 +7,10 @@ use std::{
 };
 
 use log;
-use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::{
+    sync::{OwnedSemaphorePermit, RwLock, Semaphore},
+    time::{Duration, sleep},
+};
 use tower_lsp::{
     Client,
     jsonrpc::Result,
@@ -17,9 +20,9 @@ use tower_lsp::{
         DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
         InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-        MessageType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-        SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
+        MessageType, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+        SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+        TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
     },
 };
 
@@ -27,12 +30,14 @@ use ray_frontend::queries::{
     bindings::{local_binding_definitions, local_binding_names},
     completion::{CompletionKind, completion_context},
     defs::{SourceLocation, def_header, definition_record},
+    diagnostics::file_diagnostics,
     display::{def_display_info, display_library_ty, display_ty},
     exports::{ExportedItem, module_def_index},
     items::associated_items,
     locations::{self, find_at_position},
     methods::methods_for_type,
     resolve::name_resolutions,
+    semantic_tokens::semantic_tokens as query_semantic_tokens,
     symbols::symbol_targets,
     typecheck::{def_scheme, ty_of},
     workspace::{FileMetadata, FileSource},
@@ -51,24 +56,22 @@ use ray_shared::{
 use serde_json::Value;
 
 use crate::{
-    diagnostics::{self, AnalysisSnapshotData},
+    diagnostics,
     helpers::{
-        filepath_to_uri, is_core_library_uri, lsp_position_to_pos, parse_toolchain_path,
-        span_to_range, uri_to_filepath,
+        filepath_to_uri, lsp_position_to_pos, parse_toolchain_path, span_to_range, uri_to_filepath,
     },
-    semantic_tokens::{self, pretty_dump},
+    semantic_tokens,
     workspace::{LspWorkspace, WorkspaceManager},
 };
 
 #[derive(Clone)]
 struct DocumentData {
-    text: String,
     version: Option<i32>,
 }
 
 impl DocumentData {
-    fn new(text: String, version: Option<i32>) -> Self {
-        Self { text, version }
+    fn new(version: Option<i32>) -> Self {
+        Self { version }
     }
 }
 
@@ -76,20 +79,11 @@ pub(crate) struct RayLanguageServer {
     client: Client,
     documents: RwLock<HashMap<Url, DocumentData>>,
     diagnostics_published_version: RwLock<HashMap<Url, Option<i32>>>,
-    analysis_cache: RwLock<HashMap<Url, AnalysisSnapshot>>,
     workspace_root: RwLock<Option<FilePath>>,
     toolchain_root: RwLock<Option<FilePath>>,
     workspace_manager: RwLock<WorkspaceManager>,
-    missing_toolchain_warning_emitted: AtomicBool,
     semantic_refresh_pending: Arc<AtomicBool>,
     semantic_compute: Arc<Semaphore>,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct AnalysisSnapshot {
-    version: Option<i32>,
-    data: Arc<AnalysisSnapshotData>,
 }
 
 #[tower_lsp::async_trait]
@@ -154,7 +148,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let text = params.text_document.text;
         let version = Some(params.text_document.version);
 
-        self.store_document(&uri, text.clone(), version).await;
+        self.store_document(&uri, version).await;
 
         // Apply overlay to incremental workspace
         if let Some(canonical) = Self::resolve_file_path(&uri) {
@@ -189,8 +183,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             let uri = params.text_document.uri.clone();
             let version = Some(params.text_document.version);
 
-            self.store_document(&uri, change.text.clone(), version)
-                .await;
+            self.store_document(&uri, version).await;
 
             self.log(format!(
                 "[server] did_change: version={} len={}",
@@ -274,138 +267,36 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             .await
             .expect("semaphore acquire failed");
 
-        self.log("[server] semTokens/full begin").await;
-
-        let (text, start_version) = {
+        let start_version = {
             let documents = self.documents.read().await;
-            match documents.get(&uri) {
-                Some(doc) => (Some(doc.text.clone()), doc.version),
-                None => (None, None),
-            }
+            documents.get(&uri).and_then(|d| d.version)
         };
 
-        let source_note = String::from("doc");
-
-        if text.is_none() {
-            // Do NOT fall back to disk content; it can be out-of-sync with the editor.
-            // Instead, schedule a refresh and let the client re-request once we have in-memory text.
-            self.log(
-                "[server] semTokens/full no in-memory text; scheduling refresh & returning None",
-            )
+        let tokens = self
+            .with_workspace_file_map(&uri, |ws: &LspWorkspace, file_id| {
+                let db = &*ws.db;
+                let source = db.get_input::<FileSource>(file_id);
+                let query_tokens = query_semantic_tokens(db, file_id);
+                semantic_tokens::encode_tokens(&query_tokens.data, source.as_str())
+            })
             .await;
-            self.schedule_semantic_tokens_refresh().await;
-            return Ok(None);
-        }
 
-        self.log(format!(
-            "[server] semTokens/full src={} start_version={:?} len={}",
-            source_note,
-            start_version,
-            text.as_ref().map(|s| s.len()).unwrap_or(0),
-        ))
-        .await;
-
-        let tokens = text
-            .as_ref()
-            .map(|source| semantic_tokens::semantic_tokens(source))
-            .unwrap_or_else(|| SemanticTokens {
-                result_id: None,
-                data: Vec::new(),
-            });
-
-        let built_count = tokens.data.len();
-        let mut last_abs_line_hint: u32 = 0;
-        for t in &tokens.data {
-            last_abs_line_hint = last_abs_line_hint.saturating_add(t.delta_line);
-        }
-        self.log(format!(
-            "[server] semTokens/full built_count={} last_abs_line_hint={}",
-            built_count, last_abs_line_hint
-        ))
-        .await;
-
-        // If the document version changed while we were computing tokens, drop this response
-        // to avoid out-of-order coloring after edits. The client will request again.
+        // If the document version changed while we were computing, drop
+        // this response to avoid stale coloring. The client will re-request.
         if start_version.is_some() {
             let current_version = {
                 let documents = self.documents.read().await;
                 documents.get(&uri).and_then(|d| d.version)
             };
             if current_version != start_version {
-                self.log(format!(
-                    "[server] semTokens/full DROP outdated: start={:?} current={:?}",
-                    start_version, current_version
-                ))
-                .await;
                 return Ok(None);
             }
         }
-        // Version may also change during logging below; we re-check once more before returning.
 
-        // wherever you convert your syntax tree to SemanticToken entries
-        let mut count = 0usize;
-        let mut last_line = 0u32;
-        let mut last_abs = (0u32, 0u32);
-
-        for t in tokens.data.iter() {
-            // assert strictly increasing positions
-            let abs_line = last_abs.0 + t.delta_line;
-            let abs_col = if t.delta_line == 0 {
-                last_abs.1 + t.delta_start
-            } else {
-                t.delta_start
-            };
-
-            if t.length == 0 {
-                self.log(format!(
-                    "[server] zero-length token at L{}:{}",
-                    abs_line, abs_col
-                ))
-                .await;
-            }
-            if abs_line < last_line || (abs_line == last_line && abs_col < last_abs.1) {
-                self.log(format!(
-                    "[server] out-of-order token at L{}:{} (prev L{}:{})",
-                    abs_line, abs_col, last_abs.0, last_abs.1
-                ))
-                .await;
-            }
-
-            last_line = abs_line;
-            last_abs = (abs_line, abs_col);
-            count += 1;
-
-            self.log(format!(
-                "[server] #{:03} L{}:{} len={} typeIdx={} modsBits={}",
-                count, abs_line, abs_col, t.length, t.token_type, t.token_modifiers_bitset
-            ))
-            .await;
+        match tokens {
+            Some(tokens) => Ok(Some(SemanticTokensResult::Tokens(tokens))),
+            None => Ok(None),
         }
-        self.log(format!("[server] built {} tokens total", count))
-            .await;
-
-        if log::log_enabled!(log::Level::Debug) {
-            let legend = semantic_tokens::legend();
-            let source_text = text.unwrap_or_default();
-            let dump = pretty_dump(&tokens.data, &source_text, &legend);
-            self.log(dump).await;
-        }
-
-        if start_version.is_some() {
-            let current_version = {
-                let documents = self.documents.read().await;
-                documents.get(&uri).and_then(|d| d.version)
-            };
-            if current_version != start_version {
-                self.log(format!(
-                    "[server] semTokens/full DROP outdated (post-log): start={:?} current={:?}",
-                    start_version, current_version
-                ))
-                .await;
-                return Ok(None);
-            }
-        }
-        Ok(Some(SemanticTokensResult::Tokens(tokens)))
     }
 
     async fn goto_definition(
@@ -666,27 +557,24 @@ impl RayLanguageServer {
             client,
             documents: RwLock::new(HashMap::new()),
             diagnostics_published_version: RwLock::new(HashMap::new()),
-            analysis_cache: RwLock::new(HashMap::new()),
             workspace_root: RwLock::new(None),
             toolchain_root: RwLock::new(None),
             workspace_manager: RwLock::new(WorkspaceManager::new()),
-            missing_toolchain_warning_emitted: AtomicBool::new(false),
             semantic_refresh_pending: Arc::new(AtomicBool::new(false)),
-            semantic_compute: Arc::new(Semaphore::new(1)), // limit concurrent semantic token computations
+            semantic_compute: Arc::new(Semaphore::new(1)),
         }
     }
 
     async fn schedule_semantic_tokens_refresh(&self) {
         // Debounce: schedule at most one refresh every ~100ms
-        if self
+        let acquired = self
             .semantic_refresh_pending
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
+            .is_ok();
+        if acquired {
             let client = self.client.clone();
             let flag = Arc::clone(&self.semantic_refresh_pending);
             tokio::spawn(async move {
-                use tokio::time::{Duration, sleep};
                 sleep(Duration::from_millis(100)).await;
                 let _ = client.semantic_tokens_refresh().await;
                 flag.store(false, Ordering::SeqCst);
@@ -708,11 +596,11 @@ impl RayLanguageServer {
     }
 
     /// Store a document's text and version in the in-memory document map.
-    async fn store_document(&self, uri: &Url, text: String, version: Option<i32>) {
+    async fn store_document(&self, uri: &Url, version: Option<i32>) {
         self.documents
             .write()
             .await
-            .insert(uri.clone(), DocumentData::new(text, version));
+            .insert(uri.clone(), DocumentData::new(version));
     }
 
     /// Resolve a URI, acquire a read lock on the workspace manager, look up
@@ -794,17 +682,13 @@ impl RayLanguageServer {
         let parsed = value.and_then(parse_toolchain_path);
         let mut toolchain = self.toolchain_root.write().await;
         *toolchain = parsed;
-        if toolchain.is_some() {
-            self.missing_toolchain_warning_emitted
-                .store(false, Ordering::SeqCst);
-        }
     }
 
     async fn publish_diagnostics(&self, uri: &Url) {
-        let (text, version) = {
+        let version = {
             let documents = self.documents.read().await;
             match documents.get(uri) {
-                Some(document) => (document.text.clone(), document.version),
+                Some(document) => document.version,
                 None => {
                     let _ = self
                         .client
@@ -815,130 +699,71 @@ impl RayLanguageServer {
             }
         };
 
-        // Skip duplicate publishes for the same version to avoid duplicate diagnostics and flicker.
+        // Skip duplicate publishes for the same version to avoid flicker.
         {
             let last = self.diagnostics_published_version.read().await;
             if let Some(prev) = last.get(uri) {
                 if *prev == version {
-                    self.log(format!(
-                        "[server] diagnostics: skip duplicate publish for {:?}",
-                        version
-                    ))
-                    .await;
                     return;
                 }
             }
         }
 
-        let workspace_root = {
-            let root = self.workspace_root.read().await;
-            root.clone()
-        };
-
-        // Prefer the in-workspace core sources when editing core itself.
-        // Avoid trying to load a precompiled core.raylib, which causes IO errors and stale diagnostics.
-        let toolchain_root = {
-            let configured = { self.toolchain_root.read().await.clone() };
-            if is_core_library_uri(uri) {
-                // Signal the analyzer to not rely on an external/built core; use the open files instead.
-                None
-            } else {
-                configured
-            }
-        };
-
-        if is_core_library_uri(uri) {
-            self.log(
-                "[server] diagnostics: core file detected; using workspace core (no prebuilt)",
-            )
+        // Use the incremental query system to collect diagnostics.
+        let raw_diagnostics = self
+            .with_workspace_file_map(uri, |ws: &LspWorkspace, file_id| {
+                let db = &*ws.db;
+                let errors = file_diagnostics(db, file_id);
+                let metadata = db.get_input::<FileMetadata>(file_id);
+                log::info!(
+                    "[diagnostics] file_id={:?} path={} errors={} srcs={}",
+                    file_id,
+                    metadata.path,
+                    errors.len(),
+                    errors.iter().map(|e| e.src.len()).sum::<usize>(),
+                );
+                for (i, err) in errors.iter().enumerate() {
+                    let paths: Vec<_> = err.src.iter().map(|s| s.filepath.to_string()).collect();
+                    log::info!(
+                        "[diagnostics]   error[{}]: {:?} msg={:?} src_paths={:?}",
+                        i,
+                        err.kind,
+                        err.msg,
+                        paths,
+                    );
+                }
+                diagnostics::map_errors(errors, &metadata.path)
+            })
             .await;
+
+        let (found, raw_diagnostics) = match raw_diagnostics {
+            Some(diags) => (true, diags),
+            None => (false, Vec::new()),
+        };
+
+        if !found {
+            log::warn!(
+                "[diagnostics] with_workspace_file_map returned None for {}",
+                uri
+            );
         }
 
-        let diagnostics_result =
-            diagnostics::collect(uri, &text, workspace_root.as_ref(), toolchain_root.as_ref());
-        match diagnostics_result {
-            diagnostics::CollectResult::Diagnostics {
-                diagnostics,
-                snapshot,
-            } => {
-                if let Some(snapshot) = snapshot {
-                    let mut cache = self.analysis_cache.write().await;
-                    cache.insert(
-                        uri.clone(),
-                        AnalysisSnapshot {
-                            version,
-                            data: Arc::new(snapshot),
-                        },
-                    );
-                    if let Some(entry) = cache.get(&uri) {
-                        self.log(format!(
-                            "[server] diagnostics: cached snapshot: {:#?}",
-                            entry.data
-                        ))
-                        .await;
-                    }
-                } else {
-                    self.analysis_cache.write().await.remove(uri);
-                }
+        let deduped = diagnostics::dedup_diagnostics(raw_diagnostics);
+        log::info!(
+            "[diagnostics] publishing {} diagnostics for {} (version={:?})",
+            deduped.len(),
+            uri,
+            version,
+        );
 
-                self.missing_toolchain_warning_emitted
-                    .store(false, Ordering::SeqCst);
-                // De-duplicate identical diagnostics (same message, range, severity, source).
-                let mut seen = HashSet::new();
-                let mut uniq = Vec::with_capacity(diagnostics.len());
-                for d in diagnostics.into_iter() {
-                    // Hash a stable Debug representation of severity to avoid private-field access.
-                    // Using &Option<DiagnosticSeverity> here so we don't move it out of `d`.
-                    let sev_dbg: Option<String> = d.severity.as_ref().map(|s| format!("{:?}", s));
-                    let key = (
-                        d.message.clone(),
-                        d.range.start.line,
-                        d.range.start.character,
-                        d.range.end.line,
-                        d.range.end.character,
-                        sev_dbg,
-                        d.source.clone(),
-                    );
-                    if seen.insert(key) {
-                        uniq.push(d);
-                    }
-                }
+        let _ = self
+            .client
+            .publish_diagnostics(uri.clone(), deduped, version)
+            .await;
 
-                let _ = self
-                    .client
-                    .publish_diagnostics(uri.clone(), uniq, version)
-                    .await;
-
-                // Remember the last published version for this URI.
-                {
-                    let mut last = self.diagnostics_published_version.write().await;
-                    last.insert(uri.clone(), version);
-                }
-            }
-            diagnostics::CollectResult::ToolchainMissing => {
-                self.analysis_cache.write().await.remove(uri);
-                let first_warning = !self
-                    .missing_toolchain_warning_emitted
-                    .swap(true, Ordering::SeqCst);
-                if first_warning {
-                    let message =
-                        "Ray toolchain not found; analyzer diagnostics disabled".to_string();
-                    log::warn!("{message}");
-                    let _ = self
-                        .client
-                        .show_message(MessageType::WARNING, message.clone())
-                        .await;
-                    let _ = self.client.log_message(MessageType::WARNING, message).await;
-                }
-                let _ = self
-                    .client
-                    .publish_diagnostics(uri.clone(), Vec::new(), version)
-                    .await;
-                {
-                    let mut last = self.diagnostics_published_version.write().await;
-                    last.insert(uri.clone(), version);
-                }
-            }
+        {
+            let mut last = self.diagnostics_published_version.write().await;
+            last.insert(uri.clone(), version);
         }
     }
 

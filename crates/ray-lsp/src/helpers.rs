@@ -80,19 +80,3 @@ pub(crate) fn lsp_position_to_pos(source: &str, position: &Position) -> Pos {
         offset: source.len(),
     }
 }
-
-pub(crate) fn is_core_library_uri(uri: &Url) -> bool {
-    use std::path::Component;
-    if let Ok(path) = uri.to_file_path() {
-        // Match .../lib/core/... in a platform-independent way.
-        let mut seen_lib = false;
-        for comp in path.components() {
-            match comp {
-                Component::Normal(os) if os == "lib" => seen_lib = true,
-                Component::Normal(os) if seen_lib && os == "core" => return true,
-                _ => {}
-            }
-        }
-    }
-    false
-}

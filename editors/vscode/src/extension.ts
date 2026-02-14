@@ -112,32 +112,32 @@ function startLanguageClient(
     documentSelector: [{ scheme: "file", language: "ray" }],
     outputChannel,
     initializationOptions: { toolchainPath },
-    middleware: {
-      async provideDocumentSemanticTokens(doc, cancel, next) {
-        const res = await next(doc, cancel);
-        if (res?.data && res.data instanceof Uint32Array) {
-          // Pull the legend advertised by the server during initialize
-          const legend =
-            languageClient.initializeResult?.capabilities.semanticTokensProvider?.legend ??
-            { tokenTypes: [], tokenModifiers: [] };
-          const dump = dumpClientTokens(
-            res.data as Uint32Array,
-            legend,
-            ln => doc.lineAt(ln).text
-          );
-          outputChannel.appendLine('[client] semantic tokens (full)');
-          outputChannel.appendLine(dump);
-        }
-        return res;
-      },
-      async provideDocumentRangeSemanticTokens(doc, range, cancel, next) {
-        const res = await next(doc, range, cancel);
-        const data = res?.data ?? [];
-        client?.outputChannel.appendLine(`[client] range semTokens ${doc.uri} -> ${data.length} ints`);
-        client?.outputChannel.appendLine(JSON.stringify(data));
-        return res;
-      },
-    }
+    // middleware: {
+    //   async provideDocumentSemanticTokens(doc, cancel, next) {
+    //     const res = await next(doc, cancel);
+    //     if (res?.data && res.data instanceof Uint32Array) {
+    //       // Pull the legend advertised by the server during initialize
+    //       const legend =
+    //         languageClient.initializeResult?.capabilities.semanticTokensProvider?.legend ??
+    //         { tokenTypes: [], tokenModifiers: [] };
+    //       const dump = dumpClientTokens(
+    //         res.data as Uint32Array,
+    //         legend,
+    //         ln => doc.lineAt(ln).text
+    //       );
+    //       outputChannel.appendLine('[client] semantic tokens (full)');
+    //       outputChannel.appendLine(dump);
+    //     }
+    //     return res;
+    //   },
+    //   async provideDocumentRangeSemanticTokens(doc, range, cancel, next) {
+    //     const res = await next(doc, range, cancel);
+    //     const data = res?.data ?? [];
+    //     client?.outputChannel.appendLine(`[client] range semTokens ${doc.uri} -> ${data.length} ints`);
+    //     client?.outputChannel.appendLine(JSON.stringify(data));
+    //     return res;
+    //   },
+    // }
   };
 
   log(`Starting Ray LSP with command: ${serverCommand} ${serverArgs.join(" ")}`);
