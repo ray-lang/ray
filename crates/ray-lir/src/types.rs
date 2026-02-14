@@ -22,14 +22,9 @@ use ray_shared::{
 use ray_typing::types::{ImplTy, StructTy, Subst, Substitutable, TyScheme};
 use serde::{Deserialize, Serialize};
 
-use ray_core::{
-    ast::{Modifier, Node},
-    convert::ToSet,
-    strutils::indent_lines,
-};
+use ray_core::{ast::Modifier, convert::ToSet, strutils::indent_lines};
 
-use crate::IntrinsicKind;
-use crate::RAY_MAIN_FUNCTION;
+use crate::{IntrinsicKind, RAY_MAIN_FUNCTION};
 
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {

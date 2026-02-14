@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
 use ray_shared::{
-    collections::{namecontext::NameContext, nametree::Scope},
     pathlib::ItemPath,
     resolution::DefTarget,
     span::Source,
@@ -329,28 +328,6 @@ impl TyScheme {
             Ty::Func(params, ret) => Some((&self.vars, &self.qualifiers, params, ret)),
             _ => None,
         }
-    }
-
-    pub fn resolve_fqns(&mut self, scopes: &Vec<Scope>, ncx: &NameContext) {
-        for pred in self.qualifiers_mut().iter_mut() {
-            match pred {
-                Predicate::Class(p) => {
-                    for ty in p.args.iter_mut() {
-                        ty.resolve_fqns(scopes, ncx);
-                    }
-                }
-                Predicate::HasField(p) => {
-                    p.record_ty.resolve_fqns(scopes, ncx);
-                    p.field_ty.resolve_fqns(scopes, ncx);
-                }
-                Predicate::Recv(p) => {
-                    p.recv_ty.resolve_fqns(scopes, ncx);
-                    p.expr_ty.resolve_fqns(scopes, ncx);
-                }
-            }
-        }
-
-        self.mono_mut().resolve_fqns(scopes, ncx);
     }
 
     pub fn flatten(&self) -> Vec<&Ty> {

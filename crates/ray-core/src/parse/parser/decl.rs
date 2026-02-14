@@ -10,8 +10,8 @@ use ray_typing::types::NominalKind;
 
 use crate::{
     ast::{
-        Assign, Decl, Decorator, Expr, Extern, Func, Impl, Modifier, Name, Node, Pattern, Struct,
-        TrailingPolicy, Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
+        Assign, Decl, Decorator, Expr, Impl, Modifier, Name, Node, Pattern, Struct, TrailingPolicy,
+        Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::NewlineMode,
@@ -127,9 +127,8 @@ impl Parser<'_> {
                     })
                 }
                 TokenKind::Extern => {
-                    let extern_span = parser.expect_keyword(TokenKind::Extern, ctx)?;
-                    let start = extern_span.start;
-                    let decl = parser.parse_extern_fn_sig(start, Some(impl_def_id), ctx)?;
+                    let _extern_span = parser.expect_keyword(TokenKind::Extern, ctx)?;
+                    let decl = parser.parse_extern_fn_sig(Some(impl_def_id), ctx)?;
                     let end = parser.srcmap.span_of(&decl).end;
                     externs.push(decl);
                     Ok(end)
@@ -174,14 +173,13 @@ impl Parser<'_> {
 
     pub(crate) fn parse_extern(&mut self, ctx: &ParseContext) -> DeclResult {
         // extern
-        let extern_span = self.expect_keyword(TokenKind::Extern, ctx)?;
-        let start = extern_span.start;
+        let _extern_span = self.expect_keyword(TokenKind::Extern, ctx)?;
         // parse_extern_fn_sig already wraps in Extern, so return directly
         if matches!(
             self.must_peek_kind()?,
             TokenKind::Fn | TokenKind::Modifier(_)
         ) {
-            return self.parse_extern_fn_sig(start, None, ctx);
+            return self.parse_extern_fn_sig(None, ctx);
         }
         let decl = match self.must_peek_kind()? {
             TokenKind::Struct => self.parse_struct(ctx)?,
@@ -234,7 +232,6 @@ impl Parser<'_> {
 
     pub(crate) fn parse_extern_fn_sig(
         &mut self,
-        start: Pos,
         parent_def_id: Option<DefId>,
         ctx: &ParseContext,
     ) -> DeclResult {

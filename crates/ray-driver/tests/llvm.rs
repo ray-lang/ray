@@ -4,8 +4,9 @@ mod utils;
 
 use ray_codegen::{codegen::llvm::emit_module_ir, lir};
 use ray_core::target::Target;
+use ray_frontend::queries::workspace::workspace_source_map;
 use ray_shared::optlevel::OptLevel;
-use utils::{enable_debug_logs, test_build};
+use utils::{enable_debug_logs, test_workspace};
 
 #[test]
 #[ignore = "pending ModuleBuilder removal"]
@@ -28,20 +29,16 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    let mut program = lir::generate(&frontend.db, false).expect("lir generation should succeed");
+    let mut program = lir::generate(&workspace.db, false).expect("lir generation should succeed");
     lir::monomorphize(&mut program);
 
     eprintln!("---------- LIR ----------\n{}", program);
 
     enable_debug_logs();
-    let ir = emit_module_ir(&program, &frontend.srcmap, &Target::default(), OptLevel::O0);
+    let srcmap = workspace_source_map(&workspace.db, ());
+    let ir = emit_module_ir(&program, &srcmap, &Target::default(), OptLevel::O0);
 
     eprintln!("---------- LLVM ----------\n{}", ir);
 

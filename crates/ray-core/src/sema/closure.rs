@@ -1,18 +1,14 @@
-use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
-use ray_shared::def::DefId;
-use ray_shared::local_binding::LocalBindingId;
-use ray_shared::node_id::NodeId;
-use ray_shared::resolution::Resolution;
-use ray_typing::NodeBinding;
-use ray_typing::binding_groups::BindingId;
+use ray_shared::{
+    def::DefId, local_binding::LocalBindingId, node_id::NodeId, resolution::Resolution,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::ast::{
-    Closure, Decl, Expr, FnParam, Module, Node, WalkItem, WalkScopeKind, walk_decl, walk_module,
-};
-use crate::passes::binding::BindingPassOutput;
+use crate::ast::{Closure, Decl, Expr, FnParam, Node, WalkItem, WalkScopeKind, walk_decl};
 
 /// Information about a single closure expression (new API).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,47 +17,6 @@ pub struct ClosureInfo {
     pub captures: Vec<LocalBindingId>,
     pub body_expr: Option<NodeId>,
     pub closure_expr: NodeId,
-}
-
-// =============================================================================
-// Legacy API (for existing system using BindingId)
-// =============================================================================
-
-/// Information about a single closure expression (legacy API).
-#[derive(Debug, Default, Clone)]
-pub struct LegacyClosureInfo {
-    pub parent_binding: BindingId,
-    pub captures: Vec<BindingId>,
-    pub body_expr: Option<NodeId>,
-    pub closure_expr: NodeId,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct ClosurePassOutput {
-    pub closures: Vec<LegacyClosureInfo>,
-}
-
-pub fn run_closure_pass(
-    module: &Module<(), Decl>,
-    bindings: &BindingPassOutput,
-) -> ClosurePassOutput {
-    let lookup = LegacyBindingLookup { bindings };
-    let mut ctx = ClosureCtx::new(lookup);
-    for item in walk_module(module) {
-        ctx.visit_item(item);
-    }
-    ClosurePassOutput {
-        closures: ctx
-            .closures
-            .into_iter()
-            .map(|c| LegacyClosureInfo {
-                parent_binding: c.parent_id,
-                captures: c.captures,
-                body_expr: c.body_expr,
-                closure_expr: c.closure_expr,
-            })
-            .collect(),
-    }
 }
 
 /// Analyze closures within a single definition.
@@ -147,39 +102,8 @@ impl<'a> BindingLookup for ResolutionLookup<'a> {
     }
 }
 
-/// Lookup using the legacy BindingPassOutput.
-struct LegacyBindingLookup<'a> {
-    bindings: &'a BindingPassOutput,
-}
-
-impl<'a> BindingLookup for LegacyBindingLookup<'a> {
-    type BindingId = BindingId;
-
-    fn binding_for_def(&self, node_id: NodeId) -> Option<Self::BindingId> {
-        match self.bindings.node_bindings.get(&node_id).copied()? {
-            NodeBinding::Def(binding) => Some(binding),
-            NodeBinding::Use(_) => None,
-        }
-    }
-
-    fn binding_for_use(&self, node_id: NodeId) -> Option<Self::BindingId> {
-        match self.bindings.node_bindings.get(&node_id).copied()? {
-            NodeBinding::Def(binding) | NodeBinding::Use(binding) => Some(binding),
-        }
-    }
-
-    fn parent_binding(&self, node_id: NodeId) -> Option<Self::BindingId> {
-        self.binding_for_def(node_id)
-    }
-
-    fn sort_key(id: &Self::BindingId) -> u64 {
-        id.0
-    }
-}
-
 /// Generic closure info collected during analysis.
 struct GenericClosureInfo<B> {
-    parent_id: B,
     captures: Vec<B>,
     body_expr: Option<NodeId>,
     closure_expr: NodeId,
@@ -207,7 +131,6 @@ impl<B> GenericScopeFrame<B> {
 }
 
 struct GenericActiveClosure<B> {
-    parent_id: B,
     closure_expr: NodeId,
     body_expr: Option<NodeId>,
     scope_index: usize,
@@ -250,7 +173,6 @@ impl<L: BindingLookup> ClosureCtx<L> {
                     let mut captures: Vec<L::BindingId> = active.captures.into_iter().collect();
                     captures.sort_unstable_by_key(|id| L::sort_key(id));
                     self.closures.push(GenericClosureInfo {
-                        parent_id: active.parent_id,
                         captures,
                         body_expr: active.body_expr,
                         closure_expr: active.closure_expr,
@@ -293,16 +215,13 @@ impl<L: BindingLookup> ClosureCtx<L> {
 
     fn visit_closure(&mut self, expr: &Node<Expr>, closure: &Closure) {
         self.register_closure_params(&closure.args.items);
-        if let Some(parent_id) = self.current_parent_binding() {
-            let scope_index = self.scope_stack.len().saturating_sub(1);
-            self.closure_stack.push(GenericActiveClosure {
-                parent_id,
-                closure_expr: expr.id,
-                body_expr: Some(closure.body.id),
-                scope_index,
-                captures: HashSet::new(),
-            });
-        }
+        let scope_index = self.scope_stack.len().saturating_sub(1);
+        self.closure_stack.push(GenericActiveClosure {
+            closure_expr: expr.id,
+            body_expr: Some(closure.body.id),
+            scope_index,
+            captures: HashSet::new(),
+        });
     }
 
     fn register_function_params(&mut self, params: &[Node<FnParam>]) {
@@ -359,159 +278,23 @@ impl<L: BindingLookup> ClosureCtx<L> {
             *entry = binding;
         }
     }
-
-    fn current_parent_binding(&self) -> Option<L::BindingId> {
-        self.function_stack.iter().rev().find_map(|b| b.clone())
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ast::{
-        Assign, Block, Closure as AstClosure, Expr, Func, InfixOp, Literal, Name, Node,
-        Pattern as AstPattern, Sequence,
+    use std::collections::HashMap;
+
+    use crate::{
+        ast::{
+            Assign, Block, Closure as AstClosure, Decl, Expr, Func, InfixOp, Literal, Name, Node,
+            Pattern as AstPattern, Sequence,
+        },
+        sema::closure::closures_in_def,
     };
-    use crate::passes::binding;
-    use crate::sourcemap::SourceMap;
-    use ray_shared::def::DefId;
-    use ray_shared::file_id::FileId;
-    use ray_shared::node_id::NodeId;
-    use ray_shared::pathlib::{FilePath, Path};
-    use ray_shared::span::{Source, Span};
-    use ray_typing::NodeBinding;
-    use ray_typing::env::GlobalEnv;
-
-    fn test_source() -> Source {
-        Source::new(
-            FilePath::from("test.ray"),
-            Span::new(),
-            Path::new(),
-            Path::new(),
-        )
-    }
-
-    fn seed_src<T>(srcmap: &mut SourceMap, node: &Node<T>) {
-        srcmap.set_src(node, test_source());
-    }
-
-    fn test_module(decls: Vec<Node<Decl>>) -> Module<(), Decl> {
-        Module {
-            path: Path::from("test"),
-            stmts: vec![],
-            decls,
-            imports: vec![],
-            import_stmts: vec![],
-            submodules: vec![],
-            doc_comment: None,
-            root_filepath: FilePath::from("test.ray"),
-            filepaths: vec![FilePath::from("test.ray")],
-            is_lib: false,
-        }
-    }
-
-    fn run_binding_and_closure(
-        module: &Module<(), Decl>,
-        srcmap: &SourceMap,
-    ) -> (BindingPassOutput, ClosurePassOutput) {
-        let env = GlobalEnv::default();
-        let binding_output =
-            binding::run_binding_pass(module, srcmap, &env, BindingPassOutput::empty());
-        let closure_output = run_closure_pass(module, &binding_output);
-        (binding_output, closure_output)
-    }
-
-    #[test]
-    fn closure_captures_outer_local() {
-        // Enter a DefId context for creating nodes
-        let def_id = DefId::new(FileId(0), 0);
-        let _guard = NodeId::enter_def(def_id);
-
-        let local_pattern = Node::new(AstPattern::Name(Name::new("outer")));
-        let rhs_expr = Node::new(Expr::Literal(Literal::Bool(true)));
-        let assign = Assign {
-            lhs: local_pattern.clone(),
-            rhs: Box::new(rhs_expr.clone()),
-            is_mut: false,
-            mut_span: None,
-            op: InfixOp::Assign,
-            op_span: Span::new(),
-        };
-        let assign_expr = Node::new(Expr::Assign(assign));
-        let closure_body = Node::new(Expr::Name(Name::new("outer")));
-        let closure = AstClosure {
-            args: Sequence::new(vec![]),
-            body: Box::new(closure_body.clone()),
-            arrow_span: None,
-            curly_spans: None,
-        };
-        let closure_expr = Node::new(Expr::Closure(closure));
-        let func_body = Node::new(Expr::Block(Block {
-            stmts: vec![assign_expr.clone(), closure_expr.clone()],
-        }));
-        let func = Func::new(Node::new(Path::from("pkg::f")), vec![], func_body);
-        let decl = Node::new(Decl::Func(func));
-
-        let module = test_module(vec![decl.clone()]);
-        let mut srcmap = SourceMap::new();
-        seed_src(&mut srcmap, &decl);
-        seed_src(&mut srcmap, &local_pattern);
-        seed_src(&mut srcmap, &assign_expr);
-        seed_src(&mut srcmap, &rhs_expr);
-        seed_src(&mut srcmap, &closure_expr);
-        seed_src(&mut srcmap, &closure_body);
-
-        let (binding_output, closure_output) = run_binding_and_closure(&module, &srcmap);
-        assert_eq!(closure_output.closures.len(), 1);
-        let info = &closure_output.closures[0];
-        let func_binding = match binding_output.node_bindings.get(&decl.id) {
-            Some(NodeBinding::Def(binding)) => *binding,
-            Some(NodeBinding::Use(_)) => panic!("expected def binding for function"),
-            None => panic!("function binding missing"),
-        };
-        assert_eq!(info.parent_binding, func_binding);
-        let local_binding = match binding_output.node_bindings.get(&local_pattern.id) {
-            Some(NodeBinding::Def(binding)) => *binding,
-            Some(NodeBinding::Use(_)) => panic!("expected def binding for local"),
-            None => panic!("local binding missing"),
-        };
-        assert_eq!(info.captures, vec![local_binding]);
-        assert_eq!(info.body_expr, Some(closure_body.id));
-        assert_eq!(info.closure_expr, closure_expr.id);
-    }
-
-    #[test]
-    fn closure_without_captures_reports_empty() {
-        // Enter a DefId context for creating nodes
-        let def_id = DefId::new(FileId(0), 0);
-        let _guard = NodeId::enter_def(def_id);
-
-        let closure_body = Node::new(Expr::Literal(Literal::Bool(true)));
-        let closure = AstClosure {
-            args: Sequence::new(vec![]),
-            body: Box::new(closure_body.clone()),
-            arrow_span: None,
-            curly_spans: None,
-        };
-        let closure_expr = Node::new(Expr::Closure(closure));
-        let func_body = Node::new(Expr::Block(Block {
-            stmts: vec![closure_expr.clone()],
-        }));
-        let func = Func::new(Node::new(Path::from("pkg::g")), vec![], func_body);
-        let decl = Node::new(Decl::Func(func));
-
-        let module = test_module(vec![decl.clone()]);
-        let mut srcmap = SourceMap::new();
-        seed_src(&mut srcmap, &decl);
-        seed_src(&mut srcmap, &closure_expr);
-        seed_src(&mut srcmap, &closure_body);
-
-        let (_binding_output, closure_output) = run_binding_and_closure(&module, &srcmap);
-        assert_eq!(closure_output.closures.len(), 1);
-        assert!(closure_output.closures[0].captures.is_empty());
-    }
-
-    // Tests for the new closures_in_def API
+    use ray_shared::{
+        def::DefId, file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, pathlib::Path,
+        resolution::Resolution, span::Span,
+    };
 
     #[test]
     fn closures_in_def_captures_outer_local() {

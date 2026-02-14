@@ -5,7 +5,7 @@ use std::{
 };
 
 use itertools::Itertools as _;
-use ray_core::{ast::Node, convert::ToSet};
+use ray_core::convert::ToSet;
 use ray_lir::{self as lir, NamedInst};
 use ray_shared::{
     pathlib::{ItemPath, Path},

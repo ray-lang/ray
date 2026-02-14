@@ -1,14 +1,11 @@
-use ray_codegen::modules::ModuleBuilder;
-use ray_core::passes::{FrontendPassManager, binding::BindingPassOutput};
 use ray_shared::{
     pathlib::{ItemPath, ModulePath, Path},
     ty::{Ty, TyVar},
     utils::join,
 };
 use ray_typing::{
-    NodeBinding, TypeCheckResult, TypecheckOptions,
+    TypeCheckResult,
     constraints::Predicate,
-    tyctx::TyCtx,
     types::{Subst, Substitutable as _, TyScheme},
 };
 
@@ -21,20 +18,12 @@ fn enable_debug_logs() {
         .unwrap();
 }
 
-fn typecheck_src(module_name: &str, src: &str) -> (Path, TypeCheckResult, TyCtx) {
+fn typecheck_src(module_name: &str, src: &str) -> (Path, TypeCheckResult, ()) {
     let (module_path, result, tcx, _) = typecheck_src_with_bindings(module_name, src);
     (module_path, result, tcx)
 }
 
-fn typecheck_src_with_bindings(
-    module_name: &str,
-    src: &str,
-) -> (Path, TypeCheckResult, TyCtx, BindingPassOutput) {
-    let module_path = Path::from(module_name);
-    let mut builder_result =
-        ModuleBuilder::from_src(src, module_path.clone()).expect("module should build");
-
-    let tc_options = TypecheckOptions::default();
+fn typecheck_src_with_bindings(_module_name: &str, _src: &str) -> (Path, TypeCheckResult, (), ()) {
     todo!("FIXME: uses legacy code that needs to be replaced")
 
     // let pass_manager = FrontendPassManager::new(
@@ -60,101 +49,99 @@ fn assert_typechecks(test_name: &str, result: &TypeCheckResult) {
 }
 
 fn assert_scheme_eq(
-    tcx: &TyCtx,
-    module_path: &Path,
-    binding: &str,
-    expected_vars: &[TyVar],
-    expected_ty: Ty,
-    expected_predicates: &[Predicate],
+    _tcx: &(),
+    _module_path: &Path,
+    _binding: &str,
+    _expected_vars: &[TyVar],
+    _expected_ty: Ty,
+    _expected_predicates: &[Predicate],
 ) {
-    let subpath = Path::from(binding);
-    let path = module_path.append_path(subpath);
-    let scheme = tcx.schemes().get(&path).unwrap_or_else(|| {
-        panic!(
-            "typechecker did not produce an exported scheme for {}: {:?}",
-            path,
-            tcx.schemes()
-        )
-    });
+    todo!("FIXME: this used legacy code");
+    // let subpath = Path::from(binding);
+    // let path = module_path.append_path(subpath);
+    // let scheme = tcx.schemes().get(&path).unwrap_or_else(|| {
+    //     panic!(
+    //         "typechecker did not produce an exported scheme for {}: {:?}",
+    //         path,
+    //         tcx.schemes()
+    //     )
+    // });
 
-    assert_scheme_matches(
-        scheme,
-        &path.to_string(),
-        expected_vars,
-        &expected_ty,
-        expected_predicates,
-    );
+    // assert_scheme_matches(
+    //     scheme,
+    //     &path.to_string(),
+    //     expected_vars,
+    //     &expected_ty,
+    //     expected_predicates,
+    // );
 }
 
 fn assert_local_scheme_eq(
-    tcx: &TyCtx,
-    bindings: &BindingPassOutput,
-    module_path: &Path,
-    binding: &str,
-    expected_vars: &[TyVar],
-    expected_ty: Ty,
-    expected_predicates: &[Predicate],
+    _tcx: &(),
+    _bindings: &(),
+    _module_path: &Path,
+    _binding: &str,
+    _expected_vars: &[TyVar],
+    _expected_ty: Ty,
+    _expected_predicates: &[Predicate],
 ) {
-    let relative = Path::from(binding);
-    let full = module_path.append_path(relative.clone());
-    let binding_id = bindings
-        .value_bindings
-        .get(&full)
-        .copied()
-        .or_else(|| bindings.value_bindings.get(&relative).copied())
-        .or_else(|| {
-            bindings.binding_records.iter().find_map(|(id, record)| {
-                record.path.as_ref().and_then(|p| {
-                    if p == &full || p == &relative {
-                        Some(*id)
-                    } else {
-                        None
-                    }
-                })
-            })
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "binding pass did not record binding {}. available: {:?}",
-                full, bindings.value_bindings
-            )
-        });
+    todo!("FIXME: this used legacy code");
 
-    let node_id = bindings
-        .node_bindings
-        .iter()
-        .find_map(|(node, id)| match id {
-            NodeBinding::Def(id) if *id == binding_id => Some(*node),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no node mapped for binding {}", full));
+    // let relative = Path::from(binding);
+    // let full = module_path.append_path(relative.clone());
+    // let binding_id = bindings
+    //     .value_bindings
+    //     .get(&full)
+    //     .copied()
+    //     .or_else(|| bindings.value_bindings.get(&relative).copied())
+    //     .or_else(|| {
+    //         bindings.binding_records.iter().find_map(|(id, record)| {
+    //             record.path.as_ref().and_then(|p| {
+    //                 if p == &full || p == &relative {
+    //                     Some(*id)
+    //                 } else {
+    //                     None
+    //                 }
+    //             })
+    //         })
+    //     })
+    //     .unwrap_or_else(|| {
+    //         panic!(
+    //             "binding pass did not record binding {}. available: {:?}",
+    //             full, bindings.value_bindings
+    //         )
+    //     });
 
-    let scheme = tcx.node_schemes.get(&node_id).unwrap_or_else(|| {
-        panic!(
-            "typechecker did not record a scheme for node {:?} ({})",
-            node_id, full
-        )
-    });
+    // let node_id = bindings
+    //     .node_bindings
+    //     .iter()
+    //     .find_map(|(node, id)| match id {
+    //         NodeBinding::Def(id) if *id == binding_id => Some(*node),
+    //         _ => None,
+    //     })
+    //     .unwrap_or_else(|| panic!("no node mapped for binding {}", full));
 
-    assert_scheme_matches(
-        scheme,
-        &full.to_string(),
-        expected_vars,
-        &expected_ty,
-        expected_predicates,
-    );
+    // let scheme = tcx.node_schemes.get(&node_id).unwrap_or_else(|| {
+    //     panic!(
+    //         "typechecker did not record a scheme for node {:?} ({})",
+    //         node_id, full
+    //     )
+    // });
+
+    // assert_scheme_matches(
+    //     scheme,
+    //     &full.to_string(),
+    //     expected_vars,
+    //     &expected_ty,
+    //     expected_predicates,
+    // );
 }
 
-fn assert_local_ty_eq(
-    tcx: &TyCtx,
-    bindings: &BindingPassOutput,
-    module_path: &Path,
-    binding: &str,
-    expected_ty: Ty,
-) {
+fn assert_local_ty_eq(tcx: &(), bindings: &(), module_path: &Path, binding: &str, expected_ty: Ty) {
     assert_local_scheme_eq(tcx, bindings, module_path, binding, &[], expected_ty, &[]);
 }
 
+#[allow(dead_code)]
 fn assert_scheme_matches(
     scheme: &TyScheme,
     label: &str,
@@ -267,7 +254,7 @@ fn records_call_resolution_for_unary_ops() {
         }
     "#;
 
-    let (_, result, tcx) = typecheck_src("records_call_resolution_for_unary_ops", src);
+    let (_, result, _tcx) = typecheck_src("records_call_resolution_for_unary_ops", src);
     assert_typechecks("records_call_resolution_for_unary_ops", &result);
 
     todo!("FIXME: this uses legacy code that needs to change")
@@ -1091,7 +1078,7 @@ fn main() {
 #[test]
 #[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_int_literals() {
-    let src = r#"
+    let _src = r#"
 trait Int['a] {
     default(int)
 }
@@ -1104,12 +1091,14 @@ fn main() {
 }
 "#;
 
-    let (module_path, result, tcx, _) = typecheck_src_with_bindings("test", src);
-    assert_typechecks("test", &result);
-    let a_path = module_path.append_path("main::a");
-    let scheme = tcx.all_schemes().get(&a_path).expect("a scheme");
-    assert!(scheme.vars.is_empty(), "scheme vars not empty: {}", scheme);
-    assert_eq!(*scheme.mono(), Ty::int());
+    todo!("FIXME: this used legacy code");
+
+    // let (module_path, result, tcx, _) = typecheck_src_with_bindings("test", src);
+    // assert_typechecks("test", &result);
+    // let a_path = module_path.append_path("main::a");
+    // let scheme = tcx.all_schemes().get(&a_path).expect("a scheme");
+    // assert!(scheme.vars.is_empty(), "scheme vars not empty: {}", scheme);
+    // assert_eq!(*scheme.mono(), Ty::int());
 }
 
 #[test]
@@ -1143,7 +1132,7 @@ fn mk_string() -> string {
 #[test]
 #[ignore = "pending ModuleBuilder removal"]
 fn typechecks_function_with_literals_and_rawptr() {
-    let src = r#"
+    let _src = r#"
 extern fn malloc(size: uint) -> rawptr[u8]
 
 trait Int['a] {
@@ -1157,13 +1146,14 @@ fn mk_string() {
     raw_ptr = malloc(len)
 }
 "#;
+    todo!("FIXME: this used legacy code");
 
-    let (module_path, result, tcx, _) = typecheck_src_with_bindings("test", src);
-    assert_typechecks("test", &result);
-    let len_path = module_path.append_path("mk_string::len");
-    let scheme = tcx.all_schemes().get(&len_path).expect("len scheme");
-    assert!(scheme.vars.is_empty(), "scheme vars not empty: {}", scheme);
-    assert_eq!(*scheme.mono(), Ty::uint());
+    // let (module_path, result, tcx, _) = typecheck_src_with_bindings("test", src);
+    // assert_typechecks("test", &result);
+    // let len_path = module_path.append_path("mk_string::len");
+    // let scheme = tcx.all_schemes().get(&len_path).expect("len scheme");
+    // assert!(scheme.vars.is_empty(), "scheme vars not empty: {}", scheme);
+    // assert_eq!(*scheme.mono(), Ty::uint());
 }
 
 #[test]

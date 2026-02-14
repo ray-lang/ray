@@ -10,8 +10,8 @@ use std::{
 };
 
 use inkwell::{
-    self as llvm, attributes::Attribute, builder::BuilderError, passes::PassBuilderOptions,
-    types::BasicMetadataTypeEnum, values::BasicMetadataValueEnum,
+    self as llvm, builder::BuilderError, passes::PassBuilderOptions, types::BasicMetadataTypeEnum,
+    values::BasicMetadataValueEnum,
 };
 use llvm::{
     AddressSpace, IntPredicate,
@@ -27,7 +27,7 @@ use llvm::{
 };
 use rand::RngCore;
 use ray_core::{
-    ast::{Modifier, Node},
+    ast::Modifier,
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
     target::Target,

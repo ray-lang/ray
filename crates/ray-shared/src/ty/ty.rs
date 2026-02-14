@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    collections::{namecontext::NameContext, nametree::Scope},
     pathlib::{ItemPath, Path},
     ty::TyVar,
 };
@@ -344,47 +343,6 @@ impl Ty {
         }
     }
 
-    pub fn resolve_fqns(&mut self, scopes: &Vec<Scope>, ncx: &NameContext) {
-        fn resolve_fqn(path: &mut ItemPath, scopes: &Vec<Scope>, ncx: &NameContext) {
-            let name = path.item_name().unwrap().to_string();
-            if Ty::is_builtin_name(&name) {
-                return;
-            }
-
-            if let Some(fqn) = ncx.resolve_name(scopes, &name) {
-                log::debug!("[resolve_fqns] resolved name: {} -> {:?}", name, fqn);
-                *path = fqn.into();
-            } else {
-                log::debug!(
-                    "[resolve_fqns] COULD NOT RESOLVE NAME {} in scopes = {:?}",
-                    name,
-                    scopes
-                );
-            }
-        }
-
-        match self {
-            Ty::Const(path) => {
-                resolve_fqn(path, scopes, ncx);
-            }
-            Ty::Proj(path, tys) => {
-                resolve_fqn(path, scopes, ncx);
-                for ty in tys {
-                    ty.resolve_fqns(scopes, ncx);
-                }
-            }
-            Ty::Tuple(tys) => {
-                tys.iter_mut().for_each(|t| t.resolve_fqns(scopes, ncx));
-            }
-            Ty::Ref(t) | Ty::RawPtr(t) | Ty::Array(t, _) => t.resolve_fqns(scopes, ncx),
-            Ty::Func(params, ret) => {
-                params.iter_mut().for_each(|t| t.resolve_fqns(scopes, ncx));
-                ret.resolve_fqns(scopes, ncx);
-            }
-            Ty::Var(_) | Ty::Never | Ty::Any => {}
-        }
-    }
-
     /// Returns true if the name is a primitive/builtin type.
     ///
     /// These are types intrinsic to the type system with no struct definition.
@@ -493,8 +451,9 @@ impl Ty {
 
     /// Get the instantiated type path for codegen.
     ///
-    /// Returns `Some(&ItemPath)` for nominal types:
-    #[deprecated(note = "use item_path() instead")]
+    /// Returns `Some(&ItemPath)` for nominal types
+    ///
+    /// Note: Prefer [`Ty::item_path`] instead
     pub fn get_path(&self) -> Path {
         match self {
             Ty::Never => Path::from("never"),

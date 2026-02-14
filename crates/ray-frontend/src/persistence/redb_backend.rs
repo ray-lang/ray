@@ -1,11 +1,13 @@
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
-use redb::{ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{ReadableDatabase, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use super::{CacheMeta, PersistenceBackend, QueryId};
+use crate::persistence::{CacheMeta, PersistenceBackend, QueryId};
 
 /// Bump this to invalidate all redb caches.
 const CACHE_VERSION: u64 = 1;

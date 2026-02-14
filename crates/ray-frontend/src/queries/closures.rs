@@ -1,13 +1,8 @@
 //! Closure analysis queries for the incremental compiler.
 
-use std::collections::HashMap;
-
-use ray_core::{
-    ast::{Decl, Node},
-    passes::closure::{self, ClosureInfo},
-};
+use ray_core::sema::closure::{self, ClosureInfo};
 use ray_query_macros::query;
-use ray_shared::{def::DefId, node_id::NodeId, resolution::Resolution};
+use ray_shared::{def::DefId, node_id::NodeId};
 
 use crate::{
     queries::{defs::find_def_ast, resolve::name_resolutions, transform::file_ast},

@@ -11,7 +11,8 @@ use ray_shared::{
 };
 
 use utils::{
-    TestBuildOptions, find_func, find_func_in, find_impl, test_build, test_build_with_options,
+    TestBuildOptions, find_func, find_func_in, find_impl, test_workspace,
+    test_workspace_with_options,
 };
 
 #[test]
@@ -22,7 +23,7 @@ fn foo(a: int, b: int) -> int {
 }
 "#;
 
-    let result = match test_build(&src) {
+    let result = match test_workspace(&src) {
         Ok(result) => result,
         Err(errs) => {
             panic!("Found errors: {:#?}", errs);
@@ -61,7 +62,7 @@ impl Foo[int] {
     }
 }
 "#;
-    let result = match test_build(src) {
+    let result = match test_workspace(src) {
         Ok(result) => result,
         Err(errs) => {
             panic!("Found errors: {:#?}", errs);
@@ -103,7 +104,7 @@ fn main() {
     *ptr = 2
 }
 "#;
-    let result = match test_build(src) {
+    let result = match test_workspace(src) {
         Ok(result) => result,
         Err(errs) => {
             panic!("Found errors: {:#?}", errs);
@@ -153,7 +154,7 @@ fn make_string() -> string {
 }
 "#;
 
-    let result = match test_build_with_options(src, TestBuildOptions { minimal_core: true }) {
+    let result = match test_workspace_with_options(src, TestBuildOptions { minimal_core: true }) {
         Ok(result) => result,
         Err(errs) => {
             panic!("Found errors: {:#?}", errs);

@@ -28,7 +28,7 @@ use crate::{
         exports::{ExportedItem, module_def_index},
         libraries::{LoadedLibraries, library_data},
         parse::{doc_comment, parse_file},
-        resolve::{file_scope, name_resolutions},
+        resolve::name_resolutions,
         typecheck::def_scheme,
         types::{apply_type_resolutions, apply_type_resolutions_to_scheme, mapped_def_types},
         workspace::WorkspaceSnapshot,

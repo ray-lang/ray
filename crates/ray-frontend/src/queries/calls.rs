@@ -1,8 +1,8 @@
 use ray_query_macros::query;
 use ray_shared::{node_id::NodeId, ty::Ty};
 use ray_typing::{
+    call_resolution::CallResolution,
     context::{AssignLhs, ExprKind},
-    tyctx::CallResolution,
     types::{Subst, TyScheme},
     unify::mgu,
 };

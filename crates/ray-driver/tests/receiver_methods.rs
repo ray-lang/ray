@@ -2,7 +2,7 @@
 
 mod utils;
 
-use utils::{TestBuildOptions, test_build_with_options};
+use utils::{TestBuildOptions, test_workspace_with_options};
 
 #[test]
 #[ignore = "pending ModuleBuilder removal"]
@@ -27,12 +27,14 @@ fn call_on_ptr(p: *int) -> int {
 }
 "#;
 
-    test_build_with_options(src, TestBuildOptions { minimal_core: true }).unwrap_or_else(|errs| {
-        panic!(
-            "expected type checking to succeed, but found errors: {:#?}",
-            errs
-        );
-    });
+    test_workspace_with_options(src, TestBuildOptions { minimal_core: true }).unwrap_or_else(
+        |errs| {
+            panic!(
+                "expected type checking to succeed, but found errors: {:#?}",
+                errs
+            );
+        },
+    );
 }
 
 #[test]
@@ -56,10 +58,12 @@ fn call_on_ptr(p: *int) {
 }
 "#;
 
-    test_build_with_options(src, TestBuildOptions { minimal_core: true }).unwrap_or_else(|errs| {
-        panic!(
-            "expected type checking to succeed, but found errors: {:#?}",
-            errs
-        );
-    });
+    test_workspace_with_options(src, TestBuildOptions { minimal_core: true }).unwrap_or_else(
+        |errs| {
+            panic!(
+                "expected type checking to succeed, but found errors: {:#?}",
+                errs
+            );
+        },
+    );
 }

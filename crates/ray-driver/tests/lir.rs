@@ -6,7 +6,7 @@ use std::convert::TryInto;
 
 use ray_lir::{ControlMarker, Inst, Value};
 use ray_shared::ty::Ty;
-use utils::test_build;
+use utils::test_workspace;
 
 #[test]
 #[ignore = "pending ModuleBuilder removal"]
@@ -16,18 +16,10 @@ fn lir_generation_simple_function() {
         pub fn main() -> u32 { id(1u32) }
     "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
-    for error in &frontend.errors {
-        eprintln!("frontend error: {:?}", error);
-    }
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
     let program =
-        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+        ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
     // Sanity check: at least one function emitted (main + id)
     assert!(
         !program.funcs.is_empty(),
@@ -58,15 +50,10 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
     let program =
-        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+        ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
         .user_main_idx
@@ -163,14 +150,9 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+    ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 }
 
 #[test]
@@ -196,14 +178,9 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+    ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 }
 
 #[test]
@@ -219,14 +196,9 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+    ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 }
 
 #[test]
@@ -244,15 +216,10 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
     let program =
-        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+        ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
         .user_main_idx
@@ -338,15 +305,10 @@ pub fn main() -> u32 {
 }
 "#;
 
-    let frontend = test_build(src).expect("frontend build should succeed");
-    assert!(
-        frontend.errors.is_empty(),
-        "expected no frontend errors, got {:?}",
-        frontend.errors
-    );
+    let workspace = test_workspace(src).expect("frontend build should succeed");
 
     let program =
-        ray_codegen::lir::generate(&frontend.db, false).expect("lir generation should succeed");
+        ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
         .user_main_idx

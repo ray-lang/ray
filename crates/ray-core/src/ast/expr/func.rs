@@ -1,26 +1,20 @@
 use std::collections::HashSet;
-use std::ops::{Deref as _, DerefMut as _};
+use std::ops::Deref as _;
 
 use ray_shared::{
-    collections::{namecontext::NameContext, nametree::Scope},
     def::SignatureStatus,
-    pathlib::{FilePath, Path},
+    pathlib::Path,
     span::{Span, parsed::Parsed},
     ty::{Ty, TyVar},
 };
 use ray_typing::{
     constraints::Predicate,
-    tyctx::TyCtx,
     types::{Subst, Substitutable, TyScheme},
 };
 
 use serde::{Deserialize, Serialize};
 
-use crate::sourcemap::SourceMap;
-use crate::{
-    ast::{Expr, Missing, Modifier, Name, Node, TypeParams},
-    errors::RayError,
-};
+use crate::ast::{Expr, Missing, Modifier, Name, Node, TypeParams};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnParam {
@@ -208,36 +202,6 @@ impl FuncSig {
         }
     }
 
-    pub fn resolve_signature(
-        &mut self,
-        scopes: &Vec<Scope>,
-        ncx: &NameContext,
-    ) -> Result<(), RayError> {
-        log::debug!("[resolve_signature] {}", self);
-
-        // first, resolve all FQNs in the signature: type params, params, return type, qualifiers
-        if let Some(ty_params) = self.ty_params.as_mut() {
-            for ty_param in ty_params.tys.iter_mut() {
-                ty_param.resolve_fqns(scopes, ncx);
-            }
-        }
-
-        for param in self.params.iter_mut() {
-            if let Some(ty) = param.ty_mut() {
-                ty.resolve_fqns(scopes, ncx);
-            }
-        }
-
-        if let Some(ret_ty) = self.ret_ty.as_mut() {
-            ret_ty.resolve_fqns(scopes, ncx);
-        }
-
-        for qual in self.qualifiers.iter_mut() {
-            qual.resolve_fqns(scopes, ncx);
-        }
-        Ok(())
-    }
-
     /// Collect all type variables from this signature: explicit (from `ty_params`)
     /// and implicit (discovered from param types, return type, and qualifiers).
     ///
@@ -351,163 +315,5 @@ impl FuncSig {
             scheme.apply_subst(subst);
         }
         scheme
-    }
-
-    pub fn fresh_scheme(
-        &mut self,
-        fn_scope: &Path,
-        filepath: &FilePath,
-        tcx: &mut TyCtx,
-        srcmap: &SourceMap,
-    ) -> Result<(), RayError> {
-        // then create a "fresh" scheme, replacing each schema variable with a meta variable
-        let ty = self.to_scheme(fn_scope, filepath, tcx, srcmap)?;
-        if let Some(ty_params) = &mut self.ty_params {
-            for ty_param in ty_params.tys.iter_mut() {
-                let ty = ty_param.deref_mut();
-                tcx.map_vars(ty);
-            }
-        }
-
-        self.ty = Some(ty);
-        Ok(())
-    }
-
-    pub fn to_scheme(
-        &self,
-        _fn_scope: &Path,
-        _filepath: &FilePath,
-        _fn_tcx: &mut TyCtx,
-        _srcmap: &SourceMap,
-    ) -> Result<TyScheme, RayError> {
-        unreachable!("legacy code should not be called")
-        // let mut param_tys = vec![];
-
-        // for param in self.params.iter() {
-        //     if let Some(ty) = param.ty() {
-        //         log::debug!(
-        //             "[FuncSig::to_scheme] resolving FQNs for func param: {:?}",
-        //             param
-        //         );
-        //         let mut ty = ty.clone();
-        //         fn_tcx.map_vars(&mut ty);
-        //         param_tys.push(ty);
-        //     } else {
-        //         return Err(RayError {
-        //             msg: format!("parameter `{}` must have a type annotation", param),
-        //             src: vec![Source {
-        //                 span: Some(srcmap.span_of(&param)),
-        //                 filepath: filepath.clone(),
-        //                 ..Default::default()
-        //             }],
-        //             kind: RayErrorKind::Type,
-        //             context: Some("function signature type inference".to_string()),
-        //         });
-        //     }
-        // }
-
-        // let mut ret_ty = self.ret_ty.as_deref().cloned().unwrap_or_else(|| {
-        //     if self.has_body {
-        //         Ty::ret_placeholder(fn_scope)
-        //     } else {
-        //         Ty::unit()
-        //     }
-        // });
-        // fn_tcx.map_vars(&mut ret_ty);
-
-        // let ty = Ty::Func(param_tys, Box::new(ret_ty));
-
-        // let mut preds = vec![];
-        // if self.qualifiers.len() != 0 {
-        //     for q in self.qualifiers.iter() {
-        //         let ty_span = *q.span().unwrap();
-        //         let mut q = q.clone_value();
-        //         fn_tcx.map_vars(&mut q);
-
-        //         let (fqn, ty_args) = match q {
-        //             Ty::Proj(name, args) => (name, args),
-        //             Ty::Const(name) => (name, vec![]),
-        //             _ => {
-        //                 return Err(RayError {
-        //                     msg: str!("qualifier must be a trait type"),
-        //                     src: vec![Source {
-        //                         span: Some(ty_span),
-        //                         filepath: filepath.clone(),
-        //                         ..Default::default()
-        //                     }],
-        //                     kind: RayErrorKind::Type,
-        //                     context: Some("function signature type inference".to_string()),
-        //                 });
-        //             }
-        //         };
-
-        //         log::debug!("converting from ast type: {}", fqn);
-        //         if fn_tcx.get_trait_ty(&fqn).is_none() {
-        //             return Err(RayError {
-        //                 msg: format!("trait `{}` is not defined", fqn),
-        //                 src: vec![Source {
-        //                     span: Some(ty_span),
-        //                     filepath: filepath.clone(),
-        //                     ..Default::default()
-        //                 }],
-        //                 kind: RayErrorKind::Type,
-        //                 context: Some("function signature type inference".to_string()),
-        //             });
-        //         }
-
-        //         preds.push(Predicate::class(
-        //             fqn.without_type_args().to_string(),
-        //             ty_args,
-        //         ));
-        //     }
-        // }
-
-        // let vars = if let Some(ty_params) = &self.ty_params {
-        //     let mut vars = vec![];
-        //     for ty_param in ty_params.tys.iter() {
-        //         let mut ty = ty_param.deref().clone();
-        //         fn_tcx.map_vars(&mut ty);
-        //         if let Ty::Var(v) = ty {
-        //             vars.push(v);
-        //         }
-        //     }
-
-        //     vars
-        // } else {
-        //     let mut vars = ty
-        //         .free_vars()
-        //         .into_iter()
-        //         .chain(
-        //             preds
-        //                 .iter()
-        //                 .flat_map(|q| {
-        //                     let Predicate::Class(pred) = q else {
-        //                         return None;
-        //                     };
-
-        //                     Some(&pred.args)
-        //                 })
-        //                 .flatten()
-        //                 .flat_map(|ty| {
-        //                     let Ty::Var(v) = ty else { return None };
-        //                     Some(v)
-        //                 }),
-        //         )
-        //         .filter(|tv| !tv.is_ret_placeholder())
-        //         .cloned()
-        //         .collect::<Vec<_>>();
-        //     vars.sort();
-        //     vars.dedup();
-        //     vars
-        // };
-
-        // let scheme = if vars.len() != 0 || preds.len() != 0 {
-        //     TyScheme::new(vars, preds, ty)
-        // } else {
-        //     TyScheme::from_mono(ty)
-        // };
-
-        // log::debug!("ty = {}", scheme);
-        // Ok(scheme)
     }
 }

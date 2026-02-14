@@ -10,8 +10,7 @@ use std::{
 
 use ray_core::{
     ast::{
-        Assign, Decl, Expr, Func, FuncSig, Node, PathBinding, Pattern, WalkItem, WalkScopeKind,
-        walk_decl,
+        Assign, Decl, Expr, FuncSig, Node, PathBinding, Pattern, WalkItem, WalkScopeKind, walk_decl,
     },
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
@@ -21,8 +20,7 @@ use ray_shared::pathlib::Path;
 use ray_shared::{
     def::{DefId, DefKind},
     file_id::FileId,
-    node_id::NodeId,
-    pathlib::{FilePath, ItemPath},
+    pathlib::FilePath,
     resolution::{DefTarget, Resolution},
     span::Source,
     ty::Ty,
@@ -33,7 +31,6 @@ use crate::{
         defs::{def_for_path, find_def_ast, impl_def, trait_def},
         resolve::name_resolutions,
         transform::file_ast,
-        workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
 };
@@ -114,7 +111,7 @@ fn validate_function(
         _ => return,
     };
 
-    validate_annotation_policy(sig, body, filepath, srcmap, errors);
+    validate_annotation_policy(sig, filepath, srcmap, errors);
     validate_qualifiers(db, sig, file_id, filepath, srcmap, errors);
 
     // Only validate mutability for declarations with bodies (not FnSig)
@@ -129,7 +126,6 @@ fn validate_function(
 /// or NONE of them do. Partial annotation is an error.
 fn validate_annotation_policy(
     sig: &FuncSig,
-    body: &Option<Box<Node<Expr>>>,
     filepath: &FilePath,
     srcmap: &SourceMap,
     errors: &mut Vec<RayError>,
@@ -562,7 +558,7 @@ fn validate_impl_method(
     let Decl::Func(func) = &decl.value else {
         unreachable!("impl funcs should only contain Decl::Func");
     };
-    validate_annotation_policy(&func.sig, &func.body, filepath, srcmap, errors);
+    validate_annotation_policy(&func.sig, filepath, srcmap, errors);
 }
 
 /// Validate a trait definition.
@@ -584,7 +580,7 @@ fn validate_trait(
             }
             Decl::Func(func) => {
                 // Default method implementation
-                validate_annotation_policy(&func.sig, &func.body, filepath, srcmap, errors);
+                validate_annotation_policy(&func.sig, filepath, srcmap, errors);
                 validate_qualifiers(db, &func.sig, file_id, filepath, srcmap, errors);
             }
             _ => {}

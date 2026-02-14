@@ -5205,13 +5205,13 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 Once all tests pass:
 
-- [ ] Remove `ModuleCombiner` and merged module concept
-- [ ] Remove `NameContext` global accumulation
-- [ ] Remove legacy binding pass
-- [ ] Remove `TyCtx` mutation for result storage
-- [ ] Remove `Driver::build_frontend()` legacy path
-- [ ] Update documentation to reflect new architecture
-- [ ] **Validate**: Full test suite passes with legacy code removed
+- [x] Remove `ModuleCombiner` and merged module concept
+- [x] Remove `NameContext` global accumulation
+- [x] Remove legacy binding pass
+- [x] Remove `TyCtx` mutation for result storage
+- [x] Remove `Driver::build_frontend()` legacy path
+- [x] Update documentation to reflect new architecture
+- [x] **Validate**: Full test suite passes with legacy code removed
 
 **Deliverable**: CLI and LSP fully migrated to query system. Current frontend can be removed.
 

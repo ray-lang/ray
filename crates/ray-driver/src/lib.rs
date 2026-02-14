@@ -29,7 +29,6 @@ use ray_shared::{
     pathlib::{FilePath, ModulePath, Path, RayPaths},
     span::Source,
 };
-use ray_typing::{tyctx::TyCtx, types::Substitutable};
 
 mod analyze;
 mod build;
@@ -301,35 +300,6 @@ impl Driver {
         Ok(WorkspaceResult { db, entry_file })
     }
 
-    /// Legacy method for backward compatibility.
-    ///
-    /// Prefer using `init_workspace()` and queries instead.
-    #[deprecated(note = "Use init_workspace() and queries instead")]
-    #[allow(deprecated)]
-    pub fn build_frontend(
-        &self,
-        options: &BuildOptions,
-        overlays: Option<HashMap<FilePath, String>>,
-    ) -> Result<FrontendResult, Vec<RayError>> {
-        let result = self.init_workspace(options, overlays)?;
-
-        let module_path = result.entry_module_path();
-        let paths = result.module_paths();
-
-        // Eagerly collect errors and source map for backward compatibility
-        let errors = workspace_diagnostics(&result.db, ());
-        let srcmap = workspace_source_map(&result.db, ());
-
-        Ok(FrontendResult {
-            db: result.db,
-            file_id: result.entry_file,
-            module_path,
-            srcmap,
-            paths,
-            errors,
-        })
-    }
-
     pub fn emit_errors(&mut self, errs: Vec<RayError>) {
         log::debug!("emitting errors: {:#?}", errs);
 
@@ -462,12 +432,4 @@ impl Driver {
             )
         }
     }
-}
-
-#[allow(dead_code)]
-fn pretty_print_tys<T>(tcx: &TyCtx, ty: &T) -> String
-where
-    T: Clone + Substitutable + ToString,
-{
-    tcx.pretty_tys(ty).to_string()
 }

@@ -17,7 +17,7 @@ use ray_shared::{
     ty::Ty,
 };
 use ray_typing::{
-    tyctx::CallResolution,
+    call_resolution::CallResolution,
     types::{
         ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, Subst, Substitutable, TyScheme,
     },
@@ -30,7 +30,7 @@ use ray_core::{
         PrefixOp, RangeLimits, token::IntegerBase,
     },
     errors::{RayError, RayErrorKind, RayResult},
-    passes::closure::ClosureInfo,
+    sema::closure::ClosureInfo,
     sourcemap::SourceMap,
 };
 use ray_frontend::{
@@ -39,7 +39,7 @@ use ray_frontend::{
         calls::call_resolution,
         closures::closure_info,
         defs::{
-            def_for_path, def_header, def_path, definition_record, impl_def, impls_for_trait,
+            def_for_path, def_path, definition_record, impl_def, impls_for_trait,
             method_receiver_mode, struct_def, trait_def,
         },
         libraries::{LoadedLibraries, library_lir},

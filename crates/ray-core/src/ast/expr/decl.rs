@@ -4,12 +4,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use ray_shared::{
-    pathlib::Path,
-    span::parsed::Parsed,
-    ty::Ty,
-    utils::{join, map_join},
-};
+use ray_shared::{pathlib::Path, span::parsed::Parsed, ty::Ty, utils::join};
 use ray_typing::types::{NominalKind, TyScheme};
 use serde::{Deserialize, Serialize};
 

@@ -44,12 +44,3 @@ macro_rules! variant {
         }
     }};
 }
-
-macro_rules! maybe_variant {
-    ($x:expr, if $($p:ident)::+ ($($id:ident),*)) => {{
-        match $x {
-            $($p)::+($($id),*) => Some(($($id),*)),
-            _ => None,
-        }
-    }};
-}

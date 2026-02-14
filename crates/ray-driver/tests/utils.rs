@@ -34,15 +34,15 @@ pub fn enable_debug_logs() {
 }
 
 #[allow(dead_code)]
-pub fn test_build(src: &str) -> Result<FrontendResult, Vec<RayError>> {
-    test_build_with_options(src, TestBuildOptions::default())
+pub fn test_workspace(src: &str) -> Result<WorkspaceResult, Vec<RayError>> {
+    test_workspace_with_options(src, TestBuildOptions::default())
 }
 
 #[allow(dead_code)]
-pub fn test_build_with_options(
+pub fn test_workspace_with_options(
     src: &str,
     test_options: TestBuildOptions,
-) -> Result<FrontendResult, Vec<RayError>> {
+) -> Result<WorkspaceResult, Vec<RayError>> {
     let filepath = FilePath::from("test.ray");
     let driver = Driver::new(RayPaths::default(), None);
     let options = BuildOptions {
@@ -56,7 +56,7 @@ pub fn test_build_with_options(
     } else {
         overlays.insert(filepath, src.to_string());
     }
-    driver.build_frontend(&options, Some(overlays))
+    driver.init_workspace(&options, Some(overlays))
 }
 
 pub fn include_minimal_core(src: &str) -> String {

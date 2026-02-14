@@ -30,8 +30,10 @@ pub(crate) struct LspWorkspace {
     /// Root directory of this workspace.
     pub root: FilePath,
     /// Project configuration from `ray.toml` (default if no `ray.toml`).
+    #[allow(dead_code)]
     pub config: ProjectCfg,
     /// Entry file ID for this workspace.
+    #[allow(dead_code)]
     pub entry_file: FileId,
 }
 

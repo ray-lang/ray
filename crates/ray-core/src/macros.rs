@@ -7,21 +7,6 @@ macro_rules! str {
     };
 }
 
-macro_rules! unless {
-    ($ex:expr, else $else_block:expr) => {
-        match $ex {
-            Some(x) => x,
-            _ => $else_block,
-        }
-    };
-    ($ex:expr) => {
-        match $ex {
-            Some(x) => x,
-            _ => return,
-        }
-    };
-}
-
 macro_rules! variant {
     ($x:expr, if $($p:ident)::+ ($($id:ident),*) , else |$e:ident| $b:block) => {{
         match $x {
