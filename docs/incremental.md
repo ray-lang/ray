@@ -5183,9 +5183,9 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 7: Semantic tokens handler
 
-- [ ] Query `semantic_tokens`
-- [ ] Convert to LSP format
-- [ ] **Validate**: Syntax highlighting works
+- [x] Query `semantic_tokens`
+- [x] Convert to LSP format
+- [x] **Validate**: Syntax highlighting works
 
 ---
 
