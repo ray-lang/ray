@@ -5153,10 +5153,10 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 3: Hover handler
 
-- [ ] Find node at position via `find_at_position`
-- [ ] Get type via `ty_of` or `def_scheme`
-- [ ] Format hover content
-- [ ] **Validate**: Hover shows correct types
+- [x] Find node at position via `find_at_position`
+- [x] Get type via `ty_of` or `def_scheme`
+- [x] Format hover content
+- [x] **Validate**: Hover shows correct types
 
 ##### Step 4: Go-to-definition handler
 

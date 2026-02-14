@@ -547,7 +547,8 @@ impl<'a> SemanticTokenCollector<'a> {
             } else {
                 SemanticTokenKind::Type
             };
-            self.emit_parsed_path(lhs, kind);
+            let span = self.srcmap.span_of(lhs);
+            self.emit_span(span, kind, &[]);
         }
 
         for element in &curly.elements {

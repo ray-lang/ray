@@ -15,11 +15,9 @@ build-release:
 
 core: build
 	@mkdir -p .ray/lib
-	@target/debug/ray --root-path $(PWD)/.ray build lib/core --lib --no-core
+	@target/debug/ray --root-path $(PWD)/.ray --config-path=lib/core/ray.toml build lib/core
 
-dev-toolchain: build
-	@mkdir -p .ray/lib
-	@target/debug/ray --root-path $(PWD)/.ray build lib/core --lib --no-core
+dev-toolchain: build core
 	@cp lib/core/.raylib .ray/lib/core.raylib
 
 release-toolchain:

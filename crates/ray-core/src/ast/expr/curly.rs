@@ -1,8 +1,4 @@
-use ray_shared::{
-    pathlib::Path,
-    span::{Span, parsed::Parsed},
-    utils::join,
-};
+use ray_shared::{pathlib::Path, span::Span, utils::join};
 use ray_typing::types::TyScheme;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +24,7 @@ impl std::fmt::Display for CurlyElement {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Curly {
-    pub lhs: Option<Parsed<Path>>,
+    pub lhs: Option<Node<Path>>,
     pub elements: Vec<Node<CurlyElement>>,
     pub curly_span: Span,
     pub ty: TyScheme,

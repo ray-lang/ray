@@ -321,6 +321,10 @@ fn record_fn_params(
 
 /// Index mapping callee name node IDs to their call expression IDs.
 ///
+/// Maps:
+/// - Method call callee names (dot RHS, scoped access RHS) → call expression ID
+/// - Binary operator nodes → BinOp expression ID
+///
 /// **Dependencies**: `parse_file(file_id)`
 #[query]
 pub fn call_site_index(db: &Database, file_id: FileId) -> HashMap<NodeId, NodeId> {
@@ -332,16 +336,18 @@ pub fn call_site_index(db: &Database, file_id: FileId) -> HashMap<NodeId, NodeId
             continue;
         };
 
-        let Expr::Call(call) = &expr.value else {
-            continue;
-        };
-
-        match &call.callee.value {
-            Expr::Dot(dot) => {
-                index.insert(dot.rhs.id, expr.id);
-            }
-            Expr::ScopedAccess(scoped_access) => {
-                index.insert(scoped_access.rhs.id, expr.id);
+        match &expr.value {
+            Expr::Call(call) => match &call.callee.value {
+                Expr::Dot(dot) => {
+                    index.insert(dot.rhs.id, expr.id);
+                }
+                Expr::ScopedAccess(scoped_access) => {
+                    index.insert(scoped_access.rhs.id, expr.id);
+                }
+                _ => {}
+            },
+            Expr::BinOp(binop) => {
+                index.insert(binop.op.id, expr.id);
             }
             _ => {}
         }

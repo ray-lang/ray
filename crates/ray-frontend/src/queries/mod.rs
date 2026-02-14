@@ -5,6 +5,7 @@ pub mod completion;
 pub mod defs;
 pub mod deps;
 pub mod diagnostics;
+pub mod display;
 pub mod expected_type;
 pub mod exports;
 pub mod imports;

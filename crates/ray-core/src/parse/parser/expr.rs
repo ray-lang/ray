@@ -1,4 +1,5 @@
 use ray_shared::{
+    pathlib::Path,
     span::{Span, parsed::Parsed},
     ty::Ty,
 };
@@ -558,8 +559,13 @@ impl Parser<'_> {
     ) -> ExprResult {
         let lhs = if let Some(lhs) = lhs {
             let span = self.srcmap.span_of(&lhs);
+            let node_id = lhs.id;
             match lhs.value {
-                Expr::Name(n) => Some(Parsed::new(n.path, self.mk_src(span))),
+                Expr::Name(n) => Some(Node::with_id(node_id, n.path)),
+                Expr::Path(segments) => {
+                    let parts: Vec<String> = segments.into_iter().map(|s| s.value).collect();
+                    Some(Node::with_id(node_id, Path::from(parts)))
+                }
                 _ => {
                     return Err(self.parse_error(
                         str!("expected identifier for struct expression"),

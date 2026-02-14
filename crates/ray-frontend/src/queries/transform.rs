@@ -212,10 +212,11 @@ fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
             // Emit error if struct type couldn't be resolved
             if !is_resolved {
                 if let Some(lhs) = &curly.lhs {
+                    let span = ctx.source_map.span_of(lhs);
                     ctx.errors.push(RayError {
                         msg: format!("struct type `{}` is undefined", lhs),
                         src: vec![Source {
-                            span: lhs.span().copied(),
+                            span: Some(span),
                             filepath: ctx.filepath.clone(),
                             ..Default::default()
                         }],

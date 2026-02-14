@@ -272,12 +272,12 @@ pub fn resolve_names_in_file(
                     }
                     Expr::Curly(curly) => {
                         // Resolve the struct type name for curly expressions like `Point { x, y }`
-                        // The resolution is stored on the Curly expression's NodeId
-                        if let Some(parsed_path) = &curly.lhs {
-                            if let Some(name_str) = parsed_path.name() {
-                                // Look up the struct in exports
+                        if let Some(lhs) = &curly.lhs {
+                            if let Some(name_str) = lhs.name() {
                                 if let Some(target) = exports.get(&name_str).cloned() {
-                                    ctx.resolutions.insert(expr.id, Resolution::Def(target));
+                                    ctx.resolutions
+                                        .insert(expr.id, Resolution::Def(target.clone()));
+                                    ctx.resolutions.insert(lhs.id, Resolution::Def(target));
                                 }
                             }
                         }
@@ -1881,7 +1881,7 @@ mod tests {
         let field_value = Node::new(Expr::Name(Name::new("dummy")));
         let curly_elem = Node::new(CurlyElement::Labeled(field_name, field_value));
         let curly_expr = Node::new(Expr::Curly(Curly {
-            lhs: Some(Parsed::new(Path::from("Point"), Source::default())),
+            lhs: Some(Node::new(Path::from("Point"))),
             elements: vec![curly_elem],
             curly_span: Span::default(),
             ty: TyScheme::default(),

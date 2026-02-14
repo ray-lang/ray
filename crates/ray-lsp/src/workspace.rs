@@ -320,9 +320,11 @@ fn discover_workspace_root_for_file(filepath: &FilePath) -> FilePath {
 mod tests {
     use std::fs;
 
+    use ray_frontend::queries::workspace::{FileMetadata, FileSource};
+    use ray_shared::pathlib::{FilePath, RayPaths};
     use tempfile::tempdir;
 
-    use super::*;
+    use crate::workspace::{WorkspaceManager, discover_workspace_root_for_file, scan_for_ray_toml};
 
     /// Create a minimal RayPaths pointing at a temp directory.
     fn test_ray_paths(dir: &std::path::Path) -> RayPaths {
@@ -377,6 +379,35 @@ mod tests {
     }
 
     #[test]
+    fn scan_empty_directory() {
+        let dir = tempdir().unwrap();
+        // No ray.toml anywhere
+        let results = scan_for_ray_toml(&FilePath::from(dir.path().to_path_buf()));
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn scan_ray_toml_at_root() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // ray.toml at the scan root itself
+        fs::write(root.join("ray.toml"), "[package]\nname = \"root\"\n").unwrap();
+
+        // Also a child workspace that should NOT be found (root owns subtree)
+        let child = root.join("child");
+        fs::create_dir(&child).unwrap();
+        fs::write(child.join("ray.toml"), "[package]\nname = \"child\"\n").unwrap();
+
+        let results = scan_for_ray_toml(&FilePath::from(root.to_path_buf()));
+
+        assert_eq!(results.len(), 1);
+        let found_dir = results[0].dir();
+        let expected = FilePath::from(root.to_path_buf());
+        assert_eq!(found_dir, expected);
+    }
+
+    #[test]
     fn workspace_root_for_single_file() {
         let dir = tempdir().unwrap();
         let file = FilePath::from(dir.path().join("standalone.ray"));
@@ -413,6 +444,54 @@ mod tests {
         let root = discover_workspace_root_for_file(&file);
 
         // Should be the topmost module dir, not the inner one.
+        assert_eq!(root, FilePath::from(outer));
+    }
+
+    #[test]
+    fn workspace_root_for_named_module_entry() {
+        // is_dir_module recognizes <dirname>.ray as well as mod.ray
+        let dir = tempdir().unwrap();
+        let module_dir = dir.path().join("mymod");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(module_dir.join("mymod.ray"), "").unwrap();
+        fs::write(module_dir.join("helper.ray"), "").unwrap();
+
+        let file = FilePath::from(module_dir.join("helper.ray"));
+        let root = discover_workspace_root_for_file(&file);
+
+        assert_eq!(root, FilePath::from(module_dir));
+    }
+
+    #[test]
+    fn workspace_root_for_non_module_directory() {
+        // Directory has .ray files but no mod.ray or <dirname>.ray
+        let dir = tempdir().unwrap();
+        let non_mod = dir.path().join("stuff");
+        fs::create_dir(&non_mod).unwrap();
+        fs::write(non_mod.join("foo.ray"), "fn foo() {}").unwrap();
+
+        let file = FilePath::from(non_mod.join("foo.ray"));
+        let root = discover_workspace_root_for_file(&file);
+
+        // Should return the file itself, not the directory
+        assert_eq!(root, file);
+    }
+
+    #[test]
+    fn workspace_root_for_three_level_nesting() {
+        let dir = tempdir().unwrap();
+        let outer = dir.path().join("outer");
+        let middle = outer.join("middle");
+        let inner = middle.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(outer.join("mod.ray"), "").unwrap();
+        fs::write(middle.join("mod.ray"), "").unwrap();
+        fs::write(inner.join("mod.ray"), "").unwrap();
+
+        let file = FilePath::from(inner.join("mod.ray"));
+        let root = discover_workspace_root_for_file(&file);
+
+        // Should walk all the way up to the topmost module dir
         assert_eq!(root, FilePath::from(outer));
     }
 
@@ -693,5 +772,135 @@ mod tests {
         // Verify the cache file was created
         let cache_path = ws_dir.join(".ray").join("cache.redb");
         assert!(cache_path.exists());
+    }
+
+    #[test]
+    fn lookup_file_returns_workspace_and_file_id() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn hello() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        let mod_path = FilePath::from(ws_dir.join("mod.ray"))
+            .canonicalize()
+            .unwrap();
+
+        let result = manager.lookup_file(&mod_path);
+        assert!(result.is_some(), "lookup_file should find the file");
+
+        let (ws, file_id) = result.unwrap();
+        assert_eq!(ws.file_id(&mod_path), Some(file_id));
+    }
+
+    #[test]
+    fn lookup_file_returns_none_for_unknown_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn hello() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        // File outside any workspace
+        let outside = FilePath::from(root.join("nowhere.ray"));
+        assert!(manager.lookup_file(&outside).is_none());
+    }
+
+    #[test]
+    fn workspace_for_file_returns_none_outside_all_workspaces() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn hello() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        // A file in a completely separate directory
+        let other_dir = tempdir().unwrap();
+        let outside = FilePath::from(other_dir.path().join("other.ray"));
+        fs::write(&outside, "fn other() {}").unwrap();
+
+        assert!(manager.workspace_for_file(&outside).is_none());
+    }
+
+    #[test]
+    fn workspace_for_file_or_create_reuses_existing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let ws_dir = root.join("mylib");
+        fs::create_dir(&ws_dir).unwrap();
+        fs::write(
+            ws_dir.join("ray.toml"),
+            "[package]\nname = \"mylib\"\ntype = \"lib\"\nno_core = true\n",
+        )
+        .unwrap();
+        fs::write(ws_dir.join("mod.ray"), "fn hello() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+        assert_eq!(manager.workspace_count(), 1);
+
+        // Calling workspace_for_file_or_create on a file already in a workspace
+        // should return the existing workspace, not create a new one
+        let mod_path = FilePath::from(ws_dir.join("mod.ray"));
+        let result = manager.workspace_for_file_or_create(&mod_path);
+        assert!(result.is_ok());
+        assert_eq!(manager.workspace_count(), 1);
+    }
+
+    #[test]
+    fn orphan_workspace_has_no_persistence() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // A module directory with no ray.toml
+        let module_dir = root.join("orphan_mod");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(module_dir.join("mod.ray"), "fn orphan() {}").unwrap();
+
+        let ray_paths = test_ray_paths(root);
+        let mut manager = WorkspaceManager::new();
+        manager.initialize(&FilePath::from(root.to_path_buf()), ray_paths);
+
+        // Lazily create workspace for the orphan file
+        let file = FilePath::from(module_dir.join("mod.ray"));
+        let ws = manager.workspace_for_file_or_create(&file).unwrap();
+
+        // Orphan workspace (no ray.toml) should NOT have persistence
+        assert!(
+            !ws.db.has_persistence(),
+            "orphan workspace should not have persistence"
+        );
     }
 }

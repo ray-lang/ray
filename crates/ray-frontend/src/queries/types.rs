@@ -757,7 +757,7 @@ fn extract_type_params_from_parsed_tys(
 }
 
 /// Find a declaration AST node by its root NodeId.
-fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
+pub(crate) fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
     for decl in decls {
         if decl.id == root_node {
             return Some(decl);
@@ -772,7 +772,7 @@ fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> 
 }
 
 /// Find a nested declaration within a parent declaration.
-fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>> {
+pub(crate) fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>> {
     match &parent.value {
         Decl::Trait(tr) => {
             for field in &tr.fields {

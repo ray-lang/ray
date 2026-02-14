@@ -22,12 +22,20 @@ use tower_lsp::{
     },
 };
 
-use ray_codegen::libgen;
-use ray_codegen::libgen::DefinitionKind;
-use ray_shared::file_id::FileId;
-use ray_shared::pathlib::RayPaths;
-use ray_shared::span::Span;
-use ray_shared::{node_id::NodeId, pathlib::FilePath};
+use ray_frontend::queries::{
+    bindings::local_binding_names,
+    display::{def_display_info, display_ty},
+    locations::{self, find_at_position},
+    resolve::name_resolutions,
+    symbols::symbol_targets,
+    typecheck::ty_of,
+};
+use ray_shared::{
+    file_id::FileId,
+    pathlib::{FilePath, RayPaths},
+    resolution::{DefTarget, Resolution},
+    symbol::SymbolIdentity,
+};
 use serde_json::Value;
 
 use crate::{
@@ -454,141 +462,109 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let Some((snapshot, resolved)) = self.lookup_symbol_targets_at(&uri, position).await else {
-            return Ok(None);
-        };
+        let result = self
+            .with_workspace_file_map(&uri, |ws: &LspWorkspace, file_id| {
+                let db = &*ws.db;
 
-        self.log(format!(
-            "[server] hover: found source for node_id={} source_span={:?}",
-            resolved.node_id, resolved.source.span
-        ))
-        .await;
+                // Find the AST node at the cursor position
+                let node_id = find_at_position(
+                    db,
+                    file_id,
+                    position.line as usize,
+                    position.character as usize,
+                )?;
 
-        let symbol_targets = &resolved.symbol_targets;
-        if symbol_targets.is_empty() {
-            self.log(format!(
-                "[server] hover: no symbol target for node_id={}",
-                resolved.node_id
-            ))
-            .await;
-            return Ok(None);
-        };
+                // Get the span for the hover range
+                let span = locations::span_of(db, node_id);
 
-        let has_node_type = snapshot.data.node_type_info.contains_key(&resolved.node_id);
-        let mut hover_entries: Vec<(String, Span)> = Vec::new();
-        if let Some(span) = resolved.source.span {
-            if let Some(entry) =
-                node_type_hover_entry(&snapshot, resolved.node_id, symbol_targets, span)
-            {
-                hover_entries.push(entry);
+                // Look up what this node resolves to
+                let resolutions = name_resolutions(db, file_id);
+                let resolution = resolutions.get(&node_id).cloned();
+
+                let hover_content = match resolution {
+                    Some(Resolution::Def(target)) => {
+                        // Definition reference: use def_display_info for provenance chain
+                        def_display_info(db, target).map(|info| {
+                            format_hover_markdown(&info.signatures, info.doc.as_deref())
+                        })
+                    }
+                    Some(Resolution::TypeParam(type_param_id)) => {
+                        // Type parameter: show the owning definition's provenance
+                        let owner_target = DefTarget::Workspace(type_param_id.owner);
+                        def_display_info(db, owner_target).map(|info| {
+                            format_hover_markdown(&info.signatures, info.doc.as_deref())
+                        })
+                    }
+                    Some(Resolution::Local(local_id)) => {
+                        // Local binding: show name: type
+                        let binding_names = local_binding_names(db, file_id);
+                        let name = binding_names.get(&local_id);
+                        let ty = ty_of(db, node_id).map(|ty| display_ty(db, local_id.owner, &ty));
+                        match (name, ty) {
+                            (Some(name), Some(ty)) => {
+                                Some(format!("```ray\n{}: {}\n```", name, ty))
+                            }
+                            (None, Some(ty)) => Some(format!("```ray\n{}\n```", ty)),
+                            (Some(name), None) => Some(format!("```ray\n{}\n```", name)),
+                            (None, None) => None,
+                        }
+                    }
+                    Some(Resolution::Error { .. }) | None => {
+                        // Try symbol_targets for field access, method calls, etc.
+                        let targets = symbol_targets(db, node_id);
+                        let def_target = targets.iter().find_map(|t| match &t.identity {
+                            SymbolIdentity::Def(target) => Some(target.clone()),
+                            _ => None,
+                        });
+
+                        if let Some(target) = def_target {
+                            def_display_info(db, target).map(|info| {
+                                format_hover_markdown(&info.signatures, info.doc.as_deref())
+                            })
+                        } else {
+                            // Fallback: show the inferred type if available
+                            let ty =
+                                ty_of(db, node_id).map(|ty| display_ty(db, node_id.owner, &ty));
+                            ty.map(|ty| format!("```ray\n{}\n```", ty))
+                        }
+                    }
+                };
+
+                let range = span.map(span_to_range);
+                hover_content.map(|content| (content, range))
+            })
+            .await
+            .flatten();
+
+        match result {
+            Some((markdown, range)) => {
+                let contents = HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: markdown,
+                });
+                Ok(Some(Hover { contents, range }))
             }
-            hover_entries.extend(definition_hover_entries(
-                &snapshot,
-                resolved.node_id,
-                symbol_targets,
-                span,
-                has_node_type,
-            ));
+            None => Ok(None),
         }
-
-        if hover_entries.is_empty() {
-            self.log(format!(
-                "[server] hover: empty symbol target list for node_id={}",
-                resolved.node_id
-            ))
-            .await;
-            return Ok(None);
-        }
-
-        let range_span = hover_entries.first().map(|(_, span)| *span).unwrap();
-        let range = span_to_range(range_span);
-
-        let markdown = hover_entries
-            .into_iter()
-            .map(|(content, _)| content)
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n");
-
-        let contents = HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: markdown,
-        });
-
-        let hover = Hover {
-            contents,
-            range: Some(range),
-        };
-
-        Ok(Some(hover))
     }
 }
 
-fn node_type_hover_entry(
-    snapshot: &AnalysisSnapshot,
-    node_id: NodeId,
-    symbol_targets: &[ray_core::sema::SymbolTarget],
-    span: Span,
-) -> Option<(String, Span)> {
-    let ty_info = snapshot.data.node_type_info.get(&node_id)?;
-    let label = symbol_targets
-        .first()
-        .map(|target| target.path.to_short_name())
-        .unwrap_or_default();
-    let line = if label.is_empty() {
-        ty_info.ty.clone()
-    } else {
-        format!("{}: {}", label, ty_info.ty)
-    };
-    Some((format!("```ray\n{}\n```", line), span))
-}
+/// Format hover content as markdown from a list of signature strings.
+///
+/// Each signature is wrapped in a ```ray code block. Signatures are
+/// separated by horizontal rules for visual hierarchy (outermost
+/// container first, innermost definition last).
+fn format_hover_markdown(signatures: &[String], doc: Option<&str>) -> String {
+    let mut parts: Vec<String> = signatures
+        .iter()
+        .map(|sig| format!("```ray\n{}\n```", sig))
+        .collect();
 
-fn definition_hover_entries(
-    snapshot: &AnalysisSnapshot,
-    node_id: NodeId,
-    symbol_targets: &[ray_core::sema::SymbolTarget],
-    span: Span,
-    has_node_type: bool,
-) -> Vec<(String, Span)> {
-    let mut out: Vec<(String, Span)> = Vec::new();
-
-    if let Some(record) = snapshot.data.definitions_by_id.get(&node_id) {
-        if !should_skip_definition_record(has_node_type, &record.kind) {
-            out.push((record.to_string(), span));
-        }
+    if let Some(doc) = doc {
+        parts.push(doc.to_string());
     }
 
-    let mut seen_paths = HashSet::new();
-    for symbol_target in symbol_targets {
-        let path_key = libgen::canonical_path_key(&symbol_target.path);
-        if !seen_paths.insert(path_key.clone()) {
-            continue;
-        }
-
-        match snapshot.data.definitions.get(&path_key) {
-            Some(record) => {
-                if should_skip_definition_record(has_node_type, &record.kind) {
-                    continue;
-                }
-                out.push((record.to_string(), span));
-            }
-            None => {
-                if has_node_type {
-                    continue;
-                }
-                out.push((symbol_target.path.to_string(), span));
-            }
-        }
-    }
-
-    out
-}
-
-fn should_skip_definition_record(has_node_type: bool, kind: &DefinitionKind) -> bool {
-    has_node_type
-        && matches!(
-            kind,
-            DefinitionKind::Name { .. } | DefinitionKind::Variable { .. }
-        )
+    parts.join("\n\n---\n\n")
 }
 
 impl RayLanguageServer {
@@ -655,6 +631,18 @@ impl RayLanguageServer {
                 f(ws, file_id);
             }
         }
+    }
+
+    /// Like `with_workspace_file`, but returns a value from the closure.
+    async fn with_workspace_file_map<R>(
+        &self,
+        uri: &Url,
+        f: impl FnOnce(&LspWorkspace, FileId) -> R,
+    ) -> Option<R> {
+        let canonical = Self::resolve_file_path(uri)?;
+        let manager = self.workspace_manager.read().await;
+        let (ws, file_id) = manager.lookup_file(&canonical)?;
+        Some(f(ws, file_id))
     }
 
     async fn update_workspace_root(&self, params: &InitializeParams) {

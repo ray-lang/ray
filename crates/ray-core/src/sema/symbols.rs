@@ -163,7 +163,7 @@ impl<'a> SymbolBuildContext<'a> {
             return;
         };
 
-        let struct_path = lhs.value().clone();
+        let struct_path = lhs.value.clone();
         let struct_name = struct_path
             .name()
             .unwrap_or_else(|| struct_path.to_string());

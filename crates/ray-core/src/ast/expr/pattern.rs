@@ -220,7 +220,7 @@ impl Node<Pattern> {
     pub fn paths(&self) -> Vec<Node<PathBinding<'_>>> {
         match &self.value {
             Pattern::Name(n) => vec![Node::with_id(self.id, PathBinding::new(&n.path, true))],
-            Pattern::Deref(n) => vec![Node::with_id(self.id, PathBinding::new(&n.path, false))],
+            Pattern::Deref(n) => vec![Node::with_id(n.id, PathBinding::new(&n.path, false))],
             Pattern::Dot(lhs, n) => lhs
                 .paths()
                 .into_iter()

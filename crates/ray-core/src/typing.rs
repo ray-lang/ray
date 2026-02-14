@@ -655,7 +655,7 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         // are left for future extension.
         Expr::Curly(curly) => {
             // Get the raw AST path as a fallback
-            let ast_path = curly.lhs.as_ref().map(|lhs| ItemPath::from(lhs.value()));
+            let ast_path = curly.lhs.as_ref().map(|lhs| ItemPath::from(&lhs.value));
 
             // Try to get the fully qualified path from name resolution.
             // The resolution was stored by nameresolve.rs for curly expressions.
