@@ -20,9 +20,10 @@ use tower_lsp::{
         DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
         InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-        MessageType, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-        SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-        TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
+        MessageType, RenameParams, SemanticTokensFullOptions, SemanticTokensOptions,
+        SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncOptions,
+        TextEdit, Url, WorkspaceEdit,
     },
 };
 
@@ -40,7 +41,7 @@ use ray_frontend::queries::{
     semantic_tokens::semantic_tokens as query_semantic_tokens,
     symbols::symbol_targets,
     typecheck::{def_scheme, ty_of},
-    workspace::{FileMetadata, FileSource},
+    workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
 };
 use ray_frontend::query::Database;
 use ray_shared::{
@@ -124,6 +125,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                     trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
                     ..CompletionOptions::default()
                 }),
+                rename_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -549,6 +551,121 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             None => Ok(None),
         }
     }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let result = self
+            .with_workspace_map(&uri, |ws: &LspWorkspace| {
+                let db = &*ws.db;
+                let snapshot = db.get_input::<WorkspaceSnapshot>(());
+
+                // Find the file containing the cursor
+                let canonical = Self::resolve_file_path(&uri)?;
+                let file_id = snapshot.file_id(&canonical)?;
+
+                // Find the node at cursor position
+                let node_id = find_at_position(
+                    db,
+                    file_id,
+                    position.line as usize,
+                    position.character as usize,
+                )?;
+
+                // Determine what we're renaming
+                let resolutions = name_resolutions(db, file_id);
+                let resolution = resolutions.get(&node_id).cloned();
+
+                let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+
+                match resolution {
+                    Some(Resolution::Def(ref target)) => {
+                        // Can only rename workspace definitions
+                        let def_id = target.as_workspace()?;
+
+                        // Collect all references across the workspace
+                        for ref_file_id in snapshot.all_file_ids() {
+                            let file_resolutions = name_resolutions(db, ref_file_id);
+                            for (ref_node_id, ref_resolution) in file_resolutions.iter() {
+                                if ref_resolution.to_def_target().as_ref() == Some(target) {
+                                    let Some(span) = locations::span_of(db, *ref_node_id) else {
+                                        continue;
+                                    };
+
+                                    let metadata = db.get_input::<FileMetadata>(ref_file_id);
+                                    let Some(ref_uri) = filepath_to_uri(&metadata.path) else {
+                                        continue;
+                                    };
+
+                                    changes.entry(ref_uri).or_default().push(TextEdit {
+                                        range: span_to_range(span),
+                                        new_text: new_name.clone(),
+                                    });
+                                }
+                            }
+                        }
+
+                        // Include the definition site itself (name_span)
+                        let header = def_header(db, def_id)?;
+                        let metadata = db.get_input::<FileMetadata>(def_id.file);
+                        let def_uri = filepath_to_uri(&metadata.path)?;
+                        changes.entry(def_uri).or_default().push(TextEdit {
+                            range: span_to_range(header.name_span),
+                            new_text: new_name,
+                        });
+                    }
+                    Some(Resolution::Local(local_id)) => {
+                        // Local variable rename: scan the owning file only
+                        let owner_file = local_id.owner.file;
+                        let file_resolutions = name_resolutions(db, owner_file);
+                        for (ref_node_id, ref_resolution) in file_resolutions.iter() {
+                            if matches!(ref_resolution, Resolution::Local(id) if id == &local_id) {
+                                let Some(span) = locations::span_of(db, *ref_node_id) else {
+                                    continue;
+                                };
+
+                                let metadata = db.get_input::<FileMetadata>(owner_file);
+                                let Some(ref_uri) = filepath_to_uri(&metadata.path) else {
+                                    continue;
+                                };
+
+                                changes.entry(ref_uri).or_default().push(TextEdit {
+                                    range: span_to_range(span),
+                                    new_text: new_name.clone(),
+                                });
+                            }
+                        }
+
+                        // Include the definition site
+                        let defs = local_binding_definitions(db, owner_file);
+                        if let Some(span) = defs
+                            .get(&local_id)
+                            .and_then(|node_id| locations::span_of(db, *node_id))
+                        {
+                            let metadata = db.get_input::<FileMetadata>(owner_file);
+                            if let Some(def_uri) = filepath_to_uri(&metadata.path) {
+                                changes.entry(def_uri).or_default().push(TextEdit {
+                                    range: span_to_range(span),
+                                    new_text: new_name,
+                                });
+                            }
+                        }
+                    }
+                    _ => return None,
+                }
+
+                Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                })
+            })
+            .await
+            .flatten();
+
+        Ok(result)
+    }
 }
 
 impl RayLanguageServer {
@@ -624,6 +741,20 @@ impl RayLanguageServer {
         let manager = self.workspace_manager.read().await;
         let (ws, file_id) = manager.lookup_file(&canonical)?;
         Some(f(ws, file_id))
+    }
+
+    /// Like `with_workspace_file_map`, but provides the workspace without
+    /// requiring a specific FileId. Useful for operations that need to
+    /// iterate over all files in the workspace (e.g., rename).
+    async fn with_workspace_map<R>(
+        &self,
+        uri: &Url,
+        f: impl FnOnce(&LspWorkspace) -> R,
+    ) -> Option<R> {
+        let canonical = Self::resolve_file_path(uri)?;
+        let manager = self.workspace_manager.read().await;
+        let ws = manager.workspace_for_file(&canonical)?;
+        Some(f(ws))
     }
 
     async fn update_workspace_root(&self, params: &InitializeParams) {

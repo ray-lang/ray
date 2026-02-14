@@ -5176,10 +5176,10 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 6: Rename handler
 
-- [ ] Find all references to symbol
-- [ ] Compute text edits for each reference
-- [ ] Return workspace edit
-- [ ] **Validate**: Rename updates all references
+- [x] Find all references to symbol
+- [x] Compute text edits for each reference
+- [x] Return workspace edit
+- [x] **Validate**: Rename updates all references
 
 ##### Step 7: Semantic tokens handler
 

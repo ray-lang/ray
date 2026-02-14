@@ -32,6 +32,16 @@ pub enum Resolution {
     Error { name: String, kind: NameKind },
 }
 
+impl Resolution {
+    /// Extract the `DefTarget` if this resolution points to a definition.
+    pub fn to_def_target(&self) -> Option<DefTarget> {
+        match self {
+            Resolution::Def(target) => Some(target.clone()),
+            _ => None,
+        }
+    }
+}
+
 /// Target of a definition reference.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DefTarget {
@@ -41,4 +51,14 @@ pub enum DefTarget {
     Library(LibraryDefId),
     /// A primitive/builtin type (int, bool, char, uint, etc.).
     Primitive(ItemPath),
+}
+
+impl DefTarget {
+    /// Extract the `DefId` if this is a workspace definition.
+    pub fn as_workspace(&self) -> Option<DefId> {
+        match self {
+            DefTarget::Workspace(def_id) => Some(*def_id),
+            _ => None,
+        }
+    }
 }
