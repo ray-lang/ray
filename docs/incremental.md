@@ -5168,11 +5168,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 5: Completion handler
 
-- [ ] Get completion context
-- [ ] Get scope at position
-- [ ] Filter by expected type if available
-- [ ] Return completion items
-- [ ] **Validate**: Completion returns relevant items
+- [x] Get completion context
+- [x] Get scope at position
+- [x] Filter by expected type if available
+- [x] Return completion items
+- [x] **Validate**: Completion returns relevant items
 
 ##### Step 6: Rename handler
 

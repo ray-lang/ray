@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 use ray_shared::pathlib::FilePath;
-use ray_shared::span::Span;
+use ray_shared::span::{Pos, Span};
 use serde_json::Value;
 
 pub(crate) fn parse_toolchain_path(value: &Value) -> Option<FilePath> {
@@ -50,6 +50,35 @@ pub(crate) fn span_to_range(mut span: Span) -> Range {
 
 pub(crate) fn filepath_to_uri(filepath: &FilePath) -> Option<Url> {
     Url::from_file_path(filepath.as_ref()).ok()
+}
+
+/// Convert an LSP `Position` (line, character) to a Ray `Pos` (lineno, col, byte offset).
+///
+/// Scans the source text to compute the byte offset corresponding to the given
+/// line and character position.
+pub(crate) fn lsp_position_to_pos(source: &str, position: &Position) -> Pos {
+    let target_line = position.line as usize;
+    let target_col = position.character as usize;
+    let mut offset = 0;
+
+    for (i, line) in source.split('\n').enumerate() {
+        if i == target_line {
+            let col = target_col.min(line.len());
+            return Pos {
+                lineno: target_line,
+                col,
+                offset: offset + col,
+            };
+        }
+        offset += line.len() + 1; // +1 for the '\n'
+    }
+
+    // Position past end of file — clamp to end
+    Pos {
+        lineno: target_line,
+        col: target_col,
+        offset: source.len(),
+    }
 }
 
 pub(crate) fn is_core_library_uri(uri: &Url) -> bool {

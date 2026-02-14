@@ -12,39 +12,49 @@ use tower_lsp::{
     Client,
     jsonrpc::Result,
     lsp_types::{
-        DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
-        GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams,
-        InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind, MessageType,
-        SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-        SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-        TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
+        CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
+        CompletionResponse, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+        InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+        MessageType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+        SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
     },
 };
 
 use ray_frontend::queries::{
     bindings::{local_binding_definitions, local_binding_names},
-    defs::{SourceLocation, definition_record},
-    display::{def_display_info, display_ty},
+    completion::{CompletionKind, completion_context},
+    defs::{SourceLocation, def_header, definition_record},
+    display::{def_display_info, display_library_ty, display_ty},
+    exports::{ExportedItem, module_def_index},
+    items::associated_items,
     locations::{self, find_at_position},
+    methods::methods_for_type,
     resolve::name_resolutions,
     symbols::symbol_targets,
-    typecheck::ty_of,
-    workspace::FileMetadata,
+    typecheck::{def_scheme, ty_of},
+    workspace::{FileMetadata, FileSource},
 };
+use ray_frontend::query::Database;
 use ray_shared::{
+    def::DefKind,
     file_id::FileId,
     pathlib::{FilePath, RayPaths},
     resolution::{DefTarget, Resolution},
+    scope::ScopeEntry,
     span::Span,
     symbol::SymbolIdentity,
+    ty::Ty,
 };
 use serde_json::Value;
 
 use crate::{
     diagnostics::{self, AnalysisSnapshotData},
     helpers::{
-        filepath_to_uri, is_core_library_uri, parse_toolchain_path, span_to_range, uri_to_filepath,
+        filepath_to_uri, is_core_library_uri, lsp_position_to_pos, parse_toolchain_path,
+        span_to_range, uri_to_filepath,
     },
     semantic_tokens::{self, pretty_dump},
     workspace::{LspWorkspace, WorkspaceManager},
@@ -116,6 +126,10 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                 semantic_tokens_provider: Some(semantic_tokens_capability),
                 hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
                 definition_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+                    ..CompletionOptions::default()
+                }),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -473,6 +487,88 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         }
     }
 
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let items = self
+            .with_workspace_file_map(&uri, |ws: &LspWorkspace, file_id| {
+                let db = &*ws.db;
+                let source = db.get_input::<FileSource>(file_id);
+                let pos = lsp_position_to_pos(source.as_str(), &position);
+
+                let ctx = completion_context(db, file_id, pos)?;
+
+                let mut items: Vec<CompletionItem> = Vec::new();
+
+                match &ctx.kind {
+                    CompletionKind::Member => {
+                        let receiver_ty = ctx.receiver_type.as_ref()?;
+                        for (name, def_target) in methods_for_type(db, receiver_ty.clone()) {
+                            let detail = display_def_type(db, &def_target);
+                            items.push(CompletionItem {
+                                label: name,
+                                kind: Some(CompletionItemKind::METHOD),
+                                detail,
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                    CompletionKind::Scope => {
+                        for (name, entry) in &ctx.scope {
+                            let (kind, detail) = scope_entry_info(db, entry);
+                            items.push(CompletionItem {
+                                label: name.clone(),
+                                kind: Some(kind),
+                                detail,
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                    CompletionKind::ModuleMember(module_path) => {
+                        let exports = module_def_index(db, module_path.clone());
+                        for (name, result) in &exports {
+                            let Some(item) = result.as_ref().ok() else {
+                                continue;
+                            };
+                            let (kind, detail) = exported_item_info(db, item);
+                            items.push(CompletionItem {
+                                label: name.clone(),
+                                kind: Some(kind),
+                                detail,
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                    CompletionKind::TypeMember(def_target) => {
+                        for (name, item_target) in associated_items(db, def_target.clone()) {
+                            let detail = display_def_type(db, &item_target);
+                            items.push(CompletionItem {
+                                label: name,
+                                kind: Some(CompletionItemKind::FUNCTION),
+                                detail,
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                }
+
+                // Rank by type compatibility if expected_type is known
+                if let Some(ref expected) = ctx.expected_type {
+                    rank_by_type_compatibility(&mut items, expected);
+                }
+
+                Some(items)
+            })
+            .await
+            .flatten();
+
+        match items {
+            Some(items) => Ok(Some(CompletionResponse::Array(items))),
+            None => Ok(None),
+        }
+    }
+
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
@@ -562,24 +658,6 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             None => Ok(None),
         }
     }
-}
-
-/// Format hover content as markdown from a list of signature strings.
-///
-/// Each signature is wrapped in a ```ray code block. Signatures are
-/// separated by horizontal rules for visual hierarchy (outermost
-/// container first, innermost definition last).
-fn format_hover_markdown(signatures: &[String], doc: Option<&str>) -> String {
-    let mut parts: Vec<String> = signatures
-        .iter()
-        .map(|sig| format!("```ray\n{}\n```", sig))
-        .collect();
-
-    if let Some(doc) = doc {
-        parts.push(doc.to_string());
-    }
-
-    parts.join("\n\n---\n\n")
 }
 
 impl RayLanguageServer {
@@ -874,4 +952,139 @@ impl RayLanguageServer {
             self.publish_diagnostics(&uri).await;
         }
     }
+}
+
+/// Format hover content as markdown from a list of signature strings.
+///
+/// Each signature is wrapped in a ```ray code block. Signatures are
+/// separated by horizontal rules for visual hierarchy (outermost
+/// container first, innermost definition last).
+fn format_hover_markdown(signatures: &[String], doc: Option<&str>) -> String {
+    let mut parts: Vec<String> = signatures
+        .iter()
+        .map(|sig| format!("```ray\n{}\n```", sig))
+        .collect();
+
+    if let Some(doc) = doc {
+        parts.push(doc.to_string());
+    }
+
+    parts.join("\n\n---\n\n")
+}
+
+/// Get the display type string for a definition target.
+///
+/// Uses `display_ty` to map internal type variables to user-facing names.
+/// For workspace definitions, uses the definition's own DefId as the owner.
+fn display_def_type(db: &Database, target: &DefTarget) -> Option<String> {
+    let scheme = def_scheme(db, target.clone())?;
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let displayed = display_ty(db, *def_id, &scheme.ty);
+            Some(displayed.to_string())
+        }
+        DefTarget::Library(lib_def_id) => {
+            let displayed = display_library_ty(db, lib_def_id, &scheme.ty);
+            Some(displayed.to_string())
+        }
+        DefTarget::Primitive(_) => Some(scheme.ty.to_string()),
+    }
+}
+
+/// Get the LSP `CompletionItemKind` and optional detail string for a scope entry.
+fn scope_entry_info(db: &Database, entry: &ScopeEntry) -> (CompletionItemKind, Option<String>) {
+    match entry {
+        ScopeEntry::Local(local_id) => {
+            let detail = local_binding_names(db, local_id.owner.file)
+                .get(local_id)
+                .and_then(|_name| {
+                    let defs = local_binding_definitions(db, local_id.owner.file);
+                    let node_id = defs.get(local_id)?;
+                    let ty = ty_of(db, *node_id)?;
+                    let displayed = display_ty(db, local_id.owner, &ty);
+                    Some(displayed.to_string())
+                });
+            (CompletionItemKind::VARIABLE, detail)
+        }
+        ScopeEntry::Def(def_target) => {
+            let kind = def_target_to_completion_kind(db, def_target);
+            let detail = display_def_type(db, def_target);
+            (kind, detail)
+        }
+        ScopeEntry::Module(_) => (CompletionItemKind::MODULE, None),
+    }
+}
+
+/// Map a `DefTarget` to an LSP `CompletionItemKind` by looking up its `DefKind`.
+fn def_target_to_completion_kind(db: &Database, target: &DefTarget) -> CompletionItemKind {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let Some(header) = def_header(db, *def_id) else {
+                return CompletionItemKind::VALUE;
+            };
+            def_kind_to_completion_kind(&header.kind)
+        }
+        DefTarget::Library(_) => {
+            let Some(record) = definition_record(db, target.clone()) else {
+                return CompletionItemKind::VALUE;
+            };
+            def_kind_to_completion_kind(&record.kind)
+        }
+        DefTarget::Primitive(_) => CompletionItemKind::KEYWORD,
+    }
+}
+
+/// Map a `DefKind` to an LSP `CompletionItemKind`.
+fn def_kind_to_completion_kind(kind: &DefKind) -> CompletionItemKind {
+    match kind {
+        DefKind::Function { .. } => CompletionItemKind::FUNCTION,
+        DefKind::Struct => CompletionItemKind::STRUCT,
+        DefKind::Trait => CompletionItemKind::INTERFACE,
+        DefKind::TypeAlias => CompletionItemKind::TYPE_PARAMETER,
+        DefKind::Method => CompletionItemKind::METHOD,
+        DefKind::Binding { .. } | DefKind::AssociatedConst { .. } => CompletionItemKind::VARIABLE,
+        _ => CompletionItemKind::VALUE,
+    }
+}
+
+/// Get the LSP `CompletionItemKind` and optional detail string for a module export.
+fn exported_item_info(db: &Database, item: &ExportedItem) -> (CompletionItemKind, Option<String>) {
+    match item {
+        ExportedItem::Def(def_id) => {
+            let target = DefTarget::Workspace(*def_id);
+            let kind = def_target_to_completion_kind(db, &target);
+            let detail = display_def_type(db, &target);
+            (kind, detail)
+        }
+        ExportedItem::Local(_) => (CompletionItemKind::VARIABLE, None),
+    }
+}
+
+/// Rank completion items by type compatibility with the expected type.
+///
+/// Items whose detail matches the expected type sort first (sort_text = "0"),
+/// items with a compatible shape sort next ("1"), and everything else sorts
+/// last ("2"). Within each tier, the original order is preserved.
+fn rank_by_type_compatibility(items: &mut [CompletionItem], expected: &Ty) {
+    let expected_str = expected.to_string();
+
+    for item in items.iter_mut() {
+        let rank = match &item.detail {
+            Some(detail) if *detail == expected_str => "0",
+            Some(detail) if types_share_base(detail, &expected_str) => "1",
+            _ => "2",
+        };
+        item.sort_text = Some(format!("{}{}", rank, item.label));
+    }
+}
+
+/// Check if two type strings share the same base type name.
+///
+/// This is a simple heuristic: it strips generic parameters and compares
+/// the base name. For example, `List[int]` and `List[string]` share base
+/// `List`.
+fn types_share_base(a: &str, b: &str) -> bool {
+    let base_a = a.split('[').next().unwrap_or(a).trim();
+    let base_b = b.split('[').next().unwrap_or(b).trim();
+    !base_a.is_empty() && base_a == base_b
 }

@@ -27,6 +27,7 @@ use crate::{
             DefinitionRecord, ImplDef, StructDef, TraitDef, def_path, impl_def, struct_def,
             trait_def,
         },
+        display::collect_reverse_map,
         parse::parse_file,
         typecheck::def_scheme,
         workspace::WorkspaceSnapshot,
@@ -89,6 +90,11 @@ pub struct LibraryData {
 
     /// Source map for error messages and source locations.
     pub source_map: SourceMap,
+
+    /// Reverse maps for display: maps internal schema vars to user-facing var names.
+    /// Used by IDE features to show `'a` instead of `?s10` for library definitions.
+    #[serde(default)]
+    pub display_vars: HashMap<LibraryDefId, HashMap<TyVar, TyVar>>,
 }
 
 impl LibraryData {
@@ -473,6 +479,21 @@ fn remap_library_type_vars(data: &mut LibraryData, offset: u32) {
         imp.type_params.apply_subst(&subst);
         imp.implementing_type.apply_subst(&subst);
     }
+
+    // Remap display_vars keys (schema vars get offset, user vars stay the same)
+    for inner_map in data.display_vars.values_mut() {
+        *inner_map = inner_map
+            .drain()
+            .map(|(key, value)| {
+                let new_key = if let Some(id) = parse_schema_var_id(&key) {
+                    TyVar::new(format!("{}{}", SCHEMA_PREFIX, id + offset))
+                } else {
+                    key
+                };
+                (new_key, value)
+            })
+            .collect();
+    }
 }
 
 /// Build a substitution that maps each schema variable to its offset version.
@@ -607,6 +628,7 @@ pub fn build_library_data(
     let mut impls_map = HashMap::new();
     let mut impls_by_type: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
     let mut impls_by_trait_map: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
+    let mut display_vars: HashMap<LibraryDefId, HashMap<TyVar, TyVar>> = HashMap::new();
 
     for file_id in workspace.all_file_ids() {
         let parse_result = parse_file(db, file_id);
@@ -622,6 +644,12 @@ pub fn build_library_data(
             // Get type scheme for all defs that have one
             if let Some(scheme) = def_scheme(db, target.clone()) {
                 schemes.insert(lib_def_id.clone(), scheme);
+            }
+
+            // Collect reverse map for display (schema var → user var)
+            let reverse_map = collect_reverse_map(db, def_header.def_id);
+            if !reverse_map.is_empty() {
+                display_vars.insert(lib_def_id.clone(), reverse_map);
             }
 
             match def_header.kind {
@@ -701,6 +729,7 @@ pub fn build_library_data(
         modules,
         definitions: HashMap::new(),
         source_map: srcmap,
+        display_vars,
     }
 }
 

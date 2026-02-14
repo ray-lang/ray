@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use ray_core::ast::{Decl, FuncSig, Node};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, DefKind},
+    def::{DefId, DefKind, LibraryDefId},
     pathlib::ItemPath,
     resolution::DefTarget,
     ty::{Ty, TyVar},
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     queries::{
         defs::{def_header, def_path, impl_def, struct_def, trait_def},
+        libraries::library_data,
         parse::parse_file,
         typecheck::def_scheme,
         types::{find_def_ast, mapped_def_types},
@@ -331,7 +332,7 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
 
 fn library_display_info(db: &Database, target: &DefTarget) -> Option<DefDisplayInfo> {
     let path = def_path(db, target.clone())?;
-    let scheme = def_scheme(db, target.clone());
+    let scheme = get_display_scheme(db, target);
 
     let mut signatures = Vec::new();
 
@@ -470,10 +471,15 @@ fn format_func_from_scheme(db: &Database, target: &DefTarget, name: &str) -> Str
 fn get_display_scheme(db: &Database, target: &DefTarget) -> Option<TyScheme> {
     let mut scheme = def_scheme(db, target.clone())?;
 
-    if let DefTarget::Workspace(def_id) = target {
-        let reverse_map = collect_reverse_map(db, *def_id);
-        if !reverse_map.is_empty() {
-            let subst = build_rename_subst(&reverse_map);
+    let reverse_map = match target {
+        DefTarget::Workspace(def_id) => Some(collect_reverse_map(db, *def_id)),
+        DefTarget::Library(lib_def_id) => library_reverse_map(db, lib_def_id),
+        DefTarget::Primitive(_) => None,
+    };
+
+    if let Some(ref map) = reverse_map {
+        if !map.is_empty() {
+            let subst = build_rename_subst(map);
             scheme.apply_subst(&subst);
         }
     }
@@ -482,7 +488,7 @@ fn get_display_scheme(db: &Database, target: &DefTarget) -> Option<TyScheme> {
 }
 
 /// Collect the full reverse_map for a definition, including parent mappings.
-fn collect_reverse_map(db: &Database, def_id: DefId) -> HashMap<TyVar, TyVar> {
+pub(crate) fn collect_reverse_map(db: &Database, def_id: DefId) -> HashMap<TyVar, TyVar> {
     let mut reverse_map = HashMap::new();
 
     // Get parent's reverse_map first (for methods in trait/impl blocks)
@@ -533,6 +539,29 @@ pub fn display_ty(db: &Database, owner: DefId, ty: &Ty) -> Ty {
     let mut result = ty.clone();
     result.apply_subst(&subst);
     result
+}
+
+/// Look up the display reverse map for a library definition.
+fn library_reverse_map(db: &Database, lib_def_id: &LibraryDefId) -> Option<HashMap<TyVar, TyVar>> {
+    let data = library_data(db, lib_def_id.module.clone())?;
+    data.display_vars.get(lib_def_id).cloned()
+}
+
+/// Apply the reverse variable mapping to a type from a library definition.
+///
+/// Like `display_ty` but for library definitions, using the serialized
+/// reverse map from `LibraryData.display_vars`.
+pub fn display_library_ty(db: &Database, lib_def_id: &LibraryDefId, ty: &Ty) -> Ty {
+    let reverse_map = library_reverse_map(db, lib_def_id);
+    match reverse_map {
+        Some(ref map) if !map.is_empty() => {
+            let subst = build_rename_subst(map);
+            let mut result = ty.clone();
+            result.apply_subst(&subst);
+            result
+        }
+        _ => ty.clone(),
+    }
 }
 
 /// Format a function signature from scheme data.
