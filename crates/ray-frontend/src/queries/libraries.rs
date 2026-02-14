@@ -9,6 +9,7 @@ use std::{
 use ray_query_macros::{input, query};
 use ray_shared::{
     def::{DefId, DefKind, LibraryDefId},
+    node_id::NodeId,
     pathlib::{FilePath, ItemPath, ModulePath},
     resolution::DefTarget,
     ty::{SCHEMA_PREFIX, SchemaVarAllocator, Ty, TyVar},
@@ -24,8 +25,8 @@ use ray_core::sourcemap::SourceMap;
 use crate::{
     queries::{
         defs::{
-            DefinitionRecord, ImplDef, StructDef, TraitDef, def_path, impl_def, struct_def,
-            trait_def,
+            DefinitionRecord, FuncDef, ImplDef, StructDef, TraitDef, def_path, func_def, impl_def,
+            struct_def, trait_def,
         },
         display::collect_reverse_map,
         parse::parse_file,
@@ -95,6 +96,20 @@ pub struct LibraryData {
     /// Used by IDE features to show `'a` instead of `?s10` for library definitions.
     #[serde(default)]
     pub display_vars: HashMap<LibraryDefId, HashMap<TyVar, TyVar>>,
+
+    /// Maps each library def to its root NodeId in the source map.
+    /// Used by doc_comment lookup to find docs from source_map.
+    #[serde(default)]
+    pub root_nodes: HashMap<LibraryDefId, NodeId>,
+
+    /// Maps child defs (methods, struct fields) to their parent def.
+    /// Populated during build from DefHeader.parent.
+    #[serde(default)]
+    pub parent_map: HashMap<LibraryDefId, LibraryDefId>,
+
+    /// Function/method definitions with param names and modifiers.
+    #[serde(default)]
+    pub func_defs: HashMap<LibraryDefId, FuncDef>,
 }
 
 impl LibraryData {
@@ -629,6 +644,9 @@ pub fn build_library_data(
     let mut impls_by_type: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
     let mut impls_by_trait_map: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
     let mut display_vars: HashMap<LibraryDefId, HashMap<TyVar, TyVar>> = HashMap::new();
+    let mut root_nodes: HashMap<LibraryDefId, NodeId> = HashMap::new();
+    let mut parent_map: HashMap<LibraryDefId, LibraryDefId> = HashMap::new();
+    let mut func_defs: HashMap<LibraryDefId, FuncDef> = HashMap::new();
 
     for file_id in workspace.all_file_ids() {
         let parse_result = parse_file(db, file_id);
@@ -641,6 +659,16 @@ pub fn build_library_data(
 
             let target = DefTarget::Workspace(def_header.def_id);
 
+            // Track root NodeId for doc comment lookup
+            root_nodes.insert(lib_def_id.clone(), def_header.root_node);
+
+            // Track parent relationship
+            if let Some(parent_def_id) = def_header.parent {
+                if let Some(parent_lib_id) = def_id_to_lib.get(&parent_def_id) {
+                    parent_map.insert(lib_def_id.clone(), parent_lib_id.clone());
+                }
+            }
+
             // Get type scheme for all defs that have one
             if let Some(scheme) = def_scheme(db, target.clone()) {
                 schemes.insert(lib_def_id.clone(), scheme);
@@ -650,6 +678,14 @@ pub fn build_library_data(
             let reverse_map = collect_reverse_map(db, def_header.def_id);
             if !reverse_map.is_empty() {
                 display_vars.insert(lib_def_id.clone(), reverse_map);
+            }
+
+            // Build FuncDef for functions and methods
+            if matches!(def_header.kind, DefKind::Function { .. } | DefKind::Method) {
+                if let Some(mut fdef) = func_def(db, target.clone()) {
+                    fdef.target = remap_def_target(&fdef.target, &def_id_to_lib);
+                    func_defs.insert(lib_def_id.clone(), fdef);
+                }
             }
 
             match def_header.kind {
@@ -730,6 +766,9 @@ pub fn build_library_data(
         definitions: HashMap::new(),
         source_map: srcmap,
         display_vars,
+        root_nodes,
+        parent_map,
+        func_defs,
     }
 }
 
@@ -737,11 +776,10 @@ pub fn build_library_data(
 fn remap_def_target(target: &DefTarget, mapping: &HashMap<DefId, LibraryDefId>) -> DefTarget {
     match target {
         DefTarget::Workspace(def_id) => {
-            if let Some(lib_id) = mapping.get(def_id) {
-                DefTarget::Library(lib_id.clone())
-            } else {
-                target.clone()
-            }
+            let lib_id = mapping.get(def_id).unwrap_or_else(|| {
+                panic!("missing library mapping for workspace def {:?}", def_id)
+            });
+            DefTarget::Library(lib_id.clone())
         }
         other => other.clone(),
     }

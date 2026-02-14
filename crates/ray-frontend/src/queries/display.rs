@@ -5,11 +5,10 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, FuncSig, Node};
+use ray_core::ast::Modifier;
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind, LibraryDefId},
-    pathlib::ItemPath,
     resolution::DefTarget,
     ty::{Ty, TyVar},
 };
@@ -21,11 +20,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
-        defs::{ImplDef, def_header, def_path, impl_def, struct_def, trait_def},
+        defs::{ImplDef, def_header, definition_record, func_def, impl_def, struct_def, trait_def},
         libraries::library_data,
-        parse::parse_file,
         typecheck::def_scheme,
-        types::{find_def_ast, mapped_def_types},
+        types::mapped_def_types,
     },
     query::{Database, Query},
 };
@@ -50,284 +48,177 @@ pub struct DefDisplayInfo {
 /// Returns a `DefDisplayInfo` containing a provenance chain of signatures
 /// and an optional documentation comment. Used by the hover handler to
 /// show rust-analyzer-style contextual information.
+///
+/// Works uniformly for workspace, library, and primitive definitions.
 #[query]
 pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayInfo> {
-    match target {
-        DefTarget::Workspace(def_id) => workspace_display_info(db, def_id),
-        DefTarget::Library(_) => library_display_info(db, &target),
-        DefTarget::Primitive(ref path) => {
-            let name = path.item_name()?;
-            Some(DefDisplayInfo {
-                signatures: vec![name.to_string()],
-                doc: None,
-            })
-        }
-    }
-}
-
-fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo> {
-    let header = def_header(db, def_id)?;
-    let target = DefTarget::Workspace(def_id);
-    let item_path = def_path(db, target.clone());
-
-    let parse_result = parse_file(db, def_id.file);
-    let ast_node = find_def_ast(&parse_result.ast.decls, header.root_node);
-
-    // Extract doc comment from AST if available
-    let doc = ast_node.and_then(|node| extract_doc_comment(&node.value));
+    let record = definition_record(db, target.clone())?;
+    let name = record.path.item_name().unwrap_or("?").to_string();
 
     let mut signatures = Vec::new();
 
-    match header.kind {
-        DefKind::Function { .. } if header.parent.is_none() => {
-            // Standalone function: [module_path], fn signature
-            if let Some(ref path) = item_path {
-                if !path.module.is_empty() {
-                    signatures.push(path.module.to_string());
-                }
-            }
-
-            let sig_str = if let Some(node) = ast_node {
-                format_func_from_ast(db, def_id, node, None)
-            } else {
-                format_func_from_scheme(db, &target, &header.name)
-            };
-            signatures.push(sig_str);
+    match record.kind {
+        DefKind::Primitive => {
+            return Some(DefDisplayInfo {
+                signatures: vec![name],
+                doc: record.doc,
+            });
         }
 
-        DefKind::Method if header.parent.is_some() => {
-            let parent_def_id = header.parent.unwrap();
-            let parent_header = def_header(db, parent_def_id);
+        DefKind::FileMain => {
+            return None;
+        }
 
-            match parent_header.as_ref().map(|h| h.kind) {
-                Some(DefKind::Impl) => {
-                    // Method in an impl block
-                    let parent_target = DefTarget::Workspace(parent_def_id);
-                    let impl_arc = impl_def(db, parent_target.clone());
-                    let impl_info_opt = impl_arc.as_ref().as_ref();
+        DefKind::Function { .. } | DefKind::Method => {
+            if let Some(ref parent_target) = record.parent {
+                // Method or function with a parent (impl/trait)
+                let parent_record = definition_record(db, parent_target.clone());
 
-                    if let Some(impl_info) = impl_info_opt {
-                        // Apply reverse map for user-facing type variable names
-                        let impl_ty = display_ty(db, def_id, &impl_info.implementing_type);
-                        let display_preds = display_predicates(db, def_id, &impl_info.predicates);
+                match parent_record.as_ref().map(|r| r.kind) {
+                    Some(DefKind::Impl) => {
+                        let impl_arc = impl_def(db, parent_target.clone());
+                        let impl_info = impl_arc.as_ref().as_ref();
 
-                        if let Some(ref trait_ty) = impl_info.trait_ty {
-                            // Trait impl method: impl Trait[Type] where ..., fn sig
-                            let display_trait_ty = display_ty(db, def_id, trait_ty);
-                            signatures.push(format_impl_sig(
-                                &impl_ty,
-                                Some(&display_trait_ty),
-                                &display_preds,
-                            ));
-                        } else {
-                            // Inherent impl method: impl object Type where ..., fn sig
-                            signatures.push(format_impl_sig(&impl_ty, None, &display_preds));
+                        if let Some(info) = impl_info {
+                            let impl_ty =
+                                display_ty_for_target(db, parent_target, &info.implementing_type);
+                            let display_preds =
+                                display_predicates_for_target(db, parent_target, &info.predicates);
+
+                            if let Some(ref trait_ty) = info.trait_ty {
+                                let display_trait_ty =
+                                    display_ty_for_target(db, parent_target, trait_ty);
+                                signatures.push(format_impl_sig(
+                                    &impl_ty,
+                                    Some(&display_trait_ty),
+                                    &display_preds,
+                                ));
+                            } else {
+                                signatures.push(format_impl_sig(&impl_ty, None, &display_preds));
+                            }
                         }
-                    }
 
-                    let parent_root = parent_header.as_ref().unwrap().root_node;
-                    let sig_str = if let Some(parent_node) =
-                        find_def_ast(&parse_result.ast.decls, parent_root)
-                    {
-                        find_method_in_parent(db, def_id, parent_node, impl_info_opt)
-                    } else {
-                        None
-                    };
-                    signatures.push(
-                        sig_str
-                            .unwrap_or_else(|| format_func_from_scheme(db, &target, &header.name)),
-                    );
-                }
-                Some(DefKind::Trait) => {
-                    // Trait method declaration: trait Name[ty_params], fn sig
-                    // Use AST for user-facing type params
-                    let parent_root = parent_header.as_ref().unwrap().root_node;
-                    let parent_ast = find_def_ast(&parse_result.ast.decls, parent_root);
-                    let trait_sig_str = parent_ast.and_then(|node| match &node.value {
-                        Decl::Trait(tr) => Some(format!("trait {}", tr.ty)),
-                        _ => None,
-                    });
-                    if let Some(sig) = trait_sig_str {
+                        let sig = format_func_sig_from_query(
+                            db,
+                            &target,
+                            &name,
+                            impl_info,
+                            Some(parent_target),
+                        );
                         signatures.push(sig);
-                    } else {
-                        let parent_target = DefTarget::Workspace(parent_def_id);
-                        if let Some(trait_info) = trait_def(db, parent_target) {
-                            signatures
-                                .push(format_trait_sig(&trait_info.path, &trait_info.type_params));
-                        }
                     }
-
-                    let sig_str =
-                        parent_ast.and_then(|node| find_method_in_parent(db, def_id, node, None));
-                    signatures.push(
-                        sig_str
-                            .unwrap_or_else(|| format_func_from_scheme(db, &target, &header.name)),
-                    );
+                    Some(DefKind::Trait) => {
+                        if let Some(tdef) = trait_def(db, parent_target.clone()) {
+                            let vars = format_ty_vars(&display_vars_for_target(
+                                db,
+                                parent_target,
+                                &tdef.type_params,
+                            ));
+                            let trait_name = tdef.path.item_name().unwrap_or("?");
+                            signatures.push(format!("trait {}{}", trait_name, vars));
+                        }
+                        let sig = format_func_sig_from_query(db, &target, &name, None, None);
+                        signatures.push(sig);
+                    }
+                    _ => {
+                        let sig = format_func_sig_from_query(db, &target, &name, None, None);
+                        signatures.push(sig);
+                    }
                 }
-                _ => {
-                    // Fallback: just show the method signature
-                    let sig_str = if let Some(node) = ast_node {
-                        format_func_from_ast(db, def_id, node, None)
-                    } else {
-                        format_func_from_scheme(db, &target, &header.name)
-                    };
-                    signatures.push(sig_str);
+            } else {
+                // Standalone function (no parent)
+                if !record.path.module.is_empty() {
+                    signatures.push(record.path.module.to_string());
                 }
+                let sig = format_func_sig_from_query(db, &target, &name, None, None);
+                signatures.push(sig);
             }
         }
 
         DefKind::Struct => {
-            // Struct: [module_path], struct Name[ty_params]
-            if let Some(ref path) = item_path {
-                if !path.module.is_empty() {
-                    signatures.push(path.module.to_string());
-                }
+            if !record.path.module.is_empty() {
+                signatures.push(record.path.module.to_string());
             }
-
-            // Use AST type params for user-facing names
-            let ty_params_str = ast_node
-                .and_then(|node| match &node.value {
-                    Decl::Struct(s) => s.ty_params.as_ref().map(|tp| tp.to_string()),
-                    _ => None,
-                })
+            let vars = struct_def(db, target.clone())
+                .map(|sdef| format_ty_vars(&display_vars_for_target(db, &target, &sdef.ty.vars)))
                 .unwrap_or_default();
-            signatures.push(format!("struct {}{}", header.name, ty_params_str));
+            signatures.push(format!("struct {}{}", name, vars));
         }
 
         DefKind::StructField => {
-            // Struct field: struct ParentName[ty_params], field: type
-            if let Some(parent_def_id) = header.parent {
-                let parent_target = DefTarget::Workspace(parent_def_id);
-                let parent_header = def_header(db, parent_def_id);
-                let parent_name = parent_header
-                    .as_ref()
-                    .map(|h| h.name.clone())
+            if let Some(ref parent_target) = record.parent {
+                let parent_name = definition_record(db, parent_target.clone())
+                    .and_then(|r| r.path.item_name().map(|n| n.to_string()))
                     .unwrap_or_else(|| "?".to_string());
-
-                let parent_ty_params = parent_header
+                let sdef = struct_def(db, parent_target.clone());
+                let vars = sdef
                     .as_ref()
-                    .and_then(|ph| {
-                        let parent_parse = parse_file(db, parent_def_id.file);
-                        find_def_ast(&parent_parse.ast.decls, ph.root_node).and_then(|node| {
-                            match &node.value {
-                                Decl::Struct(s) => s.ty_params.as_ref().map(|tp| tp.to_string()),
-                                _ => None,
-                            }
-                        })
+                    .map(|s| {
+                        format_ty_vars(&display_vars_for_target(db, parent_target, &s.ty.vars))
                     })
                     .unwrap_or_default();
+                signatures.push(format!("struct {}{}", parent_name, vars));
 
-                signatures.push(format!("struct {}{}", parent_name, parent_ty_params));
-
-                let field_ty_str = struct_def(db, parent_target)
+                let field_ty_str = sdef
                     .and_then(|sdef| {
-                        sdef.fields
-                            .iter()
-                            .find(|f| f.name == header.name)
-                            .map(|field| display_ty(db, def_id, &field.ty.ty).to_string())
+                        sdef.fields.iter().find(|f| f.name == name).map(|field| {
+                            display_ty_for_target(db, &target, &field.ty.ty).to_string()
+                        })
                     })
                     .unwrap_or_else(|| "?".to_string());
-                signatures.push(format!("{}: {}", header.name, field_ty_str));
+                signatures.push(format!("{}: {}", name, field_ty_str));
             } else {
-                signatures.push(format!("{}: ?", header.name));
+                signatures.push(format!("{}: ?", name));
             }
         }
 
         DefKind::Trait => {
-            // Trait: [module_path], trait Name[ty_params]
-            if let Some(ref path) = item_path {
-                if !path.module.is_empty() {
-                    signatures.push(path.module.to_string());
-                }
+            if !record.path.module.is_empty() {
+                signatures.push(record.path.module.to_string());
             }
-
-            // Use AST type info for user-facing names
-            let trait_ty_str = ast_node.and_then(|node| match &node.value {
-                Decl::Trait(tr) => Some(tr.ty.to_string()),
-                _ => None,
-            });
-
-            if let Some(ty_str) = trait_ty_str {
-                signatures.push(format!("trait {}", ty_str));
-            } else {
-                let trait_target = DefTarget::Workspace(def_id);
-                if let Some(tdef) = trait_def(db, trait_target) {
-                    signatures.push(format_trait_sig(&tdef.path, &tdef.type_params));
-                } else {
-                    signatures.push(format!("trait {}", header.name));
-                }
-            }
-        }
-
-        DefKind::TypeAlias => {
-            // Type alias: typealias Name[ty_params] = AliasedType
-            // For now, just show the name; we could look up TypeAliasDef later
-            let scheme = def_scheme(db, target);
-            if let Some(scheme) = scheme {
-                let vars = format_ty_vars(&scheme.vars);
-                signatures.push(format!("typealias {}{} = {}", header.name, vars, scheme.ty));
-            } else {
-                signatures.push(format!("typealias {}", header.name));
-            }
+            let vars = trait_def(db, target.clone())
+                .map(|tdef| {
+                    format_ty_vars(&display_vars_for_target(db, &target, &tdef.type_params))
+                })
+                .unwrap_or_default();
+            signatures.push(format!("trait {}{}", name, vars));
         }
 
         DefKind::Impl => {
-            // Impl block: impl Trait['a, 'b, ...] or impl object Type
-            let impl_target = DefTarget::Workspace(def_id);
-            if let Some(impl_info) = impl_def(db, impl_target).as_ref() {
-                let impl_ty = display_ty(db, def_id, &impl_info.implementing_type);
+            if let Some(impl_info) = impl_def(db, target.clone()).as_ref() {
+                let impl_ty = display_ty_for_target(db, &target, &impl_info.implementing_type);
                 let trait_display_ty = impl_info
                     .trait_ty
                     .as_ref()
-                    .map(|ty| display_ty(db, def_id, ty));
-                let display_preds = display_predicates(db, def_id, &impl_info.predicates);
+                    .map(|ty| display_ty_for_target(db, &target, ty));
+                let display_preds =
+                    display_predicates_for_target(db, &target, &impl_info.predicates);
                 signatures.push(format_impl_sig(
                     &impl_ty,
                     trait_display_ty.as_ref(),
                     &display_preds,
                 ));
             } else {
-                signatures.push(format!("impl {}", header.name));
+                signatures.push(format!("impl {}", name));
             }
         }
 
-        DefKind::Binding { .. } => {
-            // Local binding: name: type
-            let scheme = def_scheme(db, target);
-            let ty_str = scheme
-                .map(|s| s.ty.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            signatures.push(format!("{}: {}", header.name, ty_str));
-        }
-
-        DefKind::AssociatedConst { .. } => {
-            // Associated constant: name: type
-            let scheme = def_scheme(db, target);
-            let ty_str = scheme
-                .map(|s| s.ty.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            signatures.push(format!("{}: {}", header.name, ty_str));
-        }
-
-        DefKind::FileMain | DefKind::Primitive => {
-            // No meaningful display for these
-            return None;
-        }
-
-        DefKind::Function { .. } => {
-            // Function with parent (shouldn't happen, but handle gracefully)
-            let sig_str = if let Some(node) = ast_node {
-                format_func_from_ast(db, def_id, node, None)
+        DefKind::TypeAlias => {
+            let scheme = get_display_scheme(db, &target);
+            if let Some(scheme) = scheme {
+                let vars = format_ty_vars(&scheme.vars);
+                signatures.push(format!("typealias {}{} = {}", name, vars, scheme.ty));
             } else {
-                format_func_from_scheme(db, &target, &header.name)
-            };
-            signatures.push(sig_str);
+                signatures.push(format!("typealias {}", name));
+            }
         }
 
-        DefKind::Method => {
-            // Method without parent (shouldn't happen, handled above)
-            let sig_str = format_func_from_scheme(db, &target, &header.name);
-            signatures.push(sig_str);
+        DefKind::Binding { .. } | DefKind::AssociatedConst { .. } => {
+            let scheme = get_display_scheme(db, &target);
+            let ty_str = scheme
+                .map(|s| s.ty.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            signatures.push(format!("{}: {}", name, ty_str));
         }
     }
 
@@ -335,191 +226,175 @@ fn workspace_display_info(db: &Database, def_id: DefId) -> Option<DefDisplayInfo
         return None;
     }
 
-    Some(DefDisplayInfo { signatures, doc })
-}
-
-fn library_display_info(db: &Database, target: &DefTarget) -> Option<DefDisplayInfo> {
-    let path = def_path(db, target.clone())?;
-    let scheme = get_display_scheme(db, target);
-
-    let mut signatures = Vec::new();
-
-    // Show the module path if present
-    if !path.module.is_empty() {
-        signatures.push(path.module.to_string());
-    }
-
-    // Format based on available type info
-    if let Some(scheme) = scheme {
-        let name = path.item_name().unwrap_or("?");
-        match &scheme.ty {
-            Ty::Func(_, _) => {
-                signatures.push(format_func_from_scheme_data(name, &scheme));
-            }
-            _ => {
-                signatures.push(format!("{}: {}", name, scheme.ty));
-            }
-        }
-    } else {
-        // No type info, just show the path
-        signatures.push(path.to_string());
-    }
-
     Some(DefDisplayInfo {
         signatures,
-        doc: None,
+        doc: record.doc,
     })
 }
 
-/// Format a function signature from an AST node containing a Decl.
+// ============================================================================
+// Function signature formatting
+// ============================================================================
+
+/// Format a function/method signature using query results only.
 ///
-/// When `parent_impl` is provided, inherited type vars and qualifiers are
-/// stripped from the method signature.
-fn format_func_from_ast(
-    db: &Database,
-    def_id: DefId,
-    node: &Node<Decl>,
-    parent_impl: Option<&ImplDef>,
-) -> String {
-    let target = DefTarget::Workspace(def_id);
-
-    match &node.value {
-        Decl::Func(func) => format_func_sig(db, &target, &func.sig, parent_impl),
-        Decl::FnSig(sig) => format_func_sig(db, &target, sig, parent_impl),
-        _ => format_func_from_scheme(db, &target, "?"),
-    }
-}
-
-/// Find a method AST within a parent impl/trait node and format it.
-fn find_method_in_parent(
-    db: &Database,
-    method_def_id: DefId,
-    parent_node: &Node<Decl>,
-    parent_impl: Option<&ImplDef>,
-) -> Option<String> {
-    let header = def_header(db, method_def_id)?;
-    let root_node = header.root_node;
-
-    match &parent_node.value {
-        Decl::Impl(im) => {
-            if let Some(funcs) = &im.funcs {
-                for func_node in funcs {
-                    if func_node.id == root_node {
-                        return Some(format_func_from_ast(
-                            db,
-                            method_def_id,
-                            func_node,
-                            parent_impl,
-                        ));
-                    }
-                }
-            }
-            if let Some(externs) = &im.externs {
-                for ext_node in externs {
-                    if ext_node.id == root_node {
-                        return Some(format_func_from_ast(
-                            db,
-                            method_def_id,
-                            ext_node,
-                            parent_impl,
-                        ));
-                    }
-                }
-            }
-        }
-        Decl::Trait(tr) => {
-            for field_node in &tr.fields {
-                if field_node.id == root_node {
-                    return Some(format_func_from_ast(db, method_def_id, field_node, None));
-                }
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
-/// Format a function signature by combining AST info (modifiers, param names)
-/// with type system info (resolved types).
-///
-/// Uses `def_scheme` for resolved types, then applies `mapped_def_types.reverse_map`
-/// to substitute internal type variable names (like `?s:...`) with user-facing
-/// names (like `'a`).
-///
-/// When `parent_impl` is provided, type vars and qualifiers inherited from the
-/// parent impl block are stripped from the method signature (they are already
-/// shown on the impl line).
-fn format_func_sig(
+/// Uses `func_def` for param names and modifiers, `get_display_scheme` for types.
+/// When `parent_impl` is provided, inherited type vars and qualifiers are stripped
+/// using the parent's display-mapped vars/predicates.
+fn format_func_sig_from_query(
     db: &Database,
     target: &DefTarget,
-    sig: &FuncSig,
+    name: &str,
     parent_impl: Option<&ImplDef>,
+    parent_target: Option<&DefTarget>,
 ) -> String {
+    let fdef = func_def(db, target.clone());
     let scheme = get_display_scheme(db, target);
 
+    let (param_names, modifiers): (&[String], &[Modifier]) = match fdef {
+        Some(ref fd) => (&fd.param_names, &fd.modifiers),
+        None => (&[], &[]),
+    };
+
+    // Build display-mapped parent vars and predicates for filtering
+    let parent_display = parent_impl.and_then(|impl_info| {
+        let pt = parent_target?;
+        let display_vars = display_vars_for_target(db, pt, &impl_info.type_params);
+        let display_preds = display_predicates_for_target(db, pt, &impl_info.predicates);
+        Some((display_vars, display_preds))
+    });
+
+    match scheme {
+        Some(scheme) => format_func_display(
+            name,
+            &scheme,
+            param_names,
+            modifiers,
+            parent_display.as_ref(),
+        ),
+        None => {
+            let mut parts = Vec::new();
+            for m in modifiers {
+                parts.push(m.to_string());
+            }
+            parts.push(format!("fn {}", name));
+            parts.join(" ")
+        }
+    }
+}
+
+/// Format a function signature from its components.
+///
+/// Combines modifiers, name, type vars, params (with names if available),
+/// return type, and where-clause. Strips parent vars and qualifiers
+/// when `parent_display` is provided (display-mapped parent vars and predicates).
+fn format_func_display(
+    name: &str,
+    scheme: &TyScheme,
+    param_names: &[String],
+    modifiers: &[Modifier],
+    parent_display: Option<&(Vec<TyVar>, Vec<Predicate>)>,
+) -> String {
     let mut parts = Vec::new();
 
-    // Modifiers
-    for m in &sig.modifiers {
+    for m in modifiers {
         parts.push(m.to_string());
     }
-
-    // fn keyword
     parts.push("fn".to_string());
 
-    let name = sig.path.name().unwrap_or_else(|| "__anon__".to_string());
+    // Strip parent impl vars and qualifiers from the method scheme
+    let (vars, qualifiers) = if let Some((parent_vars, parent_preds)) = parent_display {
+        let filtered_vars: Vec<_> = scheme
+            .vars
+            .iter()
+            .filter(|v| !parent_vars.contains(v))
+            .cloned()
+            .collect();
+        let parent_qual_strs: Vec<_> = parent_preds.iter().map(|p| p.to_string()).collect();
+        let filtered_quals: Vec<_> = scheme
+            .qualifiers
+            .iter()
+            .filter(|q| !parent_qual_strs.contains(&q.to_string()))
+            .cloned()
+            .collect();
+        (filtered_vars, filtered_quals)
+    } else {
+        (scheme.vars.clone(), scheme.qualifiers.clone())
+    };
 
-    // Build the type params, params, and return type from the scheme
-    if let Some(ref scheme) = scheme {
-        // Strip parent impl vars and qualifiers from the method scheme
-        let (vars, qualifiers) = if let Some(impl_info) = parent_impl {
-            let parent_vars: Vec<_> = impl_info.type_params.iter().collect();
-            let filtered_vars: Vec<_> = scheme
-                .vars
-                .iter()
-                .filter(|v| !parent_vars.contains(v))
-                .cloned()
-                .collect();
-            let parent_qual_strs: Vec<_> =
-                impl_info.predicates.iter().map(|p| p.to_string()).collect();
-            let filtered_quals: Vec<_> = scheme
-                .qualifiers
-                .iter()
-                .filter(|q| !parent_qual_strs.contains(&q.to_string()))
-                .cloned()
-                .collect();
-            (filtered_vars, filtered_quals)
-        } else {
-            (scheme.vars.clone(), scheme.qualifiers.clone())
-        };
+    let vars_str = format_ty_vars(&vars);
+    let params_str = format_func_params(param_names, &scheme.ty);
+    let ret_str = format_func_ret(&scheme.ty);
+    let quals_str = format_qualifiers(&qualifiers);
 
-        let vars_str = format_ty_vars(&vars);
-        let (params_str, ret_str) = format_func_ty_parts(sig, &scheme.ty);
-        let quals_str = format_qualifiers(&qualifiers);
+    let sig_str = format!("{}{}{}{}", name, vars_str, params_str, ret_str);
+    parts.push(sig_str);
 
-        let sig_str = format!("{}{}{}{}", name, vars_str, params_str, ret_str);
-        parts.push(sig_str);
+    let result = parts.join(" ");
+    if quals_str.is_empty() {
+        result
+    } else {
+        format!("{} where {}", result, quals_str)
+    }
+}
 
-        if !quals_str.is_empty() {
-            return format!("{} where {}", parts.join(" "), quals_str);
+/// Format function parameters from names + types in Ty::Func.
+///
+/// When param_names is non-empty, produces `(name: type, ...)`.
+/// When param_names is empty, produces `(type, ...)`.
+/// Self params are formatted specially (just `self` when type is `self`).
+fn format_func_params(param_names: &[String], ty: &Ty) -> String {
+    match ty {
+        Ty::Func(param_tys, _) => {
+            if param_names.is_empty() {
+                // No names available — just show types
+                let params_str = param_tys
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", params_str)
+            } else {
+                let params: Vec<String> = param_names
+                    .iter()
+                    .zip(param_tys.iter())
+                    .map(|(name, ty)| format!("{}: {}", name, ty))
+                    .collect();
+
+                // Handle extra types without corresponding names
+                let extra: Vec<String> = param_tys
+                    .iter()
+                    .skip(param_names.len())
+                    .map(|ty| ty.to_string())
+                    .collect();
+
+                let mut all_params = params;
+                all_params.extend(extra);
+
+                format!("({})", all_params.join(", "))
+            }
         }
-    } else {
-        // No scheme available, use AST info only
-        parts.push(sig.to_string());
-    }
-
-    parts.join(" ")
-}
-
-/// Format a function signature from a TyScheme without AST info.
-fn format_func_from_scheme(db: &Database, target: &DefTarget, name: &str) -> String {
-    let scheme = get_display_scheme(db, target);
-    if let Some(scheme) = scheme {
-        format_func_from_scheme_data(name, &scheme)
-    } else {
-        format!("fn {}", name)
+        _ => {
+            if param_names.is_empty() {
+                "()".to_string()
+            } else {
+                format!("({})", param_names.join(", "))
+            }
+        }
     }
 }
+
+/// Extract the return type string from a Ty::Func.
+fn format_func_ret(ty: &Ty) -> String {
+    match ty {
+        Ty::Func(_, ret) => format!(" -> {}", ret),
+        _ => String::new(),
+    }
+}
+
+// ============================================================================
+// Display type variable mapping (schema vars → user vars)
+// ============================================================================
 
 /// Get the type scheme for display, with internal vars renamed to user vars.
 ///
@@ -599,12 +474,60 @@ pub fn display_ty(db: &Database, owner: DefId, ty: &Ty) -> Ty {
     result
 }
 
-/// Apply the reverse variable mapping to a list of predicates for display.
-fn display_predicates(db: &Database, owner: DefId, predicates: &[Predicate]) -> Vec<Predicate> {
-    let reverse_map = collect_reverse_map(db, owner);
-    if reverse_map.is_empty() {
-        return predicates.to_vec();
+/// Apply the reverse variable mapping to a type from any DefTarget.
+///
+/// Works for workspace, library, and primitive definitions.
+fn display_ty_for_target(db: &Database, target: &DefTarget, ty: &Ty) -> Ty {
+    match target {
+        DefTarget::Workspace(def_id) => display_ty(db, *def_id, ty),
+        DefTarget::Library(lib_def_id) => display_library_ty(db, lib_def_id, ty),
+        DefTarget::Primitive(_) => ty.clone(),
     }
+}
+
+/// Apply the reverse variable mapping to type vars from any DefTarget.
+///
+/// Maps internal schema vars (like `?s:...`) to user-facing names (like `'a`).
+fn display_vars_for_target(db: &Database, target: &DefTarget, vars: &[TyVar]) -> Vec<TyVar> {
+    let reverse_map = match target {
+        DefTarget::Workspace(def_id) => {
+            let map = collect_reverse_map(db, *def_id);
+            if map.is_empty() {
+                return vars.to_vec();
+            }
+            map
+        }
+        DefTarget::Library(lib_def_id) => match library_reverse_map(db, lib_def_id) {
+            Some(map) if !map.is_empty() => map,
+            _ => return vars.to_vec(),
+        },
+        DefTarget::Primitive(_) => return vars.to_vec(),
+    };
+    vars.iter()
+        .map(|v| reverse_map.get(v).cloned().unwrap_or_else(|| v.clone()))
+        .collect()
+}
+
+/// Apply the reverse variable mapping to predicates from any DefTarget.
+fn display_predicates_for_target(
+    db: &Database,
+    target: &DefTarget,
+    predicates: &[Predicate],
+) -> Vec<Predicate> {
+    let reverse_map = match target {
+        DefTarget::Workspace(def_id) => {
+            let map = collect_reverse_map(db, *def_id);
+            if map.is_empty() {
+                return predicates.to_vec();
+            }
+            map
+        }
+        DefTarget::Library(lib_def_id) => match library_reverse_map(db, lib_def_id) {
+            Some(map) if !map.is_empty() => map,
+            _ => return predicates.to_vec(),
+        },
+        DefTarget::Primitive(_) => return predicates.to_vec(),
+    };
     let subst = build_rename_subst(&reverse_map);
     predicates
         .iter()
@@ -639,85 +562,9 @@ pub fn display_library_ty(db: &Database, lib_def_id: &LibraryDefId, ty: &Ty) -> 
     }
 }
 
-/// Format a function signature from scheme data.
-fn format_func_from_scheme_data(name: &str, scheme: &TyScheme) -> String {
-    let vars_str = format_ty_vars(&scheme.vars);
-    let quals_str = format_qualifiers(&scheme.qualifiers);
-
-    let sig = match &scheme.ty {
-        Ty::Func(params, ret) => {
-            let params_str = params
-                .iter()
-                .map(|t| t.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("fn {}{}({}) -> {}", name, vars_str, params_str, ret)
-        }
-        ty => format!("fn {}{}: {}", name, vars_str, ty),
-    };
-
-    if quals_str.is_empty() {
-        sig
-    } else {
-        format!("{} where {}", sig, quals_str)
-    }
-}
-
-/// Format function params and return type from AST param names + Ty::Func.
-fn format_func_ty_parts(sig: &FuncSig, ty: &Ty) -> (String, String) {
-    match ty {
-        Ty::Func(param_tys, ret_ty) => {
-            let params: Vec<String> = sig
-                .params
-                .iter()
-                .zip(param_tys.iter())
-                .map(|(param, ty)| {
-                    let name = param.value.name().to_short_name();
-                    if name == "self" {
-                        // Show `self: Type` when the type is informative (e.g. a type variable)
-                        let ty_str = ty.to_string();
-                        if ty_str == "self" {
-                            "self".to_string()
-                        } else {
-                            format!("self: {}", ty)
-                        }
-                    } else {
-                        format!("{}: {}", name, ty)
-                    }
-                })
-                .collect();
-
-            // If there are more types than params (shouldn't happen, but handle it)
-            let extra: Vec<String> = param_tys
-                .iter()
-                .skip(sig.params.len())
-                .map(|ty| ty.to_string())
-                .collect();
-
-            let mut all_params = params;
-            all_params.extend(extra);
-
-            let params_str = format!("({})", all_params.join(", "));
-            let ret_str = format!(" -> {}", ret_ty);
-
-            (params_str, ret_str)
-        }
-        _ => {
-            // Non-function type, use AST Display
-            (
-                format!(
-                    "({})",
-                    sig.params
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                String::new(),
-            )
-        }
-    }
-}
+// ============================================================================
+// Formatting helpers
+// ============================================================================
 
 /// Format type variables as `[var1, var2]`, or empty string if none.
 fn format_ty_vars(vars: &[TyVar]) -> String {
@@ -746,13 +593,6 @@ fn format_qualifiers(qualifiers: &[Predicate]) -> String {
     }
 }
 
-/// Format a trait signature: `trait Name[ty_params]`
-fn format_trait_sig(path: &ItemPath, type_params: &[TyVar]) -> String {
-    let name = path.item_name().unwrap_or("?");
-    let vars = format_ty_vars(type_params);
-    format!("trait {}{}", name, vars)
-}
-
 /// Format an impl signature, including where-clause predicates if any.
 fn format_impl_sig(
     implementing_type: &Ty,
@@ -771,29 +611,25 @@ fn format_impl_sig(
     }
 }
 
-/// Extract a doc comment from a declaration.
-fn extract_doc_comment(decl: &Decl) -> Option<String> {
-    match decl {
-        Decl::Func(func) => func.sig.doc_comment.clone(),
-        Decl::FnSig(sig) => sig.doc_comment.clone(),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use ray_shared::{
+        def::LibraryDefId,
         file_id::FileId,
+        node_id::NodeId,
         pathlib::{FilePath, ItemPath, ModulePath},
         resolution::DefTarget,
+        ty::{Ty, TyVar},
     };
+    use ray_typing::types::TyScheme;
 
     use crate::{
         queries::{
+            defs::{FuncDef, StructDef, TraitDef},
             display::def_display_info,
-            libraries::LoadedLibraries,
+            libraries::{LibraryData, LoadedLibraries},
             parse::parse_file,
             workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
@@ -874,6 +710,11 @@ trait Eq['a] {
             "should contain 'trait Eq': {}",
             trait_sig
         );
+        assert!(
+            trait_sig.contains("'a"),
+            "should contain type var 'a: {}",
+            trait_sig
+        );
     }
 
     #[test]
@@ -906,12 +747,6 @@ trait Eq['a] {
         );
     }
 
-    // Note: Local bindings (e.g. `x = 42` inside a function) are handled
-    // separately in the hover handler via Resolution::Local + ty_of,
-    // not through def_display_info. The DefKind::Binding path in
-    // def_display_info covers top-level named declarations that appear
-    // as DefHeaders (e.g. parameters with explicit names in module scope).
-
     #[test]
     fn trait_method_display() {
         let source = "trait Eq['a] {\n    fn eq(self: 'a, other: 'a) -> bool\n}";
@@ -925,6 +760,11 @@ trait Eq['a] {
         assert!(
             info.signatures[0].contains("trait Eq"),
             "first sig should be trait: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[0].contains("'a"),
+            "trait sig should contain type var 'a: {}",
             info.signatures[0]
         );
         assert!(
@@ -942,6 +782,453 @@ trait Eq['a] {
             !info.signatures[1].contains("?s:"),
             "should not contain internal var names: {}",
             info.signatures[1]
+        );
+    }
+
+    // ========================================================================
+    // Expanded workspace tests
+    // ========================================================================
+
+    #[test]
+    fn inherent_impl_method_display() {
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn origin() -> Point => Point { x: 0, y: 0 }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        let target = find_def_by_name(&db, file_id, "origin").unwrap();
+        let info = def_display_info(&db, target).unwrap();
+
+        // Should show: impl object <type>, fn origin() -> Point
+        assert_eq!(info.signatures.len(), 2);
+        assert!(
+            info.signatures[0].contains("impl object"),
+            "first sig should be impl: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[0].contains("Point"),
+            "first sig should mention Point: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[1].contains("fn origin"),
+            "second sig should be method: {}",
+            info.signatures[1]
+        );
+    }
+
+    #[test]
+    fn trait_impl_method_display() {
+        let source = r#"
+trait Eq['a] {
+    fn eq(self: 'a, other: 'a) -> bool
+}
+
+struct Point { x: int, y: int }
+
+impl Eq[Point] {
+    fn eq(self: Point, other: Point) -> bool => true
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        // Find the impl method (second "eq"), not the trait method (first "eq")
+        let parse_result = parse_file(&db, file_id);
+        let impl_eq = parse_result
+            .defs
+            .iter()
+            .filter(|h| h.name == "eq")
+            .last()
+            .expect("expected impl eq method");
+        let target = DefTarget::Workspace(impl_eq.def_id);
+        let info = def_display_info(&db, target).unwrap();
+
+        // Should show: impl <Trait>[<Type>], fn eq(...)
+        assert_eq!(info.signatures.len(), 2);
+        assert!(
+            info.signatures[0].contains("impl"),
+            "first sig should be trait impl: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[0].contains("Eq"),
+            "first sig should mention Eq: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[0].contains("Point"),
+            "first sig should mention Point: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[1].contains("fn eq"),
+            "second sig should be method: {}",
+            info.signatures[1]
+        );
+    }
+
+    #[test]
+    fn generic_function_display() {
+        let source = "fn identity['a](x: 'a) -> 'a => x";
+        let (db, file_id) = setup_db(source);
+        let target = find_def_by_name(&db, file_id, "identity").unwrap();
+        let info = def_display_info(&db, target).unwrap();
+
+        assert_eq!(info.signatures.len(), 2); // module_path + fn sig
+        assert_eq!(info.signatures[0], "test");
+        assert!(
+            info.signatures[1].contains("identity"),
+            "should contain function name: {}",
+            info.signatures[1]
+        );
+        assert!(
+            info.signatures[1].contains("'a"),
+            "should contain type var 'a: {}",
+            info.signatures[1]
+        );
+    }
+
+    #[test]
+    fn pub_function_display() {
+        let source = "pub fn greet(name: string) -> string => name";
+        let (db, file_id) = setup_db(source);
+        let target = find_def_by_name(&db, file_id, "greet").unwrap();
+        let info = def_display_info(&db, target).unwrap();
+
+        assert_eq!(info.signatures.len(), 2);
+        assert!(
+            info.signatures[1].starts_with("pub fn greet"),
+            "should start with 'pub fn greet': {}",
+            info.signatures[1]
+        );
+    }
+
+    #[test]
+    #[ignore = "Parser does not yet support typealias declarations"]
+    fn typealias_display() {
+        let source = "typealias Pair = (int, int)";
+        let (db, file_id) = setup_db(source);
+        let target = find_def_by_name(&db, file_id, "Pair").unwrap();
+        let info = def_display_info(&db, target).unwrap();
+
+        assert!(info.signatures.len() >= 1);
+        let sig = info.signatures.last().unwrap();
+        assert!(
+            sig.contains("typealias Pair"),
+            "should contain 'typealias Pair': {}",
+            sig
+        );
+    }
+
+    #[test]
+    fn impl_block_display() {
+        let source = r#"
+struct Point { x: int, y: int }
+
+impl object Point {
+    fn origin() -> Point => Point { x: 0, y: 0 }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        let parse_result = parse_file(&db, file_id);
+        // Find the impl def itself (not a method inside it)
+        let impl_def = parse_result
+            .defs
+            .iter()
+            .find(|h| matches!(h.kind, ray_shared::def::DefKind::Impl))
+            .expect("expected impl def");
+        let target = DefTarget::Workspace(impl_def.def_id);
+        let info = def_display_info(&db, target).unwrap();
+
+        assert!(info.signatures.len() >= 1);
+        assert!(
+            info.signatures[0].contains("impl object"),
+            "should contain 'impl object': {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[0].contains("Point"),
+            "should mention Point: {}",
+            info.signatures[0]
+        );
+    }
+
+    #[test]
+    fn doc_comment_display() {
+        let source = "/// Adds two numbers together.\nfn add(x: int, y: int) -> int => x";
+        let (db, file_id) = setup_db(source);
+        let target = find_def_by_name(&db, file_id, "add").unwrap();
+        let info = def_display_info(&db, target).unwrap();
+
+        assert!(info.doc.is_some(), "should have a doc comment, got None");
+        assert!(
+            info.doc.as_ref().unwrap().contains("Adds two numbers"),
+            "doc should contain 'Adds two numbers': {:?}",
+            info.doc
+        );
+    }
+
+    #[test]
+    fn generic_struct_field_display() {
+        let source = "struct Pair['a, 'b] { first: 'a, second: 'b }";
+        let (db, file_id) = setup_db(source);
+        let target = find_def_by_name(&db, file_id, "first").unwrap();
+        let info = def_display_info(&db, target).unwrap();
+
+        // Should show parent struct + field type
+        assert!(info.signatures.len() >= 2);
+        assert!(
+            info.signatures[0].contains("struct Pair"),
+            "first sig should be parent struct: {}",
+            info.signatures[0]
+        );
+        assert!(
+            info.signatures[1].contains("first"),
+            "second sig should contain field name: {}",
+            info.signatures[1]
+        );
+    }
+
+    // ========================================================================
+    // Library target tests
+    // ========================================================================
+
+    /// Helper to set up a database with library data and no workspace files.
+    fn setup_library_db(lib_path: &str, lib_data: LibraryData) -> Database {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        let mut libraries = LoadedLibraries::default();
+        libraries.add(ModulePath::from(lib_path), lib_data);
+        db.set_input::<LoadedLibraries>((), libraries);
+
+        db
+    }
+
+    #[test]
+    fn library_function_display() {
+        let mut lib = LibraryData::default();
+        lib.modules.push(ModulePath::from("core::io"));
+
+        let def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
+
+        lib.names.insert(path.clone(), def_id.clone());
+        lib.schemes.insert(
+            def_id.clone(),
+            TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::int()))),
+        );
+
+        let db = setup_library_db("core", lib);
+        let target = DefTarget::Library(def_id);
+        let info = def_display_info(&db, target).unwrap();
+
+        // Should show module path + function signature
+        assert!(info.signatures.len() >= 2);
+        assert_eq!(info.signatures[0], "core::io");
+        assert!(
+            info.signatures[1].contains("fn read"),
+            "should contain 'fn read': {}",
+            info.signatures[1]
+        );
+    }
+
+    #[test]
+    fn library_function_with_param_names_display() {
+        let mut lib = LibraryData::default();
+        lib.modules.push(ModulePath::from("core::io"));
+
+        let def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let path = ItemPath::new(ModulePath::from("core::io"), vec!["write".into()]);
+        let target = DefTarget::Library(def_id.clone());
+
+        let func_ty = Ty::Func(vec![Ty::string(), Ty::int()], Box::new(Ty::unit()));
+        let scheme = TyScheme::from_mono(func_ty.clone());
+
+        lib.names.insert(path.clone(), def_id.clone());
+        lib.schemes.insert(def_id.clone(), scheme.clone());
+        lib.func_defs.insert(
+            def_id.clone(),
+            FuncDef {
+                target: target.clone(),
+                path: path.clone(),
+                scheme,
+                param_names: vec!["data".into(), "flags".into()],
+                modifiers: vec![],
+            },
+        );
+
+        let db = setup_library_db("core", lib);
+        let info = def_display_info(&db, target).unwrap();
+
+        assert!(info.signatures.len() >= 2);
+        let fn_sig = &info.signatures[1];
+        assert!(
+            fn_sig.contains("data"),
+            "should contain param name 'data': {}",
+            fn_sig
+        );
+        assert!(
+            fn_sig.contains("flags"),
+            "should contain param name 'flags': {}",
+            fn_sig
+        );
+    }
+
+    #[test]
+    fn library_struct_display() {
+        let mut lib = LibraryData::default();
+        lib.modules.push(ModulePath::from("core::option"));
+
+        let def_id = LibraryDefId {
+            module: ModulePath::from("core::option"),
+            index: 0,
+        };
+        let path = ItemPath::new(ModulePath::from("core::option"), vec!["Option".into()]);
+
+        let ty_var = TyVar::from("'a");
+        lib.names.insert(path.clone(), def_id.clone());
+        lib.schemes.insert(
+            def_id.clone(),
+            TyScheme {
+                vars: vec![ty_var.clone()],
+                qualifiers: vec![],
+                ty: Ty::Const(path.clone()),
+            },
+        );
+        lib.structs.insert(
+            def_id.clone(),
+            StructDef {
+                target: DefTarget::Library(def_id.clone()),
+                path: path.clone(),
+                ty: TyScheme {
+                    vars: vec![ty_var],
+                    qualifiers: vec![],
+                    ty: Ty::Const(path.clone()),
+                },
+                fields: vec![],
+            },
+        );
+
+        let db = setup_library_db("core", lib);
+        let target = DefTarget::Library(def_id);
+        let info = def_display_info(&db, target).unwrap();
+
+        let struct_sig = info.signatures.last().unwrap();
+        assert!(
+            struct_sig.contains("struct Option"),
+            "should contain 'struct Option': {}",
+            struct_sig
+        );
+        assert!(
+            struct_sig.contains("'a"),
+            "should contain type var: {}",
+            struct_sig
+        );
+    }
+
+    #[test]
+    fn library_trait_display() {
+        let mut lib = LibraryData::default();
+        lib.modules.push(ModulePath::from("core::cmp"));
+
+        let def_id = LibraryDefId {
+            module: ModulePath::from("core::cmp"),
+            index: 0,
+        };
+        let path = ItemPath::new(ModulePath::from("core::cmp"), vec!["Ord".into()]);
+
+        let ty_var = TyVar::from("'a");
+        lib.names.insert(path.clone(), def_id.clone());
+        lib.schemes.insert(
+            def_id.clone(),
+            TyScheme {
+                vars: vec![ty_var.clone()],
+                qualifiers: vec![],
+                ty: Ty::Const(path.clone()),
+            },
+        );
+        lib.traits.insert(
+            def_id.clone(),
+            TraitDef {
+                target: DefTarget::Library(def_id.clone()),
+                path: path.clone(),
+                ty: Ty::Const(path.clone()),
+                type_params: vec![ty_var],
+                super_traits: vec![],
+                methods: vec![],
+                default_ty: None,
+            },
+        );
+
+        let db = setup_library_db("core", lib);
+        let target = DefTarget::Library(def_id);
+        let info = def_display_info(&db, target).unwrap();
+
+        let trait_sig = info.signatures.last().unwrap();
+        assert!(
+            trait_sig.contains("trait Ord"),
+            "should contain 'trait Ord': {}",
+            trait_sig
+        );
+        assert!(
+            trait_sig.contains("'a"),
+            "should contain type var: {}",
+            trait_sig
+        );
+    }
+
+    #[test]
+    fn library_doc_comment_display() {
+        let mut lib = LibraryData::default();
+        lib.modules.push(ModulePath::from("core::io"));
+
+        let def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
+
+        lib.names.insert(path.clone(), def_id.clone());
+        lib.schemes.insert(
+            def_id.clone(),
+            TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::int()))),
+        );
+
+        // Set up a doc comment via root_nodes + source_map
+        let node_id = NodeId {
+            owner: ray_shared::def::DefId {
+                file: FileId(999),
+                index: 0,
+            },
+            index: 0,
+        };
+        lib.root_nodes.insert(def_id.clone(), node_id);
+        lib.source_map
+            .set_doc_by_id(node_id, "Reads data from the stream.".into());
+
+        let db = setup_library_db("core", lib);
+        let target = DefTarget::Library(def_id);
+        let info = def_display_info(&db, target).unwrap();
+
+        assert!(info.doc.is_some(), "library def should have a doc comment");
+        assert!(
+            info.doc
+                .as_ref()
+                .unwrap()
+                .contains("Reads data from the stream"),
+            "doc should contain expected text: {:?}",
+            info.doc
         );
     }
 }

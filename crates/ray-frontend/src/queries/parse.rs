@@ -15,11 +15,15 @@ use ray_shared::{
     def::{DefHeader, DefId},
     file_id::FileId,
     pathlib::Path,
+    resolution::DefTarget,
     span::Span,
 };
 
 use crate::{
-    queries::workspace::{FileMetadata, FileSource},
+    queries::{
+        libraries::library_data,
+        workspace::{FileMetadata, FileSource},
+    },
     query::{Database, Query},
 };
 
@@ -96,20 +100,36 @@ pub fn has_decorator(db: &Database, def_id: DefId, name: &str) -> bool {
 }
 
 /// Returns the doc comment for a definition, if present.
+///
+/// Works for both workspace and library definitions:
+/// - Workspace: looks up via parse_file source map
+/// - Library: looks up via library_data source map + root_nodes
 #[query]
-pub fn doc_comment(db: &Database, def_id: DefId) -> Option<String> {
-    let parse_result = parse_file(db, def_id.file);
-    let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
-
-    parse_result
-        .source_map
-        .doc_by_id(def_header.root_node)
-        .cloned()
+pub fn doc_comment(db: &Database, target: DefTarget) -> Option<String> {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let parse_result = parse_file(db, def_id.file);
+            let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
+            parse_result
+                .source_map
+                .doc_by_id(def_header.root_node)
+                .cloned()
+        }
+        DefTarget::Library(lib_def_id) => {
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+            let root_node = lib_data.root_nodes.get(&lib_def_id)?;
+            lib_data.source_map.doc_by_id(*root_node).cloned()
+        }
+        DefTarget::Primitive(_) => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use ray_shared::pathlib::{FilePath, ModulePath, Path};
+    use ray_shared::{
+        pathlib::{FilePath, ModulePath, Path},
+        resolution::DefTarget,
+    };
 
     use crate::{
         queries::{
@@ -327,7 +347,7 @@ mod tests {
             .find(|d| d.name == "documented")
             .expect("expected documented function");
 
-        let doc = doc_comment(&db, fn_def.def_id);
+        let doc = doc_comment(&db, DefTarget::Workspace(fn_def.def_id));
 
         assert!(doc.is_some());
         assert!(doc.unwrap().contains("This is a documented function"));
@@ -355,7 +375,7 @@ mod tests {
             .find(|d| d.name == "undocumented")
             .expect("expected undocumented function");
 
-        let doc = doc_comment(&db, fn_def.def_id);
+        let doc = doc_comment(&db, DefTarget::Workspace(fn_def.def_id));
 
         assert!(doc.is_none());
     }

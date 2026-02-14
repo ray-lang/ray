@@ -128,6 +128,10 @@ impl SourceMap {
         self.docs.insert(node.id, doc);
     }
 
+    pub fn set_doc_by_id(&mut self, id: NodeId, doc: String) {
+        self.docs.insert(id, doc);
+    }
+
     pub fn doc<T>(&self, node: &Node<T>) -> Option<&String> {
         self.docs.get(&node.id)
     }

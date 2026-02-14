@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
-        defs::{def_header, def_path},
+        defs::{def_header, def_path, find_def_ast},
         parse::parse_file,
         resolve::name_resolutions,
         transform::file_ast,
@@ -754,54 +754,6 @@ fn extract_type_params_from_parsed_tys(
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Find a declaration AST node by its root NodeId.
-pub(crate) fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
-    for decl in decls {
-        if decl.id == root_node {
-            return Some(decl);
-        }
-
-        // Check nested declarations (e.g., methods in impl blocks, trait methods)
-        if let Some(nested) = find_nested_def(decl, root_node) {
-            return Some(nested);
-        }
-    }
-    None
-}
-
-/// Find a nested declaration within a parent declaration.
-pub(crate) fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>> {
-    match &parent.value {
-        Decl::Trait(tr) => {
-            for field in &tr.fields {
-                if field.id == root_node {
-                    return Some(field);
-                }
-            }
-        }
-        Decl::Impl(im) => {
-            // Check extern declarations
-            if let Some(externs) = &im.externs {
-                for ext in externs {
-                    if ext.id == root_node {
-                        return Some(ext);
-                    }
-                }
-            }
-            // Check function declarations
-            if let Some(funcs) = &im.funcs {
-                for func in funcs {
-                    if func.id == root_node {
-                        return Some(func);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    None
 }
 
 #[cfg(test)]

@@ -27,8 +27,9 @@ use crate::{
     queries::{
         exports::{ExportedItem, module_def_index},
         libraries::{LoadedLibraries, library_data},
-        parse::parse_file,
+        parse::{doc_comment, parse_file},
         resolve::{file_scope, name_resolutions},
+        typecheck::def_scheme,
         types::{apply_type_resolutions, apply_type_resolutions_to_scheme, mapped_def_types},
         workspace::WorkspaceSnapshot,
     },
@@ -238,6 +239,24 @@ pub struct TypeAliasDef {
     pub aliased_type: Ty,
 }
 
+/// A function definition for the query layer.
+///
+/// Mirrors `StructDef`, `TraitDef`, `ImplDef` — a self-contained definition
+/// with all the information needed for display and IDE features.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FuncDef {
+    /// The target identifying this function definition.
+    pub target: DefTarget,
+    /// The fully qualified path of the function.
+    pub path: ItemPath,
+    /// The type scheme (param types, return type, type vars, qualifiers).
+    pub scheme: TyScheme,
+    /// Parameter names in order (e.g., `["self", "other"]`).
+    pub param_names: Vec<String>,
+    /// Modifiers on the function (e.g., `[Pub, Static]`).
+    pub modifiers: Vec<Modifier>,
+}
+
 /// Source location for a definition, supporting both workspace and library definitions.
 ///
 /// Used for go-to-definition and hover functionality.
@@ -264,6 +283,8 @@ pub struct DefinitionRecord {
     pub doc: Option<String>,
     /// The kind of definition (function, struct, trait, etc.).
     pub kind: DefKind,
+    /// Parent definition (e.g., impl/trait for methods, struct for fields).
+    pub parent: Option<DefTarget>,
 }
 
 /// Look up a top-level definition by its full path.
@@ -490,25 +511,29 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
                 span: def_header.span,
             });
 
-            // doc_comment query not yet implemented
-            let doc = None;
+            let doc = doc_comment(db, DefTarget::Workspace(def_id));
+            let parent = def_header.parent.map(DefTarget::Workspace);
 
             Some(DefinitionRecord {
                 path,
                 source_location,
                 doc,
                 kind: def_header.kind,
+                parent,
             })
         }
-        DefTarget::Library(lib_def_id) => {
-            let path = def_path(db, DefTarget::Library(lib_def_id.clone()))?;
+        DefTarget::Library(ref lib_def_id) => {
+            let path = def_path(db, target.clone())?;
             let lib_data = library_data(db, lib_def_id.module.clone())?;
 
-            // Library definitions don't have source locations in current implementation
             let source_location = None;
 
-            // Library definitions don't have doc comments in current implementation
-            let doc = None;
+            let doc = doc_comment(db, target.clone());
+
+            let parent = lib_data
+                .parent_map
+                .get(lib_def_id)
+                .map(|parent_id| DefTarget::Library(parent_id.clone()));
 
             // Infer kind from which collection contains this definition
             let kind = if lib_data.structs.contains_key(&lib_def_id) {
@@ -518,7 +543,6 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
             } else if lib_data.impls.contains_key(&lib_def_id) {
                 DefKind::Impl
             } else {
-                // Default to function for definitions in schemes but not in other collections
                 DefKind::Function {
                     signature: SignatureStatus::FullyAnnotated,
                 }
@@ -529,6 +553,7 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
                 source_location,
                 doc,
                 kind,
+                parent,
             })
         }
         DefTarget::Primitive(path) => {
@@ -538,6 +563,7 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
                 source_location: None,
                 doc: None,
                 kind: DefKind::Primitive,
+                parent: None,
             })
         }
     }
@@ -1242,6 +1268,75 @@ fn extract_library_impl(db: &Database, lib_def_id: &LibraryDefId) -> Option<Impl
 }
 
 // ============================================================================
+// func_def query
+// ============================================================================
+
+/// Look up a function definition by its DefTarget.
+///
+/// For workspace definitions, extracts the function from the parsed AST.
+/// For library definitions, looks up in the LibraryData.
+///
+/// Returns `None` if the target doesn't correspond to a function or method.
+#[query]
+pub fn func_def(db: &Database, target: DefTarget) -> Option<FuncDef> {
+    match target {
+        DefTarget::Workspace(def_id) => extract_workspace_func(db, def_id),
+        DefTarget::Library(lib_def_id) => extract_library_func(db, &lib_def_id),
+        DefTarget::Primitive(_) => None,
+    }
+}
+
+/// Extract a function definition from the workspace AST.
+fn extract_workspace_func(db: &Database, def_id: DefId) -> Option<FuncDef> {
+    let parse_result = parse_file(db, def_id.file);
+
+    let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
+
+    if !matches!(def_header.kind, DefKind::Function { .. } | DefKind::Method) {
+        return None;
+    }
+
+    let target = DefTarget::Workspace(def_id);
+    let path = def_path(db, target.clone())?;
+    let scheme = def_scheme(db, target)?;
+
+    let ast_node = find_def_ast(&parse_result.ast.decls, def_header.root_node);
+    let sig = ast_node.and_then(|node| match &node.value {
+        Decl::Func(func) => Some(&func.sig),
+        Decl::FnSig(sig) => Some(sig),
+        _ => None,
+    });
+
+    let (param_names, modifiers) = match sig {
+        Some(sig) => {
+            let names = sig
+                .params
+                .iter()
+                .map(|p| p.value.name().to_short_name())
+                .collect();
+            let mods = sig.modifiers.clone();
+            (names, mods)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
+    Some(FuncDef {
+        target: DefTarget::Workspace(def_id),
+        path,
+        scheme,
+        param_names,
+        modifiers,
+    })
+}
+
+/// Extract a function definition from library data.
+fn extract_library_func(db: &Database, lib_def_id: &LibraryDefId) -> Option<FuncDef> {
+    let lib_data = library_data(db, lib_def_id.module.clone())?;
+
+    lib_data.func_defs.get(lib_def_id).cloned()
+}
+
+// ============================================================================
 // type_alias query
 // ============================================================================
 
@@ -1717,6 +1812,55 @@ fn library_method_receiver_mode(db: &Database, lib_def_id: &LibraryDefId) -> Rec
     }
 
     ReceiverMode::None
+}
+
+/// Find a declaration AST node by its root NodeId.
+///
+/// Searches top-level declarations and their nested children
+/// (e.g., methods in impl/trait blocks).
+pub(crate) fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
+    for decl in decls {
+        if decl.id == root_node {
+            return Some(decl);
+        }
+
+        // Check nested declarations (e.g., methods in impl blocks, trait methods)
+        if let Some(nested) = find_nested_def(decl, root_node) {
+            return Some(nested);
+        }
+    }
+    None
+}
+
+/// Find a nested declaration within a parent declaration.
+pub(crate) fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>> {
+    match &parent.value {
+        Decl::Trait(tr) => {
+            for field in &tr.fields {
+                if field.id == root_node {
+                    return Some(field);
+                }
+            }
+        }
+        Decl::Impl(im) => {
+            if let Some(externs) = &im.externs {
+                for ext in externs {
+                    if ext.id == root_node {
+                        return Some(ext);
+                    }
+                }
+            }
+            if let Some(funcs) = &im.funcs {
+                for func in funcs {
+                    if func.id == root_node {
+                        return Some(func);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 #[cfg(test)]

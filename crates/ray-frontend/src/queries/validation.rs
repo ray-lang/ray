@@ -30,7 +30,7 @@ use ray_shared::{
 
 use crate::{
     queries::{
-        defs::{def_for_path, impl_def, trait_def},
+        defs::{def_for_path, find_def_ast, impl_def, trait_def},
         resolve::name_resolutions,
         transform::file_ast,
         workspace::WorkspaceSnapshot,
@@ -649,46 +649,6 @@ fn validate_trait_method_signature(
 
     // Validate qualifiers (where clauses)
     validate_qualifiers(db, sig, file_id, filepath, srcmap, errors);
-}
-
-/// Find a declaration AST node by its root NodeId.
-fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
-    for decl in decls {
-        if decl.id == root_node {
-            return Some(decl);
-        }
-
-        // Check nested declarations (e.g., methods in impl blocks, trait methods)
-        if let Some(nested) = find_nested_def(decl, root_node) {
-            return Some(nested);
-        }
-    }
-    None
-}
-
-/// Find a nested declaration within a parent declaration.
-fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>> {
-    match &parent.value {
-        Decl::Trait(tr) => {
-            for field in &tr.fields {
-                if field.id == root_node {
-                    return Some(field);
-                }
-            }
-        }
-        Decl::Impl(im) => {
-            // Check extern declarations
-            if let Some(externs) = &im.externs {
-                for ext in externs {
-                    if ext.id == root_node {
-                        return Some(ext);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    None
 }
 
 #[cfg(test)]

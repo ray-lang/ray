@@ -10,7 +10,7 @@ use ray_query_macros::query;
 use ray_shared::{def::DefId, node_id::NodeId, resolution::Resolution};
 
 use crate::{
-    queries::{resolve::name_resolutions, transform::file_ast},
+    queries::{defs::find_def_ast, resolve::name_resolutions, transform::file_ast},
     query::{Database, Query},
 };
 
@@ -70,43 +70,6 @@ pub fn closure_info(db: &Database, closure_node: NodeId) -> Option<ClosureInfo> 
     closures
         .into_iter()
         .find(|c| c.closure_expr == closure_node)
-}
-
-/// Find a declaration AST node by its root NodeId.
-///
-/// Searches through declarations to find the one matching the given NodeId.
-fn find_def_ast(decls: &[Node<Decl>], root_node: NodeId) -> Option<&Node<Decl>> {
-    for decl in decls {
-        // Check if this decl's node ID matches
-        if decl.id == root_node {
-            return Some(decl);
-        }
-
-        // Also check nested declarations (e.g., methods in impl blocks, trait methods)
-        if let Some(nested) = find_nested_def(decl, root_node) {
-            return Some(nested);
-        }
-    }
-
-    None
-}
-
-/// Find a nested declaration within a parent declaration.
-///
-/// This handles cases like methods inside impl blocks or trait definitions.
-fn find_nested_def(parent: &Node<Decl>, root_node: NodeId) -> Option<&Node<Decl>> {
-    match &parent.value {
-        Decl::Trait(tr) => {
-            // Check methods in trait definition
-            for field in &tr.fields {
-                if field.id == root_node {
-                    return Some(field);
-                }
-            }
-        }
-        _ => {}
-    }
-    None
 }
 
 #[cfg(test)]
