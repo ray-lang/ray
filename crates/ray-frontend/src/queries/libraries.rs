@@ -110,6 +110,12 @@ pub struct LibraryData {
     /// Function/method definitions with param names and modifiers.
     #[serde(default)]
     pub func_defs: HashMap<LibraryDefId, FuncDef>,
+
+    /// Reverse path index: maps LibraryDefId -> ItemPath for ALL defs
+    /// (including methods, fields, impls). Unlike `names`, this is many-to-one
+    /// safe since keys are unique LibraryDefIds.
+    #[serde(default)]
+    pub paths: HashMap<LibraryDefId, ItemPath>,
 }
 
 impl LibraryData {
@@ -121,6 +127,18 @@ impl LibraryData {
     /// Check if a library contains the given item path.
     pub fn contains_item(&self, path: &ItemPath) -> bool {
         self.names.contains_key(path)
+    }
+
+    /// Register a named definition in both the forward (`names`) and reverse (`paths`) indexes.
+    pub fn register_name(&mut self, path: ItemPath, def_id: LibraryDefId) {
+        self.paths.insert(def_id.clone(), path.clone());
+        self.names.insert(path, def_id);
+    }
+
+    /// Register a path for a definition that isn't a named export (e.g., methods, impls).
+    /// Only adds to the reverse (`paths`) index.
+    pub fn register_path(&mut self, def_id: LibraryDefId, path: ItemPath) {
+        self.paths.insert(def_id, path);
     }
 }
 
@@ -637,6 +655,7 @@ pub fn build_library_data(
 
     // Phase 2: Populate library data using queries
     let mut names = HashMap::new();
+    let mut paths = HashMap::new();
     let mut schemes = HashMap::new();
     let mut structs_map = HashMap::new();
     let mut traits_map = HashMap::new();
@@ -688,6 +707,12 @@ pub fn build_library_data(
                 }
             }
 
+            // Register path for all defs; also add to names for top-level named defs
+            let item_path = def_path(db, DefTarget::Workspace(def_header.def_id));
+            if let Some(ref path) = item_path {
+                paths.insert(lib_def_id.clone(), path.clone());
+            }
+
             match def_header.kind {
                 DefKind::Function { .. }
                 | DefKind::TypeAlias
@@ -695,13 +720,13 @@ pub fn build_library_data(
                 | DefKind::Binding { .. } => {
                     // Named export (only top-level, not methods)
                     if def_header.parent.is_none() {
-                        if let Some(path) = def_path(db, target) {
+                        if let Some(path) = item_path {
                             names.insert(path, lib_def_id);
                         }
                     }
                 }
                 DefKind::Struct => {
-                    if let Some(path) = def_path(db, target.clone()) {
+                    if let Some(path) = item_path {
                         names.insert(path, lib_def_id.clone());
                     }
                     if let Some(mut sdef) = struct_def(db, target) {
@@ -710,7 +735,7 @@ pub fn build_library_data(
                     }
                 }
                 DefKind::Trait => {
-                    if let Some(path) = def_path(db, target.clone()) {
+                    if let Some(path) = item_path {
                         names.insert(path, lib_def_id.clone());
                     }
                     if let Some(mut tdef) = trait_def(db, target) {
@@ -755,6 +780,7 @@ pub fn build_library_data(
 
     LibraryData {
         names,
+        paths,
         schemes,
         structs: structs_map,
         traits: traits_map,

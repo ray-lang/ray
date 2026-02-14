@@ -862,7 +862,7 @@ mod tests {
         };
 
         // Add the name -> def_id mapping
-        core_lib.names.insert(read_path, read_def_id.clone());
+        core_lib.register_name(read_path, read_def_id.clone());
 
         // Add a scheme for core::io::read
         core_lib.schemes.insert(
@@ -938,8 +938,8 @@ mod tests {
         };
 
         // Add name -> def_id mappings
-        core_lib.names.insert(read_path, read_def_id.clone());
-        core_lib.names.insert(write_path, write_def_id.clone());
+        core_lib.register_name(read_path, read_def_id.clone());
+        core_lib.register_name(write_path, write_def_id.clone());
 
         // Add schemes
         core_lib.schemes.insert(
@@ -1038,7 +1038,7 @@ mod tests {
             index: 0,
         };
         let list_path = ItemPath::new(ModulePath::from("core::collections"), vec!["list".into()]);
-        core_lib.names.insert(list_path, list_def_id.clone());
+        core_lib.register_name(list_path, list_def_id.clone());
         core_lib.schemes.insert(
             list_def_id,
             TyScheme {
@@ -1155,7 +1155,7 @@ mod tests {
             index: 0,
         };
         let list_path = ItemPath::new(ModulePath::from("core::collections"), vec!["list".into()]);
-        core_lib.names.insert(list_path, list_def_id.clone());
+        core_lib.register_name(list_path, list_def_id.clone());
         core_lib.schemes.insert(
             list_def_id,
             TyScheme {
@@ -1214,7 +1214,7 @@ mod tests {
         );
 
         // Add the name -> def_id mapping
-        core_lib.names.insert(hashmap_path, hashmap_def_id.clone());
+        core_lib.register_name(hashmap_path, hashmap_def_id.clone());
 
         // Add a scheme for HashMap
         core_lib.schemes.insert(
@@ -1285,7 +1285,7 @@ mod tests {
         );
 
         // Add the name -> def_id mapping
-        std_lib.names.insert(hashmap_path, hashmap_def_id.clone());
+        std_lib.register_name(hashmap_path, hashmap_def_id.clone());
 
         // Add a scheme for HashMap
         std_lib.schemes.insert(
@@ -1356,7 +1356,7 @@ mod tests {
         );
 
         // Add the name -> def_id mapping
-        std_lib.names.insert(hashmap_path, hashmap_def_id.clone());
+        std_lib.register_name(hashmap_path, hashmap_def_id.clone());
 
         // Add a scheme for HashMap
         std_lib.schemes.insert(

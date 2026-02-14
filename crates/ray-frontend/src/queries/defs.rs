@@ -434,15 +434,8 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
             Some(ItemPath::new(module_path, vec![def_header.name.clone()]))
         }
         DefTarget::Library(lib_def_id) => {
-            // For library definitions, look up the path from library data
             let lib_data = library_data(db, lib_def_id.module.clone())?;
-            // Find the ItemPath that maps to this LibraryDefId
-            for (path, id) in &lib_data.names {
-                if *id == lib_def_id {
-                    return Some(path.clone());
-                }
-            }
-            None
+            lib_data.paths.get(&lib_def_id).cloned()
         }
         DefTarget::Primitive(path) => Some(path),
     }
@@ -451,7 +444,7 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
 /// Get the simple name of a definition.
 ///
 /// For workspace definitions, returns the name from the DefHeader.
-/// For library definitions, looks up the name from the ItemPath in the names index.
+/// For library definitions, looks up the name from the paths index.
 ///
 /// Returns `None` if the definition cannot be found.
 ///
@@ -468,15 +461,11 @@ pub fn def_name(db: &Database, target: DefTarget) -> Option<String> {
             Some(def_header.name.clone())
         }
         DefTarget::Library(lib_def_id) => {
-            // For library definitions, get the name from the ItemPath
             let lib_data = library_data(db, lib_def_id.module.clone())?;
-            // Find the ItemPath that maps to this LibraryDefId
-            for (path, id) in &lib_data.names {
-                if *id == lib_def_id {
-                    return path.item_name().map(|s| s.to_string());
-                }
-            }
-            None
+            lib_data
+                .paths
+                .get(&lib_def_id)
+                .and_then(|p| p.item_name().map(|s| s.to_string()))
         }
         DefTarget::Primitive(path) => path.item_name().map(|s| s.to_string()),
     }
@@ -2020,9 +2009,7 @@ mod tests {
         };
 
         // Add to the names index
-        core_lib
-            .names
-            .insert(read_path.clone(), read_def_id.clone());
+        core_lib.register_name(read_path.clone(), read_def_id.clone());
 
         // Add the scheme
         core_lib.schemes.insert(
@@ -2349,9 +2336,7 @@ impl object List {
         };
 
         // Add to names index
-        core_lib
-            .names
-            .insert(option_path.clone(), option_def_id.clone());
+        core_lib.register_name(option_path.clone(), option_def_id.clone());
 
         // Add struct definition using the spec types
         core_lib.structs.insert(
@@ -2536,7 +2521,7 @@ trait Add['a, 'b, 'c] {
         };
 
         // Add to names index
-        core_lib.names.insert(ord_path.clone(), ord_def_id.clone());
+        core_lib.register_name(ord_path.clone(), ord_def_id.clone());
 
         // Add trait definition using the spec types
         core_lib.traits.insert(
@@ -3872,9 +3857,7 @@ impl Stringify[Foo] {
         };
 
         // Add to names index
-        core_lib
-            .names
-            .insert(display_path.clone(), display_def_id.clone());
+        core_lib.register_name(display_path.clone(), display_def_id.clone());
 
         // Add trait definition
         core_lib.traits.insert(
@@ -3976,9 +3959,7 @@ impl Display[Point] {
         };
 
         // Add to names index
-        core_lib
-            .names
-            .insert(option_path.clone(), option_def_id.clone());
+        core_lib.register_name(option_path.clone(), option_def_id.clone());
 
         // Add struct definition
         core_lib.structs.insert(
@@ -4707,7 +4688,7 @@ impl object List {
         };
         let read_path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
 
-        core_lib.names.insert(read_path, read_def_id.clone());
+        core_lib.register_name(read_path, read_def_id.clone());
         core_lib
             .schemes
             .insert(read_def_id.clone(), TyScheme::from_mono(Ty::unit()));
@@ -4859,9 +4840,7 @@ trait Eq['a] {
         };
         let option_path = ItemPath::new(ModulePath::from("core::option"), vec!["Option".into()]);
 
-        core_lib
-            .names
-            .insert(option_path.clone(), option_def_id.clone());
+        core_lib.register_name(option_path.clone(), option_def_id.clone());
         core_lib.structs.insert(
             option_def_id.clone(),
             StructDef {

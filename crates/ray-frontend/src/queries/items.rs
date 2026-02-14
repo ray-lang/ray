@@ -355,9 +355,7 @@ impl Zeroed[Point] {
         };
         let list_path = ItemPath::new(ModulePath::from("core::collections"), vec!["List".into()]);
 
-        core_lib
-            .names
-            .insert(list_path.clone(), list_def_id.clone());
+        core_lib.register_name(list_path.clone(), list_def_id.clone());
         core_lib.structs.insert(
             list_def_id.clone(),
             StructDef {
@@ -463,9 +461,7 @@ impl object int {
         };
         let option_path = ItemPath::new(ModulePath::from("core::option"), vec!["Option".into()]);
 
-        core_lib
-            .names
-            .insert(option_path.clone(), option_def_id.clone());
+        core_lib.register_name(option_path.clone(), option_def_id.clone());
         core_lib.structs.insert(
             option_def_id.clone(),
             StructDef {

@@ -1020,7 +1020,7 @@ impl object Point {
         };
         let path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
 
-        lib.names.insert(path.clone(), def_id.clone());
+        lib.register_name(path.clone(), def_id.clone());
         lib.schemes.insert(
             def_id.clone(),
             TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::int()))),
@@ -1055,7 +1055,7 @@ impl object Point {
         let func_ty = Ty::Func(vec![Ty::string(), Ty::int()], Box::new(Ty::unit()));
         let scheme = TyScheme::from_mono(func_ty.clone());
 
-        lib.names.insert(path.clone(), def_id.clone());
+        lib.register_name(path.clone(), def_id.clone());
         lib.schemes.insert(def_id.clone(), scheme.clone());
         lib.func_defs.insert(
             def_id.clone(),
@@ -1097,7 +1097,7 @@ impl object Point {
         let path = ItemPath::new(ModulePath::from("core::option"), vec!["Option".into()]);
 
         let ty_var = TyVar::from("'a");
-        lib.names.insert(path.clone(), def_id.clone());
+        lib.register_name(path.clone(), def_id.clone());
         lib.schemes.insert(
             def_id.clone(),
             TyScheme {
@@ -1149,7 +1149,7 @@ impl object Point {
         let path = ItemPath::new(ModulePath::from("core::cmp"), vec!["Ord".into()]);
 
         let ty_var = TyVar::from("'a");
-        lib.names.insert(path.clone(), def_id.clone());
+        lib.register_name(path.clone(), def_id.clone());
         lib.schemes.insert(
             def_id.clone(),
             TyScheme {
@@ -1199,7 +1199,7 @@ impl object Point {
         };
         let path = ItemPath::new(ModulePath::from("core::io"), vec!["read".into()]);
 
-        lib.names.insert(path.clone(), def_id.clone());
+        lib.register_name(path.clone(), def_id.clone());
         lib.schemes.insert(
             def_id.clone(),
             TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::int()))),

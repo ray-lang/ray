@@ -83,15 +83,14 @@ pub struct Monomorphizer<'p> {
 impl<'p> Monomorphizer<'p> {
     pub fn new(program: &'p mut lir::Program) -> Monomorphizer<'p> {
         // TODO: don't clone these into the Monomorphizer (reference them outside)
-        let poly_fn_map: HashMap<Path, Vec<lir::Func>> = program
-            .poly_fn_map
-            .iter()
-            .map(|(name, indices)| {
-                let funcs: Vec<lir::Func> =
-                    indices.iter().map(|&i| program.funcs[i].clone()).collect();
-                (name.clone(), funcs)
-            })
-            .collect();
+        let mut poly_fn_map: HashMap<Path, Vec<lir::Func>> = HashMap::new();
+        for (name, indices) in program.poly_fn_map.iter() {
+            let funcs: Vec<lir::Func> = indices.iter().map(|&i| program.funcs[i].clone()).collect();
+            poly_fn_map
+                .entry(name.with_names_only())
+                .or_default()
+                .extend(funcs);
+        }
 
         let name_set = program.funcs.iter().map(|f| f.name.clone()).collect();
         log::debug!("[monomorphize] name set: {:#?}", name_set);

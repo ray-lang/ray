@@ -57,12 +57,10 @@ pub fn call_resolution(db: &Database, node_id: NodeId) -> Option<CallResolution>
             let container_ty = ty_of(db, *container)?;
             let index_ty = ty_of(db, *index)?;
             let rhs_ty = ty_of(db, *rhs)?;
-            let result_ty = ty_of(db, node_id)?;
+            // Index::set returns nilable[elem], not the assignment expression type (unit)
+            let ret_ty = Ty::nilable(rhs_ty.clone());
             let recv_ty = Ty::ref_of(container_ty);
-            TyScheme::from_mono(Ty::Func(
-                vec![recv_ty, index_ty, rhs_ty],
-                Box::new(result_ty),
-            ))
+            TyScheme::from_mono(Ty::Func(vec![recv_ty, index_ty, rhs_ty], Box::new(ret_ty)))
         }
         _ => return None,
     };
