@@ -65,6 +65,29 @@ runs:
         ${{ inputs.packages }}
         RUN_PACKAGES
 
+    - name: Debug LLVM setup
+      shell: bash
+      run: |
+        echo "=== PATH ==="
+        echo "$PATH" | tr ':' '\n' | grep -i llvm || echo "(no llvm in PATH)"
+        echo "=== GITHUB_PATH contents ==="
+        cat "$GITHUB_PATH" || true
+        echo "=== GITHUB_ENV contents ==="
+        cat "$GITHUB_ENV" || true
+        echo "=== which llvm-config ==="
+        which llvm-config || echo "llvm-config not on PATH"
+        which llvm-config-17 || echo "llvm-config-17 not on PATH"
+        echo "=== LLVM_SYS_CONFIG_PATH ==="
+        echo "${LLVM_SYS_CONFIG_PATH:-not set}"
+        echo "=== brew check ==="
+        if command -v brew &>/dev/null; then
+          LLVM_PREFIX=$(brew --prefix llvm@17 2>/dev/null || echo "brew --prefix failed")
+          echo "brew --prefix llvm@17 = $LLVM_PREFIX"
+          ls "$LLVM_PREFIX/bin/llvm-config"* 2>/dev/null || echo "no llvm-config at $LLVM_PREFIX/bin/"
+        else
+          echo "brew not available"
+        fi
+
     - name: Cargo build (ray)
       shell: bash
       run: |
