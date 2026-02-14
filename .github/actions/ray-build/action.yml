@@ -61,9 +61,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        bash -eo pipefail <<'RUN_PACKAGES'
         ${{ inputs.packages }}
-        RUN_PACKAGES
 
     - name: Debug LLVM setup
       shell: bash
