@@ -679,6 +679,12 @@ impl<'p> Monomorphizer<'p> {
                 mono_fn.locals
             );
             funcs.push(mono_fn);
+            // Register the mono name immediately so that subsequent calls to the
+            // same monomorphized function reuse it instead of creating duplicates.
+            // Without this, calls where poly_name == mono_name (e.g. dict literal
+            // inserts whose callee type is already concrete) skip the name_set
+            // update in `monomorphize_func` and produce redundant copies.
+            self.name_set.insert(mono_name.clone());
             (poly_name, mono_name.clone())
         };
 

@@ -317,23 +317,21 @@ pub fn resolve_names_in_file(
                         );
                     }
                     Expr::Assign(assign) => {
-                        // Compound assignments (+=, -=, etc.) are mutations of existing
-                        // bindings, not new binding declarations. Resolve the LHS names
-                        // to their existing bindings here. The later WalkItem::Pattern
-                        // handler will skip these because bind_local is a no-op for
-                        // nodes that already have a resolution.
-                        if matches!(assign.op, InfixOp::AssignOp(_)) {
-                            for node in assign.lhs.paths() {
-                                let PathBinding {
-                                    path,
-                                    is_bindable: _,
-                                } = node.value;
-                                let Some(name) = path.name() else {
-                                    continue;
-                                };
-                                if let Some(local_id) = ctx.lookup_local(&name) {
-                                    ctx.resolutions.insert(node.id, Resolution::Local(local_id));
-                                }
+                        // Resolve assignment LHS names to existing bindings when
+                        // they are already in scope. This ensures `ptr = ptr - 1`
+                        // reassigns the existing `ptr` rather than creating a new
+                        // binding. The later WalkItem::Pattern handler skips nodes
+                        // that already have a resolution (bind_local is a no-op).
+                        for node in assign.lhs.paths() {
+                            let PathBinding {
+                                path,
+                                is_bindable: _,
+                            } = node.value;
+                            let Some(name) = path.name() else {
+                                continue;
+                            };
+                            if let Some(local_id) = ctx.lookup_local(&name) {
+                                ctx.resolutions.insert(node.id, Resolution::Local(local_id));
                             }
                         }
                     }
