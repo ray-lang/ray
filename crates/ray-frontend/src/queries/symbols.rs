@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use ray_core::ast::{CurlyElement, Decl, Expr, PathBinding, WalkItem, walk_file};
+use ray_core::ast::{CurlyElement, Decl, Expr, FuncSig, PathBinding, WalkItem, walk_file};
 use ray_query_macros::query;
 use ray_shared::{
     def::DefId,
@@ -306,7 +306,7 @@ pub fn definition_identities(db: &Database, file_id: FileId) -> HashMap<NodeId, 
 }
 
 fn record_fn_params(
-    sig: &ray_core::ast::FuncSig,
+    sig: &FuncSig,
     resolutions: &HashMap<NodeId, Resolution>,
     identities: &mut HashMap<NodeId, SymbolIdentity>,
 ) {
@@ -444,6 +444,7 @@ mod tests {
 
     use ray_shared::{
         def::DefKind,
+        file_id::FileId,
         pathlib::{FilePath, ModulePath},
         resolution::{DefTarget, Resolution},
         symbol::{SymbolIdentity, SymbolRole},
@@ -455,14 +456,14 @@ mod tests {
             libraries::LoadedLibraries,
             parse::parse_file,
             resolve::name_resolutions,
-            symbols::{definition_identities, symbol_targets},
+            symbols::{definition_identities, dot_field_index, symbol_targets},
             workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
     use ray_core::ast::{CurlyElement, Decl, Expr, WalkItem, walk_file};
 
-    fn setup_test_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_test_db(source: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
         let module_path = ModulePath::from("test");
@@ -478,7 +479,7 @@ mod tests {
         (db, file_id)
     }
 
-    fn setup_test_db_with_libs(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_test_db_with_libs(source: &str) -> (Database, FileId) {
         let (db, file_id) = setup_test_db(source);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         (db, file_id)
@@ -1139,7 +1140,7 @@ fn test() -> int {
         let method_name_id = method_name_id.expect("expected method call name node");
 
         // The dot_field_index should NOT contain this node (it's a method call)
-        let dot_fields = super::dot_field_index(&db, file_id);
+        let dot_fields = dot_field_index(&db, file_id);
         assert!(
             !dot_fields.contains_key(&method_name_id),
             "method calls should not be in dot_field_index"

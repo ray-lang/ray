@@ -16,24 +16,27 @@ use tower_lsp::{
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
         GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams,
         InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind, MessageType,
-        Position, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-        SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
+        SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+        SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+        TextDocumentSyncCapability, TextDocumentSyncOptions, Url,
     },
 };
 
 use ray_frontend::queries::{
-    bindings::local_binding_names,
+    bindings::{local_binding_definitions, local_binding_names},
+    defs::{SourceLocation, definition_record},
     display::{def_display_info, display_ty},
     locations::{self, find_at_position},
     resolve::name_resolutions,
     symbols::symbol_targets,
     typecheck::ty_of,
+    workspace::FileMetadata,
 };
 use ray_shared::{
     file_id::FileId,
     pathlib::{FilePath, RayPaths},
     resolution::{DefTarget, Resolution},
+    span::Span,
     symbol::SymbolIdentity,
 };
 use serde_json::Value;
@@ -44,7 +47,6 @@ use crate::{
         filepath_to_uri, is_core_library_uri, parse_toolchain_path, span_to_range, uri_to_filepath,
     },
     semantic_tokens::{self, pretty_dump},
-    symbols::{ResolvedSymbol, resolve_symbol_at_position},
     workspace::{LspWorkspace, WorkspaceManager},
 };
 
@@ -399,63 +401,76 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let Some((_snapshot, resolved)) = self.lookup_symbol_targets_at(&uri, position).await
-        else {
-            return Ok(None);
-        };
+        let locations = self
+            .with_workspace_file_map(&uri, |ws: &LspWorkspace, file_id| {
+                let db = &*ws.db;
 
-        self.log(format!(
-            "[server] goto_definition: found source for node_id={} source_span={:?}",
-            resolved.node_id, resolved.source.span
-        ))
-        .await;
+                let node_id = find_at_position(
+                    db,
+                    file_id,
+                    position.line as usize,
+                    position.character as usize,
+                )?;
 
-        let symbol_targets = &resolved.symbol_targets;
-        if symbol_targets.is_empty() {
-            self.log(format!(
-                "[server] goto_definition: no symbol target for node_id={}",
-                resolved.node_id
-            ))
-            .await;
-            return Ok(None);
-        };
+                let targets = symbol_targets(db, node_id);
+                if targets.is_empty() {
+                    return None;
+                }
 
-        let mut seen_locations = HashSet::new();
-        let mut locations = Vec::new();
+                let resolve_location = |identity: &SymbolIdentity| -> Option<(Url, Span)> {
+                    match identity {
+                        SymbolIdentity::Def(def_target) => {
+                            let record = definition_record(db, def_target.clone())?;
+                            match record.source_location? {
+                                SourceLocation::Workspace { file, span } => {
+                                    let metadata = db.get_input::<FileMetadata>(file);
+                                    let uri = filepath_to_uri(&metadata.path)?;
+                                    Some((uri, span))
+                                }
+                                SourceLocation::Library { filepath, span } => {
+                                    let uri = filepath_to_uri(&filepath)?;
+                                    Some((uri, span))
+                                }
+                            }
+                        }
+                        SymbolIdentity::Local(local_id) => {
+                            let defs = local_binding_definitions(db, local_id.owner.file);
+                            let def_node_id = defs.get(local_id)?;
+                            let span = locations::span_of(db, *def_node_id)?;
+                            let metadata = db.get_input::<FileMetadata>(local_id.owner.file);
+                            let uri = filepath_to_uri(&metadata.path)?;
+                            Some((uri, span))
+                        }
+                    }
+                };
 
-        for target in symbol_targets {
-            let span = target.span;
-            let Some(target_uri) = filepath_to_uri(&target.filepath) else {
-                self.log(format!(
-                    "[server] goto_definition: unable to convert filepath={} to URI",
-                    target.filepath
-                ))
-                .await;
-                continue;
-            };
+                let mut seen = HashSet::new();
+                let mut locations = Vec::new();
 
-            let key = (target_uri.clone(), span);
-            if !seen_locations.insert(key) {
-                continue;
-            }
+                for target in &targets {
+                    if let Some((uri, span)) = resolve_location(&target.identity) {
+                        if seen.insert((uri.clone(), span)) {
+                            locations.push(Location {
+                                uri,
+                                range: span_to_range(span),
+                            });
+                        }
+                    }
+                }
 
-            let range = span_to_range(span);
-            locations.push(Location {
-                uri: target_uri,
-                range,
-            });
+                if locations.is_empty() {
+                    None
+                } else {
+                    Some(locations)
+                }
+            })
+            .await
+            .flatten();
+
+        match locations {
+            Some(locs) => Ok(Some(GotoDefinitionResponse::Array(locs))),
+            None => Ok(None),
         }
-
-        if locations.is_empty() {
-            self.log(format!(
-                "[server] goto_definition: empty symbol target list for node_id={}",
-                resolved.node_id
-            ))
-            .await;
-            return Ok(None);
-        }
-
-        Ok(Some(GotoDefinitionResponse::Array(locations)))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -858,45 +873,5 @@ impl RayLanguageServer {
         for uri in uris {
             self.publish_diagnostics(&uri).await;
         }
-    }
-
-    async fn lookup_symbol_targets_at(
-        &self,
-        uri: &Url,
-        position: Position,
-    ) -> Option<(AnalysisSnapshot, ResolvedSymbol)> {
-        // 1. snapshot
-        let snapshot = {
-            let cache = self.analysis_cache.read().await;
-            cache.get(uri).cloned()
-        }?;
-
-        self.log(format!(
-            "[server] lookup_symbol_targets_at: snapshot version={:?} module={} defs={}",
-            snapshot.version,
-            snapshot.data.module_path,
-            snapshot.data.definitions.len(),
-        ))
-        .await;
-
-        // 2. filepath
-        let filepath = uri_to_filepath(uri)?;
-        let canon = filepath.canonicalize().unwrap_or(filepath.clone());
-
-        // 3. node + source span in this file
-        let resolved = resolve_symbol_at_position(
-            &snapshot.data,
-            &canon,
-            position.line as usize,
-            position.character as usize,
-        )?;
-
-        self.log(format!(
-            "[server] lookup_symbol_targets_at: node_id={} source_span={:?}",
-            resolved.node_id, resolved.source.span
-        ))
-        .await;
-
-        Some((snapshot, resolved))
     }
 }

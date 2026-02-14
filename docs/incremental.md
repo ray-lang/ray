@@ -5160,11 +5160,11 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 ##### Step 4: Go-to-definition handler
 
-- [ ] Find node at position
-- [ ] Get targets via `symbol_targets`
-- [ ] Get spans via `span_of`
-- [ ] Return locations
-- [ ] **Validate**: Navigation works correctly
+- [x] Find node at position
+- [x] Get targets via `symbol_targets`
+- [x] Get spans via `span_of`
+- [x] Return locations
+- [x] **Validate**: Navigation works correctly
 
 ##### Step 5: Completion handler
 

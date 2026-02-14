@@ -10,6 +10,7 @@ use ray_core::ast::{CurlyElement, Decl, Expr, FnParam, Node, Pattern};
 use ray_query_macros::query;
 use ray_shared::{
     file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, resolution::Resolution,
+    symbol::SymbolIdentity,
 };
 
 use crate::{
@@ -17,6 +18,7 @@ use crate::{
         deps::{BindingGroupId, binding_group_members},
         parse::parse_file,
         resolve::name_resolutions,
+        symbols::definition_identities,
     },
     query::{Database, Query},
 };
@@ -109,6 +111,30 @@ pub fn local_binding_names(db: &Database, file_id: FileId) -> Arc<HashMap<LocalB
     }
 
     Arc::new(names)
+}
+
+/// Returns the definition-site NodeId for each LocalBindingId in a file.
+///
+/// This is the reverse of the local binding entries in `definition_identities`:
+/// given a LocalBindingId, returns the NodeId where that binding was defined
+/// (parameter, assignment LHS, closure arg, etc.).
+///
+/// Used by go-to-definition to navigate to local binding definition sites.
+///
+/// **Dependencies**: `definition_identities(file_id)`
+#[query]
+pub fn local_binding_definitions(
+    db: &Database,
+    file_id: FileId,
+) -> HashMap<LocalBindingId, NodeId> {
+    let identities = definition_identities(db, file_id);
+    let mut result = HashMap::new();
+    for (node_id, identity) in &identities {
+        if let SymbolIdentity::Local(local_id) = identity {
+            result.insert(*local_id, *node_id);
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -391,8 +417,9 @@ mod tests {
 
     use crate::{
         queries::{
-            bindings::local_binding_names,
+            bindings::{local_binding_definitions, local_binding_names},
             libraries::LoadedLibraries,
+            locations::span_of,
             resolve::name_resolutions,
             workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
@@ -492,6 +519,120 @@ mod tests {
                     local_id
                 );
             }
+        }
+    }
+
+    // =========================================================================
+    // Tests for local_binding_definitions
+    // =========================================================================
+
+    #[test]
+    fn binding_defs_covers_all_locals() {
+        let source = "fn foo(x: int, y: int) { x }";
+        let (db, file_id) = setup_db(source);
+
+        let defs = local_binding_definitions(&db, file_id);
+        let names = local_binding_names(&db, file_id);
+
+        // Every LocalBindingId in names should have a definition site
+        for local_id in names.keys() {
+            assert!(
+                defs.contains_key(local_id),
+                "local_id {:?} (name={:?}) should have a definition site",
+                local_id,
+                names.get(local_id)
+            );
+        }
+    }
+
+    #[test]
+    fn binding_defs_have_valid_spans() {
+        let source = "fn foo(x: int) { x }";
+        let (db, file_id) = setup_db(source);
+
+        let defs = local_binding_definitions(&db, file_id);
+
+        // Every definition NodeId should have a span
+        for (local_id, node_id) in &defs {
+            let span = span_of(&db, *node_id);
+            assert!(
+                span.is_some(),
+                "definition site for {:?} should have a span",
+                local_id
+            );
+        }
+    }
+
+    #[test]
+    fn binding_defs_for_local_assignments() {
+        let source = "fn foo() {\n    a = 1\n    b = 2\n    a\n}";
+        let (db, file_id) = setup_db(source);
+
+        let defs = local_binding_definitions(&db, file_id);
+        let names = local_binding_names(&db, file_id);
+
+        // Should have definitions for both a and b
+        let def_names: Vec<String> = defs
+            .keys()
+            .filter_map(|lid| names.get(lid).cloned())
+            .collect();
+        assert!(
+            def_names.contains(&"a".to_string()),
+            "should have definition for a: {:?}",
+            def_names
+        );
+        assert!(
+            def_names.contains(&"b".to_string()),
+            "should have definition for b: {:?}",
+            def_names
+        );
+    }
+
+    #[test]
+    fn binding_defs_for_closure_args() {
+        let source = "fn foo() {\n    f = (x) => x\n    f\n}";
+        let (db, file_id) = setup_db(source);
+
+        let defs = local_binding_definitions(&db, file_id);
+        let names = local_binding_names(&db, file_id);
+
+        let def_names: Vec<String> = defs
+            .keys()
+            .filter_map(|lid| names.get(lid).cloned())
+            .collect();
+        assert!(
+            def_names.contains(&"f".to_string()),
+            "should have definition for f: {:?}",
+            def_names
+        );
+        assert!(
+            def_names.contains(&"x".to_string()),
+            "should have definition for x: {:?}",
+            def_names
+        );
+    }
+
+    #[test]
+    fn binding_defs_node_id_resolves_to_definition() {
+        // Verify that the NodeId from local_binding_definitions is the
+        // definition site, not a reference site
+        let source = "fn foo(x: int) { x }";
+        let (db, file_id) = setup_db(source);
+
+        let defs = local_binding_definitions(&db, file_id);
+        let resolutions = name_resolutions(&db, file_id);
+
+        for (local_id, def_node_id) in &defs {
+            // The definition NodeId should also appear in resolutions
+            // as a Resolution::Local with the same LocalBindingId
+            let resolution = resolutions.get(def_node_id);
+            assert!(
+                matches!(resolution, Some(Resolution::Local(lid)) if lid == local_id),
+                "definition node {:?} should resolve to the same local_id {:?}, got {:?}",
+                def_node_id,
+                local_id,
+                resolution
+            );
         }
     }
 }
