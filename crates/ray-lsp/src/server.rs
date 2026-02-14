@@ -19,11 +19,11 @@ use tower_lsp::{
         CompletionResponse, DidChangeConfigurationParams, DidChangeTextDocumentParams,
         DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-        MessageType, RenameParams, SemanticTokensFullOptions, SemanticTokensOptions,
-        SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncOptions,
-        TextEdit, Url, WorkspaceEdit,
+        InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
+        InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, MessageType,
+        RenameParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+        SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+        TextDocumentSyncCapability, TextDocumentSyncOptions, TextEdit, Url, WorkspaceEdit,
     },
 };
 
@@ -34,6 +34,7 @@ use ray_frontend::queries::{
     diagnostics::file_diagnostics,
     display::{def_display_info, display_library_ty, display_ty},
     exports::{ExportedItem, module_def_index},
+    inlay_hints::{InlayHintDataKind, inlay_hints as query_inlay_hints},
     items::associated_items,
     locations::{self, find_at_position},
     methods::methods_for_type,
@@ -59,7 +60,8 @@ use serde_json::Value;
 use crate::{
     diagnostics,
     helpers::{
-        filepath_to_uri, lsp_position_to_pos, parse_toolchain_path, span_to_range, uri_to_filepath,
+        filepath_to_uri, lsp_position_to_pos, parse_toolchain_path, pos_to_position, span_to_range,
+        uri_to_filepath,
     },
     semantic_tokens,
     workspace::{LspWorkspace, WorkspaceManager},
@@ -126,6 +128,7 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                     ..CompletionOptions::default()
                 }),
                 rename_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
+                inlay_hint_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -665,6 +668,45 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
             .flatten();
 
         Ok(result)
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+
+        let hints = self
+            .with_workspace_file_map(&uri, |ws: &LspWorkspace, file_id| {
+                let db = &*ws.db;
+                let hint_data = query_inlay_hints(db, file_id);
+
+                hint_data
+                    .iter()
+                    .filter_map(|h| match &h.kind {
+                        InlayHintDataKind::Type(ty_str) => Some(InlayHint {
+                            position: pos_to_position(h.span.end),
+                            label: InlayHintLabel::String(format!(": {}", ty_str)),
+                            kind: Some(InlayHintKind::TYPE),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: Some(false),
+                            padding_right: Some(false),
+                            data: None,
+                        }),
+                        InlayHintDataKind::Parameter(name) => Some(InlayHint {
+                            position: pos_to_position(h.span.start),
+                            label: InlayHintLabel::String(format!("{}: ", name)),
+                            kind: Some(InlayHintKind::PARAMETER),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: Some(false),
+                            padding_right: Some(true),
+                            data: None,
+                        }),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+
+        Ok(hints)
     }
 }
 

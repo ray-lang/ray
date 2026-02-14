@@ -5191,13 +5191,13 @@ This is the largest migration. Do it incrementally, running tests after each ste
 
 #### 4.G: Phase 4 Validation
 
-- [ ] **CLI end-to-end**: Build test project, compare to legacy
-- [ ] **CLI cache**: Verify incremental builds work correctly
-- [ ] **LSP hover**: Verify type display matches legacy
-- [ ] **LSP go-to-def**: Verify navigation to correct locations
-- [ ] **LSP completion**: Verify completions are relevant and complete
-- [ ] **LSP rename**: Verify all references updated
-- [ ] **LSP perf**: Measure response time on edits (target: <200ms)
+- [x] **CLI end-to-end**: Build test project, compare to legacy
+- [x] **CLI cache**: Verify incremental builds work correctly
+- [x] **LSP hover**: Verify type display matches legacy
+- [x] **LSP go-to-def**: Verify navigation to correct locations
+- [x] **LSP completion**: Verify completions are relevant and complete
+- [x] **LSP rename**: Verify all references updated
+- [x] **LSP perf**: Measure response time on edits (target: <200ms)
 
 ---
 

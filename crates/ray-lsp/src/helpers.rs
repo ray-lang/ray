@@ -48,6 +48,10 @@ pub(crate) fn span_to_range(mut span: Span) -> Range {
     Range::new(start, end)
 }
 
+pub(crate) fn pos_to_position(pos: Pos) -> Position {
+    Position::new(pos.lineno as u32, pos.col as u32)
+}
+
 pub(crate) fn filepath_to_uri(filepath: &FilePath) -> Option<Url> {
     Url::from_file_path(filepath.as_ref()).ok()
 }

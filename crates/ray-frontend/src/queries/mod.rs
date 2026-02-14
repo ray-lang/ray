@@ -9,6 +9,7 @@ pub mod display;
 pub mod expected_type;
 pub mod exports;
 pub mod imports;
+pub mod inlay_hints;
 pub mod items;
 pub mod libraries;
 pub mod locations;

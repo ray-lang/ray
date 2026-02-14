@@ -1,8 +1,8 @@
 fn main() {
     d = { 1: 10, 2: 20, 3: 30 }
     d[4] = 40
-    for entry in d {
-        print(entry)
+    if some(y) = d[4] {
+        print(y)
     }
 }
 
