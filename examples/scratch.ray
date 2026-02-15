@@ -1,12 +1,5 @@
 fn main() {
-    d = { 1: 10, 2: 20, 3: 30 }
-    d[4] = 40
-    if some(y) = d[4] {
-        print(y)
-    }
+    x: i32 = 42i32
+    y = x + 1i32
+    print(f"y = {y}")
 }
-
-// fn main() {
-//     t1 = (1,20)
-//     print(t1)
-// }

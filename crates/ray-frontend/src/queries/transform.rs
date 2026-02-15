@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use ray_core::{
     ast::{
-        CurlyElement, Decl, Expr, File, FnParam, FuncSig, Impl, Name, Node, ScopedAccess, Trait,
+        CurlyElement, Decl, Expr, FStringPart, File, FnParam, FuncSig, Impl, Name, Node,
+        ScopedAccess, Trait,
         token::{Token, TokenKind},
         transform::{convert_func_to_closure, desugar_compound_assignment, expand_curly_shorthand},
     },
@@ -357,6 +358,13 @@ fn transform_expr_children(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>
         Expr::NilCoalesce(nc) => {
             transform_expr(&mut nc.lhs, ctx);
             transform_expr(&mut nc.rhs, ctx);
+        }
+        Expr::FString(fstr) => {
+            for part in &mut fstr.parts {
+                if let FStringPart::Expr(expr) = part {
+                    transform_expr(expr, ctx);
+                }
+            }
         }
         Expr::UnaryOp(unop) => {
             transform_expr(&mut unop.expr, ctx);

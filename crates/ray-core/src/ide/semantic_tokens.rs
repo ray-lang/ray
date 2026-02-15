@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{
-        self, Assign, Curly, CurlyElement, Decl, Expr, FnParam, Func, FuncSig, Import, ImportKind,
-        Name, Node, Pattern, Struct, Trait,
+        self, Assign, Curly, CurlyElement, Decl, Expr, FStringPart, FnParam, Func, FuncSig, Import,
+        ImportKind, Name, Node, Pattern, Struct, Trait,
     },
     parse::{ParseDiagnostics, ParseOptions, Parser},
     sourcemap::{SourceMap, TriviaKind},
@@ -359,6 +359,13 @@ impl<'a> SemanticTokenCollector<'a> {
             Expr::NilCoalesce(nc) => {
                 self.visit_expr(&nc.lhs);
                 self.visit_expr(&nc.rhs);
+            }
+            Expr::FString(fstr) => {
+                for part in &fstr.parts {
+                    if let FStringPart::Expr(expr) = part {
+                        self.visit_expr(expr);
+                    }
+                }
             }
             Expr::Block(block) => {
                 for stmt in &block.stmts {

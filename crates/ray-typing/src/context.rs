@@ -111,6 +111,11 @@ pub enum ExprKind {
     /// non-nil, otherwise evaluates `rhs`. The `rhs` may be a divergent
     /// expression (`return`, `break`, `continue`) with type `never`.
     NilCoalesce { lhs: NodeId, rhs: NodeId },
+    /// F-string interpolation, e.g. `f"hello {name}"`.
+    ///
+    /// `parts` contains only the NodeIds of the interpolated expressions
+    /// (literal string segments are not tracked in the typing IR).
+    FString { parts: Vec<NodeId> },
     /// Top-level or named function binding. Unlike closures, these correspond
     /// to declared functions and always carry binding identifiers for their
     /// parameters.

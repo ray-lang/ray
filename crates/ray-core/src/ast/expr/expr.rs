@@ -7,9 +7,9 @@ use crate::ast::{Boxed, Node, Ref, expr::deref::Deref};
 use ray_typing::types::TyScheme;
 
 use super::{
-    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dict, Dot, For, Func, If, Index, List,
-    Literal, Loop, Missing, Name, New, NilCoalesce, Pattern, Range, ScopedAccess, Sequence, Set,
-    Tuple, UnaryOp, While,
+    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dict, Dot, FString, For, Func, If, Index,
+    List, Literal, Loop, Missing, Name, New, NilCoalesce, Pattern, Range, ScopedAccess, Sequence,
+    Set, Tuple, UnaryOp, While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +28,7 @@ pub enum Expr {
     DefaultValue(Box<Node<Expr>>),
     Deref(Deref),
     Dot(Dot),
+    FString(FString),
     Func(Func),
     For(For),
     If(If),
@@ -96,6 +97,7 @@ impl std::fmt::Display for Expr {
                 Expr::DefaultValue(ex) => ex.to_string(),
                 Expr::Deref(ex) => ex.to_string(),
                 Expr::Dot(ex) => ex.to_string(),
+                Expr::FString(ex) => ex.to_string(),
                 Expr::Func(ex) => ex.to_string(),
                 Expr::For(ex) => ex.to_string(),
                 Expr::If(ex) => ex.to_string(),
@@ -152,6 +154,7 @@ impl Expr {
             Expr::DefaultValue(..) => "DefaultValue",
             Expr::Deref(..) => "Deref",
             Expr::Dot(..) => "Dot",
+            Expr::FString(..) => "FString",
             Expr::Func(..) => "Func",
             Expr::For(..) => "For",
             Expr::If(..) => "If",
@@ -204,6 +207,7 @@ impl Expr {
             | Expr::Deref(_)
             | Expr::Dot(_)
             | Expr::For(_)
+            | Expr::FString(_)
             | Expr::If(_)
             | Expr::Index(_)
             | Expr::Labeled(_, _)
@@ -257,6 +261,7 @@ impl Expr {
             | Expr::Deref(_)
             | Expr::Dot(_)
             | Expr::For(_)
+            | Expr::FString(_)
             | Expr::If(_)
             | Expr::Index(_)
             | Expr::Labeled(_, _)
@@ -300,6 +305,7 @@ impl Expr {
             Expr::DefaultValue(..) => "default value",
             Expr::Deref(..) => "deref",
             Expr::Dot(..) => "dot",
+            Expr::FString(..) => "f-string",
             Expr::Func(..) => "function",
             Expr::For(..) => "for",
             Expr::If(..) => "if",

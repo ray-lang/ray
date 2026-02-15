@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ray_core::{
-    ast::{Decl, Expr, FnParam, Node, Pattern},
+    ast::{Decl, Expr, FStringPart, FnParam, Node, Pattern},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
@@ -260,6 +260,13 @@ fn collect_locals_in_expr(
         Expr::NilCoalesce(nc) => {
             collect_locals_in_expr(&nc.lhs, srcmap, pos, resolutions, locals);
             collect_locals_in_expr(&nc.rhs, srcmap, pos, resolutions, locals);
+        }
+        Expr::FString(fstr) => {
+            for part in &fstr.parts {
+                if let FStringPart::Expr(expr) = part {
+                    collect_locals_in_expr(expr, srcmap, pos, resolutions, locals);
+                }
+            }
         }
         Expr::Paren(inner)
         | Expr::Some(inner)

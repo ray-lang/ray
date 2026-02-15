@@ -13,7 +13,7 @@ use std::{collections::HashMap, sync::Arc};
 use serde::{Deserialize, Serialize};
 
 use ray_core::{
-    ast::{CurlyElement, Decl, Expr, File, Literal, Node},
+    ast::{CurlyElement, Decl, Expr, FStringPart, File, Literal, Node},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
@@ -346,6 +346,11 @@ fn find_ctx_in_expr(expr: &Node<Expr>, srcmap: &SourceMap, pos: &Pos) -> Option<
 
         Expr::NilCoalesce(nc) => find_ctx_in_expr(&nc.lhs, srcmap, pos)
             .or_else(|| find_ctx_in_expr(&nc.rhs, srcmap, pos)),
+
+        Expr::FString(fstr) => fstr.parts.iter().find_map(|part| match part {
+            FStringPart::Expr(expr) => find_ctx_in_expr(expr, srcmap, pos),
+            FStringPart::Literal(_) => None,
+        }),
 
         Expr::Paren(inner)
         | Expr::Some(inner)

@@ -314,6 +314,7 @@ impl TypeCheckInput {
             }
             Some(ExprKind::Some { expr }) => vec![*expr],
             Some(ExprKind::NilCoalesce { lhs, rhs }) => vec![*lhs, *rhs],
+            Some(ExprKind::FString { parts }) => parts.clone(),
             Some(ExprKind::Range { start, end, .. }) => vec![*start, *end],
             Some(ExprKind::Nil)
             | Some(ExprKind::LiteralInt)

@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use ray_core::ast::{CurlyElement, Decl, Expr, FnParam, Node, Pattern};
+use ray_core::ast::{CurlyElement, Decl, Expr, FStringPart, FnParam, Node, Pattern};
 use ray_query_macros::query;
 use ray_shared::{
     file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, resolution::Resolution,
@@ -242,6 +242,13 @@ fn collect_all_bindings_in_expr(
         Expr::NilCoalesce(nc) => {
             collect_all_bindings_in_expr(&nc.lhs, resolutions, names);
             collect_all_bindings_in_expr(&nc.rhs, resolutions, names);
+        }
+        Expr::FString(fstr) => {
+            for part in &fstr.parts {
+                if let FStringPart::Expr(expr) = part {
+                    collect_all_bindings_in_expr(expr, resolutions, names);
+                }
+            }
         }
         Expr::Paren(inner)
         | Expr::Some(inner)

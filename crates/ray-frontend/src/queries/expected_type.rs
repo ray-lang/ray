@@ -8,7 +8,7 @@
 //! be inferred (e.g. no interesting context, type errors, or incomplete code).
 
 use ray_core::{
-    ast::{CurlyElement, Decl, Expr, File, Node},
+    ast::{CurlyElement, Decl, Expr, FStringPart, File, Node},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
@@ -331,6 +331,11 @@ fn find_context_in_expr(
 
         Expr::NilCoalesce(nc) => find_context_in_expr(&nc.lhs, srcmap, pos, enclosing_func_id)
             .or_else(|| find_context_in_expr(&nc.rhs, srcmap, pos, enclosing_func_id)),
+
+        Expr::FString(fstr) => fstr.parts.iter().find_map(|part| match part {
+            FStringPart::Expr(expr) => find_context_in_expr(expr, srcmap, pos, enclosing_func_id),
+            FStringPart::Literal(_) => None,
+        }),
 
         Expr::Paren(inner)
         | Expr::Some(inner)

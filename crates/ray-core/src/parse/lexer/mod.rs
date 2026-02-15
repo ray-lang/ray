@@ -35,6 +35,19 @@ pub enum NewlineMode {
     Suppress,
 }
 
+/// A segment returned by the f-string lexer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FStringSegment {
+    /// A run of literal characters (escapes and `{{`/`}}` already processed).
+    Literal(String),
+    /// A bare `{` was encountered — the caller should parse an expression.
+    ExprStart,
+    /// The closing quote was reached.
+    End,
+    /// EOF before the closing quote.
+    Unterminated,
+}
+
 fn is_tok_comment(tok: &Token) -> bool {
     matches!(tok.kind, TokenKind::Comment { .. })
 }
@@ -187,6 +200,74 @@ impl Lexer {
             }
         }
         (s, false)
+    }
+
+    /// Read the next segment of an f-string. Must be called after the opening
+    /// `"` has been consumed. Returns one segment at a time:
+    ///
+    /// - `Literal(s)` — a run of literal characters (escapes processed,
+    ///   `{{`/`}}` collapsed to `{`/`}`)
+    /// - `ExprStart` — a bare `{` was encountered; the caller should parse an
+    ///   expression and then expect `}`
+    /// - `End` — the closing quote was reached
+    /// - `Unterminated` — EOF before the closing quote
+    pub fn next_fstring_segment(&mut self, quote: char) -> FStringSegment {
+        self.rewind_tokens();
+
+        let mut s = String::new();
+        loop {
+            let saved_pos = self.stash_pos;
+            let Some(ch) = self.next_char() else { break };
+            match ch {
+                c if c == quote => {
+                    if !s.is_empty() {
+                        // Put back the closing quote so the next call returns End.
+                        self.stash_pos = saved_pos;
+                        return FStringSegment::Literal(s);
+                    }
+                    return FStringSegment::End;
+                }
+                '{' if self.first() == '{' => {
+                    // escaped `{{` → literal `{`
+                    self.next_char();
+                    s.push('{');
+                }
+                '{' => {
+                    if !s.is_empty() {
+                        // Put back the `{` so the next call returns ExprStart.
+                        self.stash_pos = saved_pos;
+                        return FStringSegment::Literal(s);
+                    }
+                    return FStringSegment::ExprStart;
+                }
+                '}' if self.first() == '}' => {
+                    // escaped `}}` → literal `}`
+                    self.next_char();
+                    s.push('}');
+                }
+                '\\' if self.first() == 'n' => {
+                    self.next_char().unwrap();
+                    s.push('\n');
+                }
+                '\\' if self.first() == '\\' || self.first() == quote => {
+                    s.push(self.next_char().unwrap());
+                }
+                _ => s.push(ch),
+            }
+        }
+        if !s.is_empty() {
+            return FStringSegment::Literal(s);
+        }
+        FStringSegment::Unterminated
+    }
+
+    /// Commit the current character-reading position so that normal
+    /// tokenisation resumes from here. Called after `next_fstring_segment`
+    /// returns `ExprStart` to switch from character mode back to token mode.
+    pub fn commit_position(&mut self) {
+        self.curr_pos = self.stash_pos;
+        self.stash.clear();
+        self.token_stash.clear();
     }
 
     fn suffix(&mut self) -> (Option<String>, bool) {

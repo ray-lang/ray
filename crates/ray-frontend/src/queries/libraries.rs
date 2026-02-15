@@ -29,6 +29,7 @@ use crate::{
             struct_def, trait_def,
         },
         display::collect_reverse_map,
+        operators::operator_index,
         parse::parse_file,
         typecheck::def_scheme,
         workspace::WorkspaceSnapshot,
@@ -615,8 +616,6 @@ fn collect_vars_from_predicate(subst: &mut Subst, pred: &Predicate, offset: u32)
 ///   This is a pre-existing limitation: `exported_item_to_def_target` in
 ///   resolve.rs also drops `ExportedItem::Local` items. Fixing this requires
 ///   extending the resolution model to support library locals.
-/// - Operator index is not populated. Operator traits/methods are serialized
-///   in `traits` and `impls`, but the `operators` shortcut index is empty.
 /// - Definition records (for IDE go-to-definition) are not populated.
 pub fn build_library_data(
     db: &Database,
@@ -787,7 +786,14 @@ pub fn build_library_data(
         impls: impls_map,
         impls_by_type,
         impls_by_trait: impls_by_trait_map,
-        operators: HashMap::new(),
+        operators: operator_index(db)
+            .into_iter()
+            .map(|(key, mut entry)| {
+                entry.trait_def = remap_def_target(&entry.trait_def, &def_id_to_lib);
+                entry.method_def = remap_def_target(&entry.method_def, &def_id_to_lib);
+                (key, entry)
+            })
+            .collect(),
         modules,
         definitions: HashMap::new(),
         source_map: srcmap,

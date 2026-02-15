@@ -8,7 +8,7 @@ use ray_shared::{
 use ray_typing::types::NominalKind;
 
 use crate::{
-    ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern},
+    ast::{Decl, Expr, FStringPart, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern},
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
 };
@@ -2302,5 +2302,167 @@ fn main() {
             assert!(if_expr.els.is_some(), "expected if-else with else branch");
         }
         other => panic!("expected If expression, got {:?}", other),
+    }
+}
+
+// ── f-string tests ──────────────────────────────────────────────────
+
+#[test]
+fn parses_fstring_with_no_interpolation() {
+    let src = r#"
+fn main() {
+    f"hello"
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::FString(fstr) => {
+            assert_eq!(fstr.parts.len(), 1);
+            assert_eq!(fstr.parts[0], FStringPart::Literal("hello".to_string()));
+        }
+        other => panic!("expected FString, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_fstring_with_single_expr() {
+    let src = r#"
+fn main() {
+    f"hello {name}"
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::FString(fstr) => {
+            assert_eq!(fstr.parts.len(), 2);
+            assert_eq!(fstr.parts[0], FStringPart::Literal("hello ".to_string()));
+            assert!(
+                matches!(&fstr.parts[1], FStringPart::Expr(e) if matches!(&e.value, Expr::Name(_))),
+                "expected Expr part with Name, got {:?}",
+                fstr.parts[1]
+            );
+        }
+        other => panic!("expected FString, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_fstring_with_multiple_exprs() {
+    let src = r#"
+fn main() {
+    f"{a} and {b}"
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::FString(fstr) => {
+            assert_eq!(fstr.parts.len(), 3);
+            assert!(matches!(&fstr.parts[0], FStringPart::Expr(_)));
+            assert_eq!(fstr.parts[1], FStringPart::Literal(" and ".to_string()));
+            assert!(matches!(&fstr.parts[2], FStringPart::Expr(_)));
+        }
+        other => panic!("expected FString, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_fstring_with_escaped_braces() {
+    let src = r#"
+fn main() {
+    f"use {{braces}}"
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::FString(fstr) => {
+            assert_eq!(fstr.parts.len(), 1);
+            assert_eq!(
+                fstr.parts[0],
+                FStringPart::Literal("use {braces}".to_string())
+            );
+        }
+        other => panic!("expected FString, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_fstring_with_complex_expr() {
+    let src = r#"
+fn main() {
+    f"value: {x + 1}"
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::FString(fstr) => {
+            assert_eq!(fstr.parts.len(), 2);
+            assert_eq!(fstr.parts[0], FStringPart::Literal("value: ".to_string()));
+            assert!(
+                matches!(&fstr.parts[1], FStringPart::Expr(e) if matches!(&e.value, Expr::BinOp(_))),
+                "expected Expr part with BinOp, got {:?}",
+                fstr.parts[1]
+            );
+        }
+        other => panic!("expected FString, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_fstring_adjacent_exprs() {
+    let src = r#"
+fn main() {
+    f"{a}{b}"
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::FString(fstr) => {
+            assert_eq!(fstr.parts.len(), 2);
+            assert!(matches!(&fstr.parts[0], FStringPart::Expr(_)));
+            assert!(matches!(&fstr.parts[1], FStringPart::Expr(_)));
+        }
+        other => panic!("expected FString, got {:?}", other),
     }
 }

@@ -26,8 +26,8 @@ use ray_typing::{
 
 use ray_core::{
     ast::{
-        self, Assign, Call, Closure, CurlyElement, Decl, Expr, Literal, Modifier, Node, Pattern,
-        PrefixOp, RangeLimits, token::IntegerBase,
+        self, Assign, Call, Closure, CurlyElement, Decl, Expr, FStringPart, Literal, Modifier,
+        Node, Pattern, PrefixOp, RangeLimits, token::IntegerBase,
     },
     errors::{RayError, RayErrorKind, RayResult},
     sema::closure::ClosureInfo,
@@ -1633,6 +1633,57 @@ impl<'a> GenCtx<'a> {
         Ok(call.into())
     }
 
+    /// Emit a string literal value and return its local index.
+    fn emit_string_literal(&mut self, s: &str) -> usize {
+        let bytes = s.as_bytes().to_vec();
+        let len = bytes.len();
+        let string_size = lir::Size::bytes(len);
+        let idx = self.data(bytes);
+
+        let data_loc = self.local(Ty::ref_of(Ty::u8()).into());
+        let ptr = lir::Malloc::new(Ty::u8().into(), lir::Atom::uptr(len as u64));
+        self.set_local(data_loc, ptr.into());
+
+        let path = self.path();
+        self.push(lir::Inst::MemCopy(
+            lir::Variable::Local(data_loc),
+            lir::Variable::Data(path, idx),
+            string_size.into(),
+        ));
+
+        let string_target = resolve_builtin(self.db, self.file_id, "string".to_string())
+            .expect("string type not in scope");
+        let string_fqn = def_path(self.db, string_target).expect("missing def_path for string");
+        let string_ty = Ty::Const(string_fqn.clone());
+        let loc = self.local(string_ty.clone().into());
+        self.push(lir::Inst::StructInit(
+            lir::Variable::Local(loc),
+            StructTy {
+                kind: NominalKind::Struct,
+                path: string_fqn,
+                ty: string_ty.into(),
+                fields: vec![
+                    (str!("raw_ptr"), Ty::ref_of(Ty::u8()).into()),
+                    (str!("len"), Ty::uint().into()),
+                ],
+            },
+        ));
+
+        self.push(lir::SetField::new(
+            lir::Variable::Local(loc),
+            str!("raw_ptr"),
+            lir::Variable::Local(data_loc).into(),
+        ));
+
+        self.push(lir::SetField::new(
+            lir::Variable::Local(loc),
+            str!("len"),
+            lir::Atom::Size(string_size).into(),
+        ));
+
+        loc
+    }
+
     fn maybe_coerce_receiver_arg(
         &mut self,
         value: lir::Value,
@@ -3061,6 +3112,110 @@ impl LirGen<GenResult> for Node<Expr> {
                     .push(lir::ControlMarker::End(cond_label));
 
                 lir::Atom::Variable(lir::Variable::Local(result_loc)).into()
+            }
+            Expr::FString(fstr) => {
+                let src = ctx.srcmap.get(self);
+                let string_scheme = TyScheme::from_mono(Ty::Const(
+                    resolve_builtin(ctx.db, ctx.file_id, "string".to_string())
+                        .and_then(|target| def_path(ctx.db, target))
+                        .expect("string type not found"),
+                ));
+
+                let needs_to_str = fstr.parts.iter().any(|p| matches!(p, FStringPart::Expr(_)));
+                let needs_concat = fstr.parts.len() > 1;
+
+                let to_str_fqn = if needs_to_str {
+                    Some(
+                        resolve_builtin(ctx.db, ctx.file_id, "ToStr".to_string())
+                            .and_then(|target| def_path(ctx.db, target))
+                            .expect("ToStr trait not found"),
+                    )
+                } else {
+                    None
+                };
+
+                let add_fqn = if needs_concat {
+                    Some(
+                        resolve_builtin(ctx.db, ctx.file_id, "Add".to_string())
+                            .and_then(|target| def_path(ctx.db, target))
+                            .expect("Add trait not found"),
+                    )
+                } else {
+                    None
+                };
+
+                // Convert each part to a string-typed local
+                let mut string_locs: Vec<usize> = Vec::new();
+                for part in &fstr.parts {
+                    match part {
+                        FStringPart::Literal(s) => {
+                            string_locs.push(ctx.emit_string_literal(s));
+                        }
+                        FStringPart::Expr(expr) => {
+                            let expr_scheme = ctx.ty_of(expr.id);
+                            let expr_val = expr.lir_gen(ctx)?;
+                            let expr_loc = ctx
+                                .get_or_set_local(expr_val, expr_scheme.clone())
+                                .unwrap_or_else(|| panic!("expected non-unit f-string expression"));
+
+                            // Call ToStr::to_str() on the expression
+                            let to_str_callee_ty = TyScheme::from_mono(Ty::func(
+                                vec![expr_scheme.mono().clone()],
+                                string_scheme.mono().clone(),
+                            ));
+                            let str_loc = ctx
+                                .emit_trait_method_call_with_recv_local(
+                                    to_str_fqn.as_ref().unwrap(),
+                                    "to_str",
+                                    expr_loc,
+                                    expr_scheme,
+                                    to_str_callee_ty,
+                                    &src,
+                                )?
+                                .unwrap_or_else(|| {
+                                    panic!("expected non-unit return from to_str()")
+                                });
+                            string_locs.push(str_loc);
+                        }
+                    }
+                }
+
+                if string_locs.is_empty() {
+                    // Empty f-string: emit ""
+                    let loc = ctx.emit_string_literal("");
+                    lir::Atom::Variable(lir::Variable::Local(loc)).into()
+                } else {
+                    let mut acc_loc = string_locs[0];
+                    let string_mono = string_scheme.mono().clone();
+                    for &next_loc in &string_locs[1..] {
+                        let add_callee_ty = TyScheme::from_mono(Ty::func(
+                            vec![string_mono.clone(), string_mono.clone()],
+                            string_mono.clone(),
+                        ));
+                        let resolved = ctx
+                            .resolve_trait_method_direct_call(
+                                add_fqn.as_ref().unwrap(),
+                                "+",
+                                add_callee_ty,
+                            )
+                            .unwrap_or_else(|| {
+                                panic!("could not resolve Add::+ for string concat")
+                            });
+
+                        let call_args = vec![
+                            lir::Variable::Local(acc_loc),
+                            lir::Variable::Local(next_loc),
+                        ];
+                        let concat_val =
+                            ctx.emit_resolved_direct_call(&resolved, call_args, &src)?;
+                        acc_loc = ctx
+                            .get_or_set_local(concat_val, string_scheme.clone())
+                            .unwrap_or_else(|| {
+                                panic!("expected non-unit return from string concat")
+                            });
+                    }
+                    lir::Atom::Variable(lir::Variable::Local(acc_loc)).into()
+                }
             }
             Expr::Break(ex) => {
                 if let Some(_) = ex {
@@ -5618,6 +5773,122 @@ pub fn main() -> u32 {
         assert!(
             saw_if && saw_is_some && saw_payload,
             "expected nil coalesce in assignment to generate if/is_some/payload\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_fstring_with_interpolation() {
+        let src = r#"
+struct string {
+    raw_ptr: *u8
+    len: uint
+}
+
+@intrinsic extern fn str_concat(a: string, b: string) -> string
+
+trait ToStr['a] {
+    fn to_str(self: 'a) -> string
+}
+
+trait Add['a, 'b, 'c] {
+    fn +(lhs: 'a, rhs: 'b) -> 'c
+}
+
+impl ToStr[string] {
+    fn to_str(self: string) -> string { self }
+}
+
+impl Add[string, string, string] {
+    fn +(lhs: string, rhs: string) -> string => str_concat(lhs, rhs)
+}
+
+pub fn main() -> string {
+    name = "world"
+    f"hello {name}"
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_to_str = false;
+        let mut saw_add = false;
+
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::Call(call)) = inst {
+                    let name = call.fn_name.to_string();
+                    if name.contains("ToStr::to_str") {
+                        saw_to_str = true;
+                    }
+                    if name.contains("Add::+") {
+                        saw_add = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_to_str,
+            "expected f-string to call ToStr::to_str\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_add,
+            "expected f-string to call Add::+ for concatenation\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_fstring_literal_only_no_trait_calls() {
+        // A literal-only f-string needs neither ToStr nor Add in scope
+        let src = r#"
+struct string {
+    raw_ptr: *u8
+    len: uint
+}
+
+pub fn main() -> string {
+    f"hello"
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // A literal-only f-string should NOT generate any trait calls
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::Call(call)) = inst {
+                    let name = call.fn_name.to_string();
+                    assert!(
+                        !name.contains("ToStr::to_str") && !name.contains("Add::+"),
+                        "literal-only f-string should not call trait methods, but found: {}\n--- LIR Program ---\n{}",
+                        name,
+                        prog
+                    );
+                }
+            }
+        }
+
+        // Should still produce string data
+        assert!(
+            !prog.data.is_empty(),
+            "expected f-string literal to produce data entry\n--- LIR Program ---\n{}",
             prog
         );
     }

@@ -6,11 +6,14 @@ use ray_shared::{
 use ray_typing::types::TyScheme;
 
 use crate::ast::{
-    Boxed, Call, Curly, CurlyElement, Dot, Expr, Index, Literal, Modifier, Name, New, Node,
-    ScopedAccess, Sequence, TrailingPolicy, ValueKind,
+    Boxed, Call, Curly, CurlyElement, Dot, Expr, FString, FStringPart, Index, Literal, Modifier,
+    Name, New, Node, ScopedAccess, Sequence, TrailingPolicy, ValueKind,
     token::{Token, TokenKind},
 };
-use crate::parse::{lexer::NewlineMode, parser::Recover};
+use crate::parse::{
+    lexer::{FStringSegment, NewlineMode},
+    parser::Recover,
+};
 
 use super::{
     ExprResult, ParsedExpr, Parser, RecoveryCtx, Restrictions,
@@ -163,6 +166,11 @@ impl Parser<'_> {
                         ctx.path.clone(),
                     ))
                 }
+            }
+            TokenKind::Identifier(s)
+                if &s == "f" && matches!(self.peek_kind_at(1), TokenKind::DoubleQuote) =>
+            {
+                self.parse_fstring(ctx)
             }
             TokenKind::Identifier(_) | TokenKind::Underscore => {
                 let n = self.parse_name(ctx)?;
@@ -735,5 +743,46 @@ impl Parser<'_> {
             span,
             ctx.path.clone(),
         ))
+    }
+
+    fn parse_fstring(&mut self, ctx: &ParseContext) -> ExprResult {
+        let parser = &mut self.with_scope(ctx).with_description("parse f-string");
+        let ctx = &parser.ctx_clone();
+
+        // consume the `f` identifier
+        let (_, Span { start, .. }) = parser.expect_id(ctx)?;
+        // consume the opening `"`
+        parser.expect_sp(TokenKind::DoubleQuote, ctx)?;
+
+        let mut parts = Vec::new();
+        loop {
+            match parser.lex.next_fstring_segment('"') {
+                FStringSegment::Literal(s) => {
+                    parts.push(FStringPart::Literal(s));
+                }
+                FStringSegment::ExprStart => {
+                    parser.lex.commit_position();
+                    let mut expr_ctx = ctx.clone();
+                    expr_ctx.stop_token = Some(TokenKind::RightCurly);
+                    let expr = parser.parse_expr(&expr_ctx)?;
+                    parser.expect_sp(TokenKind::RightCurly, ctx)?;
+                    parts.push(FStringPart::Expr(expr));
+                }
+                FStringSegment::End => {
+                    parser.lex.commit_position();
+                    break;
+                }
+                FStringSegment::Unterminated => {
+                    let end = parser.lex.position();
+                    return Err(
+                        parser.unexpected_eof(end, "unterminated f-string literal".to_string())
+                    );
+                }
+            }
+        }
+
+        let end = parser.lex.position();
+        let span = Span { start, end };
+        Ok(parser.mk_expr(Expr::FString(FString { parts }), span, ctx.path.clone()))
     }
 }

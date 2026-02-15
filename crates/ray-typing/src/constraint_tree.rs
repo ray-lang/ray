@@ -1180,6 +1180,26 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::eq(expr_ty, payload_ty, info.clone()));
             }
+            ExprKind::FString { parts } => {
+                // F-string interpolation: each expression part must implement
+                // `ToStr`, and the overall result type is `string`.
+                let to_str_path = ctx.env().resolve_builtin("ToStr");
+                for &part_id in parts {
+                    let part_ty = ctx.expr_ty_or_fresh(part_id);
+                    node.wanteds.push(Constraint::class(
+                        to_str_path.clone(),
+                        vec![part_ty],
+                        info.clone(),
+                    ));
+                }
+
+                let string_path = ctx.env().resolve_builtin("string");
+                node.wanteds.push(Constraint::eq(
+                    expr_ty,
+                    Ty::Const(string_path),
+                    info.clone(),
+                ));
+            }
             ExprKind::OpFunc { args, result, .. } => {
                 let arg_tys: Vec<_> = args.iter().map(|id| ctx.expr_ty_or_fresh(*id)).collect();
                 let result_ty = ctx.expr_ty_or_fresh(*result);
@@ -1924,7 +1944,8 @@ fn generate_constraints_for_expr(
     }
 
     // Recurse into children based on the ModuleInput's view of the AST.
-    for child_expr in input.expr_children(expr) {
+    let children = input.expr_children(expr);
+    for child_expr in children {
         generate_constraints_for_child(input, ctx, node, def_id, skolem_subst, next_id, child_expr);
     }
 }
@@ -2618,6 +2639,58 @@ mod tests {
                 _ => false,
             }),
             "expected a constraint involving nilable[...] type even with never RHS"
+        );
+    }
+
+    #[test]
+    fn fstring_generates_tostr_class_and_string_eq_constraints() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let part_a = NodeId::new();
+        let part_b = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(part_a, ExprKind::LiteralInt);
+        kinds.insert(part_b, ExprKind::LiteralInt);
+        kinds.insert(
+            expr_id,
+            ExprKind::FString {
+                parts: vec![part_a, part_b],
+            },
+        );
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // Each expression part should generate a ToStr class constraint
+        let class_count = binding_node
+            .wanteds
+            .iter()
+            .filter(|c| matches!(c.kind, ConstraintKind::Class(_)))
+            .count();
+        assert!(
+            class_count >= 2,
+            "expected at least 2 Class constraints (ToStr for each part), got {}",
+            class_count
+        );
+
+        // The result type should be constrained to string (an Eq constraint)
+        let eq_count = binding_node
+            .wanteds
+            .iter()
+            .filter(|c| matches!(c.kind, ConstraintKind::Eq(_)))
+            .count();
+        assert!(
+            eq_count >= 1,
+            "expected at least 1 Eq constraint (result == string), got {}",
+            eq_count
         );
     }
 }

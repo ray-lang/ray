@@ -18,7 +18,9 @@ use ray_typing::{
 };
 
 use crate::{
-    ast::{CurlyElement, Decl, Expr, Literal, Node, Pattern as AstPattern, RangeLimits},
+    ast::{
+        CurlyElement, Decl, Expr, FStringPart, Literal, Node, Pattern as AstPattern, RangeLimits,
+    },
     sourcemap::SourceMap,
 };
 
@@ -539,6 +541,17 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             let lhs = lower_expr(ctx, &nc.lhs);
             let rhs = lower_expr(ctx, &nc.rhs);
             ctx.record_expr(node, ExprKind::NilCoalesce { lhs, rhs })
+        }
+        Expr::FString(fstr) => {
+            let parts = fstr
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    FStringPart::Literal(_) => None,
+                    FStringPart::Expr(expr) => Some(lower_expr(ctx, expr)),
+                })
+                .collect();
+            ctx.record_expr(node, ExprKind::FString { parts })
         }
         Expr::Block(block) => {
             if block.stmts.is_empty() {

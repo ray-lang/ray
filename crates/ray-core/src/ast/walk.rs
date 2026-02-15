@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, File, Index, List, Module, Name, New,
-    Node, Pattern, Range, ScopedAccess, Set, Tuple, UnaryOp,
+    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, FStringPart, File, Index, List,
+    Module, Name, New, Node, Pattern, Range, ScopedAccess, Set, Tuple, UnaryOp,
     expr::{Assign, Block, Call, Closure, For, Func, If, Loop, Sequence, While},
 };
 
@@ -148,6 +148,13 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
                     .push(StackEntry::EnterNode(WalkItem::Expr(&nc.rhs)));
                 walk.stack
                     .push(StackEntry::EnterNode(WalkItem::Expr(&nc.lhs)));
+            }
+            Expr::FString(fstr) => {
+                for part in fstr.parts.iter().rev() {
+                    if let FStringPart::Expr(expr) = part {
+                        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(expr)));
+                    }
+                }
             }
             Expr::Cast(cast) => push_cast(walk, cast),
             Expr::Curly(curly) => push_curly(walk, curly),
