@@ -344,6 +344,9 @@ fn find_ctx_in_expr(expr: &Node<Expr>, srcmap: &SourceMap, pos: &Pos) -> Option<
         Expr::BinOp(binop) => find_ctx_in_expr(&binop.lhs, srcmap, pos)
             .or_else(|| find_ctx_in_expr(&binop.rhs, srcmap, pos)),
 
+        Expr::NilCoalesce(nc) => find_ctx_in_expr(&nc.lhs, srcmap, pos)
+            .or_else(|| find_ctx_in_expr(&nc.rhs, srcmap, pos)),
+
         Expr::Paren(inner)
         | Expr::Some(inner)
         | Expr::DefaultValue(inner)

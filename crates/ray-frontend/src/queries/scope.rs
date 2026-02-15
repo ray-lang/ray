@@ -257,6 +257,10 @@ fn collect_locals_in_expr(
             collect_locals_in_expr(&binop.lhs, srcmap, pos, resolutions, locals);
             collect_locals_in_expr(&binop.rhs, srcmap, pos, resolutions, locals);
         }
+        Expr::NilCoalesce(nc) => {
+            collect_locals_in_expr(&nc.lhs, srcmap, pos, resolutions, locals);
+            collect_locals_in_expr(&nc.rhs, srcmap, pos, resolutions, locals);
+        }
         Expr::Paren(inner)
         | Expr::Some(inner)
         | Expr::DefaultValue(inner)

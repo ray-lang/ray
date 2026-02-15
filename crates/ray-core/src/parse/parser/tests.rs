@@ -8,7 +8,7 @@ use ray_shared::{
 use ray_typing::types::NominalKind;
 
 use crate::{
-    ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, Pattern},
+    ast::{Decl, Expr, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern},
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
 };
@@ -760,7 +760,7 @@ fn main() where {
 fn recovers_missing_fn_type_return() {
     let source = r#"
 struct Foo {
-    cb: Fn(i32) -> ,
+    cb: fn(i32) -> ,
 }
 "#;
     let (file, errors) = parse_source(source);
@@ -2067,4 +2067,240 @@ impl object Foo {
         errors
     );
     assert!(file.decls.len() >= 2, "expected struct + impl declarations");
+}
+
+// ---------------------------------------------------------------------------
+// Nil-coalescing (else) expression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parses_nil_coalesce_with_default_value() {
+    let src = r#"
+fn main() {
+    x = get() else 10
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(assign) => assign,
+        other => panic!("expected assignment, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::NilCoalesce(NilCoalesce { lhs, rhs }) => {
+            assert!(
+                matches!(lhs.value, Expr::Call(_)),
+                "expected call on LHS, got {:?}",
+                lhs.value
+            );
+            assert!(
+                matches!(rhs.value, Expr::Literal(Literal::Integer { .. })),
+                "expected integer literal on RHS, got {:?}",
+                rhs.value
+            );
+        }
+        other => panic!("expected NilCoalesce, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_nil_coalesce_with_return() {
+    let src = r#"
+fn main() {
+    x = get() else return
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(assign) => assign,
+        other => panic!("expected assignment, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::NilCoalesce(NilCoalesce { rhs, .. }) => {
+            assert!(
+                matches!(rhs.value, Expr::Return(None)),
+                "expected bare return on RHS, got {:?}",
+                rhs.value
+            );
+        }
+        other => panic!("expected NilCoalesce, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_nil_coalesce_with_return_value() {
+    let src = r#"
+fn main() -> int {
+    x = get() else return 42
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(assign) => assign,
+        other => panic!("expected assignment, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::NilCoalesce(NilCoalesce { rhs, .. }) => {
+            assert!(
+                matches!(rhs.value, Expr::Return(Some(_))),
+                "expected return with value on RHS, got {:?}",
+                rhs.value
+            );
+        }
+        other => panic!("expected NilCoalesce, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_nil_coalesce_with_break() {
+    let src = r#"
+fn main() {
+    loop {
+        x = get() else break
+    }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let loop_expr = match &block.stmts[0].value {
+        Expr::Loop(l) => l,
+        other => panic!("expected loop, got {:?}", other),
+    };
+    let loop_block = match &loop_expr.body.value {
+        Expr::Block(block) => block,
+        other => panic!("expected block in loop, got {:?}", other),
+    };
+    let assign = match &loop_block.stmts[0].value {
+        Expr::Assign(assign) => assign,
+        other => panic!("expected assignment, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::NilCoalesce(NilCoalesce { rhs, .. }) => {
+            assert!(
+                matches!(rhs.value, Expr::Break(None)),
+                "expected bare break on RHS, got {:?}",
+                rhs.value
+            );
+        }
+        other => panic!("expected NilCoalesce, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_nil_coalesce_with_continue() {
+    let src = r#"
+fn main() {
+    loop {
+        x = get() else continue
+    }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let loop_expr = match &block.stmts[0].value {
+        Expr::Loop(l) => l,
+        other => panic!("expected loop, got {:?}", other),
+    };
+    let loop_block = match &loop_expr.body.value {
+        Expr::Block(block) => block,
+        other => panic!("expected block in loop, got {:?}", other),
+    };
+    let assign = match &loop_block.stmts[0].value {
+        Expr::Assign(assign) => assign,
+        other => panic!("expected assignment, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::NilCoalesce(NilCoalesce { rhs, .. }) => {
+            assert!(
+                matches!(rhs.value, Expr::Continue),
+                "expected continue on RHS, got {:?}",
+                rhs.value
+            );
+        }
+        other => panic!("expected NilCoalesce, got {:?}", other),
+    }
+}
+
+#[test]
+fn nil_coalesce_binds_tighter_than_assignment() {
+    // `x = a else b` should parse as `x = (a else b)`, not `(x = a) else b`
+    let src = r#"
+fn main() {
+    x = a else b
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::Assign(assign) => {
+            assert!(
+                matches!(assign.rhs.value, Expr::NilCoalesce(_)),
+                "expected NilCoalesce as RHS of assignment, got {:?}",
+                assign.rhs.value
+            );
+        }
+        other => panic!("expected assignment, got {:?}", other),
+    }
+}
+
+#[test]
+fn nil_coalesce_does_not_interfere_with_if_else() {
+    // `if cond { a } else { b }` should still parse as an if-else, not nil-coalesce
+    let src = r#"
+fn main() {
+    if true { 1 } else { 2 }
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors, got: {:?}",
+        errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    match &block.stmts[0].value {
+        Expr::If(if_expr) => {
+            assert!(if_expr.els.is_some(), "expected if-else with else branch");
+        }
+        other => panic!("expected If expression, got {:?}", other),
+    }
 }

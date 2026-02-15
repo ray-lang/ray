@@ -131,7 +131,7 @@ impl<'a> TyParser<'a> {
     fn parse_ty_complex(&mut self) -> Result<Option<Ty>, String> {
         Ok(if let Some('*') = self.peek() {
             Some(self.parse_ptr_ty()?)
-        } else if let Some("Fn") = self.peek_n(2) {
+        } else if let Some("fn") = self.peek_n(2) {
             Some(self.parse_fn_ty()?)
         } else if let Some('[') = self.peek() {
             Some(self.parse_arr_ty()?)
@@ -256,8 +256,8 @@ impl<'a> TyParser<'a> {
     }
 
     fn parse_fn_ty(&mut self) -> Result<Ty, String> {
-        // Fn(<params>) -> <ret_ty>
-        self.expect("Fn");
+        // fn(<params>) -> <ret_ty>
+        self.expect("fn");
         let params_ty = self.parse_tuple_ty()?;
         let ret_ty = Box::new(if let Some("->") = self.peek_n(2) {
             self.advance(2);
@@ -406,12 +406,12 @@ mod tests {
 
     #[test]
     fn parses_fn_ty() {
-        let ty = TyParser::parse("Fn(i32, uint) -> string")
-            .expect("could not parse `Fn(i32, uint) -> string`");
+        let ty = TyParser::parse("fn(i32, uint) -> string")
+            .expect("could not parse `fn(i32, uint) -> string`");
         assert_eq!(ty, Ty::func(vec![Ty::i32(), Ty::uint()], Ty::string()));
 
-        let ty = TyParser::parse("pkg::T[uint, Fn(i8, (u64, i64)) -> string]")
-            .expect("could not parse `pkg::T[uint, Fn(i8, (u64, i64)) -> string]`");
+        let ty = TyParser::parse("pkg::T[uint, fn(i8, (u64, i64)) -> string]")
+            .expect("could not parse `pkg::T[uint, fn(i8, (u64, i64)) -> string]`");
         assert_eq!(
             ty,
             Ty::proj(

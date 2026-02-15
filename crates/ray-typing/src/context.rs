@@ -105,6 +105,12 @@ pub enum ExprKind {
     Some { expr: NodeId },
     /// Bare `nil` literal (Section "Nilable literals").
     Nil,
+    /// Nil-coalescing expression `lhs else rhs`.
+    ///
+    /// If `lhs` is `nilable[T]`, evaluates to the unwrapped `T` value when
+    /// non-nil, otherwise evaluates `rhs`. The `rhs` may be a divergent
+    /// expression (`return`, `break`, `continue`) with type `never`.
+    NilCoalesce { lhs: NodeId, rhs: NodeId },
     /// Top-level or named function binding. Unlike closures, these correspond
     /// to declared functions and always carry binding identifiers for their
     /// parameters.

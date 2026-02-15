@@ -354,6 +354,10 @@ fn transform_expr_children(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>
             transform_expr(&mut binop.lhs, ctx);
             transform_expr(&mut binop.rhs, ctx);
         }
+        Expr::NilCoalesce(nc) => {
+            transform_expr(&mut nc.lhs, ctx);
+            transform_expr(&mut nc.rhs, ctx);
+        }
         Expr::UnaryOp(unop) => {
             transform_expr(&mut unop.expr, ctx);
         }

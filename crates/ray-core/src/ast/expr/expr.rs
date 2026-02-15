@@ -8,8 +8,8 @@ use ray_typing::types::TyScheme;
 
 use super::{
     Assign, BinOp, Block, Call, Cast, Closure, Curly, Dict, Dot, For, Func, If, Index, List,
-    Literal, Loop, Missing, Name, New, Pattern, Range, ScopedAccess, Sequence, Set, Tuple, UnaryOp,
-    While,
+    Literal, Loop, Missing, Name, New, NilCoalesce, Pattern, Range, ScopedAccess, Sequence, Set,
+    Tuple, UnaryOp, While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +39,7 @@ pub enum Expr {
     Missing(Missing),
     Name(Name),
     New(New),
+    NilCoalesce(NilCoalesce),
     /// A qualified path like `std::collections::HashMap`.
     /// Each segment is a Node with its own NodeId for name resolution.
     Path(Vec<Node<String>>),
@@ -106,6 +107,7 @@ impl std::fmt::Display for Expr {
                 Expr::Missing(ex) => ex.to_string(),
                 Expr::Name(ex) => ex.to_string(),
                 Expr::New(ex) => ex.to_string(),
+                Expr::NilCoalesce(ex) => ex.to_string(),
                 Expr::Path(segments) => segments
                     .iter()
                     .map(|s| s.value.as_str())
@@ -161,6 +163,7 @@ impl Expr {
             Expr::Missing(..) => "Missing",
             Expr::Name(..) => "Name",
             Expr::New(..) => "New",
+            Expr::NilCoalesce(..) => "NilCoalesce",
             Expr::Path(..) => "Path",
             Expr::Pattern(..) => "Pattern",
             Expr::Paren(..) => "Paren",
@@ -209,6 +212,7 @@ impl Expr {
             | Expr::Loop(_)
             | Expr::Missing(_)
             | Expr::New(_)
+            | Expr::NilCoalesce(_)
             | Expr::Paren(_)
             | Expr::Range(_)
             | Expr::Ref(_)
@@ -261,6 +265,7 @@ impl Expr {
             | Expr::Loop(_)
             | Expr::Missing(_)
             | Expr::New(_)
+            | Expr::NilCoalesce(_)
             | Expr::Paren(_)
             | Expr::Range(_)
             | Expr::Ref(_)
@@ -305,6 +310,7 @@ impl Expr {
             Expr::Missing(..) => "missing expression",
             Expr::Name(..) => "name",
             Expr::New(..) => "new",
+            Expr::NilCoalesce(..) => "nil coalesce",
             Expr::Pattern(..) => "pattern",
             Expr::Path(..) => "path",
             Expr::Paren(..) => "paren",

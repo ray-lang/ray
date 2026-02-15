@@ -105,7 +105,7 @@ impl Parser<'_> {
     fn parse_ty_complex(&mut self, ctx: &ParseContext) -> ParseResult<Option<Parsed<TyScheme>>> {
         Ok(if peek!(self, TokenKind::Asterisk) {
             Some(self.parse_ptr_ty(ctx)?)
-        } else if peek!(self, TokenKind::UpperFn) {
+        } else if peek!(self, TokenKind::Fn) {
             Some(self.parse_fn_ty(ctx)?)
         } else if peek!(self, TokenKind::LeftBracket) {
             Some(self.parse_arr_ty(ctx)?)

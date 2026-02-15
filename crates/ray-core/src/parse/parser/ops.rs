@@ -5,8 +5,8 @@ use super::{
 };
 
 use crate::ast::{
-    Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, Node, Pattern, PrefixOp, Range,
-    RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
+    Assign, Associativity, BinOp, Cast, Deref, Expr, InfixOp, NilCoalesce, Node, Pattern, PrefixOp,
+    Range, RangeLimits, Ref, Sequence, UnaryOp, token::TokenKind,
 };
 use ray_shared::span::Span;
 
@@ -185,6 +185,10 @@ impl Parser<'_> {
                         trailing: false,
                     })
                 }
+                InfixOp::Else => Expr::NilCoalesce(NilCoalesce {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                }),
                 _ => Expr::BinOp(BinOp {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),

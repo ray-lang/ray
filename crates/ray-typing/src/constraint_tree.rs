@@ -1150,6 +1150,36 @@ fn generate_constraints_for_expr(
                     info: info.clone(),
                 });
             }
+            ExprKind::NilCoalesce { lhs, rhs } => {
+                // Nil-coalescing expression `lhs else rhs`:
+                //
+                //   Γ ⊢ lhs ⇝ (T_lhs, C_lhs)
+                //   Γ ⊢ rhs ⇝ (T_rhs, C_rhs)
+                //   fresh ?payload
+                //   --------------------------------------------------------
+                //   Γ ⊢ lhs else rhs ⇝
+                //       (?payload, C_lhs ∪ C_rhs ∪
+                //           { T_lhs == nilable[?payload], T_rhs == ?payload })
+                //
+                // The result type is the unwrapped payload of the nilable lhs.
+                // When rhs is a divergent expression (return/break/continue),
+                // T_rhs will be `never` which unifies with any ?payload.
+                let lhs_ty = ctx.expr_ty_or_fresh(*lhs);
+                let rhs_ty = ctx.expr_ty_or_fresh(*rhs);
+                let payload_ty = ctx.fresh_meta();
+                // lhs must be nilable[?payload]
+                node.wanteds.push(Constraint::eq(
+                    lhs_ty,
+                    Ty::nilable(payload_ty.clone()),
+                    info.clone(),
+                ));
+                // rhs must match the payload type
+                node.wanteds
+                    .push(Constraint::eq(rhs_ty, payload_ty.clone(), info.clone()));
+                // result is the payload type
+                node.wanteds
+                    .push(Constraint::eq(expr_ty, payload_ty, info.clone()));
+            }
             ExprKind::OpFunc { args, result, .. } => {
                 let arg_tys: Vec<_> = args.iter().map(|id| ctx.expr_ty_or_fresh(*id)).collect();
                 let result_ty = ctx.expr_ty_or_fresh(*result);
@@ -2504,6 +2534,90 @@ mod tests {
                 .wanteds
                 .iter()
                 .any(|c| matches!(c.kind, ConstraintKind::Class(_)))
+        );
+    }
+
+    #[test]
+    fn nil_coalesce_generates_nilable_and_payload_constraints() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let lhs = NodeId::new();
+        let rhs = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(lhs, ExprKind::Nil);
+        kinds.insert(rhs, ExprKind::LiteralInt);
+        kinds.insert(expr_id, ExprKind::NilCoalesce { lhs, rhs });
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // Should generate 3 Eq constraints:
+        //   lhs_ty == nilable[?payload]
+        //   rhs_ty == ?payload
+        //   expr_ty == ?payload
+        let eq_count = binding_node
+            .wanteds
+            .iter()
+            .filter(|c| matches!(c.kind, ConstraintKind::Eq(_)))
+            .count();
+        assert!(
+            eq_count >= 3,
+            "expected at least 3 Eq constraints for NilCoalesce, got {}",
+            eq_count
+        );
+
+        // One of the constraints should involve nilable[...]
+        assert!(
+            binding_node.wanteds.iter().any(|c| match &c.kind {
+                ConstraintKind::Eq(eq) =>
+                    matches!(&eq.lhs, Ty::Proj(name, _) if name.as_str() == "nilable")
+                        || matches!(&eq.rhs, Ty::Proj(name, _) if name.as_str() == "nilable"),
+                _ => false,
+            }),
+            "expected a constraint involving nilable[...] type"
+        );
+    }
+
+    #[test]
+    fn nil_coalesce_with_never_rhs_still_generates_constraints() {
+        // Simulates `lhs else return` where rhs has type `never`
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let lhs = NodeId::new();
+        let ret_expr = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(lhs, ExprKind::Nil);
+        kinds.insert(ret_expr, ExprKind::Return { expr: None });
+        kinds.insert(expr_id, ExprKind::NilCoalesce { lhs, rhs: ret_expr });
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // Should still generate the nilable constraint even when rhs is `return`
+        assert!(
+            binding_node.wanteds.iter().any(|c| match &c.kind {
+                ConstraintKind::Eq(eq) =>
+                    matches!(&eq.lhs, Ty::Proj(name, _) if name.as_str() == "nilable")
+                        || matches!(&eq.rhs, Ty::Proj(name, _) if name.as_str() == "nilable"),
+                _ => false,
+            }),
+            "expected a constraint involving nilable[...] type even with never RHS"
         );
     }
 }

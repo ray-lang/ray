@@ -536,6 +536,7 @@ impl CollectConstraints for Node<Expr> {
             Expr::Missing(_) => todo!(),
             Expr::Name(ex) => (ex, src).collect_constraints(ctx),
             Expr::New(ex) => (ex, src).collect_constraints(ctx),
+            Expr::NilCoalesce(_) => todo!("old_collect: NilCoalesce"),
             Expr::Paren(ex) => (ex, src).collect_constraints(ctx),
             Expr::Path(ex) => (ex, src).collect_constraints(ctx),
             Expr::Pattern(ex) => (ex, src).collect_constraints(ctx),

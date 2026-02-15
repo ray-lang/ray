@@ -143,6 +143,12 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             Expr::Sequence(sequence) => push_sequence(walk, sequence),
             Expr::While(while_expr) => push_while(walk, while_expr),
             Expr::BinOp(bin_op) => push_bin_op(walk, bin_op),
+            Expr::NilCoalesce(nc) => {
+                walk.stack
+                    .push(StackEntry::EnterNode(WalkItem::Expr(&nc.rhs)));
+                walk.stack
+                    .push(StackEntry::EnterNode(WalkItem::Expr(&nc.lhs)));
+            }
             Expr::Cast(cast) => push_cast(walk, cast),
             Expr::Curly(curly) => push_curly(walk, curly),
             Expr::Dict(dict) => push_dict(walk, dict),

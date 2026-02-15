@@ -239,6 +239,10 @@ fn collect_all_bindings_in_expr(
             collect_all_bindings_in_expr(&binop.lhs, resolutions, names);
             collect_all_bindings_in_expr(&binop.rhs, resolutions, names);
         }
+        Expr::NilCoalesce(nc) => {
+            collect_all_bindings_in_expr(&nc.lhs, resolutions, names);
+            collect_all_bindings_in_expr(&nc.rhs, resolutions, names);
+        }
         Expr::Paren(inner)
         | Expr::Some(inner)
         | Expr::DefaultValue(inner)

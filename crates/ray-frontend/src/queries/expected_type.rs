@@ -329,6 +329,9 @@ fn find_context_in_expr(
         Expr::BinOp(binop) => find_context_in_expr(&binop.lhs, srcmap, pos, enclosing_func_id)
             .or_else(|| find_context_in_expr(&binop.rhs, srcmap, pos, enclosing_func_id)),
 
+        Expr::NilCoalesce(nc) => find_context_in_expr(&nc.lhs, srcmap, pos, enclosing_func_id)
+            .or_else(|| find_context_in_expr(&nc.rhs, srcmap, pos, enclosing_func_id)),
+
         Expr::Paren(inner)
         | Expr::Some(inner)
         | Expr::DefaultValue(inner)

@@ -356,6 +356,10 @@ impl<'a> SemanticTokenCollector<'a> {
                     &[],
                 );
             }
+            Expr::NilCoalesce(nc) => {
+                self.visit_expr(&nc.lhs);
+                self.visit_expr(&nc.rhs);
+            }
             Expr::Block(block) => {
                 for stmt in &block.stmts {
                     self.visit_expr(stmt);

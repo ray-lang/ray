@@ -535,6 +535,11 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 ctx.record_expr(node, ExprKind::Missing)
             }
         }
+        Expr::NilCoalesce(nc) => {
+            let lhs = lower_expr(ctx, &nc.lhs);
+            let rhs = lower_expr(ctx, &nc.rhs);
+            ctx.record_expr(node, ExprKind::NilCoalesce { lhs, rhs })
+        }
         Expr::Block(block) => {
             if block.stmts.is_empty() {
                 ctx.record_expr(node, ExprKind::Tuple { elems: Vec::new() })

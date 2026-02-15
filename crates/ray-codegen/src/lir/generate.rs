@@ -2974,6 +2974,94 @@ impl LirGen<GenResult> for Node<Expr> {
                 // because method_resolutions is keyed by the BinOp expression node.
                 ctx.call_from_op(self.id, &[binop.lhs.as_ref(), binop.rhs.as_ref()])?
             }
+            Expr::NilCoalesce(nc) => {
+                // Nil-coalescing: `lhs else rhs`
+                //
+                // 1. Evaluate `lhs` (nilable['a]) into a local
+                // 2. Extract `is_some` field as the branch condition
+                // 3. Then-branch: extract `payload` field (the unwrapped value)
+                // 4. Else-branch: evaluate `rhs`
+                // 5. Merge both branches into the result local
+
+                let lhs_ty = ctx.ty_of(nc.lhs.id);
+                let lhs_val = nc.lhs.lir_gen(ctx)?;
+                let lhs_loc = ctx.get_or_set_local(lhs_val, lhs_ty.clone()).unwrap();
+
+                // Extract `is_some` field and branch on it
+                let cond_label = ctx.new_block();
+                let cond_loc = ctx.with_block(cond_label, |ctx| {
+                    ctx.block().markers_mut().push(lir::ControlMarker::If);
+                    let is_some_val: lir::Value = lir::GetField {
+                        src: lir::Variable::Local(lhs_loc),
+                        field: str!("is_some"),
+                    }
+                    .into();
+                    ctx.get_or_set_local(is_some_val, Ty::bool().into())
+                        .unwrap()
+                });
+
+                ctx.goto(cond_label);
+
+                // Then-branch: extract the payload
+                let payload_ty = lhs_ty
+                    .mono()
+                    .nilable_payload()
+                    .cloned()
+                    .map(TyScheme::from_mono)
+                    .unwrap_or_else(|| ty.clone());
+
+                let then_label = ctx.new_block();
+                let (then_val, then_end) = ctx.with_block_capture(then_label, |_ctx| {
+                    let payload_val: lir::Value = lir::GetField {
+                        src: lir::Variable::Local(lhs_loc),
+                        field: str!("payload"),
+                    }
+                    .into();
+                    RayResult::Ok(payload_val)
+                });
+                let then_val = then_val?;
+
+                // Else-branch: evaluate rhs
+                let else_label = ctx.new_block();
+                let (else_val, else_end) =
+                    ctx.with_block_capture(else_label, |ctx| RayResult::Ok(nc.rhs.lir_gen(ctx)?));
+                let else_val = else_val?;
+
+                // Create result local and store from both branches
+                let result_loc = ctx.local(ty.clone());
+                ctx.with_block(then_end, |ctx| {
+                    if let Some(loc) = ctx.get_or_set_local(then_val, payload_ty) {
+                        ctx.set_local(
+                            result_loc,
+                            lir::Atom::Variable(lir::Variable::Local(loc)).into(),
+                        );
+                    }
+                });
+                ctx.with_block(else_end, |ctx| {
+                    if let Some(loc) = ctx.get_or_set_local(else_val, ty.clone()) {
+                        ctx.set_local(
+                            result_loc,
+                            lir::Atom::Variable(lir::Variable::Local(loc)).into(),
+                        );
+                    }
+                });
+
+                // Wire up the control flow
+                ctx.with_block(cond_label, |ctx| {
+                    ctx.cond(cond_loc, then_label, else_label);
+                });
+
+                let end_label = ctx.new_block();
+                ctx.with_block(then_end, |ctx| ctx.goto(end_label));
+                ctx.with_block(else_end, |ctx| ctx.goto(end_label));
+
+                ctx.use_block(end_label);
+                ctx.block()
+                    .markers_mut()
+                    .push(lir::ControlMarker::End(cond_label));
+
+                lir::Atom::Variable(lir::Variable::Local(result_loc)).into()
+            }
             Expr::Break(ex) => {
                 if let Some(_) = ex {
                     todo!()
@@ -5378,5 +5466,159 @@ fn caller() -> u32 { helper() }
         ]);
 
         let _prog = generate(&db, true).expect("lir generation should succeed");
+    }
+
+    #[test]
+    fn generates_nil_coalesce_with_default_value() {
+        let src = r#"
+fn get_value() -> u32? {
+    some(42u32)
+}
+
+pub fn main() -> u32 {
+    get_value() else 0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // NilCoalesce should branch on `is_some` and extract `payload`
+        let mut saw_if = false;
+        let mut saw_is_some = false;
+        let mut saw_payload = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::If(_)) {
+                    saw_if = true;
+                }
+                if let Inst::SetLocal(_, Value::GetField(gf)) = inst {
+                    match gf.field.as_str() {
+                        "is_some" => saw_is_some = true,
+                        "payload" => saw_payload = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_if,
+            "expected nil coalesce to generate Inst::If\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_is_some,
+            "expected nil coalesce to check is_some field\n--- LIR Program ---\n{}",
+            prog
+        );
+        assert!(
+            saw_payload,
+            "expected nil coalesce to extract payload field\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_nil_coalesce_with_return() {
+        let src = r#"
+fn get_value() -> u32? {
+    some(42u32)
+}
+
+pub fn main() -> u32 {
+    get_value() else return 0u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // The else-branch should contain a Ret instruction
+        let mut saw_if = false;
+        let mut saw_ret_count = 0;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::If(_)) {
+                    saw_if = true;
+                }
+                if matches!(inst, Inst::Return(_)) {
+                    saw_ret_count += 1;
+                }
+            }
+        }
+
+        assert!(
+            saw_if,
+            "expected nil coalesce to generate Inst::If\n--- LIR Program ---\n{}",
+            prog
+        );
+        // At least 2 returns: the `return 0u32` in else-branch and the implicit main return
+        assert!(
+            saw_ret_count >= 2,
+            "expected at least 2 Ret instructions (else return + implicit), got {}\n--- LIR Program ---\n{}",
+            saw_ret_count,
+            prog
+        );
+    }
+
+    #[test]
+    fn generates_nil_coalesce_assigned_to_variable() {
+        let src = r#"
+fn get_value() -> u32? {
+    some(42u32)
+}
+
+pub fn main() -> u32 {
+    x = get_value() else 99u32
+    x
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Should have an if-branch (from nil coalesce) and both is_some + payload field access
+        let mut saw_if = false;
+        let mut saw_is_some = false;
+        let mut saw_payload = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::If(_)) {
+                    saw_if = true;
+                }
+                if let Inst::SetLocal(_, Value::GetField(gf)) = inst {
+                    match gf.field.as_str() {
+                        "is_some" => saw_is_some = true,
+                        "payload" => saw_payload = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_if && saw_is_some && saw_payload,
+            "expected nil coalesce in assignment to generate if/is_some/payload\n--- LIR Program ---\n{}",
+            prog
+        );
     }
 }

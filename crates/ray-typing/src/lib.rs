@@ -313,6 +313,7 @@ impl TypeCheckInput {
                 fields.iter().map(|(_, id)| *id).collect()
             }
             Some(ExprKind::Some { expr }) => vec![*expr],
+            Some(ExprKind::NilCoalesce { lhs, rhs }) => vec![*lhs, *rhs],
             Some(ExprKind::Range { start, end, .. }) => vec![*start, *end],
             Some(ExprKind::Nil)
             | Some(ExprKind::LiteralInt)
