@@ -340,8 +340,8 @@ impl Parser<'_> {
     fn parse_fn_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
         let parser = &mut self.with_scope(ctx).with_description("parse function type");
         let ctx = &parser.ctx_clone();
-        // Fn[<ty_params>](<params>) -> <ret_ty>
-        let fn_span = parser.expect_keyword(TokenKind::UpperFn, ctx)?;
+        // fn[<ty_params>](<params>) -> <ret_ty>
+        let fn_span = parser.expect_keyword(TokenKind::Fn, ctx)?;
         let start = fn_span.start;
         let ty_params = parser.parse_ty_params(ctx)?;
         let (params_ty, params_src, param_ids) =
