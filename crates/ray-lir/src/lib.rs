@@ -1,10 +1,12 @@
 mod intrinsics;
 mod transform;
+mod tree_shake;
 mod types;
 mod visitor;
 
 pub use intrinsics::*;
 pub use transform::*;
+pub use tree_shake::RootSet;
 pub use types::*;
 pub use visitor::*;
 

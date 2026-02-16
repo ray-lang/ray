@@ -64,7 +64,7 @@ use crate::{lir::Builder, mangle, mono};
 /// # Arguments
 /// * `db` - The query database
 /// * `is_lib` - Whether we're building a library (skips _start generation)
-pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
+pub fn generate(db: &Database, is_lib: bool) -> RayResult<(lir::Program, Option<lir::RootSet>)> {
     // Get workspace and libraries
     let workspace = db.get_input::<WorkspaceSnapshot>(());
     let libraries = db.get_input::<LoadedLibraries>(());
@@ -257,10 +257,15 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
             }
         }
     }
+    let root_set = if is_lib {
+        Some(prog.snapshot_root_set())
+    } else {
+        None
+    };
     for other in libs {
         prog.extend(other);
     }
-    Ok(prog)
+    Ok((prog, root_set))
 }
 
 pub fn monomorphize(program: &mut lir::Program) {
@@ -4348,7 +4353,7 @@ mod tests {
             panic!("{:?}", err);
         }
 
-        let prog = gen_result.unwrap();
+        let (prog, _) = gen_result.unwrap();
         assert_eq!(
             prog.funcs.len(),
             4, // _start, module main, id, and user main
@@ -4387,7 +4392,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4544,7 +4549,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4630,7 +4635,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4689,7 +4694,7 @@ pub fn main() -> bool {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4736,7 +4741,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         // Verify the Counter::get method was generated
         let get_func = prog
@@ -4789,7 +4794,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4835,7 +4840,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         // Find the closure function
         let closure_func = prog
@@ -4871,7 +4876,7 @@ pub fn main() -> u32? {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4907,7 +4912,7 @@ pub fn main() -> u32? {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -4979,7 +4984,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5021,7 +5026,7 @@ pub fn main() -> f64 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5065,7 +5070,7 @@ pub fn main() -> string {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         // Check that we have data for the string
         assert!(
@@ -5084,7 +5089,7 @@ pub fn main() -> (u32, bool) {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5129,7 +5134,7 @@ pub fn main() -> bool {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         // Find the make_range function which contains the range expression
         let range_func = prog
@@ -5173,7 +5178,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5223,7 +5228,7 @@ pub fn main() -> list[u32] {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5269,7 +5274,7 @@ pub fn main() -> *u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5314,7 +5319,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5351,7 +5356,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5386,7 +5391,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5435,7 +5440,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         // Check that we have a function handle struct type and wrapper function
         let has_fn_handle = prog
@@ -5477,7 +5482,7 @@ pub fn main() -> Counter {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5525,7 +5530,7 @@ pub fn main() -> Widget {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5561,7 +5566,7 @@ pub fn main() -> *u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5597,7 +5602,7 @@ pub fn main() -> *A {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5640,7 +5645,7 @@ pub fn main() -> u64 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5700,7 +5705,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5731,7 +5736,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -5791,7 +5796,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false)
+        let (prog, _) = generate(&db, false)
             .expect("lir generation should succeed for compound assignment in while loop");
 
         let user_main_idx: usize = prog
@@ -5877,7 +5882,7 @@ pub fn main() -> u32 {
             module_path.clone(),
         );
 
-        let prog = generate(&db, false)
+        let (prog, _) = generate(&db, false)
             .expect("lir generation should succeed for compound assignment across files");
 
         let user_main_idx: usize = prog
@@ -5935,7 +5940,7 @@ fn caller() -> u32 { helper() }
             module_path.clone(),
         );
 
-        let prog = generate(&db, false)
+        let (prog, _) = generate(&db, false)
             .expect("lir generation should succeed for multi-file workspace with cross-file calls");
 
         // Verify both helper and caller functions were generated
@@ -5983,7 +5988,7 @@ fn caller() -> u32 { helper() }
             },
         ]);
 
-        let _prog = generate(&db, true).expect("lir generation should succeed");
+        let (_prog, _) = generate(&db, true).expect("lir generation should succeed");
     }
 
     #[test]
@@ -5999,7 +6004,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -6056,7 +6061,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -6106,7 +6111,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -6174,7 +6179,7 @@ pub fn main() -> string {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -6227,7 +6232,7 @@ pub fn main() -> string {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let user_main_idx: usize = prog
             .user_main_idx
@@ -6372,7 +6377,7 @@ test "basic addition" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let test_func = prog
             .funcs
@@ -6413,7 +6418,7 @@ test "third" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let test_funcs: Vec<_> = prog.funcs.iter().filter(|f| f.is_test).collect();
         assert_eq!(
@@ -6452,7 +6457,7 @@ test "with statements" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let test_func = prog
             .funcs
@@ -6499,7 +6504,7 @@ pub fn main() -> u32 {
 "#;
 
         let (db, _file_id) = setup_test_workspace(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let test_funcs: Vec<_> = prog.funcs.iter().filter(|f| f.is_test).collect();
         assert!(
@@ -6519,7 +6524,7 @@ test "handles edge-case: empty input!" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let test_func = prog
             .funcs
@@ -6549,7 +6554,7 @@ test "return check" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let test_func = prog
             .funcs
@@ -6584,7 +6589,7 @@ test "two" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         // Find the _start function (the harness)
         let start_func = prog
@@ -6644,7 +6649,7 @@ test "check exit" {
 "#;
 
         let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let prog = generate(&db, false).expect("lir generation should succeed");
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
 
         let start_func = prog
             .funcs

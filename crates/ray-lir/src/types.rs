@@ -1941,7 +1941,7 @@ impl Call {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CExternCall {
     fn_name: String,
-    args: Vec<Atom>,
+    pub(crate) args: Vec<Atom>,
     ty: Ty,
 }
 
@@ -2580,7 +2580,7 @@ impl Substitutable for Cast {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IntConvert {
-    value: Atom,
+    pub(crate) value: Atom,
     src: (Size, bool),
     dst: (Size, bool),
 }

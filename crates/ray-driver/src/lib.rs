@@ -365,11 +365,14 @@ impl Driver {
         let module_paths = workspace.module_paths();
         let srcmap = workspace_source_map(db, ());
 
-        let mut program = lir::generate(db, options.build_lib)?;
+        let (mut program, root_set) = lir::generate(db, options.build_lib)?;
         if matches!(options.emit, Some(build::EmitType::LIR)) {
-            if !options.build_lib {
+            if options.build_lib {
+                program.tree_shake(root_set.as_ref());
+            } else {
                 log::debug!("program before monomorphization:\n{}", program);
                 lir::monomorphize(&mut program);
+                program.tree_shake(None);
                 log::debug!("program after monomorphization:");
             }
             println!("{}", program);
@@ -411,6 +414,7 @@ impl Driver {
                 lib_data.traits.len(),
                 lib_data.impls.len(),
             );
+            program.tree_shake(root_set.as_ref());
             let lib = libgen::serialize(lib_data, program);
             let path = output_path("raylib");
 
@@ -418,8 +422,13 @@ impl Driver {
             fs::write(&path, lib).map_err(|err| vec![err.into()])?;
             Ok(Some(path))
         } else {
+            // Pre-mono tree-shaking is skipped for executables: monomorphization
+            // discovers transitive dependencies through impls_by_trait that aren't
+            // visible in the static symbol graph. Post-mono tree-shaking handles
+            // dead code elimination after all specializations are resolved.
             log::debug!("program before monomorphization:\n{}", program);
             lir::monomorphize(&mut program);
+            program.tree_shake(None);
             log::debug!("program after monomorphization:\n{}", program);
 
             let lcx = inkwell::context::Context::create();
