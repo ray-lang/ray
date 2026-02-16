@@ -1,13 +1,23 @@
+//! Raw pointer arithmetic.
+//!
+//! Provides `Add` and `Sub` implementations for `rawptr` so that pointer
+//! offsets can be computed with `+` and `-` syntax. Offsets are in units of
+//! the pointed-to element (not bytes).
+
+/// Advances a raw pointer forward by `offset` elements.
 @intrinsic
 extern fn __ptr_add(ptr: rawptr['a], offset: uint) -> rawptr['a]
 
+/// Moves a raw pointer backward by `offset` elements.
 @intrinsic
 extern fn __ptr_sub(ptr: rawptr['a], offset: uint) -> rawptr['a]
 
+/// Pointer addition: `ptr + offset` advances by `offset` elements.
 impl Add[rawptr['a], uint, rawptr['a]] {
     fn +(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_add(lhs, rhs)
 }
 
+/// Pointer subtraction: `ptr - offset` retreats by `offset` elements.
 impl Sub[rawptr['a], uint, rawptr['a]] {
     fn -(lhs: rawptr['a], rhs: uint) -> rawptr['a] => __ptr_sub(lhs, rhs)
 }

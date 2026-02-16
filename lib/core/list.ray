@@ -1,15 +1,43 @@
+//! A growable, heap-allocated array.
+//!
+//! `list['a]` is a generic dynamic array backed by a contiguous block of
+//! memory. It supports indexed access, iteration, and amortized O(1) `push`.
+//!
+//! # Examples
+//!
+//! ```ray
+//! mut items = list[int]::with_capacity(4)
+//! items.push(10)
+//! items.push(20)
+//! items.push(30)
+//!
+//! for v in items {
+//!     print(v)
+//! }
+//! ```
+
+/// A growable array of `'a` elements.
+///
+/// Elements are stored contiguously in memory. The list tracks its current
+/// `len` (number of elements) and `capacity` (allocated slots). When `len`
+/// reaches `capacity`, the next `push` doubles the allocation.
 struct list['a] {
     values: rawptr['a]
     len: uint
     capacity: uint
 }
 
+/// Iterator over the elements of a `list`.
 struct ListIter['a] {
     list: *list['a]
     idx: uint
 }
 
+/// Indexed access into a list.
+///
+/// Returns `nil` if `idx` is out of bounds.
 impl Index[list['a], 'a, uint] {
+    /// Returns the element at `idx`, or `nil` if out of bounds.
     fn get(self: *list['a], idx: uint) -> 'a? {
         if idx >= self.len {
             return nil
@@ -19,6 +47,8 @@ impl Index[list['a], 'a, uint] {
         some(*ptr)
     }
 
+    /// Replaces the element at `idx` with `el`. Returns the previous value,
+    /// or `nil` if out of bounds.
     fn set(self: *list['a], idx: uint, el: 'a) -> 'a? {
         if idx >= self.len {
             return nil
@@ -31,12 +61,15 @@ impl Index[list['a], 'a, uint] {
     }
 }
 
+/// Creates an iterator over the elements of a list.
 impl Iterable[list['a], ListIter['a], 'a] {
     fn iter(self: *list['a]) -> ListIter['a] {
         ListIter { list: self, idx: 0 }
     }
 }
 
+/// Advances the list iterator, returning the next element or `nil` when
+/// exhausted.
 impl Iter[ListIter['a], 'a] {
     fn next(self: *ListIter['a]) -> 'a? {
         if self.idx >= self.list.len {
@@ -51,6 +84,7 @@ impl Iter[ListIter['a], 'a] {
 }
 
 impl object list['a] {
+    /// Creates a new list with pre-allocated space for `capacity` elements.
     static fn with_capacity(capacity: uint) -> list['a] {
         if capacity == 0 {
             return list { values: malloc(0) as rawptr['a], len: 0, capacity: 0 }
@@ -62,14 +96,17 @@ impl object list['a] {
         list { values, len: 0, capacity }
     }
 
+    /// Returns `true` if the list contains no elements.
     fn is_empty(self: *list['a]) -> bool {
         self.len == 0
     }
 
+    /// Removes all elements from the list without releasing memory.
     fn clear(self: *list['a]) -> () {
         self.len = 0
     }
 
+    /// Removes and returns the last element, or `nil` if the list is empty.
     fn pop(self: *list['a]) -> 'a? {
         if self.len == 0 {
             return nil
@@ -82,6 +119,10 @@ impl object list['a] {
         some(prev)
     }
 
+    /// Reallocates the list to hold exactly `capacity` elements.
+    ///
+    /// If `capacity` is less than the current length, elements beyond the
+    /// new capacity are dropped.
     fn reserve(self: *list['a], capacity: uint) -> () {
         if capacity == self.capacity {
             return
@@ -111,6 +152,7 @@ impl object list['a] {
         self.capacity = capacity
     }
 
+    /// Appends `el` to the end of the list, growing the allocation if needed.
     fn push(self: *list['a], el: 'a) -> () {
         if self.len == self.capacity {
             if self.capacity == 0 {

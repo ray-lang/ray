@@ -1,1 +1,4 @@
+//! Built-in decorators.
+
+/// Marks a function for inlining at call sites.
 fn inline() => ()

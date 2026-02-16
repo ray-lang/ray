@@ -108,12 +108,15 @@ impl Parser<'_> {
                 TokenKind::Fn | TokenKind::Modifier(_) => {
                     parser.enter_def::<ParseResult<Pos>>(|parser, def_id| {
                         let (mut f, span) = parser.parse_fn(only_sigs, ctx)?;
-                        f.sig.doc_comment = doc;
+                        f.sig.doc_comment = doc.clone();
                         f.sig.is_method = true;
                         let name = f.sig.path.to_short_name();
                         let name_span = parser.srcmap.get(&f.sig.path).span.unwrap();
                         // Wrap in Decl::Func so methods have the same shape as top-level functions
                         let decl_node = parser.mk_node(Decl::Func(f), span, ctx.path.clone());
+                        if let Some(doc) = doc {
+                            parser.srcmap.set_doc(&decl_node, doc);
+                        }
                         parser.defs.push(DefHeader {
                             def_id,
                             root_node: decl_node.id,

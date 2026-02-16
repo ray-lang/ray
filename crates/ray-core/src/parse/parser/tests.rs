@@ -232,6 +232,31 @@ trait Hash['a] {
 }
 
 #[test]
+fn impl_inner_fn_gets_doc_comment() {
+    let mut srcmap = SourceMap::new();
+    let source = r#"/// Add for int
+impl Add[int, int, int] {
+    /// Adds two integers.
+    fn add(self: int, rhs: int) -> int => self
+}
+"#;
+    let (file, errors) = parse_source_with_srcmap(source, &mut srcmap);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.decls.len(), 1);
+
+    let doc0 = srcmap.doc(&file.decls[0]).expect("impl should have doc");
+    assert_eq!(doc0, "Add for int");
+
+    let Decl::Impl(impl_decl) = &*file.decls[0] else {
+        panic!("expected impl");
+    };
+    let funcs = impl_decl.funcs.as_ref().expect("impl should have funcs");
+    let fn_decl = &funcs[0];
+    let fn_doc = srcmap.doc(fn_decl).expect("inner fn should have doc");
+    assert_eq!(fn_doc, "Adds two integers.");
+}
+
+#[test]
 fn parses_new_expression() {
     let src = r#"
 fn main() {

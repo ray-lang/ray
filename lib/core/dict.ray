@@ -1,3 +1,22 @@
+//! A hash map from keys to values.
+//!
+//! `dict['k, 'v]` is an open-addressing hash table using SwissTable-style
+//! control bytes. Keys must implement `Hash` and `Eq`. The table grows
+//! automatically when the load factor exceeds ~7/8.
+//!
+//! # Examples
+//!
+//! ```ray
+//! mut m = dict[string, int]::with_capacity(16)
+//! m["alice"] = 1
+//! m["bob"] = 2
+//!
+//! for k, v in m {
+//!     print(k)
+//! }
+//! ```
+
+/// Internal storage record. Not exposed to user code.
 struct dict_entry['k, 'v] {
     hash: u64
     key: 'k
@@ -6,6 +25,11 @@ struct dict_entry['k, 'v] {
     state: u8
 }
 
+/// A hash map from `'k` keys to `'v` values.
+///
+/// Uses separate `ctrl`, `keys`, and `values` arrays with linear probing.
+/// The `ctrl` byte for each slot stores the low 7 bits of the hash (h2)
+/// or a sentinel value for empty / deleted slots.
 struct dict['k, 'v] {
     ctrl: rawptr[u8]
     keys: rawptr['k]
@@ -15,12 +39,18 @@ struct dict['k, 'v] {
     tombstones: uint
 }
 
+/// Iterator over the key-value pairs of a `dict`.
 struct DictIter['k, 'v] {
     dict: *dict['k, 'v]
     idx: uint
 }
 
+/// Indexed access into a dict by key.
+///
+/// `get` returns `nil` if the key is not present. `set` inserts or replaces
+/// the value for the given key.
 impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
+    /// Returns the value for `key`, or `nil` if not present.
     fn get(self: *dict['k, 'v], key: 'k) -> 'v? {
         if self.capacity == 0 {
             return nil
@@ -36,17 +66,22 @@ impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
         some(*vptr)
     }
 
+    /// Inserts or replaces the value for `key`. Returns the previous value,
+    /// or `nil` if the key was not present.
     fn set(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.insert(key, value)
     }
 }
 
+/// Creates an iterator over the key-value pairs of a dict.
 impl Iterable[dict['k, 'v], DictIter['k, 'v], ('k, 'v)] {
     fn iter(self: *dict['k, 'v]) -> DictIter['k, 'v] {
         DictIter { dict: self, idx: 0 }
     }
 }
 
+/// Advances the dict iterator, returning the next `(key, value)` pair or
+/// `nil` when exhausted.
 impl Iter[DictIter['k, 'v], ('k, 'v)] where Hash['k], Eq['k, 'k] {
     fn next(self: *DictIter['k, 'v]) -> ('k, 'v)? {
         while self.idx < self.dict.capacity {
@@ -88,6 +123,10 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         cap
     }
 
+    /// Creates a new dict with space for at least `capacity` entries.
+    ///
+    /// The actual capacity is rounded up to the next power of two
+    /// (minimum 16).
     static fn with_capacity(capacity: uint) -> dict['k, 'v] {
         if capacity == 0 {
             return dict {
@@ -132,10 +171,12 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         dict { ctrl, keys, values, len: 0, capacity: cap, tombstones: 0 }
     }
 
+    /// Returns `true` if the dict contains no entries.
     fn is_empty(self: *dict['k, 'v]) -> bool {
         self.len == 0
     }
 
+    /// Returns `true` if `key` is present in the dict.
     fn contains_key(self: *dict['k, 'v], key: 'k) -> bool {
         if self.capacity == 0 {
             return false
@@ -146,6 +187,8 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         found
     }
 
+    /// Inserts `key` / `value` into the dict. Returns the previous value
+    /// if the key was already present, or `nil` otherwise.
     fn insert(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.__ensure_capacity(1)
 
@@ -181,6 +224,8 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         nil
     }
 
+    /// Removes `key` from the dict. Returns the removed value, or `nil` if
+    /// the key was not present.
     fn remove(self: *dict['k, 'v], key: 'k) -> 'v? {
         if self.capacity == 0 {
             return nil

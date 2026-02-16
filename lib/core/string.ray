@@ -1,12 +1,23 @@
+//! The `string` type and its trait implementations.
+//!
+//! Strings in Ray are length-prefixed byte sequences stored as a raw pointer
+//! and a length. They are not null-terminated. Strings support equality
+//! comparison, hashing (for use as `dict` keys), and concatenation via `+`.
+
+/// A UTF-8 string represented as a pointer to bytes and a length.
 struct string {
     raw_ptr: rawptr[u8]
     len: uint
 }
 
+/// Strings convert to themselves (identity conversion).
 impl ToStr[string] {
     fn to_str(self) => self
 }
 
+/// Byte-by-byte equality comparison for strings.
+///
+/// Two strings are equal if they have the same length and identical bytes.
 impl Eq[string, string] {
     fn ==(a: string, b: string) -> bool {
         if a.len != b.len {
@@ -27,6 +38,7 @@ impl Eq[string, string] {
     }
 }
 
+/// FNV-1a hashing for strings, hashing each byte sequentially.
 impl Hash[string] {
     fn hash(self: string) -> u64 {
         // FNV-1a (64-bit)
@@ -42,6 +54,7 @@ impl Hash[string] {
     }
 }
 
+/// String concatenation. Returns a new string containing `a` followed by `b`.
 impl Add[string, string, string] {
     fn +(a: string, b: string) -> string {
         len = a.len + b.len

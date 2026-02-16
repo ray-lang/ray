@@ -1,8 +1,30 @@
+//! Integer types and their trait implementations.
+//!
+//! Ray provides both signed and unsigned integer types in various widths:
+//!
+//! | Signed   | Unsigned | Width     |
+//! |----------|----------|-----------|
+//! | `int`    | `uint`   | native    |
+//! | `i8`     | `u8`     | 8-bit     |
+//! | `i16`    | `u16`    | 16-bit    |
+//! | `i32`    | `u32`    | 32-bit    |
+//! | `i64`    | `u64`    | 64-bit    |
+//!
+//! All integer types implement `Int`. Signed types additionally implement
+//! `SignedInt`, and unsigned types implement `UnsignedInt`. These marker
+//! traits are used as constraints for generic integer algorithms (e.g.
+//! `Hash` and `ToStr` implementations).
+
+/// Marker trait for all integer types.
+///
+/// The default type is `int` (the native-width signed integer).
 trait Int['a] {
     default (int)
 }
 
+/// Marker trait for signed integer types (`int`, `i8`, `i16`, `i32`, `i64`).
 trait SignedInt['a] {}
+/// Marker trait for unsigned integer types (`uint`, `u8`, `u16`, `u32`, `u64`).
 trait UnsignedInt['a] {}
 
 impl Int[int] {}
@@ -27,6 +49,7 @@ impl UnsignedInt[u32] {}
 impl Int[u64] {}
 impl UnsignedInt[u64] {}
 
+/// FNV-1a hashing for all integer types.
 impl Hash['a] where Int['a] {
     fn hash(self: 'a) -> u64 {
         mut packed, len = int_hash_bytes(self)
@@ -46,6 +69,7 @@ impl Hash['a] where Int['a] {
     }
 }
 
+/// Converts an unsigned integer to its decimal string representation.
 impl ToStr['a] where UnsignedInt['a], Int['a], Div['a, 'a, 'a], Mod['a, 'a, 'a], Eq['a, 'a] {
     fn to_str(self: 'a) -> string {
         mut len = 1
@@ -74,6 +98,9 @@ impl ToStr['a] where UnsignedInt['a], Int['a], Div['a, 'a, 'a], Mod['a, 'a, 'a],
     }
 }
 
+/// Converts a signed integer to its decimal string representation.
+///
+/// Negative values are prefixed with `-`.
 impl ToStr['a] where SignedInt['a], Int['a], Lt['a, 'a], Neg['a, 'a], Div['a, 'a, 'a], Mod['a, 'a, 'a], Eq['a, 'a] {
     fn to_str(self: 'a) -> string {
         mut len = 1
@@ -105,7 +132,7 @@ impl ToStr['a] where SignedInt['a], Int['a], Lt['a, 'a], Neg['a, 'a], Div['a, 'a
         if self < 0 {
             *ptr = '-' as u8
         }
-        
+
         string { raw_ptr, len }
     }
 }

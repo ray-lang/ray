@@ -1,20 +1,46 @@
+//! Numeric ranges for iteration.
+//!
+//! A `range` represents a half-open or closed interval over integer types.
+//! Ranges are created with the `..<` (exclusive) and `..=` (inclusive)
+//! operators and are most commonly used in `for` loops.
+//!
+//! # Examples
+//!
+//! ```ray
+//! for i in 0..<10 {
+//!     print(i)  // 0, 1, 2, ..., 9
+//! }
+//!
+//! for i in 1..=5 {
+//!     print(i)  // 1, 2, 3, 4, 5
+//! }
+//! ```
+
+/// A range from `start` to `end`.
+///
+/// When `inclusive` is `false`, the range excludes `end` (half-open).
+/// When `inclusive` is `true`, the range includes `end` (closed).
 struct range['a] {
     start: 'a
     end: 'a
     inclusive: bool
 }
 
+/// Iterator state for a range.
 struct RangeIter['a] {
     range: *range['a]
     curr: 'a
 }
 
+/// Creates an iterator over the values in a range.
 impl Iterable[range['a], RangeIter['a], 'a] {
     fn iter(self: *range['a]) -> RangeIter['a] {
         RangeIter { range: self, curr: self.start }
     }
 }
 
+/// Advances the range iterator by one step, returning the next value or
+/// `nil` when the range is exhausted.
 impl Iter[RangeIter['a], 'a] where Int['a], Add['a, 'a, 'a], Lt['a, 'a], LtEq['a, 'a] {
     fn next(self: *RangeIter['a]) -> 'a? {
         if self.range.inclusive {

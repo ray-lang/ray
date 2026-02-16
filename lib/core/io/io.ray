@@ -1,5 +1,14 @@
+//! Standard output functions.
+//!
+//! Provides `print` and `puts` for writing to stdout. `print` converts
+//! any `ToStr` value to a string and appends a newline. `puts` writes
+//! a raw string without conversion.
+
 import super with ToStr, sizeof, string
 
+/// Prints `v` to stdout followed by a newline.
+///
+/// The value is converted to a string via its `ToStr` implementation.
 fn print(v: 'a) -> () where ToStr['a] {
     s = v.to_str()
     nl = "\n"
@@ -13,6 +22,7 @@ fn print(v: 'a) -> () where ToStr['a] {
     _ = writev_stdout(chunks, 2)
 }
 
+/// Writes the string `s` to stdout without a trailing newline.
 fn puts(s: string) -> () {
     _ = writev_stdout(&s, 1)
 }

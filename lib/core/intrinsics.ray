@@ -1,6 +1,17 @@
+//! Compiler intrinsics.
+//!
+//! These are low-level functions implemented directly by the compiler backend.
+//! They cannot be written in Ray and are used to bootstrap the core library.
+//! User code should generally use the higher-level traits and functions
+//! defined elsewhere in the core library instead of calling these directly.
+
+/// Returns the size in bytes of type `'a`.
 @intrinsic extern fn sizeof(t: type['a]) -> uint
+/// Copies `len` bytes from `src` to `dst`. The memory regions may not overlap.
 @intrinsic extern fn memcopy(dst: rawptr[u8], src: rawptr[u8], len: uint) -> ()
 
+/// Packs the bytes of an integer value for hashing. Returns the packed
+/// representation and the number of bytes.
 @intrinsic extern fn int_hash_bytes(x: 'a) -> (u64, uint) where Int['a]
 
 // Arithmetic comparisons

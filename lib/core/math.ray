@@ -1,3 +1,8 @@
+//! Basic math utilities.
+
+/// Returns the absolute value of `a`.
+///
+/// For signed integer types, returns `-a` when `a < 0`, otherwise returns `a`.
 fn abs(a: 'a) -> 'a where Int['a], Lt['a, 'a], Neg['a, 'a] {
     if a < 0 {
         -a

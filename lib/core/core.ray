@@ -1,5 +1,10 @@
-//! This is the core library for Ray
+//! The Ray core library.
+//!
+//! This is the root module of the core library. It re-exports the `io`
+//! submodule and provides the `malloc` allocator intrinsic used by all
+//! heap-allocating data structures.
 
 import io
 
+/// Allocates `size` bytes of uninitialized memory and returns a pointer.
 extern fn malloc(size: uint) -> rawptr[u8]

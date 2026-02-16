@@ -1,12 +1,21 @@
+//! WASI file descriptor I/O.
+//!
+//! Low-level bindings to the WASI `fd_write` syscall for writing data
+//! to file descriptors. Used internally by `print` and `puts`.
+
 import super with string
 
+/// WASI `fd_write` -- writes scatter/gather vectors to a file descriptor.
 extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) -> uint
 
+/// A scatter/gather I/O vector for WASI file operations.
 struct IOVec {
     base: rawptr[u8]  // Starting address
     len: uint  // Number of bytes to transfer
 }
 
+/// Writes `n` string chunks to stdout using WASI vectored I/O.
+/// Returns the number of bytes written.
 fn writev_stdout(chunks: *string, n: uint) -> uint {
     iovecs = new(IOVec, n)
     raw_chunks = chunks as rawptr[string]

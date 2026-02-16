@@ -1,29 +1,52 @@
+//! An unordered collection of unique elements.
+//!
+//! `set['k]` is implemented as a thin wrapper around `dict['k, ()]`. Keys
+//! must implement `Hash` and `Eq`.
+//!
+//! # Examples
+//!
+//! ```ray
+//! mut s = set[int]::with_capacity(16)
+//! s.insert(1)
+//! s.insert(2)
+//! s.insert(1)  // duplicate, ignored
+//! print(s.len())  // 2
+//! ```
+
+/// An unordered set of unique `'k` elements, backed by a `dict`.
 struct set['k] {
     inner: dict['k, ()]
 }
 
 impl object set['k] where Hash['k], Eq['k, 'k] {
+    /// Creates a new set with space for at least `capacity` elements.
     static fn with_capacity(capacity: uint) -> set['k] {
         set { inner: dict['k, ()]::with_capacity(capacity) }
     }
 
+    /// Returns `true` if the set contains no elements.
     fn is_empty(self: *set['k]) -> bool {
         self.inner.is_empty()
     }
 
+    /// Returns the number of elements in the set.
     fn len(self: *set['k]) -> uint {
         self.inner.len
     }
 
+    /// Returns `true` if `key` is in the set.
     fn contains(self: *set['k], key: 'k) -> bool {
         self.inner.contains_key(key)
     }
 
+    /// Adds `key` to the set. Returns `true` if the key was newly inserted,
+    /// `false` if it was already present.
     fn insert(self: *set['k], key: 'k) -> bool {
         prev = self.inner.insert(key, ())
         prev == nil
     }
 
+    /// Removes `key` from the set. Returns `true` if the key was present.
     fn remove(self: *set['k], key: 'k) -> bool {
         prev = self.inner.remove(key)
         prev != nil
