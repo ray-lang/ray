@@ -465,7 +465,13 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
         FileSource::new(&db, file_id, source.to_string());
         FileMetadata::new(
             &db,

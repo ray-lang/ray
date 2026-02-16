@@ -218,6 +218,7 @@ impl WorkspaceManager {
             (),
             CompilerOptions {
                 no_core: config.no_core(),
+                test_mode: false,
             },
         );
 

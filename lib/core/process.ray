@@ -1,0 +1,8 @@
+//! Process control.
+//!
+//! WASI bindings for process lifecycle management.
+
+/// Terminates the process with the given exit code.
+///
+/// An exit code of 0 indicates success; any other value indicates failure.
+extern wasi fn proc_exit(code: int)

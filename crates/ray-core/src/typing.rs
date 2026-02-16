@@ -203,10 +203,20 @@ pub fn build_typecheck_input(
                 }
             }
             Decl::Test(test) => {
-                // Test blocks have a body expression but don't introduce type
-                // schemes into the nominal environment. Lower the body so it
-                // participates in type checking.
-                let _root_expr_id = lower_expr(&mut ctx, &test.body);
+                // Test blocks are lowered like FileMain: their body statements
+                // are registered in file_main_stmts so the typechecker processes
+                // each statement and infers types for all expressions.
+                if let Expr::Block(block) = &test.body.value {
+                    if !block.stmts.is_empty() {
+                        let test_def = decl_node.id.owner;
+                        let mut stmt_ids = Vec::with_capacity(block.stmts.len());
+                        for stmt in &block.stmts {
+                            let stmt_id = lower_expr(&mut ctx, stmt);
+                            stmt_ids.push(stmt_id);
+                        }
+                        ctx.file_main_stmts.insert(test_def, stmt_ids);
+                    }
+                }
             }
         }
     }

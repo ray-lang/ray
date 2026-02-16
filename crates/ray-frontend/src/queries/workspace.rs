@@ -19,6 +19,8 @@ use crate::query::{Database, Input, Query};
 pub struct CompilerOptions {
     /// When true, don't automatically import `core` and `core::io`.
     pub no_core: bool,
+    /// When true, compile test blocks and generate test harness.
+    pub test_mode: bool,
 }
 
 /// Input representing the source code contents of a file.

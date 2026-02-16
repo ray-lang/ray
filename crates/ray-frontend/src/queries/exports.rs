@@ -65,8 +65,8 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
 
     // Then, extract definitions from defs
     for def in &parse_result.defs {
-        // Skip FileMain itself - it's not an export
-        if matches!(def.kind, DefKind::FileMain) {
+        // Skip FileMain and Test - they're not exports
+        if matches!(def.kind, DefKind::FileMain | DefKind::Test) {
             continue;
         }
 

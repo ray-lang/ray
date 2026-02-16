@@ -2675,9 +2675,36 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
             lir::IntrinsicKind::BoolAnd => self.codegen_basic_op(lir::Op::And, false, ctx, srcmap),
             lir::IntrinsicKind::BoolOr => self.codegen_basic_op(lir::Op::Or, false, ctx, srcmap),
             lir::IntrinsicKind::BoolNot => self.codegen_basic_op(lir::Op::Not, false, ctx, srcmap),
-            lir::IntrinsicKind::TestAssert | lir::IntrinsicKind::TestFail => {
-                // Test intrinsics are handled by the test harness codegen
-                todo!("test intrinsic codegen")
+            lir::IntrinsicKind::TestAssert => {
+                // Inline expansion: if !cond { __test_failed = true }
+                // Local 0 is always __test_failed in test functions.
+                let cond = self.eval_intrinsic_int(ctx, srcmap, 0)?;
+                let test_failed_ptr = ctx.get_local(0);
+
+                let fn_val = ctx.get_fn();
+                let fail_block = ctx.lcx.append_basic_block(fn_val, "assert_fail");
+                let pass_block = ctx.lcx.append_basic_block(fn_val, "assert_pass");
+
+                ctx.builder
+                    .build_conditional_branch(cond, pass_block, fail_block)?;
+
+                // In fail block: set flag and continue
+                ctx.builder.position_at_end(fail_block);
+                let true_val = ctx.lcx.bool_type().const_int(1, false);
+                ctx.builder.build_store(test_failed_ptr, true_val)?;
+                ctx.builder.build_unconditional_branch(pass_block)?;
+
+                // Continue from pass block
+                ctx.builder.position_at_end(pass_block);
+                Ok(LoweredCall::Value(ctx.unit()))
+            }
+            lir::IntrinsicKind::TestFail => {
+                // Inline expansion: __test_failed = true (unconditionally)
+                // Local 0 is always __test_failed in test functions.
+                let test_failed_ptr = ctx.get_local(0);
+                let true_val = ctx.lcx.bool_type().const_int(1, false);
+                let inst = ctx.builder.build_store(test_failed_ptr, true_val)?;
+                Ok(LoweredCall::Inst(inst))
             }
         }
     }

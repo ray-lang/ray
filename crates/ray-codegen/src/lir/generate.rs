@@ -48,7 +48,7 @@ use ray_frontend::{
         transform::file_ast,
         typecheck::{def_scheme, inferred_local_type, ty_of},
         types::resolved_ty,
-        workspace::WorkspaceSnapshot,
+        workspace::{CompilerOptions, WorkspaceSnapshot},
     },
     query::Database,
 };
@@ -169,6 +169,9 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
         })
     };
 
+    let options = db.get_input::<CompilerOptions>(());
+    let is_test = options.test_mode;
+
     let start_idx = if !is_lib {
         let mut main_symbols = lir::SymbolSet::new();
         log::debug!("module main path: {}", module_main_path);
@@ -179,54 +182,19 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
         }
 
         ctx.with_builder(Builder::new());
-        ctx.with_new_block(|ctx| {
-            // call all the main functions from the libs first
-            let mut main_funcs = libs
-                .iter()
-                .map(|l| l.module_main_path())
-                .collect::<Vec<_>>();
 
-            // then call _this_ module's main function
-            main_funcs.push(module_main_path.clone());
-
-            // generate calls
-            for main in main_funcs {
-                log::debug!("calling main function: {}", main);
-                main_symbols.insert(main.clone());
-                ctx.push(
-                    lir::Call::new(
-                        main,
-                        vec![],
-                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                        None,
-                    )
-                    .into(),
-                );
-            }
-
-            if let Some((user_main_path, user_main_ty)) = &user_main_info {
-                log::debug!("calling user main function: {}", user_main_path);
-                main_symbols.insert(user_main_path.clone());
-                ctx.push(
-                    lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None)
-                        .into(),
-                );
-            } else if let Some(user_main_path) = &user_main_resolved_path {
-                log::debug!("calling user main function: {}", user_main_path);
-                main_symbols.insert(user_main_path.clone());
-                ctx.push(
-                    lir::Call::new(
-                        user_main_path.clone(),
-                        vec![],
-                        Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                        None,
-                    )
-                    .into(),
-                );
-            }
-
-            ctx.ret(lir::Value::Empty);
-        });
+        if is_test {
+            generate_test_harness(&mut ctx, &libs, &module_main_path, &mut main_symbols);
+        } else {
+            generate_normal_start(
+                &mut ctx,
+                &libs,
+                &module_main_path,
+                &user_main_info,
+                &user_main_resolved_path,
+                &mut main_symbols,
+            );
+        }
 
         // add the _start function
         let builder = ctx.builder.take().unwrap();
@@ -326,6 +294,308 @@ pub fn monomorphize(program: &mut lir::Program) {
 
     // add the new monomorphized functions
     program.funcs.extend(funcs);
+}
+
+/// Generate the normal `_start` function body that calls module mains and user main.
+fn generate_normal_start(
+    ctx: &mut GenCtx,
+    libs: &[lir::Program],
+    module_main_path: &Path,
+    user_main_info: &Option<(Path, TyScheme)>,
+    user_main_resolved_path: &Option<Path>,
+    main_symbols: &mut lir::SymbolSet,
+) {
+    ctx.with_new_block(|ctx| {
+        // call all the main functions from the libs first
+        let mut main_funcs = libs
+            .iter()
+            .map(|l| l.module_main_path())
+            .collect::<Vec<_>>();
+
+        // then call _this_ module's main function
+        main_funcs.push(module_main_path.clone());
+
+        // generate calls
+        for main in main_funcs {
+            log::debug!("calling main function: {}", main);
+            main_symbols.insert(main.clone());
+            ctx.push(
+                lir::Call::new(
+                    main,
+                    vec![],
+                    Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                    None,
+                )
+                .into(),
+            );
+        }
+
+        if let Some((user_main_path, user_main_ty)) = user_main_info {
+            log::debug!("calling user main function: {}", user_main_path);
+            main_symbols.insert(user_main_path.clone());
+            ctx.push(
+                lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None).into(),
+            );
+        } else if let Some(user_main_path) = user_main_resolved_path {
+            log::debug!("calling user main function: {}", user_main_path);
+            main_symbols.insert(user_main_path.clone());
+            ctx.push(
+                lir::Call::new(
+                    user_main_path.clone(),
+                    vec![],
+                    Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                    None,
+                )
+                .into(),
+            );
+        }
+
+        ctx.ret(lir::Value::Empty);
+    });
+}
+
+/// Generate the test harness `_start` function body.
+///
+/// The harness:
+/// 1. Calls module main functions for initialization
+/// 2. Runs each test function, printing PASS/FAIL
+/// 3. Prints a summary with pass/fail counts
+/// 4. Calls `proc_exit(1)` if any tests failed
+fn generate_test_harness(
+    ctx: &mut GenCtx,
+    libs: &[lir::Program],
+    module_main_path: &Path,
+    main_symbols: &mut lir::SymbolSet,
+) {
+    // Resolve well-known functions through the query system.
+    let puts_item = ItemPath::new("core::io", vec!["puts".into()]);
+    let puts_target = def_for_path(ctx.db, puts_item.clone()).expect("core::io::puts not found");
+    let puts_scheme = def_scheme(ctx.db, puts_target).expect("core::io::puts has no type scheme");
+    let puts_path = mangle::fn_name(&puts_item.to_path(), &puts_scheme);
+    let puts_ty = puts_scheme;
+
+    let print_item = ItemPath::new("core::io", vec!["print".into()]);
+    let print_target = def_for_path(ctx.db, print_item.clone()).expect("core::io::print not found");
+    let print_poly_ty =
+        def_scheme(ctx.db, print_target).expect("core::io::print has no type scheme");
+    let print_mono_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
+    let print_mono_path = print_item
+        .to_path()
+        .append_func_type(vec![Ty::int()], Ty::unit());
+
+    let proc_exit_item = ItemPath::new("core", vec!["proc_exit".into()]);
+    let proc_exit_target =
+        def_for_path(ctx.db, proc_exit_item.clone()).expect("core::proc_exit not found");
+    let proc_exit_scheme =
+        def_scheme(ctx.db, proc_exit_target).expect("core::proc_exit has no type scheme");
+    let proc_exit_path = mangle::fn_name(&proc_exit_item.to_path(), &proc_exit_scheme);
+    let proc_exit_ty = proc_exit_scheme;
+
+    let test_functions = ctx.test_functions.clone();
+    let unit_fn_ty: TyScheme = Ty::Func(vec![], Box::new(Ty::unit())).into();
+
+    // Entry block: module initialization
+    let entry_block = ctx.new_block();
+    ctx.use_block(entry_block);
+
+    // Call module main functions
+    let main_funcs: Vec<Path> = libs
+        .iter()
+        .map(|l| l.module_main_path())
+        .chain(std::iter::once(module_main_path.clone()))
+        .collect();
+    for main in &main_funcs {
+        main_symbols.insert(main.clone());
+        ctx.push(lir::Call::new(main.clone(), vec![], unit_fn_ty.clone(), None).into());
+    }
+
+    // Initialize counters: pass_count = 0, fail_count = 0
+    let pass_count_loc = ctx.local(TyScheme::from_mono(Ty::int()));
+    ctx.set_local(
+        pass_count_loc,
+        lir::Atom::IntConst(0, lir::Size::ptr()).into(),
+    );
+    let fail_count_loc = ctx.local(TyScheme::from_mono(Ty::int()));
+    ctx.set_local(
+        fail_count_loc,
+        lir::Atom::IntConst(0, lir::Size::ptr()).into(),
+    );
+
+    let test_fn_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+
+    // For each test function
+    for (test_name, test_path) in &test_functions {
+        // Print "test: {name} ... "
+        let header = format!("test: {} ... ", test_name);
+        let str_loc = ctx.emit_string_literal(&header);
+        main_symbols.insert(puts_path.clone());
+        ctx.push(
+            lir::Call::new(
+                puts_path.clone(),
+                vec![lir::Variable::Local(str_loc)],
+                puts_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+
+        // Call test function (returns bool: true = failed)
+        let result_loc = ctx.local(TyScheme::from_mono(Ty::bool()));
+        let call = lir::Call::new(test_path.clone(), vec![], test_fn_ty.clone(), None);
+        ctx.set_local(result_loc, call.into());
+        main_symbols.insert(test_path.clone());
+
+        // Branch on result: true = failed
+        let fail_block = ctx.new_block();
+        let pass_block = ctx.new_block();
+        let continue_block = ctx.new_block();
+        ctx.cond(result_loc, fail_block, pass_block);
+
+        // Pass block
+        ctx.use_block(pass_block);
+        let pass_str_loc = ctx.emit_string_literal("PASS\n");
+        ctx.push(
+            lir::Call::new(
+                puts_path.clone(),
+                vec![lir::Variable::Local(pass_str_loc)],
+                puts_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+        let add = lir::BasicOp {
+            op: lir::Op::Add,
+            size: lir::Size::ptr(),
+            signed: true,
+            operands: vec![
+                lir::Variable::Local(pass_count_loc).into(),
+                lir::Atom::IntConst(1, lir::Size::ptr()),
+            ],
+        };
+        ctx.set_local(pass_count_loc, add.into());
+        ctx.goto(continue_block);
+
+        // Fail block
+        ctx.use_block(fail_block);
+        let fail_str_loc = ctx.emit_string_literal("FAIL\n");
+        ctx.push(
+            lir::Call::new(
+                puts_path.clone(),
+                vec![lir::Variable::Local(fail_str_loc)],
+                puts_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+        let add = lir::BasicOp {
+            op: lir::Op::Add,
+            size: lir::Size::ptr(),
+            signed: true,
+            operands: vec![
+                lir::Variable::Local(fail_count_loc).into(),
+                lir::Atom::IntConst(1, lir::Size::ptr()),
+            ],
+        };
+        ctx.set_local(fail_count_loc, add.into());
+        ctx.goto(continue_block);
+
+        // Continue to next test
+        ctx.use_block(continue_block);
+    }
+
+    // Summary: "passed: N\nfailed: M\n"
+    // (print adds a newline, so format as two labeled lines)
+    let newline_loc = ctx.emit_string_literal("\n");
+    ctx.push(
+        lir::Call::new(
+            puts_path.clone(),
+            vec![lir::Variable::Local(newline_loc)],
+            puts_ty.clone(),
+            None,
+        )
+        .into(),
+    );
+
+    let passed_label_loc = ctx.emit_string_literal("passed: ");
+    ctx.push(
+        lir::Call::new(
+            puts_path.clone(),
+            vec![lir::Variable::Local(passed_label_loc)],
+            puts_ty.clone(),
+            None,
+        )
+        .into(),
+    );
+    main_symbols.insert(print_mono_path.clone());
+    ctx.push(
+        lir::Call::new(
+            print_mono_path.clone(),
+            vec![lir::Variable::Local(pass_count_loc)],
+            print_mono_ty.clone(),
+            Some(print_poly_ty.clone()),
+        )
+        .into(),
+    );
+
+    let failed_label_loc = ctx.emit_string_literal("failed: ");
+    ctx.push(
+        lir::Call::new(
+            puts_path.clone(),
+            vec![lir::Variable::Local(failed_label_loc)],
+            puts_ty.clone(),
+            None,
+        )
+        .into(),
+    );
+    ctx.push(
+        lir::Call::new(
+            print_mono_path.clone(),
+            vec![lir::Variable::Local(fail_count_loc)],
+            print_mono_ty.clone(),
+            Some(print_poly_ty.clone()),
+        )
+        .into(),
+    );
+
+    // Check if any tests failed
+    let gt_op = lir::BasicOp {
+        op: lir::Op::Gt,
+        size: lir::Size::ptr(),
+        signed: true,
+        operands: vec![
+            lir::Variable::Local(fail_count_loc).into(),
+            lir::Atom::IntConst(0, lir::Size::ptr()),
+        ],
+    };
+    let has_failures_loc = ctx.local(TyScheme::from_mono(Ty::bool()));
+    ctx.set_local(has_failures_loc, gt_op.into());
+
+    let exit_fail_block = ctx.new_block();
+    let exit_ok_block = ctx.new_block();
+    ctx.cond(has_failures_loc, exit_fail_block, exit_ok_block);
+
+    // Exit fail: call proc_exit(1)
+    ctx.use_block(exit_fail_block);
+    let exit_code_loc = ctx.local(TyScheme::from_mono(Ty::int()));
+    ctx.set_local(
+        exit_code_loc,
+        lir::Atom::IntConst(1, lir::Size::ptr()).into(),
+    );
+    main_symbols.insert(proc_exit_path.clone());
+    ctx.push(
+        lir::Call::new(
+            proc_exit_path,
+            vec![lir::Variable::Local(exit_code_loc)],
+            proc_exit_ty,
+            None,
+        )
+        .into(),
+    );
+    ctx.ret(lir::Value::Empty);
+
+    // Exit ok
+    ctx.use_block(exit_ok_block);
+    ctx.ret(lir::Value::Empty);
 }
 
 /// Build the impls_by_trait map by collecting all trait impls from workspace and libraries.
@@ -456,6 +726,8 @@ pub struct GenCtx<'a> {
     fn_handle_types: HashMap<(Vec<Ty>, Ty), StructTy>,
     fn_handle_path_types: HashMap<ItemPath, StructTy>,
     fn_handle_wrappers: HashMap<(Path, Vec<Ty>, Ty), Path>,
+    /// Collected test functions: (test_name, function_path).
+    pub test_functions: Vec<(String, Path)>,
 }
 
 impl<'a> std::ops::Deref for GenCtx<'a> {
@@ -494,6 +766,7 @@ impl<'a> GenCtx<'a> {
             fn_handle_types: HashMap::new(),
             fn_handle_path_types: HashMap::new(),
             fn_handle_wrappers: HashMap::new(),
+            test_functions: Vec::new(),
         }
     }
 
@@ -3861,8 +4134,83 @@ impl LirGen<GenResult> for Node<Decl> {
                     stmt.lir_gen(ctx)?;
                 }
             }
-            Decl::Test(_) => {
-                // Test blocks are only compiled in test mode (handled by test harness generation)
+            Decl::Test(test_decl) => {
+                let options = ctx.db.get_input::<CompilerOptions>(());
+                if !options.test_mode {
+                    return Ok(lir::Value::Empty);
+                }
+
+                // Enter a synthetic def scope for LIR-generated nodes
+                let _guard = NodeId::enter_def(DefId::default());
+
+                ctx.with_builder(Builder::new());
+
+                // Entry block: allocate __test_failed = false (always local 0)
+                let failed_loc = ctx.with_entry_block(|ctx| {
+                    let loc = ctx.local(TyScheme::from_mono(Ty::bool()));
+                    ctx.set_local(loc, lir::Atom::BoolConst(false).into());
+                    loc
+                });
+
+                // Generate body with flag checks after each statement
+                if let Expr::Block(block) = &test_decl.body.value {
+                    let (_, result) = ctx.with_new_block(|ctx| {
+                        for stmt in &block.stmts {
+                            let value = stmt.lir_gen(ctx)?;
+                            if let Some(i) = value.to_inst() {
+                                ctx.push(i);
+                            }
+
+                            // Flag check: if __test_failed, return early
+                            let check_block = ctx.new_block();
+                            ctx.goto(check_block);
+                            ctx.use_block(check_block);
+
+                            let return_block = ctx.new_block();
+                            let continue_block = ctx.new_block();
+                            ctx.cond(failed_loc, return_block, continue_block);
+
+                            ctx.with_block(return_block, |ctx| {
+                                ctx.ret(lir::Variable::Local(failed_loc).into());
+                            });
+
+                            ctx.use_block(continue_block);
+                        }
+
+                        RayResult::Ok(())
+                    });
+                    result?;
+                }
+
+                // Exit block: return __test_failed (false = all passed)
+                ctx.with_exit_block(|ctx| {
+                    ctx.ret(lir::Variable::Local(failed_loc).into());
+                });
+
+                let builder = ctx.builder.take().unwrap();
+                let (params, locals, blocks, symbols, cfg) = builder.done();
+
+                // Generate function name: __test_{index}_{sanitized_name}
+                let test_idx = ctx.test_functions.len();
+                let sanitized = test_decl
+                    .name
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect::<String>();
+                let test_fn_name = format!("__test_{}_{}", test_idx, sanitized);
+                let test_path: Path = test_fn_name.into();
+
+                let fn_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+                let mut func = lir::Func::new(test_path.clone(), fn_ty, vec![], symbols, cfg, None);
+                func.name = test_path.clone();
+                func.params = params;
+                func.locals = locals;
+                func.blocks = blocks;
+                func.is_test = true;
+                ctx.new_func(func);
+
+                // Record test metadata for harness generation
+                ctx.test_functions.push((test_decl.name.clone(), test_path));
             }
         }
 
@@ -3876,17 +4224,21 @@ mod tests {
 
     use ray_frontend::{
         queries::{
-            libraries::LoadedLibraries,
+            defs::{StructDef, StructField},
+            libraries::{LibraryData, LoadedLibraries},
             workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
     use ray_shared::{
+        def::LibraryDefId,
         file_id::FileId,
-        pathlib::{FilePath, ModulePath},
+        pathlib::{FilePath, ItemPath, ModulePath},
+        resolution::DefTarget,
         ty::Ty,
         utils::map_join,
     };
+    use ray_typing::types::TyScheme;
 
     use ray_lir::{ControlMarker, Inst, Value};
 
@@ -3906,7 +4258,13 @@ mod tests {
         workspace.entry = Some(file_id);
 
         db.set_input::<WorkspaceSnapshot>((), workspace);
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         FileSource::new(&db, file_id, src.to_string());
         FileMetadata::new(
@@ -3937,7 +4295,13 @@ mod tests {
         }
 
         db.set_input::<WorkspaceSnapshot>((), workspace);
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
         (db, file_ids)
     }
@@ -5422,7 +5786,13 @@ pub fn main() -> u32 {
         workspace.entry = Some(entry_file);
 
         db.set_input::<WorkspaceSnapshot>((), workspace);
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
 
         FileSource::new(
@@ -5504,7 +5874,13 @@ pub fn main() -> u32 {
         workspace.entry = Some(entry_file);
 
         db.set_input::<WorkspaceSnapshot>((), workspace);
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
 
         FileSource::new(&db, entry_file, "pub fn main() -> u32 { 0u32 }".to_string());
@@ -5849,6 +6225,420 @@ pub fn main() -> string {
         assert!(
             !prog.data.is_empty(),
             "expected f-string literal to produce data entry\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    /// Set up a test workspace with `test_mode: true` and stub core modules
+    /// that provide `puts`, `print`, and `proc_exit` so the test harness can
+    /// resolve them. The entry file is the first argument `src`.
+    fn setup_test_workspace_test_mode(src: &str) -> (Database, FileId) {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+
+        // Entry file (the test file)
+        let file_id = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
+        workspace.entry = Some(file_id);
+        FileSource::new(&db, file_id, src.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
+
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: false,
+                test_mode: true,
+            },
+        );
+
+        // Build stub core library via LoadedLibraries so auto-import works
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core::io"));
+
+        // string struct in core module
+        let string_def_id = LibraryDefId {
+            module: ModulePath::from("core"),
+            index: 0,
+        };
+        let string_path = ItemPath::new("core", vec!["string".into()]);
+        let string_ty = TyScheme::from_mono(Ty::Func(
+            vec![Ty::rawptr(Ty::u8()), Ty::uint(), Ty::uint()],
+            Box::new(Ty::string()),
+        ));
+        core_lib.register_name(string_path.clone(), string_def_id.clone());
+        core_lib
+            .schemes
+            .insert(string_def_id.clone(), string_ty.clone());
+        core_lib.structs.insert(
+            string_def_id.clone(),
+            StructDef {
+                target: DefTarget::Library(string_def_id),
+                path: string_path,
+                ty: string_ty,
+                fields: vec![
+                    StructField {
+                        name: "raw_ptr".to_string(),
+                        ty: TyScheme::from_mono(Ty::rawptr(Ty::u8())),
+                    },
+                    StructField {
+                        name: "len".to_string(),
+                        ty: TyScheme::from_mono(Ty::uint()),
+                    },
+                    StructField {
+                        name: "char_len".to_string(),
+                        ty: TyScheme::from_mono(Ty::uint()),
+                    },
+                ],
+            },
+        );
+
+        // proc_exit in core module
+        let proc_exit_def_id = LibraryDefId {
+            module: ModulePath::from("core"),
+            index: 1,
+        };
+        let proc_exit_path = ItemPath::new("core", vec!["proc_exit".into()]);
+        let proc_exit_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
+        core_lib.register_name(proc_exit_path, proc_exit_def_id.clone());
+        core_lib.schemes.insert(proc_exit_def_id, proc_exit_ty);
+
+        // puts in core::io module
+        let puts_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let puts_path = ItemPath::new("core::io", vec!["puts".into()]);
+        let puts_ty = TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::unit())));
+        core_lib.register_name(puts_path, puts_def_id.clone());
+        core_lib.schemes.insert(puts_def_id, puts_ty);
+
+        // print in core::io module
+        let print_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 1,
+        };
+        let print_path = ItemPath::new("core::io", vec!["print".into()]);
+        let print_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
+        core_lib.register_name(print_path, print_def_id.clone());
+        core_lib.schemes.insert(print_def_id, print_ty);
+
+        let mut libraries = LoadedLibraries::default();
+        libraries.add(ModulePath::from("core"), core_lib);
+        db.set_input::<LoadedLibraries>((), libraries);
+
+        (db, file_id)
+    }
+
+    #[test]
+    fn generates_test_function() {
+        let src = r#"
+test "basic addition" {
+    x = 42u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let test_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.to_string().contains("__test_"));
+        assert!(
+            test_func.is_some(),
+            "expected __test_ function to be generated\n--- Functions ---\n[{}]",
+            map_join(&prog.funcs, ", ", |f| format!("{}", f.name))
+        );
+
+        let test_func = test_func.unwrap();
+        assert!(
+            test_func.is_test,
+            "expected test function to have is_test = true"
+        );
+        assert_eq!(
+            test_func.ty,
+            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool()))),
+            "test function should return bool"
+        );
+    }
+
+    #[test]
+    fn generates_multiple_test_functions() {
+        let src = r#"
+test "first" {
+    x = 1u32
+}
+
+test "second" {
+    y = 2u32
+}
+
+test "third" {
+    z = 3u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let test_funcs: Vec<_> = prog.funcs.iter().filter(|f| f.is_test).collect();
+        assert_eq!(
+            test_funcs.len(),
+            3,
+            "expected 3 test functions, found {}: [{}]",
+            test_funcs.len(),
+            map_join(&test_funcs, ", ", |f| format!("{}", f.name))
+        );
+
+        // Verify naming includes index and sanitized name
+        assert!(
+            test_funcs[0].name.to_string().contains("__test_0_first"),
+            "expected first test to be named __test_0_first, got {}",
+            test_funcs[0].name
+        );
+        assert!(
+            test_funcs[1].name.to_string().contains("__test_1_second"),
+            "expected second test to be named __test_1_second, got {}",
+            test_funcs[1].name
+        );
+        assert!(
+            test_funcs[2].name.to_string().contains("__test_2_third"),
+            "expected third test to be named __test_2_third, got {}",
+            test_funcs[2].name
+        );
+    }
+
+    #[test]
+    fn test_function_has_flag_checks() {
+        let src = r#"
+test "with statements" {
+    x = 1u32
+    y = 2u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let test_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.is_test)
+            .expect("expected test function");
+
+        // The test function should have multiple blocks due to flag checks:
+        // entry block → body block → (for each stmt: check block → return/continue blocks)
+        // With 2 statements, we expect at least 6 blocks:
+        // entry, body, check1, return1, continue1, check2, return2, continue2, exit
+        assert!(
+            test_func.blocks.len() >= 6,
+            "expected at least 6 blocks (flag checks after each statement), got {}\n--- LIR Program ---\n{}",
+            test_func.blocks.len(),
+            prog
+        );
+
+        // Verify there are Inst::If instructions (flag checks)
+        let if_count = test_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::If(_)))
+            .count();
+        assert!(
+            if_count >= 2,
+            "expected at least 2 flag checks (one per statement), got {}\n--- LIR Program ---\n{}",
+            if_count,
+            prog
+        );
+    }
+
+    #[test]
+    fn test_blocks_skipped_in_normal_mode() {
+        let src = r#"
+test "should be skipped" {
+    x = 1u32
+}
+
+pub fn main() -> u32 {
+    42u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let test_funcs: Vec<_> = prog.funcs.iter().filter(|f| f.is_test).collect();
+        assert!(
+            test_funcs.is_empty(),
+            "expected no test functions in normal mode, found {}: [{}]",
+            test_funcs.len(),
+            map_join(&test_funcs, ", ", |f| format!("{}", f.name))
+        );
+    }
+
+    #[test]
+    fn test_function_name_sanitizes_special_chars() {
+        let src = r#"
+test "handles edge-case: empty input!" {
+    x = 1u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let test_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.is_test)
+            .expect("expected test function");
+
+        let name = test_func.name.to_string();
+        assert!(
+            !name.contains(' ') && !name.contains(':') && !name.contains('!'),
+            "expected sanitized name without special chars, got {}",
+            name
+        );
+        assert!(
+            name.contains("__test_0_"),
+            "expected __test_0_ prefix, got {}",
+            name
+        );
+    }
+
+    #[test]
+    fn test_function_returns_failed_flag() {
+        let src = r#"
+test "return check" {
+    x = 1u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let test_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.is_test)
+            .expect("expected test function");
+
+        // The exit block should return local 0 (__test_failed)
+        // Find blocks with Return instructions
+        let ret_blocks: Vec<_> = test_func
+            .blocks
+            .iter()
+            .filter(|b| b.iter().any(|inst| matches!(inst, Inst::Return(_))))
+            .collect();
+        assert!(
+            !ret_blocks.is_empty(),
+            "expected at least one block with a return instruction\n--- LIR Program ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn test_harness_calls_test_functions() {
+        let src = r#"
+test "one" {
+    x = 1u32
+}
+
+test "two" {
+    y = 2u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        // Find the _start function (the harness)
+        let start_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.to_string() == "_start")
+            .expect("expected _start function");
+
+        // The harness should call the test functions
+        let call_names: Vec<String> = start_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter_map(|inst| match inst {
+                Inst::SetLocal(_, Value::Call(call)) => Some(call.fn_name.to_string()),
+                Inst::Call(call) => Some(call.fn_name.to_string()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            call_names.iter().any(|n| n.contains("__test_0_one")),
+            "harness should call __test_0_one\n--- Calls: {:?}\n--- LIR Program ---\n{}",
+            call_names,
+            prog
+        );
+        assert!(
+            call_names.iter().any(|n| n.contains("__test_1_two")),
+            "harness should call __test_1_two\n--- Calls: {:?}\n--- LIR Program ---\n{}",
+            call_names,
+            prog
+        );
+
+        // The harness should call puts (for test headers and results)
+        assert!(
+            call_names.iter().any(|n| n.contains("puts")),
+            "harness should call puts for output\n--- Calls: {:?}\n--- LIR Program ---\n{}",
+            call_names,
+            prog
+        );
+
+        // The harness should call print (for pass/fail counts)
+        assert!(
+            call_names.iter().any(|n| n.contains("print")),
+            "harness should call print for counts\n--- Calls: {:?}\n--- LIR Program ---\n{}",
+            call_names,
+            prog
+        );
+    }
+
+    #[test]
+    fn test_harness_calls_proc_exit_on_failure() {
+        let src = r#"
+test "check exit" {
+    x = 1u32
+}
+"#;
+
+        let (db, _file_id) = setup_test_workspace_test_mode(src);
+        let prog = generate(&db, false).expect("lir generation should succeed");
+
+        let start_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.to_string() == "_start")
+            .expect("expected _start function");
+
+        // The harness should reference proc_exit somewhere (for failure path)
+        let call_names: Vec<String> = start_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter_map(|inst| match inst {
+                Inst::SetLocal(_, Value::Call(call)) => Some(call.fn_name.to_string()),
+                Inst::Call(call) => Some(call.fn_name.to_string()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            call_names.iter().any(|n| n.contains("proc_exit")),
+            "harness should call proc_exit on failure\n--- Calls: {:?}\n--- LIR Program ---\n{}",
+            call_names,
             prog
         );
     }

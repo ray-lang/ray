@@ -251,6 +251,7 @@ impl Driver {
             (),
             CompilerOptions {
                 no_core: options.no_core,
+                test_mode: false,
             },
         );
 

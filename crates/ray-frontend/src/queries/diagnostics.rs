@@ -177,7 +177,13 @@ mod tests {
     }
 
     fn setup_no_core(db: &Database) {
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
     }
 
     fn setup_test_db(source: &str) -> (Database, ray_shared::file_id::FileId) {

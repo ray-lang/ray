@@ -1505,6 +1505,8 @@ pub struct Func {
     /// The source AST node this function was generated from, if any.
     /// `None` for synthetic functions like `_start` and module main.
     pub source_id: Option<NodeId>,
+    /// When true, this is a test function. Local 0 is `__test_failed` (bool).
+    pub is_test: bool,
 }
 
 pub struct FuncDisplayCtx<'a, T> {
@@ -1597,6 +1599,7 @@ impl Func {
             params: vec![],
             locals: vec![],
             blocks: vec![],
+            is_test: false,
         }
     }
 

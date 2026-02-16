@@ -293,7 +293,13 @@ mod tests {
 
     /// Helper to set up CompilerOptions with no_core = true (no implicit imports).
     fn setup_no_core(db: &Database) {
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
     }
 
     #[test]

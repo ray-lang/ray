@@ -473,7 +473,13 @@ mod tests {
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
         FileSource::new(&db, file_id, source.to_string());
         FileMetadata::new(
             &db,
@@ -706,7 +712,13 @@ mod tests {
         let file_b = workspace.add_file(FilePath::from("mymod/b.ray"), Path::from("mymod"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
 
         let source_a = "fn main() { x = 1 }";
         let source_b = "fn helper() {}";
@@ -751,7 +763,13 @@ mod tests {
         let file_utils = workspace.add_file(FilePath::from("utils.ray"), Path::from("utils"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
 
         let source_main = "import utils\nfn main() { x = 1 }";
         let source_utils = "fn helper() {}";
@@ -797,7 +815,13 @@ mod tests {
         let file_utils = workspace.add_file(FilePath::from("utils.ray"), Path::from("utils"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
         LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
-        db.set_input::<CompilerOptions>((), CompilerOptions { no_core: true });
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
 
         let source_main = "import utils with helper\nfn main() { x = 1 }";
         let source_utils = "fn helper() {}";
