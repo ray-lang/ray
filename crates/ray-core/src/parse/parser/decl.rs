@@ -15,6 +15,7 @@ use crate::{
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::NewlineMode,
+    parse::parser::DocComments,
     sourcemap::TriviaKind,
 };
 
@@ -372,12 +373,20 @@ impl Parser<'_> {
                         break;
                     }
 
+                    let DocComments {
+                        module: _,
+                        item: doc,
+                    } = parser.parse_doc_comments();
+
                     parser.enter_def::<ParseResult<()>>(|parser, def_id| {
                         let sig = parser.parse_trait_fn_sig(&ctx)?;
                         let span = sig.span;
                         let name = sig.path.to_short_name();
                         let name_span = parser.srcmap.get(&sig.path).span.unwrap();
                         let node = parser.mk_decl(Decl::FnSig(sig), span, ctx.path.clone());
+                        if let Some(doc) = doc.clone() {
+                            parser.srcmap.set_doc(&node, doc);
+                        }
                         parser.defs.push(DefHeader {
                             def_id,
                             root_node: node.id,

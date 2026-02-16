@@ -473,7 +473,7 @@ impl<'src> Parser<'src> {
 
         // Drain any trivia (comments) that remain before EOF so they are recorded.
         for trivia in parser.lex.preceding() {
-            if let Preceding::Comment(comment_tok) = trivia {
+            if let Preceding::Comment(comment_tok, _) = trivia {
                 parser.record_trivia(TriviaKind::Comment, comment_tok.span, None);
             }
         }
@@ -1240,7 +1240,7 @@ impl<'src> Parser<'src> {
         let mut item_lines: Vec<String> = vec![];
 
         for p in preceding {
-            if let Preceding::Comment(c) = p {
+            if let Preceding::Comment(c, _) = p {
                 self.record_trivia(TriviaKind::Comment, c.span, None);
                 if let TokenKind::Comment { ref content, kind } = c.kind {
                     let line = if let Some(stripped) = content.strip_prefix(' ') {
@@ -1300,14 +1300,13 @@ impl<'src> Parser<'src> {
     }
 
     fn token(&mut self) -> ParseResult<Token> {
-        // let start = self.lex.position();
-        let (leading, tok) = self.lex.consume();
-        for trivia in leading {
-            if let Preceding::Comment(comment_tok) = trivia {
+        let entry = self.lex.consume();
+        for trivia in entry.preceding {
+            if let Preceding::Comment(comment_tok, _) = trivia {
                 self.record_trivia(TriviaKind::Comment, comment_tok.span, None);
             }
         }
-        Ok(tok)
+        Ok(entry.token)
     }
 
     fn peek(&mut self) -> Token {
@@ -1650,7 +1649,7 @@ impl<'src> Parser<'src> {
         matches!(self.peek_kind(), TokenKind::NewLine)
             || self.is_eof()
             || self.lex.peek_preceding().iter().any(|p| match p {
-                Preceding::Whitespace(t) | Preceding::Comment(t) => {
+                Preceding::Whitespace(t, _) | Preceding::Comment(t, _) => {
                     t.kind == TokenKind::NewLine || t.span.lines() > 1
                 }
             })

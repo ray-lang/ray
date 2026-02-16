@@ -146,6 +146,92 @@ fn main() {
 }
 
 #[test]
+fn multiple_definitions_each_get_doc_comments() {
+    let mut srcmap = SourceMap::new();
+    let source = r#"/// first function docs
+fn first() => 1
+
+/// second function docs
+fn second() => 2
+
+/// third function docs
+fn third() => 3
+"#;
+    let (file, errors) = parse_source_with_srcmap(source, &mut srcmap);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.decls.len(), 3, "expected 3 declarations");
+
+    let doc0 = srcmap
+        .doc(&file.decls[0])
+        .expect("first decl should have doc");
+    assert_eq!(doc0, "first function docs");
+
+    let doc1 = srcmap
+        .doc(&file.decls[1])
+        .expect("second decl should have doc");
+    assert_eq!(doc1, "second function docs");
+
+    let doc2 = srcmap
+        .doc(&file.decls[2])
+        .expect("third decl should have doc");
+    assert_eq!(doc2, "third function docs");
+}
+
+#[test]
+fn trait_and_impl_get_doc_comments() {
+    let mut srcmap = SourceMap::new();
+    let source = r#"/// The Add trait
+trait Add['a, 'b, 'c] {
+    fn add(self: 'a, rhs: 'b) -> 'c
+}
+
+/// Add for int
+impl Add[int, int, int] {
+    fn add(self: int, rhs: int) -> int => 1
+}
+"#;
+    let (file, errors) = parse_source_with_srcmap(source, &mut srcmap);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.decls.len(), 2, "expected 2 declarations");
+
+    let doc0 = srcmap.doc(&file.decls[0]).expect("trait should have doc");
+    assert_eq!(doc0, "The Add trait");
+
+    let doc1 = srcmap.doc(&file.decls[1]).expect("impl should have doc");
+    assert_eq!(doc1, "Add for int");
+}
+
+#[test]
+fn trait_inner_fn_gets_doc_comment() {
+    let mut srcmap = SourceMap::new();
+    let source = r#"/// A type that can be hashed.
+///
+/// Types that implement `Hash` can be used as keys in `dict`.
+trait Hash['a] {
+    /// Computes and returns a 64-bit hash of `self`.
+    fn hash(self: 'a) -> u64
+}
+"#;
+    let (file, errors) = parse_source_with_srcmap(source, &mut srcmap);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.decls.len(), 1);
+
+    let doc0 = srcmap.doc(&file.decls[0]).expect("trait should have doc");
+    assert_eq!(
+        doc0,
+        "A type that can be hashed.\n\nTypes that implement `Hash` can be used as keys in `dict`."
+    );
+
+    // The inner fn should also have its doc comment
+    let Decl::Trait(trait_decl) = &*file.decls[0] else {
+        panic!("expected trait");
+    };
+    let fn_decl = &trait_decl.fields[0];
+    let fn_doc = srcmap.doc(fn_decl).expect("inner fn should have doc");
+    assert_eq!(fn_doc, "Computes and returns a 64-bit hash of `self`.");
+}
+
+#[test]
 fn parses_new_expression() {
     let src = r#"
 fn main() {

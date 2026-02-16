@@ -1,14 +1,58 @@
+//! Automatic dereferencing for pointer and reference types.
+//!
+//! This module defines the `Deref` trait and provides implementations for
+//! Ray's two pointer types:
+//!
+//! - `*'a` (references) — Safe, compiler-tracked pointers.
+//! - `rawptr['a]` (raw pointers) — Unsafe, untracked pointers used for
+//!   low-level memory operations and FFI.
+//!
+//! The compiler uses `Deref` to automatically dereference pointers when
+//! the `*` prefix operator is applied.
+
+/// Intrinsic: dereferences a safe reference `*'a` to produce the value `'a`.
 @intrinsic extern fn __deref_ref(p: *'a) -> 'a
+
+/// Intrinsic: dereferences a raw pointer `rawptr['a]` to produce the value `'a`.
+///
+/// # Safety
+///
+/// The pointer must be valid and properly aligned. Dereferencing a null or
+/// dangling raw pointer is undefined behavior.
 @intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
 
+/// A type that can be dereferenced to produce a value of another type.
+///
+/// This trait powers the `*` prefix operator. When you write `*p`, the
+/// compiler calls `p.deref()`.
+///
+/// # Type Parameters
+///
+/// - `'a` — The pointer or wrapper type being dereferenced.
+/// - `'b` — The type of the value obtained by dereferencing.
+///
+/// # Examples
+///
+/// ```ray
+/// x = 42
+/// p: *int = &x
+/// value = *p     // value is 42
+/// ```
 trait Deref['a, 'b] {
+    /// Dereferences `self`, returning the pointed-to value.
     fn deref(self: 'a) -> 'b
 }
 
+/// Dereference a safe reference to obtain the underlying value.
 impl Deref[*'a, 'a] {
     fn deref(self: *'a) -> 'a => __deref_ref(self)
 }
 
+/// Dereference a raw pointer to obtain the underlying value.
+///
+/// # Safety
+///
+/// The raw pointer must point to valid, initialized memory of type `'a`.
 impl Deref[rawptr['a], 'a] {
     fn deref(self: rawptr['a]) -> 'a => __deref_raw(self)
 }

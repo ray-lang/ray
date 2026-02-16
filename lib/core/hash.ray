@@ -1,3 +1,31 @@
+//! Hashing support for use in hash-based collections.
+//!
+//! This module defines the `Hash` trait, which provides a way to compute
+//! a 64-bit hash value for any type. Types that implement `Hash` can be
+//! used as keys in `dict` and elements in `set`.
+//!
+//! Hash implementations for primitive integer types are provided in `int.ray`
+//! using the FNV-1a algorithm. The `string` type also implements `Hash`.
+
+/// A type that can be hashed to produce a 64-bit hash value.
+///
+/// Types that implement `Hash` can be used as keys in `dict` and as
+/// elements in `set`. The hash value should be deterministic: calling
+/// `hash` on the same value must always produce the same result.
+///
+/// # Contract
+///
+/// If two values are equal according to `Eq`, they **must** produce the
+/// same hash value. The converse is not required: different values may
+/// hash to the same value (collisions are expected).
+///
+/// # Examples
+///
+/// ```ray
+/// x = 42
+/// h = x.hash()
+/// ```
 trait Hash['a] {
+    /// Computes and returns a 64-bit hash of `self`.
     fn hash(self: 'a) -> u64
 }

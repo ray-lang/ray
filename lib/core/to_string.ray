@@ -1,11 +1,40 @@
+//! String conversion trait and implementations for basic types.
+//!
+//! This module defines the `ToStr` trait, which provides a standard way to
+//! convert any value to its string representation. It also provides
+//! implementations for fundamental types: `()`, tuples, and `bool`.
+//!
+//! Implementations for numeric types are provided in `int.ray`.
+//! The `string` type's `ToStr` implementation (identity) is in `string.ray`.
+//!
+//! `ToStr` is used implicitly by `print()` and f-string interpolation.
+
+/// A type that can be converted to a human-readable string representation.
+///
+/// This is Ray's equivalent of `Display` / `ToString` in other languages.
+/// Any type that implements `ToStr` can be passed to `print()` and used
+/// in f-string interpolation (`f"value: {x}"`).
+///
+/// # Examples
+///
+/// ```ray
+/// x = 42
+/// s = x.to_str()    // "42"
+/// print(x)           // calls to_str() implicitly
+/// msg = f"x is {x}"  // also calls to_str()
+/// ```
 trait ToStr['a] {
+    /// Converts `self` to its string representation.
     fn to_str(self: 'a) -> string
 }
 
+/// Unit `()` displays as the literal string `"()"`.
 impl ToStr[()] {
     fn to_str(self: ()) -> string => "()"
 }
 
+/// Two-element tuples display as `"(a, b)"` where each element is
+/// converted via its own `ToStr` implementation.
 impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
     fn to_str(self: ('a, 'b)) -> string {
         a, b = self
@@ -13,6 +42,7 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
     }
 }
 
+/// Booleans display as `"true"` or `"false"`.
 impl ToStr[bool] {
     fn to_str(self: bool) -> string {
         if self {

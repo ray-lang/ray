@@ -158,7 +158,7 @@ impl Parser<'_> {
         let (prec_and_toks, _) = self.lex.consume_count(tok_count);
         let span = prec_and_toks
             .iter()
-            .map(|(_, tok)| tok.span)
+            .map(|entry| entry.token.span)
             .reduce(|a, b| a.extend_to(&b))
             .unwrap();
         Ok(Some((op_str, span)))

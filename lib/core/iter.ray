@@ -1,7 +1,74 @@
+//! Iterator protocol for sequential element access.
+//!
+//! This module defines the two traits that form Ray's iteration protocol:
+//!
+//! - `Iterable` — Types that can produce an iterator (e.g., `list`, `dict`, `set`).
+//! - `Iter` — The iterator itself, which yields elements one at a time.
+//!
+//! Together these traits power `for` loops:
+//!
+//! ```ray
+//! for item in my_list {
+//!     print(item)
+//! }
+//! ```
+//!
+//! The compiler desugars this into a call to `iter()` followed by repeated
+//! calls to `next()` until `nil` is returned.
+
+/// An iterator that yields elements of type `'el` one at a time.
+///
+/// Iterators are stateful: each call to `next` advances the iterator
+/// and returns the next element, or `nil` when the sequence is exhausted.
+///
+/// # Type Parameters
+///
+/// - `'it` — The concrete iterator type (e.g., `ListIter`, `DictIter`).
+/// - `'el` — The element type yielded by the iterator.
+///
+/// # Examples
+///
+/// Manually consuming an iterator:
+///
+/// ```ray
+/// mut it = my_list.iter()
+/// loop {
+///     item = it.next()
+///     if item == nil { break }
+///     print(item)
+/// }
+/// ```
 trait Iter['it, 'el] {
+    /// Advances the iterator and returns the next element.
+    ///
+    /// Returns `nil` when there are no more elements.
     fn next(self: *'it) -> 'el?
 }
 
+/// A collection that can produce an iterator over its elements.
+///
+/// Types that implement `Iterable` can be used in `for` loops. The `iter`
+/// method creates a new iterator that traverses the collection from the
+/// beginning.
+///
+/// # Type Parameters
+///
+/// - `'c` — The collection type (e.g., `list['a]`, `dict['k, 'v]`).
+/// - `'it` — The iterator type returned by `iter()`.
+/// - `'el` — The element type yielded by the iterator.
+///
+/// # Examples
+///
+/// ```ray
+/// names = ["alice", "bob", "carol"]
+/// for name in names {
+///     print(name)
+/// }
+/// ```
 trait Iterable['c, 'it, 'el] {
+    /// Creates a new iterator over the elements of this collection.
+    ///
+    /// The iterator borrows the collection via a pointer (`*'c`), so the
+    /// collection must remain valid for the lifetime of the iterator.
     fn iter(self: *'c) -> 'it
 }

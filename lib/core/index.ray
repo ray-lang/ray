@@ -1,5 +1,41 @@
+//! Indexing operations for collections.
+//!
+//! This module defines the `Index` trait, which enables bracket-based
+//! element access (`collection[key]`) and assignment (`collection[key] = value`).
+//!
+//! Implemented by `list` (integer indexing) and `dict` (key-based lookup).
+
+/// A collection that supports element access and mutation by index or key.
+///
+/// Implementing this trait allows a type to be used with bracket syntax:
+///
+/// ```ray
+/// value = my_list[0]       // calls get()
+/// my_list[0] = new_value   // calls set()
+/// ```
+///
+/// # Type Parameters
+///
+/// - `'a` — The collection type.
+/// - `'el` — The element type stored in the collection.
+/// - `'idx` — The index or key type used for lookup.
+///
+/// # Nilable Returns
+///
+/// Both `get` and `set` return `'el?` (nilable) because the index may be
+/// out of bounds or the key may not exist. Callers should handle the `nil`
+/// case when working with potentially missing entries.
 trait Index['a, 'el, 'idx] {
+    /// Retrieves the element at the given index or key.
+    ///
+    /// Returns the element if the index is valid, or `nil` if the index
+    /// is out of bounds or the key does not exist.
     fn get(self: *'a, idx: 'idx) -> 'el?
 
+    /// Sets the element at the given index or key, returning the previous
+    /// value if one existed.
+    ///
+    /// For `list`, the index must be within bounds. For `dict`, this
+    /// inserts a new entry or updates an existing one.
     fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
 }

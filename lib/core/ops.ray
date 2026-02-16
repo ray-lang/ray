@@ -1,6 +1,77 @@
-// ---- Add
+//! Operator traits and implementations for all numeric types.
+//!
+//! This module defines the traits that power Ray's operator syntax. When you
+//! write `a + b`, the compiler resolves it to a call to `Add::+(a, b)`. Each
+//! operator has a corresponding trait, and types opt into operators by providing
+//! implementations.
+//!
+//! # Arithmetic Operators
+//!
+//! | Syntax | Trait  | Description          |
+//! |--------|--------|----------------------|
+//! | `a + b` | `Add` | Addition             |
+//! | `a - b` | `Sub` | Subtraction          |
+//! | `a * b` | `Mul` | Multiplication       |
+//! | `a / b` | `Div` | Division             |
+//! | `a % b` | `Mod` | Remainder / modulo   |
+//! | `-a`    | `Neg` | Negation (prefix)    |
+//!
+//! # Comparison Operators
+//!
+//! | Syntax   | Trait  | Description              |
+//! |----------|--------|--------------------------|
+//! | `a == b` | `Eq`   | Equality                 |
+//! | `a != b` | `Neq`  | Inequality               |
+//! | `a > b`  | `Gt`   | Greater than             |
+//! | `a < b`  | `Lt`   | Less than                |
+//! | `a >= b` | `GtEq` | Greater than or equal    |
+//! | `a <= b` | `LtEq` | Less than or equal       |
+//!
+//! # Logical Operators
+//!
+//! | Syntax    | Trait | Description   |
+//! |-----------|-------|---------------|
+//! | `a && b`  | `And` | Logical AND   |
+//! | `a \|\| b` | `Or`  | Logical OR    |
+//! | `!a`      | `Not` | Logical NOT   |
+//!
+//! # Bitwise Operators
+//!
+//! | Syntax  | Trait    | Description       |
+//! |---------|---------|-------------------|
+//! | `a & b` | `BitAnd` | Bitwise AND       |
+//! | `a \| b` | `BitOr`  | Bitwise OR        |
+//! | `a ^ b` | `BitXor` | Bitwise XOR       |
+//!
+//! All arithmetic, comparison, and bitwise operators are implemented for every
+//! integer type: `int`, `i8`, `i16`, `i32`, `i64`, `uint`, `u8`, `u16`, `u32`, `u64`.
+//! Negation (`Neg`) is only implemented for signed types.
 
+// ---------------------------------------------------------------------------
+// Arithmetic operators
+// ---------------------------------------------------------------------------
+
+/// Addition operator (`+`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+/// - `'c` — Result type.
+///
+/// All built-in numeric implementations use the same type for all three
+/// parameters (e.g., `Add[int, int, int]`). The three-parameter design
+/// allows user-defined types to support heterogeneous addition, such as
+/// adding a scalar to a vector.
+///
+/// # Examples
+///
+/// ```ray
+/// result = 1 + 2       // 3
+/// total = price + tax   // works for any type implementing Add
+/// ```
 trait Add['a, 'b, 'c] {
+    /// Returns the sum of `a` and `b`.
     fn +(a: 'a, b: 'b) -> 'c
 }
 
@@ -54,9 +125,15 @@ impl Add[u64, u64, u64] {
     fn +(a: u64, b: u64) -> u64 => u64_add(a, b)
 }
 
-// ---- Sub
-
+/// Subtraction operator (`-`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+/// - `'c` — Result type.
 trait Sub['a, 'b, 'c] {
+    /// Returns the difference of `a` and `b`.
     fn -(a: 'a, b: 'b) -> 'c
 }
 
@@ -110,9 +187,15 @@ impl Sub[u64, u64, u64] {
     fn -(a: u64, b: u64) -> u64 => u64_sub(a, b)
 }
 
-// ---- Mul
-
+/// Multiplication operator (`*`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+/// - `'c` — Result type.
 trait Mul['a, 'b, 'c] {
+    /// Returns the product of `a` and `b`.
     fn *(a: 'a, b: 'b) -> 'c
 }
 
@@ -166,9 +249,21 @@ impl Mul[u64, u64, u64] {
     fn *(a: u64, b: u64) -> u64 => u64_mul(a, b)
 }
 
-// ---- Div
-
+/// Division operator (`/`).
+///
+/// Performs integer division (truncated toward zero) for integer types.
+///
+/// # Type Parameters
+///
+/// - `'a` — Dividend type.
+/// - `'b` — Divisor type.
+/// - `'c` — Quotient type.
+///
+/// # Panics
+///
+/// Division by zero is undefined behavior on WASM and will trap at runtime.
 trait Div['a, 'b, 'c] {
+    /// Returns the quotient of `a` divided by `b`.
     fn /(a: 'a, b: 'b) -> 'c
 }
 
@@ -222,9 +317,18 @@ impl Div[u64, u64, u64] {
     fn /(a: u64, b: u64) -> u64 => u64_div(a, b)
 }
 
-// ---- Mod
-
+/// Remainder / modulo operator (`%`).
+///
+/// Returns the remainder after integer division. The result has the same
+/// sign as the dividend for signed types.
+///
+/// # Type Parameters
+///
+/// - `'a` — Dividend type.
+/// - `'b` — Divisor type.
+/// - `'c` — Remainder type.
 trait Mod['a, 'b, 'c] {
+    /// Returns the remainder of `a` divided by `b`.
     fn %(a: 'a, b: 'b) -> 'c
 }
 
@@ -278,9 +382,24 @@ impl Mod[u64, u64, u64] {
     fn %(a: u64, b: u64) -> u64 => u64_mod(a, b)
 }
 
-// ---- Neg
-
+/// Arithmetic negation operator (prefix `-`).
+///
+/// Only implemented for signed integer types (`int`, `i8`, `i16`, `i32`, `i64`).
+/// Unsigned integers cannot be negated.
+///
+/// # Type Parameters
+///
+/// - `'a` — The operand type.
+/// - `'b` — The result type (same as `'a` for built-in types).
+///
+/// # Examples
+///
+/// ```ray
+/// x = 42
+/// y = -x   // -42
+/// ```
 trait Neg['a, 'b] {
+    /// Returns the arithmetic negation of `a`.
     fn -(a: 'a) -> 'b
 }
 
@@ -309,9 +428,23 @@ impl Neg[i64, i64] {
     fn -(a: i64) -> i64 => i64_neg(a)
 }
 
-// ---- And
+// ---------------------------------------------------------------------------
+// Logical operators
+// ---------------------------------------------------------------------------
 
+/// Logical AND operator (`&&`).
+///
+/// Short-circuit evaluation: if `a` is `false`, `b` is not evaluated.
+///
+/// # Examples
+///
+/// ```ray
+/// if is_valid && is_ready {
+///     proceed()
+/// }
+/// ```
 trait And['a, 'b] {
+    /// Returns `true` if both `a` and `b` are `true`.
     fn &&(a: 'a, b: 'b) -> bool
 }
 
@@ -319,9 +452,19 @@ impl And[bool, bool] {
     fn &&(a: bool, b: bool) -> bool => bool_and(a, b)
 }
 
-// ---- Or
-
+/// Logical OR operator (`||`).
+///
+/// Short-circuit evaluation: if `a` is `true`, `b` is not evaluated.
+///
+/// # Examples
+///
+/// ```ray
+/// if is_admin || is_owner {
+///     allow_access()
+/// }
+/// ```
 trait Or['a, 'b] {
+    /// Returns `true` if either `a` or `b` is `true`.
     fn ||(a: 'a, b: 'b) -> bool
 }
 
@@ -329,9 +472,17 @@ impl Or[bool, bool] {
     fn ||(a: bool, b: bool) -> bool => bool_or(a, b)
 }
 
-// ---- Not
-
+/// Logical NOT operator (`!`).
+///
+/// # Examples
+///
+/// ```ray
+/// if !is_done {
+///     keep_working()
+/// }
+/// ```
 trait Not['a] {
+    /// Returns the logical negation of `a`.
     fn !(a: 'a) -> bool
 }
 
@@ -339,9 +490,22 @@ impl Not[bool] {
     fn !(a: bool) -> bool => bool_not(a)
 }
 
-// ---- BitAnd
+// ---------------------------------------------------------------------------
+// Bitwise operators
+// ---------------------------------------------------------------------------
 
+/// Bitwise AND operator (`&`).
+///
+/// Performs a bitwise AND on each pair of corresponding bits. A result
+/// bit is `1` only if both input bits are `1`.
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+/// - `'c` — Result type.
 trait BitAnd['a, 'b, 'c] {
+    /// Returns the bitwise AND of `a` and `b`.
     fn &(a: 'a, b: 'b) -> 'c
 }
 
@@ -395,9 +559,18 @@ impl BitAnd[u64, u64, u64] {
     fn &(a: u64, b: u64) -> u64 => u64_bit_and(a, b)
 }
 
-// ---- BitOr
-
+/// Bitwise OR operator (`|`).
+///
+/// Performs a bitwise OR on each pair of corresponding bits. A result
+/// bit is `1` if either input bit is `1`.
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+/// - `'c` — Result type.
 trait BitOr['a, 'b, 'c] {
+    /// Returns the bitwise OR of `a` and `b`.
     fn |(a: 'a, b: 'b) -> 'c
 }
 
@@ -451,9 +624,18 @@ impl BitOr[u64, u64, u64] {
     fn |(a: u64, b: u64) -> u64 => u64_bit_or(a, b)
 }
 
-// ---- BitXor
-
+/// Bitwise XOR (exclusive OR) operator (`^`).
+///
+/// Performs a bitwise XOR on each pair of corresponding bits. A result
+/// bit is `1` if the input bits differ.
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+/// - `'c` — Result type.
 trait BitXor['a, 'b, 'c] {
+    /// Returns the bitwise XOR of `a` and `b`.
     fn ^(a: 'a, b: 'b) -> 'c
 }
 
@@ -507,9 +689,31 @@ impl BitXor[u64, u64, u64] {
     fn ^(a: u64, b: u64) -> u64 => u64_bit_xor(a, b)
 }
 
-// ---- Eq
+// ---------------------------------------------------------------------------
+// Comparison operators
+// ---------------------------------------------------------------------------
 
+/// Equality operator (`==`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+///
+/// Implemented for all integer types, `bool`, `()` (unit), and nilable
+/// types (`'a?`). The nilable implementation compares structurally:
+/// `nil == nil` is `true`, `some(x) == some(y)` delegates to `x == y`,
+/// and mixed `some`/`nil` comparisons are `false`.
+///
+/// # Examples
+///
+/// ```ray
+/// if x == 0 {
+///     print("zero")
+/// }
+/// ```
 trait Eq['a, 'b] {
+    /// Returns `true` if `a` and `b` are equal.
     fn ==(a: 'a, b: 'b) -> bool
 }
 
@@ -563,6 +767,7 @@ impl Eq[u64, u64] {
     fn ==(a: u64, b: u64) -> bool => u64_eq(a, b)
 }
 
+/// Unit values are always equal.
 impl Eq[(), ()] {
     @inline
     fn ==(a: (), b: ()) -> bool => true
@@ -573,6 +778,11 @@ impl Eq[bool, bool] {
     fn ==(a: bool, b: bool) -> bool => bool_eq(a, b)
 }
 
+/// Structural equality for nilable types.
+///
+/// - `nil == nil` is `true`
+/// - `some(x) == some(y)` delegates to `x == y`
+/// - `some(_) == nil` and `nil == some(_)` are `false`
 impl Eq['a?, 'a?] where Eq['a, 'a] {
     @inline
     fn ==(a: 'a?, b: 'a?) -> bool {
@@ -592,9 +802,16 @@ impl Eq['a?, 'a?] where Eq['a, 'a] {
     }
 }
 
-// ---- Neq
-
+/// Inequality operator (`!=`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
+///
+/// The nilable implementation is defined as the negation of `Eq`.
 trait Neq['a, 'b] {
+    /// Returns `true` if `a` and `b` are not equal.
     fn !=(a: 'a, b: 'b) -> bool
 }
 
@@ -648,6 +865,7 @@ impl Neq[u64, u64] {
     fn !=(a: u64, b: u64) -> bool => u64_neq(a, b)
 }
 
+/// Unit values are never unequal.
 impl Neq[(), ()] {
     @inline
     fn !=(a: (), b: ()) -> bool => false
@@ -658,14 +876,20 @@ impl Neq[bool, bool] {
     fn !=(a: bool, b: bool) -> bool => bool_neq(a, b)
 }
 
+/// Inequality for nilable types, defined as the negation of `==`.
 impl Neq['a?, 'a?] where Eq['a, 'a] {
     @inline
     fn !=(a: 'a?, b: 'a?) -> bool => !(a == b)
 }
 
-// ---- Gt
-
+/// Greater-than comparison operator (`>`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
 trait Gt['a, 'b] {
+    /// Returns `true` if `a` is strictly greater than `b`.
     fn >(a: 'a, b: 'b) -> bool
 }
 
@@ -719,9 +943,14 @@ impl Gt[u64, u64] {
     fn >(a: u64, b: u64) -> bool => u64_gt(a, b)
 }
 
-// ---- Lt
-
+/// Less-than comparison operator (`<`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
 trait Lt['a, 'b] {
+    /// Returns `true` if `a` is strictly less than `b`.
     fn <(a: 'a, b: 'b) -> bool
 }
 
@@ -775,9 +1004,14 @@ impl Lt[u64, u64] {
     fn <(a: u64, b: u64) -> bool => u64_lt(a, b)
 }
 
-// ---- GtEq
-
+/// Greater-than-or-equal comparison operator (`>=`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
 trait GtEq['a, 'b] {
+    /// Returns `true` if `a` is greater than or equal to `b`.
     fn >=(a: 'a, b: 'b) -> bool
 }
 
@@ -831,9 +1065,14 @@ impl GtEq[u64, u64] {
     fn >=(a: u64, b: u64) -> bool => u64_gteq(a, b)
 }
 
-// ---- LtEq
-
+/// Less-than-or-equal comparison operator (`<=`).
+///
+/// # Type Parameters
+///
+/// - `'a` — Left operand type.
+/// - `'b` — Right operand type.
 trait LtEq['a, 'b] {
+    /// Returns `true` if `a` is less than or equal to `b`.
     fn <=(a: 'a, b: 'b) -> bool
 }
 

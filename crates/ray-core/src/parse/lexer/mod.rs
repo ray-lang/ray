@@ -8,8 +8,8 @@ use std::collections::VecDeque;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Preceding {
-    Whitespace(Token),
-    Comment(Token),
+    Whitespace(Token, usize),
+    Comment(Token, usize),
 }
 
 /// A single lexeme produced by the Ray lexer along with any leading trivia.
@@ -19,14 +19,29 @@ pub struct Lexeme {
     pub token: Token,
 }
 
+pub struct StashEntry {
+    pub preceding: Vec<Preceding>,
+    pub token: Token,
+    pub char_idx: usize,
+}
+
 pub struct Lexer {
     src: Vec<char>,
     curr_pos: Pos,
     stash_pos: Pos,
+    /// Character index into `src` corresponding to `curr_pos`.
+    /// Separate from `Pos::offset` which tracks byte offsets.
+    curr_char_idx: usize,
+    /// Character index into `src` corresponding to `stash_pos`.
+    stash_char_idx: usize,
     last_tok_span: Span,
     token_stash: VecDeque<Token>,
-    stash: VecDeque<(Vec<Preceding>, Token)>,
+    stash: VecDeque<StashEntry>,
     newline_mode: NewlineMode,
+    /// Comments collected by `next_preceding` that were deferred past a
+    /// newline token in Emit mode. Prepended to the next `next_preceding` call
+    /// so they end up on the next non-newline token.
+    deferred_preceding: Vec<Preceding>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,10 +81,13 @@ impl Lexer {
             src: src.chars().collect(),
             curr_pos: Pos::empty(),
             stash_pos: Pos::empty(),
+            curr_char_idx: 0,
+            stash_char_idx: 0,
             last_tok_span: Span::new(),
             token_stash: VecDeque::new(),
             stash: VecDeque::new(),
             newline_mode: NewlineMode::Suppress,
+            deferred_preceding: vec![],
         }
     }
 
@@ -82,7 +100,7 @@ impl Lexer {
     }
 
     pub fn is_eof(&self) -> bool {
-        self.src.get(self.stash_pos.offset).is_none()
+        self.src.get(self.stash_char_idx).is_none()
     }
 
     fn eof(&mut self) -> Token {
@@ -97,14 +115,15 @@ impl Lexer {
     }
 
     fn next_char(&mut self) -> Option<char> {
-        let ch = self.char_at(self.stash_pos.offset)?;
+        let ch = self.char_at(self.stash_char_idx)?;
         if ch == '\n' {
             self.stash_pos.lineno += 1;
             self.stash_pos.col = 0;
         } else {
             self.stash_pos.col += 1;
         }
-        self.stash_pos.offset += 1;
+        self.stash_char_idx += 1;
+        self.stash_pos.offset += ch.len_utf8();
         Some(ch)
     }
 
@@ -113,16 +132,17 @@ impl Lexer {
     }
 
     fn first(&self) -> char {
-        self.char_at(self.stash_pos.offset).unwrap_or('\0')
+        self.char_at(self.stash_char_idx).unwrap_or('\0')
     }
 
     fn second(&self) -> char {
-        self.char_at(self.stash_pos.offset + 1).unwrap_or('\0')
+        self.char_at(self.stash_char_idx + 1).unwrap_or('\0')
     }
 
     fn consume_char(&mut self) -> Option<char> {
         let c = self.next_char();
         self.curr_pos = self.stash_pos;
+        self.curr_char_idx = self.stash_char_idx;
         c
     }
 
@@ -217,12 +237,14 @@ impl Lexer {
         let mut s = String::new();
         loop {
             let saved_pos = self.stash_pos;
+            let saved_char_idx = self.stash_char_idx;
             let Some(ch) = self.next_char() else { break };
             match ch {
                 c if c == quote => {
                     if !s.is_empty() {
                         // Put back the closing quote so the next call returns End.
                         self.stash_pos = saved_pos;
+                        self.stash_char_idx = saved_char_idx;
                         return FStringSegment::Literal(s);
                     }
                     return FStringSegment::End;
@@ -236,6 +258,7 @@ impl Lexer {
                     if !s.is_empty() {
                         // Put back the `{` so the next call returns ExprStart.
                         self.stash_pos = saved_pos;
+                        self.stash_char_idx = saved_char_idx;
                         return FStringSegment::Literal(s);
                     }
                     return FStringSegment::ExprStart;
@@ -266,6 +289,7 @@ impl Lexer {
     /// returns `ExprStart` to switch from character mode back to token mode.
     pub fn commit_position(&mut self) {
         self.curr_pos = self.stash_pos;
+        self.curr_char_idx = self.stash_char_idx;
         self.stash.clear();
         self.token_stash.clear();
     }
@@ -430,7 +454,7 @@ impl Lexer {
                             let com = TokenKind::Comment {
                                 content: self
                                     .next_char_while(None, |c| c != '\n')
-                                    .trim()
+                                    .trim_end()
                                     .to_owned(),
                                 kind,
                             };
@@ -564,55 +588,66 @@ impl Lexer {
         }
 
         loop {
-            let newline_token = self.stash.front_mut().and_then(|(preceding, _)| {
-                preceding
+            let newline_token = self.stash.front_mut().and_then(|entry| {
+                entry
+                    .preceding
                     .iter()
                     .position(|p| match p {
-                        Preceding::Whitespace(tok) => {
+                        Preceding::Whitespace(tok, _) => {
                             tok.kind == TokenKind::NewLine || tok.span.lines() > 1
                         }
                         _ => false,
                     })
-                    .and_then(|idx| match preceding.remove(idx) {
-                        Preceding::Whitespace(mut tok) => {
+                    .and_then(|idx| match entry.preceding.remove(idx) {
+                        Preceding::Whitespace(mut tok, char_idx) => {
                             tok.kind = TokenKind::NewLine;
-                            Some(tok)
+                            Some((tok, char_idx))
                         }
                         _ => None,
                     })
             });
-            let Some(tok) = newline_token else {
+            let Some((token, char_idx)) = newline_token else {
                 break;
             };
 
-            log::debug!("[lexer] promote_pending_newline: injecting {:?}", tok.span);
-            self.stash.push_front((Vec::new(), tok));
+            log::debug!(
+                "[lexer] promote_pending_newline: injecting {:?}",
+                token.span
+            );
+            self.stash.push_front(StashEntry {
+                preceding: Vec::new(),
+                token,
+                char_idx,
+            });
         }
     }
 
     fn next_preceding(&mut self) -> Vec<Preceding> {
-        let mut preceding = vec![];
+        let mut preceding = std::mem::take(&mut self.deferred_preceding);
         loop {
             if let Some(t) = self.take_token_if(is_tok_comment) {
-                preceding.push(Preceding::Comment(t))
+                preceding.push(Preceding::Comment(t, self.stash_char_idx))
             } else {
                 // When newline emission is enabled we must leave newline tokens
                 // in the main stream so the parser can treat them as statement
-                // terminators. Detect that upfront and stop draining trivia so
-                // the next caller observes the newline token.
+                // terminators. If we've already collected comments, defer them
+                // past this newline so they end up on the next non-newline token.
                 if self.newline_mode == NewlineMode::Emit
                     && matches!(self.get_token().kind, TokenKind::NewLine)
                 {
-                    log::debug!(
-                        "[lexer] next_preceding: leaving newline in stream at {:?}",
-                        self.get_token().span
-                    );
+                    let has_comments = preceding
+                        .iter()
+                        .any(|p| matches!(p, Preceding::Comment(..)));
+                    if has_comments {
+                        self.deferred_preceding = preceding;
+                        return vec![];
+                    }
                     break;
                 }
 
                 if let Some(t) = self.take_token_if(is_tok_whitespace) {
                     log::debug!("[lexer] next_preceding: consuming whitespace {:?}", t.span);
-                    preceding.push(Preceding::Whitespace(t))
+                    preceding.push(Preceding::Whitespace(t, self.stash_char_idx))
                 } else {
                     break;
                 }
@@ -645,46 +680,59 @@ impl Lexer {
     fn rewind_tokens(&mut self) {
         if self.stash.len() != 0 {
             self.stash_pos = self.curr_pos;
+            self.stash_char_idx = self.curr_char_idx;
         }
 
         // after resetting the index and position, clear the stash
         self.stash.clear();
         self.token_stash.clear();
+        self.deferred_preceding.clear();
     }
 
     fn ensure_stash(&mut self, n: usize) {
         while self.stash.len() < n {
             self.promote_pending_newline();
-            let p = self.next_preceding();
-            let t = self.take_token();
-            self.stash.push_back((p, t));
+            let preceding = self.next_preceding();
+            let token = self.take_token();
+            self.stash.push_back(StashEntry {
+                preceding,
+                token,
+                char_idx: self.stash_char_idx,
+            });
         }
         self.promote_pending_newline();
     }
 
-    pub fn consume(&mut self) -> (Vec<Preceding>, Token) {
+    pub fn consume(&mut self) -> StashEntry {
         // consume the preceding whitespace/comments and last token
         let (mut prec_w_tok, _) = self.consume_count(1);
         prec_w_tok.remove(0)
     }
 
-    pub fn consume_count(&mut self, n: usize) -> (Vec<(Vec<Preceding>, Token)>, Span) {
+    pub fn consume_count(&mut self, n: usize) -> (Vec<StashEntry>, Span) {
         // consume the preceding whitespace/comments and token n times
         self.ensure_stash(n);
         let toks = self.stash.drain(0..n).collect::<Vec<_>>();
-        let start = if let Some((_, tok)) = toks.first() {
-            tok.span.start
+        let (start, start_char_idx) = if let Some(StashEntry {
+            token, char_idx, ..
+        }) = toks.first()
+        {
+            (token.span.start, *char_idx)
         } else {
-            self.position()
+            (self.position(), self.curr_char_idx)
         };
 
-        let end = if let Some((_, tok)) = toks.last() {
-            tok.span.end
+        let (end, end_char_idx) = if let Some(StashEntry {
+            token, char_idx, ..
+        }) = toks.last()
+        {
+            (token.span.end, *char_idx)
         } else {
-            start
+            (start, start_char_idx)
         };
 
         self.curr_pos = end;
+        self.curr_char_idx = end_char_idx;
         (toks, Span { start, end })
     }
 
@@ -699,52 +747,32 @@ impl Lexer {
     pub fn peek_token_at(&mut self, idx: usize) -> &Token {
         self.ensure_stash(idx + 1);
         // note: this will always unwrap, because we've called ensure stash
-        self.stash.get(idx).map(|(_, t)| t).unwrap()
+        self.stash.get(idx).map(|entry| &entry.token).unwrap()
     }
 
     pub fn token(&mut self) -> Token {
-        let (_, tok) = self.consume();
-        tok
+        let StashEntry { token, .. } = self.consume();
+        token
     }
 
     pub fn preceding(&mut self) -> Vec<Preceding> {
         self.stash
             .front_mut()
-            .map_or_else(|| vec![], |(p, _)| p.drain(..).collect())
+            .map_or_else(|| vec![], |entry| entry.preceding.drain(..).collect())
     }
 
     pub fn peek_preceding(&mut self) -> Vec<&Preceding> {
         self.ensure_stash(1);
         self.stash
             .front()
-            .map(|(p, _)| p.iter().collect())
+            .map(|entry| entry.preceding.iter().collect())
             .unwrap_or_default()
     }
 }
 
-/// Convenience helper that runs the lexer to completion and collects all lexemes,
-/// including the trailing EOF token, along with their leading trivia.
-pub fn lexemes(src: &str) -> Vec<Lexeme> {
-    let mut lexer = Lexer::new(src);
-    let mut out = Vec::new();
-
-    loop {
-        let (leading, token) = lexer.consume();
-        let is_eof = matches!(token.kind, TokenKind::EOF);
-        out.push(Lexeme { leading, token });
-        if is_eof {
-            break;
-        }
-    }
-
-    out
-}
-
 #[cfg(test)]
-mod lexer_tests {
-    use crate::ast::token::{CommentKind, IntegerBase, TokenKind};
-
-    use super::{Lexer, Preceding, lexemes};
+mod tests {
+    use crate::{ast::token::TokenKind, parse::Lexer};
 
     #[test]
     fn test_rewind() {
@@ -769,96 +797,180 @@ mod lexer_tests {
         }
     }
 
-    #[test]
-    fn lexemes_collects_tokens() {
-        let tokens = lexemes("fn answer() -> i32 { 42 }");
-        assert!(!tokens.is_empty());
-        assert!(matches!(tokens.last().unwrap().token.kind, TokenKind::EOF));
+    /// Helper: collect all tokens from source, returning (kind, start_offset, end_offset).
+    fn tokens(src: &str) -> Vec<(TokenKind, usize, usize)> {
+        let mut lex = Lexer::new(src);
+        let mut out = vec![];
+        while !lex.is_eof() {
+            let t = lex.token();
+            if t.kind == TokenKind::EOF {
+                break;
+            }
+            out.push((t.kind, t.span.start.offset, t.span.end.offset));
+        }
+        out
+    }
+
+    /// Verify that every token span can be used to slice the source string
+    /// without panicking, and that the slice matches the expected text.
+    fn assert_spans_are_valid_byte_offsets(src: &str) {
+        let mut lex = Lexer::new(src);
+        while !lex.is_eof() {
+            let t = lex.token();
+            if t.kind == TokenKind::EOF {
+                break;
+            }
+            let start = t.span.start.offset;
+            let end = t.span.end.offset;
+            assert!(
+                src.is_char_boundary(start),
+                "start offset {} is not a char boundary in {:?} (token {:?})",
+                start,
+                src,
+                t.kind
+            );
+            assert!(
+                src.is_char_boundary(end),
+                "end offset {} is not a char boundary in {:?} (token {:?})",
+                end,
+                src,
+                t.kind
+            );
+            assert!(
+                end >= start,
+                "end {} < start {} for token {:?}",
+                end,
+                start,
+                t.kind
+            );
+            // Slicing must not panic.
+            let _slice = &src[start..end];
+        }
     }
 
     #[test]
-    fn lexemes_preserve_trivia_and_kinds() {
-        let source = "fn foo(mut value: i32) {\n    // answer\n    42\n}\n";
-        let tokens = lexemes(source);
+    fn ascii_offsets_equal_char_indices() {
+        let src = "fn foo(x: int) -> int";
+        let toks = tokens(src);
+        // "fn" starts at byte 0, ends at byte 2
+        assert_eq!(toks[0], (TokenKind::Fn, 0, 2));
+        // "foo" starts at byte 3, ends at byte 6
+        assert_eq!(toks[1], (TokenKind::Identifier("foo".to_string()), 3, 6));
+        assert_spans_are_valid_byte_offsets(src);
+    }
 
-        assert!(matches!(tokens[0].token.kind, TokenKind::Fn));
-        assert!(matches!(
-            tokens[1].token.kind,
-            TokenKind::Identifier(ref name) if name == "foo"
-        ));
-        assert!(matches!(tokens[2].token.kind, TokenKind::LeftParen));
-        assert!(matches!(tokens[3].token.kind, TokenKind::Mut));
-        assert!(matches!(
-            tokens[4].token.kind,
-            TokenKind::Identifier(ref name) if name == "value"
-        ));
-        assert!(matches!(tokens[5].token.kind, TokenKind::Colon));
-        assert!(matches!(
-            tokens[6].token.kind,
-            TokenKind::Identifier(ref name) if name == "i32"
-        ));
-        assert!(matches!(tokens[7].token.kind, TokenKind::RightParen));
-        assert!(matches!(tokens[8].token.kind, TokenKind::LeftCurly));
-        assert!(matches!(
-            tokens[9].token.kind,
-            TokenKind::Integer { ref value, base, .. }
-                if value == "42" && matches!(base, IntegerBase::Decimal)
-        ));
-        assert!(matches!(tokens[10].token.kind, TokenKind::RightCurly));
-        assert!(matches!(tokens.last().unwrap().token.kind, TokenKind::EOF));
+    #[test]
+    fn multibyte_comment_offsets_are_byte_based() {
+        // The em dash '—' is 3 bytes in UTF-8.
+        let src = "// a — b\nx = 1";
+        assert_spans_are_valid_byte_offsets(src);
 
-        // The integer is preceded by a comment that we should surface via trivia.
-        let comment = tokens[9]
-            .leading
+        let toks = tokens(src);
+        // After the comment (which includes '—'), the next line starts.
+        // "// a — b" is 10 bytes: '/' '/' ' ' 'a' ' ' '—'(3) ' ' 'b' = 10
+        // Plus '\n' = 11
+        // "x" should start at byte 11.
+        let x_tok = toks
             .iter()
-            .find_map(|preceding| match preceding {
-                Preceding::Comment(tok) => Some(tok),
-                _ => None,
-            })
-            .expect("expected comment preceding integer literal");
-
-        if let TokenKind::Comment {
-            ref content,
-            ref kind,
-        } = comment.kind
-        {
-            assert_eq!(content, "answer");
-            assert_eq!(*kind, CommentKind::Line);
-        } else {
-            panic!("expected token kind comment");
-        }
+            .find(|(k, _, _)| *k == TokenKind::Identifier("x".to_string()))
+            .expect("should find 'x' token");
+        assert_eq!(x_tok.1, 11, "x should start at byte 11");
     }
 
     #[test]
-    fn lexemes_classifies_doc_comment_kinds() {
-        let tokens = lexemes("//! module docs\n/// fn docs\nfn main() {}");
+    fn multibyte_in_identifier_context() {
+        // CJK character '中' is 3 bytes in UTF-8.
+        // The lexer treats it as an identifier character (alphabetic).
+        let src = "x = 中";
+        assert_spans_are_valid_byte_offsets(src);
 
-        let leading = &tokens[0].leading;
-        assert_eq!(leading.len(), 2);
-        match &leading[0] {
-            Preceding::Comment(token) => {
-                assert_eq!(
-                    token.kind,
-                    TokenKind::Comment {
-                        content: "module docs".to_string(),
-                        kind: CommentKind::ModuleDoc,
-                    }
-                );
-            }
-            other => panic!("unexpected preceding token: {:?}", other),
-        }
+        let toks = tokens(src);
+        // 'x' at 0..1, '=' at 2..3, '中' at 4..7 (3 bytes)
+        let last = toks.last().unwrap();
+        assert_eq!(last.1, 4, "中 should start at byte 4");
+        assert_eq!(last.2, 7, "中 should end at byte 7");
+    }
 
-        match &leading[1] {
-            Preceding::Comment(token) => {
-                assert_eq!(
-                    token.kind,
-                    TokenKind::Comment {
-                        content: "fn docs".to_string(),
-                        kind: CommentKind::Doc,
-                    }
-                );
+    #[test]
+    fn multiple_multibyte_chars_accumulate_correctly() {
+        // Each '—' is 3 bytes. After two of them (6 bytes), offsets should reflect that.
+        let src = "// —— done\nx = 1";
+        assert_spans_are_valid_byte_offsets(src);
+
+        let toks = tokens(src);
+        // "// —— done" = '/' '/' ' ' '—'(3) '—'(3) ' ' 'd' 'o' 'n' 'e' = 14 bytes
+        // Plus '\n' = 15
+        let x_tok = toks
+            .iter()
+            .find(|(k, _, _)| *k == TokenKind::Identifier("x".to_string()))
+            .expect("should find 'x' token");
+        assert_eq!(x_tok.1, 15, "x should start at byte 15");
+    }
+
+    #[test]
+    fn emoji_in_comment() {
+        // '🎉' is 4 bytes in UTF-8.
+        let src = "// 🎉\nx = 1";
+        assert_spans_are_valid_byte_offsets(src);
+
+        let toks = tokens(src);
+        // "// 🎉" = '/' '/' ' ' '🎉'(4) = 7 bytes, plus '\n' = 8
+        let x_tok = toks
+            .iter()
+            .find(|(k, _, _)| *k == TokenKind::Identifier("x".to_string()))
+            .expect("should find 'x' token");
+        assert_eq!(x_tok.1, 8, "x should start at byte 8");
+    }
+
+    #[test]
+    fn doc_comment_with_multibyte() {
+        // This is the pattern that caused the original LSP crash.
+        let src = "/// `'a` — Left operand type.\nfn add() => 1";
+        assert_spans_are_valid_byte_offsets(src);
+
+        let toks = tokens(src);
+        // "/// `'a` — Left operand type." = 31 bytes (— is 3 bytes, rest ASCII)
+        // Plus '\n' = 32
+        let fn_tok = toks
+            .iter()
+            .find(|(k, _, _)| *k == TokenKind::Fn)
+            .expect("should find 'fn' token");
+        assert_eq!(fn_tok.1, 32, "fn should start at byte 32");
+    }
+
+    #[test]
+    fn module_doc_comment_with_multibyte() {
+        let src = "//! Module — overview\nfn x() => 1";
+        assert_spans_are_valid_byte_offsets(src);
+
+        let toks = tokens(src);
+        // "//! Module — overview" = 23 bytes (— is 3 bytes)
+        // Plus '\n' = 24
+        let fn_tok = toks
+            .iter()
+            .find(|(k, _, _)| *k == TokenKind::Fn)
+            .expect("should find 'fn' token");
+        assert_eq!(fn_tok.1, 24, "fn should start at byte 24");
+    }
+
+    #[test]
+    fn string_slicing_with_multibyte_offsets() {
+        // The key invariant: span offsets can be used to slice the original source.
+        let src = "/// Type — desc\nfn foo(x: int) -> int => x";
+        let mut lex = Lexer::new(src);
+        while !lex.is_eof() {
+            let t = lex.token();
+            if t.kind == TokenKind::EOF {
+                break;
             }
-            other => panic!("unexpected preceding token: {:?}", other),
+            let slice = &src[t.span.start.offset..t.span.end.offset];
+            match &t.kind {
+                TokenKind::Fn => assert_eq!(slice, "fn"),
+                TokenKind::Identifier(s) => assert_eq!(slice, s.as_str()),
+                TokenKind::Arrow => assert_eq!(slice, "->"),
+                TokenKind::FatArrow => assert_eq!(slice, "=>"),
+                _ => {}
+            }
         }
     }
 }
