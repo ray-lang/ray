@@ -14,22 +14,26 @@ struct IOVec {
     len: uint  // Number of bytes to transfer
 }
 
-/// Writes `n` string chunks to stdout using WASI vectored I/O.
-/// Returns the number of bytes written.
+/// Writes `n` string chunks to stdout via individual `fd_write` calls.
+/// WASI hosts may only process the first iovec per call (partial writes
+/// are valid), so each chunk is written separately to ensure all data
+/// reaches stdout.
 fn writev_stdout(chunks: *string, n: uint) -> uint {
-    iovecs = new(IOVec, n)
     raw_chunks = chunks as rawptr[string]
-    raw_iovecs = iovecs as rawptr[IOVec]
+    mut total = 0
     mut i = 0
     while i < n {
         raw_chunk = *(raw_chunks + i)
         chunk = raw_chunk as string
-        ptr = raw_iovecs + i
-        *ptr = IOVec { base: chunk.raw_ptr, len: chunk.len }
+        iov = new(IOVec, 1)
+        raw_iov = iov as rawptr[IOVec]
+        *raw_iov = IOVec { base: chunk.raw_ptr, len: chunk.len }
+        wrote = 0
+        // TODO: handle partial writes within a single iovec (retry loop)
+        _ = fd_write(1, iov, 1, &wrote)
+        total = total + wrote
         i += 1
     }
 
-    wrote = 0
-    _ = fd_write(1, iovecs, n, &wrote)
-    wrote
+    total
 }

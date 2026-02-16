@@ -77,7 +77,7 @@
         },
         {
           "name": "keyword.other.ray",
-          "match": "\\b(import|wasi|static|@intrinsic)\\b"
+          "match": "\\b(import|wasi|static|test|@intrinsic|@inline)\\b"
         },
         {
           "name": "keyword.operator.arrow.ray",

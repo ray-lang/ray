@@ -66,6 +66,10 @@ pub struct BuildOptions {
         action = clap::ArgAction::SetTrue,
     )]
     pub build_lib: bool,
+
+    /// When true, compile in test mode (not a CLI flag; set programmatically by `ray test`).
+    #[arg(skip)]
+    pub test_mode: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

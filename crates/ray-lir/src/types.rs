@@ -1106,26 +1106,52 @@ impl Program {
     }
 
     pub fn extend(&mut self, other: Program) {
-        let func_offset = self.funcs.len();
+        // --- Funcs (dedup by name) ---
+        let existing_funcs: HashSet<Path> = self.funcs.iter().map(|f| f.name.clone()).collect();
+        let mut func_remap: Vec<Option<usize>> = Vec::with_capacity(other.funcs.len());
+        for func in other.funcs {
+            if existing_funcs.contains(&func.name) {
+                func_remap.push(None);
+            } else {
+                let new_idx = self.funcs.len();
+                func_remap.push(Some(new_idx));
+                self.funcs.push(func);
+            }
+        }
         for (p, indices) in other.poly_fn_map {
-            let offset_indices: Vec<usize> = indices.into_iter().map(|i| func_offset + i).collect();
-            self.poly_fn_map
-                .entry(p)
-                .or_default()
-                .extend(offset_indices);
+            let remapped: Vec<usize> = indices.into_iter().filter_map(|i| func_remap[i]).collect();
+            if !remapped.is_empty() {
+                self.poly_fn_map.entry(p).or_default().extend(remapped);
+            }
         }
 
-        self.globals.extend(other.globals);
-        self.data.extend(other.data);
-        self.funcs.extend(other.funcs);
-
-        // Offset extern indices before extending
-        let extern_offset = self.externs.len();
-        self.externs.extend(other.externs);
+        // --- Externs (dedup by map key) ---
         for (path, idx) in other.extern_map {
-            self.extern_map.insert(path, extern_offset + idx);
+            if !self.extern_map.contains_key(&path) {
+                let new_idx = self.externs.len();
+                self.externs.push(other.externs[idx].clone());
+                self.extern_map.insert(path, new_idx);
+            }
         }
 
+        // --- Globals (dedup by name) ---
+        let existing_globals: HashSet<String> =
+            self.globals.iter().map(|g| g.name.clone()).collect();
+        for global in other.globals {
+            if !existing_globals.contains(&global.name) {
+                self.globals.push(global);
+            }
+        }
+
+        // --- Data (dedup by key) ---
+        let existing_data: HashSet<(Path, usize)> = self.data.iter().map(|d| d.key()).collect();
+        for datum in other.data {
+            if !existing_data.contains(&datum.key()) {
+                self.data.push(datum);
+            }
+        }
+
+        // --- Sets and maps (naturally dedup) ---
         self.trait_member_set.extend(other.trait_member_set);
         self.struct_types.extend(other.struct_types);
         for (trait_name, bucket) in other.impls_by_trait {

@@ -114,9 +114,24 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<lir::Program> {
     // Find user main function
     let user_main_info = resolve_user_main_info(db, &path);
 
+    // Build library externs index so is_extern() can resolve library externs
+    // before library LIR programs are merged into the main program.
+    let mut library_externs = HashMap::new();
+    for lib in &libs {
+        for (map_name, &idx) in &lib.extern_map {
+            library_externs.insert(map_name.clone(), lib.externs[idx].clone());
+        }
+    }
+
     // Create program and generate LIR for all decls
     let prog = Rc::new(RefCell::new(lir::Program::new(path)));
-    let mut ctx = GenCtx::new(db, entry_file_id, Rc::clone(&prog), &combined_srcmap);
+    let mut ctx = GenCtx::new(
+        db,
+        entry_file_id,
+        Rc::clone(&prog),
+        &combined_srcmap,
+        library_externs,
+    );
     extern_decls.lir_gen(&mut ctx)?;
     all_decls.lir_gen(&mut ctx)?;
 
@@ -388,7 +403,13 @@ fn generate_test_harness(
         def_for_path(ctx.db, proc_exit_item.clone()).expect("core::proc_exit not found");
     let proc_exit_scheme =
         def_scheme(ctx.db, proc_exit_target).expect("core::proc_exit has no type scheme");
-    let proc_exit_path = mangle::fn_name(&proc_exit_item.to_path(), &proc_exit_scheme);
+    let proc_exit_fqn = proc_exit_item.to_path();
+    let proc_exit_path = if ctx.is_extern(&proc_exit_fqn) {
+        ctx.extern_link_name(&proc_exit_fqn)
+            .unwrap_or_else(|| proc_exit_fqn)
+    } else {
+        mangle::fn_name(&proc_exit_fqn, &proc_exit_scheme)
+    };
     let proc_exit_ty = proc_exit_scheme;
 
     let test_functions = ctx.test_functions.clone();
@@ -728,6 +749,10 @@ pub struct GenCtx<'a> {
     fn_handle_wrappers: HashMap<(Path, Vec<Ty>, Ty), Path>,
     /// Collected test functions: (test_name, function_path).
     pub test_functions: Vec<(String, Path)>,
+    /// Externs from pre-compiled libraries, keyed by FQN.
+    /// Allows `is_extern` / `extern_link_name` to resolve library externs
+    /// before library LIR is merged into the main program.
+    library_externs: HashMap<Path, lir::Extern>,
 }
 
 impl<'a> std::ops::Deref for GenCtx<'a> {
@@ -750,6 +775,7 @@ impl<'a> GenCtx<'a> {
         file_id: FileId,
         prog: Rc<RefCell<lir::Program>>,
         srcmap: &'a SourceMap,
+        library_externs: HashMap<Path, lir::Extern>,
     ) -> GenCtx<'a> {
         GenCtx {
             db,
@@ -767,6 +793,7 @@ impl<'a> GenCtx<'a> {
             fn_handle_path_types: HashMap::new(),
             fn_handle_wrappers: HashMap::new(),
             test_functions: Vec::new(),
+            library_externs,
         }
     }
 
@@ -860,13 +887,15 @@ impl<'a> GenCtx<'a> {
 
     fn is_extern(&self, name: &Path) -> bool {
         let prog = self.prog.borrow();
-        prog.extern_map.contains_key(name)
+        prog.extern_map.contains_key(name) || self.library_externs.contains_key(name)
     }
 
     fn extern_link_name(&self, name: &Path) -> Option<Path> {
         let prog = self.prog.borrow();
-        let idx = prog.extern_map.get(name)?;
-        Some(prog.externs[*idx].name.clone())
+        if let Some(idx) = prog.extern_map.get(name) {
+            return Some(prog.externs[*idx].name.clone());
+        }
+        self.library_externs.get(name).map(|ext| ext.name.clone())
     }
 
     fn new_global(&mut self, name: &Path, init_value: lir::Value, ty: TyScheme, mutable: bool) {

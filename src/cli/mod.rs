@@ -1,7 +1,7 @@
 use std::process;
 
 use clap::{Parser, Subcommand, builder::styling};
-use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions};
+use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions, TestOptions};
 use ray_shared::logger;
 use ray_shared::pathlib::RayPaths;
 
@@ -9,6 +9,7 @@ mod analyze;
 mod bootstrap;
 mod build;
 mod lsp;
+mod test;
 
 const STYLES: styling::Styles = styling::Styles::styled()
     .header(styling::AnsiColor::Green.on_default().bold())
@@ -33,6 +34,8 @@ pub struct Cli {
 pub enum Command {
     /// Build a module or file into a binary, or library
     Build(BuildOptions),
+    /// Run tests in a file
+    Test(TestOptions),
     /// Analyze a module or file
     Analyze(AnalyzeOptions),
     /// Run the language server
@@ -107,6 +110,16 @@ pub fn run() {
             });
             let mut driver = Driver::new(ray_paths, config_path.as_ref().map(AsRef::as_ref));
             build::action(&mut driver, options);
+        }
+        Command::Test(options) => {
+            let ray_paths = ray_paths.unwrap_or_else(|| {
+                eprintln!(
+                    "error: unable to locate Ray toolchain. Set --root-path or RAY_PATH to a directory containing lib/core and wasi-sysroot/include."
+                );
+                process::exit(1);
+            });
+            let mut driver = Driver::new(ray_paths, config_path.as_ref().map(AsRef::as_ref));
+            test::action(&mut driver, options);
         }
         Command::Analyze(options) => {
             let ray_paths = ray_paths.unwrap_or_else(|| {

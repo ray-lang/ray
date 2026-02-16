@@ -13,6 +13,8 @@ pub struct DiscoveryOptions {
     /// If true, discover ALL submodules (for library builds).
     /// When false, only discover modules reachable via imports.
     pub build_lib: bool,
+    /// If true, also load the `testing` library for test mode.
+    pub test_mode: bool,
 }
 
 use ray_core::{
@@ -163,6 +165,13 @@ pub fn discover_workspace(
         if !options.no_core && !core_injected && !module_path.starts_with("core") {
             core_injected = true;
             ensure_core_libraries_loaded(
+                &mut loaded_libs,
+                &search_paths,
+                &mut schema_var_allocator,
+            );
+
+            // Also load the testing library if available
+            ensure_testing_library_loaded(
                 &mut loaded_libs,
                 &search_paths,
                 &mut schema_var_allocator,
@@ -446,6 +455,28 @@ fn ensure_core_libraries_loaded(
             if !loaded_libs.libraries.contains_key(&io_path) {
                 if let Ok(lib_data) = load_library(&lib_file, allocator) {
                     loaded_libs.add_from_file(io_path.clone(), lib_file, lib_data);
+                }
+            }
+            break;
+        }
+    }
+}
+
+/// Ensure the testing library is loaded into LoadedLibraries.
+///
+/// Called in test mode so that `import testing with *` can resolve.
+fn ensure_testing_library_loaded(
+    loaded_libs: &mut LoadedLibraries,
+    search_paths: &[FilePath],
+    allocator: &mut SchemaVarAllocator,
+) {
+    let testing_path = ModulePath::from("testing");
+    for search_path in search_paths {
+        let lib_file = library_path_for_module(search_path, &testing_path);
+        if lib_file.exists() {
+            if !loaded_libs.libraries.contains_key(&testing_path) {
+                if let Ok(lib_data) = load_library(&lib_file, allocator) {
+                    loaded_libs.add_from_file(testing_path.clone(), lib_file, lib_data);
                 }
             }
             break;

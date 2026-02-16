@@ -228,6 +228,7 @@ impl WorkspaceManager {
         let discovery_options = DiscoveryOptions {
             no_core: config.no_core(),
             build_lib: true,
+            test_mode: false,
         };
 
         let (workspace, loaded_libs) =

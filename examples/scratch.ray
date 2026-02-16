@@ -1,5 +1,14 @@
+fn add_one(x: i32) -> i32 {
+    x + 1
+}
+
 fn main() {
     x: i32 = 42i32
     y = x + 1i32
     print(f"y = {y}")
+}
+
+test "adds one to 41" {
+    x = add_one(41)
+    assert(x == 42)
 }

@@ -34,6 +34,7 @@ mod analyze;
 mod build;
 pub mod discovery;
 mod global_options;
+mod test;
 
 pub use analyze::{
     AnalysisFormat, AnalysisReport, AnalyzeOptions, DefinitionInfo, SymbolInfo, SymbolKind,
@@ -42,6 +43,7 @@ pub use analyze::{
 pub use build::BuildOptions;
 pub use build::EmitType;
 pub use global_options::*;
+pub use test::TestOptions;
 
 /// Result of workspace initialization.
 ///
@@ -169,6 +171,7 @@ impl Driver {
             link_modules: None,
             build_lib: false,
             no_core,
+            test_mode: false,
         };
         self.apply_project_config(&mut build_options);
 
@@ -251,7 +254,7 @@ impl Driver {
             (),
             CompilerOptions {
                 no_core: options.no_core,
-                test_mode: false,
+                test_mode: options.test_mode,
             },
         );
 
@@ -259,6 +262,7 @@ impl Driver {
         let discovery_options = discovery::DiscoveryOptions {
             no_core: options.no_core,
             build_lib: options.build_lib,
+            test_mode: options.test_mode,
         };
         let (workspace, loaded_libs) = discovery::discover_workspace(
             &db,
@@ -334,7 +338,7 @@ impl Driver {
         }
     }
 
-    pub fn build(&self, mut options: BuildOptions) -> Result<(), Vec<RayError>> {
+    pub fn build(&self, mut options: BuildOptions) -> Result<Option<FilePath>, Vec<RayError>> {
         self.apply_project_config(&mut options);
         let workspace = self.init_workspace(&options, None)?;
 
@@ -353,7 +357,7 @@ impl Driver {
         }
 
         if options.no_compile {
-            return Ok(());
+            return Ok(None);
         }
 
         let db = &workspace.db;
@@ -369,7 +373,7 @@ impl Driver {
                 log::debug!("program after monomorphization:");
             }
             println!("{}", program);
-            return Ok(());
+            return Ok(None);
         }
 
         log::debug!("{}", program);
@@ -411,7 +415,8 @@ impl Driver {
             let path = output_path("raylib");
 
             log::info!("writing to {}", path);
-            fs::write(path, lib).map_err(|err| vec![err.into()])
+            fs::write(&path, lib).map_err(|err| vec![err.into()])?;
+            Ok(Some(path))
         } else {
             log::debug!("program before monomorphization:\n{}", program);
             lir::monomorphize(&mut program);
@@ -423,6 +428,7 @@ impl Driver {
                 emit: matches!(options.emit, Some(build::EmitType::LLVM)),
                 opt_level: options.opt_level,
             };
+            let wasm_path = output_path("wasm");
             llvm::codegen(
                 &program,
                 &srcmap,
@@ -430,7 +436,8 @@ impl Driver {
                 &target,
                 output_path,
                 codegen_options,
-            )
+            )?;
+            Ok(Some(wasm_path))
         }
     }
 }

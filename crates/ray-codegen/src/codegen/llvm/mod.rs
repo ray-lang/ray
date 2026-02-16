@@ -1694,7 +1694,6 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Func {
 
     fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         log::debug!("generating {}", self);
-
         // clear the locals and blocks
         ctx.locals.clear();
         ctx.blocks.clear();
@@ -2124,7 +2123,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Store {
             lir::Variable::Local(idx) => {
                 let mut ptr = ctx.get_local(idx);
                 // if the local holds a pointer, we are storing to the pointee
-                if ctx.get_pointee_ty(ptr).is_any_pointer() {
+                let pointee_ty = ctx.get_pointee_ty(ptr).clone();
+                if pointee_ty.is_any_pointer() {
                     ptr = ctx.load_pointer(ptr)?.into_pointer_value();
                 }
 

@@ -13,12 +13,16 @@ build:
 build-release:
 	@cargo build --release
 
-core: build
+lib-core: build
 	@mkdir -p .ray/lib
 	@target/debug/ray --root-path $(PWD)/.ray --config-path=lib/core/ray.toml build lib/core
-
-dev-toolchain: build core
 	@cp lib/core/.raylib .ray/lib/core.raylib
+
+lib-testing: lib-core
+	@target/debug/ray --root-path $(PWD)/.ray --config-path=lib/testing/ray.toml build lib/testing
+	@cp lib/testing/.raylib .ray/lib/testing.raylib
+
+dev-toolchain: lib-testing
 
 release-toolchain:
 	@echo "==> cargo build --release"
@@ -27,6 +31,8 @@ release-toolchain:
 	@mkdir -p build/toolchain/lib
 	@target/release/ray --root-path $(PWD)/build/toolchain build lib/core --lib --no-core
 	@cp lib/core/.raylib build/toolchain/lib/core.raylib
+	@target/release/ray --root-path $(PWD)/build/toolchain build lib/testing --lib
+	@cp lib/testing/.raylib build/toolchain/lib/testing.raylib
 	@echo "==> writing toolchain manifest"
 	@printf 'version = "%s"\nchannel = "%s"\n' "local" "local" > build/toolchain/manifest.toml
 	@echo "==> cleaning staging artifacts"

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Import, ImportKind};
+use ray_core::ast::{Decl, Import, ImportKind};
 use ray_query_macros::query;
 use ray_shared::{file_id::FileId, pathlib::ModulePath};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,17 @@ pub fn resolved_imports(
         }
     }
 
+    // Inject `import testing with *` when file has test blocks
+    let parse_result = parse_file(db, file_id);
+    let has_tests = parse_result
+        .ast
+        .decls
+        .iter()
+        .any(|d| matches!(d.value, Decl::Test(_)));
+    if has_tests {
+        inject_testing_import(&mut result, &workspace, &libraries);
+    }
+
     result
 }
 
@@ -143,6 +154,28 @@ fn inject_implicit_imports(
         if let Ok(mp) = resolve_module_path(&io_path, workspace, libraries, None) {
             result.insert(
                 "io".to_string(),
+                Ok(ResolvedImport {
+                    module_path: mp,
+                    names: ImportNames::Glob,
+                }),
+            );
+        }
+    }
+}
+
+/// Inject `import testing with *` for files containing test blocks.
+///
+/// Only injected when the `testing` module is available in the workspace or libraries.
+fn inject_testing_import(
+    result: &mut HashMap<String, Result<ResolvedImport, ImportError>>,
+    workspace: &WorkspaceSnapshot,
+    libraries: &LoadedLibraries,
+) {
+    if !result.contains_key("testing") {
+        let testing_path = ModulePath::from("testing");
+        if let Ok(mp) = resolve_module_path(&testing_path, workspace, libraries, None) {
+            result.insert(
+                "testing".to_string(),
                 Ok(ResolvedImport {
                     module_path: mp,
                     names: ImportNames::Glob,
