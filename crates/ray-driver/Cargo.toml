@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bincode = "1.3"
 clap = { version = "4.5", features = ["derive", "env"] }
 fern = { version = "0.6" }
 inkwell = { version = "0.6", features = ["llvm17-0"] }
@@ -13,9 +14,11 @@ ray-cfg = { path = "../ray-cfg" }
 ray-codegen = { path = "../ray-codegen" }
 ray-core = { path = "../ray-core" }
 ray-frontend = { path = "../ray-frontend" }
+ray-lir = { path = "../ray-lir" }
 ray-shared = { path = "../ray-shared" }
 ray-typing = { path = "../ray-typing" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 tempfile = "3"
-ray-lir = { path = "../ray-lir" }

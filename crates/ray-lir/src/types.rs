@@ -1555,25 +1555,13 @@ impl<'a, T> FuncDisplayCtx<'a, T> {
 
 impl Display for Func {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (_, preds, _, ret_ty) = self.ty.try_borrow_fn().unwrap();
-        write!(
-            f,
-            "fn {}({}) -> {}{} {{\n{}\n}}",
-            self.name,
-            map_join(&self.params, ", ", |p| format!("${}: {}", p.idx, p.ty)),
-            ret_ty,
-            if !preds.is_empty() {
-                format!(" where {}", join(preds, " + "))
-            } else {
-                str!("")
-            },
-            indent_lines(
-                map_join(&self.blocks, "\n", |block| {
-                    format!("{}", FuncDisplayCtx::new(block, &self.locals))
-                }),
-                2,
-            )
-        )
+        let body = indent_lines(
+            map_join(&self.blocks, "\n", |block| {
+                format!("{}", FuncDisplayCtx::new(block, &self.locals))
+            }),
+            2,
+        );
+        write!(f, "{} {{\n{}\n}}", self.format_signature(), body)
     }
 }
 
@@ -1627,6 +1615,20 @@ impl Func {
             blocks: vec![],
             is_test: false,
         }
+    }
+
+    /// Format just the function signature (no body).
+    ///
+    /// Produces `fn name(params) -> ret_ty` with optional `where preds`.
+    pub fn format_signature(&self) -> String {
+        let (_, preds, _, ret_ty) = self.ty.try_borrow_fn().unwrap();
+        let params = map_join(&self.params, ", ", |p| format!("${}: {}", p.idx, p.ty));
+        let preds_str = if preds.is_empty() {
+            str!("")
+        } else {
+            format!(" where {}", join(preds, " + "))
+        };
+        format!("fn {}({}) -> {}{}", self.name, params, ret_ty, preds_str)
     }
 
     pub fn ty_of_local(&self, loc: usize) -> Option<TyScheme> {

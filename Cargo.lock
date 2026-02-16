@@ -1895,6 +1895,7 @@ dependencies = [
 name = "ray-driver"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "clap",
  "fern",
  "inkwell",
@@ -1907,6 +1908,8 @@ dependencies = [
  "ray-lir",
  "ray-shared",
  "ray-typing",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

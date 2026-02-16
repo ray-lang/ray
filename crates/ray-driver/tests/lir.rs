@@ -18,7 +18,7 @@ fn lir_generation_simple_function() {
 
     let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    let program =
+    let (program, _) =
         ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
     // Sanity check: at least one function emitted (main + id)
     assert!(
@@ -52,7 +52,7 @@ pub fn main() -> u32 {
 
     let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    let program =
+    let (program, _) =
         ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
@@ -218,7 +218,7 @@ pub fn main() -> u32 {
 
     let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    let program =
+    let (program, _) =
         ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program
@@ -307,7 +307,7 @@ pub fn main() -> u32 {
 
     let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    let program =
+    let (program, _) =
         ray_codegen::lir::generate(&workspace.db, false).expect("lir generation should succeed");
 
     let user_main_idx: usize = program

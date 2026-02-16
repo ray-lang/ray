@@ -1,13 +1,16 @@
 use std::process;
 
 use clap::{Parser, Subcommand, builder::styling};
-use ray_driver::{AnalyzeOptions, BuildOptions, Driver, GlobalOptions, TestOptions};
+use ray_driver::{
+    AnalyzeOptions, BuildOptions, Driver, GlobalOptions, InspectOptions, TestOptions,
+};
 use ray_shared::logger;
 use ray_shared::pathlib::RayPaths;
 
 mod analyze;
 mod bootstrap;
 mod build;
+mod inspect;
 mod lsp;
 mod test;
 
@@ -38,6 +41,8 @@ pub enum Command {
     Test(TestOptions),
     /// Analyze a module or file
     Analyze(AnalyzeOptions),
+    /// Inspect a precompiled .raylib file
+    Inspect(InspectOptions),
     /// Run the language server
     Lsp(lsp::LspOptions),
     /// Download and install the Ray toolchain
@@ -100,6 +105,9 @@ pub fn run() {
                 eprintln!("error: {err:?}");
                 process::exit(1);
             }
+        }
+        Command::Inspect(options) => {
+            inspect::action(options);
         }
         Command::Build(options) => {
             let ray_paths = ray_paths.unwrap_or_else(|| {

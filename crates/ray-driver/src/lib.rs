@@ -34,6 +34,7 @@ mod analyze;
 mod build;
 pub mod discovery;
 mod global_options;
+pub mod inspect;
 mod test;
 
 pub use analyze::{
@@ -43,6 +44,7 @@ pub use analyze::{
 pub use build::BuildOptions;
 pub use build::EmitType;
 pub use global_options::*;
+pub use inspect::InspectOptions;
 pub use test::TestOptions;
 
 /// Result of workspace initialization.

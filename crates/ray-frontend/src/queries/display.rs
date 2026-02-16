@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
-        defs::{ImplDef, def_header, definition_record, func_def, impl_def, struct_def, trait_def},
+        defs::{def_header, definition_record, func_def, impl_def, struct_def, trait_def},
         libraries::library_data,
         typecheck::def_scheme,
         types::mapped_def_types,
@@ -98,17 +98,19 @@ pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayIn
                             }
                         }
 
-                        let sig = format_func_sig_from_query(
-                            db,
-                            &target,
-                            &name,
-                            impl_info,
-                            Some(parent_target),
-                        );
+                        let parent_params = impl_info.map(|info| {
+                            (
+                                parent_target as &DefTarget,
+                                info.type_params.as_slice(),
+                                info.predicates.as_slice(),
+                            )
+                        });
+                        let sig = format_func_sig_from_query(db, &target, &name, parent_params);
                         signatures.push(sig);
                     }
                     Some(DefKind::Trait) => {
-                        if let Some(tdef) = trait_def(db, parent_target.clone()) {
+                        let tdef_opt = trait_def(db, parent_target.clone());
+                        if let Some(ref tdef) = tdef_opt {
                             let vars = format_ty_vars(&display_vars_for_target(
                                 db,
                                 parent_target,
@@ -117,11 +119,18 @@ pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayIn
                             let trait_name = tdef.path.item_name().unwrap_or("?");
                             signatures.push(format!("trait {}{}", trait_name, vars));
                         }
-                        let sig = format_func_sig_from_query(db, &target, &name, None, None);
+                        let parent_params = tdef_opt.as_ref().map(|tdef| {
+                            (
+                                parent_target as &DefTarget,
+                                tdef.type_params.as_slice(),
+                                [].as_slice(),
+                            )
+                        });
+                        let sig = format_func_sig_from_query(db, &target, &name, parent_params);
                         signatures.push(sig);
                     }
                     _ => {
-                        let sig = format_func_sig_from_query(db, &target, &name, None, None);
+                        let sig = format_func_sig_from_query(db, &target, &name, None);
                         signatures.push(sig);
                     }
                 }
@@ -130,7 +139,7 @@ pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayIn
                 if !record.path.module.is_empty() {
                     signatures.push(record.path.module.to_string());
                 }
-                let sig = format_func_sig_from_query(db, &target, &name, None, None);
+                let sig = format_func_sig_from_query(db, &target, &name, None);
                 signatures.push(sig);
             }
         }
@@ -239,14 +248,13 @@ pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayIn
 /// Format a function/method signature using query results only.
 ///
 /// Uses `func_def` for param names and modifiers, `get_display_scheme` for types.
-/// When `parent_impl` is provided, inherited type vars and qualifiers are stripped
-/// using the parent's display-mapped vars/predicates.
+/// When parent type vars and predicates are provided, inherited vars and qualifiers
+/// are stripped using the parent's display-mapped vars/predicates.
 fn format_func_sig_from_query(
     db: &Database,
     target: &DefTarget,
     name: &str,
-    parent_impl: Option<&ImplDef>,
-    parent_target: Option<&DefTarget>,
+    parent_type_params: Option<(&DefTarget, &[TyVar], &[Predicate])>,
 ) -> String {
     let fdef = func_def(db, target.clone());
     let scheme = get_display_scheme(db, target);
@@ -257,11 +265,10 @@ fn format_func_sig_from_query(
     };
 
     // Build display-mapped parent vars and predicates for filtering
-    let parent_display = parent_impl.and_then(|impl_info| {
-        let pt = parent_target?;
-        let display_vars = display_vars_for_target(db, pt, &impl_info.type_params);
-        let display_preds = display_predicates_for_target(db, pt, &impl_info.predicates);
-        Some((display_vars, display_preds))
+    let parent_display = parent_type_params.map(|(pt, vars, preds)| {
+        let display_vars = display_vars_for_target(db, pt, vars);
+        let display_preds = display_predicates_for_target(db, pt, preds);
+        (display_vars, display_preds)
     });
 
     match scheme {
@@ -288,7 +295,7 @@ fn format_func_sig_from_query(
 /// Combines modifiers, name, type vars, params (with names if available),
 /// return type, and where-clause. Strips parent vars and qualifiers
 /// when `parent_display` is provided (display-mapped parent vars and predicates).
-fn format_func_display(
+pub fn format_func_display(
     name: &str,
     scheme: &TyScheme,
     param_names: &[String],
@@ -343,7 +350,7 @@ fn format_func_display(
 /// When param_names is non-empty, produces `(name: type, ...)`.
 /// When param_names is empty, produces `(type, ...)`.
 /// Self params are formatted specially (just `self` when type is `self`).
-fn format_func_params(param_names: &[String], ty: &Ty) -> String {
+pub fn format_func_params(param_names: &[String], ty: &Ty) -> String {
     match ty {
         Ty::Func(param_tys, _) => {
             if param_names.is_empty() {
@@ -385,7 +392,7 @@ fn format_func_params(param_names: &[String], ty: &Ty) -> String {
 }
 
 /// Extract the return type string from a Ty::Func.
-fn format_func_ret(ty: &Ty) -> String {
+pub fn format_func_ret(ty: &Ty) -> String {
     match ty {
         Ty::Func(_, ret) => format!(" -> {}", ret),
         _ => String::new(),
@@ -450,7 +457,7 @@ pub(crate) fn collect_reverse_map(db: &Database, def_id: DefId) -> HashMap<TyVar
 }
 
 /// Build a Subst from a reverse_map (schema_var → user_var).
-fn build_rename_subst(reverse_map: &HashMap<TyVar, TyVar>) -> Subst {
+pub fn build_rename_subst(reverse_map: &HashMap<TyVar, TyVar>) -> Subst {
     let mut subst = Subst::new();
     for (schema_var, user_var) in reverse_map {
         subst.insert(schema_var.clone(), Ty::Var(user_var.clone()));
@@ -567,7 +574,7 @@ pub fn display_library_ty(db: &Database, lib_def_id: &LibraryDefId, ty: &Ty) -> 
 // ============================================================================
 
 /// Format type variables as `[var1, var2]`, or empty string if none.
-fn format_ty_vars(vars: &[TyVar]) -> String {
+pub fn format_ty_vars(vars: &[TyVar]) -> String {
     if vars.is_empty() {
         String::new()
     } else {
@@ -581,7 +588,7 @@ fn format_ty_vars(vars: &[TyVar]) -> String {
 }
 
 /// Format qualifiers/predicates as a where clause body (without the `where` keyword).
-fn format_qualifiers(qualifiers: &[Predicate]) -> String {
+pub fn format_qualifiers(qualifiers: &[Predicate]) -> String {
     if qualifiers.is_empty() {
         String::new()
     } else {
@@ -594,7 +601,7 @@ fn format_qualifiers(qualifiers: &[Predicate]) -> String {
 }
 
 /// Format an impl signature, including where-clause predicates if any.
-fn format_impl_sig(
+pub fn format_impl_sig(
     implementing_type: &Ty,
     trait_ty: Option<&Ty>,
     predicates: &[Predicate],
