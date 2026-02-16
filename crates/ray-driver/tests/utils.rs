@@ -64,6 +64,7 @@ pub fn include_minimal_core(src: &str) -> String {
 struct string {
     raw_ptr: *u8
     len: uint
+    char_len: uint
 }
 
 trait Int['a] {

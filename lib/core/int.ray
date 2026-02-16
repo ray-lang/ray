@@ -83,6 +83,7 @@ impl ToStr['a] where UnsignedInt['a], Int['a], Div['a, 'a, 'a], Mod['a, 'a, 'a],
         }
 
         raw_ptr = malloc(len)
+        char_len = len
         i = self
         mut ptr = raw_ptr + (len - 1)
         while true {
@@ -94,7 +95,7 @@ impl ToStr['a] where UnsignedInt['a], Int['a], Div['a, 'a, 'a], Mod['a, 'a, 'a],
             }
         }
 
-        string { raw_ptr, len }
+        string { raw_ptr, len, char_len }
     }
 }
 
@@ -118,6 +119,7 @@ impl ToStr['a] where SignedInt['a], Int['a], Lt['a, 'a], Neg['a, 'a], Div['a, 'a
         }
 
         raw_ptr = malloc(len)
+        char_len = len
         i = abs(self)
         mut ptr = raw_ptr + (len - 1)
         while true {
@@ -133,6 +135,6 @@ impl ToStr['a] where SignedInt['a], Int['a], Lt['a, 'a], Neg['a, 'a], Div['a, 'a
             *ptr = '-' as u8
         }
 
-        string { raw_ptr, len }
+        string { raw_ptr, len, char_len }
     }
 }

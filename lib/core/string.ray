@@ -1,13 +1,17 @@
 //! The `string` type and its trait implementations.
 //!
-//! Strings in Ray are length-prefixed byte sequences stored as a raw pointer
-//! and a length. They are not null-terminated. Strings support equality
-//! comparison, hashing (for use as `dict` keys), and concatenation via `+`.
+//! Strings in Ray are UTF-8 encoded byte sequences stored as a raw pointer,
+//! a byte length, and a character (codepoint) count. They are not
+//! null-terminated. Strings support equality, ordering, hashing, concatenation,
+//! substring operations, and character-based iteration.
 
 /// A UTF-8 string represented as a pointer to bytes and a length.
+///
+/// `len` is the byte length. `char_len` is the number of Unicode codepoints.
 struct string {
     raw_ptr: rawptr[u8]
     len: uint
+    char_len: uint
 }
 
 /// Strings convert to themselves (identity conversion).
@@ -58,6 +62,7 @@ impl Hash[string] {
 impl Add[string, string, string] {
     fn +(a: string, b: string) -> string {
         len = a.len + b.len
+        char_len = a.char_len + b.char_len
         raw_ptr = malloc(len)
 
         mut src_len = a.len
@@ -70,6 +75,246 @@ impl Add[string, string, string] {
         src_ptr = b.raw_ptr
         memcopy(dst_ptr, src_ptr, src_len)
 
-        string { raw_ptr, len }
+        string { raw_ptr, len, char_len }
+    }
+}
+
+/// String inequality. Two strings are unequal if they differ in length or content.
+impl Neq[string, string] {
+    @inline
+    fn !=(a: string, b: string) -> bool => !(a == b)
+}
+
+/// Lexicographic less-than comparison.
+///
+/// Compares byte-by-byte, which is equivalent to codepoint ordering for UTF-8.
+impl Lt[string, string] {
+    fn <(a: string, b: string) -> bool {
+        mut min_len = a.len
+        if b.len < min_len {
+            min_len = b.len
+        }
+
+        mut i: uint = 0
+        while i < min_len {
+            ab = *(a.raw_ptr + i)
+            bb = *(b.raw_ptr + i)
+            if ab < bb {
+                return true
+            }
+            if ab > bb {
+                return false
+            }
+            i += 1
+        }
+
+        a.len < b.len
+    }
+}
+
+/// Lexicographic greater-than comparison.
+impl Gt[string, string] {
+    @inline
+    fn >(a: string, b: string) -> bool => b < a
+}
+
+/// Lexicographic less-than-or-equal comparison.
+impl LtEq[string, string] {
+    @inline
+    fn <=(a: string, b: string) -> bool => !(b < a)
+}
+
+/// Lexicographic greater-than-or-equal comparison.
+impl GtEq[string, string] {
+    @inline
+    fn >=(a: string, b: string) -> bool => !(a < b)
+}
+
+/// Decodes a single UTF-8 codepoint starting at byte offset `offset`.
+///
+/// Returns `(codepoint, byte_length)` where `codepoint` is the Unicode
+/// scalar value and `byte_length` is the number of bytes consumed (1-4).
+fn __utf8_decode(ptr: rawptr[u8], offset: uint) -> (u32, uint) {
+    b0 = *(ptr + offset) as u32
+    if b0 < 128 {
+        return (b0, 1)
+    }
+
+    if b0 < 224 {
+        b1 = *(ptr + offset + 1) as u32
+        cp = (b0 & 31) * 64 + (b1 & 63)
+        return (cp, 2)
+    }
+
+    if b0 < 240 {
+        b1 = *(ptr + offset + 1) as u32
+        b2 = *(ptr + offset + 2) as u32
+        cp = (b0 & 15) * 4096 + (b1 & 63) * 64 + (b2 & 63)
+        return (cp, 3)
+    }
+
+    b1 = *(ptr + offset + 1) as u32
+    b2 = *(ptr + offset + 2) as u32
+    b3 = *(ptr + offset + 3) as u32
+    cp = (b0 & 7) * 262144 + (b1 & 63) * 4096 + (b2 & 63) * 64 + (b3 & 63)
+    (cp, 4)
+}
+
+/// String methods.
+impl object string {
+    /// Returns `true` if the string contains no characters.
+    fn is_empty(self: *string) -> bool => self.char_len == 0
+
+    /// Returns the byte offset of the `n`-th character (0-indexed).
+    ///
+    /// Returns `self.len` if `n` is past the end.
+    fn __byte_offset_of_char(self: *string, n: uint) -> uint {
+        mut byte_off: uint = 0
+        mut char_idx: uint = 0
+        while char_idx < n {
+            if byte_off >= self.len {
+                return self.len
+            }
+            b0 = *(self.raw_ptr + byte_off) as uint
+            if b0 < 128 {
+                byte_off += 1
+            } else if b0 < 224 {
+                byte_off += 2
+            } else if b0 < 240 {
+                byte_off += 3
+            } else {
+                byte_off += 4
+            }
+            char_idx += 1
+        }
+        byte_off
+    }
+
+    /// Returns the character at index `idx`, or `nil` if out of bounds.
+    fn char_at(self: *string, idx: uint) -> char? {
+        if idx >= self.char_len {
+            return nil
+        }
+        byte_off = self.__byte_offset_of_char(idx)
+        cp, _ = __utf8_decode(self.raw_ptr, byte_off)
+        some(cp as char)
+    }
+
+    /// Returns a new string containing characters from `start` up to (but not
+    /// including) `end`. Both indices are clamped to `char_len`.
+    fn slice(self: *string, start: uint, end: uint) -> string {
+        mut actual_end = end
+        if actual_end > self.char_len {
+            actual_end = self.char_len
+        }
+        if start >= actual_end {
+            raw_ptr = malloc(0)
+            return string { raw_ptr, len: 0, char_len: 0 }
+        }
+
+        start_byte = self.__byte_offset_of_char(start)
+        end_byte = self.__byte_offset_of_char(actual_end)
+        len = end_byte - start_byte
+        char_len = actual_end - start
+        raw_ptr = malloc(len)
+        memcopy(raw_ptr, self.raw_ptr + start_byte, len)
+        string { raw_ptr, len, char_len }
+    }
+
+    /// Returns `true` if `sub` occurs anywhere within this string.
+    fn contains(self: *string, sub: string) -> bool {
+        if sub.len > self.len {
+            return false
+        }
+        if sub.len == 0 {
+            return true
+        }
+        limit = self.len - sub.len + 1
+        mut i: uint = 0
+        while i < limit {
+            mut j: uint = 0
+            mut matched = true
+            while j < sub.len {
+                if *(self.raw_ptr + i + j) != *(sub.raw_ptr + j) {
+                    matched = false
+                    break
+                }
+                j += 1
+            }
+            if matched {
+                return true
+            }
+            i += 1
+        }
+        false
+    }
+
+    /// Returns `true` if this string begins with `prefix`.
+    fn starts_with(self: *string, prefix: string) -> bool {
+        if prefix.len > self.len {
+            return false
+        }
+        mut i: uint = 0
+        while i < prefix.len {
+            if *(self.raw_ptr + i) != *(prefix.raw_ptr + i) {
+                return false
+            }
+            i += 1
+        }
+        true
+    }
+
+    /// Returns `true` if this string ends with `suffix`.
+    fn ends_with(self: *string, suffix: string) -> bool {
+        if suffix.len > self.len {
+            return false
+        }
+        offset = self.len - suffix.len
+        mut i: uint = 0
+        while i < suffix.len {
+            if *(self.raw_ptr + offset + i) != *(suffix.raw_ptr + i) {
+                return false
+            }
+            i += 1
+        }
+        true
+    }
+
+    /// Returns a new string formed by repeating this string `n` times.
+    fn repeat(self: *string, n: uint) -> string {
+        len = self.len * n
+        char_len = self.char_len * n
+        raw_ptr = malloc(len)
+        mut i: uint = 0
+        while i < n {
+            memcopy(raw_ptr + (i * self.len), self.raw_ptr, self.len)
+            i += 1
+        }
+        string { raw_ptr, len, char_len }
+    }
+}
+
+/// Iterator over the Unicode codepoints of a string.
+struct StringIter {
+    s: *string
+    byte_off: uint
+}
+
+/// Strings can be iterated over, yielding each `char` (Unicode codepoint).
+impl Iterable[string, StringIter, char] {
+    fn iter(self: *string) -> StringIter {
+        StringIter { s: self, byte_off: 0 }
+    }
+}
+
+/// Advances the string iterator, returning the next codepoint or `nil`.
+impl Iter[StringIter, char] {
+    fn next(self: *StringIter) -> char? {
+        if self.byte_off >= self.s.len {
+            return nil
+        }
+        cp, byte_len = __utf8_decode(self.s.raw_ptr, self.byte_off)
+        self.byte_off = self.byte_off + byte_len
+        some(cp as char)
     }
 }

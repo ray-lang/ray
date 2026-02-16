@@ -1637,6 +1637,7 @@ impl<'a> GenCtx<'a> {
     fn emit_string_literal(&mut self, s: &str) -> usize {
         let bytes = s.as_bytes().to_vec();
         let len = bytes.len();
+        let char_len = s.chars().count();
         let string_size = lir::Size::bytes(len);
         let idx = self.data(bytes);
 
@@ -1665,6 +1666,7 @@ impl<'a> GenCtx<'a> {
                 fields: vec![
                     (str!("raw_ptr"), Ty::ref_of(Ty::u8()).into()),
                     (str!("len"), Ty::uint().into()),
+                    (str!("char_len"), Ty::uint().into()),
                 ],
             },
         ));
@@ -1679,6 +1681,12 @@ impl<'a> GenCtx<'a> {
             lir::Variable::Local(loc),
             str!("len"),
             lir::Atom::Size(string_size).into(),
+        ));
+
+        self.push(lir::SetField::new(
+            lir::Variable::Local(loc),
+            str!("char_len"),
+            lir::Atom::uptr(char_len as u64).into(),
         ));
 
         loc
@@ -2233,61 +2241,7 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
                 lir::Value::new(lir::Atom::FloatConst(c, size))
             }
             Literal::String(s) => {
-                // convert the string to bytes and add a `Data` to the program
-                let bytes = s.as_bytes().to_vec();
-                let len = bytes.len();
-                let string_size = lir::Size::bytes(len);
-                let idx = ctx.data(bytes);
-
-                // allocate a pointer to store the string bytes
-                let data_loc = ctx.local(Ty::ref_of(Ty::u8()).into());
-                let ptr = lir::Malloc::new(Ty::u8().into(), lir::Atom::uptr(len as u64));
-                ctx.set_local(data_loc, ptr.into());
-
-                // make a call to `memcpy` to copy the bytes
-                let path = ctx.path();
-                ctx.push(lir::Inst::MemCopy(
-                    lir::Variable::Local(data_loc), // dst
-                    lir::Variable::Data(path, idx), // src
-                    string_size.into(),             // size
-                ));
-
-                // create a `string` struct
-                //  - raw_ptr: *u8
-                //  - len: usize
-                let string_target = resolve_builtin(ctx.db, ctx.file_id, "string".to_string())
-                    .expect("string type not in scope");
-                let string_fqn =
-                    def_path(ctx.db, string_target).expect("missing def_path for string");
-                let string_ty = Ty::Const(string_fqn.clone());
-                let loc = ctx.local(string_ty.clone().into());
-                ctx.push(lir::Inst::StructInit(
-                    lir::Variable::Local(loc),
-                    StructTy {
-                        kind: NominalKind::Struct,
-                        path: string_fqn,
-                        ty: string_ty.into(),
-                        fields: vec![
-                            (str!("raw_ptr"), Ty::ref_of(Ty::u8()).into()),
-                            (str!("len"), Ty::uint().into()),
-                        ],
-                    },
-                ));
-
-                // store the pointer to the bytes
-                ctx.push(lir::SetField::new(
-                    lir::Variable::Local(loc),
-                    str!("raw_ptr"),
-                    lir::Variable::Local(data_loc).into(),
-                ));
-
-                // store the size of the string
-                ctx.push(lir::SetField::new(
-                    lir::Variable::Local(loc),
-                    str!("len"),
-                    lir::Atom::Size(string_size).into(),
-                ));
-
+                let loc = ctx.emit_string_literal(s);
                 lir::Atom::new(lir::Variable::Local(loc)).into()
             }
             Literal::ByteString(_) => todo!(),
@@ -4706,6 +4660,7 @@ pub fn main() -> f64 {
 struct string {
     raw_ptr: *u8
     len: uint
+    char_len: uint
 }
 
 pub fn main() -> string {
@@ -5783,6 +5738,7 @@ pub fn main() -> u32 {
 struct string {
     raw_ptr: *u8
     len: uint
+    char_len: uint
 }
 
 @intrinsic extern fn str_concat(a: string, b: string) -> string
@@ -5854,6 +5810,7 @@ pub fn main() -> string {
 struct string {
     raw_ptr: *u8
     len: uint
+    char_len: uint
 }
 
 pub fn main() -> string {

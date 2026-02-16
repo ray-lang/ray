@@ -1040,6 +1040,7 @@ extern wasi fn fd_write(fd: int, iov: *IOVec, iov_len: uint, nwritten: *uint) ->
 struct string {
     raw_ptr: rawptr[u8]
     len: uint
+    char_len: uint
 }
 
 struct IOVec {
@@ -1116,12 +1117,14 @@ impl Int[uint] {}
 struct string {
     raw_ptr: rawptr[u8]
     len: uint
+    char_len: uint
 }
 
 fn mk_string() -> string {
     len = 10
     raw_ptr = malloc(len)
-    string { raw_ptr, len }
+    char_len = len
+    string { raw_ptr, len, char_len }
 }
 "#;
 
@@ -1557,6 +1560,7 @@ impl Lt[uint, uint] {
 struct string {
     raw_ptr: rawptr[u8]
     len: uint
+    char_len: uint
 }
 
 impl Add[rawptr['a], uint, rawptr['a]] {

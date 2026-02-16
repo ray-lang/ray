@@ -1132,7 +1132,8 @@ fn parses_curly_expression() {
 fn main() {
     len = 10
     raw_ptr = new(u8, len)
-    s = string { raw_ptr, len }
+    char_len = len
+    s = string { raw_ptr, len, char_len }
 }
 "#;
     let mut srcmap = SourceMap::new();
@@ -1147,12 +1148,12 @@ fn main() {
     let block = function_body_block(func);
 
     assert!(
-        block.stmts.len() == 3,
-        "expected 3 statements, found {}",
+        block.stmts.len() == 4,
+        "expected 4 statements, found {}",
         block.stmts.len()
     );
 
-    let assign = match &block.stmts[2].value {
+    let assign = match &block.stmts[3].value {
         Expr::Assign(assign) => assign,
         other => panic!("expected assignment statement, got {:?}", other),
     };
@@ -1166,8 +1167,8 @@ fn main() {
     let raw_ptr_elem = &curly.elements[0];
     let raw_ptr_elem_src = srcmap.get(raw_ptr_elem);
     let raw_ptr_elem_span = raw_ptr_elem_src.span.expect("expected span");
-    assert!(raw_ptr_elem_span.start.lineno == 4);
-    assert!(raw_ptr_elem_span.end.lineno == 4);
+    assert!(raw_ptr_elem_span.start.lineno == 5);
+    assert!(raw_ptr_elem_span.end.lineno == 5);
 }
 
 #[test]
@@ -1176,9 +1177,11 @@ fn parses_multiline_curly_expression_allows_trailing_comma() {
 fn main() {
     len = 10
     raw_ptr = new(u8, len)
+    char_len = len
     s = string {
         raw_ptr,
         len,
+        char_len,
     }
 }
 "#;
@@ -1191,7 +1194,7 @@ fn main() {
 
     let func = first_function(&file);
     let block = function_body_block(func);
-    let assign = match &block.stmts[2].value {
+    let assign = match &block.stmts[3].value {
         Expr::Assign(assign) => assign,
         other => panic!("expected assignment statement, got {:?}", other),
     };
@@ -1201,7 +1204,7 @@ fn main() {
         other => panic!("expected curly expression, got {:?}", other),
     };
 
-    assert_eq!(curly.elements.len(), 2);
+    assert_eq!(curly.elements.len(), 3);
 }
 
 #[test]

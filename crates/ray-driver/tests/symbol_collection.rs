@@ -150,7 +150,8 @@ fn collects_curly_elements() {
 fn make_string() -> string {
     len = 3
     raw_ptr = new(u8, len)
-    string { raw_ptr, len }
+    char_len = len
+    string { raw_ptr, len, char_len }
 }
 "#;
 
@@ -168,7 +169,7 @@ fn make_string() -> string {
         _ => panic!("expected block"),
     };
 
-    assert!(make_string_body.stmts.len() == 3, "expected 3 statements");
+    assert!(make_string_body.stmts.len() == 4, "expected 4 statements");
 
     let raw_ptr_assign = match &make_string_body.stmts[1].value {
         Expr::Assign(assign) => assign,
@@ -191,12 +192,12 @@ fn make_string() -> string {
         "expected local definition for raw_ptr"
     );
 
-    let curly = match &make_string_body.stmts[2].value {
+    let curly = match &make_string_body.stmts[3].value {
         Expr::Curly(curly) => curly,
         _ => panic!("expected curly"),
     };
 
-    assert!(curly.elements.len() == 2, "expected 2 elements");
+    assert!(curly.elements.len() == 3, "expected 3 elements");
 
     let raw_ptr_elem = &curly.elements[0];
 
