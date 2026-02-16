@@ -373,6 +373,8 @@ fn compute_signature_status(decl: &Node<Decl>, has_implicit_self: bool) -> Signa
         }
         // FileMain doesn't have a signature - it's a container for statements
         Decl::FileMain(_) => SignatureStatus::FullyAnnotated,
+        // Test blocks don't have signatures
+        Decl::Test(_) => SignatureStatus::FullyAnnotated,
     }
 }
 
@@ -718,7 +720,11 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
             // (any type vars in the aliased type are free)
             vec![]
         }
-        Decl::Name(_, _) | Decl::Mutable(_, _) | Decl::Declare(_) | Decl::FileMain(_) => vec![],
+        Decl::Name(_, _)
+        | Decl::Mutable(_, _)
+        | Decl::Declare(_)
+        | Decl::FileMain(_)
+        | Decl::Test(_) => vec![],
     }
 }
 

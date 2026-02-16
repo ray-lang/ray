@@ -247,6 +247,7 @@ fn find_ctx_in_decl(decl: &Node<Decl>, srcmap: &SourceMap, pos: &Pos) -> Option<
             }
             None
         }
+        Decl::Test(test) => find_ctx_in_expr(&test.body, srcmap, pos),
         Decl::Struct(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)

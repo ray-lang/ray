@@ -99,6 +99,8 @@ pub enum TokenKind {
     New,
     /// box
     Bx,
+    /// test
+    Test,
 
     Modifier(Modifier),
 
@@ -270,6 +272,7 @@ impl TokenKind {
             TokenKind::Where => "`where`",
             TokenKind::New => "`new`",
             TokenKind::Bx => "`box`",
+            TokenKind::Test => "`test`",
             TokenKind::Equals => "`=`",
             TokenKind::Gt => "`>`",
             TokenKind::Lt => "`<`",
@@ -338,6 +341,7 @@ impl TokenKind {
                 | TokenKind::In
                 | TokenKind::Bx
                 | TokenKind::New
+                | TokenKind::Test
         )
     }
 
@@ -405,6 +409,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Where => "where".to_string(),
             TokenKind::New => "new".to_string(),
             TokenKind::Bx => "box".to_string(),
+            TokenKind::Test => "test".to_string(),
             TokenKind::Equals => "=".to_string(),
             TokenKind::Gt => ">".to_string(),
             TokenKind::Lt => "<".to_string(),

@@ -2580,3 +2580,94 @@ fn main() {
         other => panic!("expected FString, got {:?}", other),
     }
 }
+
+// ============================================================================
+// Test block parsing tests
+// ============================================================================
+
+#[test]
+fn parses_test_block() {
+    let src = r#"
+test "adds one" {
+    x = 42
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected test block to parse without errors, got: {:?}",
+        errors
+    );
+    assert_eq!(file.decls.len(), 1, "expected one declaration");
+    let test_decl = match &file.decls[0].value {
+        Decl::Test(t) => t,
+        other => panic!("expected Decl::Test, got {:?}", other),
+    };
+    assert_eq!(test_decl.name, "adds one");
+    match &test_decl.body.value {
+        Expr::Block(block) => {
+            assert_eq!(block.stmts.len(), 1, "expected one statement in test body");
+        }
+        other => panic!("expected block body, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_multiple_test_blocks() {
+    let src = r#"
+fn add_one(x: int) -> int => x + 1
+
+test "add_one returns correct result" {
+    x = add_one(41)
+}
+
+test "add_one handles zero" {
+    x = add_one(0)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(
+        errors.is_empty(),
+        "expected multiple test blocks to parse without errors, got: {:?}",
+        errors
+    );
+    assert_eq!(file.decls.len(), 3, "expected fn + 2 test declarations");
+    assert!(
+        matches!(&file.decls[0].value, Decl::Func(_)),
+        "expected first decl to be a function"
+    );
+    let test1 = match &file.decls[1].value {
+        Decl::Test(t) => t,
+        other => panic!("expected Decl::Test for second decl, got {:?}", other),
+    };
+    assert_eq!(test1.name, "add_one returns correct result");
+    let test2 = match &file.decls[2].value {
+        Decl::Test(t) => t,
+        other => panic!("expected Decl::Test for third decl, got {:?}", other),
+    };
+    assert_eq!(test2.name, "add_one handles zero");
+}
+
+#[test]
+fn test_block_requires_string_name() {
+    let src = r#"
+test { x = 1 }
+"#;
+    let (_file, errors) = parse_source(src);
+    assert!(
+        !errors.is_empty(),
+        "expected parse error when test block has no string name"
+    );
+}
+
+#[test]
+fn test_block_requires_body() {
+    let src = r#"
+test "no body"
+"#;
+    let (_file, errors) = parse_source(src);
+    assert!(
+        !errors.is_empty(),
+        "expected parse error when test block has no body"
+    );
+}

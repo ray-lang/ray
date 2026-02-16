@@ -201,6 +201,8 @@ pub enum IntrinsicKind {
     BoolAnd,
     BoolOr,
     BoolNot,
+    TestAssert,
+    TestFail,
 }
 
 impl IntrinsicKind {
@@ -403,6 +405,8 @@ impl IntrinsicKind {
             "bool_and" => Some(Self::BoolAnd),
             "bool_or" => Some(Self::BoolOr),
             "bool_not" => Some(Self::BoolNot),
+            "assert" => Some(Self::TestAssert),
+            "fail" => Some(Self::TestFail),
             _ => None,
         }
     }

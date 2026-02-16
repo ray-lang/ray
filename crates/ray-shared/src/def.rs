@@ -61,6 +61,7 @@ pub enum DefKind {
     Trait,
     Impl,
     TypeAlias,
+    Test,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -158,6 +158,9 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
                 transform_expr(stmt, ctx);
             }
         }
+        Decl::Test(test) => {
+            transform_expr(&mut test.body, ctx);
+        }
         // Other declaration types don't contain expressions to transform
         Decl::Struct(_)
         | Decl::FnSig(_)

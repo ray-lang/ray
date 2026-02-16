@@ -116,6 +116,10 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
                     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(stmt)));
                 }
             }
+            Decl::Test(test) => {
+                walk.stack
+                    .push(StackEntry::EnterNode(WalkItem::Expr(&test.body)));
+            }
             Decl::Mutable(_, _)
             | Decl::Name(_, _)
             | Decl::Struct(_)

@@ -3861,6 +3861,9 @@ impl LirGen<GenResult> for Node<Decl> {
                     stmt.lir_gen(ctx)?;
                 }
             }
+            Decl::Test(_) => {
+                // Test blocks are only compiled in test mode (handled by test harness generation)
+            }
         }
 
         Ok(lir::Value::Empty)

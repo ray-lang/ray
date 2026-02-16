@@ -772,7 +772,7 @@ pub fn build_library_data(
                     // Method schemes already added above; they're accessed
                     // through their parent trait/impl, not via names
                 }
-                DefKind::FileMain | DefKind::StructField | DefKind::Primitive => {}
+                DefKind::FileMain | DefKind::StructField | DefKind::Primitive | DefKind::Test => {}
             }
         }
     }

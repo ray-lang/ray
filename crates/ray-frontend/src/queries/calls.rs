@@ -198,12 +198,12 @@ impl Add[int, int, int] {
     fn +(a: int, b: int) -> int => a
 }
 
-fn test() -> int => 1 + 2
+fn check() -> int => 1 + 2
 "#;
         let (db, file_id) = setup_test_db(source);
 
         let file_result = file_ast(&db, file_id);
-        let test_def = find_def_by_name(&file_result, "test").expect("Should have test function");
+        let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
         let group_id = binding_group_for_def(&db, test_def.def_id);
         let input = typecheck_group_input(&db, group_id);
@@ -256,7 +256,7 @@ impl object Point {
     fn magnitude(self: *Point) -> int => self.x
 }
 
-fn test() -> int {
+fn check() -> int {
     p = Point { x: 3, y: 4 }
     p.magnitude()
 }
@@ -264,7 +264,7 @@ fn test() -> int {
         let (db, file_id) = setup_test_db(source);
 
         let file_result = file_ast(&db, file_id);
-        let test_def = find_def_by_name(&file_result, "test").expect("Should have test function");
+        let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
         let group_id = binding_group_for_def(&db, test_def.def_id);
         let input = typecheck_group_input(&db, group_id);
@@ -328,7 +328,7 @@ impl Index[List, int, int] {
     fn set(self: *List, idx: int, el: int) -> int? => nil
 }
 
-fn test() -> int? {
+fn check() -> int? {
     l = List { data: 0 }
     l[0]
 }
@@ -336,7 +336,7 @@ fn test() -> int? {
         let (db, file_id) = setup_test_db(source);
 
         let file_result = file_ast(&db, file_id);
-        let test_def = find_def_by_name(&file_result, "test").expect("Should have test function");
+        let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
         let group_id = binding_group_for_def(&db, test_def.def_id);
         let input = typecheck_group_input(&db, group_id);
@@ -392,7 +392,7 @@ impl Index[List, int, int] {
     fn set(self: *List, idx: int, el: int) -> int? => nil
 }
 
-fn test() -> int? {
+fn check() -> int? {
     l = List { data: 0 }
     l[0] = 42
 }
@@ -400,7 +400,7 @@ fn test() -> int? {
         let (db, file_id) = setup_test_db(source);
 
         let file_result = file_ast(&db, file_id);
-        let test_def = find_def_by_name(&file_result, "test").expect("Should have test function");
+        let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
         let group_id = binding_group_for_def(&db, test_def.def_id);
         let input = typecheck_group_input(&db, group_id);

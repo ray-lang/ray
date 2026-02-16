@@ -202,6 +202,12 @@ pub fn build_typecheck_input(
                     lower_file_main(&mut ctx, stmts);
                 }
             }
+            Decl::Test(test) => {
+                // Test blocks have a body expression but don't introduce type
+                // schemes into the nominal environment. Lower the body so it
+                // participates in type checking.
+                let _root_expr_id = lower_expr(&mut ctx, &test.body);
+            }
         }
     }
 

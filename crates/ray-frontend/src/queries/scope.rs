@@ -150,6 +150,9 @@ fn collect_locals_in_decl(
                 collect_locals_in_expr(stmt, srcmap, pos, resolutions, locals);
             }
         }
+        Decl::Test(test) => {
+            collect_locals_in_expr(&test.body, srcmap, pos, resolutions, locals);
+        }
         // Other declarations don't introduce local scopes
         Decl::Struct(_)
         | Decl::FnSig(_)

@@ -275,7 +275,7 @@ pub fn definition_identities(db: &Database, file_id: FileId) -> HashMap<NodeId, 
                     Decl::Mutable(name, _) | Decl::Name(name, _) => {
                         identities.insert(name.id, def_identity);
                     }
-                    Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) => {}
+                    Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) | Decl::Test(_) => {}
                 }
             }
             WalkItem::Pattern(pattern) => {
@@ -566,7 +566,7 @@ impl object Point {
     fn magnitude(self: *Point) -> int => self.x
 }
 
-fn test() -> int {
+fn check() -> int {
     p = Point { x: 3, y: 4 }
     p.magnitude()
 }
@@ -672,7 +672,7 @@ impl Greet[Person] {
     fn greet(self: *Person) -> int => 1
 }
 
-fn test() -> int {
+fn check() -> int {
     p = Person {}
     p.greet()
 }
@@ -817,7 +817,7 @@ impl object Math['t] {
     static fn double(x: int) -> int => x * 2
 }
 
-fn test() -> int => Math[int]::double(5)
+fn check() -> int => Math[int]::double(5)
 "#;
         let (db, file_id) = setup_test_db_with_libs(source);
 
@@ -879,7 +879,7 @@ impl Greet[Person] {
     fn greet(self: *Person) -> int => 1
 }
 
-fn test(p: *Person) -> int => Greet[Person]::greet(p)
+fn check(p: *Person) -> int => Greet[Person]::greet(p)
 "#;
         let (db, file_id) = setup_test_db_with_libs(source);
 
@@ -944,7 +944,7 @@ impl object Box['t] {
     static fn value() -> int => 42
 }
 
-fn test() -> int => Box[int]::value()
+fn check() -> int => Box[int]::value()
 "#;
         let (db, file_id) = setup_test_db_with_libs(source);
 
@@ -1111,7 +1111,7 @@ impl object Point {
     fn magnitude(self: *Point) -> int => self.x
 }
 
-fn test() -> int {
+fn check() -> int {
     p = Point { x: 3, y: 4 }
     p.magnitude()
 }
@@ -1157,7 +1157,7 @@ fn test() -> int {
         let source = r#"
 struct Point { x: int, y: int }
 
-fn test() -> Point {
+fn check() -> Point {
     value = 42
     Point { x: value, y: 0 }
 }
@@ -1215,7 +1215,7 @@ fn test() -> Point {
         let source = r#"
 struct Point { x: int, y: int }
 
-fn test() -> Point {
+fn check() -> Point {
     x = 42
     y = 10
     Point { x, y }
@@ -1455,7 +1455,7 @@ fn get_answer() -> int => answer
     #[test]
     fn symbol_targets_marks_mutable_binding_definition() {
         let source = r#"
-fn test() -> int {
+fn check() -> int {
     mut x = 42
     x = x + 1
     x

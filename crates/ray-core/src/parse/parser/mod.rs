@@ -427,7 +427,8 @@ impl<'src> Parser<'src> {
                 | TokenKind::TypeAlias
                 | TokenKind::Impl
                 | TokenKind::Modifier(_)
-                | TokenKind::Fn => {
+                | TokenKind::Fn
+                | TokenKind::Test => {
                     let decl = this.parse_decl(&kind, &ctx)?;
                     if let Some(decs) = decs
                         && decs.len() > 0
@@ -1100,6 +1101,7 @@ impl<'src> Parser<'src> {
                 | TokenKind::Object
                 | TokenKind::Import
                 | TokenKind::Modifier(_)
+                | TokenKind::Test
         )
     }
 

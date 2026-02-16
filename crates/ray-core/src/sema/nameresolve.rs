@@ -469,6 +469,11 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             ctx.current_def = Some(decl.id.owner);
             ctx.local_counter = 0;
         }
+        Decl::Test(_test) => {
+            // Set up test block as the current definition owner for local bindings.
+            ctx.current_def = Some(decl.id.owner);
+            ctx.local_counter = 0;
+        }
     }
 }
 

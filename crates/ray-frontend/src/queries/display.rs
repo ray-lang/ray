@@ -65,7 +65,7 @@ pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayIn
             });
         }
 
-        DefKind::FileMain => {
+        DefKind::FileMain | DefKind::Test => {
             return None;
         }
 

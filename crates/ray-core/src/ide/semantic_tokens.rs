@@ -184,6 +184,9 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.visit_expr(stmt);
                 }
             }
+            Decl::Test(test) => {
+                self.visit_expr(&test.body);
+            }
         }
     }
 

@@ -2675,6 +2675,10 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
             lir::IntrinsicKind::BoolAnd => self.codegen_basic_op(lir::Op::And, false, ctx, srcmap),
             lir::IntrinsicKind::BoolOr => self.codegen_basic_op(lir::Op::Or, false, ctx, srcmap),
             lir::IntrinsicKind::BoolNot => self.codegen_basic_op(lir::Op::Not, false, ctx, srcmap),
+            lir::IntrinsicKind::TestAssert | lir::IntrinsicKind::TestFail => {
+                // Test intrinsics are handled by the test harness codegen
+                todo!("test intrinsic codegen")
+            }
         }
     }
 

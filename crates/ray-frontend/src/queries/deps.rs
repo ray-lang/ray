@@ -97,7 +97,8 @@ fn is_unannotated(kind: DefKind) -> bool {
         | DefKind::Trait
         | DefKind::Impl
         | DefKind::TypeAlias
-        | DefKind::Primitive => false,
+        | DefKind::Primitive
+        | DefKind::Test => false,
     }
 }
 

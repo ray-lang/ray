@@ -73,6 +73,8 @@ pub enum Decl {
     /// Contains all top-level statements (expressions) that are not declarations.
     /// Always has DefId with index 0 for the file.
     FileMain(Vec<Node<Expr>>),
+    /// A test block: `test "name" { body }`.
+    Test(TestDecl),
 }
 
 impl PartialOrd for Decl {
@@ -102,6 +104,7 @@ impl Into<usize> for &Decl {
             Decl::Declare(_) => 5,
             Decl::Mutable(_, _) | Decl::Name(_, _) => 6,
             Decl::FileMain(_) => 7,
+            Decl::Test(_) => 8,
         }
     }
 }
@@ -119,6 +122,7 @@ impl Decl {
             Decl::TypeAlias(_, _) => "TypeAlias",
             Decl::Impl(_) => "Impl",
             Decl::FileMain(_) => "FileMain",
+            Decl::Test(_) => "Test",
         }
     }
 
@@ -134,6 +138,7 @@ impl Decl {
             Decl::TypeAlias(_, _) => str!("type alias"),
             Decl::Impl(_) => str!("impl"),
             Decl::FileMain(_) => str!("file main"),
+            Decl::Test(_) => str!("test"),
         }
     }
 
@@ -147,6 +152,7 @@ impl Decl {
             Decl::FnSig(sig) => sig.ty.is_some(),
             Decl::Impl(_) => false, // not entirely true, but we don't care here
             Decl::FileMain(_) => false, // FileMain is not explicitly typed
+            Decl::Test(_) => false,
         }
     }
 
@@ -159,6 +165,7 @@ impl Decl {
             Decl::Func(f) => f.sig.ty.as_ref(),
             Decl::FnSig(sig) => sig.ty.as_ref(),
             Decl::FileMain(_) => None, // FileMain doesn't have an explicit type
+            Decl::Test(_) => None,
         }
     }
 
@@ -202,6 +209,9 @@ impl Decl {
             Decl::FileMain(_) => {
                 // FileMain doesn't export named definitions
             }
+            Decl::Test(_) => {
+                // Test blocks don't export named definitions
+            }
         }
         defs
     }
@@ -244,6 +254,15 @@ pub struct Impl {
     pub funcs: Option<Vec<Node<Decl>>>,
     pub consts: Option<Vec<Node<Assign>>>,
     pub is_object: bool,
+}
+
+/// A test block declaration: `test "name" { body }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestDecl {
+    /// The test name from the string literal.
+    pub name: String,
+    /// The block body of the test.
+    pub body: Node<Expr>,
 }
 
 impl std::fmt::Display for Decl {
@@ -353,6 +372,9 @@ impl std::fmt::Display for Decl {
                     write!(f, "(file-main\n{})", stmts_str)
                 }
             }
+            Decl::Test(test) => {
+                write!(f, "(test \"{}\" {})", test.name, test.body)
+            }
         }
     }
 }
@@ -366,6 +388,7 @@ impl Decl {
             Decl::Struct(s) => s.path.name(),
             Decl::Trait(t) => Some(t.ty.name()),
             Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) => None,
+            Decl::Test(test) => Some(test.name.clone()),
         }
     }
 }

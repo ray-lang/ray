@@ -173,6 +173,9 @@ fn collect_all_bindings_in_decl(
                 collect_all_bindings_in_expr(stmt, resolutions, names);
             }
         }
+        Decl::Test(test) => {
+            collect_all_bindings_in_expr(&test.body, resolutions, names);
+        }
         Decl::Struct(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)

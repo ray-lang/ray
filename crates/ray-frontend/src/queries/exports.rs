@@ -99,7 +99,8 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
             | DefKind::Method
             | DefKind::Impl
             | DefKind::Primitive
-            | DefKind::StructField => {
+            | DefKind::StructField
+            | DefKind::Test => {
                 // FileMain, Method, Impl are handled above
                 // Primitive is for built-in types, not workspace definitions
                 // StructField is nested within struct, not a top-level export

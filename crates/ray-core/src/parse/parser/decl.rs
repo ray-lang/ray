@@ -10,8 +10,8 @@ use ray_typing::types::NominalKind;
 
 use crate::{
     ast::{
-        Assign, Decl, Decorator, Expr, Impl, Modifier, Name, Node, Pattern, Struct, TrailingPolicy,
-        Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
+        Assign, Decl, Decorator, Expr, Impl, Modifier, Name, Node, Pattern, Struct, TestDecl,
+        TrailingPolicy, Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::NewlineMode,
@@ -171,8 +171,53 @@ impl Parser<'_> {
                     Ok(node)
                 })
             }
+            TokenKind::Test => self.parse_test(ctx),
             _ => unreachable!(),
         }
+    }
+
+    /// Parses a test block: `test "name" { body }`.
+    ///
+    /// The `test` keyword is consumed by the dispatch in `parse_decl`.
+    pub(crate) fn parse_test(&mut self, ctx: &ParseContext) -> DeclResult {
+        self.enter_def::<DeclResult>(|parser, def_id| {
+            // Consume the `test` keyword
+            let start = parser.expect_keyword(TokenKind::Test, ctx)?;
+
+            // Expect a string literal for the test name
+            if !matches!(parser.peek_kind(), TokenKind::DoubleQuote) {
+                let tok = parser.peek();
+                return Err(parser.unexpected_token(&tok, "string literal for test name", ctx));
+            }
+            let (name, name_span) = parser.expect_string(ctx)?;
+
+            // Parse the block body
+            let body = parser.parse_block(ctx)?;
+            let body_span = parser.srcmap.span_of(&body);
+            let span = Span {
+                start: start.start,
+                end: body_span.end,
+            };
+
+            let node = parser.mk_decl(
+                Decl::Test(TestDecl {
+                    name: name.clone(),
+                    body,
+                }),
+                span,
+                ctx.path.clone(),
+            );
+            parser.defs.push(DefHeader {
+                def_id,
+                root_node: node.id,
+                name,
+                kind: DefKind::Test,
+                span,
+                name_span,
+                parent: None,
+            });
+            Ok(node)
+        })
     }
 
     pub(crate) fn parse_extern(&mut self, ctx: &ParseContext) -> DeclResult {
