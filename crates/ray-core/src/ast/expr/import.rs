@@ -16,6 +16,9 @@ pub enum ImportKind {
     Glob(Node<Path>),
     /// `import "C" "header.h"` - C header import
     CImport(String, Span), // second value is the span of the string
+    /// Error recovery: import statement that couldn't be fully parsed.
+    /// Produced when the parser encounters `import` but fails to parse the rest.
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,24 +36,28 @@ impl Display for Import {
             }
             ImportKind::Glob(path) => write!(f, "{} with *", path),
             ImportKind::CImport(name, _) => write!(f, "import \"C\" {}", name),
+            ImportKind::Incomplete => write!(f, "import ..."),
         }
     }
 }
 
 impl Import {
-    pub fn path(&self) -> &Path {
+    pub fn path(&self) -> Option<&Path> {
         match &self.kind {
-            ImportKind::Path(path) => path,
-            ImportKind::Names(path, _) => path.deref(),
-            ImportKind::Glob(path) => path.deref(),
-            ImportKind::CImport(_, _) => panic!("CImport"),
+            ImportKind::Path(path) => Some(path),
+            ImportKind::Names(path, _) => Some(path.deref()),
+            ImportKind::Glob(path) => Some(path.deref()),
+            ImportKind::CImport(_, _) | ImportKind::Incomplete => None,
         }
     }
 
     pub fn names(&self) -> Option<&Vec<Node<Path>>> {
         match &self.kind {
             ImportKind::Names(_, names) => Some(names),
-            ImportKind::Path(_) | ImportKind::Glob(_) | ImportKind::CImport(_, _) => None,
+            ImportKind::Path(_)
+            | ImportKind::Glob(_)
+            | ImportKind::CImport(_, _)
+            | ImportKind::Incomplete => None,
         }
     }
 }

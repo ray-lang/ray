@@ -184,7 +184,7 @@ fn convert_to_def_targets(
 /// Get exports from a library module.
 ///
 /// Returns a map from exported name to DefTarget::Library.
-fn get_library_exports(
+pub(crate) fn get_library_exports(
     libraries: &LoadedLibraries,
     module_path: &ModulePath,
 ) -> HashMap<String, DefTarget> {

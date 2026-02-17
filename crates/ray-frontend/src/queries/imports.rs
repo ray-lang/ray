@@ -245,6 +245,9 @@ fn resolve_imports(
                 // C imports don't resolve to module paths
                 result.insert(name.clone(), Err(ImportError::CImport));
             }
+            ImportKind::Incomplete => {
+                // Error recovery artifact — skip
+            }
         }
     }
 

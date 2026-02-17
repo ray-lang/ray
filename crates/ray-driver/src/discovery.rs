@@ -457,6 +457,7 @@ fn extract_module_path(import: &Import) -> Option<ModulePath> {
         ImportKind::Names(path_node, _) => Some(ModulePath::from(&path_node.value)),
         ImportKind::Glob(path_node) => Some(ModulePath::from(&path_node.value)),
         ImportKind::CImport(_, _) => None, // C imports don't resolve to module paths
+        ImportKind::Incomplete => None,    // Error recovery artifact
     }
 }
 
@@ -468,6 +469,7 @@ fn extract_export_module_path(export: &Export) -> Option<ModulePath> {
         ExportKind::Path(path_node) => Some(ModulePath::from(&path_node.value)),
         ExportKind::Names(path_node, _) => Some(ModulePath::from(&path_node.value)),
         ExportKind::Glob(path_node) => Some(ModulePath::from(&path_node.value)),
+        ExportKind::Incomplete => None, // Error recovery artifact
     }
 }
 

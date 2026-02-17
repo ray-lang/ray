@@ -29,7 +29,10 @@ use tower_lsp::{
 
 use ray_frontend::queries::{
     bindings::{local_binding_definitions, local_binding_names},
-    completion::{CompletionKind, completion_context},
+    completion::{
+        CompletionKind, available_import_modules, child_modules, completion_context,
+        get_module_exports,
+    },
     defs::{SourceLocation, def_header, definition_record},
     diagnostics::file_diagnostics,
     display::{def_display_info, display_library_ty, display_ty},
@@ -124,7 +127,11 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                 hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
                 definition_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        ":".to_string(),
+                        ",".to_string(),
+                    ]),
                     ..CompletionOptions::default()
                 }),
                 rename_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
@@ -442,6 +449,42 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                             items.push(CompletionItem {
                                 label: name,
                                 kind: Some(CompletionItemKind::FUNCTION),
+                                detail,
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                    CompletionKind::ImportModule => {
+                        for (name, _module_path) in available_import_modules(db, file_id) {
+                            items.push(CompletionItem {
+                                label: name,
+                                kind: Some(CompletionItemKind::MODULE),
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                    CompletionKind::ImportModulePath { resolved_prefix } => {
+                        for name in child_modules(db, resolved_prefix) {
+                            items.push(CompletionItem {
+                                label: name,
+                                kind: Some(CompletionItemKind::MODULE),
+                                ..CompletionItem::default()
+                            });
+                        }
+                    }
+                    CompletionKind::ImportName {
+                        module_path,
+                        already_imported,
+                    } => {
+                        for (name, def_target) in get_module_exports(db, module_path) {
+                            if already_imported.contains(&name) {
+                                continue;
+                            }
+                            let kind = def_target_to_completion_kind(db, &def_target);
+                            let detail = display_def_type(db, &def_target);
+                            items.push(CompletionItem {
+                                label: name,
+                                kind: Some(kind),
                                 detail,
                                 ..CompletionItem::default()
                             });

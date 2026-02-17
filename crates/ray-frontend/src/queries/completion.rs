@@ -13,7 +13,10 @@ use std::{collections::HashMap, sync::Arc};
 use serde::{Deserialize, Serialize};
 
 use ray_core::{
-    ast::{CurlyElement, Decl, Expr, FStringPart, File, Literal, Node},
+    ast::{
+        CurlyElement, Decl, Export, ExportKind, Expr, FStringPart, File, Import, ImportKind,
+        Literal, Node,
+    },
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
@@ -29,8 +32,14 @@ use ray_shared::{
 
 use crate::{
     queries::{
-        expected_type::expected_type_at, parse::parse_file, resolve::name_resolutions,
-        scope::scope_at, typecheck::ty_of,
+        expected_type::expected_type_at,
+        imports::resolve_module_path,
+        libraries::LoadedLibraries,
+        parse::parse_file,
+        resolve::name_resolutions,
+        scope::scope_at,
+        typecheck::ty_of,
+        workspace::{FileSource, WorkspaceSnapshot},
     },
     query::{Database, Query},
 };
@@ -46,6 +55,15 @@ pub enum CompletionKind {
     ModuleMember(ModulePath),
     /// After `Type::` — complete associated items.
     TypeMember(DefTarget),
+    /// After `import`/`export` keyword — complete available modules.
+    ImportModule,
+    /// After `import path::` — complete submodules of resolved prefix.
+    ImportModulePath { resolved_prefix: ModulePath },
+    /// After `with` or `,` — complete exported names from the resolved module.
+    ImportName {
+        module_path: ModulePath,
+        already_imported: Vec<String>,
+    },
 }
 
 /// The full completion context at a cursor position.
@@ -75,6 +93,20 @@ pub fn completion_context(db: &Database, file_id: FileId, pos: Pos) -> Option<Co
     let expected_type = expected_type_at(db, file_id, pos);
 
     let parsed = parse_file(db, file_id);
+    let source = db.get_input::<FileSource>(file_id);
+
+    // Check import/export context first — these use parser-recovered AST nodes
+    if let Some(import_kind) =
+        detect_import_completion(&parsed.ast, source.as_str(), &pos, db, file_id)
+    {
+        return Some(CompletionContext {
+            kind: import_kind,
+            scope: (*scope).clone(),
+            receiver_type: None,
+            expected_type: None,
+        });
+    }
+
     let resolutions = name_resolutions(db, file_id);
 
     let position_ctx = find_position_context(&parsed.ast, &parsed.source_map, &pos);
@@ -173,6 +205,361 @@ fn resolve_path_access_kind(
         }
     }
     CompletionKind::Scope
+}
+
+// ---------------------------------------------------------------------------
+// Import/export completion detection
+// ---------------------------------------------------------------------------
+
+/// Check if the cursor is within an import or export statement and determine
+/// the appropriate completion kind.
+///
+/// Uses parser-recovered AST nodes: `ImportKind::Incomplete` for bare `import `,
+/// `ImportKind::Names(path, [])` for `import x with `, etc.
+fn detect_import_completion(
+    file: &File,
+    source: &str,
+    pos: &Pos,
+    db: &Database,
+    file_id: FileId,
+) -> Option<CompletionKind> {
+    // Check imports
+    for import in &file.imports {
+        if let Some(kind) = import_completion_kind(import, source, pos, db, file_id) {
+            return Some(kind);
+        }
+    }
+
+    // Check exports (same logic, different AST type)
+    for export in &file.exports {
+        if let Some(kind) = export_completion_kind(export, source, pos, db, file_id) {
+            return Some(kind);
+        }
+    }
+
+    None
+}
+
+/// Check if cursor is on the same line as the statement and after its start.
+fn is_on_statement_line(span: &ray_shared::span::Span, pos: &Pos) -> bool {
+    pos.lineno >= span.start.lineno
+        && pos.lineno <= span.end.lineno.max(span.start.lineno)
+        && pos.offset >= span.start.offset
+}
+
+/// Determine completion kind for an import statement at the given cursor position.
+fn import_completion_kind(
+    import: &Import,
+    source: &str,
+    pos: &Pos,
+    db: &Database,
+    file_id: FileId,
+) -> Option<CompletionKind> {
+    if !is_on_statement_line(&import.span, pos) {
+        return None;
+    }
+
+    match &import.kind {
+        ImportKind::Incomplete => {
+            // `import ` with nothing after keyword, or `import ops::` with partial path.
+            // Look at source text to distinguish the two cases.
+            incomplete_import_kind(source, &import.span, pos, db, file_id)
+        }
+        ImportKind::Path(path_node) => {
+            // Complete import like `import ops`. If cursor is on the path,
+            // the user may be editing the module name.
+            let path = &path_node.value;
+            if pos.offset <= import.span.end.offset {
+                // Cursor is on/within the path — suggest modules
+                Some(CompletionKind::ImportModule)
+            } else {
+                // Cursor is past the import — not in import context
+                // (But the user might be typing ` with ` which hasn't been parsed yet.
+                // For `import ops with `, `with` would be consumed and we'd get Names.)
+                let _ = path;
+                None
+            }
+        }
+        ImportKind::Names(path_node, names) => {
+            // `import ops with ...` — cursor is in the names area
+            let path = &path_node.value;
+            let module_path = ModulePath::from(path);
+            let resolved = resolve_import_module(db, file_id, &module_path);
+            let already_imported: Vec<String> =
+                names.iter().map(|n| n.value.to_short_name()).collect();
+            Some(CompletionKind::ImportName {
+                module_path: resolved,
+                already_imported,
+            })
+        }
+        ImportKind::Glob(_) | ImportKind::CImport(_, _) => None,
+    }
+}
+
+/// Determine completion kind for an export statement at the given cursor position.
+fn export_completion_kind(
+    export: &Export,
+    source: &str,
+    pos: &Pos,
+    db: &Database,
+    file_id: FileId,
+) -> Option<CompletionKind> {
+    if !is_on_statement_line(&export.span, pos) {
+        return None;
+    }
+
+    match &export.kind {
+        ExportKind::Incomplete => incomplete_export_kind(source, &export.span, pos, db, file_id),
+        ExportKind::Path(path_node) => {
+            let path = &path_node.value;
+            if pos.offset <= export.span.end.offset {
+                Some(CompletionKind::ImportModule)
+            } else {
+                let _ = path;
+                None
+            }
+        }
+        ExportKind::Names(path_node, names) => {
+            let path = &path_node.value;
+            let module_path = ModulePath::from(path);
+            let resolved = resolve_import_module(db, file_id, &module_path);
+            let already_imported: Vec<String> =
+                names.iter().map(|n| n.value.to_short_name()).collect();
+            Some(CompletionKind::ImportName {
+                module_path: resolved,
+                already_imported,
+            })
+        }
+        ExportKind::Glob(_) => None,
+    }
+}
+
+/// For `ImportKind::Incomplete`, extract the partial path from source text
+/// to determine if this is a module or submodule completion.
+fn incomplete_import_kind(
+    source: &str,
+    span: &ray_shared::span::Span,
+    pos: &Pos,
+    db: &Database,
+    file_id: FileId,
+) -> Option<CompletionKind> {
+    // Extract text from after the keyword to the cursor position
+    // The span starts at `import` keyword. Skip "import " (7 chars).
+    let keyword_end = span.start.offset + 7; // "import " = 7 bytes
+    let text_after_keyword = if pos.offset > keyword_end && pos.offset <= source.len() {
+        source[keyword_end..pos.offset].trim()
+    } else {
+        ""
+    };
+
+    parse_partial_path_completion(text_after_keyword, db, file_id)
+}
+
+/// For `ExportKind::Incomplete`, extract the partial path from source text.
+fn incomplete_export_kind(
+    source: &str,
+    span: &ray_shared::span::Span,
+    pos: &Pos,
+    db: &Database,
+    file_id: FileId,
+) -> Option<CompletionKind> {
+    // Skip "export " (7 chars)
+    let keyword_end = span.start.offset + 7;
+    let text_after_keyword = if pos.offset > keyword_end && pos.offset <= source.len() {
+        source[keyword_end..pos.offset].trim()
+    } else {
+        ""
+    };
+
+    parse_partial_path_completion(text_after_keyword, db, file_id)
+}
+
+/// Given partial text after import/export keyword, determine completion kind.
+///
+/// Examples:
+/// - `""` → ImportModule (just typed the keyword)
+/// - `"co"` → ImportModule (partial module name, client does fuzzy matching)
+/// - `"core::"` → ImportModulePath with resolved prefix `core`
+/// - `"core::i"` → ImportModulePath with resolved prefix `core`
+fn parse_partial_path_completion(
+    text: &str,
+    db: &Database,
+    file_id: FileId,
+) -> Option<CompletionKind> {
+    if text.contains("::") {
+        // Has path separator — this is a submodule completion
+        let segments: Vec<&str> = text.split("::").collect();
+        // Take all complete segments (exclude the last one which may be partial)
+        let prefix_segments: Vec<String> = segments
+            .iter()
+            .take(segments.len().saturating_sub(1))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+
+        if prefix_segments.is_empty() {
+            return Some(CompletionKind::ImportModule);
+        }
+
+        let partial = ModulePath::new(prefix_segments);
+        let resolved = resolve_import_module(db, file_id, &partial);
+        Some(CompletionKind::ImportModulePath {
+            resolved_prefix: resolved,
+        })
+    } else {
+        // No path separator — module name completion
+        Some(CompletionKind::ImportModule)
+    }
+}
+
+/// Resolve a module path for import completion, using the standard resolution order.
+fn resolve_import_module(db: &Database, file_id: FileId, module_path: &ModulePath) -> ModulePath {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let current_module = workspace
+        .file_info(file_id)
+        .map(|info| info.module_path.clone());
+
+    resolve_module_path(module_path, &workspace, &libraries, current_module.as_ref())
+        .unwrap_or_else(|_| module_path.clone())
+}
+
+/// Collect all module names available for import from the current file's perspective.
+///
+/// Returns `(short_name, full_module_path)` pairs. The short name is what the user
+/// types in the import statement.
+pub fn available_import_modules(db: &Database, file_id: FileId) -> Vec<(String, ModulePath)> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let current_module = workspace
+        .file_info(file_id)
+        .map(|info| info.module_path.clone());
+
+    let mut results: Vec<(String, ModulePath)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Helper: add a module if its short name hasn't been seen
+    let mut add_module = |mp: &ModulePath| {
+        if let Some(name) = mp.segments().last() {
+            let name = name.clone();
+            if seen.insert(name.clone()) {
+                results.push((name, mp.clone()));
+            }
+        }
+    };
+
+    // Child modules (if current module is `core`, suggest `core::io`, etc.)
+    if let Some(current) = &current_module {
+        for mp in workspace.all_module_paths() {
+            if mp.segments().len() == current.segments().len() + 1
+                && mp.segments().starts_with(current.segments())
+            {
+                add_module(mp);
+            }
+        }
+        for mp in libraries.all_module_paths() {
+            if mp.segments().len() == current.segments().len() + 1
+                && mp.segments().starts_with(current.segments())
+            {
+                add_module(mp);
+            }
+        }
+
+        // Sibling modules
+        if current.segments().len() > 1 {
+            let parent = &current.segments()[..current.segments().len() - 1];
+            for mp in workspace.all_module_paths() {
+                if mp.segments().len() == parent.len() + 1
+                    && mp.segments().starts_with(parent)
+                    && mp != current
+                {
+                    add_module(mp);
+                }
+            }
+            for mp in libraries.all_module_paths() {
+                if mp.segments().len() == parent.len() + 1
+                    && mp.segments().starts_with(parent)
+                    && mp != current
+                {
+                    add_module(mp);
+                }
+            }
+        }
+    }
+
+    // Top-level workspace modules
+    for mp in workspace.all_module_paths() {
+        if mp.segments().len() == 1 {
+            add_module(mp);
+        }
+    }
+
+    // Library roots (top-level library paths)
+    for mp in libraries.all_module_paths() {
+        if mp.segments().len() == 1 {
+            add_module(mp);
+        }
+    }
+
+    results
+}
+
+/// Collect direct child module names of a given prefix.
+///
+/// For `core`, returns `["io", "ops", "string", ...]`.
+pub fn child_modules(db: &Database, prefix: &ModulePath) -> Vec<String> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let prefix_len = prefix.segments().len();
+
+    let mut names = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for mp in workspace
+        .all_module_paths()
+        .chain(libraries.all_module_paths())
+    {
+        if mp.segments().len() == prefix_len + 1 && mp.segments().starts_with(prefix.segments()) {
+            if let Some(name) = mp.segments().last() {
+                if seen.insert(name.clone()) {
+                    names.push(name.clone());
+                }
+            }
+        }
+    }
+
+    names
+}
+
+/// Collect exported names from a module (both workspace and library sources).
+///
+/// Returns `(name, DefTarget)` pairs for all exports of the module.
+pub fn get_module_exports(db: &Database, module_path: &ModulePath) -> Vec<(String, DefTarget)> {
+    use crate::queries::{exports::module_def_index, resolve::get_library_exports};
+
+    let mut results = Vec::new();
+
+    // Workspace exports
+    let exports = module_def_index(db, module_path.clone());
+    for (name, result) in exports {
+        if let Ok(item) = result {
+            let target = match item {
+                crate::queries::exports::ExportedItem::Def(def_id) => DefTarget::Workspace(def_id),
+                crate::queries::exports::ExportedItem::Local(_) => continue,
+                crate::queries::exports::ExportedItem::ReExport(target) => target,
+                crate::queries::exports::ExportedItem::Module(_) => continue,
+            };
+            results.push((name, target));
+        }
+    }
+
+    // Library exports
+    let libraries = db.get_input::<LoadedLibraries>(());
+    for (name, target) in get_library_exports(&libraries, module_path) {
+        results.push((name, target));
+    }
+
+    results
 }
 
 /// Internal result of the AST walk: what kind of position the cursor is at.

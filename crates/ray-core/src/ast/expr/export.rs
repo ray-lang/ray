@@ -18,6 +18,9 @@ pub enum ExportKind {
     Names(Node<Path>, Vec<Node<Path>>),
     /// `export utils with *` - re-export all exports from the module
     Glob(Node<Path>),
+    /// Error recovery: export statement that couldn't be fully parsed.
+    /// Produced when the parser encounters `export` but fails to parse the rest.
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,23 +37,25 @@ impl Display for Export {
                 write!(f, "export {} with {}", path, names.iter().join(", "))
             }
             ExportKind::Glob(path) => write!(f, "export {} with *", path),
+            ExportKind::Incomplete => write!(f, "export ..."),
         }
     }
 }
 
 impl Export {
-    pub fn path(&self) -> &Path {
+    pub fn path(&self) -> Option<&Path> {
         match &self.kind {
-            ExportKind::Path(path) => path,
-            ExportKind::Names(path, _) => path,
-            ExportKind::Glob(path) => path,
+            ExportKind::Path(path) => Some(path),
+            ExportKind::Names(path, _) => Some(path),
+            ExportKind::Glob(path) => Some(path),
+            ExportKind::Incomplete => None,
         }
     }
 
     pub fn names(&self) -> Option<&Vec<Node<Path>>> {
         match &self.kind {
             ExportKind::Names(_, names) => Some(names),
-            ExportKind::Path(_) | ExportKind::Glob(_) => None,
+            ExportKind::Path(_) | ExportKind::Glob(_) | ExportKind::Incomplete => None,
         }
     }
 }

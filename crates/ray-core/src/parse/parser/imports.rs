@@ -42,7 +42,18 @@ impl Parser<'_> {
                 span: Span { start, end },
             }
         } else {
-            let path = parser.parse_path(ctx)?;
+            // Recovery: if path parsing fails, produce an Incomplete import
+            let path = match parser.parse_path(ctx) {
+                Ok(p) => p,
+                Err(err) => {
+                    parser.record_parse_error(err);
+                    let end = parser.lex.position();
+                    return Ok(Import {
+                        kind: ImportKind::Incomplete,
+                        span: Span { start, end },
+                    });
+                }
+            };
             let path_span = parser.srcmap.span_of(&path);
             let mut end = path_span.end;
             let kind = if peek!(parser, TokenKind::With) {
@@ -55,47 +66,55 @@ impl Parser<'_> {
                     ImportKind::Glob(path)
                 } else {
                     // Selective import: `with name1, name2`
+                    // Allow trailing commas for LSP completion after `import x with Add,`
                     let spec = SeqSpec {
                         delimiters: None,
-                        trailing: TrailingPolicy::Forbid,
+                        trailing: TrailingPolicy::Allow,
                         newline: NewlineMode::Suppress,
                         restrictions: Restrictions::empty(),
                     };
-                    let ((names, _), spans) =
-                        parser.parse_delimited_seq(spec, ctx, |parser, trailing, _, ctx| {
-                            parser.parse_sep_seq(
-                                &TokenKind::Comma,
-                                trailing,
-                                None,
-                                ctx,
-                                |parser, ctx| parser.parse_name_with_type(None, ctx),
-                            )
-                        })?;
+                    // Recovery: if names parsing fails, produce Names with empty list
+                    match parser.parse_delimited_seq(spec, ctx, |parser, trailing, _, ctx| {
+                        parser.parse_sep_seq(
+                            &TokenKind::Comma,
+                            trailing,
+                            None,
+                            ctx,
+                            |parser, ctx| parser.parse_name_with_type(None, ctx),
+                        )
+                    }) {
+                        Ok(((names, _), spans)) => {
+                            let span = if let Some((left, right)) = spans {
+                                Span {
+                                    start: left.start,
+                                    end: right.end,
+                                }
+                            } else if let Some(first) = names.first()
+                                && let Some(last) = names.last()
+                            {
+                                let first_span = parser.srcmap.span_of(first);
+                                let last_span = parser.srcmap.span_of(last);
+                                Span {
+                                    start: first_span.start,
+                                    end: last_span.end,
+                                }
+                            } else {
+                                Span {
+                                    start: path_span.end,
+                                    end: path_span.end,
+                                }
+                            };
 
-                    let span = if let Some((left, right)) = spans {
-                        Span {
-                            start: left.start,
-                            end: right.end,
+                            let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
+                            end = span.end;
+                            ImportKind::Names(path, names)
                         }
-                    } else if let Some(first) = names.first()
-                        && let Some(last) = names.last()
-                    {
-                        let first_span = parser.srcmap.span_of(first);
-                        let last_span = parser.srcmap.span_of(last);
-                        Span {
-                            start: first_span.start,
-                            end: last_span.end,
+                        Err(err) => {
+                            parser.record_parse_error(err);
+                            end = parser.lex.position();
+                            ImportKind::Names(path, vec![])
                         }
-                    } else {
-                        Span {
-                            start: path_span.end,
-                            end: path_span.end,
-                        }
-                    };
-
-                    let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
-                    end = span.end;
-                    ImportKind::Names(path, names)
+                    }
                 }
             } else {
                 ImportKind::Path(path)
@@ -123,7 +142,18 @@ impl Parser<'_> {
         let export_span = parser.expect_keyword(TokenKind::Export, ctx)?;
         let start = export_span.start;
 
-        let path = parser.parse_path(ctx)?;
+        // Recovery: if path parsing fails, produce an Incomplete export
+        let path = match parser.parse_path(ctx) {
+            Ok(p) => p,
+            Err(err) => {
+                parser.record_parse_error(err);
+                let end = parser.lex.position();
+                return Ok(Export {
+                    kind: ExportKind::Incomplete,
+                    span: Span { start, end },
+                });
+            }
+        };
         let path_span = parser.srcmap.span_of(&path);
         let mut end = path_span.end;
         let kind = if peek!(parser, TokenKind::With) {
@@ -136,47 +166,51 @@ impl Parser<'_> {
                 ExportKind::Glob(path)
             } else {
                 // Selective export: `with name1, name2`
+                // Allow trailing commas for LSP completion after `export x with Foo,`
                 let spec = SeqSpec {
                     delimiters: None,
-                    trailing: TrailingPolicy::Forbid,
+                    trailing: TrailingPolicy::Allow,
                     newline: NewlineMode::Suppress,
                     restrictions: Restrictions::empty(),
                 };
-                let ((names, _), spans) =
-                    parser.parse_delimited_seq(spec, ctx, |parser, trailing, _, ctx| {
-                        parser.parse_sep_seq(
-                            &TokenKind::Comma,
-                            trailing,
-                            None,
-                            ctx,
-                            |parser, ctx| parser.parse_name_with_type(None, ctx),
-                        )
-                    })?;
+                // Recovery: if names parsing fails, produce Names with empty list
+                match parser.parse_delimited_seq(spec, ctx, |parser, trailing, _, ctx| {
+                    parser.parse_sep_seq(&TokenKind::Comma, trailing, None, ctx, |parser, ctx| {
+                        parser.parse_name_with_type(None, ctx)
+                    })
+                }) {
+                    Ok(((names, _), spans)) => {
+                        let span = if let Some((left, right)) = spans {
+                            Span {
+                                start: left.start,
+                                end: right.end,
+                            }
+                        } else if let Some(first) = names.first()
+                            && let Some(last) = names.last()
+                        {
+                            let first_span = parser.srcmap.span_of(first);
+                            let last_span = parser.srcmap.span_of(last);
+                            Span {
+                                start: first_span.start,
+                                end: last_span.end,
+                            }
+                        } else {
+                            Span {
+                                start: path_span.end,
+                                end: path_span.end,
+                            }
+                        };
 
-                let span = if let Some((left, right)) = spans {
-                    Span {
-                        start: left.start,
-                        end: right.end,
+                        let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
+                        end = span.end;
+                        ExportKind::Names(path, names)
                     }
-                } else if let Some(first) = names.first()
-                    && let Some(last) = names.last()
-                {
-                    let first_span = parser.srcmap.span_of(first);
-                    let last_span = parser.srcmap.span_of(last);
-                    Span {
-                        start: first_span.start,
-                        end: last_span.end,
+                    Err(err) => {
+                        parser.record_parse_error(err);
+                        end = parser.lex.position();
+                        ExportKind::Names(path, vec![])
                     }
-                } else {
-                    Span {
-                        start: path_span.end,
-                        end: path_span.end,
-                    }
-                };
-
-                let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
-                end = span.end;
-                ExportKind::Names(path, names)
+                }
             }
         } else {
             ExportKind::Path(path)

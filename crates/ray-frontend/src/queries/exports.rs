@@ -157,7 +157,10 @@ pub fn file_reexports(db: &Database, file_id: FileId) -> Vec<ResolvedReExport> {
     let mut reexports = Vec::new();
 
     for export in &parse_result.ast.exports {
-        let export_path = ModulePath::from(export.path().to_string().as_str());
+        let Some(path) = export.path() else {
+            continue; // Incomplete export — skip
+        };
+        let export_path = ModulePath::from(path.to_string().as_str());
 
         let resolved = resolve_module_path(
             &export_path,
@@ -178,6 +181,7 @@ pub fn file_reexports(db: &Database, file_id: FileId) -> Vec<ResolvedReExport> {
                 ReExportNames::Selective(names)
             }
             ExportKind::Glob(_) => ReExportNames::Glob,
+            ExportKind::Incomplete => continue,
         };
 
         reexports.push(ResolvedReExport { module_path, names });

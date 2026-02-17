@@ -145,6 +145,7 @@ impl<'a> SemanticTokenCollector<'a> {
             ImportKind::CImport(_, span) => {
                 self.emit_span(*span, SemanticTokenKind::String, &[]);
             }
+            ImportKind::Incomplete => {}
         }
     }
 
@@ -159,6 +160,7 @@ impl<'a> SemanticTokenCollector<'a> {
                     self.emit_path_node(name, SemanticTokenKind::Namespace, &[]);
                 }
             }
+            ExportKind::Incomplete => {}
         }
     }
 
