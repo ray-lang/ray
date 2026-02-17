@@ -13,6 +13,10 @@
 //! print(s.len())  // 2
 //! ```
 
+import dict with dict
+import hash with Hash
+import ops with Eq
+
 /// An unordered set of unique `'k` elements, backed by a `dict`.
 struct set['k] {
     inner: dict['k, ()]

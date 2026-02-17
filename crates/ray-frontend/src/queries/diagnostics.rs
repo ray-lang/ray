@@ -76,7 +76,10 @@ pub fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
     let mut processed_groups = HashSet::new();
 
     for def_header in &file_ast_result.defs {
-        let group_id = binding_group_for_def(db, def_header.def_id);
+        let group_id = match binding_group_for_def(db, def_header.def_id) {
+            Some(id) => id,
+            None => continue,
+        };
 
         // Skip if we've already processed this group
         if !processed_groups.insert(group_id.clone()) {

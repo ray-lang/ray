@@ -78,11 +78,8 @@ pub fn discover_workspace(
     let mut pending: VecDeque<FilePath> = VecDeque::new();
     let mut seen: HashSet<FilePath> = HashSet::new();
 
-    // Start with entry file AND its module siblings
     let entry_module = discover_module_for_file(&entry_file);
-    for file in discover_sibling_files(&entry_file, &entry_module) {
-        pending.push_back(file);
-    }
+    pending.push_back(entry_file.clone());
 
     // For library builds, also discover all submodules in the entry directory
     if options.build_lib {
@@ -210,13 +207,15 @@ pub fn discover_workspace(
 
 /// Determine the module path for a file based on its filesystem location.
 ///
-/// This walks up the directory tree to find contiguous module directories,
-/// building the module path from the chain of directory names.
+/// Each file is its own module. Facade files (`mod.ray` or `<dirname>.ray`)
+/// represent the directory module; all other files get a child module path.
 ///
 /// Examples:
 /// - `foo.ray` (not in module dir) → `foo`
-/// - `mymod/mod.ray` → `mymod`
-/// - `mymod/sub/mod.ray` → `mymod::sub`
+/// - `mymod/mod.ray` → `mymod`           (facade)
+/// - `mymod/helpers.ray` → `mymod::helpers` (non-facade)
+/// - `mymod/sub/mod.ray` → `mymod::sub`  (facade)
+/// - `mymod/sub/util.ray` → `mymod::sub::util` (non-facade)
 pub fn discover_module_for_file(filepath: &FilePath) -> ModulePath {
     // Single-file module: if this is a file and its directory is not a dir-module,
     // treat the file itself as the root module and use its stem.
@@ -249,40 +248,33 @@ pub fn discover_module_for_file(filepath: &FilePath) -> ModulePath {
         return ModulePath::from(module_dir.file_name().as_str());
     }
 
-    // Build the path from the TOPMOST contiguous entry dir down to `module_dir`.
+    // Build the directory module path from the TOPMOST contiguous entry dir down to `module_dir`.
     let parts: Vec<String> = chain.iter().rev().map(|d| d.file_name()).collect();
-    ModulePath::new(parts)
+    let dir_module_path = ModulePath::new(parts);
+
+    // File = Module: non-facade files get their own child module path.
+    // A facade file is `mod.ray` or `<dirname>.ray`.
+    if !is_facade_file(filepath) {
+        let mut segments = dir_module_path.segments().to_vec();
+        segments.push(filepath.file_stem());
+        return ModulePath::new(segments);
+    }
+
+    dir_module_path
 }
 
-/// Discover all sibling .ray files in the same module as the given file.
+/// Returns true if the file is a facade file for its directory module.
 ///
-/// For a directory module like `mymod/foo.ray`, this returns all `.ray` files in `mymod/`.
-/// For a single-file module like `foo.ray` (not in a module directory), this returns only that file.
-/// This is used to add all files in a module when any file in that module is imported.
-pub fn discover_sibling_files(file: &FilePath, _module: &ModulePath) -> Vec<FilePath> {
-    let dir = file.dir();
-
-    // Single-file module: directory is not a module directory, so only return this file
-    if !root::is_dir_module(&dir) {
-        return vec![file.clone()];
+/// Facade files are `mod.ray` or `<dirname>.ray` — they represent the
+/// directory module itself rather than being a child module.
+fn is_facade_file(filepath: &FilePath) -> bool {
+    let filename = filepath.file_name();
+    if filename == "mod.ray" {
+        return true;
     }
-
-    // Directory module: return all .ray files in the directory
-    discover_files_in_dir(&dir)
-}
-
-/// Discover all .ray files in a directory.
-fn discover_files_in_dir(dir: &FilePath) -> Vec<FilePath> {
-    let mut files = Vec::new();
-    if let Ok(entries) = dir.read_dir() {
-        for entry in entries.flatten() {
-            let path = FilePath::from(entry.path());
-            if path.has_extension("ray") {
-                files.push(path);
-            }
-        }
-    }
-    files
+    let dir = filepath.dir();
+    let dir_name = dir.file_name();
+    filename == format!("{}.ray", dir_name)
 }
 
 /// Resolve an import path to either a source module or a library.
@@ -321,6 +313,10 @@ pub fn resolve_import(
 }
 
 /// Try to resolve a module path within a base directory.
+///
+/// In the file=module model, importing a directory module discovers only
+/// the facade file (`mod.ray` or `<dirname>.ray`). The facade's own
+/// imports and exports will pull in sibling files as needed.
 fn try_resolve_in_dir(import_path: &ModulePath, base_dir: &FilePath) -> Option<ImportResolution> {
     // Convert module path to file path: foo::bar -> foo/bar
     let relative_path = import_path.to_path().to_filepath();
@@ -335,14 +331,33 @@ fn try_resolve_in_dir(import_path: &ModulePath, base_dir: &FilePath) -> Option<I
         ));
     }
 
-    // Check for directory module: foo/bar/mod.ray or foo/bar/bar.ray
+    // Check for directory module: only return the facade file
     if target_dir.is_dir() && root::is_dir_module(&target_dir) {
-        let files = discover_files_in_dir(&target_dir);
-        if !files.is_empty() {
-            return Some(ImportResolution::SourceModule(import_path.clone(), files));
+        if let Some(facade) = find_facade_file(&target_dir) {
+            return Some(ImportResolution::SourceModule(
+                import_path.clone(),
+                vec![facade],
+            ));
         }
     }
 
+    None
+}
+
+/// Find the facade file for a directory module.
+///
+/// The facade file is `mod.ray` or `<dirname>.ray`. Returns `None` if
+/// neither exists (shouldn't happen for a valid dir-module).
+fn find_facade_file(dir: &FilePath) -> Option<FilePath> {
+    let mod_file = dir / "mod.ray";
+    if mod_file.exists() {
+        return Some(mod_file);
+    }
+    let name = dir.file_name();
+    let named_file = dir / &format!("{}.ray", name);
+    if named_file.exists() {
+        return Some(named_file);
+    }
     None
 }
 
@@ -423,19 +438,14 @@ fn discover_all_submodules(
         let path = FilePath::from(entry.path());
 
         if path.is_dir() && root::is_dir_module(&path) {
-            // This is a submodule directory
+            // This is a submodule directory — recurse into it
             let submodule_name = path.file_name();
             let mut segments = parent_module.segments().to_vec();
             segments.push(submodule_name);
             let submodule_path = ModulePath::new(segments);
-
-            // Add all files in this submodule
-            for file in discover_files_in_dir(&path) {
-                pending.push_back(file);
-            }
-
-            // Recurse into submodule
             discover_all_submodules(&path, &submodule_path, pending);
+        } else if path.has_extension("ray") {
+            pending.push_back(path);
         }
     }
 }
@@ -531,7 +541,7 @@ mod tests {
 
     use crate::discovery::{
         ImportResolution, discover_all_submodules, discover_module_for_file,
-        discover_sibling_files, library_path_for_module, resolve_entry_path, resolve_import,
+        library_path_for_module, resolve_entry_path, resolve_import,
     };
 
     #[test]
@@ -563,8 +573,21 @@ mod tests {
     }
 
     #[test]
-    fn discover_module_for_file_in_module_dir() {
-        // File in a module directory (with mod.ray) should use directory name
+    fn discover_module_for_facade_file() {
+        // Facade file (mod.ray) should use directory name
+        let dir = tempdir().unwrap();
+        let module_dir = dir.path().join("mymod");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(module_dir.join("mod.ray"), "").unwrap();
+        fs::write(module_dir.join("helper.ray"), "").unwrap();
+
+        let facade = FilePath::from(module_dir.join("mod.ray"));
+        assert_eq!(discover_module_for_file(&facade), ModulePath::from("mymod"));
+    }
+
+    #[test]
+    fn discover_module_for_non_facade_file() {
+        // Non-facade file gets its own child module path
         let dir = tempdir().unwrap();
         let module_dir = dir.path().join("mymod");
         fs::create_dir(&module_dir).unwrap();
@@ -573,7 +596,19 @@ mod tests {
 
         let file = FilePath::from(module_dir.join("helper.ray"));
         let module_path = discover_module_for_file(&file);
-        assert_eq!(module_path, ModulePath::from("mymod"));
+        assert_eq!(module_path, ModulePath::from("mymod::helper"));
+    }
+
+    #[test]
+    fn discover_module_for_named_facade_file() {
+        // Named facade file (<dirname>.ray) should use directory name
+        let dir = tempdir().unwrap();
+        let module_dir = dir.path().join("mymod");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(module_dir.join("mymod.ray"), "").unwrap();
+
+        let facade = FilePath::from(module_dir.join("mymod.ray"));
+        assert_eq!(discover_module_for_file(&facade), ModulePath::from("mymod"));
     }
 
     #[test]
@@ -589,37 +624,6 @@ mod tests {
         let file = FilePath::from(inner.join("mod.ray"));
         let module_path = discover_module_for_file(&file);
         assert_eq!(module_path, ModulePath::from("outer::inner"));
-    }
-
-    #[test]
-    fn discover_sibling_files_for_single_file_module() {
-        // Single file module should only return itself
-        let dir = tempdir().unwrap();
-        let file = FilePath::from(dir.path().join("standalone.ray"));
-        fs::write(&file, "").unwrap();
-
-        let siblings = discover_sibling_files(&file, &ModulePath::from("standalone"));
-        assert_eq!(siblings.len(), 1);
-        assert_eq!(siblings[0], file);
-    }
-
-    #[test]
-    fn discover_sibling_files_for_directory_module() {
-        // Directory module should return all .ray files
-        let dir = tempdir().unwrap();
-        let module_dir = dir.path().join("mymod");
-        fs::create_dir(&module_dir).unwrap();
-        fs::write(module_dir.join("mod.ray"), "").unwrap();
-        fs::write(module_dir.join("a.ray"), "").unwrap();
-        fs::write(module_dir.join("b.ray"), "").unwrap();
-        fs::write(module_dir.join("not_ray.txt"), "").unwrap(); // Should be ignored
-
-        let file = FilePath::from(module_dir.join("mod.ray"));
-        let siblings = discover_sibling_files(&file, &ModulePath::from("mymod"));
-        assert_eq!(siblings.len(), 3);
-        assert!(siblings.iter().any(|f| f.file_name() == "mod.ray"));
-        assert!(siblings.iter().any(|f| f.file_name() == "a.ray"));
-        assert!(siblings.iter().any(|f| f.file_name() == "b.ray"));
     }
 
     #[test]
@@ -646,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_import_finds_directory_module() {
+    fn resolve_import_finds_directory_module_facade_only() {
         let dir = tempdir().unwrap();
         let root = dir.path();
 
@@ -664,7 +668,9 @@ mod tests {
         match result {
             ImportResolution::SourceModule(path, files) => {
                 assert_eq!(path, ModulePath::from("bar"));
-                assert_eq!(files.len(), 2);
+                // In file=module model, only the facade file is returned
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].file_name(), "mod.ray");
             }
             other => panic!("expected SourceModule, got {:?}", other),
         }
@@ -766,12 +772,12 @@ mod tests {
         let root_module = ModulePath::from("mylib");
         discover_all_submodules(&FilePath::from(&lib_dir), &root_module, &mut pending);
 
-        // Should find: sub/mod.ray, sub/util.ray, sub/nested/mod.ray
-        assert_eq!(pending.len(), 3);
+        // Should find all 5 files: mod.ray, helper.ray, sub/mod.ray, sub/util.ray, sub/nested/mod.ray
+        assert_eq!(pending.len(), 5);
 
         let file_names: Vec<String> = pending.iter().map(|p| p.file_name()).collect();
-        // Check we found files from both submodules
-        assert!(file_names.iter().filter(|n| *n == "mod.ray").count() == 2);
+        assert!(file_names.iter().filter(|n| *n == "mod.ray").count() == 3);
+        assert!(file_names.iter().any(|n| n == "helper.ray"));
         assert!(file_names.iter().any(|n| n == "util.ray"));
     }
 
@@ -823,5 +829,49 @@ mod tests {
 
         let result = resolve_entry_path(&module_dir);
         assert!(result.is_err());
+    }
+
+    // ── File = Module tests ──────────────────────────────────────────────
+
+    #[test]
+    fn discover_module_for_nested_non_facade() {
+        // Non-facade file in nested module gets full path
+        let dir = tempdir().unwrap();
+        let outer = dir.path().join("outer");
+        let inner = outer.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(outer.join("mod.ray"), "").unwrap();
+        fs::write(inner.join("mod.ray"), "").unwrap();
+        fs::write(inner.join("utils.ray"), "").unwrap();
+
+        let file = FilePath::from(inner.join("utils.ray"));
+        let module_path = discover_module_for_file(&file);
+        assert_eq!(module_path, ModulePath::from("outer::inner::utils"));
+    }
+
+    #[test]
+    fn resolve_import_finds_sibling_file_as_module() {
+        // Importing a sibling .ray file resolves as a single-file module
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // Create a directory module with facade and helper
+        let mymod = root.join("mymod");
+        fs::create_dir(&mymod).unwrap();
+        fs::write(mymod.join("mod.ray"), "").unwrap();
+        fs::write(mymod.join("helpers.ray"), "").unwrap();
+
+        // From within mymod/, importing helpers should find helpers.ray
+        let from_file = FilePath::from(mymod.join("mod.ray"));
+        let result = resolve_import(&ModulePath::from("helpers"), &from_file, &[]);
+
+        match result {
+            ImportResolution::SourceModule(path, files) => {
+                assert_eq!(path, ModulePath::from("helpers"));
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].file_name(), "helpers.ray");
+            }
+            other => panic!("expected SourceModule, got {:?}", other),
+        }
     }
 }

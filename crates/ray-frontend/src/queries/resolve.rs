@@ -13,7 +13,7 @@ use ray_shared::{
 
 use crate::{
     queries::{
-        exports::{ExportedItem, file_exports, module_def_index},
+        exports::{ExportedItem, module_def_index},
         imports::{ImportNames, resolved_imports},
         libraries::LoadedLibraries,
         parse::parse_file,
@@ -110,12 +110,6 @@ pub fn file_scope(db: &Database, file_id: FileId) -> HashMap<String, DefTarget> 
     let module_index = module_def_index(db, file_info.module_path.clone());
     let mut combined_exports = convert_to_def_targets(&module_index);
 
-    // Add sibling exports
-    let sibling_exports = compute_sibling_exports(db, file_id, &file_info.module_path, &workspace);
-    for (sibling_name, target) in sibling_exports {
-        combined_exports.entry(sibling_name).or_insert(target);
-    }
-
     // Add selective and glob imports
     for (_alias, import_result) in &resolved {
         if let Ok(resolved_import) = import_result {
@@ -208,23 +202,17 @@ fn get_library_exports(
         None => return result,
     };
 
-    // Collect exports from the library's names index
-    // The item paths are full paths like "core::io::read", we need to filter
-    // for paths that start with the module_path
-    let module_prefix = module_path.to_string();
-
+    // Collect direct children from the library's names index.
+    // Match on exact module equality and single-segment item names.
     for (item_path, lib_def_id) in &lib_data.names {
-        let path_str = item_path.to_string();
-        // Check if this path belongs to the imported module
-        if path_str.starts_with(&module_prefix) {
-            // Extract the name: for "core::io::read" with module "core::io", name is "read"
-            let suffix = &path_str[module_prefix.len()..];
-            if let Some(name) = suffix.strip_prefix("::") {
-                // Only direct children (no more :: in the name)
-                if !name.contains("::") {
-                    result.insert(name.to_string(), DefTarget::Library(lib_def_id.clone()));
-                }
-            }
+        if item_path.module == *module_path && item_path.item.len() == 1 {
+            let name = &item_path.item[0];
+            let target = if let Some(mp) = lib_data.module_defs.get(lib_def_id) {
+                DefTarget::Module(mp.clone())
+            } else {
+                DefTarget::Library(lib_def_id.clone())
+            };
+            result.insert(name.clone(), target);
         }
     }
 
@@ -243,37 +231,6 @@ fn exported_item_to_def_target(item: &ExportedItem) -> Option<DefTarget> {
         ExportedItem::ReExport(target) => Some(target.clone()),
         ExportedItem::Module(mp) => Some(DefTarget::Module(mp.clone())),
     }
-}
-
-/// Compute exports from sibling files in the same module.
-///
-/// Sibling exports are definitions from other files in the same module
-/// that this file can reference without imports.
-fn compute_sibling_exports(
-    db: &Database,
-    file_id: FileId,
-    module_path: &ModulePath,
-    workspace: &WorkspaceSnapshot,
-) -> HashMap<String, DefTarget> {
-    let mut sibling_exports = HashMap::new();
-
-    if let Some(module_info) = workspace.module_info(module_path) {
-        for &sibling_id in &module_info.files {
-            if sibling_id == file_id {
-                // Skip self
-                continue;
-            }
-
-            let exports = file_exports(db, sibling_id);
-            for (name, item) in exports {
-                if let Some(target) = exported_item_to_def_target(&item) {
-                    sibling_exports.entry(name).or_insert(target);
-                }
-            }
-        }
-    }
-
-    sibling_exports
 }
 
 #[cfg(test)]
@@ -1477,6 +1434,344 @@ mod tests {
             def_count > 0,
             "Explicit `import io` from core module should resolve `io::print` to a Def. Got resolutions: {:?}",
             resolutions
+        );
+    }
+
+    // ── File = Module tests ──────────────────────────────────────────────
+
+    #[test]
+    fn file_module_sibling_not_visible_without_import() {
+        // When files have per-file module paths, siblings are NOT visible
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        // Each file is its own module (file=module semantics)
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        // helpers defines a function
+        FileSource::new(&db, helpers_file, "fn help() {}".to_string());
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        // utils tries to use help() without importing — should NOT resolve
+        FileSource::new(&db, utils_file, "fn go() { help() }".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let resolutions = name_resolutions(&db, utils_file);
+
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert_eq!(
+            def_count, 0,
+            "sibling definitions should NOT be visible without explicit import"
+        );
+    }
+
+    #[test]
+    fn file_module_sibling_visible_with_selective_import() {
+        // With explicit `import helpers with help`, the name resolves
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, helpers_file, "fn help() {}".to_string());
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        // utils imports help from sibling
+        FileSource::new(
+            &db,
+            utils_file,
+            "import helpers with help\nfn go() { help() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let resolutions = name_resolutions(&db, utils_file);
+
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert_eq!(
+            def_count, 1,
+            "sibling import `import helpers with help` should make help() visible"
+        );
+    }
+
+    #[test]
+    fn file_module_sibling_visible_with_glob_import() {
+        // With `import helpers with *`, all sibling names resolve
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(
+            &db,
+            helpers_file,
+            "fn help() {}\nfn assist() {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        FileSource::new(
+            &db,
+            utils_file,
+            "import helpers with *\nfn go() { help()\n assist() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let resolutions = name_resolutions(&db, utils_file);
+
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert_eq!(
+            def_count, 2,
+            "glob import from sibling should make both help() and assist() visible"
+        );
+    }
+
+    #[test]
+    fn file_module_sibling_visible_with_qualified_import() {
+        // With `import helpers`, qualified access helpers::help() works
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, helpers_file, "fn help() {}".to_string());
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        FileSource::new(
+            &db,
+            utils_file,
+            "import helpers\nfn go() { helpers::help() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let resolutions = name_resolutions(&db, utils_file);
+
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert!(
+            def_count > 0,
+            "qualified access helpers::help() should resolve via sibling import"
+        );
+    }
+
+    #[test]
+    fn file_module_facade_exports_control_public_api() {
+        // When importing mymod, only the facade file's exports are visible
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        // Facade file for mymod
+        let facade_file =
+            workspace.add_file(FilePath::from("mymod/mod.ray"), ModulePath::from("mymod"));
+        // Non-facade sibling (in its own module)
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        // External file importing mymod
+        let main_file = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        // Facade exports pub_fn, helpers has helper_fn
+        FileSource::new(&db, facade_file, "fn pub_fn() {}".to_string());
+        FileMetadata::new(
+            &db,
+            facade_file,
+            FilePath::from("mymod/mod.ray"),
+            ModulePath::from("mymod"),
+        );
+        FileSource::new(&db, helpers_file, "fn helper_fn() {}".to_string());
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        // main imports mymod with * — should only get pub_fn, NOT helper_fn
+        FileSource::new(
+            &db,
+            main_file,
+            "import mymod with *\nfn go() { pub_fn()\n helper_fn() }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            main_file,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let resolutions = name_resolutions(&db, main_file);
+
+        let def_count = resolutions
+            .values()
+            .filter(|res| matches!(res, Resolution::Def(_)))
+            .count();
+
+        assert_eq!(
+            def_count, 1,
+            "import mymod with * should only get facade exports (pub_fn), not sibling module exports (helper_fn)"
+        );
+    }
+
+    #[test]
+    fn import_selective_from_library_with_reexport() {
+        // Simulate a library "lib" with two modules:
+        //   lib (root/facade) — re-exports Point from lib::point
+        //   lib::point        — defines struct Point
+        //
+        // A user file does: import lib with Point
+        // Point should be resolvable.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let user_file = workspace.add_file(FilePath::from("test.ray"), ModulePath::from("test"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_no_core(&db);
+
+        // Set up library with Point defined in lib::point
+        // but re-exported at the lib level
+        let mut libraries = LoadedLibraries::default();
+        let mut lib_data = LibraryData::default();
+        lib_data.modules.push(ModulePath::from("lib"));
+        lib_data.modules.push(ModulePath::from("lib::point"));
+
+        let point_def_id = LibraryDefId {
+            module: ModulePath::from("lib::point"),
+            index: 0,
+        };
+
+        // Point lives in lib::point
+        let point_path_original =
+            ItemPath::new(ModulePath::from("lib::point"), vec!["Point".into()]);
+        lib_data.register_name(point_path_original, point_def_id.clone());
+
+        // Re-export: Point is also accessible at lib::Point
+        let point_path_reexport = ItemPath::new(ModulePath::from("lib"), vec!["Point".into()]);
+        lib_data.register_name(point_path_reexport, point_def_id.clone());
+
+        lib_data.schemes.insert(
+            point_def_id,
+            TyScheme {
+                vars: vec![],
+                qualifiers: vec![],
+                ty: Ty::unit(),
+            },
+        );
+
+        libraries.add(ModulePath::from("lib"), lib_data);
+        db.set_input::<LoadedLibraries>((), libraries);
+
+        FileSource::new(
+            &db,
+            user_file,
+            "import lib with Point\nfn main(p: Point) {}".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            user_file,
+            FilePath::from("test.ray"),
+            ModulePath::from("test"),
+        );
+
+        let result = resolve_builtin(&db, user_file, "Point".to_string());
+        assert!(
+            result.is_some(),
+            "Should resolve 'Point' from library re-export"
+        );
+        assert!(
+            matches!(result, Some(DefTarget::Library(_))),
+            "Should be a library target"
         );
     }
 }

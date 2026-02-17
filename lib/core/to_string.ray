@@ -9,6 +9,8 @@
 //!
 //! `ToStr` is used implicitly by `print()` and f-string interpolation.
 
+import string with string
+
 /// A type that can be converted to a human-readable string representation.
 ///
 /// This is Ray's equivalent of `Display` / `ToString` in other languages.

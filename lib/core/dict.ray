@@ -16,6 +16,15 @@
 //! }
 //! ```
 
+import deref with Deref
+import hash with Hash
+import index with Index
+import int with Int
+import intrinsics with sizeof
+import iter with Iter, Iterable
+import mem with malloc
+import ops with Eq
+
 /// Internal storage record. Not exposed to user code.
 struct dict_entry['k, 'v] {
     hash: u64

@@ -693,7 +693,7 @@ impl Database {
         let inputs = self.inputs.read().expect("inputs lock poisoned");
         let value = inputs
             .get(&ikey)
-            .expect("missing input")
+            .expect(&format!("missing input: {}", I::NAME))
             .downcast_ref::<I::Value>()
             .expect("input type mismatch");
 

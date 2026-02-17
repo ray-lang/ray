@@ -1,0 +1,2 @@
+/// Allocates `size` bytes of uninitialized memory and returns a pointer.
+extern fn malloc(size: uint) -> rawptr[u8]

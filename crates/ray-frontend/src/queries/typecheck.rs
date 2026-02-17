@@ -439,7 +439,7 @@ pub fn typecheck_group(db: &Database, group_id: BindingGroupId) -> TypeCheckResu
 /// The monomorphic type for the local binding, or `None` if not found.
 #[query]
 pub fn inferred_local_type(db: &Database, local_id: LocalBindingId) -> Option<Ty> {
-    let group_id = binding_group_for_def(db, local_id.owner);
+    let group_id = binding_group_for_def(db, local_id.owner)?;
     let result = typecheck_group(db, group_id);
     result.local_tys.get(&local_id).cloned()
 }
@@ -468,7 +468,7 @@ pub fn inferred_local_type(db: &Database, local_id: LocalBindingId) -> Option<Ty
 pub fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
     match target {
         DefTarget::Workspace(def_id) => {
-            let group_id = binding_group_for_def(db, def_id);
+            let group_id = binding_group_for_def(db, def_id)?;
             let result = typecheck_group(db, group_id);
             result.schemes.get(&def_id).cloned()
         }
@@ -497,7 +497,7 @@ pub fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
 #[query]
 pub fn ty_of(db: &Database, node_id: NodeId) -> Option<Ty> {
     let def_id = node_id.owner;
-    let group_id = binding_group_for_def(db, def_id);
+    let group_id = binding_group_for_def(db, def_id)?;
     let result = typecheck_group(db, group_id);
     result.node_tys.get(&node_id).cloned()
 }
@@ -1004,7 +1004,7 @@ fn double(x: int) -> int => x
             .expect("Should have double function");
 
         // Get its binding group
-        let group_id = binding_group_for_def(&db, double_def.def_id);
+        let group_id = binding_group_for_def(&db, double_def.def_id).unwrap();
 
         // Typecheck the group
         let result = typecheck_group(&db, group_id);
@@ -1052,7 +1052,7 @@ fn answer() -> int => 42
             .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "answer")
             .expect("Should have answer function");
 
-        let group_id = binding_group_for_def(&db, answer_def.def_id);
+        let group_id = binding_group_for_def(&db, answer_def.def_id).unwrap();
         let result = typecheck_group(&db, group_id);
 
         assert!(
@@ -1105,7 +1105,7 @@ fn is_odd(n) {
             .expect("Should have is_odd function");
 
         // Both should be in the same group
-        let group_id = binding_group_for_def(&db, is_even_def.def_id);
+        let group_id = binding_group_for_def(&db, is_even_def.def_id).unwrap();
 
         // Typecheck the group
         let result = typecheck_group(&db, group_id);
@@ -1162,8 +1162,8 @@ fn bar(y: int) -> int => foo(y)
             .expect("Should have bar function");
 
         // Get binding groups
-        let foo_group = binding_group_for_def(&db, foo_def.def_id);
-        let bar_group = binding_group_for_def(&db, bar_def.def_id);
+        let foo_group = binding_group_for_def(&db, foo_def.def_id).unwrap();
+        let bar_group = binding_group_for_def(&db, bar_def.def_id).unwrap();
 
         // They should be in different groups (both fully annotated)
         assert_ne!(
@@ -1221,7 +1221,7 @@ fn c(x: int) -> int => b(x)
 
         // Typecheck c's group - the query system should automatically
         // ensure a and b are typechecked first via annotated_scheme lookups
-        let c_group = binding_group_for_def(&db, c_def.def_id);
+        let c_group = binding_group_for_def(&db, c_def.def_id).unwrap();
         let result = typecheck_group(&db, c_group);
 
         assert!(
@@ -1338,8 +1338,8 @@ fn bar(b: bool) -> bool => b
             .expect("Should have bar function");
 
         // They should be in different groups (both annotated)
-        let foo_group = binding_group_for_def(&db, foo_def.def_id);
-        let bar_group = binding_group_for_def(&db, bar_def.def_id);
+        let foo_group = binding_group_for_def(&db, foo_def.def_id).unwrap();
+        let bar_group = binding_group_for_def(&db, bar_def.def_id).unwrap();
         assert_ne!(
             foo_group.index, bar_group.index,
             "foo and bar should be in different binding groups"
@@ -1575,8 +1575,8 @@ fn get_flag() -> bool => flag
         let file_main_def_id = DefId::new(file_id, 0);
 
         // Verify they are in different binding groups
-        let func_group = binding_group_for_def(&db, func_def.def_id);
-        let file_main_group = binding_group_for_def(&db, file_main_def_id);
+        let func_group = binding_group_for_def(&db, func_def.def_id).unwrap();
+        let file_main_group = binding_group_for_def(&db, file_main_def_id).unwrap();
         assert_ne!(
             func_group.index, file_main_group.index,
             "get_flag and FileMain should be in different binding groups"
@@ -1926,7 +1926,7 @@ fn identity(x: int) -> int => x
             .expect("Should have identity function");
 
         // Get the typecheck input to find the definition's root NodeId
-        let group_id = binding_group_for_def(&db, func_def.def_id);
+        let group_id = binding_group_for_def(&db, func_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id.clone());
 
         // Get the root expression NodeId for the definition.
@@ -1984,7 +1984,7 @@ fn get_true() -> bool => true
             .expect("Should have get_true function");
 
         // Typecheck the group
-        let group_id = binding_group_for_def(&db, func_def.def_id);
+        let group_id = binding_group_for_def(&db, func_def.def_id).unwrap();
         let result = typecheck_group(&db, group_id.clone());
 
         // The result should have node_tys for expressions
@@ -2036,7 +2036,7 @@ x = true
         let file_main_def_id = DefId::new(file_id, 0);
 
         // Typecheck the group
-        let group_id = binding_group_for_def(&db, file_main_def_id);
+        let group_id = binding_group_for_def(&db, file_main_def_id).unwrap();
         let result = typecheck_group(&db, group_id);
 
         // The result should have node_tys for expressions in FileMain
@@ -2158,7 +2158,7 @@ impl Showable['a] where Check['a] {
             .expect("Should find impl method show");
 
         // Typecheck the method's binding group
-        let group_id = binding_group_for_def(&db, method_def.def_id);
+        let group_id = binding_group_for_def(&db, method_def.def_id).unwrap();
         let result = typecheck_group(&db, group_id);
 
         // The method should typecheck without errors if parent where-clause

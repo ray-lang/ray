@@ -4,6 +4,8 @@
 //! offsets can be computed with `+` and `-` syntax. Offsets are in units of
 //! the pointed-to element (not bytes).
 
+import ops with Add, Sub
+
 /// Advances a raw pointer forward by `offset` elements.
 @intrinsic
 extern fn __ptr_add(ptr: rawptr['a], offset: uint) -> rawptr['a]

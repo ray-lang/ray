@@ -31,7 +31,8 @@ pub fn main() -> u32 {
 
     let workspace = test_workspace(src).expect("frontend build should succeed");
 
-    let mut program = lir::generate(&workspace.db, false).expect("lir generation should succeed");
+    let (mut program, _) =
+        lir::generate(&workspace.db, false).expect("lir generation should succeed");
     lir::monomorphize(&mut program);
 
     eprintln!("---------- LIR ----------\n{}", program);

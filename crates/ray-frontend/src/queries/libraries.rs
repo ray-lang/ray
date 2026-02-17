@@ -29,6 +29,7 @@ use crate::{
             struct_def, trait_def,
         },
         display::collect_reverse_map,
+        exports::{ExportedItem, module_def_index},
         operators::operator_index,
         parse::parse_file,
         typecheck::def_scheme,
@@ -117,6 +118,13 @@ pub struct LibraryData {
     /// safe since keys are unique LibraryDefIds.
     #[serde(default)]
     pub paths: HashMap<LibraryDefId, ItemPath>,
+
+    /// Module re-exports: maps LibraryDefId -> ModulePath for entries in `names`
+    /// that represent re-exported modules (via `export modulename`).
+    /// Used by `get_library_exports` to return `DefTarget::Module` instead of
+    /// `DefTarget::Library` for these entries.
+    #[serde(default)]
+    pub module_defs: HashMap<LibraryDefId, ModulePath>,
 }
 
 impl LibraryData {
@@ -664,6 +672,7 @@ pub fn build_library_data(
     let mut display_vars: HashMap<LibraryDefId, HashMap<TyVar, TyVar>> = HashMap::new();
     let mut root_nodes: HashMap<LibraryDefId, NodeId> = HashMap::new();
     let mut parent_map: HashMap<LibraryDefId, LibraryDefId> = HashMap::new();
+    let mut module_defs: HashMap<LibraryDefId, ModulePath> = HashMap::new();
     let mut func_defs: HashMap<LibraryDefId, FuncDef> = HashMap::new();
 
     for file_id in workspace.all_file_ids() {
@@ -777,6 +786,42 @@ pub fn build_library_data(
         }
     }
 
+    // Phase 3: Flatten re-exports into the names index.
+    //
+    // `export point with Point` in a facade means Point should be accessible
+    // under the facade's module path, not just in the original submodule.
+    // module_def_index already resolves re-exports for workspace modules,
+    // so we just need to register the additional name entries.
+    for module in &modules {
+        let index = module_def_index(db, module.clone());
+        for (name, item_result) in &index {
+            if let Ok(item) = item_result {
+                match item {
+                    ExportedItem::ReExport(DefTarget::Workspace(def_id)) => {
+                        if let Some(lib_def_id) = def_id_to_lib.get(def_id).cloned() {
+                            let reexport_path = ItemPath::new(module.clone(), vec![name.clone()]);
+                            names.entry(reexport_path).or_insert(lib_def_id);
+                        }
+                    }
+                    ExportedItem::Module(mp) => {
+                        let counter = module_counters.entry(module.clone()).or_insert(0);
+                        let lib_def_id = LibraryDefId {
+                            module: module.clone(),
+                            index: *counter,
+                        };
+                        *counter += 1;
+                        let reexport_path = ItemPath::new(module.clone(), vec![name.clone()]);
+                        names.entry(reexport_path.clone()).or_insert_with(|| {
+                            module_defs.insert(lib_def_id.clone(), mp.clone());
+                            lib_def_id
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     LibraryData {
         names,
         paths,
@@ -801,6 +846,7 @@ pub fn build_library_data(
         root_nodes,
         parent_map,
         func_defs,
+        module_defs,
     }
 }
 

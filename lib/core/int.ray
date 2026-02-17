@@ -15,6 +15,15 @@
 //! traits are used as constraints for generic integer algorithms (e.g.
 //! `Hash` and `ToStr` implementations).
 
+import deref with Deref
+import hash with Hash
+import intrinsics with int_hash_bytes
+import math with abs
+import mem with malloc
+import ops with Div, Eq, Lt, Mod, Neg
+import to_string with ToStr
+import string with string
+
 /// Marker trait for all integer types.
 ///
 /// The default type is `int` (the native-width signed integer).

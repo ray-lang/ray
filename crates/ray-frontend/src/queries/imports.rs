@@ -298,6 +298,26 @@ pub(crate) fn resolve_module_path(
         }
     }
 
+    // Try sibling resolution: if the current module is `mymod::utils` and the import
+    // is `helpers`, try resolving `mymod::helpers`.
+    if let Some(current) = current_module {
+        let segments = current.segments();
+        if segments.len() > 1 {
+            let parent = &segments[..segments.len() - 1];
+            let mut sibling = parent.to_vec();
+            sibling.extend(resolved.segments().iter().cloned());
+            let sibling_path = ModulePath::new(sibling);
+
+            if workspace.module_info(&sibling_path).is_some() {
+                return Ok(sibling_path);
+            }
+
+            if libraries.has_module(&sibling_path) {
+                return Ok(sibling_path);
+            }
+        }
+    }
+
     // Module not found
     Err(ImportError::UnknownModule(resolved.to_string()))
 }
@@ -1151,5 +1171,190 @@ mod tests {
         assert!(result.contains_key("utils"));
         assert!(!result.contains_key("core"));
         assert!(!result.contains_key("io"));
+    }
+
+    // ── Sibling resolution tests (file = module) ────────────────────────
+
+    #[test]
+    fn resolved_imports_sibling_resolution_resolves_sibling_module() {
+        // From mymod::utils, `import helpers` should resolve to mymod::helpers
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, helpers_file, "fn help() {}".to_string());
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        // utils imports helpers (sibling resolution: mymod::utils → mymod::helpers)
+        FileSource::new(&db, utils_file, "import helpers".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let result = resolved_imports(&db, utils_file);
+
+        assert_eq!(result.len(), 1);
+        let helpers_result = result.get("helpers").expect("should have helpers import");
+        assert!(helpers_result.is_ok(), "sibling import should resolve");
+        let resolved = helpers_result.as_ref().unwrap();
+        assert_eq!(
+            resolved.module_path.to_string(),
+            "mymod::helpers",
+            "should resolve to full sibling path"
+        );
+        assert_eq!(resolved.names, ImportNames::Namespace);
+    }
+
+    #[test]
+    fn resolved_imports_sibling_resolution_selective() {
+        // From mymod::utils, `import helpers with help` resolves as selective sibling import
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let helpers_file = workspace.add_file(
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, helpers_file, "fn help() {}".to_string());
+        FileMetadata::new(
+            &db,
+            helpers_file,
+            FilePath::from("mymod/helpers.ray"),
+            ModulePath::from("mymod::helpers"),
+        );
+        FileSource::new(&db, utils_file, "import helpers with help".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let result = resolved_imports(&db, utils_file);
+
+        assert_eq!(result.len(), 1);
+        let helpers_result = result.get("helpers").unwrap();
+        assert!(helpers_result.is_ok());
+        let resolved = helpers_result.as_ref().unwrap();
+        assert_eq!(resolved.module_path.to_string(), "mymod::helpers");
+        assert_eq!(
+            resolved.names,
+            ImportNames::Selective(vec!["help".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolved_imports_sibling_resolution_not_for_top_level() {
+        // From a top-level module (1 segment), sibling resolution should NOT apply
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, file_id, "import nonexistent".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let result = resolved_imports(&db, file_id);
+
+        assert_eq!(result.len(), 1);
+        let import_result = result.get("nonexistent").unwrap();
+        assert!(
+            import_result.is_err(),
+            "top-level module should not use sibling resolution"
+        );
+    }
+
+    #[test]
+    fn resolved_imports_child_resolution_takes_priority_over_sibling() {
+        // If both child and sibling exist, child should win
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        // child: mymod::utils::sub
+        let child_file = workspace.add_file(
+            FilePath::from("mymod/utils/sub/mod.ray"),
+            ModulePath::from("mymod::utils::sub"),
+        );
+        // sibling: mymod::sub
+        let sibling_file = workspace.add_file(
+            FilePath::from("mymod/sub.ray"),
+            ModulePath::from("mymod::sub"),
+        );
+        let utils_file = workspace.add_file(
+            FilePath::from("mymod/utils/mod.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, child_file, "fn child_fn() {}".to_string());
+        FileMetadata::new(
+            &db,
+            child_file,
+            FilePath::from("mymod/utils/sub/mod.ray"),
+            ModulePath::from("mymod::utils::sub"),
+        );
+        FileSource::new(&db, sibling_file, "fn sibling_fn() {}".to_string());
+        FileMetadata::new(
+            &db,
+            sibling_file,
+            FilePath::from("mymod/sub.ray"),
+            ModulePath::from("mymod::sub"),
+        );
+        // utils imports "sub" — should resolve to child (mymod::utils::sub), not sibling (mymod::sub)
+        FileSource::new(&db, utils_file, "import sub".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("mymod/utils/mod.ray"),
+            ModulePath::from("mymod::utils"),
+        );
+
+        let result = resolved_imports(&db, utils_file);
+
+        assert_eq!(result.len(), 1);
+        let sub_result = result.get("sub").unwrap();
+        assert!(sub_result.is_ok());
+        let resolved = sub_result.as_ref().unwrap();
+        assert_eq!(
+            resolved.module_path.to_string(),
+            "mymod::utils::sub",
+            "child resolution should take priority over sibling"
+        );
     }
 }

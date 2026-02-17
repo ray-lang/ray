@@ -5,6 +5,14 @@
 //! null-terminated. Strings support equality, ordering, hashing, concatenation,
 //! substring operations, and character-based iteration.
 
+import deref with Deref
+import hash with Hash
+import intrinsics with memcopy
+import iter with Iter, Iterable
+import mem with malloc
+import ops with Add, Eq, Lt, LtEq, Gt, GtEq, Neq
+import to_string with ToStr
+
 /// A UTF-8 string represented as a pointer to bytes and a length.
 ///
 /// `len` is the byte length. `char_len` is the number of Unicode codepoints.

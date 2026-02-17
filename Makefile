@@ -43,3 +43,9 @@ vscode-ext:
 	@cd editors/vscode && npm run compile
 	@echo "==> packaging extension VSIX"
 	@cd editors/vscode && vsce package --skip-license
+
+clean:
+	@echo "==> clearing .ray/lib"
+	@rm -rf .ray/lib
+	@echo "==> clearing build caches"
+	@rm -rf lib/core/.ray lib/testing/.ray 

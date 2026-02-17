@@ -28,7 +28,7 @@ use crate::{
 #[query]
 pub fn call_resolution(db: &Database, node_id: NodeId) -> Option<CallResolution> {
     let def_id = node_id.owner;
-    let group_id = binding_group_for_def(db, def_id);
+    let group_id = binding_group_for_def(db, def_id)?;
     let result = typecheck_group(db, group_id.clone());
     let input = typecheck_group_input(db, group_id);
 
@@ -139,7 +139,7 @@ fn main() -> int => helper(42)
         let file_result = file_ast(&db, file_id);
         let main_def = find_def_by_name(&file_result, "main").expect("Should have main function");
 
-        let group_id = binding_group_for_def(&db, main_def.def_id);
+        let group_id = binding_group_for_def(&db, main_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id);
 
         let call_node_id = input
@@ -168,7 +168,7 @@ fn get_value() -> int => 42
         let func_def =
             find_def_by_name(&file_result, "get_value").expect("Should have get_value function");
 
-        let group_id = binding_group_for_def(&db, func_def.def_id);
+        let group_id = binding_group_for_def(&db, func_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id);
 
         let literal_node_id = input
@@ -205,7 +205,7 @@ fn check() -> int => 1 + 2
         let file_result = file_ast(&db, file_id);
         let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
-        let group_id = binding_group_for_def(&db, test_def.def_id);
+        let group_id = binding_group_for_def(&db, test_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id);
 
         // Find the BinaryOp expression
@@ -266,7 +266,7 @@ fn check() -> int {
         let file_result = file_ast(&db, file_id);
         let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
-        let group_id = binding_group_for_def(&db, test_def.def_id);
+        let group_id = binding_group_for_def(&db, test_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id);
 
         // Find a Call expression with a FieldAccess callee (method call pattern)
@@ -338,7 +338,7 @@ fn check() -> int? {
         let file_result = file_ast(&db, file_id);
         let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
-        let group_id = binding_group_for_def(&db, test_def.def_id);
+        let group_id = binding_group_for_def(&db, test_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id);
 
         // Find the Index expression
@@ -402,7 +402,7 @@ fn check() -> int? {
         let file_result = file_ast(&db, file_id);
         let test_def = find_def_by_name(&file_result, "check").expect("Should have test function");
 
-        let group_id = binding_group_for_def(&db, test_def.def_id);
+        let group_id = binding_group_for_def(&db, test_def.def_id).unwrap();
         let input = typecheck_group_input(&db, group_id);
 
         // Find the Assign expression with Index LHS

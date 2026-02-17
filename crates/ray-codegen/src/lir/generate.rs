@@ -403,11 +403,11 @@ fn generate_test_harness(
         .to_path()
         .append_func_type(vec![Ty::int()], Ty::unit());
 
-    let proc_exit_item = ItemPath::new("core", vec!["proc_exit".into()]);
+    let proc_exit_item = ItemPath::new("core::process", vec!["proc_exit".into()]);
     let proc_exit_target =
-        def_for_path(ctx.db, proc_exit_item.clone()).expect("core::proc_exit not found");
+        def_for_path(ctx.db, proc_exit_item.clone()).expect("core::process::proc_exit not found");
     let proc_exit_scheme =
-        def_scheme(ctx.db, proc_exit_target).expect("core::proc_exit has no type scheme");
+        def_scheme(ctx.db, proc_exit_target).expect("core::process::proc_exit has no type scheme");
     let proc_exit_fqn = proc_exit_item.to_path();
     let proc_exit_path = if ctx.is_extern(&proc_exit_fqn) {
         ctx.extern_link_name(&proc_exit_fqn)
@@ -1065,7 +1065,15 @@ impl<'a> GenCtx<'a> {
             call_args.push(self.value_to_local_or_unit(arg_val, arg_ty));
         }
 
-        let target = resolved.target().expect("call resolution missing target");
+        // Prefer trait_target for the path: trait impl methods are registered in
+        // poly_fn_map under the trait's path (e.g., core::ops::Add::+), not the
+        // impl's file module (e.g., core::string::Add::+). Using trait_target
+        // ensures the call name matches the registered function name.
+        let target = resolved
+            .trait_target
+            .as_ref()
+            .or(resolved.impl_target.as_ref())
+            .expect("call resolution missing target");
         let base_fqn = def_path(self.db, target.clone())
             .expect("missing def_path for call target")
             .to_path();
@@ -1688,7 +1696,12 @@ impl<'a> GenCtx<'a> {
         call_args: Vec<lir::Variable>,
         src: &Source,
     ) -> RayResult<GenResult> {
-        let target = resolved.target().expect("call resolution missing target");
+        // Prefer trait_target for the path (see comment in call_from_op).
+        let target = resolved
+            .trait_target
+            .as_ref()
+            .or(resolved.impl_target.as_ref())
+            .expect("call resolution missing target");
         let base_fqn = def_path(self.db, target.clone())
             .expect("missing def_path for call target")
             .to_path();
@@ -6292,7 +6305,9 @@ pub fn main() -> string {
 
         // Build stub core library via LoadedLibraries so auto-import works
         let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core"));
         core_lib.modules.push(ModulePath::from("core::io"));
+        core_lib.modules.push(ModulePath::from("core::process"));
 
         // string struct in core module
         let string_def_id = LibraryDefId {
@@ -6333,10 +6348,10 @@ pub fn main() -> string {
 
         // proc_exit in core module
         let proc_exit_def_id = LibraryDefId {
-            module: ModulePath::from("core"),
+            module: ModulePath::from("core::process"),
             index: 1,
         };
-        let proc_exit_path = ItemPath::new("core", vec!["proc_exit".into()]);
+        let proc_exit_path = ItemPath::new("core::process", vec!["proc_exit".into()]);
         let proc_exit_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
         core_lib.register_name(proc_exit_path, proc_exit_def_id.clone());
         core_lib.schemes.insert(proc_exit_def_id, proc_exit_ty);

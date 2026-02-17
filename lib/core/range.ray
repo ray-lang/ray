@@ -16,6 +16,10 @@
 //! }
 //! ```
 
+import int with Int
+import iter with Iter, Iterable
+import ops with Add, Lt, LtEq
+
 /// A range from `start` to `end`.
 ///
 /// When `inclusive` is `false`, the range excludes `end` (half-open).

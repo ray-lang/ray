@@ -208,17 +208,14 @@ pub fn binding_group_members(db: &Database, group_id: BindingGroupId) -> Vec<Def
 /// Returns the binding group that contains the given definition. This is the
 /// inverse of `binding_group_members`.
 ///
-/// # Panics
-///
-/// Panics if the DefId is not found in any group. This is an internal error -
-/// every definition should be in exactly one group.
+/// Returns `None` if the definition is not found in any binding group. This
+/// can happen when the workspace is in an inconsistent state (e.g., during
+/// LSP editing with unresolved imports).
 #[query]
-pub fn binding_group_for_def(db: &Database, def_id: DefId) -> BindingGroupId {
+pub fn binding_group_for_def(db: &Database, def_id: DefId) -> Option<BindingGroupId> {
     // Get the module for this definition's file
     let workspace = db.get_input::<WorkspaceSnapshot>(());
-    let file_info = workspace
-        .file_info(def_id.file)
-        .expect("file not in workspace");
+    let file_info = workspace.file_info(def_id.file)?;
     let module = file_info.module_path.clone();
 
     // Get the binding groups for this module
@@ -227,14 +224,12 @@ pub fn binding_group_for_def(db: &Database, def_id: DefId) -> BindingGroupId {
     // Find which group contains this def
     for (idx, members) in result.members.iter().enumerate() {
         if members.contains(&def_id) {
-            return result.group_ids[idx].clone();
+            return Some(result.group_ids[idx].clone());
         }
     }
 
-    panic!(
-        "DefId {:?} not found in any binding group (internal error)",
-        def_id
-    );
+    log::warn!("DefId {:?} not found in any binding group", def_id);
+    None
 }
 
 #[cfg(test)]
@@ -1555,8 +1550,8 @@ fn bar() -> int { 2 }
             .find(|d| d.name == "bar")
             .expect("should find bar");
 
-        let foo_group = binding_group_for_def(&db, foo_def.def_id);
-        let bar_group = binding_group_for_def(&db, bar_def.def_id);
+        let foo_group = binding_group_for_def(&db, foo_def.def_id).unwrap();
+        let bar_group = binding_group_for_def(&db, bar_def.def_id).unwrap();
 
         // Both should have correct module
         assert_eq!(foo_group.module, module_path);
@@ -1612,8 +1607,8 @@ fn is_odd(n) {
             .find(|d| d.name == "is_odd")
             .expect("should find is_odd");
 
-        let is_even_group = binding_group_for_def(&db, is_even_def.def_id);
-        let is_odd_group = binding_group_for_def(&db, is_odd_def.def_id);
+        let is_even_group = binding_group_for_def(&db, is_even_def.def_id).unwrap();
+        let is_odd_group = binding_group_for_def(&db, is_odd_def.def_id).unwrap();
 
         // Both should be in the same group
         assert_eq!(is_even_group, is_odd_group);
@@ -1654,7 +1649,7 @@ fn caller() -> int { helper(42) }
 
         // For every def, binding_group_for_def should return a group that contains that def
         for def_header in &parse_result.defs {
-            let group_id = binding_group_for_def(&db, def_header.def_id);
+            let group_id = binding_group_for_def(&db, def_header.def_id).unwrap();
             let members = binding_group_members(&db, group_id);
             assert!(
                 members.contains(&def_header.def_id),
@@ -1664,8 +1659,7 @@ fn caller() -> int { helper(42) }
     }
 
     #[test]
-    #[should_panic(expected = "not found in any binding group")]
-    fn binding_group_for_def_panics_for_unknown_def() {
+    fn binding_group_for_def_returns_none_for_unknown_def() {
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -1691,7 +1685,7 @@ fn caller() -> int { helper(42) }
             index: 9999,
         };
 
-        // This should panic
-        binding_group_for_def(&db, fake_def_id);
+        // This should return None
+        assert!(binding_group_for_def(&db, fake_def_id).is_none());
     }
 }

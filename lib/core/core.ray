@@ -1,10 +1,17 @@
 //! The Ray core library.
 //!
-//! This is the root module of the core library. It re-exports the `io`
-//! submodule and provides the `malloc` allocator intrinsic used by all
-//! heap-allocating data structures.
+//! This is the root module of the core library.
 
-import io
-
-/// Allocates `size` bytes of uninitialized memory and returns a pointer.
-extern fn malloc(size: uint) -> rawptr[u8]
+export deref with Deref
+export dict with dict
+export list with list
+export hash with Hash
+export int with Int, SignedInt, UnsignedInt
+export iter with Iter, Iterable
+export intrinsics with sizeof
+export mem with malloc
+export ops with *
+export range with range
+export string with string
+export to_string with ToStr
+export io with print

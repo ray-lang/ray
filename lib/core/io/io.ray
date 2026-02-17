@@ -4,7 +4,8 @@
 //! any `ToStr` value to a string and appends a newline. `puts` writes
 //! a raw string without conversion.
 
-import super with ToStr, sizeof, string
+import super with Deref, Int, sizeof, string, ToStr
+import io_wasi with writev_stdout
 
 /// Prints `v` to stdout followed by a newline.
 ///

@@ -16,6 +16,11 @@
 //! }
 //! ```
 
+import index with Index
+import intrinsics with sizeof, memcopy
+import iter with Iter, Iterable
+import mem with malloc
+
 /// A growable array of `'a` elements.
 ///
 /// Elements are stored contiguously in memory. The list tracks its current

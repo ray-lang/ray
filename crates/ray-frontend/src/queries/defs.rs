@@ -1661,11 +1661,7 @@ fn path_for_target(target: &DefTarget, db: &Database) -> Option<ItemPath> {
         }
         DefTarget::Library(lib_def_id) => {
             let lib_data = library_data(db, lib_def_id.module.clone())?;
-            lib_data
-                .names
-                .iter()
-                .find(|(_, def_id)| *def_id == lib_def_id)
-                .map(|(item_path, _)| item_path.clone())
+            lib_data.paths.get(lib_def_id).cloned()
         }
         DefTarget::Primitive(path) => Some(path.clone()),
         DefTarget::Module(module_path) => Some(ItemPath::new(module_path.clone(), Vec::new())),
