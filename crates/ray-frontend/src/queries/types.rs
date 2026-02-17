@@ -819,6 +819,7 @@ mod tests {
                 vec![format!("lib_{}", lib_def_id.index)],
             ),
             DefTarget::Primitive(path) => path.clone(),
+            DefTarget::Module(module_path) => ItemPath::new(module_path.clone(), Vec::new()),
         }
     }
 

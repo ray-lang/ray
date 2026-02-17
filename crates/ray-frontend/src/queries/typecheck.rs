@@ -476,7 +476,7 @@ pub fn def_scheme(db: &Database, target: DefTarget) -> Option<TyScheme> {
             let lib_data = library_data(db, lib_def_id.module.clone())?;
             lib_data.schemes.get(&lib_def_id).cloned()
         }
-        DefTarget::Primitive(_) => None, // Primitives don't have user-defined schemes
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     }
 }
 

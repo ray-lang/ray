@@ -79,6 +79,8 @@ pub enum TokenKind {
     Nil,
     /// import
     Import,
+    /// export
+    Export,
     /// with
     With,
     /// as
@@ -263,6 +265,7 @@ impl TokenKind {
             TokenKind::Nil => "`nil`",
             TokenKind::With => "`with`",
             TokenKind::Import => "`import`",
+            TokenKind::Export => "`export`",
             TokenKind::As => "`as`",
             TokenKind::While => "`while`",
             TokenKind::Loop => "`loop`",
@@ -400,6 +403,7 @@ impl fmt::Display for TokenKind {
             TokenKind::With => "with".to_string(),
             TokenKind::Nil => "nil".to_string(),
             TokenKind::Import => "import".to_string(),
+            TokenKind::Export => "export".to_string(),
             TokenKind::As => "as".to_string(),
             TokenKind::For => "for".to_string(),
             TokenKind::While => "while".to_string(),

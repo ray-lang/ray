@@ -337,6 +337,8 @@ fn exported_item_to_def_target(item: &ExportedItem) -> Option<DefTarget> {
             // Local bindings are not accessible as DefTargets through path lookup
             None
         }
+        ExportedItem::ReExport(target) => Some(target.clone()),
+        ExportedItem::Module(mp) => Some(DefTarget::Module(mp.clone())),
     }
 }
 
@@ -438,6 +440,7 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
             lib_data.paths.get(&lib_def_id).cloned()
         }
         DefTarget::Primitive(path) => Some(path),
+        DefTarget::Module(module_path) => Some(ItemPath::new(module_path, Vec::new())),
     }
 }
 
@@ -468,6 +471,7 @@ pub fn def_name(db: &Database, target: DefTarget) -> Option<String> {
                 .and_then(|p| p.item_name().map(|s| s.to_string()))
         }
         DefTarget::Primitive(path) => path.item_name().map(|s| s.to_string()),
+        DefTarget::Module(module_path) => module_path.segments().last().map(|s| s.to_string()),
     }
 }
 
@@ -555,6 +559,7 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
                 parent: None,
             })
         }
+        DefTarget::Module(_) => None,
     }
 }
 
@@ -569,7 +574,7 @@ pub fn struct_def(db: &Database, target: DefTarget) -> Option<StructDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_struct(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_struct(db, &lib_def_id),
-        DefTarget::Primitive(_) => None, // Primitives are not structs
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     }
 }
 
@@ -761,7 +766,7 @@ pub fn trait_def(db: &Database, target: DefTarget) -> Option<TraitDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_trait(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_trait(db, &lib_def_id),
-        DefTarget::Primitive(_) => None, // Primitives are not traits
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     }
 }
 
@@ -1078,7 +1083,7 @@ pub fn impl_def(db: &Database, target: DefTarget) -> Arc<Option<ImplDef>> {
     Arc::new(match target {
         DefTarget::Workspace(def_id) => extract_workspace_impl(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_impl(db, &lib_def_id),
-        DefTarget::Primitive(_) => None, // Primitives don't have impl definitions
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     })
 }
 
@@ -1271,7 +1276,7 @@ pub fn func_def(db: &Database, target: DefTarget) -> Option<FuncDef> {
     match target {
         DefTarget::Workspace(def_id) => extract_workspace_func(db, def_id),
         DefTarget::Library(lib_def_id) => extract_library_func(db, &lib_def_id),
-        DefTarget::Primitive(_) => None,
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     }
 }
 
@@ -1343,7 +1348,7 @@ pub fn type_alias(db: &Database, target: DefTarget) -> Option<TypeAliasDef> {
             // Library type aliases not yet supported in LibraryData
             None
         }
-        DefTarget::Primitive(_) => None, // Primitives are not type aliases
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     }
 }
 
@@ -1663,6 +1668,7 @@ fn path_for_target(target: &DefTarget, db: &Database) -> Option<ItemPath> {
                 .map(|(item_path, _)| item_path.clone())
         }
         DefTarget::Primitive(path) => Some(path.clone()),
+        DefTarget::Module(module_path) => Some(ItemPath::new(module_path.clone(), Vec::new())),
     }
 }
 
@@ -1720,7 +1726,7 @@ pub fn method_receiver_mode(db: &Database, method_target: DefTarget) -> Receiver
     match method_target {
         DefTarget::Workspace(def_id) => workspace_method_receiver_mode(db, def_id),
         DefTarget::Library(lib_def_id) => library_method_receiver_mode(db, &lib_def_id),
-        DefTarget::Primitive(_) => ReceiverMode::None,
+        DefTarget::Primitive(_) | DefTarget::Module(_) => ReceiverMode::None,
     }
 }
 

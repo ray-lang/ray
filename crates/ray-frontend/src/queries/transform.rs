@@ -341,6 +341,7 @@ fn is_type_def(db: &Database, def_target: &DefTarget) -> bool {
             .unwrap_or(false),
         DefTarget::Library(_) => true,
         DefTarget::Primitive(_) => true,
+        DefTarget::Module(_) => false,
     }
 }
 

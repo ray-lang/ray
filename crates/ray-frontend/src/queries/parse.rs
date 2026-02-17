@@ -59,6 +59,7 @@ pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
             stmts: vec![],
             decls: vec![],
             imports: vec![],
+            exports: vec![],
             doc_comment: None,
             filepath: metadata.path.clone(),
             span: Span::default(),
@@ -120,7 +121,7 @@ pub fn doc_comment(db: &Database, target: DefTarget) -> Option<String> {
             let root_node = lib_data.root_nodes.get(&lib_def_id)?;
             lib_data.source_map.doc_by_id(*root_node).cloned()
         }
-        DefTarget::Primitive(_) => None,
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     }
 }
 

@@ -333,6 +333,7 @@ impl Lexer {
             "typealias" => TokenKind::TypeAlias,
             "with" => TokenKind::With,
             "import" => TokenKind::Import,
+            "export" => TokenKind::Export,
             "as" => TokenKind::As,
             "for" => TokenKind::For,
             "while" => TokenKind::While,

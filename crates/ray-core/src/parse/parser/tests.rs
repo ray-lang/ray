@@ -8,7 +8,9 @@ use ray_shared::{
 use ray_typing::types::NominalKind;
 
 use crate::{
-    ast::{Decl, Expr, FStringPart, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern},
+    ast::{
+        Decl, ExportKind, Expr, FStringPart, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern,
+    },
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
 };
@@ -2670,4 +2672,124 @@ test "no body"
         !errors.is_empty(),
         "expected parse error when test block has no body"
     );
+}
+
+// ── Export parsing ──────────────────────────────────────────────────────────
+
+#[test]
+fn export_path() {
+    let src = "export utils";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.exports.len(), 1);
+    match &file.exports[0].kind {
+        ExportKind::Path(path) => {
+            assert_eq!(path.value, Path::from("utils"));
+        }
+        other => panic!("expected ExportKind::Path, got {:?}", other),
+    }
+}
+
+#[test]
+fn export_nested_path() {
+    let src = "export foo::bar";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.exports.len(), 1);
+    match &file.exports[0].kind {
+        ExportKind::Path(path) => {
+            assert_eq!(path.value, Path::from("foo::bar"));
+        }
+        other => panic!("expected ExportKind::Path, got {:?}", other),
+    }
+}
+
+#[test]
+fn export_selective_names() {
+    let src = "export utils with decode, to_url";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.exports.len(), 1);
+    match &file.exports[0].kind {
+        ExportKind::Names(path, names) => {
+            assert_eq!(path.value, Path::from("utils"));
+            assert_eq!(names.len(), 2);
+            assert_eq!(names[0].value, Path::from("decode"));
+            assert_eq!(names[1].value, Path::from("to_url"));
+        }
+        other => panic!("expected ExportKind::Names, got {:?}", other),
+    }
+}
+
+#[test]
+fn export_glob() {
+    let src = "export utils with *";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.exports.len(), 1);
+    match &file.exports[0].kind {
+        ExportKind::Glob(path) => {
+            assert_eq!(path.value, Path::from("utils"));
+        }
+        other => panic!("expected ExportKind::Glob, got {:?}", other),
+    }
+}
+
+#[test]
+fn export_nested_path_with_glob() {
+    let src = "export foo::bar with *";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.exports.len(), 1);
+    match &file.exports[0].kind {
+        ExportKind::Glob(path) => {
+            assert_eq!(path.value, Path::from("foo::bar"));
+        }
+        other => panic!("expected ExportKind::Glob, got {:?}", other),
+    }
+}
+
+#[test]
+fn multiple_exports_in_file() {
+    let src = r#"
+export utils
+export helpers with foo, bar
+export core with *
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.exports.len(), 3);
+    assert!(matches!(&file.exports[0].kind, ExportKind::Path(_)));
+    assert!(matches!(&file.exports[1].kind, ExportKind::Names(_, _)));
+    assert!(matches!(&file.exports[2].kind, ExportKind::Glob(_)));
+}
+
+#[test]
+fn export_alongside_imports_and_decls() {
+    let src = r#"
+import io
+export utils with *
+
+fn main() {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(file.imports.len(), 1);
+    assert_eq!(file.exports.len(), 1);
+    assert!(!file.decls.is_empty());
+}
+
+#[test]
+fn export_display_formatting() {
+    let src = "export utils";
+    let (file, _) = parse_source(src);
+    assert_eq!(file.exports[0].to_string(), "export utils");
+
+    let src = "export utils with foo, bar";
+    let (file, _) = parse_source(src);
+    assert_eq!(file.exports[0].to_string(), "export utils with foo, bar");
+
+    let src = "export utils with *";
+    let (file, _) = parse_source(src);
+    assert_eq!(file.exports[0].to_string(), "export utils with *");
 }

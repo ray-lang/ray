@@ -414,7 +414,7 @@ fn get_display_scheme(db: &Database, target: &DefTarget) -> Option<TyScheme> {
     let reverse_map = match target {
         DefTarget::Workspace(def_id) => Some(collect_reverse_map(db, *def_id)),
         DefTarget::Library(lib_def_id) => library_reverse_map(db, lib_def_id),
-        DefTarget::Primitive(_) => None,
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
     };
 
     if let Some(ref map) = reverse_map {
@@ -488,7 +488,7 @@ fn display_ty_for_target(db: &Database, target: &DefTarget, ty: &Ty) -> Ty {
     match target {
         DefTarget::Workspace(def_id) => display_ty(db, *def_id, ty),
         DefTarget::Library(lib_def_id) => display_library_ty(db, lib_def_id, ty),
-        DefTarget::Primitive(_) => ty.clone(),
+        DefTarget::Primitive(_) | DefTarget::Module(_) => ty.clone(),
     }
 }
 
@@ -508,7 +508,7 @@ fn display_vars_for_target(db: &Database, target: &DefTarget, vars: &[TyVar]) ->
             Some(map) if !map.is_empty() => map,
             _ => return vars.to_vec(),
         },
-        DefTarget::Primitive(_) => return vars.to_vec(),
+        DefTarget::Primitive(_) | DefTarget::Module(_) => return vars.to_vec(),
     };
     vars.iter()
         .map(|v| reverse_map.get(v).cloned().unwrap_or_else(|| v.clone()))
@@ -533,7 +533,7 @@ fn display_predicates_for_target(
             Some(map) if !map.is_empty() => map,
             _ => return predicates.to_vec(),
         },
-        DefTarget::Primitive(_) => return predicates.to_vec(),
+        DefTarget::Primitive(_) | DefTarget::Module(_) => return predicates.to_vec(),
     };
     let subst = build_rename_subst(&reverse_map);
     predicates

@@ -878,6 +878,7 @@ mod tests {
             stmts,
             decls,
             imports: vec![],
+            exports: vec![],
             doc_comment: None,
             filepath: FilePath::from("test.ray"),
             span: Span::new(),

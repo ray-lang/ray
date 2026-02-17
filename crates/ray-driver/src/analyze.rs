@@ -771,7 +771,7 @@ pub fn collect_definitions(db: &Database) -> Vec<DefinitionInfo> {
                     };
                     span_of(db, def_node_id)
                 }
-                DefTarget::Library(_) | DefTarget::Primitive(_) => None,
+                DefTarget::Library(_) | DefTarget::Primitive(_) | DefTarget::Module(_) => None,
             };
 
             // Get the filepath for the definition
@@ -779,7 +779,7 @@ pub fn collect_definitions(db: &Database) -> Vec<DefinitionInfo> {
                 DefTarget::Workspace(def_id) => workspace
                     .file_info(def_id.file)
                     .map(|info| info.path.clone()),
-                DefTarget::Library(_) | DefTarget::Primitive(_) => None,
+                DefTarget::Library(_) | DefTarget::Primitive(_) | DefTarget::Module(_) => None,
             };
 
             // Construct usage path from the definition path

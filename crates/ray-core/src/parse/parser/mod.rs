@@ -33,7 +33,8 @@ use ray_typing::types::TyScheme;
 
 use crate::{
     ast::{
-        Decl, Decorator, Expr, File, Import, InfixOp, Missing, Node, Pattern, TrailingPolicy,
+        Decl, Decorator, Export, Expr, File, Import, InfixOp, Missing, Node, Pattern,
+        TrailingPolicy,
         token::{CommentKind, Token, TokenKind},
     },
     errors::{RayError, RayErrorKind},
@@ -164,6 +165,7 @@ impl<T> ParseDiagnostics<T> {
 
 struct Items {
     imports: Vec<Import>,
+    exports: Vec<Export>,
     decls: Vec<Node<Decl>>,
     stmts: Vec<Node<Expr>>,
 }
@@ -172,6 +174,7 @@ impl Items {
     fn new() -> Items {
         Items {
             imports: vec![],
+            exports: vec![],
             decls: vec![],
             stmts: vec![],
         }
@@ -421,6 +424,12 @@ impl<'src> Parser<'src> {
                     items.imports.push(import);
                     Ok(end)
                 }
+                TokenKind::Export => {
+                    let export = this.parse_export(&ctx)?;
+                    let end = export.span.end;
+                    items.exports.push(export);
+                    Ok(end)
+                }
                 TokenKind::Extern
                 | TokenKind::Struct
                 | TokenKind::Trait
@@ -508,6 +517,7 @@ impl<'src> Parser<'src> {
             stmts: items.stmts, // Now empty if there were statements (moved to FileMain decl)
             decls: items.decls,
             imports: items.imports,
+            exports: items.exports,
             doc_comment,
             filepath,
             span,
@@ -1100,6 +1110,7 @@ impl<'src> Parser<'src> {
                 | TokenKind::Extern
                 | TokenKind::Object
                 | TokenKind::Import
+                | TokenKind::Export
                 | TokenKind::Modifier(_)
                 | TokenKind::Test
         )

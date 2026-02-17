@@ -255,7 +255,7 @@ fn resolve_imports(
 ///
 /// If the path contains `super` segments, they are resolved relative to
 /// `current_module` before lookup.
-fn resolve_module_path(
+pub(crate) fn resolve_module_path(
     module_path: &ModulePath,
     workspace: &WorkspaceSnapshot,
     libraries: &LoadedLibraries,

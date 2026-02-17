@@ -985,7 +985,7 @@ fn display_def_type(db: &Database, target: &DefTarget) -> Option<String> {
             let displayed = display_library_ty(db, lib_def_id, &scheme.ty);
             Some(displayed.to_string())
         }
-        DefTarget::Primitive(_) => Some(scheme.ty.to_string()),
+        DefTarget::Primitive(_) | DefTarget::Module(_) => Some(scheme.ty.to_string()),
     }
 }
 
@@ -1029,6 +1029,7 @@ fn def_target_to_completion_kind(db: &Database, target: &DefTarget) -> Completio
             def_kind_to_completion_kind(&record.kind)
         }
         DefTarget::Primitive(_) => CompletionItemKind::KEYWORD,
+        DefTarget::Module(_) => CompletionItemKind::MODULE,
     }
 }
 
@@ -1055,6 +1056,12 @@ fn exported_item_info(db: &Database, item: &ExportedItem) -> (CompletionItemKind
             (kind, detail)
         }
         ExportedItem::Local(_) => (CompletionItemKind::VARIABLE, None),
+        ExportedItem::ReExport(target) => {
+            let kind = def_target_to_completion_kind(db, target);
+            let detail = display_def_type(db, target);
+            (kind, detail)
+        }
+        ExportedItem::Module(_) => (CompletionItemKind::MODULE, None),
     }
 }
 

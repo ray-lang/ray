@@ -18,7 +18,7 @@ pub struct DiscoveryOptions {
 }
 
 use ray_core::{
-    ast::{Import, ImportKind},
+    ast::{Export, ExportKind, Import, ImportKind},
     errors::{RayError, RayErrorKind},
     sema::root,
 };
@@ -153,6 +153,32 @@ pub fn discover_workspace(
                         log::debug!(
                             "Import not found during discovery: {} (from {})",
                             import_module_path,
+                            file_path
+                        );
+                    }
+                }
+            }
+        }
+
+        // Process exports — discover referenced modules just like imports
+        for export in &parse_result.ast.exports {
+            if let Some(export_module_path) = extract_export_module_path(export) {
+                match resolve_import(&export_module_path, &file_path, &search_paths) {
+                    ImportResolution::SourceModule(_mod_path, files) => {
+                        for file in files {
+                            pending.push_back(file);
+                        }
+                    }
+                    ImportResolution::Library(lib_mod_path, lib_file_path) => {
+                        if !loaded_libs.libraries.contains_key(&lib_mod_path) {
+                            let lib_data = load_library(&lib_file_path, &mut schema_var_allocator)?;
+                            loaded_libs.add_from_file(lib_mod_path, lib_file_path, lib_data);
+                        }
+                    }
+                    ImportResolution::NotFound => {
+                        log::debug!(
+                            "Export target not found during discovery: {} (from {})",
+                            export_module_path,
                             file_path
                         );
                     }
@@ -421,6 +447,17 @@ fn extract_module_path(import: &Import) -> Option<ModulePath> {
         ImportKind::Names(path_node, _) => Some(ModulePath::from(&path_node.value)),
         ImportKind::Glob(path_node) => Some(ModulePath::from(&path_node.value)),
         ImportKind::CImport(_, _) => None, // C imports don't resolve to module paths
+    }
+}
+
+/// Extract the module path from an export statement for discovery.
+///
+/// All export kinds reference a module path that needs to be discovered.
+fn extract_export_module_path(export: &Export) -> Option<ModulePath> {
+    match &export.kind {
+        ExportKind::Path(path_node) => Some(ModulePath::from(&path_node.value)),
+        ExportKind::Names(path_node, _) => Some(ModulePath::from(&path_node.value)),
+        ExportKind::Glob(path_node) => Some(ModulePath::from(&path_node.value)),
     }
 }
 

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{
-        self, Assign, Curly, CurlyElement, Decl, Expr, FStringPart, FnParam, Func, FuncSig, Import,
-        ImportKind, Name, Node, Pattern, Struct, Trait,
+        self, Assign, Curly, CurlyElement, Decl, Export, ExportKind, Expr, FStringPart, FnParam,
+        Func, FuncSig, Import, ImportKind, Name, Node, Pattern, Struct, Trait,
     },
     parse::{ParseDiagnostics, ParseOptions, Parser},
     sourcemap::{SourceMap, TriviaKind},
@@ -118,6 +118,10 @@ impl<'a> SemanticTokenCollector<'a> {
             self.visit_import(import);
         }
 
+        for export in &file.exports {
+            self.visit_export(export);
+        }
+
         for decl in &file.decls {
             self.visit_decl(decl);
         }
@@ -140,6 +144,20 @@ impl<'a> SemanticTokenCollector<'a> {
             }
             ImportKind::CImport(_, span) => {
                 self.emit_span(*span, SemanticTokenKind::String, &[]);
+            }
+        }
+    }
+
+    fn visit_export(&mut self, export: &Export) {
+        match &export.kind {
+            ExportKind::Path(path) | ExportKind::Glob(path) => {
+                self.emit_path_node(path, SemanticTokenKind::Namespace, &[])
+            }
+            ExportKind::Names(path, names) => {
+                self.emit_path_node(path, SemanticTokenKind::Namespace, &[]);
+                for name in names {
+                    self.emit_path_node(name, SemanticTokenKind::Namespace, &[]);
+                }
             }
         }
     }

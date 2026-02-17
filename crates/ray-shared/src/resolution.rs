@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     def::{DefId, LibraryDefId},
     local_binding::LocalBindingId,
-    pathlib::ItemPath,
+    pathlib::{ItemPath, ModulePath},
     type_param_id::TypeParamId,
 };
 
@@ -51,6 +51,8 @@ pub enum DefTarget {
     Library(LibraryDefId),
     /// A primitive/builtin type (int, bool, char, uint, etc.).
     Primitive(ItemPath),
+    /// A module re-exported as a namespace.
+    Module(ModulePath),
 }
 
 impl DefTarget {

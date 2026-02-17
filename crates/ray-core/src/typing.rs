@@ -821,7 +821,8 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     | Resolution::Def(target @ DefTarget::Library(_)) => {
                         ctx.record_expr(node, ExprKind::DefRef(target.clone()))
                     }
-                    Resolution::Def(DefTarget::Primitive(_)) => {
+                    Resolution::Def(DefTarget::Primitive(_))
+                    | Resolution::Def(DefTarget::Module(_)) => {
                         // Primitive type names (int, bool, etc.) used as values
                         ctx.emit_error(node, "type name cannot be used as a value".to_string());
                         ctx.record_expr(node, ExprKind::Missing)
@@ -859,7 +860,8 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                     | Resolution::Def(target @ DefTarget::Library(_)) => {
                         ctx.record_expr(node, ExprKind::DefRef(target.clone()))
                     }
-                    Resolution::Def(DefTarget::Primitive(_)) => {
+                    Resolution::Def(DefTarget::Primitive(_))
+                    | Resolution::Def(DefTarget::Module(_)) => {
                         // Primitive type names (int, bool, etc.) used as values
                         ctx.emit_error(node, "type name cannot be used as a value".to_string());
                         ctx.record_expr(node, ExprKind::Missing)

@@ -54,6 +54,15 @@ pub fn name_resolutions(db: &Database, file_id: FileId) -> Arc<HashMap<NodeId, R
         }
     }
 
+    // Add module re-exports to the imports map for qualified access
+    for (name, target) in &combined_exports {
+        if let DefTarget::Module(mp) = target {
+            imports_map
+                .entry(name.clone())
+                .or_insert_with(|| mp.clone());
+        }
+    }
+
     // Create closure to look up exports for a module path
     let module_exports = |module_path: &ModulePath| -> Option<HashMap<String, DefTarget>> {
         // Check if this is a library import or workspace import
@@ -231,6 +240,8 @@ fn exported_item_to_def_target(item: &ExportedItem) -> Option<DefTarget> {
             // They are accessed differently (through the FileMain)
             None
         }
+        ExportedItem::ReExport(target) => Some(target.clone()),
+        ExportedItem::Module(mp) => Some(DefTarget::Module(mp.clone())),
     }
 }
 

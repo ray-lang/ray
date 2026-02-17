@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Import, ImportKind, TrailingPolicy, token::TokenKind},
+    ast::{Export, ExportKind, Import, ImportKind, TrailingPolicy, token::TokenKind},
     parse::{
         ParseContext, ParseResult, Parser,
         lexer::NewlineMode,
@@ -105,6 +105,86 @@ impl Parser<'_> {
                 kind,
                 span: Span { start, end },
             }
+        })
+    }
+
+    /// Parses an export statement
+    ///
+    /// Examples:
+    ///   export a                    - re-export module as namespace
+    ///   export a::b                 - re-export module as namespace
+    ///   export a::b with C, D, E    - selectively re-export specific names
+    ///   export a::b with *          - re-export all exports from module
+    pub(crate) fn parse_export(&mut self, ctx: &ParseContext) -> ParseResult<Export> {
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse export statement");
+        let ctx = &parser.ctx_clone();
+        let export_span = parser.expect_keyword(TokenKind::Export, ctx)?;
+        let start = export_span.start;
+
+        let path = parser.parse_path(ctx)?;
+        let path_span = parser.srcmap.span_of(&path);
+        let mut end = path_span.end;
+        let kind = if peek!(parser, TokenKind::With) {
+            let _with_span = parser.expect_keyword(TokenKind::With, ctx)?;
+
+            // Check for glob export: `with *`
+            if peek!(parser, TokenKind::Asterisk) {
+                let star_span = parser.expect_sp(TokenKind::Asterisk, ctx)?;
+                end = star_span.end;
+                ExportKind::Glob(path)
+            } else {
+                // Selective export: `with name1, name2`
+                let spec = SeqSpec {
+                    delimiters: None,
+                    trailing: TrailingPolicy::Forbid,
+                    newline: NewlineMode::Suppress,
+                    restrictions: Restrictions::empty(),
+                };
+                let ((names, _), spans) =
+                    parser.parse_delimited_seq(spec, ctx, |parser, trailing, _, ctx| {
+                        parser.parse_sep_seq(
+                            &TokenKind::Comma,
+                            trailing,
+                            None,
+                            ctx,
+                            |parser, ctx| parser.parse_name_with_type(None, ctx),
+                        )
+                    })?;
+
+                let span = if let Some((left, right)) = spans {
+                    Span {
+                        start: left.start,
+                        end: right.end,
+                    }
+                } else if let Some(first) = names.first()
+                    && let Some(last) = names.last()
+                {
+                    let first_span = parser.srcmap.span_of(first);
+                    let last_span = parser.srcmap.span_of(last);
+                    Span {
+                        start: first_span.start,
+                        end: last_span.end,
+                    }
+                } else {
+                    Span {
+                        start: path_span.end,
+                        end: path_span.end,
+                    }
+                };
+
+                let names = names.into_iter().map(|n| n.take_map(|n| n.path)).collect();
+                end = span.end;
+                ExportKind::Names(path, names)
+            }
+        } else {
+            ExportKind::Path(path)
+        };
+
+        Ok(Export {
+            kind,
+            span: Span { start, end },
         })
     }
 }
