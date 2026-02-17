@@ -869,7 +869,9 @@ impl SizeOf for Ty {
             Ty::Never | Ty::Any | Ty::Var(_) => Size::zero(),
             Ty::Array(t, size) => t.size_of() * *size,
             Ty::Tuple(t) => t.iter().map(Ty::size_of).sum(),
-            Ty::Func(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => Size::ptr(),
+            Ty::Func(_, _) | Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_) => {
+                Size::ptr()
+            }
             Ty::Proj(ty, params) => {
                 // Special-case `nilable['a]` to have an explicit Option-like
                 // layout: a 1-byte discriminant plus the payload `'a`.

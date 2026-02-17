@@ -2022,8 +2022,8 @@ impl<'a> GenCtx<'a> {
         let expr_mono = expr_ty_scheme.mono().clone();
 
         match recv_mode {
-            ReceiverMode::Ptr => {
-                if let Ty::Ref(inner) = param_mono {
+            ReceiverMode::Ptr | ReceiverMode::MutPtr => {
+                if let Ty::Ref(inner) | Ty::MutRef(inner) = param_mono {
                     if **inner == expr_mono {
                         let val_loc = self
                             .get_or_set_local(value, expr_ty_scheme.clone())
@@ -2045,8 +2045,8 @@ impl<'a> GenCtx<'a> {
                 }
             }
             ReceiverMode::Value => {
-                if !matches!(param_mono, Ty::Ref(_))
-                    && matches!(expr_mono, Ty::Ref(inner) if *inner == *param_mono)
+                if !matches!(param_mono, Ty::Ref(_) | Ty::MutRef(_))
+                    && matches!(&expr_mono, Ty::Ref(inner) | Ty::MutRef(inner) if **inner == *param_mono)
                 {
                     let val_loc = self
                         .get_or_set_local(value, expr_ty_scheme.clone())

@@ -15,7 +15,7 @@ pub fn methods_for_type(db: &Database, ty: Ty) -> Vec<(String, DefTarget)> {
     // Unwrap reference types to get the inner nominal type (auto-deref for `.` access).
     // RawPtr is NOT unwrapped — no auto-deref for raw pointers.
     let item_path = match &ty {
-        Ty::Ref(inner) => inner.item_path(),
+        Ty::Ref(inner) | Ty::MutRef(inner) => inner.item_path(),
         _ => ty.item_path(),
     };
 

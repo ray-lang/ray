@@ -21,7 +21,10 @@ fn occurs_in(var: &TyVar, ty: &Ty, subst: &Subst) -> bool {
         Ty::Func(ref params, ref ret) => {
             params.iter().any(|t| occurs_in(var, t, subst)) || occurs_in(var, ret, subst)
         }
-        Ty::Ref(ref inner) | Ty::RawPtr(ref inner) => occurs_in(var, inner, subst),
+        Ty::Ref(ref inner)
+        | Ty::MutRef(ref inner)
+        | Ty::IdRef(ref inner)
+        | Ty::RawPtr(ref inner) => occurs_in(var, inner, subst),
         Ty::Proj(_, ref args) | Ty::Tuple(ref args) => {
             args.iter().any(|t| occurs_in(var, t, subst))
         }
@@ -157,6 +160,12 @@ pub fn unify(
         (Ty::Ref(t1), Ty::Ref(t2)) => {
             subst = unify(&t1, &t2, &subst, info)?;
         }
+        (Ty::MutRef(t1), Ty::MutRef(t2)) => {
+            subst = unify(&t1, &t2, &subst, info)?;
+        }
+        (Ty::IdRef(t1), Ty::IdRef(t2)) => {
+            subst = unify(&t1, &t2, &subst, info)?;
+        }
         (Ty::RawPtr(t1), Ty::RawPtr(t2)) => {
             subst = unify(&t1, &t2, &subst, info)?;
         }
@@ -228,6 +237,101 @@ mod tests {
         let out2 = unify(&Ty::Var(t0.clone()), &Ty::Var(s0.clone()), &subst, &info).unwrap();
         assert_eq!(out2.get(&t0), Some(&Ty::Var(s0)));
     }
+
+    #[test]
+    fn unify_mut_ref_with_mut_ref() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let result = unify(
+            &Ty::mut_ref_of(Ty::int()),
+            &Ty::mut_ref_of(Ty::int()),
+            &subst,
+            &info,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn unify_id_ref_with_id_ref() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let result = unify(
+            &Ty::id_ref_of(Ty::int()),
+            &Ty::id_ref_of(Ty::int()),
+            &subst,
+            &info,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn unify_mut_ref_with_shared_ref_fails() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let result = unify(
+            &Ty::mut_ref_of(Ty::int()),
+            &Ty::ref_of(Ty::int()),
+            &subst,
+            &info,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unify_mut_ref_with_id_ref_fails() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let result = unify(
+            &Ty::mut_ref_of(Ty::int()),
+            &Ty::id_ref_of(Ty::int()),
+            &subst,
+            &info,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unify_shared_ref_with_id_ref_fails() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let result = unify(
+            &Ty::ref_of(Ty::int()),
+            &Ty::id_ref_of(Ty::int()),
+            &subst,
+            &info,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unify_mut_ref_binds_inner_meta() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let meta = TyVar::new("?t0");
+        let result = unify(
+            &Ty::mut_ref_of(Ty::Var(meta.clone())),
+            &Ty::mut_ref_of(Ty::int()),
+            &subst,
+            &info,
+        )
+        .unwrap();
+        assert_eq!(result.get(&meta), Some(&Ty::int()));
+    }
+
+    #[test]
+    fn unify_id_ref_binds_inner_meta() {
+        let info = TypeSystemInfo::default();
+        let subst = Subst::new();
+        let meta = TyVar::new("?t0");
+        let result = unify(
+            &Ty::id_ref_of(Ty::Var(meta.clone())),
+            &Ty::id_ref_of(Ty::string()),
+            &subst,
+            &info,
+        )
+        .unwrap();
+        assert_eq!(result.get(&meta), Some(&Ty::string()));
+    }
 }
 
 /// Convenience wrapper that computes the most-general unifier of two monotypes.
@@ -278,9 +382,10 @@ pub fn match_ty(poly: &Ty, callee: &Ty, poly_vars: &HashSet<TyVar>, subst: &mut 
                         .all(|(a, b)| match_ty(a, b, poly_vars, subst))
                     && match_ty(a_ret, b_ret, poly_vars, subst)
             }
-            (Ty::Ref(a), Ty::Ref(b)) | (Ty::RawPtr(a), Ty::RawPtr(b)) => {
-                match_ty(a, b, poly_vars, subst)
-            }
+            (Ty::Ref(a), Ty::Ref(b))
+            | (Ty::MutRef(a), Ty::MutRef(b))
+            | (Ty::IdRef(a), Ty::IdRef(b))
+            | (Ty::RawPtr(a), Ty::RawPtr(b)) => match_ty(a, b, poly_vars, subst),
             (Ty::Proj(a_name, a_args), Ty::Proj(b_name, b_args)) => {
                 a_name == b_name
                     && a_args.len() == b_args.len()

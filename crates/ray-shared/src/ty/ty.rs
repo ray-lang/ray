@@ -22,8 +22,14 @@ pub enum Ty {
     // Function types: (T0, T1, ...) -> Tn.
     Func(Vec<Ty>, Box<Ty>),
 
-    // Pointer types: *T and rawptr[T] and similar will be refined later.
+    // Pointer types.
+    /// Shared reference `*T` — read-only, reference-counted (strong).
     Ref(Box<Ty>),
+    /// Unique mutable reference `*mut T` — single-owner, non-copyable.
+    MutRef(Box<Ty>),
+    /// Identity reference `id *T` — weak reference, cannot access fields.
+    IdRef(Box<Ty>),
+    /// Raw pointer `rawptr[T]` — unsafe, no semantics.
     RawPtr(Box<Ty>),
 
     // Placeholder for other constructors: structs, traits, type constructors, etc.
@@ -57,6 +63,8 @@ impl std::fmt::Display for Ty {
                 write!(f, "({}) -> {}", parts, ret)
             }
             Ty::Ref(ty) => write!(f, "*{}", ty),
+            Ty::MutRef(ty) => write!(f, "*mut {}", ty),
+            Ty::IdRef(ty) => write!(f, "id *{}", ty),
             Ty::RawPtr(ty) => write!(f, "rawptr[{}]", ty),
             Ty::Proj(p, args) => {
                 if args.is_empty() {
@@ -180,6 +188,14 @@ impl Ty {
         Ty::Ref(Box::new(ty))
     }
 
+    pub fn mut_ref_of(ty: Ty) -> Self {
+        Ty::MutRef(Box::new(ty))
+    }
+
+    pub fn id_ref_of(ty: Ty) -> Self {
+        Ty::IdRef(Box::new(ty))
+    }
+
     pub fn rawptr(ty: Ty) -> Self {
         Ty::RawPtr(Box::new(ty))
     }
@@ -277,7 +293,7 @@ impl Ty {
                 }
                 ret.free_ty_vars(out);
             }
-            Ty::Ref(inner) | Ty::RawPtr(inner) => {
+            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
                 inner.free_ty_vars(out);
             }
             Ty::Proj(_, args) | Ty::Tuple(args) => {
@@ -335,7 +351,9 @@ impl Ty {
             Ty::Any => str!("any"),
             Ty::Var(_) => str!("variable"),
             Ty::Tuple(_) => str!("tuple"),
-            Ty::Ref(ty) => format!("reference to {}", ty.desc()),
+            Ty::Ref(ty) => format!("shared reference to {}", ty.desc()),
+            Ty::MutRef(ty) => format!("unique reference to {}", ty.desc()),
+            Ty::IdRef(ty) => format!("identity reference to {}", ty.desc()),
             Ty::RawPtr(ty) => format!("raw pointer to {}", ty.desc()),
             Ty::Array(ty, _) => format!("array of {}", ty.desc()),
             Ty::Func(_, _) => str!("function"),
@@ -434,6 +452,8 @@ impl Ty {
                 format!("<({}):{}>", params_str, ret.to_mangled())
             }
             Ty::Ref(inner) => format!("*{}", inner.to_mangled()),
+            Ty::MutRef(inner) => format!("*mut {}", inner.to_mangled()),
+            Ty::IdRef(inner) => format!("id *{}", inner.to_mangled()),
             Ty::RawPtr(inner) => format!("rawptr[{}]", inner.to_mangled()),
             Ty::Tuple(elems) => {
                 let elems_str = elems
@@ -469,6 +489,14 @@ impl Ty {
                 let base_path = Path::from("ref");
                 base_path.append_type_args(std::iter::once(ty.as_ref()))
             }
+            Ty::MutRef(ty) => {
+                let base_path = Path::from("mutref");
+                base_path.append_type_args(std::iter::once(ty.as_ref()))
+            }
+            Ty::IdRef(ty) => {
+                let base_path = Path::from("idref");
+                base_path.append_type_args(std::iter::once(ty.as_ref()))
+            }
             Ty::RawPtr(ty) => {
                 let base_path = Path::from("rawptr");
                 base_path.append_type_args(std::iter::once(ty.as_ref()))
@@ -492,6 +520,8 @@ impl Ty {
             Ty::Const(path) | Ty::Proj(path, _) => path.to_string(),
             Ty::Array(..) => str!("array"),
             Ty::Ref(_) => str!("ref"),
+            Ty::MutRef(_) => str!("mutref"),
+            Ty::IdRef(_) => str!("idref"),
             Ty::RawPtr(_) => str!("rawptr"),
             Ty::Func(_, _) => str!("func"),
         }
@@ -518,7 +548,7 @@ impl Ty {
     pub fn arity(&self) -> usize {
         match self {
             Ty::Any | Ty::Never | Ty::Const(_) | Ty::Var(_) => 0,
-            Ty::Ref(_) | Ty::RawPtr(_) | Ty::Array(_, _) => 1,
+            Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_) | Ty::Array(_, _) => 1,
             Ty::Proj(_, items) | Ty::Tuple(items) => items.len(),
             Ty::Func(items, _) => items.len() + 1,
         }
@@ -528,7 +558,12 @@ impl Ty {
         match self {
             Ty::Never | Ty::Any | Ty::Const(_) | Ty::Var(_) => true,
             Ty::Proj(_, tys) | Ty::Tuple(tys) => tys.len() == 0,
-            Ty::Func(_, _) | Ty::Array(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => false,
+            Ty::Func(_, _)
+            | Ty::Array(_, _)
+            | Ty::Ref(_)
+            | Ty::MutRef(_)
+            | Ty::IdRef(_)
+            | Ty::RawPtr(_) => false,
         }
     }
 
@@ -591,7 +626,9 @@ impl Ty {
     /// See also [`type_params`](Self::type_params) which filters to only type variables.
     pub fn type_arguments(&self) -> Vec<&Ty> {
         match self {
-            Ty::Array(t, _) | Ty::Ref(t) | Ty::RawPtr(t) => vec![t.as_ref()],
+            Ty::Array(t, _) | Ty::Ref(t) | Ty::MutRef(t) | Ty::IdRef(t) | Ty::RawPtr(t) => {
+                vec![t.as_ref()]
+            }
             Ty::Tuple(t) | Ty::Proj(_, t) => t.iter().collect(),
             Ty::Never | Ty::Any | Ty::Const(_) | Ty::Var(_) | Ty::Func(_, _) => vec![],
         }
@@ -635,7 +672,7 @@ impl Ty {
 
                 Some(t.as_ref())
             }
-            Ty::Ref(t) => {
+            Ty::Ref(t) | Ty::MutRef(t) | Ty::IdRef(t) => {
                 if idx != 0 {
                     return None;
                 }
@@ -667,7 +704,7 @@ impl Ty {
 
                 *t = Box::new(tp);
             }
-            Ty::Ref(t) => {
+            Ty::Ref(t) | Ty::MutRef(t) | Ty::IdRef(t) => {
                 if idx != 0 {
                     panic!("reference only has one type parameter: idx={}", idx)
                 }
@@ -729,21 +766,46 @@ impl Ty {
 
     pub fn unwrap_pointer(&self) -> Option<&Ty> {
         match self {
-            Ty::Ref(inner) | Ty::RawPtr(inner) => Some(&inner),
+            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
+                Some(&inner)
+            }
             _ => None,
         }
     }
 
     #[inline]
     pub fn is_any_pointer(&self) -> bool {
-        matches!(self, Ty::Ref(_) | Ty::RawPtr(_))
+        matches!(
+            self,
+            Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_)
+        )
+    }
+
+    /// Returns true if this is a shared reference `*T`.
+    #[inline]
+    pub fn is_shared_ref(&self) -> bool {
+        matches!(self, Ty::Ref(_))
+    }
+
+    /// Returns true if this is a unique mutable reference `*mut T`.
+    #[inline]
+    pub fn is_mut_ref(&self) -> bool {
+        matches!(self, Ty::MutRef(_))
+    }
+
+    /// Returns true if this is an identity reference `id *T`.
+    #[inline]
+    pub fn is_id_ref(&self) -> bool {
+        matches!(self, Ty::IdRef(_))
     }
 
     pub fn flatten(&self) -> Vec<&Ty> {
         match self {
             Ty::Never | Ty::Any | Ty::Var(_) | Ty::Const(_) => vec![self],
             Ty::Tuple(items) => items.iter().flat_map(Ty::flatten).collect(),
-            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => ty.flatten(),
+            Ty::Ref(ty) | Ty::MutRef(ty) | Ty::IdRef(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => {
+                ty.flatten()
+            }
             Ty::Func(items, ty) => items
                 .iter()
                 .chain(std::iter::once(ty.as_ref()))
@@ -804,7 +866,9 @@ impl Ty {
             Ty::Proj(_, tys) | Ty::Tuple(tys) => {
                 tys.iter().map(|ty| ty.free_vars()).flatten().collect()
             }
-            Ty::Ref(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => ty.free_vars(),
+            Ty::Ref(ty) | Ty::MutRef(ty) | Ty::IdRef(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => {
+                ty.free_vars()
+            }
             Ty::Func(param_tys, ret_ty) => {
                 let mut vars = param_tys
                     .iter()
@@ -815,5 +879,182 @@ impl Ty {
                 vars
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ty::{Ty, TyVar};
+
+    // --- Display ---
+
+    #[test]
+    fn display_mut_ref() {
+        let ty = Ty::mut_ref_of(Ty::int());
+        assert_eq!(ty.to_string(), "*mut int");
+    }
+
+    #[test]
+    fn display_id_ref() {
+        let ty = Ty::id_ref_of(Ty::int());
+        assert_eq!(ty.to_string(), "id *int");
+    }
+
+    #[test]
+    fn display_shared_ref() {
+        let ty = Ty::ref_of(Ty::int());
+        assert_eq!(ty.to_string(), "*int");
+    }
+
+    #[test]
+    fn display_nested_mut_ref() {
+        let ty = Ty::mut_ref_of(Ty::mut_ref_of(Ty::int()));
+        assert_eq!(ty.to_string(), "*mut *mut int");
+    }
+
+    #[test]
+    fn display_id_ref_of_shared_ref() {
+        let ty = Ty::id_ref_of(Ty::ref_of(Ty::int()));
+        assert_eq!(ty.to_string(), "id **int");
+    }
+
+    // --- Constructors ---
+
+    #[test]
+    fn mut_ref_of_wraps_inner_type() {
+        let inner = Ty::string();
+        let ty = Ty::mut_ref_of(inner.clone());
+        assert_eq!(ty, Ty::MutRef(Box::new(inner)));
+    }
+
+    #[test]
+    fn id_ref_of_wraps_inner_type() {
+        let inner = Ty::string();
+        let ty = Ty::id_ref_of(inner.clone());
+        assert_eq!(ty, Ty::IdRef(Box::new(inner)));
+    }
+
+    // --- Predicates ---
+
+    #[test]
+    fn is_shared_ref_only_matches_ref() {
+        assert!(Ty::ref_of(Ty::int()).is_shared_ref());
+        assert!(!Ty::mut_ref_of(Ty::int()).is_shared_ref());
+        assert!(!Ty::id_ref_of(Ty::int()).is_shared_ref());
+        assert!(!Ty::int().is_shared_ref());
+    }
+
+    #[test]
+    fn is_mut_ref_only_matches_mut_ref() {
+        assert!(Ty::mut_ref_of(Ty::int()).is_mut_ref());
+        assert!(!Ty::ref_of(Ty::int()).is_mut_ref());
+        assert!(!Ty::id_ref_of(Ty::int()).is_mut_ref());
+        assert!(!Ty::int().is_mut_ref());
+    }
+
+    #[test]
+    fn is_id_ref_only_matches_id_ref() {
+        assert!(Ty::id_ref_of(Ty::int()).is_id_ref());
+        assert!(!Ty::ref_of(Ty::int()).is_id_ref());
+        assert!(!Ty::mut_ref_of(Ty::int()).is_id_ref());
+        assert!(!Ty::int().is_id_ref());
+    }
+
+    #[test]
+    fn is_any_pointer_includes_all_ref_types() {
+        assert!(Ty::ref_of(Ty::int()).is_any_pointer());
+        assert!(Ty::mut_ref_of(Ty::int()).is_any_pointer());
+        assert!(Ty::id_ref_of(Ty::int()).is_any_pointer());
+        assert!(Ty::RawPtr(Box::new(Ty::int())).is_any_pointer());
+        assert!(!Ty::int().is_any_pointer());
+    }
+
+    // --- unwrap_pointer ---
+
+    #[test]
+    fn unwrap_pointer_works_for_all_ref_types() {
+        assert_eq!(Ty::ref_of(Ty::int()).unwrap_pointer(), Some(&Ty::int()));
+        assert_eq!(Ty::mut_ref_of(Ty::int()).unwrap_pointer(), Some(&Ty::int()));
+        assert_eq!(Ty::id_ref_of(Ty::int()).unwrap_pointer(), Some(&Ty::int()));
+        assert_eq!(
+            Ty::RawPtr(Box::new(Ty::int())).unwrap_pointer(),
+            Some(&Ty::int())
+        );
+        assert_eq!(Ty::int().unwrap_pointer(), None);
+    }
+
+    // --- arity & type_arguments ---
+
+    #[test]
+    fn arity_is_one_for_all_ref_types() {
+        assert_eq!(Ty::ref_of(Ty::int()).arity(), 1);
+        assert_eq!(Ty::mut_ref_of(Ty::int()).arity(), 1);
+        assert_eq!(Ty::id_ref_of(Ty::int()).arity(), 1);
+    }
+
+    #[test]
+    fn type_arguments_returns_inner_for_all_ref_types() {
+        assert_eq!(Ty::ref_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
+        assert_eq!(Ty::mut_ref_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
+        assert_eq!(Ty::id_ref_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
+    }
+
+    // --- desc ---
+
+    #[test]
+    fn desc_for_ref_types() {
+        assert_eq!(Ty::ref_of(Ty::int()).desc(), "shared reference to int");
+        assert_eq!(Ty::mut_ref_of(Ty::int()).desc(), "unique reference to int");
+        assert_eq!(Ty::id_ref_of(Ty::int()).desc(), "identity reference to int");
+    }
+
+    // --- free_vars ---
+
+    #[test]
+    fn free_vars_traverses_mut_ref() {
+        let var = TyVar::new("'a");
+        let ty = Ty::mut_ref_of(Ty::Var(var.clone()));
+        let vars = ty.free_vars();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(*vars[0], var);
+    }
+
+    #[test]
+    fn free_vars_traverses_id_ref() {
+        let var = TyVar::new("'a");
+        let ty = Ty::id_ref_of(Ty::Var(var.clone()));
+        let vars = ty.free_vars();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(*vars[0], var);
+    }
+
+    // --- Equality: different ref kinds are NOT equal ---
+
+    #[test]
+    fn ref_kinds_are_distinct() {
+        let shared = Ty::ref_of(Ty::int());
+        let mutable = Ty::mut_ref_of(Ty::int());
+        let identity = Ty::id_ref_of(Ty::int());
+
+        assert_ne!(shared, mutable);
+        assert_ne!(shared, identity);
+        assert_ne!(mutable, identity);
+    }
+
+    // --- to_mangled ---
+
+    #[test]
+    fn to_mangled_for_ref_types() {
+        let shared = Ty::ref_of(Ty::int()).to_mangled();
+        let mutable = Ty::mut_ref_of(Ty::int()).to_mangled();
+        let identity = Ty::id_ref_of(Ty::int()).to_mangled();
+
+        // Each should produce a distinct mangled name
+        assert_ne!(shared, mutable);
+        assert_ne!(shared, identity);
+        assert_ne!(mutable, identity);
+
+        assert!(mutable.contains("mut"));
+        assert!(identity.contains("id"));
     }
 }

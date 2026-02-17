@@ -480,7 +480,9 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
         match container_ty {
             Ty::Array(elem_ty, _) => elem_ty.as_ref().clone(),
-            Ty::Ref(inner_ty) => inner_ty.as_ref().clone(),
+            Ty::Ref(inner_ty) | Ty::MutRef(inner_ty) | Ty::IdRef(inner_ty) => {
+                inner_ty.as_ref().clone()
+            }
             Ty::RawPtr(inner_ty) => inner_ty.as_ref().clone(),
             Ty::Proj(fqn, args) => {
                 let struct_ty = self.lookup_struct_ty_instantiated(fqn, args);
@@ -641,7 +643,10 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                     .build_gep(llvm_struct, base_ptr, &[self.zero(), offset], "")?
             };
             (gep, field_ray_ty)
-        } else if matches!(container_ty, Ty::Array(_, _) | Ty::Ref(_) | Ty::RawPtr(_)) {
+        } else if matches!(
+            container_ty,
+            Ty::Array(_, _) | Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_)
+        ) {
             // Array / pointer stepping: use the element type derived from the container.
             let field_ray_ty = self.get_element_ty(&container_ty, index);
             log::debug!("[get_element_ptr] field_ray_ty={:?}", field_ray_ty);
@@ -832,7 +837,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                     false,
                 )
                 .into(),
-            Ty::Func(_, _) | Ty::Ref(_) | Ty::RawPtr(_) => self
+            Ty::Func(_, _) | Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_) => self
                 .lcx
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
@@ -976,7 +981,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                     // Pointer parameter: the logical argument is a pointer value (*T | rawptr[T]).
                     // If that pointer is stored in a local slot (slot-of-pointer),
                     // load once so we pass the pointer value instead of the slot address.
-                    Ty::Ref(_) | Ty::RawPtr(_) => {
+                    Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_) => {
                         if self.is_local_slot(&p) && self.get_pointee_ty(p).is_any_pointer() {
                             val = self.load_pointer(p)?;
                         }
@@ -1017,7 +1022,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         // If the Ray parameter type is Ty::Ref(_), then to_llvm_type(ray_param_ty)
         // should have produced a pointer-typed LLVM parameter; reaching this branch
         // would indicate an inconsistency between Ray and LLVM signatures.
-        if matches!(ray_param_ty, Ty::Ref(_)) {
+        if matches!(ray_param_ty, Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_)) {
             panic!(
                 "COMPILER BUG: Ray pointer parameter lowered to non-pointer LLVM parameter; ray_param_ty={} llvm_param_ty={}",
                 ray_param_ty,
@@ -1120,7 +1125,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             && self.is_local_slot(&rhs_ptr)
         {
             match dest_ty {
-                Ty::Ref(_) | Ty::RawPtr(_) => {
+                Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_) => {
                     if let Some(rhs_pointee) = self.pointee_tys.get(&rhs_ptr) {
                         if rhs_pointee.is_any_pointer() {
                             log::debug!(
@@ -1965,7 +1970,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
     fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, srcmap: &SourceMap) -> Self::Output {
         let orig_ty = self.ty.mono();
         let element_ty = match orig_ty.clone() {
-            Ty::Ref(inner) | Ty::RawPtr(inner) => *inner,
+            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => *inner,
             ty => ty,
         };
 

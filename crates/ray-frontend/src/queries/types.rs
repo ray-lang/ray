@@ -258,6 +258,18 @@ where
             Ty::Ref(Box::new(resolved_inner))
         }
 
+        Ty::MutRef(inner) => {
+            let resolved_inner =
+                transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::MutRef(Box::new(resolved_inner))
+        }
+
+        Ty::IdRef(inner) => {
+            let resolved_inner =
+                transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::IdRef(Box::new(resolved_inner))
+        }
+
         Ty::RawPtr(inner) => {
             let resolved_inner =
                 transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);

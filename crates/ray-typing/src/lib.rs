@@ -1397,7 +1397,10 @@ fn check_residuals_and_emit_errors(
                     let mut ty = resolve_call.subject_ty.clone();
                     let subject_fqn = loop {
                         match ty {
-                            Ty::Ref(inner) | Ty::RawPtr(inner) => ty = (*inner).clone(),
+                            Ty::Ref(inner)
+                            | Ty::MutRef(inner)
+                            | Ty::IdRef(inner)
+                            | Ty::RawPtr(inner) => ty = (*inner).clone(),
                             Ty::Const(p) | Ty::Proj(p, _) => break Some(p),
                             Ty::Var(v) if v.is_meta() => break None,
                             _ => break None,

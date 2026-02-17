@@ -187,7 +187,7 @@ impl Substitutable for Ty {
                 }
                 ret.apply_subst(subst);
             }
-            Ty::Ref(inner) | Ty::RawPtr(inner) => {
+            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
                 inner.apply_subst(subst);
             }
             Ty::Proj(_, args) | Ty::Tuple(args) => {
@@ -669,6 +669,7 @@ pub enum ReceiverMode {
     None,
     Value,
     Ptr,
+    MutPtr,
 }
 
 impl ReceiverMode {
@@ -682,6 +683,7 @@ impl ReceiverMode {
         // otherwise as a value receiver.
         match &param_tys[0] {
             Ty::Ref(_) => ReceiverMode::Ptr,
+            Ty::MutRef(_) => ReceiverMode::MutPtr,
             _ => ReceiverMode::Value,
         }
     }

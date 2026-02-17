@@ -605,8 +605,9 @@ fn solve_has_field(wanted: &Constraint, subst: &mut Subst, ctx: &mut SolverConte
     record_ty.apply_subst(subst);
 
     // If the record type is a pointer, auto-deref to get the underlying type.
+    // MutRef and Ref auto-deref; IdRef does NOT (identity refs cannot access fields).
     let record_ty = match &record_ty {
-        Ty::Ref(inner) => (**inner).clone(),
+        Ty::Ref(inner) | Ty::MutRef(inner) => (**inner).clone(),
         other => other.clone(),
     };
 
@@ -713,7 +714,7 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
     }
 
     let base_ty = match &expr_ty {
-        Ty::Ref(inner) => (**inner).clone(),
+        Ty::Ref(inner) | Ty::MutRef(inner) => (**inner).clone(),
         _ => expr_ty,
     };
 
@@ -895,7 +896,7 @@ fn subject_fqn(subject_ty: &Ty) -> Option<ItemPath> {
     let mut ty = subject_ty.clone();
     loop {
         match ty {
-            Ty::Ref(inner) | Ty::RawPtr(inner) => {
+            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
                 ty = (*inner).clone();
             }
             Ty::Const(p) => return Some(p),

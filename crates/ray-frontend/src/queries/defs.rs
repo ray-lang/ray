@@ -1005,6 +1005,7 @@ fn compute_receiver_mode(sig: &FuncSig, is_static: bool) -> ReceiverMode {
     if let Some(ty) = first_param.value.ty() {
         match ty {
             Ty::Ref(_) => ReceiverMode::Ptr,
+            Ty::MutRef(_) => ReceiverMode::MutPtr,
             _ => ReceiverMode::Value,
         }
     } else {

@@ -79,7 +79,11 @@ impl MapVars for Ty {
                 *param_tys = new_tys;
                 state = mapped_state;
             }
-            Ty::Array(inner, _) | Ty::Ref(inner) | Ty::RawPtr(inner) => {
+            Ty::Array(inner, _)
+            | Ty::Ref(inner)
+            | Ty::MutRef(inner)
+            | Ty::IdRef(inner)
+            | Ty::RawPtr(inner) => {
                 let (new_ty, mapped_state) = inner.map_vars(&state, allocator);
                 **inner = new_ty;
                 state = mapped_state;
@@ -146,5 +150,45 @@ mod tests {
         assert_eq!(var, original_var);
 
         assert_eq!(state, new_state);
+    }
+
+    #[test]
+    fn maps_vars_in_mut_ref() {
+        let var = TyVar::new("'a");
+        let ty = Ty::mut_ref_of(Ty::Var(var.clone()));
+        let mut allocator = SchemaVarAllocator::new();
+        let (mapped_ty, state) = ty.map_vars(&MappingState::default(), &mut allocator);
+
+        let mapped_var = state.get_var_mapping(&var).cloned().unwrap();
+        assert_eq!(mapped_ty, Ty::mut_ref_of(Ty::Var(mapped_var)));
+    }
+
+    #[test]
+    fn maps_vars_in_id_ref() {
+        let var = TyVar::new("'a");
+        let ty = Ty::id_ref_of(Ty::Var(var.clone()));
+        let mut allocator = SchemaVarAllocator::new();
+        let (mapped_ty, state) = ty.map_vars(&MappingState::default(), &mut allocator);
+
+        let mapped_var = state.get_var_mapping(&var).cloned().unwrap();
+        assert_eq!(mapped_ty, Ty::id_ref_of(Ty::Var(mapped_var)));
+    }
+
+    #[test]
+    fn maps_vars_preserves_ref_kind() {
+        let var = TyVar::new("'a");
+        let mut allocator = SchemaVarAllocator::new();
+
+        let shared = Ty::ref_of(Ty::Var(var.clone()));
+        let (mapped_shared, _) = shared.map_vars(&MappingState::default(), &mut allocator);
+        assert!(matches!(mapped_shared, Ty::Ref(_)));
+
+        let mut_ref = Ty::mut_ref_of(Ty::Var(var.clone()));
+        let (mapped_mut, _) = mut_ref.map_vars(&MappingState::default(), &mut allocator);
+        assert!(matches!(mapped_mut, Ty::MutRef(_)));
+
+        let id_ref = Ty::id_ref_of(Ty::Var(var.clone()));
+        let (mapped_id, _) = id_ref.map_vars(&MappingState::default(), &mut allocator);
+        assert!(matches!(mapped_id, Ty::IdRef(_)));
     }
 }
