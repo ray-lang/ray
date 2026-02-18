@@ -78,10 +78,10 @@ pub fn inlay_hints(db: &Database, file_id: FileId) -> Arc<Vec<InlayHintData>> {
             }
             Expr::Call(call) => {
                 // Multi-line dot chain: emit hint for the LHS (receiver) of the dot
-                collect_dot_chain_hints(db, expr.id, call, &mut hints);
+                collect_dot_chain_hints(db, call, &mut hints);
 
                 // Parameter name hints
-                collect_param_name_hints(db, expr.id, call, &resolutions, &call_sites, &mut hints);
+                collect_param_name_hints(db, call, &resolutions, &call_sites, &mut hints);
             }
             _ => {}
         }
@@ -155,12 +155,7 @@ fn collect_closure_param_hints(db: &Database, closure: &Closure, hints: &mut Vec
 /// We do this by looking at the LHS of the dot: if the dot starts on a
 /// different line than the LHS ends, it's a multi-line step, and we emit
 /// a type hint for the LHS.
-fn collect_dot_chain_hints(
-    db: &Database,
-    _call_id: NodeId,
-    call: &Call,
-    hints: &mut Vec<InlayHintData>,
-) {
+fn collect_dot_chain_hints(db: &Database, call: &Call, hints: &mut Vec<InlayHintData>) {
     let Expr::Dot(dot) = &call.callee.value else {
         return;
     };
@@ -195,7 +190,6 @@ fn collect_dot_chain_hints(
 /// Collect parameter name hints for a function call.
 fn collect_param_name_hints(
     db: &Database,
-    _call_id: NodeId,
     call: &Call,
     resolutions: &HashMap<NodeId, Resolution>,
     call_sites: &HashMap<NodeId, NodeId>,
@@ -216,25 +210,25 @@ fn collect_param_name_hints(
         return;
     };
 
-    // Determine if the first param is `self` (method call)
-    let is_method = func.param_names.first().is_some_and(|name| name == "self");
+    // Method calls (dot syntax) have an implicit self parameter
+    let is_method = matches!(call.callee.value, Expr::Dot(_));
     let param_offset = if is_method { 1 } else { 0 };
 
     for (i, arg) in call.args.items.iter().enumerate() {
         let param_idx = i + param_offset;
-        let Some(param_name) = func.param_names.get(param_idx) else {
+        let Some(param) = func.params.get(param_idx) else {
             continue;
         };
 
         // Skip if argument is a variable whose name matches the parameter
-        if arg_name_matches(arg, param_name) {
+        if arg_name_matches(arg, &param.name) {
             continue;
         }
 
         if let Some(span) = locations::span_of(db, arg.id) {
             hints.push(InlayHintData {
                 span,
-                kind: InlayHintDataKind::Parameter(param_name.clone()),
+                kind: InlayHintDataKind::Parameter(param.name.clone()),
             });
         }
     }

@@ -799,6 +799,41 @@ impl Ty {
         matches!(self, Ty::IdRef(_))
     }
 
+    /// Returns true if this type contains `*mut T` anywhere in its structure.
+    /// Used to reject `*mut T` in struct fields.
+    pub fn contains_mut_ref(&self) -> bool {
+        match self {
+            Ty::MutRef(_) => true,
+            Ty::Ref(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) | Ty::Array(inner, _) => {
+                inner.contains_mut_ref()
+            }
+            Ty::Tuple(items) => items.iter().any(Ty::contains_mut_ref),
+            Ty::Func(params, ret) => {
+                params.iter().any(Ty::contains_mut_ref) || ret.contains_mut_ref()
+            }
+            Ty::Proj(_, args) => args.iter().any(Ty::contains_mut_ref),
+            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Const(_) => false,
+        }
+    }
+
+    /// Returns true if this type contains an invalid reference nesting,
+    /// such as `id *mut T` (identity reference to a mutable reference).
+    pub fn contains_invalid_ref_nesting(&self) -> bool {
+        match self {
+            Ty::IdRef(inner) => inner.is_mut_ref() || inner.contains_invalid_ref_nesting(),
+            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::RawPtr(inner) | Ty::Array(inner, _) => {
+                inner.contains_invalid_ref_nesting()
+            }
+            Ty::Tuple(items) => items.iter().any(Ty::contains_invalid_ref_nesting),
+            Ty::Func(params, ret) => {
+                params.iter().any(Ty::contains_invalid_ref_nesting)
+                    || ret.contains_invalid_ref_nesting()
+            }
+            Ty::Proj(_, args) => args.iter().any(Ty::contains_invalid_ref_nesting),
+            Ty::Never | Ty::Any | Ty::Var(_) | Ty::Const(_) => false,
+        }
+    }
+
     pub fn flatten(&self) -> Vec<&Ty> {
         match self {
             Ty::Never | Ty::Any | Ty::Var(_) | Ty::Const(_) => vec![self],
@@ -1056,5 +1091,71 @@ mod tests {
 
         assert!(mutable.contains("mut"));
         assert!(identity.contains("id"));
+    }
+
+    // --- contains_mut_ref ---
+
+    #[test]
+    fn contains_mut_ref_direct() {
+        assert!(Ty::mut_ref_of(Ty::int()).contains_mut_ref());
+    }
+
+    #[test]
+    fn contains_mut_ref_nested_in_ref() {
+        // *(*mut int) — shared ref containing mut ref
+        assert!(Ty::ref_of(Ty::mut_ref_of(Ty::int())).contains_mut_ref());
+    }
+
+    #[test]
+    fn contains_mut_ref_nested_in_id_ref() {
+        // id *(*mut int)
+        assert!(Ty::id_ref_of(Ty::mut_ref_of(Ty::int())).contains_mut_ref());
+    }
+
+    #[test]
+    fn contains_mut_ref_in_tuple() {
+        let ty = Ty::Tuple(vec![Ty::int(), Ty::mut_ref_of(Ty::string())]);
+        assert!(ty.contains_mut_ref());
+    }
+
+    #[test]
+    fn contains_mut_ref_in_func_param() {
+        let ty = Ty::Func(vec![Ty::mut_ref_of(Ty::int())], Box::new(Ty::bool()));
+        assert!(ty.contains_mut_ref());
+    }
+
+    #[test]
+    fn contains_mut_ref_negative() {
+        assert!(!Ty::int().contains_mut_ref());
+        assert!(!Ty::ref_of(Ty::int()).contains_mut_ref());
+        assert!(!Ty::id_ref_of(Ty::int()).contains_mut_ref());
+        assert!(!Ty::ref_of(Ty::ref_of(Ty::int())).contains_mut_ref());
+    }
+
+    // --- contains_invalid_ref_nesting ---
+
+    #[test]
+    fn contains_invalid_ref_nesting_id_mut() {
+        // id *mut int — identity ref directly wrapping mut ref
+        assert!(Ty::id_ref_of(Ty::mut_ref_of(Ty::int())).contains_invalid_ref_nesting());
+    }
+
+    #[test]
+    fn contains_invalid_ref_nesting_deep() {
+        // Tuple containing id *mut int
+        let ty = Ty::Tuple(vec![Ty::int(), Ty::id_ref_of(Ty::mut_ref_of(Ty::string()))]);
+        assert!(ty.contains_invalid_ref_nesting());
+    }
+
+    #[test]
+    fn contains_invalid_ref_nesting_negative() {
+        // id *int — valid
+        assert!(!Ty::id_ref_of(Ty::int()).contains_invalid_ref_nesting());
+        // id **int — valid (id ref to shared ref)
+        assert!(!Ty::id_ref_of(Ty::ref_of(Ty::int())).contains_invalid_ref_nesting());
+        // *mut int — valid (not nesting issue)
+        assert!(!Ty::mut_ref_of(Ty::int()).contains_invalid_ref_nesting());
+        // *int — valid
+        assert!(!Ty::ref_of(Ty::int()).contains_invalid_ref_nesting());
     }
 }

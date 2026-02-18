@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ray_core::{
-    ast::{Decl, Expr, FStringPart, FnParam, Node, Pattern},
+    ast::{Decl, Expr, FStringPart, File, FnParam, Node, Pattern},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
@@ -80,7 +80,7 @@ pub fn scope_at(db: &Database, file_id: FileId, pos: Pos) -> Arc<Vec<(String, Sc
 /// and collects bindings (parameters, assignments) that are defined before `pos`
 /// in enclosing scopes.
 fn collect_locals_at(
-    file: &ray_core::ast::File,
+    file: &File,
     srcmap: &SourceMap,
     pos: &Pos,
     resolutions: &HashMap<NodeId, Resolution>,
@@ -372,7 +372,7 @@ fn collect_param_binding(
     match &param.value {
         FnParam::Name { name, .. } => {
             if let Some(name_str) = name.path.name() {
-                if let Some(local_id) = resolution_to_local(param.id, resolutions, srcmap) {
+                if let Some(local_id) = resolution_to_local(param.id, resolutions) {
                     locals.push((name_str, local_id));
                 }
             }
@@ -394,14 +394,14 @@ fn collect_pattern_binding(
     match &pattern.value {
         Pattern::Name(name) => {
             if let Some(name_str) = name.path.name() {
-                if let Some(local_id) = resolution_to_local(pattern.id, resolutions, srcmap) {
+                if let Some(local_id) = resolution_to_local(pattern.id, resolutions) {
                     locals.push((name_str, local_id));
                 }
             }
         }
         Pattern::Deref(name_node) => {
             if let Some(name_str) = name_node.value.path.name() {
-                if let Some(local_id) = resolution_to_local(name_node.id, resolutions, srcmap) {
+                if let Some(local_id) = resolution_to_local(name_node.id, resolutions) {
                     locals.push((name_str, local_id));
                 }
             }
@@ -438,7 +438,6 @@ fn collect_binding_from_expr(
 fn resolution_to_local(
     node_id: NodeId,
     resolutions: &HashMap<NodeId, Resolution>,
-    _srcmap: &SourceMap,
 ) -> Option<LocalBindingId> {
     match resolutions.get(&node_id) {
         Some(Resolution::Local(local_id)) => Some(*local_id),

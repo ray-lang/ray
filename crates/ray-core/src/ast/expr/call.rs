@@ -41,4 +41,9 @@ impl Call {
             self.callee.id
         }
     }
+
+    pub fn is_method_call(&self) -> bool {
+        // Non-static method calls can only be made through a Dot operation
+        matches!(self.callee.value, Expr::Dot(_))
+    }
 }

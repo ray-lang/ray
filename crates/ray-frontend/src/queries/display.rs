@@ -259,9 +259,13 @@ fn format_func_sig_from_query(
     let fdef = func_def(db, target.clone());
     let scheme = get_display_scheme(db, target);
 
-    let (param_names, modifiers): (&[String], &[Modifier]) = match fdef {
-        Some(ref fd) => (&fd.param_names, &fd.modifiers),
-        None => (&[], &[]),
+    let param_names: Vec<String> = match fdef {
+        Some(ref fd) => fd.params.iter().map(|p| p.name.clone()).collect(),
+        None => vec![],
+    };
+    let modifiers: &[Modifier] = match fdef {
+        Some(ref fd) => &fd.modifiers,
+        None => &[],
     };
 
     // Build display-mapped parent vars and predicates for filtering
@@ -275,7 +279,7 @@ fn format_func_sig_from_query(
         Some(scheme) => format_func_display(
             name,
             &scheme,
-            param_names,
+            &param_names,
             modifiers,
             parent_display.as_ref(),
         ),
@@ -634,7 +638,7 @@ mod tests {
 
     use crate::{
         queries::{
-            defs::{FuncDef, StructDef, TraitDef},
+            defs::{FuncDef, ParamDef, StructDef, TraitDef},
             display::def_display_info,
             libraries::{LibraryData, LoadedLibraries},
             parse::parse_file,
@@ -1070,7 +1074,16 @@ impl object Point {
                 target: target.clone(),
                 path: path.clone(),
                 scheme,
-                param_names: vec!["data".into(), "flags".into()],
+                params: vec![
+                    ParamDef {
+                        name: "data".into(),
+                        is_move: false,
+                    },
+                    ParamDef {
+                        name: "flags".into(),
+                        is_move: false,
+                    },
+                ],
                 modifiers: vec![],
             },
         );

@@ -22,7 +22,7 @@ use ray_shared::{
     file_id::FileId,
     pathlib::FilePath,
     resolution::{DefTarget, Resolution},
-    span::Source,
+    span::{Source, Span},
     ty::Ty,
 };
 
@@ -58,6 +58,9 @@ pub fn validate_def(db: &Database, def_id: DefId) -> Vec<RayError> {
     let filepath = file_result.ast.filepath.clone();
     let mut errors = Vec::new();
 
+    // Universal: validate all type annotations for invalid ref nesting (e.g., `id *mut T`)
+    validate_type_annotations(def_ast, &filepath, &mut errors);
+
     match &def_header.kind {
         DefKind::Function { .. } | DefKind::Method => {
             validate_function(
@@ -89,6 +92,9 @@ pub fn validate_def(db: &Database, def_id: DefId) -> Vec<RayError> {
                 &mut errors,
             );
         }
+        DefKind::Struct => {
+            validate_struct_fields(def_ast, &filepath, &mut errors);
+        }
         // Other definition kinds don't have special validation
         _ => {}
     }
@@ -112,7 +118,7 @@ fn validate_function(
     };
 
     validate_annotation_policy(sig, filepath, srcmap, errors);
-    validate_qualifiers(db, sig, file_id, filepath, srcmap, errors);
+    validate_qualifiers(db, sig, file_id, filepath, errors);
 
     // Only validate mutability for declarations with bodies (not FnSig)
     if body.is_some() {
@@ -191,7 +197,6 @@ fn validate_qualifiers(
     sig: &FuncSig,
     file_id: FileId,
     filepath: &FilePath,
-    _srcmap: &SourceMap,
     errors: &mut Vec<RayError>,
 ) {
     let resolutions = name_resolutions(db, file_id);
@@ -426,6 +431,190 @@ fn validate_assignment(
     }
 }
 
+// ============================================================================
+// Type annotation validation — universal ref nesting check
+// ============================================================================
+
+/// Check a single type for invalid reference nesting (e.g., `id` wrapping `*mut`).
+fn check_ref_nesting(
+    ty: &Ty,
+    span: Option<&Span>,
+    filepath: &FilePath,
+    errors: &mut Vec<RayError>,
+) {
+    if ty.contains_invalid_ref_nesting() {
+        errors.push(RayError {
+            msg: format!(
+                "`id` references cannot wrap `*mut` references in type `{}`",
+                ty
+            ),
+            src: vec![Source {
+                span: span.copied(),
+                filepath: filepath.clone(),
+                ..Default::default()
+            }],
+            kind: RayErrorKind::Type,
+            context: Some("type annotation validation".to_string()),
+        });
+    }
+}
+
+/// Check all type annotations in a function signature for invalid reference nesting.
+fn check_sig_ref_nesting(sig: &FuncSig, filepath: &FilePath, errors: &mut Vec<RayError>) {
+    for param in &sig.params {
+        if let Some(parsed_ty) = param.value.parsed_ty() {
+            check_ref_nesting(&parsed_ty.value().ty, parsed_ty.span(), filepath, errors);
+        }
+    }
+    if let Some(ret_ty) = &sig.ret_ty {
+        check_ref_nesting(ret_ty.value(), ret_ty.span(), filepath, errors);
+    }
+    for qual in &sig.qualifiers {
+        check_ref_nesting(qual.value(), qual.span(), filepath, errors);
+    }
+}
+
+/// Validate all type annotations in a declaration for invalid reference nesting.
+///
+/// Walks the entire declaration AST and checks every user-written type annotation
+/// for patterns like `id *mut T`, which is never valid.
+fn validate_type_annotations(decl: &Node<Decl>, filepath: &FilePath, errors: &mut Vec<RayError>) {
+    for item in walk_decl(decl) {
+        match item {
+            WalkItem::Decl(decl_node) => match &decl_node.value {
+                Decl::Func(func) => {
+                    check_sig_ref_nesting(&func.sig, filepath, errors);
+                }
+                Decl::FnSig(sig) => {
+                    check_sig_ref_nesting(sig, filepath, errors);
+                }
+                Decl::TypeAlias(_, parsed_ty) => {
+                    check_ref_nesting(parsed_ty.value(), parsed_ty.span(), filepath, errors);
+                }
+                Decl::Struct(st) => {
+                    if let Some(fields) = &st.fields {
+                        for field in fields {
+                            if let Some(parsed_ty) = &field.value.ty {
+                                check_ref_nesting(
+                                    &parsed_ty.value().ty,
+                                    parsed_ty.span(),
+                                    filepath,
+                                    errors,
+                                );
+                            }
+                        }
+                    }
+                }
+                Decl::Trait(tr) => {
+                    check_ref_nesting(tr.ty.value(), tr.ty.span(), filepath, errors);
+                    if let Some(super_trait) = &tr.super_trait {
+                        check_ref_nesting(
+                            super_trait.value(),
+                            super_trait.span(),
+                            filepath,
+                            errors,
+                        );
+                    }
+                }
+                Decl::Impl(imp) => {
+                    check_ref_nesting(imp.ty.value(), imp.ty.span(), filepath, errors);
+                    for qual in &imp.qualifiers {
+                        check_ref_nesting(qual.value(), qual.span(), filepath, errors);
+                    }
+                }
+                Decl::Name(name, _) | Decl::Mutable(name, _) => {
+                    if let Some(parsed_ty) = &name.value.ty {
+                        check_ref_nesting(
+                            &parsed_ty.value().ty,
+                            parsed_ty.span(),
+                            filepath,
+                            errors,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            WalkItem::Expr(expr) => match &expr.value {
+                Expr::Cast(cast) => {
+                    check_ref_nesting(cast.ty.value(), cast.ty.span(), filepath, errors);
+                }
+                Expr::New(new_expr) => {
+                    check_ref_nesting(
+                        new_expr.ty.value.value(),
+                        new_expr.ty.value.span(),
+                        filepath,
+                        errors,
+                    );
+                }
+                Expr::TypeAnnotated(_, parsed) => {
+                    check_ref_nesting(
+                        &parsed.value.value().ty,
+                        parsed.value.span(),
+                        filepath,
+                        errors,
+                    );
+                }
+                Expr::Type(parsed) => {
+                    check_ref_nesting(&parsed.value().ty, parsed.span(), filepath, errors);
+                }
+                Expr::Name(name) => {
+                    if let Some(parsed_ty) = &name.ty {
+                        check_ref_nesting(
+                            &parsed_ty.value().ty,
+                            parsed_ty.span(),
+                            filepath,
+                            errors,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            WalkItem::Name(name) => {
+                if let Some(parsed_ty) = &name.value.ty {
+                    check_ref_nesting(&parsed_ty.value().ty, parsed_ty.span(), filepath, errors);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Validate struct field types for reference restrictions.
+///
+/// Rejects `*mut T` anywhere in a field type (unique references are not allowed in struct fields).
+/// Invalid reference nesting like `id *mut T` is caught by `validate_type_annotations`.
+fn validate_struct_fields(decl: &Node<Decl>, filepath: &FilePath, errors: &mut Vec<RayError>) {
+    let Decl::Struct(st) = &decl.value else {
+        return;
+    };
+
+    let Some(fields) = &st.fields else { return };
+
+    for field in fields {
+        let Some(parsed_ty) = &field.value.ty else {
+            continue;
+        };
+
+        let ty = &parsed_ty.value().ty;
+
+        if ty.contains_mut_ref() {
+            errors.push(RayError {
+                msg: format!(
+                    "`*mut` references are not allowed in struct fields (field `{}`)",
+                    field.value.path
+                ),
+                src: vec![Source {
+                    span: parsed_ty.span().copied(),
+                    filepath: filepath.clone(),
+                    ..Default::default()
+                }],
+                kind: RayErrorKind::Type,
+                context: Some("struct field validation".to_string()),
+            });
+        }
+    }
+}
+
 /// Validate an impl block for completeness.
 fn validate_impl(
     db: &Database,
@@ -581,7 +770,7 @@ fn validate_trait(
             Decl::Func(func) => {
                 // Default method implementation
                 validate_annotation_policy(&func.sig, filepath, srcmap, errors);
-                validate_qualifiers(db, &func.sig, file_id, filepath, srcmap, errors);
+                validate_qualifiers(db, &func.sig, file_id, filepath, errors);
             }
             _ => {}
         }
@@ -644,7 +833,7 @@ fn validate_trait_method_signature(
     }
 
     // Validate qualifiers (where clauses)
-    validate_qualifiers(db, sig, file_id, filepath, srcmap, errors);
+    validate_qualifiers(db, sig, file_id, filepath, errors);
 }
 
 #[cfg(test)]
@@ -1707,6 +1896,278 @@ impl object Point {
                 .iter()
                 .any(|e| e.msg.contains("cannot assign to immutable")),
             "Error should mention immutable assignment: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // Struct field validation tests
+    // ====================================================================
+
+    #[test]
+    fn validate_def_error_for_mut_ref_in_struct_field() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"struct Foo { x: *mut int }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "Foo")
+            .expect("should find Foo struct");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error for *mut ref in struct field"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("*mut")),
+            "Error should mention *mut: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_ok_for_shared_and_id_ref_in_struct_fields() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"struct Foo { x: *int, y: id *int }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "Foo")
+            .expect("should find Foo struct");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for *T and id *T in struct fields, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_error_for_nested_mut_ref_in_struct_field() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // *(*mut int) contains *mut, so this should error
+        let source = r#"struct Foo { x: *(*mut int) }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "Foo")
+            .expect("should find Foo struct");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error for nested *mut ref in struct field"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("*mut")),
+            "Error should mention *mut: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // Universal type annotation validation tests (id *mut T rejection)
+    // ====================================================================
+
+    #[test]
+    fn validate_def_error_for_id_mut_ref_in_function_param() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // `id **mut int` parses as IdRef(MutRef(int)) — invalid nesting.
+        // The first `*` is part of the `id *` prefix, the second `*mut` is the pointee.
+        let source = r#"fn bad(x: id **mut int) -> int { x }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_def(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error for id **mut T in function parameter"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("cannot wrap")
+                && e.context.as_deref() == Some("type annotation validation")),
+            "Error should be from type annotation validation: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_error_for_id_mut_ref_in_return_type() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"fn bad(x: int) -> id **mut int { x }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_def(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error for id **mut T in return type"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("cannot wrap")),
+            "Error should mention invalid ref nesting: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_error_for_id_mut_ref_in_struct_field() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // id **mut T is caught by universal type annotation validation
+        let source = r#"struct Foo { x: id **mut int }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let foo_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "Foo")
+            .expect("should find Foo struct");
+
+        let errors = validate_def(&db, foo_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error for id **mut T in struct field"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("cannot wrap")),
+            "Error should mention invalid ref nesting: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_no_error_for_valid_ref_types_in_function() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // All three reference kinds are valid individually
+        let source = r#"fn ok(x: *mut int, y: *int, z: id *int) -> *int { y }"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
+
+        let errors = validate_def(&db, ok_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for valid reference types, got: {:?}",
             errors
         );
     }

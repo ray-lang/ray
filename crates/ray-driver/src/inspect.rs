@@ -435,8 +435,9 @@ fn collect_functions(data: &LibraryData) -> Vec<FunctionEntry> {
                 .item_name()
                 .unwrap_or_else(|| path.as_str())
                 .to_string();
+            let param_names: Vec<String> = fdef.params.iter().map(|p| p.name.clone()).collect();
             let signature =
-                format_func_display(&path, &scheme, &fdef.param_names, &fdef.modifiers, None);
+                format_func_display(&path, &scheme, &param_names, &fdef.modifiers, None);
             FunctionEntry {
                 path: name,
                 signature,
@@ -623,7 +624,7 @@ mod tests {
 
     use ray_codegen::libgen;
     use ray_frontend::queries::{
-        defs::{FuncDef, ImplDef, MethodInfo, StructDef, StructField, TraitDef},
+        defs::{FuncDef, ImplDef, MethodInfo, ParamDef, StructDef, StructField, TraitDef},
         libraries::LibraryData,
     };
     use ray_shared::{
@@ -738,7 +739,10 @@ mod tests {
                 target: DefTarget::Library(lib_id(4)),
                 path: ItemPath::from("test::greet"),
                 scheme: TyScheme::from_mono(Ty::unit()),
-                param_names: vec!["name".to_string()],
+                params: vec![ParamDef {
+                    name: "name".to_string(),
+                    is_move: false,
+                }],
                 modifiers: vec![],
             },
         );
@@ -827,7 +831,10 @@ mod tests {
                         Box::new(Ty::Var(schema_var.clone())),
                     ),
                 ),
-                param_names: vec!["x".to_string()],
+                params: vec![ParamDef {
+                    name: "x".to_string(),
+                    is_move: false,
+                }],
                 modifiers: vec![],
             },
         );

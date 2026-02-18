@@ -239,6 +239,15 @@ pub struct TypeAliasDef {
     pub aliased_type: Ty,
 }
 
+/// A single parameter in a function definition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParamDef {
+    /// The parameter name (e.g., `"self"`, `"x"`).
+    pub name: String,
+    /// Whether this parameter is a `move` parameter.
+    pub is_move: bool,
+}
+
 /// A function definition for the query layer.
 ///
 /// Mirrors `StructDef`, `TraitDef`, `ImplDef` — a self-contained definition
@@ -251,8 +260,8 @@ pub struct FuncDef {
     pub path: ItemPath,
     /// The type scheme (param types, return type, type vars, qualifiers).
     pub scheme: TyScheme,
-    /// Parameter names in order (e.g., `["self", "other"]`).
-    pub param_names: Vec<String>,
+    /// Parameters in order, with names and modifiers.
+    pub params: Vec<ParamDef>,
     /// Modifiers on the function (e.g., `[Pub, Static]`).
     pub modifiers: Vec<Modifier>,
 }
@@ -1302,15 +1311,18 @@ fn extract_workspace_func(db: &Database, def_id: DefId) -> Option<FuncDef> {
         _ => None,
     });
 
-    let (param_names, modifiers) = match sig {
+    let (params, modifiers) = match sig {
         Some(sig) => {
-            let names = sig
+            let params = sig
                 .params
                 .iter()
-                .map(|p| p.value.name().to_short_name())
+                .map(|p| ParamDef {
+                    name: p.value.name().to_short_name(),
+                    is_move: p.value.is_move(),
+                })
                 .collect();
             let mods = sig.modifiers.clone();
-            (names, mods)
+            (params, mods)
         }
         None => (Vec::new(), Vec::new()),
     };
@@ -1319,7 +1331,7 @@ fn extract_workspace_func(db: &Database, def_id: DefId) -> Option<FuncDef> {
         target: DefTarget::Workspace(def_id),
         path,
         scheme,
-        param_names,
+        params,
         modifiers,
     })
 }
