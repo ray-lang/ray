@@ -837,13 +837,17 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
                 ctx.record_expr(node, ExprKind::Missing)
             }
         }
-        Expr::New(new) => {
-            // Heap allocation `new(T, count?)`. The element type `T` comes
-            // from the parsed type annotation on the expression and is not
-            // yet threaded into this IR; we only lower the optional `count`
-            // expression so it participates in type checking.
-            let count = new.count.as_ref().map(|c| lower_expr(ctx, c));
-            ctx.record_expr(node, ExprKind::New { count })
+        Expr::New(_) => {
+            // Heap allocation `new(T)`. The element type `T` comes from the
+            // parsed type annotation on the expression and is not yet
+            // threaded into this IR.
+            ctx.record_expr(node, ExprKind::New)
+        }
+        Expr::BuiltinCall(bc) => {
+            // TODO(M3): Add ExprKind::BuiltinCall for proper constraint generation.
+            // For now, lower the arg so it participates in type checking.
+            let arg = lower_expr(ctx, &bc.arg);
+            ctx.record_expr(node, ExprKind::Wrapper { expr: arg })
         }
         Expr::Paren(inner) => {
             let expr = lower_expr(ctx, inner);

@@ -131,6 +131,16 @@ impl<'a> TyParser<'a> {
     fn parse_ty_complex(&mut self) -> Result<Option<Ty>, String> {
         Ok(if let Some('*') = self.peek() {
             Some(self.parse_ptr_ty()?)
+        } else if let Some("id") = self.peek_n(2) {
+            // Check if it's `id *T` (id ref type) by looking ahead
+            let saved = self.index;
+            self.advance(2);
+            if let Some('*') = self.peek() {
+                Some(self.parse_id_ref_ty()?)
+            } else {
+                self.index = saved;
+                None
+            }
         } else if let Some("fn") = self.peek_n(2) {
             Some(self.parse_fn_ty()?)
         } else if let Some('[') = self.peek() {
@@ -168,8 +178,27 @@ impl<'a> TyParser<'a> {
 
     fn parse_ptr_ty(&mut self) -> Result<Ty, String> {
         self.expect("*");
+        // Check for `*mut T`
+        if let Some("mu") = self.peek_n(2) {
+            if let Some("mut") = self.src.get(self.index..self.index + 3) {
+                // Ensure "mut" is not part of a longer identifier
+                let after_mut = self.src.chars().nth(self.index + 3);
+                if after_mut.map_or(true, |c| !c.is_ascii_alphanumeric() && c != '_') {
+                    self.advance(3);
+                    let ptee_ty = self.parse_ty()?;
+                    return Ok(Ty::mut_ref_of(ptee_ty));
+                }
+            }
+        }
         let ptee_ty = self.parse_ty()?;
         Ok(Ty::ref_of(ptee_ty))
+    }
+
+    fn parse_id_ref_ty(&mut self) -> Result<Ty, String> {
+        // `id` has already been consumed, we expect `*T`
+        self.expect("*");
+        let ptee_ty = self.parse_ty()?;
+        Ok(Ty::id_ref_of(ptee_ty))
     }
 
     fn parse_arr_ty(&mut self) -> Result<Ty, String> {
@@ -447,5 +476,57 @@ mod tests {
         parser.expect(">");
 
         assert!(parser.next().is_none());
+    }
+
+    #[test]
+    fn parses_mut_ref_ty() {
+        let ty = TyParser::parse("*mut int").expect("could not parse `*mut int`");
+        assert_eq!(ty, Ty::mut_ref_of(Ty::int()));
+
+        let ty = TyParser::parse("*mut pkg::T").expect("could not parse `*mut pkg::T`");
+        let mut path = Path::new();
+        path.append_mut("pkg").append_mut("T");
+        assert_eq!(ty, Ty::mut_ref_of(Ty::Const(path.into())));
+    }
+
+    #[test]
+    fn parses_id_ref_ty() {
+        let ty = TyParser::parse("id *int").expect("could not parse `id *int`");
+        assert_eq!(ty, Ty::id_ref_of(Ty::int()));
+
+        let ty = TyParser::parse("id *pkg::T").expect("could not parse `id *pkg::T`");
+        let mut path = Path::new();
+        path.append_mut("pkg").append_mut("T");
+        assert_eq!(ty, Ty::id_ref_of(Ty::Const(path.into())));
+    }
+
+    #[test]
+    fn parses_shared_ref_ty() {
+        // *T (without mut) should be a shared ref (Ty::Ref)
+        let ty = TyParser::parse("*int").expect("could not parse `*int`");
+        assert_eq!(ty, Ty::ref_of(Ty::int()));
+    }
+
+    #[test]
+    fn parses_nested_ref_types() {
+        // *mut *int — mut ref to shared ref
+        let ty = TyParser::parse("*mut *int").expect("could not parse `*mut *int`");
+        assert_eq!(ty, Ty::mut_ref_of(Ty::ref_of(Ty::int())));
+
+        // id **mut int — id ref to mut ref to int (the `*mut` is a unit)
+        let ty = TyParser::parse("id **mut int").expect("could not parse `id **mut int`");
+        assert_eq!(ty, Ty::id_ref_of(Ty::mut_ref_of(Ty::int())));
+
+        // id **int — id ref to shared ref to int
+        let ty = TyParser::parse("id **int").expect("could not parse `id **int`");
+        assert_eq!(ty, Ty::id_ref_of(Ty::ref_of(Ty::int())));
+    }
+
+    #[test]
+    fn star_mut_does_not_match_identifier_starting_with_mut() {
+        // *mutable should NOT be parsed as *mut + able — it should be *<ident:mutable>
+        // Since "mutable" is not a built-in type, it becomes Ty::Const
+        let ty = TyParser::parse("*mutable").expect("could not parse `*mutable`");
+        assert_eq!(ty, Ty::ref_of(Ty::con("mutable")));
     }
 }

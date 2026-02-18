@@ -280,7 +280,7 @@ impl TypeCheckInput {
                 out
             }
             Some(ExprKind::Set { items }) => items.clone(),
-            Some(ExprKind::New { count }) => count.iter().copied().collect(),
+            Some(ExprKind::New) => vec![],
             Some(ExprKind::Assign { lhs, rhs, .. }) => {
                 let mut out = vec![*rhs];
                 // For index assignments, include container and index as children

@@ -2920,16 +2920,14 @@ impl LirGen<GenResult> for Node<Expr> {
             Expr::Literal(lit) => (lit, &ty).lir_gen(ctx)?,
             Expr::Paren(ex) | Expr::TypeAnnotated(ex, _) => ex.lir_gen(ctx)?,
             Expr::New(new) => {
-                let count = match &new.count {
-                    Some(c) => {
-                        let ty = ctx.ty_of(c.id);
-                        let value = c.lir_gen(ctx)?;
-                        lir::Variable::Local(ctx.get_or_set_local(value, ty).unwrap()).into()
-                    }
-                    _ => lir::Atom::uptr(1),
-                };
+                let count = lir::Atom::uptr(1);
                 let ty = resolved_ty(ctx.db, new.ty.id).unwrap_or_else(|| new.ty.clone_value());
                 lir::Malloc::new(ty.into(), count)
+            }
+            Expr::BuiltinCall(bc) => {
+                // TODO(M6): Implement LIR lowering for freeze/id/upgrade.
+                // For now, lower the arg and pass through.
+                bc.arg.lir_gen(ctx)?
             }
             Expr::Cast(c) => {
                 let src = c.lhs.lir_gen(ctx)?;

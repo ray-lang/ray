@@ -1335,31 +1335,21 @@ fn generate_constraints_for_expr(
                 node.wanteds
                     .push(Constraint::eq(expr_ty, cast_ty, info.clone()));
             }
-            ExprKind::New { count } => {
-                // Heap allocation `new(T, count?)`, following:
-                //
-                //   Γ ⊢ count ⇝ (uint, C)
-                //   ----------------------------
-                //   Γ ⊢ new(T, count) ⇝ (*T, C)
+            ExprKind::New => {
+                // Heap allocation `new(T)`, following:
                 //
                 //   ----------------------------
                 //   Γ ⊢ new(T) ⇝ (*T, ∅)
                 //
                 // The target type `T` is provided by the parsed type
                 // annotation and is attached to this expression by the
-                // frontend; from the core type system's perspective we only
-                // ensure that `count` has type `uint`. The result type `*T`
-                // is reflected in `expr_ty` via that annotation.
+                // frontend. The result type `*T` is reflected in `expr_ty`
+                // via that annotation.
                 //
                 // TODO: once type annotations are threaded into this IR,
                 //       add an explicit equality tying `expr_ty` to `*T`
                 //       (e.g. `Ty::ref_of(T)`) so the allocator result
                 //       type participates directly in unification.
-                if let Some(count_expr) = count {
-                    let count_ty = ctx.expr_ty_or_fresh(*count_expr);
-                    node.wanteds
-                        .push(Constraint::eq(count_ty, Ty::uint(), info.clone()));
-                }
             }
             ExprKind::Nil => {
                 // Bare `nil` literal (Section "Nilable literals"):

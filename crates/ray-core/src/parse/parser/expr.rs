@@ -6,17 +6,14 @@ use ray_shared::{
 use ray_typing::types::TyScheme;
 
 use crate::ast::{
-    Boxed, Call, Curly, CurlyElement, Dot, Expr, FString, FStringPart, Index, Literal, Modifier,
-    Name, New, Node, ScopedAccess, Sequence, TrailingPolicy, ValueKind,
+    Boxed, BuiltinCall, BuiltinKind, Call, Curly, CurlyElement, Dot, Expr, FString, FStringPart,
+    Index, Literal, Modifier, Name, New, Node, ScopedAccess, Sequence, TrailingPolicy, ValueKind,
     token::{Token, TokenKind},
 };
-use crate::parse::{
-    lexer::{FStringSegment, NewlineMode},
-    parser::Recover,
-};
+use crate::parse::lexer::{FStringSegment, NewlineMode};
 
 use super::{
-    ExprResult, ParsedExpr, Parser, RecoveryCtx, Restrictions,
+    ExprResult, ParsedExpr, Parser, Restrictions,
     context::{ParseContext, SeqSpec},
 };
 
@@ -95,6 +92,15 @@ impl Parser<'_> {
             TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
             TokenKind::New => self.parse_new_expr(ctx),
             TokenKind::Bx => self.parse_box_expr(ctx),
+            TokenKind::Freeze => {
+                self.parse_builtin_call(BuiltinKind::Freeze, TokenKind::Freeze, ctx)
+            }
+            TokenKind::Upgrade => {
+                self.parse_builtin_call(BuiltinKind::Upgrade, TokenKind::Upgrade, ctx)
+            }
+            TokenKind::Id if self.peek_kind_at(1) == TokenKind::LeftParen => {
+                self.parse_builtin_call(BuiltinKind::Id, TokenKind::Id, ctx)
+            }
             TokenKind::Break => {
                 let break_span = self.expect_keyword(TokenKind::Break, ctx)?;
                 let (ex, span) = if self.is_next_expr_begin() {
@@ -686,25 +692,11 @@ impl Parser<'_> {
             restrictions: Restrictions::IN_PAREN,
         };
 
-        let ((parsed_ty, count), spans) =
+        let (parsed_ty, spans) =
             parser.parse_delimited_seq(spec, ctx, |parser, _, stop, ctx| {
-                let ty = parser
+                Ok(parser
                     .parse_type_annotation(stop.as_ref(), ctx)
-                    .map(|t| t.into_mono());
-
-                let count = if expect_if!(parser, TokenKind::Comma) {
-                    let count_start = parser.lex.position();
-                    let expr = parser.parse_expr(ctx).recover_with_ctx(
-                        parser,
-                        RecoveryCtx::expr(stop.as_ref()).with_ternary_sensitive(false),
-                        |parser, recovered| parser.missing_expr(count_start, recovered, ctx),
-                    );
-                    Some(Box::new(expr))
-                } else {
-                    None
-                };
-
-                Ok((ty, count))
+                    .map(|t| t.into_mono()))
             })?;
 
         let (lparen_span, rparen_span) = spans.expect("new expression requires parentheses");
@@ -714,7 +706,6 @@ impl Parser<'_> {
         Ok(parser.mk_expr(
             Expr::New(New {
                 ty,
-                count,
                 new_span,
                 paren_span,
             }),
@@ -731,14 +722,58 @@ impl Parser<'_> {
 
         let box_span = parser.expect_keyword(TokenKind::Bx, ctx)?;
 
-        let inner = parser.parse_expr(ctx)?;
-        let inner_span = parser.srcmap.span_of(&inner);
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+            trailing: TrailingPolicy::Forbid,
+            newline: NewlineMode::Suppress,
+            restrictions: Restrictions::IN_PAREN,
+        };
 
-        let span = box_span.extend_to(&inner_span);
+        let (inner, spans) =
+            parser.parse_delimited_seq(spec, ctx, |parser, _, _, ctx| parser.parse_expr(ctx))?;
+
+        let (_, rparen_span) = spans.expect("box expression requires parentheses");
+        let span = box_span.extend_to(&rparen_span);
         Ok(parser.mk_expr(
             Expr::Boxed(Boxed {
                 inner: Box::new(inner),
                 box_span,
+            }),
+            span,
+            ctx.path.clone(),
+        ))
+    }
+
+    fn parse_builtin_call(
+        &mut self,
+        kind: BuiltinKind,
+        token: TokenKind,
+        ctx: &ParseContext,
+    ) -> ExprResult {
+        let parser = &mut self.with_scope(ctx).with_description("parse builtin call");
+        let ctx = &parser.ctx_clone();
+
+        let keyword_span = parser.expect_keyword(token, ctx)?;
+
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+            trailing: TrailingPolicy::Forbid,
+            newline: NewlineMode::Suppress,
+            restrictions: Restrictions::IN_PAREN,
+        };
+
+        let (arg, spans) =
+            parser.parse_delimited_seq(spec, ctx, |parser, _, _, ctx| parser.parse_expr(ctx))?;
+
+        let (lparen_span, rparen_span) = spans.expect("builtin call requires parentheses");
+        let paren_span = lparen_span.extend_to(&rparen_span);
+        let span = keyword_span.extend_to(&rparen_span);
+        Ok(parser.mk_expr(
+            Expr::BuiltinCall(BuiltinCall {
+                kind,
+                arg: Box::new(arg),
+                keyword_span,
+                paren_span,
             }),
             span,
             ctx.path.clone(),

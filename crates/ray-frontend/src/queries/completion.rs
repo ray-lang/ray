@@ -747,6 +747,8 @@ fn find_ctx_in_expr(expr: &Node<Expr>, srcmap: &SourceMap, pos: &Pos) -> Option<
 
         Expr::Boxed(boxed) => find_ctx_in_expr(&boxed.inner, srcmap, pos),
 
+        Expr::BuiltinCall(bc) => find_ctx_in_expr(&bc.arg, srcmap, pos),
+
         Expr::Return(val) | Expr::Break(val) => val
             .as_ref()
             .and_then(|inner| find_ctx_in_expr(inner, srcmap, pos)),
@@ -828,10 +830,7 @@ fn find_ctx_in_expr(expr: &Node<Expr>, srcmap: &SourceMap, pos: &Pos) -> Option<
             None
         }
 
-        Expr::New(new_expr) => new_expr
-            .count
-            .as_ref()
-            .and_then(|count| find_ctx_in_expr(count, srcmap, pos)),
+        Expr::New(_) => None,
 
         // Multi-segment path like `Point::new` or `utils::helper`.
         // If the cursor is on a non-first segment, it's a path access.

@@ -24,6 +24,8 @@ pub enum PrefixOp {
     Deref,
     /// &
     Ref,
+    /// &mut
+    MutRef,
     /// !
     Not,
     /// ~
@@ -239,7 +241,7 @@ impl fmt::Display for PrefixOp {
 
 impl PrefixOp {
     pub fn is(name: &str) -> bool {
-        matches!(name, "+" | "-" | "*" | "&" | "!" | "~" | "<-")
+        matches!(name, "+" | "-" | "*" | "&" | "&mut" | "!" | "~" | "<-")
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -248,6 +250,7 @@ impl PrefixOp {
             PrefixOp::Negative => "-",
             PrefixOp::Deref => "*",
             PrefixOp::Ref => "&",
+            PrefixOp::MutRef => "&mut",
             PrefixOp::Not => "!",
             PrefixOp::BitNot => "~",
             PrefixOp::Receive => "<-",

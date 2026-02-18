@@ -345,6 +345,8 @@ fn find_context_in_expr(
 
         Expr::Boxed(boxed) => find_context_in_expr(&boxed.inner, srcmap, pos, enclosing_func_id),
 
+        Expr::BuiltinCall(bc) => find_context_in_expr(&bc.arg, srcmap, pos, enclosing_func_id),
+
         Expr::Return(None) | Expr::Break(None) => None,
 
         Expr::Break(Some(inner)) => find_context_in_expr(inner, srcmap, pos, enclosing_func_id),
@@ -421,12 +423,7 @@ fn find_context_in_expr(
             None
         }
 
-        Expr::New(new_expr) => {
-            if let Some(count) = &new_expr.count {
-                return find_context_in_expr(count, srcmap, pos, enclosing_func_id);
-            }
-            None
-        }
+        Expr::New(_) => None,
 
         // Leaf expressions — no children to recurse into
         Expr::Name(_)

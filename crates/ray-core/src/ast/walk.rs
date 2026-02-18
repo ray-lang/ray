@@ -134,6 +134,9 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             Expr::Boxed(boxed) => walk
                 .stack
                 .push(StackEntry::EnterNode(WalkItem::Expr(&boxed.inner))),
+            Expr::BuiltinCall(bc) => walk
+                .stack
+                .push(StackEntry::EnterNode(WalkItem::Expr(&bc.arg))),
             Expr::Call(call) => push_call(walk, call),
             Expr::Closure(closure) => push_closure(walk, closure),
             Expr::Deref(deref) => walk
@@ -376,11 +379,8 @@ fn push_set<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, set: &'a Set) {
     }
 }
 
-fn push_new<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, new: &'a New) {
-    if let Some(count) = &new.count {
-        walk.stack
-            .push(StackEntry::EnterNode(WalkItem::Expr(&count)));
-    }
+fn push_new<'a>(_walk: &mut ModuleWalk<WalkItem<'a>>, _new: &'a New) {
+    // new(T) has no child expressions to walk
 }
 
 fn push_range<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, range: &'a Range) {

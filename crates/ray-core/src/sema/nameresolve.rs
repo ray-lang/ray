@@ -891,7 +891,10 @@ mod tests {
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
 
-        let param = Node::new(FnParam::Name(Name::new("x")));
+        let param = Node::new(FnParam::Name {
+            name: Name::new("x"),
+            is_move: false,
+        });
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
             stmts: vec![body_name.clone()],
@@ -983,7 +986,10 @@ mod tests {
         let def_id = DefId::new(FileId(0), 0);
         let _guard = NodeId::enter_def(def_id);
 
-        let param = Node::new(FnParam::Name(Name::new("x")));
+        let param = Node::new(FnParam::Name {
+            name: Name::new("x"),
+            is_move: false,
+        });
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
             stmts: vec![body_name.clone()],
@@ -1526,7 +1532,10 @@ mod tests {
 
         let mut name = Name::new("x");
         name.ty = Some(parsed_ty_scheme);
-        let param = Node::new(FnParam::Name(name));
+        let param = Node::new(FnParam::Name {
+            name,
+            is_move: false,
+        });
 
         let mut sig = make_func_sig("test::f");
         sig.params = vec![param];
@@ -1834,7 +1843,10 @@ mod tests {
         // Create method parameter: other: 'a
         let mut other_name = Name::new("other");
         other_name.ty = Some(parsed_param_ty);
-        let other_param = Node::new(FnParam::Name(other_name));
+        let other_param = Node::new(FnParam::Name {
+            name: other_name,
+            is_move: false,
+        });
 
         // Create method signature
         let method_sig = FuncSig {
@@ -2300,7 +2312,10 @@ mod tests {
         // Create parameter: x: Point
         let mut x_name = Name::new("x");
         x_name.ty = Some(parsed_param_ty);
-        let x_param = Node::new(FnParam::Name(x_name));
+        let x_param = Node::new(FnParam::Name {
+            name: x_name,
+            is_move: false,
+        });
 
         // Create function
         let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
@@ -2384,7 +2399,10 @@ mod tests {
         // Create parameter: x: 'a
         let mut x_name = Name::new("x");
         x_name.ty = Some(parsed_param_ty);
-        let x_param = Node::new(FnParam::Name(x_name));
+        let x_param = Node::new(FnParam::Name {
+            name: x_name,
+            is_move: false,
+        });
 
         // Create function with type parameter
         let func_body = Node::new(Expr::Block(Block { stmts: vec![] }));
@@ -2795,7 +2813,10 @@ mod tests {
         // Create parameter: buf: String
         let mut buf_name = Name::new("buf");
         buf_name.ty = Some(parsed_param_ty);
-        let buf_param = Node::new(FnParam::Name(buf_name));
+        let buf_param = Node::new(FnParam::Name {
+            name: buf_name,
+            is_move: false,
+        });
 
         // Create extern function signature
         let sig = FuncSig {
@@ -2908,7 +2929,10 @@ mod tests {
         // Create parameter: arr: RawPtr['a]
         let mut arr_name = Name::new("arr");
         arr_name.ty = Some(parsed_param_ty);
-        let arr_param = Node::new(FnParam::Name(arr_name));
+        let arr_param = Node::new(FnParam::Name {
+            name: arr_name,
+            is_move: false,
+        });
 
         // Create extern function signature with type params
         let sig = FuncSig {
@@ -2979,7 +3003,10 @@ mod tests {
         // Create parameter: x: 'a
         let mut x_name = Name::new("x");
         x_name.ty = Some(parsed_param_ty);
-        let x_param = Node::new(FnParam::Name(x_name));
+        let x_param = Node::new(FnParam::Name {
+            name: x_name,
+            is_move: false,
+        });
 
         // Create extern function signature with type params
         let sig = FuncSig {
@@ -3144,11 +3171,9 @@ mod tests {
         let mut parsed_ty = Parsed::new(ty, Source::default());
         parsed_ty.set_synthetic_ids(vec![type_node_id]);
 
-        // Create new expression: new(Point, n)
-        let count = Some(Box::new(Node::new(Expr::Name(Name::new("n")))));
+        // Create new expression: new(Point)
         let new_expr = Node::new(Expr::New(New {
             ty: Node::new(parsed_ty),
-            count,
             new_span: Span::default(),
             paren_span: Span::default(),
         }));

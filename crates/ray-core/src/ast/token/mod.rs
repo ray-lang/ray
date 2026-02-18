@@ -101,6 +101,14 @@ pub enum TokenKind {
     New,
     /// box
     Bx,
+    /// freeze
+    Freeze,
+    /// id
+    Id,
+    /// move
+    Move,
+    /// upgrade
+    Upgrade,
     /// test
     Test,
 
@@ -275,6 +283,10 @@ impl TokenKind {
             TokenKind::Where => "`where`",
             TokenKind::New => "`new`",
             TokenKind::Bx => "`box`",
+            TokenKind::Freeze => "`freeze`",
+            TokenKind::Id => "`id`",
+            TokenKind::Move => "`move`",
+            TokenKind::Upgrade => "`upgrade`",
             TokenKind::Test => "`test`",
             TokenKind::Equals => "`=`",
             TokenKind::Gt => "`>`",
@@ -343,6 +355,7 @@ impl TokenKind {
                 | TokenKind::Object
                 | TokenKind::In
                 | TokenKind::Bx
+                | TokenKind::Id
                 | TokenKind::New
                 | TokenKind::Test
         )
@@ -413,6 +426,10 @@ impl fmt::Display for TokenKind {
             TokenKind::Where => "where".to_string(),
             TokenKind::New => "new".to_string(),
             TokenKind::Bx => "box".to_string(),
+            TokenKind::Freeze => "freeze".to_string(),
+            TokenKind::Id => "id".to_string(),
+            TokenKind::Move => "move".to_string(),
+            TokenKind::Upgrade => "upgrade".to_string(),
             TokenKind::Test => "test".to_string(),
             TokenKind::Equals => "=".to_string(),
             TokenKind::Gt => ">".to_string(),

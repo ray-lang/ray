@@ -310,7 +310,7 @@ impl<'a> SemanticTokenCollector<'a> {
 
     fn visit_fn_param(&mut self, param: &Node<FnParam>) {
         match &param.value {
-            FnParam::Name(name) => {
+            FnParam::Name { name, .. } => {
                 let span = self.srcmap.span_of(param);
                 self.emit_span(
                     span,
@@ -396,6 +396,7 @@ impl<'a> SemanticTokenCollector<'a> {
                 }
             }
             Expr::Boxed(boxed) => self.visit_expr(&boxed.inner),
+            Expr::BuiltinCall(bc) => self.visit_expr(&bc.arg),
             Expr::Break(value) => {
                 if let Some(expr) = value {
                     self.visit_expr(expr);
@@ -496,9 +497,6 @@ impl<'a> SemanticTokenCollector<'a> {
             }
             Expr::New(new_expr) => {
                 self.emit_node_parsed_ty(&new_expr.ty, SemanticTokenKind::Type);
-                if let Some(count) = &new_expr.count {
-                    self.visit_expr(count);
-                }
             }
             Expr::Path(_) => {
                 let span = self.srcmap.span_of(expr);

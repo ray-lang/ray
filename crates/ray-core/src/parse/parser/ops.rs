@@ -216,6 +216,12 @@ impl Parser<'_> {
             let expr = match (&op.value, &mut expr.value) {
                 (PrefixOp::Ref, _) => Expr::Ref(Ref {
                     expr: Box::new(expr),
+                    mutable: false,
+                    op_span,
+                }),
+                (PrefixOp::MutRef, _) => Expr::Ref(Ref {
+                    expr: Box::new(expr),
+                    mutable: true,
                     op_span,
                 }),
                 (PrefixOp::Deref, _) => Expr::Deref(Deref {
@@ -370,6 +376,7 @@ impl Parser<'_> {
             (Plus, _) => (PrefixOp::Positive, 1),
             (Minus, _) => (PrefixOp::Negative, 1),
             (Asterisk, _) => (PrefixOp::Deref, 1),
+            (Ampersand, Mut) => (PrefixOp::MutRef, 2),
             (Ampersand, _) => (PrefixOp::Ref, 1),
             (Exclamation, _) => (PrefixOp::Not, 1),
             (Tilde, _) => (PrefixOp::BitNot, 1),

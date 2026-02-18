@@ -280,6 +280,9 @@ fn collect_locals_in_expr(
         Expr::Boxed(boxed) => {
             collect_locals_in_expr(&boxed.inner, srcmap, pos, resolutions, locals);
         }
+        Expr::BuiltinCall(bc) => {
+            collect_locals_in_expr(&bc.arg, srcmap, pos, resolutions, locals);
+        }
         Expr::Return(val) | Expr::Break(val) => {
             if let Some(inner) = val {
                 collect_locals_in_expr(inner, srcmap, pos, resolutions, locals);
@@ -347,11 +350,7 @@ fn collect_locals_in_expr(
                 collect_locals_in_expr(item, srcmap, pos, resolutions, locals);
             }
         }
-        Expr::New(new_expr) => {
-            if let Some(count) = &new_expr.count {
-                collect_locals_in_expr(count, srcmap, pos, resolutions, locals);
-            }
-        }
+        Expr::New(_) => {}
         // Leaf expressions — no children to recurse into
         Expr::Name(_)
         | Expr::Literal(_)
@@ -371,7 +370,7 @@ fn collect_param_binding(
     locals: &mut Vec<(String, LocalBindingId)>,
 ) {
     match &param.value {
-        FnParam::Name(name) => {
+        FnParam::Name { name, .. } => {
             if let Some(name_str) = name.path.name() {
                 if let Some(local_id) = resolution_to_local(param.id, resolutions, srcmap) {
                     locals.push((name_str, local_id));

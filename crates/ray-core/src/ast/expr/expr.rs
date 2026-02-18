@@ -7,9 +7,9 @@ use crate::ast::{Boxed, Node, Ref, expr::deref::Deref};
 use ray_typing::types::TyScheme;
 
 use super::{
-    Assign, BinOp, Block, Call, Cast, Closure, Curly, Dict, Dot, FString, For, Func, If, Index,
-    List, Literal, Loop, Missing, Name, New, NilCoalesce, Pattern, Range, ScopedAccess, Sequence,
-    Set, Tuple, UnaryOp, While,
+    Assign, BinOp, Block, BuiltinCall, Call, Cast, Closure, Curly, Dict, Dot, FString, For, Func,
+    If, Index, List, Literal, Loop, Missing, Name, New, NilCoalesce, Pattern, Range, ScopedAccess,
+    Sequence, Set, Tuple, UnaryOp, While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +19,7 @@ pub enum Expr {
     Block(Block),
     Boxed(Boxed),
     Break(Option<Box<Node<Expr>>>),
+    BuiltinCall(BuiltinCall),
     Continue,
     Call(Call),
     Cast(Cast),
@@ -88,6 +89,7 @@ impl std::fmt::Display for Expr {
                     || "(break)".to_string(),
                     |ex| format!("(break {})", ex.to_string())
                 ),
+                Expr::BuiltinCall(ex) => ex.to_string(),
                 Expr::Continue => "(continue)".to_string(),
                 Expr::Call(ex) => ex.to_string(),
                 Expr::Cast(ex) => ex.to_string(),
@@ -145,6 +147,7 @@ impl Expr {
             Expr::Block(..) => "Block",
             Expr::Boxed(..) => "Boxed",
             Expr::Break(..) => "Break",
+            Expr::BuiltinCall(..) => "BuiltinCall",
             Expr::Continue => "Continue",
             Expr::Call(..) => "Call",
             Expr::Cast(..) => "Cast",
@@ -197,6 +200,7 @@ impl Expr {
             | Expr::Block(_)
             | Expr::Boxed(_)
             | Expr::Break(_)
+            | Expr::BuiltinCall(_)
             | Expr::Continue
             | Expr::Call(_)
             | Expr::Cast(_)
@@ -251,6 +255,7 @@ impl Expr {
             | Expr::Block(_)
             | Expr::Boxed(_)
             | Expr::Break(_)
+            | Expr::BuiltinCall(_)
             | Expr::Continue
             | Expr::Call(_)
             | Expr::Cast(_)
@@ -296,6 +301,7 @@ impl Expr {
             Expr::Block(..) => "block",
             Expr::Boxed(..) => "box",
             Expr::Break(..) => "break",
+            Expr::BuiltinCall(..) => "builtin call",
             Expr::Continue => "continue",
             Expr::Call(..) => "call",
             Expr::Cast(..) => "cast",

@@ -231,10 +231,9 @@ pub enum ExprKind {
     /// `Index[ContainerTy, ElemTy, IndexTy]` predicate (see the
     /// `Index` trait in docs/type-system.md Section A.3).
     Index { container: NodeId, index: NodeId },
-    /// Heap allocation `new(T, count?)`. For now we only track the optional
-    /// count expression; the target type `T` comes from the frontend's
-    /// annotation and is not yet threaded into this IR.
-    New { count: Option<NodeId> },
+    /// Heap allocation `new(T)`. The target type `T` comes from the
+    /// frontend's annotation and is not yet threaded into this IR.
+    New,
     /// Placeholder for a missing expression in the parsed AST. This is
     /// treated as an unconstrained fresh type so that type checking can
     /// continue on partially-invalid programs.

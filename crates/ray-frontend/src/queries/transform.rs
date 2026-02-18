@@ -448,11 +448,7 @@ fn transform_expr_children(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>
                 }
             }
         }
-        Expr::New(new_expr) => {
-            if let Some(count) = &mut new_expr.count {
-                transform_expr(count, ctx);
-            }
-        }
+        Expr::New(_) => {}
         Expr::Cast(cast) => {
             transform_expr(&mut cast.lhs, ctx);
         }
@@ -476,6 +472,9 @@ fn transform_expr_children(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>
         }
         Expr::Boxed(boxed) => {
             transform_expr(&mut boxed.inner, ctx);
+        }
+        Expr::BuiltinCall(bc) => {
+            transform_expr(&mut bc.arg, ctx);
         }
         Expr::Deref(deref) => {
             transform_expr(&mut deref.expr, ctx);
@@ -603,7 +602,7 @@ fn annotate_self_param_if_missing(sig: &mut FuncSig, self_ty: &Ty, srcmap: &Sour
 
     // Apply the annotation
     match &mut first.value {
-        FnParam::Name(name) => {
+        FnParam::Name { name, .. } => {
             name.ty = Some(parsed_ty);
         }
         FnParam::Missing { placeholder, .. } => {

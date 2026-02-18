@@ -184,10 +184,18 @@ impl Parser<'_> {
         ctx: &ParseContext,
         path: &Path,
     ) -> ParseResult<Node<FnParam>> {
+        let is_move = expect_if!(self, TokenKind::Move);
         self.parse_name_with_type(Some(&TokenKind::RightParen), ctx)
             .map(|name| {
                 let span = self.srcmap.span_of(&name);
-                self.mk_node(FnParam::Name(name.value), span, path.clone())
+                self.mk_node(
+                    FnParam::Name {
+                        name: name.value,
+                        is_move,
+                    },
+                    span,
+                    path.clone(),
+                )
             })
     }
 
@@ -195,10 +203,18 @@ impl Parser<'_> {
         &mut self,
         ctx: &ParseContext,
     ) -> ParseResult<Node<FnParam>> {
+        let is_move = expect_if!(self, TokenKind::Move);
         let (name, span) = self.expect_id(ctx)?;
         self.expect(TokenKind::Colon, ctx)?;
         let ty = self.parse_type_annotation(Some(&TokenKind::Comma), ctx);
-        Ok(self.mk_node(FnParam::Name(Name::typed(name, ty)), span, ctx.path.clone()))
+        Ok(self.mk_node(
+            FnParam::Name {
+                name: Name::typed(name, ty),
+                is_move,
+            },
+            span,
+            ctx.path.clone(),
+        ))
     }
 
     fn parse_params_with<F>(

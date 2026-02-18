@@ -98,7 +98,7 @@ pub fn convert_func_to_closure(func: &Func, src: &Source) -> Result<Closure, Ray
     let mut params = Vec::with_capacity(func.sig.params.len());
     for param in &func.sig.params {
         match &param.value {
-            FnParam::Name(name) => {
+            FnParam::Name { name, .. } => {
                 params.push(Node::with_id(param.id, Expr::Name(name.clone())));
             }
             _ => {

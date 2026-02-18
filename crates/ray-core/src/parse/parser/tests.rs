@@ -262,16 +262,26 @@ impl Add[int, int, int] {
 fn parses_new_expression() {
     let src = r#"
 fn main() {
-    len = 10
-    x = new(u8, len)
+    x = new(u8)
 }
 "#;
 
-    let (_, errors) = parse_source(src);
+    let (file, errors) = parse_source(src);
     assert!(
         errors.is_empty(),
         "expected parsing without errors, got {:?}",
         errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    assert!(
+        matches!(&assign.rhs.value, Expr::New(_)),
+        "expected New expression, got {:?}",
+        assign.rhs.value
     );
 }
 
@@ -280,15 +290,26 @@ fn parses_box_expression() {
     let src = r#"
 fn main() {
     x = 1
-    y = box x
+    y = box(x)
 }
 "#;
 
-    let (_, errors) = parse_source(src);
+    let (file, errors) = parse_source(src);
     assert!(
         errors.is_empty(),
         "expected parsing without errors, got {:?}",
         errors
+    );
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[1].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    assert!(
+        matches!(&assign.rhs.value, Expr::Boxed(_)),
+        "expected Boxed expression, got {:?}",
+        assign.rhs.value
     );
 }
 
@@ -403,7 +424,7 @@ fn main() {
 fn parses_deref_assignment() {
     let src = r#"
 fn main() {
-    ptr = new(u8, 1)
+    ptr = new(u8)
     *ptr = 10
 }
 "#;
@@ -1133,7 +1154,7 @@ fn parses_curly_expression() {
     let src = r#"
 fn main() {
     len = 10
-    raw_ptr = new(u8, len)
+    raw_ptr = new(u8)
     char_len = len
     s = string { raw_ptr, len, char_len }
 }
@@ -1178,7 +1199,7 @@ fn parses_multiline_curly_expression_allows_trailing_comma() {
     let src = r#"
 fn main() {
     len = 10
-    raw_ptr = new(u8, len)
+    raw_ptr = new(u8)
     char_len = len
     s = string {
         raw_ptr,
@@ -1401,7 +1422,7 @@ trait Printable {
                 "expected single parameter in trait function"
             );
             match &func_sig.params[0].value {
-                FnParam::Name(name) => assert_eq!(name.path.to_string(), "self"),
+                FnParam::Name { name, .. } => assert_eq!(name.path.to_string(), "self"),
                 other => panic!("expected parameter pattern `self`, got {:?}", other),
             }
         }
@@ -2792,4 +2813,318 @@ fn export_display_formatting() {
     let src = "export utils with *";
     let (file, _) = parse_source(src);
     assert_eq!(file.exports[0].to_string(), "export utils with *");
+}
+
+// =====================================================================
+// References & Pointer Model
+// =====================================================================
+
+#[test]
+fn parses_mut_ref_type_in_param() {
+    let src = r#"
+fn take(p: *mut int) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let param_ty = func.sig.params[0].value.ty().expect("expected param type");
+    assert_eq!(*param_ty, Ty::mut_ref_of(Ty::int()));
+}
+
+#[test]
+fn parses_shared_ref_type_in_param() {
+    let src = r#"
+fn take(p: *int) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let param_ty = func.sig.params[0].value.ty().expect("expected param type");
+    assert_eq!(*param_ty, Ty::ref_of(Ty::int()));
+}
+
+#[test]
+fn parses_id_ref_type_in_param() {
+    let src = r#"
+fn take(p: id *int) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let param_ty = func.sig.params[0].value.ty().expect("expected param type");
+    assert_eq!(*param_ty, Ty::id_ref_of(Ty::int()));
+}
+
+#[test]
+fn parses_mut_ref_type_in_return() {
+    let src = r#"
+fn alloc() -> *mut int => new(int)
+"#;
+    let (_, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+#[test]
+fn parses_id_ref_type_in_return() {
+    let src = r#"
+fn weak(p: *int) -> id *int => p
+"#;
+    let (_, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+#[test]
+fn parses_ref_expr() {
+    use crate::ast::Ref;
+    let src = r#"
+fn main() {
+    x = 1
+    y = &x
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[1].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::Ref(Ref { mutable, .. }) => {
+            assert!(!mutable, "expected immutable ref");
+        }
+        other => panic!("expected Ref expression, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_mut_ref_expr() {
+    use crate::ast::Ref;
+    let src = r#"
+fn main() {
+    mut x = 1
+    y = &mut x
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[1].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::Ref(Ref { mutable, .. }) => {
+            assert!(mutable, "expected mutable ref");
+        }
+        other => panic!("expected Ref expression, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_freeze_builtin() {
+    use crate::ast::{BuiltinCall, BuiltinKind};
+    let src = r#"
+fn main() {
+    x = freeze(p)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::BuiltinCall(BuiltinCall { kind, .. }) => {
+            assert_eq!(*kind, BuiltinKind::Freeze);
+        }
+        other => panic!("expected BuiltinCall(Freeze), got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_id_builtin() {
+    use crate::ast::{BuiltinCall, BuiltinKind};
+    let src = r#"
+fn main() {
+    x = id(p)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::BuiltinCall(BuiltinCall { kind, .. }) => {
+            assert_eq!(*kind, BuiltinKind::Id);
+        }
+        other => panic!("expected BuiltinCall(Id), got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_upgrade_builtin() {
+    use crate::ast::{BuiltinCall, BuiltinKind};
+    let src = r#"
+fn main() {
+    x = upgrade(p)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::BuiltinCall(BuiltinCall { kind, .. }) => {
+            assert_eq!(*kind, BuiltinKind::Upgrade);
+        }
+        other => panic!("expected BuiltinCall(Upgrade), got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_move_parameter() {
+    let src = r#"
+fn take(move p: *mut int) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    assert!(
+        func.sig.params[0].value.is_move(),
+        "expected move parameter"
+    );
+}
+
+#[test]
+fn parses_non_move_parameter() {
+    let src = r#"
+fn borrow(p: *int) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    assert!(
+        !func.sig.params[0].value.is_move(),
+        "expected non-move parameter"
+    );
+}
+
+#[test]
+fn parses_box_with_parens() {
+    let src = r#"
+fn main() {
+    x = box(42)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    assert!(
+        matches!(&assign.rhs.value, Expr::Boxed(_)),
+        "expected Boxed expression, got {:?}",
+        assign.rhs.value
+    );
+}
+
+#[test]
+fn parses_new_without_count() {
+    let src = r#"
+fn main() {
+    x = new(int)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    assert!(
+        matches!(&assign.rhs.value, Expr::New(_)),
+        "expected New expression, got {:?}",
+        assign.rhs.value
+    );
+}
+
+#[test]
+fn parses_chained_builtins() {
+    // freeze(box(42)) — nested builtin calls
+    use crate::ast::{BuiltinCall, BuiltinKind};
+    let src = r#"
+fn main() {
+    x = freeze(box(42))
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    match &assign.rhs.value {
+        Expr::BuiltinCall(BuiltinCall { kind, arg, .. }) => {
+            assert_eq!(*kind, BuiltinKind::Freeze);
+            assert!(
+                matches!(&arg.value, Expr::Boxed(_)),
+                "expected Boxed inner, got {:?}",
+                arg.value
+            );
+        }
+        other => panic!("expected BuiltinCall(Freeze), got {:?}", other),
+    }
+}
+
+#[test]
+fn id_without_parens_is_not_builtin_call() {
+    // `id` used as a variable name (not followed by `(`) should not be
+    // parsed as a builtin call. It's the `id` keyword used as a name.
+    let src = r#"
+fn main() {
+    x = 42
+}
+"#;
+    let (_, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+#[test]
+fn parses_display_roundtrip_builtin_call() {
+    let src = r#"
+fn main() {
+    x = freeze(y)
+}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let block = function_body_block(func);
+    let assign = match &block.stmts[0].value {
+        Expr::Assign(a) => a,
+        other => panic!("expected assign, got {:?}", other),
+    };
+    let display = assign.rhs.value.to_string();
+    assert_eq!(display, "freeze(y)");
 }

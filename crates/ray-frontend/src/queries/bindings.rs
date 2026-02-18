@@ -262,6 +262,9 @@ fn collect_all_bindings_in_expr(
         Expr::Boxed(boxed) => {
             collect_all_bindings_in_expr(&boxed.inner, resolutions, names);
         }
+        Expr::BuiltinCall(bc) => {
+            collect_all_bindings_in_expr(&bc.arg, resolutions, names);
+        }
         Expr::Return(val) | Expr::Break(val) => {
             if let Some(inner) = val {
                 collect_all_bindings_in_expr(inner, resolutions, names);
@@ -329,11 +332,7 @@ fn collect_all_bindings_in_expr(
                 collect_all_bindings_in_expr(item, resolutions, names);
             }
         }
-        Expr::New(new_expr) => {
-            if let Some(count) = &new_expr.count {
-                collect_all_bindings_in_expr(count, resolutions, names);
-            }
-        }
+        Expr::New(_) => {}
         Expr::Name(_)
         | Expr::Literal(_)
         | Expr::Continue
@@ -354,7 +353,7 @@ fn collect_param_name(
     names: &mut HashMap<LocalBindingId, String>,
 ) {
     match &param.value {
-        FnParam::Name(name) => {
+        FnParam::Name { name, .. } => {
             if let Some(name_str) = name.path.name() {
                 if let Some(Resolution::Local(local_id)) = resolutions.get(&param.id) {
                     names.insert(*local_id, name_str);

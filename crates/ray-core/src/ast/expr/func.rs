@@ -18,7 +18,7 @@ use crate::ast::{Expr, Missing, Modifier, Name, Node, TypeParams};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnParam {
-    Name(Name),
+    Name { name: Name, is_move: bool },
     DefaultValue(Box<Node<FnParam>>, Box<Node<Expr>>),
     Missing { info: Missing, placeholder: Name },
 }
@@ -26,7 +26,13 @@ pub enum FnParam {
 impl std::fmt::Display for FnParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FnParam::Name(n) => write!(f, "{}", n),
+            FnParam::Name { name, is_move } => {
+                if *is_move {
+                    write!(f, "move {}", name)
+                } else {
+                    write!(f, "{}", name)
+                }
+            }
             FnParam::DefaultValue(p, v) => write!(f, "{} = {}", p, v),
             FnParam::Missing { info, .. } => write!(f, "(missing {})", info),
         }
@@ -37,7 +43,7 @@ impl FnParam {
     pub fn name(&self) -> &Path {
         match self {
             FnParam::DefaultValue(p, _) => p.name(),
-            FnParam::Name(n) => &n.path,
+            FnParam::Name { name, .. } => &name.path,
             FnParam::Missing { placeholder, .. } => &placeholder.path,
         }
     }
@@ -45,7 +51,7 @@ impl FnParam {
     pub fn name_mut(&mut self) -> &mut Path {
         match self {
             FnParam::DefaultValue(p, _) => p.name_mut(),
-            FnParam::Name(n) => &mut n.path,
+            FnParam::Name { name, .. } => &mut name.path,
             FnParam::Missing { placeholder, .. } => &mut placeholder.path,
         }
     }
@@ -53,7 +59,7 @@ impl FnParam {
     pub fn parsed_ty(&self) -> Option<&Parsed<TyScheme>> {
         match self {
             FnParam::DefaultValue(p, _) => p.parsed_ty(),
-            FnParam::Name(n) => n.ty.as_ref(),
+            FnParam::Name { name, .. } => name.ty.as_ref(),
             FnParam::Missing { placeholder, .. } => placeholder.ty.as_ref(),
         }
     }
@@ -61,7 +67,7 @@ impl FnParam {
     pub fn ty(&self) -> Option<&Ty> {
         match self {
             FnParam::DefaultValue(p, _) => p.ty(),
-            FnParam::Name(n) => n.ty.as_deref().map(|t| t.mono()),
+            FnParam::Name { name, .. } => name.ty.as_deref().map(|t| t.mono()),
             FnParam::Missing { placeholder, .. } => placeholder.ty.as_deref().map(|t| t.mono()),
         }
     }
@@ -69,10 +75,18 @@ impl FnParam {
     pub fn ty_mut(&mut self) -> Option<&mut Ty> {
         match self {
             FnParam::DefaultValue(p, _) => p.ty_mut(),
-            FnParam::Name(n) => n.ty.as_deref_mut().map(|t| t.mono_mut()),
+            FnParam::Name { name, .. } => name.ty.as_deref_mut().map(|t| t.mono_mut()),
             FnParam::Missing { placeholder, .. } => {
                 placeholder.ty.as_deref_mut().map(|t| t.mono_mut())
             }
+        }
+    }
+
+    pub fn is_move(&self) -> bool {
+        match self {
+            FnParam::Name { is_move, .. } => *is_move,
+            FnParam::DefaultValue(p, _) => p.value.is_move(),
+            FnParam::Missing { .. } => false,
         }
     }
 }

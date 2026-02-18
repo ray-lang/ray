@@ -4,27 +4,17 @@ use ray_shared::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::ast::{Expr, Node};
+use crate::ast::Node;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct New {
     pub ty: Node<Parsed<Ty>>,
-    pub count: Option<Box<Node<Expr>>>,
     pub new_span: Span,
     pub paren_span: Span,
 }
 
 impl std::fmt::Display for New {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "new({}{})",
-            self.ty,
-            if let Some(count) = &self.count {
-                format!(", {}", count)
-            } else {
-                str!("")
-            }
-        )
+        write!(f, "new({})", self.ty)
     }
 }
