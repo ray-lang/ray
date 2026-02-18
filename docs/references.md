@@ -413,6 +413,89 @@ This allows the same method definition to work on both stack values and heap ref
 
 Auto-ref applies **only to method receivers**, not to regular function arguments. For regular function arguments, use `&` / `&mut` explicitly when passing stack values.
 
+### 6.6 Closure Captures
+
+Closures capture variables from their enclosing scope. The capture behavior depends on the captured variable's type:
+
+| Captured type | Behavior                       | Rationale                  |
+|---------------|--------------------------------|----------------------------|
+| Value types   | **Copy**                       | No ownership semantics     |
+| `*T`          | **Copy** (strong RC bump)      | Shared refs alias freely   |
+| `id *T`       | **Copy** (weak RC bump)        | Identity refs alias freely |
+| `*mut T`      | **Move** (original consumed)   | Cannot alias unique refs   |
+
+#### Unique references are moved
+
+A closure that captures a `*mut T` variable **moves** it — the original binding is consumed at the closure creation point:
+
+```ray
+fn example() {
+    mut p = box(Point { x: 1, y: 2 })
+    f = () => freeze(p) // p is moved into the closure here
+    p                   // ERROR: use of consumed value `p`
+}
+```
+
+This follows directly from the `*mut T` aliasing invariant ([§1.1](#11-mut-t--unique-mutable)): a closure capturing `p` creates a second path to the same object, which would violate uniqueness. Moving ensures only one path exists at any time.
+
+Multiple closures cannot capture the same `*mut T`:
+
+```ray
+fn example() {
+    mut p = box(42)
+    f = () => freeze(p) // p is moved here
+    g = () => freeze(p) // ERROR: use of consumed value `p`
+}
+```
+
+#### Shared and identity references are copied
+
+Closures freely capture `*T` and `id *T` references. Each capture increments the appropriate reference count:
+
+```ray
+fn example(shared: *Foo, weak: id *Bar) {
+    f = () => {
+        shared.value // shared is copied into closure (strong RC bump)
+        weak         // weak is copied into closure (weak RC bump)
+    }
+    // shared and weak are still accessible here
+}
+```
+
+#### Immediately-invoked closures
+
+There is no special-casing for immediately-invoked closures. A closure that captures `*mut T` moves it at the capture point, regardless of when or whether the closure is called:
+
+```ray
+fn example() {
+    mut p = box(42)
+    (() => freeze(p))() // p is moved at closure creation
+    // p is not accessible here
+}
+```
+
+#### Future: `noescape` closures
+
+A future extension may allow closures to **borrow** `*mut T` instead of moving it, when the closure is provably short-lived. This would use a `noescape` annotation on the function parameter receiving the closure:
+
+```ray
+fn with_lock(resource: *mut int, body: noescape fn() -> ()) {
+    body()
+    // body cannot be stored or returned — only called within this scope
+}
+
+fn example(mut p: *mut int) {
+    with_lock(p, () => use(p))  // p is borrowed, not moved
+    p                           // still valid — borrow ended when with_lock returned
+}
+```
+
+`noescape` is a property of the **parameter**, not the function type. The same function type `fn() -> ()` can appear in both escaping and non-escaping positions. The annotation is a promise by the callee that it will not store the closure beyond the call's duration.
+
+When a closure is passed to a `noescape` parameter, captured `*mut T` values are reborrowed for the call's duration — identical to how function arguments are reborrowed ([§6.1](#61-implicit-reborrowing-at-call-sites)). This ties into the region system ([§7](#7-regions--lifetime-safety)).
+
+Without `noescape`, the default is escaping — `*mut T` captures are always moves.
+
 ---
 
 ## 7. Regions & Lifetime Safety

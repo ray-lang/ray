@@ -109,6 +109,31 @@ impl EqConstraint {
     }
 }
 
+/// Directional ref coercion constraint: `from` can be used where `to` is expected.
+///
+/// Allows `*mut T` → `*T` coercion (temporary weakening at call sites) but
+/// NOT `*T` → `*mut T`. When both types are non-meta, the solver tries:
+/// 1. Exact unification `from == to`
+/// 2. If `from` is `MutRef(T)`, try `Ref(T) == to` (implicit weakening)
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RefCoerceConstraint {
+    /// The type of the argument expression (source).
+    pub from: Ty,
+    /// The type expected by the callee parameter (target).
+    pub to: Ty,
+}
+
+impl RefCoerceConstraint {
+    pub fn new(from: Ty, to: Ty) -> Self {
+        RefCoerceConstraint { from, to }
+    }
+
+    pub fn free_ty_vars(&self, out: &mut HashSet<TyVar>) {
+        self.from.free_ty_vars(out);
+        self.to.free_ty_vars(out);
+    }
+}
+
 // Instantiate constraint: instantiate a definition's or binding's scheme.
 
 /// Target of an instantiation constraint - either a top-level definition
@@ -322,6 +347,7 @@ impl Predicate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstraintKind {
     Eq(EqConstraint),
+    RefCoerce(RefCoerceConstraint),
     Instantiate(InstantiateConstraint),
     ResolveMember(ResolveMemberConstraint),
     Class(ClassPredicate),
@@ -343,6 +369,13 @@ impl Constraint {
     pub fn eq(lhs: Ty, rhs: Ty, info: TypeSystemInfo) -> Self {
         Constraint {
             kind: ConstraintKind::Eq(EqConstraint::new(lhs, rhs)),
+            info,
+        }
+    }
+
+    pub fn ref_coerce(from: Ty, to: Ty, info: TypeSystemInfo) -> Self {
+        Constraint {
+            kind: ConstraintKind::RefCoerce(RefCoerceConstraint::new(from, to)),
             info,
         }
     }
@@ -421,6 +454,7 @@ impl Constraint {
             ConstraintKind::HasField(h) => Some(Predicate::HasField(h.clone())),
             ConstraintKind::Recv(r) => Some(Predicate::Recv(r.clone())),
             ConstraintKind::Eq(_)
+            | ConstraintKind::RefCoerce(_)
             | ConstraintKind::Instantiate(_)
             | ConstraintKind::ResolveMember(_) => None,
         }
@@ -445,6 +479,9 @@ impl Constraint {
             ConstraintKind::Eq(eq) => {
                 eq.lhs.free_ty_vars(out);
                 eq.rhs.free_ty_vars(out);
+            }
+            ConstraintKind::RefCoerce(rc) => {
+                rc.free_ty_vars(out);
             }
             ConstraintKind::Instantiate(inst) => {
                 inst.ty.free_ty_vars(out);
@@ -531,10 +568,18 @@ impl Substitutable for Predicate {
     }
 }
 
+impl Substitutable for RefCoerceConstraint {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.from.apply_subst(subst);
+        self.to.apply_subst(subst);
+    }
+}
+
 impl Substitutable for ConstraintKind {
     fn apply_subst(&mut self, subst: &Subst) {
         match self {
             ConstraintKind::Eq(c) => c.apply_subst(subst),
+            ConstraintKind::RefCoerce(c) => c.apply_subst(subst),
             ConstraintKind::Instantiate(c) => c.apply_subst(subst),
             ConstraintKind::ResolveMember(c) => c.apply_subst(subst),
             ConstraintKind::Class(c) => c.apply_subst(subst),
@@ -555,12 +600,19 @@ impl std::fmt::Display for ConstraintKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConstraintKind::Eq(eq) => write!(f, "{}", eq),
+            ConstraintKind::RefCoerce(rc) => write!(f, "{}", rc),
             ConstraintKind::Instantiate(inst) => write!(f, "{}", inst),
             ConstraintKind::ResolveMember(member) => write!(f, "{}", member),
             ConstraintKind::Class(c) => write!(f, "{}", c),
             ConstraintKind::HasField(h) => write!(f, "{}", h),
             ConstraintKind::Recv(r) => write!(f, "{}", r),
         }
+    }
+}
+
+impl std::fmt::Display for RefCoerceConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RefCoerce[{} ~> {}]", self.from, self.to)
     }
 }
 

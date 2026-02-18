@@ -2105,6 +2105,272 @@ fn foo() -> bool => true
         assert!(ty.is_none(), "Should return None for an invalid NodeId");
     }
 
+    // ====================================================================
+    // RefCoerce tests (5b): implicit *mut T → *T weakening at call sites
+    // ====================================================================
+
+    #[test]
+    fn typecheck_mut_ref_passed_to_shared_ref_param() {
+        // *mut T should be passable where *T is expected (temporary weakening)
+        // Uses parameters instead of box() to avoid Int class predicate issues
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct S {}
+
+fn reader(x: *S) -> bool => true
+
+fn caller(p: *mut S) -> bool => reader(p)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "*mut T should be passable where *T is expected (RefCoerce), got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_mut_ref_passed_to_mut_ref_param() {
+        // *mut T should be passable where *mut T is expected (exact match)
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct S {}
+
+fn writer(x: *mut S) -> bool => true
+
+fn caller(p: *mut S) -> bool => writer(p)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "*mut T passed to *mut T param should typecheck, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_shared_ref_passed_to_shared_ref_param() {
+        // *T should be passable where *T is expected (exact match, no coercion needed)
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct S {}
+
+fn reader(x: *S) -> bool => true
+
+fn caller(p: *S) -> bool => reader(p)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "*T passed to *T param should typecheck, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_non_ref_types_still_work_through_ref_coerce() {
+        // Non-reference types (bool, structs) should still work through RefCoerce
+        // because RefCoerce tries exact unification first
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn both(x: bool, y: bool) -> bool => x
+
+fn caller() -> bool => both(true, false)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "Non-ref types should still work through RefCoerce, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_mut_ref_passed_to_shared_ref_with_multiple_args() {
+        // Test that RefCoerce works correctly when there are multiple arguments,
+        // mixing ref and non-ref types
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct S {}
+
+fn mixed(x: *S, y: bool) -> bool => y
+
+fn caller(p: *mut S) -> bool => mixed(p, true)
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "*mut T → *T coercion should work alongside non-ref args, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_method_shared_ref_receiver_called_on_mut_ref() {
+        // 5d: Calling a method with self: *S on a *mut S receiver.
+        // solve_recv should auto-deref *mut S → S, then re-wrap as *S.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+struct S {}
+
+impl object S {
+    fn is_valid(self: *S) -> bool => true
+}
+
+fn caller(p: *mut S) -> bool => p.is_valid()
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+
+        assert!(
+            result.errors.is_empty(),
+            "Method with *T receiver should be callable on *mut T expression (5d auto-ref), got errors: {:?}",
+            result.errors
+        );
+    }
+
     #[test]
     fn typecheck_impl_method_with_parent_where_clause() {
         // This tests the full pipeline for a method inside an impl with where-clauses.

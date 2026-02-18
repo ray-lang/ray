@@ -1834,11 +1834,18 @@ fn generate_constraints_for_expr(
                 if let Some(ExprKind::FieldAccess { recv, field }) =
                     input.expr_kind(*callee).cloned()
                 {
-                    // Collect types for explicit arguments.
-                    let mut explicit_arg_tys = Vec::with_capacity(args.len());
+                    // Collect types for explicit arguments, using RefCoerce to
+                    // allow implicit `*mut T → *T` weakening at call sites.
+                    let mut explicit_param_metas = Vec::with_capacity(args.len());
                     for arg_expr in args {
                         let arg_ty = ctx.expr_ty_or_fresh(*arg_expr);
-                        explicit_arg_tys.push(arg_ty);
+                        let param_meta = ctx.fresh_meta();
+                        node.wanteds.push(Constraint::ref_coerce(
+                            arg_ty,
+                            param_meta.clone(),
+                            info.clone(),
+                        ));
+                        explicit_param_metas.push(param_meta);
                     }
 
                     let recv_ty = ctx.expr_ty_or_fresh(recv);
@@ -1851,9 +1858,9 @@ fn generate_constraints_for_expr(
                     //   recv.method(args...) : (Trecv, Targs...) -> Tret
                     //
                     let recv_param_ty = ctx.fresh_meta();
-                    let mut callee_arg_tys = Vec::with_capacity(explicit_arg_tys.len() + 1);
+                    let mut callee_arg_tys = Vec::with_capacity(explicit_param_metas.len() + 1);
                     callee_arg_tys.push(recv_param_ty);
-                    callee_arg_tys.extend(explicit_arg_tys.iter().cloned());
+                    callee_arg_tys.extend(explicit_param_metas.iter().cloned());
                     let expected_fn_ty = Ty::Func(callee_arg_tys, Box::new(expr_ty.clone()));
                     ctx.node_tys.insert(*callee, expected_fn_ty.clone());
 
@@ -1902,11 +1909,18 @@ fn generate_constraints_for_expr(
                     lhs_ty,
                 }) = input.expr_kind(*callee).cloned()
                 {
-                    // Collect types for explicit arguments.
-                    let mut explicit_arg_tys = Vec::with_capacity(args.len());
+                    // Collect types for explicit arguments, using RefCoerce to
+                    // allow implicit `*mut T → *T` weakening at call sites.
+                    let mut explicit_param_metas = Vec::with_capacity(args.len());
                     for arg_expr in args {
                         let arg_ty = ctx.expr_ty_or_fresh(*arg_expr);
-                        explicit_arg_tys.push(arg_ty);
+                        let param_meta = ctx.fresh_meta();
+                        node.wanteds.push(Constraint::ref_coerce(
+                            arg_ty,
+                            param_meta.clone(),
+                            info.clone(),
+                        ));
+                        explicit_param_metas.push(param_meta);
                     }
 
                     // Downstream passes still expect the callee expression to
@@ -1915,7 +1929,7 @@ fn generate_constraints_for_expr(
                     //   T::member(args...) : (Targs...) -> Tret
                     //
                     let expected_fn_ty =
-                        Ty::Func(explicit_arg_tys.clone(), Box::new(expr_ty.clone()));
+                        Ty::Func(explicit_param_metas.clone(), Box::new(expr_ty.clone()));
                     ctx.node_tys.insert(*callee, expected_fn_ty.clone());
 
                     let receiver_subst = skolem_subst.and_then(|skolem_subst| {
@@ -1964,16 +1978,29 @@ fn generate_constraints_for_expr(
                 }
 
                 // Generic call: relate the callee's type and the call result
-                // type via a function type: (arg_tys...) -> expr_ty.
-                let mut arg_tys = vec![];
+                // type via a function type: (param_metas...) -> expr_ty.
+                //
+                // For each argument, we introduce a fresh meta for the parameter
+                // position and a RefCoerce constraint that allows implicit
+                // `*mut T → *T` weakening at the call site. The param metas
+                // are unified with the callee's declared parameter types via
+                // the Func equality, while RefCoerce connects the arg expression
+                // types to those metas with directional coercion.
+                let mut param_metas = vec![];
                 for arg_expr in args {
                     let arg_ty = ctx.expr_ty_or_fresh(*arg_expr);
-                    arg_tys.push(arg_ty);
+                    let param_meta = ctx.fresh_meta();
+                    node.wanteds.push(Constraint::ref_coerce(
+                        arg_ty,
+                        param_meta.clone(),
+                        info.clone(),
+                    ));
+                    param_metas.push(param_meta);
                 }
 
                 let callee_ty = ctx.expr_ty_or_fresh(*callee);
 
-                let func_ty = Ty::Func(arg_tys, Box::new(expr_ty));
+                let func_ty = Ty::Func(param_metas, Box::new(expr_ty));
 
                 node.wanteds.push(Constraint::eq(callee_ty, func_ty, info));
             }

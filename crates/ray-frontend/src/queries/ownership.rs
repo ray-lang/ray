@@ -74,6 +74,49 @@ enum VarState {
     Consumed,
 }
 
+/// A path identifying a borrow target, used for conflict detection.
+///
+/// Examples: `p` → `(p_id, [])`, `p.x` → `(p_id, ["x"])`, `p.x.y` → `(p_id, ["x", "y"])`
+#[derive(Clone, Debug)]
+struct BorrowPath {
+    /// The root variable being borrowed.
+    root: LocalBindingId,
+    /// Field path from the root (empty for a whole-variable borrow).
+    fields: Vec<String>,
+}
+
+impl BorrowPath {
+    /// Check whether two borrow paths overlap (conflict).
+    ///
+    /// Two paths conflict if one is a prefix of the other:
+    /// - `p` and `p.x` overlap (borrowing `p` covers `p.x`)
+    /// - `p.x` and `p.y` are disjoint (different field at the same level)
+    /// - `p.x` and `p.x` overlap (same path)
+    fn overlaps(&self, other: &BorrowPath) -> bool {
+        if self.root != other.root {
+            return false;
+        }
+        let min_len = self.fields.len().min(other.fields.len());
+        // Check that the shared prefix matches
+        for i in 0..min_len {
+            if self.fields[i] != other.fields[i] {
+                return false;
+            }
+        }
+        // If all shared components match and one is a prefix of the other, they overlap
+        true
+    }
+
+    fn display_path(&self, name: Option<&str>) -> String {
+        let root = name.unwrap_or("?");
+        if self.fields.is_empty() {
+            root.to_string()
+        } else {
+            format!("{}.{}", root, self.fields.join("."))
+        }
+    }
+}
+
 /// Context for tracking `*mut T` variable ownership.
 struct OwnershipCtx<'a> {
     db: &'a Database,
@@ -199,6 +242,84 @@ impl<'a> OwnershipCtx<'a> {
         }
     }
 
+    /// Extract a borrow path from an argument expression.
+    ///
+    /// Returns `Some(BorrowPath)` if the expression is a `*mut T` variable
+    /// (possibly with field access), `None` otherwise.
+    fn extract_borrow_path(&self, expr: &Node<Expr>) -> Option<BorrowPath> {
+        match &expr.value {
+            Expr::Name(_) => {
+                let local_id = local_binding_for_node(self.db, expr.id)?;
+                let ty = inferred_local_type(self.db, local_id)?;
+                if ty.is_mut_ref() {
+                    Some(BorrowPath {
+                        root: local_id,
+                        fields: vec![],
+                    })
+                } else {
+                    None
+                }
+            }
+            Expr::Dot(dot) => {
+                let mut path = self.extract_borrow_path(&dot.lhs)?;
+                path.fields.push(dot.rhs.value.to_string());
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    /// Check for conflicting borrows among the arguments of a single call.
+    ///
+    /// Two `*mut T` arguments conflict if their borrow paths overlap:
+    /// - Same variable passed twice as `*mut T` → conflict
+    /// - `p.x` and `p` → conflict (overlapping)
+    /// - `p.x` and `p.y` → OK (disjoint fields)
+    fn check_borrow_conflicts(&mut self, call: &Call) {
+        // Collect borrow paths for all *mut T arguments
+        let mut borrows: Vec<(BorrowPath, &Node<Expr>)> = Vec::new();
+
+        for arg in &call.args.items {
+            if let Some(path) = self.extract_borrow_path(arg) {
+                borrows.push((path, arg));
+            }
+        }
+
+        // Check all pairs for overlap
+        for i in 0..borrows.len() {
+            for j in (i + 1)..borrows.len() {
+                let (path_a, expr_a) = &borrows[i];
+                let (path_b, expr_b) = &borrows[j];
+
+                if path_a.overlaps(path_b) {
+                    let display_a = path_a.display_path(expr_a.get_name().as_deref());
+                    let display_b = path_b.display_path(expr_b.get_name().as_deref());
+
+                    self.errors.push(RayError {
+                        msg: format!(
+                            "conflicting borrows: `{}` and `{}` overlap",
+                            display_a, display_b
+                        ),
+                        src: vec![
+                            Source {
+                                span: Some(self.srcmap.span_of(*expr_a)),
+                                filepath: self.filepath.clone(),
+                                ..Default::default()
+                            },
+                            Source {
+                                span: Some(self.srcmap.span_of(*expr_b)),
+                                filepath: self.filepath.clone(),
+                                ..Default::default()
+                            },
+                        ],
+                        kind: RayErrorKind::Type,
+                        context: Some("borrow conflict".to_string()),
+                    });
+                }
+            }
+        }
+    }
+
     /// Resolve a callee NodeId to its DefTarget.
     fn resolve_callee_target(&self, file_id: FileId, callee_id: NodeId) -> Option<DefTarget> {
         let resolutions = name_resolutions(&self.db, file_id);
@@ -270,6 +391,8 @@ impl<'a> OwnershipCtx<'a> {
                 for arg in &call.args.items {
                     self.visit_expr(arg);
                 }
+                // Check for conflicting borrows among *mut T arguments.
+                self.check_borrow_conflicts(call);
                 // Check for `move` parameters that consume the argument.
                 // Resolve the callee to its function AST to access is_move() flags.
                 self.check_move_params(call);
@@ -382,7 +505,11 @@ impl<'a> OwnershipCtx<'a> {
 mod tests {
     use std::collections::HashMap;
 
-    use ray_shared::pathlib::{FilePath, ModulePath};
+    use ray_shared::{
+        def::DefId,
+        local_binding::LocalBindingId,
+        pathlib::{FilePath, ModulePath},
+    };
 
     use crate::{
         queries::{
@@ -766,6 +893,328 @@ fn ok() {
             errors.is_empty(),
             "Expected no errors for non-move parameter, got: {:?}",
             errors
+        );
+    }
+
+    // ====================================================================
+    // Reborrow tests (5a): *mut T available after non-move call
+    // ====================================================================
+
+    #[test]
+    fn validate_ownership_reborrow_after_non_move_call() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // borrow() takes a non-move *mut int parameter.
+        // After borrow(p), p should still be alive (reborrow semantics).
+        let source = r#"
+fn borrow(x: *mut int) {
+    x
+}
+
+fn ok() {
+    p = box(42)
+    borrow(p)
+    borrow(p)
+    p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
+
+        let errors = validate_ownership(&db, ok_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors: *mut T should be available after non-move call (reborrow), got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_move_then_reborrow_is_error() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // take() has a `move` parameter, so p is consumed.
+        // The subsequent borrow(p) should be an error.
+        let source = r#"
+fn take(move x: *mut int) {
+    freeze(x)
+}
+
+fn borrow(x: *mut int) {
+    x
+}
+
+fn bad() {
+    p = box(42)
+    take(p)
+    borrow(p)
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_ownership(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error: borrow after move should fail"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("consumed")),
+            "Error should mention consumed value: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // Borrow conflict tests (5c): path-level borrowing
+    // ====================================================================
+
+    #[test]
+    fn validate_ownership_same_var_passed_twice_is_conflict() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Passing the same *mut T variable to two parameters → conflict
+        let source = r#"
+fn two_args(x: *mut int, y: *mut int) {
+    x
+}
+
+fn bad() {
+    p = box(42)
+    two_args(p, p)
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_ownership(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error for conflicting borrows: same variable passed twice"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("conflicting borrows")),
+            "Error should mention conflicting borrows: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_different_vars_no_conflict() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two different *mut T variables passed to the same call → no conflict
+        let source = r#"
+fn two_args(x: *mut int, y: *mut int) {
+    x
+}
+
+fn ok() {
+    p = box(42)
+    q = box(99)
+    two_args(p, q)
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
+
+        let errors = validate_ownership(&db, ok_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors: different variables don't conflict, got: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // BorrowPath unit tests
+    // ====================================================================
+
+    #[test]
+    fn borrow_path_same_root_overlaps() {
+        use super::BorrowPath;
+
+        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let a = BorrowPath {
+            root,
+            fields: vec![],
+        };
+        let b = BorrowPath {
+            root,
+            fields: vec![],
+        };
+        assert!(a.overlaps(&b), "Same variable should overlap");
+    }
+
+    #[test]
+    fn borrow_path_prefix_overlaps() {
+        use super::BorrowPath;
+
+        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let parent = BorrowPath {
+            root,
+            fields: vec![],
+        };
+        let child = BorrowPath {
+            root,
+            fields: vec!["x".to_string()],
+        };
+        assert!(
+            parent.overlaps(&child),
+            "Parent path overlaps child path (p and p.x)"
+        );
+        assert!(
+            child.overlaps(&parent),
+            "Child path overlaps parent path (p.x and p)"
+        );
+    }
+
+    #[test]
+    fn borrow_path_disjoint_fields() {
+        use super::BorrowPath;
+
+        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let x = BorrowPath {
+            root,
+            fields: vec!["x".to_string()],
+        };
+        let y = BorrowPath {
+            root,
+            fields: vec!["y".to_string()],
+        };
+        assert!(
+            !x.overlaps(&y),
+            "p.x and p.y should NOT overlap (disjoint fields)"
+        );
+    }
+
+    #[test]
+    fn borrow_path_different_roots_no_overlap() {
+        use super::BorrowPath;
+
+        let root_a = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let root_b = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 2);
+        let a = BorrowPath {
+            root: root_a,
+            fields: vec!["x".to_string()],
+        };
+        let b = BorrowPath {
+            root: root_b,
+            fields: vec!["x".to_string()],
+        };
+        assert!(
+            !a.overlaps(&b),
+            "Different roots should not overlap even with same field"
+        );
+    }
+
+    #[test]
+    fn borrow_path_nested_field_overlap() {
+        use super::BorrowPath;
+
+        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let shallow = BorrowPath {
+            root,
+            fields: vec!["x".to_string()],
+        };
+        let deep = BorrowPath {
+            root,
+            fields: vec!["x".to_string(), "y".to_string()],
+        };
+        assert!(
+            shallow.overlaps(&deep),
+            "p.x and p.x.y should overlap (prefix relationship)"
+        );
+    }
+
+    #[test]
+    fn borrow_path_nested_disjoint() {
+        use super::BorrowPath;
+
+        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let a = BorrowPath {
+            root,
+            fields: vec!["x".to_string(), "a".to_string()],
+        };
+        let b = BorrowPath {
+            root,
+            fields: vec!["x".to_string(), "b".to_string()],
+        };
+        assert!(
+            !a.overlaps(&b),
+            "p.x.a and p.x.b should NOT overlap (disjoint at second level)"
         );
     }
 }

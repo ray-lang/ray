@@ -142,6 +142,7 @@ pub fn generalize_group(
                     if matches!(
                         c.kind,
                         ConstraintKind::Eq(_)
+                            | ConstraintKind::RefCoerce(_)
                             | ConstraintKind::Instantiate(_)
                             | ConstraintKind::ResolveMember(_)
                     ) {

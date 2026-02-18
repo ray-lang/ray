@@ -21,9 +21,9 @@ use ray_shared::{
 
 use crate::{
     queries::{
-        deps::binding_group_for_def, parse::parse_file, resolve::name_resolutions,
-        transform::file_ast, typecheck::typecheck_group, validation::validate_def,
-        workspace::WorkspaceSnapshot,
+        deps::binding_group_for_def, ownership::validate_ownership, parse::parse_file,
+        ref_mutability::validate_ref_mutability, resolve::name_resolutions, transform::file_ast,
+        typecheck::typecheck_group, validation::validate_def, workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
 };
@@ -101,6 +101,13 @@ pub fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
                 errors.push(type_error.clone().into());
             }
         }
+    }
+
+    // Collect post-typing validation errors (ownership, ref mutability)
+    // These run after typechecking because they depend on inferred types.
+    for def_header in &file_ast_result.defs {
+        errors.extend(validate_ownership(db, def_header.def_id));
+        errors.extend(validate_ref_mutability(db, def_header.def_id));
     }
 
     errors

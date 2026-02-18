@@ -2114,10 +2114,14 @@ mod tests {
             println!("{:?}: {}", binding, scheme);
         }
 
-        // No residual predicates expected for this program.
+        // `id` has a mono scheme (local binding, no generalization), so using
+        // it at two different types (u32, bool) produces a type mismatch. With
+        // RefCoerce's param-meta indirection, this mismatch surfaces as a
+        // residual RefCoerce(bool, u32) rather than a term-solver error.
         assert!(
-            residuals.is_empty(),
-            "expected no residuals, got: {:?}",
+            !errors.is_empty() || !residuals.is_empty(),
+            "expected a type mismatch (mono id used at two types): errors={:?}, residuals={:?}",
+            errors,
             residuals
         );
     }

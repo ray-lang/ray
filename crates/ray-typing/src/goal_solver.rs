@@ -94,6 +94,10 @@ fn solve_constraint(
         }
     }
 
+    if let ConstraintKind::RefCoerce(_) = &constraint.kind {
+        return solve_ref_coerce(constraint, subst);
+    }
+
     if let ConstraintKind::ResolveMember(_) = &constraint.kind {
         return solve_resolve_member(constraint, givens_with_subst, subst, ctx);
     }
@@ -742,6 +746,86 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
             false
         }
     }
+}
+
+/// Solve a RefCoerce constraint: `from` can be used where `to` is expected,
+/// allowing implicit `*mut T → *T` weakening at call sites.
+///
+/// The solving strategy handles the interaction between the extra param-meta
+/// indirection (introduced for coercion) and the constraint tree's top-down
+/// solving order (parent wanteds are solved before children provide type info).
+///
+/// When `from` is a meta:
+///   - If `to` is also a meta, defer — both sides are unresolved.
+///   - If `to` is a headed ref type (`*T`, `*mut T`, `id *T`), defer — `from`
+///     might be `*mut T` needing coercion, and eagerly binding would prevent it.
+///   - If `to` is a headed non-ref type, bind via exact unification — no
+///     coercion is possible for non-reference types.
+///
+/// When `from` is `*mut T` and `to` is a meta, defer — `to` might become `*T`
+/// (requiring coercion) or `*mut T` (exact match).
+///
+/// Otherwise, both sides are sufficiently headed to decide: try exact
+/// unification, then `*mut T → *T` coercion.
+fn solve_ref_coerce(wanted: &Constraint, subst: &mut Subst) -> SolveOutcome {
+    let rc = match &wanted.kind {
+        ConstraintKind::RefCoerce(rc) => rc,
+        _ => return SolveOutcome::Unsolved,
+    };
+
+    let mut from = rc.from.clone();
+    from.apply_subst(subst);
+
+    let mut to = rc.to.clone();
+    to.apply_subst(subst);
+
+    log::debug!("[solve_ref_coerce] from = {}, to = {}", from, to);
+
+    let from_is_meta = matches!(&from, Ty::Var(v) if v.is_meta());
+    let to_is_meta = matches!(&to, Ty::Var(v) if v.is_meta());
+
+    if from_is_meta {
+        if to_is_meta {
+            // Both unresolved — defer until children provide type info.
+            return SolveOutcome::Unsolved;
+        }
+        if to.is_any_pointer() {
+            // `to` is a ref type — `from` might be `*mut T` needing coercion.
+            // Defer so the arg's actual type can be resolved first.
+            return SolveOutcome::Unsolved;
+        }
+        // `to` is a headed non-ref type — no coercion possible, just bind.
+        if let Ok(new_subst) = unify(&from, &to, subst, &wanted.info) {
+            subst.union(new_subst);
+            return SolveOutcome::Solved;
+        }
+        return SolveOutcome::Unsolved;
+    }
+
+    // `from` is headed. If it's `*mut T` and `to` is still a meta, defer —
+    // `to` might become `*T` (requiring coercion) or `*mut T` (exact match).
+    if from.is_mut_ref() && to_is_meta {
+        return SolveOutcome::Unsolved;
+    }
+
+    // Both sides are sufficiently headed. Try exact unification first.
+    if let Ok(new_subst) = unify(&from, &to, subst, &wanted.info) {
+        subst.union(new_subst);
+        return SolveOutcome::Solved;
+    }
+
+    // Try MutRef → Ref coercion: if `from` is `*mut T`, try matching `*T` against `to`.
+    if let Ty::MutRef(inner) = &from {
+        let weakened = Ty::Ref(inner.clone());
+        if let Ok(new_subst) = unify(&weakened, &to, subst, &wanted.info) {
+            log::debug!("[solve_ref_coerce] coerced *mut {} → *{}", inner, inner);
+            subst.union(new_subst);
+            return SolveOutcome::Solved;
+        }
+    }
+
+    // Neither exact match nor coercion worked.
+    SolveOutcome::Unsolved
 }
 
 fn solve_resolve_member(
@@ -2057,6 +2141,23 @@ mod tests {
         let wanted = Constraint::recv(
             RecvKind::Value,
             Ty::list(Ty::var("?t0")),
+            Ty::mut_ref_of(Ty::list(Ty::con("u32"))),
+            TypeSystemInfo::default(),
+        );
+
+        assert!(solve_recv(&wanted, &mut subst));
+        assert_eq!(subst.get(&TyVar::new("?t0")), Some(&Ty::con("u32")));
+    }
+
+    #[test]
+    fn solve_recv_ref_autoderefs_mut_ref_expr() {
+        let mut subst = Subst::new();
+        // Method expects *T receiver, expression type is *mut list[u32]
+        // This is the key 5d scenario: calling a *T method on a *mut T receiver
+        // should auto-deref the *mut, then re-wrap as *T (capability weakening).
+        let wanted = Constraint::recv(
+            RecvKind::Ref,
+            Ty::ref_of(Ty::list(Ty::var("?t0"))),
             Ty::mut_ref_of(Ty::list(Ty::con("u32"))),
             TypeSystemInfo::default(),
         );
