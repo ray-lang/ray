@@ -2925,7 +2925,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Malloc::new(ty.into(), count)
             }
             Expr::BuiltinCall(bc) => {
-                // TODO(M6): Implement LIR lowering for freeze/id/upgrade.
+                // TODO: Implement LIR lowering for freeze/id/upgrade.
                 // For now, lower the arg and pass through.
                 bc.arg.lir_gen(ctx)?
             }

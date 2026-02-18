@@ -17,7 +17,7 @@ use crate::{
     PatternKind, TypeCheckInput,
     binding_groups::BindingGroup,
     constraints::{Constraint, ConstraintKind, ResolveMemberConstraint},
-    context::{AssignLhs, ExprKind, LhsPattern, Pattern, SolverContext},
+    context::{AssignLhs, BuiltinOp, ExprKind, LhsPattern, Pattern, SolverContext},
     info::TypeSystemInfo,
     types::{Subst, Substitutable, TyScheme},
 };
@@ -1016,11 +1016,18 @@ fn generate_constraints_for_expr(
                     info.clone(),
                 ));
             }
-            ExprKind::Ref { expr: inner } => {
+            ExprKind::Ref {
+                expr: inner,
+                mutable,
+            } => {
                 // Explicit reference (Section 1.1 "Pointer types"):
-                // if `e : T` then `ref e : *T`.
+                // `&e : *T` when `e : T`; `&mut e : *mut T` when `e : T`.
                 let inner_ty = ctx.expr_ty_or_fresh(*inner);
-                let ptr_ty = Ty::ref_of(inner_ty);
+                let ptr_ty = if *mutable {
+                    Ty::mut_ref_of(inner_ty)
+                } else {
+                    Ty::ref_of(inner_ty)
+                };
                 node.wanteds
                     .push(Constraint::eq(expr_ty, ptr_ty, info.clone()));
             }
@@ -1275,11 +1282,10 @@ fn generate_constraints_for_expr(
                 });
             }
             ExprKind::Boxed { expr: inner } => {
-                // Heap allocation / boxing (Section 1.1 "Pointer types"):
-                // if `e : T` then `box e : *T`. We model this as a unary
-                // constructor on types using the safe reference type.
+                // Heap allocation / boxing: if `e : T` then `box(e) : *mut T`.
+                // Boxing produces a unique (mutable) reference.
                 let inner_ty = ctx.expr_ty_or_fresh(*inner);
-                let ptr_ty = Ty::ref_of(inner_ty);
+                let ptr_ty = Ty::mut_ref_of(inner_ty);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, ptr_ty, info.clone()));
             }
@@ -1336,20 +1342,17 @@ fn generate_constraints_for_expr(
                     .push(Constraint::eq(expr_ty, cast_ty, info.clone()));
             }
             ExprKind::New => {
-                // Heap allocation `new(T)`, following:
-                //
-                //   ----------------------------
-                //   Γ ⊢ new(T) ⇝ (*T, ∅)
+                // Heap allocation `new(T)` produces `*mut T`.
                 //
                 // The target type `T` is provided by the parsed type
                 // annotation and is attached to this expression by the
-                // frontend. The result type `*T` is reflected in `expr_ty`
-                // via that annotation.
+                // frontend. The result type `*mut T` is reflected in
+                // `expr_ty` via that annotation.
                 //
                 // TODO: once type annotations are threaded into this IR,
-                //       add an explicit equality tying `expr_ty` to `*T`
-                //       (e.g. `Ty::ref_of(T)`) so the allocator result
-                //       type participates directly in unification.
+                //       add an explicit equality tying `expr_ty` to
+                //       `*mut T` so the allocator result type participates
+                //       directly in unification.
             }
             ExprKind::Nil => {
                 // Bare `nil` literal (Section "Nilable literals"):
@@ -1543,6 +1546,50 @@ fn generate_constraints_for_expr(
                 let inner_ty = ctx.expr_ty_or_fresh(*inner);
                 node.wanteds
                     .push(Constraint::eq(expr_ty, inner_ty, info.clone()));
+            }
+            ExprKind::BuiltinCall { op, arg } => {
+                let arg_ty = ctx.expr_ty_or_fresh(*arg);
+                match op {
+                    BuiltinOp::Freeze => {
+                        // freeze(x): arg must be `*mut T`, result is `*T`.
+                        let inner = ctx.fresh_meta();
+                        node.wanteds.push(Constraint::eq(
+                            arg_ty,
+                            Ty::mut_ref_of(inner.clone()),
+                            info.clone(),
+                        ));
+                        node.wanteds
+                            .push(Constraint::eq(expr_ty, Ty::ref_of(inner), info.clone()));
+                    }
+                    BuiltinOp::Id => {
+                        // id(x): arg must be `*T`, result is `id *T`.
+                        let inner = ctx.fresh_meta();
+                        node.wanteds.push(Constraint::eq(
+                            arg_ty,
+                            Ty::ref_of(inner.clone()),
+                            info.clone(),
+                        ));
+                        node.wanteds.push(Constraint::eq(
+                            expr_ty,
+                            Ty::id_ref_of(inner),
+                            info.clone(),
+                        ));
+                    }
+                    BuiltinOp::Upgrade => {
+                        // upgrade(x): arg must be `id *T`, result is `nilable[*T]`.
+                        let inner = ctx.fresh_meta();
+                        node.wanteds.push(Constraint::eq(
+                            arg_ty,
+                            Ty::id_ref_of(inner.clone()),
+                            info.clone(),
+                        ));
+                        node.wanteds.push(Constraint::eq(
+                            expr_ty,
+                            Ty::nilable(Ty::ref_of(inner)),
+                            info.clone(),
+                        ));
+                    }
+                }
             }
             ExprKind::If {
                 cond,
@@ -1981,7 +2028,7 @@ mod tests {
         binding_groups::{BindingGraph, BindingGroup},
         constraint_tree::{ConstraintNode, build_constraint_tree_for_group, walk_tree},
         constraints::{ConstraintKind, InstantiateTarget},
-        context::{ExprKind, Pattern, SolverContext},
+        context::{BuiltinOp, ExprKind, Pattern, SolverContext},
         mocks::MockTypecheckEnv,
         types::TyScheme,
     };
@@ -2681,6 +2728,259 @@ mod tests {
             eq_count >= 1,
             "expected at least 1 Eq constraint (result == string), got {}",
             eq_count
+        );
+    }
+
+    // --- Reference model constraint generation tests ---
+
+    /// Helper: collect all Eq constraints from a binding node.
+    fn eq_constraints(binding_node: &ConstraintNode) -> Vec<(&Ty, &Ty)> {
+        binding_node
+            .wanteds
+            .iter()
+            .filter_map(|c| match &c.kind {
+                ConstraintKind::Eq(eq) => Some((&eq.lhs, &eq.rhs)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Helper: check if any Eq constraint has an rhs that matches a predicate.
+    fn has_eq_rhs(binding_node: &ConstraintNode, pred: impl Fn(&Ty) -> bool) -> bool {
+        binding_node.wanteds.iter().any(|c| match &c.kind {
+            ConstraintKind::Eq(eq) => pred(&eq.rhs),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn boxed_generates_mut_ref_constraint() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let inner_id = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(inner_id, ExprKind::LiteralInt);
+        kinds.insert(expr_id, ExprKind::Boxed { expr: inner_id });
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // box(e) should produce a *mut T constraint (MutRef), not *T (Ref)
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::MutRef(_))),
+            "expected MutRef in constraint rhs, got: {:?}",
+            eq_constraints(binding_node)
+        );
+        assert!(
+            !has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
+            "should not produce Ref constraint for box()"
+        );
+    }
+
+    #[test]
+    fn shared_ref_generates_ref_constraint() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let inner_id = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(inner_id, ExprKind::LiteralInt);
+        kinds.insert(
+            expr_id,
+            ExprKind::Ref {
+                expr: inner_id,
+                mutable: false,
+            },
+        );
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // &e should produce *T (Ref), not *mut T (MutRef)
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
+            "expected Ref in constraint rhs, got: {:?}",
+            eq_constraints(binding_node)
+        );
+    }
+
+    #[test]
+    fn mutable_ref_generates_mut_ref_constraint() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let inner_id = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(inner_id, ExprKind::LiteralInt);
+        kinds.insert(
+            expr_id,
+            ExprKind::Ref {
+                expr: inner_id,
+                mutable: true,
+            },
+        );
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // &mut e should produce *mut T (MutRef), not *T (Ref)
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::MutRef(_))),
+            "expected MutRef in constraint rhs for &mut, got: {:?}",
+            eq_constraints(binding_node)
+        );
+        assert!(
+            !has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
+            "should not produce Ref constraint for &mut"
+        );
+    }
+
+    #[test]
+    fn freeze_generates_correct_constraints() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let arg_id = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(arg_id, ExprKind::LiteralInt);
+        kinds.insert(
+            expr_id,
+            ExprKind::BuiltinCall {
+                op: BuiltinOp::Freeze,
+                arg: arg_id,
+            },
+        );
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // freeze(x): arg constrained to MutRef(?a), result constrained to Ref(?a)
+        let eqs = eq_constraints(binding_node);
+        // There should be at least 2 Eq constraints for the builtin call itself
+        // (arg == *mut ?a, result == *?a), plus binding equalities
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::MutRef(_))),
+            "freeze should constrain arg to MutRef, got: {:?}",
+            eqs
+        );
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
+            "freeze should constrain result to Ref, got: {:?}",
+            eqs
+        );
+    }
+
+    #[test]
+    fn id_generates_correct_constraints() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let arg_id = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(arg_id, ExprKind::LiteralInt);
+        kinds.insert(
+            expr_id,
+            ExprKind::BuiltinCall {
+                op: BuiltinOp::Id,
+                arg: arg_id,
+            },
+        );
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // id(x): arg constrained to Ref(?a), result constrained to IdRef(?a)
+        let eqs = eq_constraints(binding_node);
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
+            "id should constrain arg to Ref, got: {:?}",
+            eqs
+        );
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::IdRef(_))),
+            "id should constrain result to IdRef, got: {:?}",
+            eqs
+        );
+    }
+
+    #[test]
+    fn upgrade_generates_correct_constraints() {
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+        let arg_id = NodeId::new();
+        let expr_id = NodeId::new();
+
+        let mut kinds = HashMap::new();
+        kinds.insert(arg_id, ExprKind::LiteralInt);
+        kinds.insert(
+            expr_id,
+            ExprKind::BuiltinCall {
+                op: BuiltinOp::Upgrade,
+                arg: arg_id,
+            },
+        );
+
+        let input = make_input(def_id, expr_id, kinds);
+        let group = single_binding_group(def_id);
+        let typecheck_env = MockTypecheckEnv::new();
+        let mut schema_allocator = SchemaVarAllocator::new();
+        let mut ctx = SolverContext::new(&mut schema_allocator, &typecheck_env);
+
+        let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
+        let binding_node = get_binding_node(&tree);
+
+        // upgrade(x): arg constrained to IdRef(?a), result constrained to nilable[*?a]
+        let eqs = eq_constraints(binding_node);
+        assert!(
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::IdRef(_))),
+            "upgrade should constrain arg to IdRef, got: {:?}",
+            eqs
+        );
+        // Result should be nilable[Ref(?a)] — nilable is Ty::Proj("nilable", _)
+        assert!(
+            has_eq_rhs(binding_node, |ty| {
+                matches!(ty, Ty::Proj(name, args) if name.item_name() == Some("nilable")
+                    && args.len() == 1
+                    && matches!(args[0], Ty::Ref(_)))
+            }),
+            "upgrade should constrain result to nilable[*?a], got: {:?}",
+            eqs
         );
     }
 }

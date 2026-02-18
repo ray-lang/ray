@@ -12,14 +12,15 @@ use ray_shared::{
 use ray_typing::{
     ExprRecord, PatternKind, PatternRecord, TypeCheckInput, TypeError,
     binding_groups::BindingGraph,
-    context::{AssignLhs, ExprKind, LhsPattern, Pattern},
+    context::{AssignLhs, BuiltinOp, ExprKind, LhsPattern, Pattern},
     env::TypecheckEnv,
     info::TypeSystemInfo,
 };
 
 use crate::{
     ast::{
-        CurlyElement, Decl, Expr, FStringPart, Literal, Node, Pattern as AstPattern, RangeLimits,
+        BuiltinKind, CurlyElement, Decl, Expr, FStringPart, Literal, Node, Pattern as AstPattern,
+        RangeLimits,
     },
     sourcemap::SourceMap,
 };
@@ -844,10 +845,13 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             ctx.record_expr(node, ExprKind::New)
         }
         Expr::BuiltinCall(bc) => {
-            // TODO(M3): Add ExprKind::BuiltinCall for proper constraint generation.
-            // For now, lower the arg so it participates in type checking.
             let arg = lower_expr(ctx, &bc.arg);
-            ctx.record_expr(node, ExprKind::Wrapper { expr: arg })
+            let op = match bc.kind {
+                BuiltinKind::Freeze => BuiltinOp::Freeze,
+                BuiltinKind::Id => BuiltinOp::Id,
+                BuiltinKind::Upgrade => BuiltinOp::Upgrade,
+            };
+            ctx.record_expr(node, ExprKind::BuiltinCall { op, arg })
         }
         Expr::Paren(inner) => {
             let expr = lower_expr(ctx, inner);
@@ -910,7 +914,8 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
         }
         Expr::Ref(rf) => {
             let expr = lower_expr(ctx, &rf.expr);
-            ctx.record_expr(node, ExprKind::Ref { expr })
+            let mutable = rf.mutable;
+            ctx.record_expr(node, ExprKind::Ref { expr, mutable })
         }
         Expr::Return(opt_expr) => {
             // If this is `return e`, lower the inner expression and attach it.

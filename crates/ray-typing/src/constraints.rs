@@ -70,6 +70,7 @@ impl HasFieldPredicate {
 pub enum RecvKind {
     Value,
     Ref,
+    MutRef,
 }
 
 // Recv[RecvTy, ExprTy].

@@ -691,12 +691,36 @@ impl ReceiverMode {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::Ty;
+    use crate::types::{ReceiverMode, Ty};
 
     #[test]
     fn func_eq() {
         let f1 = Ty::func(vec![Ty::var("?t0"), Ty::var("?t0")], Ty::var("?t1"));
         let f2 = Ty::func(vec![Ty::var("?t0"), Ty::var("?t0")], Ty::var("?t1"));
         assert_eq!(f1, f2)
+    }
+
+    #[test]
+    fn receiver_mode_from_shared_ref() {
+        let mode = ReceiverMode::from_signature(&[Ty::ref_of(Ty::int())], false);
+        assert_eq!(mode, ReceiverMode::Ptr);
+    }
+
+    #[test]
+    fn receiver_mode_from_mut_ref() {
+        let mode = ReceiverMode::from_signature(&[Ty::mut_ref_of(Ty::int())], false);
+        assert_eq!(mode, ReceiverMode::MutPtr);
+    }
+
+    #[test]
+    fn receiver_mode_from_value() {
+        let mode = ReceiverMode::from_signature(&[Ty::int()], false);
+        assert_eq!(mode, ReceiverMode::Value);
+    }
+
+    #[test]
+    fn receiver_mode_static() {
+        let mode = ReceiverMode::from_signature(&[Ty::mut_ref_of(Ty::int())], true);
+        assert_eq!(mode, ReceiverMode::None);
     }
 }

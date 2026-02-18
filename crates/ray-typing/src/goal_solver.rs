@@ -723,6 +723,7 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
     let target_ty = match rp.kind {
         RecvKind::Value => base_ty,
         RecvKind::Ref => Ty::Ref(Box::new(base_ty)),
+        RecvKind::MutRef => Ty::MutRef(Box::new(base_ty)),
     };
 
     log::debug!(
@@ -1381,6 +1382,7 @@ fn solve_chosen_method_call(
         // separate constraint into the outer worklist.
         let recv_kind = match recv_mode {
             ReceiverMode::Ptr => RecvKind::Ref,
+            ReceiverMode::MutPtr => RecvKind::MutRef,
             _ => RecvKind::Value,
         };
         let recv_ok = solve_recv(
@@ -2014,5 +2016,52 @@ mod tests {
             Ty::Func(vec![Ty::int()], Box::new(Ty::int())),
             "expression type should be inferred as (int) -> int"
         );
+    }
+
+    // --- MutRef receiver coercion tests ---
+
+    #[test]
+    fn solve_recv_mut_ref_autorefs_to_mut_ref() {
+        let mut subst = Subst::new();
+        // Method expects *mut T receiver, expression is a plain value
+        let wanted = Constraint::recv(
+            RecvKind::MutRef,
+            Ty::mut_ref_of(Ty::list(Ty::var("?t0"))),
+            Ty::list(Ty::con("u32")),
+            TypeSystemInfo::default(),
+        );
+
+        assert!(solve_recv(&wanted, &mut subst));
+        assert_eq!(subst.get(&TyVar::new("?t0")), Some(&Ty::con("u32")));
+    }
+
+    #[test]
+    fn solve_recv_mut_ref_autoderefs_mut_ref_expr() {
+        let mut subst = Subst::new();
+        // Method expects *mut T receiver, expression type is *mut list[u32]
+        let wanted = Constraint::recv(
+            RecvKind::MutRef,
+            Ty::mut_ref_of(Ty::list(Ty::var("?t0"))),
+            Ty::mut_ref_of(Ty::list(Ty::con("u32"))),
+            TypeSystemInfo::default(),
+        );
+
+        assert!(solve_recv(&wanted, &mut subst));
+        assert_eq!(subst.get(&TyVar::new("?t0")), Some(&Ty::con("u32")));
+    }
+
+    #[test]
+    fn solve_recv_value_autoderefs_mut_ref_expr() {
+        let mut subst = Subst::new();
+        // Method expects value receiver, expression type is *mut list[u32]
+        let wanted = Constraint::recv(
+            RecvKind::Value,
+            Ty::list(Ty::var("?t0")),
+            Ty::mut_ref_of(Ty::list(Ty::con("u32"))),
+            TypeSystemInfo::default(),
+        );
+
+        assert!(solve_recv(&wanted, &mut subst));
+        assert_eq!(subst.get(&TyVar::new("?t0")), Some(&Ty::con("u32")));
     }
 }

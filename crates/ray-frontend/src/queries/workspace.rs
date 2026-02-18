@@ -335,9 +335,16 @@ pub fn workspace_source_map(db: &Database, _key: ()) -> SourceMap {
 mod tests {
     use std::fs;
 
+    use ray_shared::{
+        file_id::FileId,
+        pathlib::{FilePath, ModulePath},
+    };
     use tempfile::tempdir;
 
-    use super::*;
+    use crate::{
+        queries::workspace::{FileSource, WorkspaceSnapshot},
+        query::{Database, Input as _},
+    };
 
     #[test]
     fn workspace_snapshot_can_add_files() {

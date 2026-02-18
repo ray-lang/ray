@@ -295,7 +295,8 @@ impl TypeCheckInput {
             Some(ExprKind::Missing) => vec![],
             Some(ExprKind::Boxed { expr }) => vec![*expr],
             Some(ExprKind::Deref { expr }) => vec![*expr],
-            Some(ExprKind::Ref { expr }) => vec![*expr],
+            Some(ExprKind::Ref { expr, .. }) => vec![*expr],
+            Some(ExprKind::BuiltinCall { arg, .. }) => vec![*arg],
             Some(ExprKind::Tuple { elems }) => elems.clone(),
             Some(ExprKind::BinaryOp {
                 lhs, rhs, operator, ..

@@ -263,7 +263,10 @@ impl PersistenceBackend for RedbBackend {
 mod tests {
     use tempfile::tempdir;
 
-    use super::*;
+    use crate::persistence::{
+        PersistenceBackend as _, QueryId,
+        redb_backend::{CACHE_VERSION, INFO_TABLE, RedbBackend},
+    };
 
     #[test]
     fn new_backend_creates_fresh_db() {

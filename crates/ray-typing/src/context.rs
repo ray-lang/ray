@@ -45,6 +45,20 @@ pub enum Pattern {
     },
 }
 
+/// Built-in operations that have special type rules.
+///
+/// This is the typing IR's counterpart to `ray_core::ast::BuiltinKind`,
+/// intentionally decoupled from the AST.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuiltinOp {
+    /// `freeze(x)`: consumes `*mut T`, produces `*T`.
+    Freeze,
+    /// `id(x)`: takes `*T`, produces `id *T`.
+    Id,
+    /// `upgrade(x)`: takes `id *T`, produces `nilable[*T]`.
+    Upgrade,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExprKind {
     /// A reference to a local binding (parameter, let-binding, etc.).
@@ -162,8 +176,9 @@ pub enum ExprKind {
     /// Dereference `*e`, which in the core type system has type `T` when
     /// `e : *T` (Section 1.1 "Pointer types").
     Deref { expr: NodeId },
-    /// Explicit reference `ref e`, which has type `*T` when `e : T`.
-    Ref { expr: NodeId },
+    /// Explicit reference `&e` or `&mut e`.
+    /// `&e` has type `*T` when `e : T`; `&mut e` has type `*mut T`.
+    Ref { expr: NodeId, mutable: bool },
     /// Tuple expression `(e0, e1, ..., en)`.
     Tuple { elems: Vec<NodeId> },
     /// `for pat in e { body }` using the `Iter[Recv, Elem]` trait, as
@@ -231,6 +246,8 @@ pub enum ExprKind {
     /// `Index[ContainerTy, ElemTy, IndexTy]` predicate (see the
     /// `Index` trait in docs/type-system.md Section A.3).
     Index { container: NodeId, index: NodeId },
+    /// Built-in operation `freeze(e)`, `id(e)`, or `upgrade(e)`.
+    BuiltinCall { op: BuiltinOp, arg: NodeId },
     /// Heap allocation `new(T)`. The target type `T` comes from the
     /// frontend's annotation and is not yet threaded into this IR.
     New,

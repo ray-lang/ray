@@ -315,9 +315,15 @@ fn utf16_len(text: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use ray_core::ide::semantic_tokens as semantic;
     use std::path::PathBuf;
+
+    use ray_core::ide::semantic_tokens as semantic;
+    use tower_lsp::lsp_types::SemanticTokens;
+
+    use crate::semantic_tokens::{
+        TOKEN_TYPE_COMMENT, TOKEN_TYPE_FIELD, TOKEN_TYPE_FUNCTION, TOKEN_TYPE_KEYWORD,
+        TOKEN_TYPE_PARAMETER, TOKEN_TYPE_TYPE, encode_tokens,
+    };
 
     /// Parse + encode semantic tokens for a source string (test helper).
     fn tokens_for_source(source: &str) -> SemanticTokens {

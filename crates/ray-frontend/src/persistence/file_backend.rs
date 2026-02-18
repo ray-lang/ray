@@ -266,9 +266,14 @@ impl PersistenceBackend for FileBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
-    use super::*;
+    use crate::persistence::{
+        PersistenceBackend as _, QueryId,
+        file_backend::{CACHE_VERSION, FileBackend},
+    };
 
     #[test]
     fn new_backend_invalidates_when_no_version_file() {
