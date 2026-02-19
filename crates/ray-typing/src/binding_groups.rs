@@ -5,8 +5,10 @@
 // for locals. This file still provides SCC grouping, but callers
 // can induce subgraphs for custom grouping needs.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
+use std::ops::{Deref, DerefMut};
 
+use ray_shared::graph::DirectedGraph;
 use serde::{Deserialize, Serialize};
 
 // Represents a single binding in a module or scope.
@@ -46,172 +48,70 @@ impl<T: std::fmt::Display> std::fmt::Display for BindingGroup<T> {
     }
 }
 
-/// Type alias for backwards compatibility during migration.
-pub type LegacyBindingGroup = BindingGroup<BindingId>;
-
-/// A dependency graph between bindings. An edge `from -> to` means that the
-/// definition of `from` refers to `to`.
+/// A dependency graph between bindings, backed by `DirectedGraph<T>`.
+///
+/// An edge `from -> to` means that the definition of `from` refers to `to`.
+/// Provides binding-specific methods (topo-sorted SCCs) on top of the
+/// generic graph operations available via `Deref<Target = DirectedGraph<T>>`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "T: Serialize + Ord",
     deserialize = "T: Deserialize<'de> + Ord"
 ))]
-pub struct BindingGraph<T> {
-    pub edges: BTreeMap<T, Vec<T>>,
-}
+pub struct BindingGraph<T>(pub DirectedGraph<T>);
 
-/// Type alias for backwards compatibility during migration.
-pub type LegacyBindingGraph = BindingGraph<BindingId>;
-
-struct SccBuilder<'a, T> {
-    /// Reference to the binding dependency graph we are analyzing.
-    graph: &'a BindingGraph<T>,
-    /// All binding IDs participating in the graph, each assigned a compact
-    /// index for use in Tarjan's algorithm.
-    nodes: Vec<T>,
-    /// Mapping from node to its index in `nodes`.
-    id_to_idx: HashMap<T, usize>,
-    /// Next depth-first search index to assign.
-    index: usize,
-    /// DFS discovery index for each node, or `None` if not yet visited.
-    indices: Vec<Option<usize>>,
-    /// Lowest index reachable from each node via DFS (Tarjan lowlink).
-    lowlink: Vec<usize>,
-    /// Whether a node is currently on the SCC stack.
-    on_stack: Vec<bool>,
-    /// Stack of node indices representing the current DFS path.
-    stack: Vec<usize>,
-    /// Accumulated strongly connected components as lists of nodes.
-    sccs: Vec<Vec<T>>,
-}
-
-impl<'a, T: Copy + Eq + std::hash::Hash + Ord> SccBuilder<'a, T> {
-    fn new(graph: &'a BindingGraph<T>) -> Self {
-        let mut nodes = Vec::new();
-        let mut id_to_idx = HashMap::new();
-
-        for (&id, neighbours) in &graph.edges {
-            if !id_to_idx.contains_key(&id) {
-                let idx = nodes.len();
-                nodes.push(id);
-                id_to_idx.insert(id, idx);
-            }
-            for &n in neighbours {
-                if !id_to_idx.contains_key(&n) {
-                    let idx = nodes.len();
-                    nodes.push(n);
-                    id_to_idx.insert(n, idx);
-                }
-            }
-        }
-
-        let n = nodes.len();
-        SccBuilder {
-            graph,
-            nodes,
-            id_to_idx,
-            index: 0,
-            indices: vec![None; n],
-            lowlink: vec![0; n],
-            on_stack: vec![false; n],
-            stack: Vec::new(),
-            sccs: Vec::new(),
-        }
-    }
-
-    fn strong_connect(&mut self, v: usize) {
-        // Set the depth index for v to the smallest unused index and push it
-        // onto the stack.
-        self.indices[v] = Some(self.index);
-        self.lowlink[v] = self.index;
-        self.index += 1;
-        self.stack.push(v);
-        self.on_stack[v] = true;
-
-        let v_id = self.nodes[v];
-        if let Some(neighbours) = self.graph.edges.get(&v_id) {
-            for &w_id in neighbours {
-                if let Some(&w) = self.id_to_idx.get(&w_id) {
-                    if self.indices[w].is_none() {
-                        // Successor w has not yet been visited; recurse on it.
-                        self.strong_connect(w);
-                        // After recursion, update v's lowlink based on w.
-                        self.lowlink[v] = self.lowlink[v].min(self.lowlink[w]);
-                    } else if self.on_stack[w] {
-                        // Successor w is in the current SCC stack; update
-                        // lowlink[v] based on w's index.
-                        if let Some(idx_w) = self.indices[w] {
-                            self.lowlink[v] = self.lowlink[v].min(idx_w);
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(idx_v) = self.indices[v] {
-            if self.lowlink[v] == idx_v {
-                // If v is a root node, pop the stack and generate an SCC.
-                let mut component = Vec::new();
-                while let Some(w) = self.stack.pop() {
-                    self.on_stack[w] = false;
-                    component.push(self.nodes[w]);
-                    if w == v {
-                        break;
-                    }
-                }
-                self.sccs.push(component);
-            }
-        }
-    }
-
-    fn run(mut self) -> Vec<Vec<T>> {
-        for v in 0..self.nodes.len() {
-            if self.indices[v].is_none() {
-                self.strong_connect(v);
-            }
-        }
-        self.sccs
+impl<T> Deref for BindingGraph<T> {
+    type Target = DirectedGraph<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-impl<T: Copy + Eq + std::hash::Hash + Ord> BindingGraph<T> {
+impl<T> DerefMut for BindingGraph<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Clone + Eq + std::hash::Hash + Ord> BindingGraph<T> {
     pub fn new() -> Self {
-        BindingGraph {
-            edges: BTreeMap::new(),
-        }
+        BindingGraph(DirectedGraph::new())
     }
 
+    /// Add a binding (node) with no outgoing edges.
     pub fn add_binding(&mut self, id: T) {
-        self.edges.entry(id).or_insert_with(Vec::new);
+        self.0.add_node(id);
     }
 
-    pub fn add_edge(&mut self, from: T, to: T) {
-        self.edges.entry(from).or_insert_with(Vec::new).push(to);
-        self.edges.entry(to).or_insert_with(Vec::new);
+    /// Returns a new `BindingGraph` induced by the set of nodes.
+    /// Only bindings in `nodes` are included as keys in the new graph,
+    /// and only edges where both endpoints are in `nodes` are kept.
+    pub fn induced_subgraph(&self, nodes: &BTreeSet<T>) -> BindingGraph<T> {
+        BindingGraph(self.0.induced_subgraph(nodes))
     }
 
     /// Compute binding groups as strongly connected components (SCCs) of the
-    /// dependency graph, as described in the type system spec.
+    /// dependency graph, topologically sorted so that dependencies come before
+    /// dependents.
     pub fn compute_binding_groups(&self) -> Vec<BindingGroup<T>> {
-        let builder = SccBuilder::new(self);
-        let sccs = builder.run();
+        let sccs = self.0.compute_sccs();
 
         // Build a condensation graph of SCCs and compute a topo order where
         // dependencies come before dependents.
         let comp_count = sccs.len();
         let mut comp_index_of: HashMap<T, usize> = HashMap::new();
         for (ci, comp) in sccs.iter().enumerate() {
-            for &bid in comp {
-                comp_index_of.insert(bid, ci);
+            for bid in comp {
+                comp_index_of.insert(bid.clone(), ci);
             }
         }
 
         let mut comp_edges: Vec<Vec<usize>> = vec![Vec::new(); comp_count];
         let mut indegree: Vec<usize> = vec![0; comp_count];
-        for (&from, neighbours) in &self.edges {
-            if let Some(&from_ci) = comp_index_of.get(&from) {
-                for &to in neighbours {
-                    if let Some(&to_ci) = comp_index_of.get(&to) {
+        for (from, neighbours) in &self.0.edges {
+            if let Some(&from_ci) = comp_index_of.get(from) {
+                for to in neighbours {
+                    if let Some(&to_ci) = comp_index_of.get(to) {
                         if from_ci != to_ci {
                             // Edge from dependency to dependent so that
                             // dependencies appear earlier in topological order.
@@ -244,28 +144,6 @@ impl<T: Copy + Eq + std::hash::Hash + Ord> BindingGraph<T> {
             .into_iter()
             .map(|ci| BindingGroup::new(sccs[ci].clone()))
             .collect()
-    }
-
-    /// Returns a new BindingGraph induced by the set of nodes.
-    /// Only bindings in `nodes` are included as keys in the new graph,
-    /// and only edges where both endpoints are in `nodes` are kept.
-    pub fn induced_subgraph(&self, nodes: &BTreeSet<T>) -> BindingGraph<T> {
-        let mut edges = BTreeMap::new();
-        for &id in nodes {
-            let filtered: Vec<T> = self
-                .edges
-                .get(&id)
-                .map(|neighs| {
-                    neighs
-                        .iter()
-                        .cloned()
-                        .filter(|n| nodes.contains(n))
-                        .collect()
-                })
-                .unwrap_or_else(Vec::new);
-            edges.insert(id, filtered);
-        }
-        BindingGraph { edges }
     }
 
     /// Computes binding groups (SCCs) over a filtered set of bindings.

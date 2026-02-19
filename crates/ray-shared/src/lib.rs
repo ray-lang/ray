@@ -5,6 +5,7 @@ pub mod binding_target;
 pub mod collections;
 pub mod def;
 pub mod file_id;
+pub mod graph;
 pub mod local_binding;
 pub mod logger;
 pub mod node_id;

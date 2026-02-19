@@ -952,7 +952,9 @@ mod tests {
         assert!(reexports.is_empty(), "unresolved export should be skipped");
     }
 
-    // ── module_def_index re-export tests ────────────────────────────────────
+    // =========================================================================
+    // module_def_index re-export tests
+    // =========================================================================
 
     #[test]
     fn module_def_index_namespace_reexport_adds_module() {

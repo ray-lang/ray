@@ -9,10 +9,7 @@ use ray_codegen::{
     codegen::{CodegenOptions, llvm},
     libgen, lir,
 };
-use ray_core::{
-    errors::{RayError, RayErrorKind},
-    sourcemap::SourceMap,
-};
+use ray_core::errors::{RayError, RayErrorKind};
 use ray_frontend::{
     persistence::redb_backend::RedbBackend,
     queries::{
@@ -77,19 +74,6 @@ impl WorkspaceResult {
             .map(|mp| Path::from(mp.to_string()))
             .collect()
     }
-}
-
-/// Legacy result type for backward compatibility.
-///
-/// Prefer using `WorkspaceResult` from `init_workspace()` and queries instead.
-#[deprecated(note = "Use WorkspaceResult from init_workspace() and queries instead")]
-pub struct FrontendResult {
-    pub db: Database,
-    pub file_id: FileId,
-    pub module_path: Path,
-    pub srcmap: SourceMap,
-    pub paths: HashSet<Path>,
-    pub errors: Vec<RayError>,
 }
 
 #[derive(Debug)]
