@@ -185,6 +185,11 @@ impl Parser<'_> {
         path: &Path,
     ) -> ParseResult<Node<FnParam>> {
         let is_move = expect_if!(self, TokenKind::Move);
+        let is_noescape = if !is_move {
+            expect_if!(self, TokenKind::Noescape)
+        } else {
+            false
+        };
         self.parse_name_with_type(Some(&TokenKind::RightParen), ctx)
             .map(|name| {
                 let span = self.srcmap.span_of(&name);
@@ -192,6 +197,7 @@ impl Parser<'_> {
                     FnParam::Name {
                         name: name.value,
                         is_move,
+                        is_noescape,
                     },
                     span,
                     path.clone(),
@@ -204,6 +210,11 @@ impl Parser<'_> {
         ctx: &ParseContext,
     ) -> ParseResult<Node<FnParam>> {
         let is_move = expect_if!(self, TokenKind::Move);
+        let is_noescape = if !is_move {
+            expect_if!(self, TokenKind::Noescape)
+        } else {
+            false
+        };
         let (name, span) = self.expect_id(ctx)?;
         self.expect(TokenKind::Colon, ctx)?;
         let ty = self.parse_type_annotation(Some(&TokenKind::Comma), ctx);
@@ -211,6 +222,7 @@ impl Parser<'_> {
             FnParam::Name {
                 name: Name::typed(name, ty),
                 is_move,
+                is_noescape,
             },
             span,
             ctx.path.clone(),

@@ -894,6 +894,7 @@ mod tests {
         let param = Node::new(FnParam::Name {
             name: Name::new("x"),
             is_move: false,
+            is_noescape: false,
         });
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
@@ -989,6 +990,7 @@ mod tests {
         let param = Node::new(FnParam::Name {
             name: Name::new("x"),
             is_move: false,
+            is_noescape: false,
         });
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
@@ -1535,6 +1537,7 @@ mod tests {
         let param = Node::new(FnParam::Name {
             name,
             is_move: false,
+            is_noescape: false,
         });
 
         let mut sig = make_func_sig("test::f");
@@ -1846,6 +1849,7 @@ mod tests {
         let other_param = Node::new(FnParam::Name {
             name: other_name,
             is_move: false,
+            is_noescape: false,
         });
 
         // Create method signature
@@ -2315,6 +2319,7 @@ mod tests {
         let x_param = Node::new(FnParam::Name {
             name: x_name,
             is_move: false,
+            is_noescape: false,
         });
 
         // Create function
@@ -2402,6 +2407,7 @@ mod tests {
         let x_param = Node::new(FnParam::Name {
             name: x_name,
             is_move: false,
+            is_noescape: false,
         });
 
         // Create function with type parameter
@@ -2816,6 +2822,7 @@ mod tests {
         let buf_param = Node::new(FnParam::Name {
             name: buf_name,
             is_move: false,
+            is_noescape: false,
         });
 
         // Create extern function signature
@@ -2932,6 +2939,7 @@ mod tests {
         let arr_param = Node::new(FnParam::Name {
             name: arr_name,
             is_move: false,
+            is_noescape: false,
         });
 
         // Create extern function signature with type params
@@ -3006,6 +3014,7 @@ mod tests {
         let x_param = Node::new(FnParam::Name {
             name: x_name,
             is_move: false,
+            is_noescape: false,
         });
 
         // Create extern function signature with type params

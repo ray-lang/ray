@@ -101,10 +101,9 @@ lazy_static! {
     static ref MALLOC_BUF_HASH: u64 = xxhash_rust::xxh3::xxh3_64(MALLOC_BUF);
 }
 
-pub fn codegen<'a, P>(
+pub fn codegen<P>(
     program: &lir::Program,
     srcmap: &SourceMap,
-    lcx: &'a llvm::context::Context,
     target: &Target,
     output_path: P,
     options: CodegenOptions,
@@ -112,10 +111,11 @@ pub fn codegen<'a, P>(
 where
     P: FnOnce(&'static str) -> FilePath,
 {
+    let lcx = llvm::context::Context::create();
     let name = program.module_path.to_string();
     let module = lcx.create_module(&name);
     let builder = lcx.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(target, lcx, &module, &builder, &program.struct_types);
+    let mut ctx = LLVMCodegenCtx::new(target, &lcx, &module, &builder, &program.struct_types);
     if let Some(err) = program.codegen(&mut ctx, srcmap).err() {
         // TODO: convert to ray error
         panic!("error during codegen: {}", err);

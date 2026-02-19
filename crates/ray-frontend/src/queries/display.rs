@@ -1078,10 +1078,12 @@ impl object Point {
                     ParamDef {
                         name: "data".into(),
                         is_move: false,
+                        is_noescape: false,
                     },
                     ParamDef {
                         name: "flags".into(),
                         is_move: false,
+                        is_noescape: false,
                     },
                 ],
                 modifiers: vec![],

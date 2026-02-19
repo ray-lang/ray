@@ -346,6 +346,7 @@ impl Lexer {
             "freeze" => TokenKind::Freeze,
             "id" => TokenKind::Id,
             "move" => TokenKind::Move,
+            "noescape" => TokenKind::Noescape,
             "upgrade" => TokenKind::Upgrade,
             "test" => TokenKind::Test,
             "pub" => TokenKind::Modifier(Modifier::Pub),

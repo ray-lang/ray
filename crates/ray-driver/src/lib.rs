@@ -433,21 +433,13 @@ impl Driver {
             program.tree_shake(None);
             log::debug!("program after monomorphization:\n{}", program);
 
-            let lcx = inkwell::context::Context::create();
             let target = options.get_target();
             let codegen_options = CodegenOptions {
                 emit: matches!(options.emit, Some(build::EmitType::LLVM)),
                 opt_level: options.opt_level,
             };
             let wasm_path = output_path("wasm");
-            llvm::codegen(
-                &program,
-                &srcmap,
-                &lcx,
-                &target,
-                output_path,
-                codegen_options,
-            )?;
+            llvm::codegen(&program, &srcmap, &target, output_path, codegen_options)?;
             Ok(Some(wasm_path))
         }
     }

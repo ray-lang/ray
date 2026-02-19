@@ -7,21 +7,21 @@
 use std::collections::{HashMap, HashSet};
 
 use ray_core::{
-    ast::{BuiltinKind, Call, CurlyElement, Decl, Expr, Node},
+    ast::{BuiltinKind, Call, CurlyElement, Decl, Expr, FuncSig, Node},
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
 use ray_shared::{
     def::DefId, file_id::FileId, local_binding::LocalBindingId, node_id::NodeId, pathlib::FilePath,
-    resolution::DefTarget, span::Source,
+    span::Source,
 };
 
 use crate::{
     queries::{
         bindings::local_binding_for_node,
-        defs::{find_def_ast, func_def},
-        resolve::name_resolutions,
+        closures::closure_info,
+        defs::{call_arg_params, find_def_ast},
         transform::file_ast,
         typecheck::inferred_local_type,
     },
@@ -57,6 +57,8 @@ pub fn validate_ownership(db: &Database, def_id: DefId) -> Vec<RayError> {
         Decl::Func(func) => {
             if let Some(body) = &func.body {
                 ctx.visit_expr(body);
+                // Validate callee-side noescape parameter usage
+                ctx.validate_noescape_params(&func.sig, body);
             }
         }
         _ => {}
@@ -125,6 +127,8 @@ struct OwnershipCtx<'a> {
     srcmap: &'a SourceMap,
     /// Maps tracked `*mut T` variables to their current state.
     var_states: HashMap<LocalBindingId, VarState>,
+    /// Closures passed to `noescape` parameters borrow captures instead of moving.
+    noescape_closures: HashSet<NodeId>,
     errors: Vec<RayError>,
 }
 
@@ -141,6 +145,7 @@ impl<'a> OwnershipCtx<'a> {
             filepath,
             srcmap,
             var_states: HashMap::new(),
+            noescape_closures: HashSet::new(),
             errors: Vec::new(),
         }
     }
@@ -216,28 +221,23 @@ impl<'a> OwnershipCtx<'a> {
     /// Check if any arguments to a call are passed to `move` parameters,
     /// and if so, consume the corresponding `*mut T` variables.
     fn check_move_params(&mut self, call: &Call) {
-        let callee_id = call.call_resolution_id();
-        let Some(target) = self.resolve_callee_target(self.file_id, callee_id) else {
-            return;
-        };
-        let Some(fdef) = func_def(&self.db, target) else {
-            return;
-        };
-
-        // Method calls have an implicit self parameter
-        let param_offset = if call.is_method_call() { 1 } else { 0 };
-
-        for (i, arg) in call.args.items.iter().enumerate() {
-            let param_idx = i + param_offset;
-            let Some(param) = fdef.params.get(param_idx) else {
-                continue;
-            };
-            if !param.is_move {
-                continue;
+        for (arg, param) in call_arg_params(self.db, self.file_id, call) {
+            if param.is_move {
+                if let Some(local_id) = local_binding_for_node(self.db, arg.id) {
+                    self.consume(local_id);
+                }
             }
-            // This argument is passed to a `move` parameter — consume it.
-            if let Some(local_id) = local_binding_for_node(&self.db, arg.id) {
-                self.consume(local_id);
+        }
+    }
+
+    /// Mark closure arguments passed to `noescape` parameters.
+    ///
+    /// When a closure literal is passed to a `noescape` parameter, it borrows
+    /// captured `*mut T` variables instead of moving them.
+    fn mark_noescape_closures(&mut self, call: &Call) {
+        for (arg, param) in call_arg_params(self.db, self.file_id, call) {
+            if param.is_noescape && matches!(&arg.value, Expr::Closure(_)) {
+                self.noescape_closures.insert(arg.id);
             }
         }
     }
@@ -320,12 +320,6 @@ impl<'a> OwnershipCtx<'a> {
         }
     }
 
-    /// Resolve a callee NodeId to its DefTarget.
-    fn resolve_callee_target(&self, file_id: FileId, callee_id: NodeId) -> Option<DefTarget> {
-        let resolutions = name_resolutions(&self.db, file_id);
-        resolutions.get(&callee_id)?.to_def_target()
-    }
-
     /// Recursively visit an expression, tracking `*mut T` ownership state.
     fn visit_expr(&mut self, expr: &Node<Expr>) {
         match &expr.value {
@@ -388,6 +382,9 @@ impl<'a> OwnershipCtx<'a> {
             }
             Expr::Call(call) => {
                 self.visit_expr(&call.callee);
+                // Before visiting arguments, mark closure args passed to noescape
+                // parameters so the closure visitor can borrow instead of move.
+                self.mark_noescape_closures(call);
                 for arg in &call.args.items {
                     self.visit_expr(arg);
                 }
@@ -457,11 +454,47 @@ impl<'a> OwnershipCtx<'a> {
                 // new(T) has no sub-expressions to visit
             }
             Expr::Closure(closure) => {
-                // Walk closure body with the current context. This is conservative:
-                // if the closure consumes a *mut T (e.g., freeze(p)), we treat it
-                // as consumed in the enclosing scope. This is safe because the closure
-                // may be called before any subsequent use of the variable.
-                self.visit_expr(&closure.body);
+                // Capturing a *mut T variable moves it into the closure.
+                // The original binding is consumed at the closure creation point.
+                // Exception: noescape closures borrow instead of moving.
+                let is_noescape = self.noescape_closures.remove(&expr.id);
+
+                if let Some(info) = closure_info(self.db, expr.id) {
+                    // Collect captured *mut T bindings
+                    let mut captured_mut_refs = Vec::new();
+                    for &capture_id in &info.captures {
+                        let is_mut = inferred_local_type(self.db, capture_id)
+                            .map(|ty| ty.is_mut_ref())
+                            .unwrap_or(false);
+                        if is_mut {
+                            // Check for use-after-consume (e.g., second closure capturing same var)
+                            self.record_use(capture_id, expr);
+                            if !is_noescape {
+                                // Consume in outer scope: the *mut T is moved into the closure
+                                self.consume(capture_id);
+                            }
+                            captured_mut_refs.push(capture_id);
+                        }
+                    }
+
+                    // Save outer state
+                    let outer_state = self.save_state();
+
+                    // Inside the closure body, captured *mut T vars are alive
+                    // (the closure owns them after the move / borrow)
+                    for &id in &captured_mut_refs {
+                        self.var_states.insert(id, VarState::Alive);
+                    }
+
+                    // Visit closure body (validates internal ownership, e.g. freeze inside)
+                    self.visit_expr(&closure.body);
+
+                    // Restore outer state — outer scope sees captures as Consumed (or Alive for noescape)
+                    self.var_states = outer_state;
+                } else {
+                    // Fallback: no closure info, walk body conservatively
+                    self.visit_expr(&closure.body);
+                }
             }
             Expr::Func(_) => {
                 // Nested functions don't get their own DefId, so validate_ownership
@@ -497,6 +530,174 @@ impl<'a> OwnershipCtx<'a> {
             }
             // Literals and other leaf expressions — nothing to visit
             _ => {}
+        }
+    }
+
+    /// Validate callee-side noescape parameter usage.
+    ///
+    /// A `noescape` parameter may only be:
+    /// - Called directly (callee position of a `Call`)
+    /// - Passed to another `noescape` parameter
+    ///
+    /// Returning, assigning, or passing to a non-noescape parameter is an error.
+    fn validate_noescape_params(&mut self, sig: &FuncSig, body: &Node<Expr>) {
+        let mut noescape_bindings: HashSet<LocalBindingId> = HashSet::new();
+        for param in &sig.params {
+            if param.value.is_noescape() {
+                if let Some(local_id) = local_binding_for_node(self.db, param.id) {
+                    noescape_bindings.insert(local_id);
+                }
+            }
+        }
+        if noescape_bindings.is_empty() {
+            return;
+        }
+        self.check_noescape_uses(body, &noescape_bindings);
+    }
+
+    /// Recursively walk the body checking that noescape params are only used
+    /// in allowed positions.
+    fn check_noescape_uses(
+        &mut self,
+        expr: &Node<Expr>,
+        noescape_bindings: &HashSet<LocalBindingId>,
+    ) {
+        match &expr.value {
+            Expr::Block(block) => {
+                for stmt in &block.stmts {
+                    self.check_noescape_uses(stmt, noescape_bindings);
+                }
+            }
+            Expr::Call(call) => {
+                // The callee position is OK for a noescape param (direct call)
+                // But we still recurse into non-callee positions
+                // Don't check the callee itself — it's an allowed position
+                self.check_noescape_call_args(call, noescape_bindings);
+                // Recurse into the callee for nested expressions (e.g., foo(bar)())
+                match &call.callee.value {
+                    Expr::Name(_) => {
+                        // Simple name callee — this is the direct-call pattern, OK
+                    }
+                    _ => {
+                        self.check_noescape_uses(&call.callee, noescape_bindings);
+                    }
+                }
+            }
+            Expr::Assign(assign) => {
+                // Assigning a noescape param to a local is an error
+                if let Some(local_id) = local_binding_for_node(self.db, assign.rhs.id) {
+                    if noescape_bindings.contains(&local_id) {
+                        self.errors.push(RayError {
+                            msg: format!(
+                                "`noescape` parameter `{}` cannot be assigned to a local variable",
+                                assign.rhs.get_name().unwrap_or_default()
+                            ),
+                            src: vec![Source {
+                                span: Some(self.srcmap.span_of(&assign.rhs)),
+                                filepath: self.filepath.clone(),
+                                ..Default::default()
+                            }],
+                            kind: RayErrorKind::Type,
+                            context: Some("noescape validation".to_string()),
+                        });
+                    }
+                }
+                self.check_noescape_uses(&assign.rhs, noescape_bindings);
+            }
+            Expr::Return(ret) => {
+                if let Some(val) = ret {
+                    if let Some(local_id) = local_binding_for_node(self.db, val.id) {
+                        if noescape_bindings.contains(&local_id) {
+                            self.errors.push(RayError {
+                                msg: format!(
+                                    "`noescape` parameter `{}` cannot be returned",
+                                    val.get_name().unwrap_or_default()
+                                ),
+                                src: vec![Source {
+                                    span: Some(self.srcmap.span_of(val)),
+                                    filepath: self.filepath.clone(),
+                                    ..Default::default()
+                                }],
+                                kind: RayErrorKind::Type,
+                                context: Some("noescape validation".to_string()),
+                            });
+                        }
+                    }
+                    self.check_noescape_uses(val, noescape_bindings);
+                }
+            }
+            Expr::If(if_expr) => {
+                self.check_noescape_uses(&if_expr.cond, noescape_bindings);
+                self.check_noescape_uses(&if_expr.then, noescape_bindings);
+                if let Some(els) = &if_expr.els {
+                    self.check_noescape_uses(els, noescape_bindings);
+                }
+            }
+            Expr::For(for_expr) => {
+                self.check_noescape_uses(&for_expr.expr, noescape_bindings);
+                self.check_noescape_uses(&for_expr.body, noescape_bindings);
+            }
+            Expr::While(while_expr) => {
+                self.check_noescape_uses(&while_expr.cond, noescape_bindings);
+                self.check_noescape_uses(&while_expr.body, noescape_bindings);
+            }
+            Expr::Loop(loop_expr) => {
+                self.check_noescape_uses(&loop_expr.body, noescape_bindings);
+            }
+            Expr::Closure(closure) => {
+                // Capturing a noescape param in a closure is always an error
+                // (closures can escape, noescape params cannot)
+                self.check_noescape_uses(&closure.body, noescape_bindings);
+            }
+            Expr::BinOp(binop) => {
+                self.check_noescape_uses(&binop.lhs, noescape_bindings);
+                self.check_noescape_uses(&binop.rhs, noescape_bindings);
+            }
+            Expr::UnaryOp(unop) => {
+                self.check_noescape_uses(&unop.expr, noescape_bindings);
+            }
+            _ => {}
+        }
+    }
+
+    /// Check arguments of a call for noescape violations.
+    ///
+    /// A noescape param passed as an argument is OK only if the corresponding
+    /// callee parameter is also `noescape`.
+    fn check_noescape_call_args(
+        &mut self,
+        call: &Call,
+        noescape_bindings: &HashSet<LocalBindingId>,
+    ) {
+        // Build a set of arg NodeIds whose target parameter is noescape
+        let noescape_target_args: HashSet<NodeId> = call_arg_params(self.db, self.file_id, call)
+            .filter(|(_, param)| param.is_noescape)
+            .map(|(arg, _)| arg.id)
+            .collect();
+
+        for arg in &call.args.items {
+            if let Some(local_id) = local_binding_for_node(self.db, arg.id) {
+                if noescape_bindings.contains(&local_id) && !noescape_target_args.contains(&arg.id)
+                {
+                    self.errors.push(RayError {
+                        msg: format!(
+                            "`noescape` parameter `{}` can only be passed to another `noescape` parameter",
+                            arg.get_name().unwrap_or_default()
+                        ),
+                        src: vec![Source {
+                            span: Some(self.srcmap.span_of(arg)),
+                            filepath: self.filepath.clone(),
+                            ..Default::default()
+                        }],
+                        kind: RayErrorKind::Type,
+                        context: Some("noescape validation".to_string()),
+                    });
+                }
+            }
+            // Recurse into non-Name arguments (e.g., nested calls)
+            if !matches!(&arg.value, Expr::Name(_)) {
+                self.check_noescape_uses(arg, noescape_bindings);
+            }
         }
     }
 }
@@ -661,7 +862,9 @@ fn bad() {
     }
 
     #[test]
-    fn validate_ownership_closure_not_consuming_is_ok() {
+    fn validate_ownership_closure_capturing_mut_ref_is_move() {
+        // Capturing *mut T in a closure is a move — the original is consumed
+        // at the closure creation point, regardless of what the closure does with it.
         let db = Database::new();
 
         let mut workspace = WorkspaceSnapshot::new();
@@ -670,12 +873,55 @@ fn bad() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // Closure uses p but doesn't consume it — no error
+        let source = r#"
+fn bad() {
+    p = box(42)
+    f = () => p
+    p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_ownership(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error: capturing *mut T in closure consumes it"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("consumed")),
+            "Error should mention consumed value: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_closure_capture_without_subsequent_use_is_ok() {
+        // Capturing *mut T consumes it, but if nothing uses it after, no error.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
         let source = r#"
 fn ok() {
     p = box(42)
     f = () => p
-    p
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -696,7 +942,137 @@ fn ok() {
         let errors = validate_ownership(&db, ok_def.def_id);
         assert!(
             errors.is_empty(),
-            "Expected no errors when closure doesn't consume, got: {:?}",
+            "No error when *mut T is captured but not used after: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_double_closure_capture_is_error() {
+        // Two closures capturing the same *mut T — second is use-after-consume.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn bad() {
+    p = box(42)
+    f = () => p
+    g = () => p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_ownership(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Expected error: second closure captures already-consumed *mut T"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("consumed")),
+            "Error should mention consumed value: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_closure_capturing_non_mut_ref_is_ok() {
+        // Capturing a value type (not *mut T) does not consume it.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn ok(x: bool) -> bool {
+    f = () => x
+    x
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
+
+        let errors = validate_ownership(&db, ok_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Non-*mut T capture should not produce errors: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_closure_body_freeze_does_not_double_report() {
+        // freeze(p) inside the closure body should not cause an ADDITIONAL error
+        // in the outer scope — the outer error comes from the capture itself.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn bad() {
+    p = box(42)
+    f = () => freeze(p)
+    p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_ownership(&db, bad_def.def_id);
+        // Should have exactly 1 error: use of p after closure captures it
+        // The freeze inside the closure body should not leak to the outer scope
+        assert_eq!(
+            errors.len(),
+            1,
+            "Expected exactly 1 error (use after capture), got: {:?}",
             errors
         );
     }
@@ -897,7 +1273,7 @@ fn ok() {
     }
 
     // ====================================================================
-    // Reborrow tests (5a): *mut T available after non-move call
+    // Reborrow tests: *mut T available after non-move call
     // ====================================================================
 
     #[test]
@@ -1002,7 +1378,7 @@ fn bad() {
     }
 
     // ====================================================================
-    // Borrow conflict tests (5c): path-level borrowing
+    // Borrow conflict tests: path-level borrowing
     // ====================================================================
 
     #[test]
@@ -1215,6 +1591,364 @@ fn ok() {
         assert!(
             !a.overlaps(&b),
             "p.x.a and p.x.b should NOT overlap (disjoint at second level)"
+        );
+    }
+
+    // ====================================================================
+    // Caller-side noescape tests
+    // ====================================================================
+
+    #[test]
+    fn validate_ownership_noescape_borrow_preserves_availability() {
+        // Passing a closure to a noescape parameter borrows captures
+        // instead of moving them — the original variable remains usable.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn with_lock(noescape body: fn() -> ()) {}
+
+fn ok() {
+    p = box(42)
+    with_lock(() => p)
+    p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
+
+        let errors = validate_ownership(&db, ok_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "noescape closure should not consume the captured variable: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_non_noescape_closure_consumes() {
+        // Without noescape, a closure capturing *mut T consumes the variable.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn run(body: fn() -> ()) {}
+
+fn bad() {
+    p = box(42)
+    run(() => p)
+    p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let bad_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "bad")
+            .expect("should find bad function");
+
+        let errors = validate_ownership(&db, bad_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "non-noescape closure should consume the captured variable"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("consumed")),
+            "Error should mention consumed value: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_noescape_with_freeze_inside_closure() {
+        // Freeze inside a noescape closure happens in the closure scope.
+        // The outer variable remains alive after the noescape closure.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn with_lock(noescape body: fn() -> ()) {}
+
+fn ok() {
+    p = box(42)
+    with_lock(() => freeze(p))
+    p
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok")
+            .expect("should find ok function");
+
+        let errors = validate_ownership(&db, ok_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "noescape closure with freeze inside should not affect outer scope: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // Callee-side noescape tests
+    // ====================================================================
+
+    #[test]
+    fn validate_ownership_noescape_direct_call_ok() {
+        // Calling a noescape parameter directly is allowed.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn f(noescape body: fn() -> ()) {
+    body()
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f function");
+
+        let errors = validate_ownership(&db, f_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "direct call of noescape param should be OK: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_noescape_return_is_error() {
+        // Returning a noescape parameter is not allowed.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn f(noescape body: fn() -> ()) -> fn() -> () {
+    return body
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f function");
+
+        let errors = validate_ownership(&db, f_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "returning a noescape param should be an error"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("cannot be returned")),
+            "Error should mention returning noescape: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_noescape_assign_to_local_is_error() {
+        // Assigning a noescape parameter to a local variable is not allowed.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn f(noescape body: fn() -> ()) {
+    g = body
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f function");
+
+        let errors = validate_ownership(&db, f_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "assigning a noescape param to a local should be an error"
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("cannot be assigned")),
+            "Error should mention assignment: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_noescape_pass_to_non_noescape_is_error() {
+        // Passing a noescape parameter to a non-noescape parameter is not allowed.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn run(body: fn() -> ()) {}
+
+fn f(noescape body: fn() -> ()) {
+    run(body)
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f function");
+
+        let errors = validate_ownership(&db, f_def.def_id);
+        assert!(
+            !errors.is_empty(),
+            "passing noescape param to non-noescape should be an error"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.msg.contains("can only be passed to another `noescape`")),
+            "Error should mention noescape constraint: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_ownership_noescape_pass_to_noescape_is_ok() {
+        // Passing a noescape parameter to another noescape parameter is allowed.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+fn inner(noescape cb: fn() -> ()) {
+    cb()
+}
+
+fn f(noescape body: fn() -> ()) {
+    inner(body)
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f function");
+
+        let errors = validate_ownership(&db, f_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "passing noescape param to another noescape param should be OK: {:?}",
+            errors
         );
     }
 }

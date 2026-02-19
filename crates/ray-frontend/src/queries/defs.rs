@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, ops::Deref, sync::Arc};
 
-use ray_core::ast::{Decl, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind};
+use ray_core::ast::{Call, Decl, Expr, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefHeader, DefId, DefKind, LibraryDefId, SignatureStatus},
@@ -246,6 +246,8 @@ pub struct ParamDef {
     pub name: String,
     /// Whether this parameter is a `move` parameter.
     pub is_move: bool,
+    /// Whether this parameter is a `noescape` parameter.
+    pub is_noescape: bool,
 }
 
 /// A function definition for the query layer.
@@ -1290,6 +1292,36 @@ pub fn func_def(db: &Database, target: DefTarget) -> Option<FuncDef> {
     }
 }
 
+/// Iterate over a call's arguments paired with their resolved parameter definitions.
+///
+/// Resolves the callee to its `FuncDef` and pairs each argument with the
+/// corresponding `ParamDef`, accounting for the implicit `self` parameter
+/// offset on method calls. Returns an empty iterator if the callee cannot
+/// be resolved.
+pub fn call_arg_params<'a>(
+    db: &Database,
+    file_id: FileId,
+    call: &'a Call,
+) -> impl Iterator<Item = (&'a Node<Expr>, ParamDef)> {
+    let callee_id = call.call_resolution_id();
+    let resolutions = name_resolutions(db, file_id);
+    let resolved = resolutions
+        .get(&callee_id)
+        .and_then(|r| r.to_def_target())
+        .and_then(|target| func_def(db, target));
+
+    let param_offset = if call.is_method_call() { 1 } else { 0 };
+
+    call.args
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(move |(i, arg)| {
+            let param = resolved.as_ref()?.params.get(i + param_offset)?;
+            Some((arg, param.clone()))
+        })
+}
+
 /// Extract a function definition from the workspace AST.
 fn extract_workspace_func(db: &Database, def_id: DefId) -> Option<FuncDef> {
     let parse_result = parse_file(db, def_id.file);
@@ -1319,6 +1351,7 @@ fn extract_workspace_func(db: &Database, def_id: DefId) -> Option<FuncDef> {
                 .map(|p| ParamDef {
                     name: p.value.name().to_short_name(),
                     is_move: p.value.is_move(),
+                    is_noescape: p.value.is_noescape(),
                 })
                 .collect();
             let mods = sig.modifiers.clone();

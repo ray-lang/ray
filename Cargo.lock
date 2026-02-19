@@ -1898,7 +1898,6 @@ dependencies = [
  "bincode",
  "clap",
  "fern",
- "inkwell",
  "itertools",
  "log",
  "ray-cfg",

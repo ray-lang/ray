@@ -18,17 +18,30 @@ use crate::ast::{Expr, Missing, Modifier, Name, Node, TypeParams};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnParam {
-    Name { name: Name, is_move: bool },
+    Name {
+        name: Name,
+        is_move: bool,
+        is_noescape: bool,
+    },
     DefaultValue(Box<Node<FnParam>>, Box<Node<Expr>>),
-    Missing { info: Missing, placeholder: Name },
+    Missing {
+        info: Missing,
+        placeholder: Name,
+    },
 }
 
 impl std::fmt::Display for FnParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FnParam::Name { name, is_move } => {
+            FnParam::Name {
+                name,
+                is_move,
+                is_noescape,
+            } => {
                 if *is_move {
                     write!(f, "move {}", name)
+                } else if *is_noescape {
+                    write!(f, "noescape {}", name)
                 } else {
                     write!(f, "{}", name)
                 }
@@ -86,6 +99,14 @@ impl FnParam {
         match self {
             FnParam::Name { is_move, .. } => *is_move,
             FnParam::DefaultValue(p, _) => p.value.is_move(),
+            FnParam::Missing { .. } => false,
+        }
+    }
+
+    pub fn is_noescape(&self) -> bool {
+        match self {
+            FnParam::Name { is_noescape, .. } => *is_noescape,
+            FnParam::DefaultValue(p, _) => p.value.is_noescape(),
             FnParam::Missing { .. } => false,
         }
     }

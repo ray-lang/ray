@@ -107,6 +107,8 @@ pub enum TokenKind {
     Id,
     /// move
     Move,
+    /// noescape
+    Noescape,
     /// upgrade
     Upgrade,
     /// test
@@ -286,6 +288,7 @@ impl TokenKind {
             TokenKind::Freeze => "`freeze`",
             TokenKind::Id => "`id`",
             TokenKind::Move => "`move`",
+            TokenKind::Noescape => "`noescape`",
             TokenKind::Upgrade => "`upgrade`",
             TokenKind::Test => "`test`",
             TokenKind::Equals => "`=`",
@@ -429,6 +432,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Freeze => "freeze".to_string(),
             TokenKind::Id => "id".to_string(),
             TokenKind::Move => "move".to_string(),
+            TokenKind::Noescape => "noescape".to_string(),
             TokenKind::Upgrade => "upgrade".to_string(),
             TokenKind::Test => "test".to_string(),
             TokenKind::Equals => "=".to_string(),

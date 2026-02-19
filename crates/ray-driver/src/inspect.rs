@@ -742,6 +742,7 @@ mod tests {
                 params: vec![ParamDef {
                     name: "name".to_string(),
                     is_move: false,
+                    is_noescape: false,
                 }],
                 modifiers: vec![],
             },
@@ -834,6 +835,7 @@ mod tests {
                 params: vec![ParamDef {
                     name: "x".to_string(),
                     is_move: false,
+                    is_noescape: false,
                 }],
                 modifiers: vec![],
             },

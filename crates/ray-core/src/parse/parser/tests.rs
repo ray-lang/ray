@@ -3024,6 +3024,48 @@ fn borrow(p: *int) {}
 }
 
 #[test]
+fn parses_noescape_parameter() {
+    let src = r#"
+fn with_lock(noescape body: fn() -> ()) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let param = &func.sig.params[0].value;
+    assert!(param.is_noescape(), "expected noescape parameter");
+    assert!(!param.is_move(), "noescape should not be move");
+}
+
+#[test]
+fn parses_non_noescape_parameter() {
+    let src = r#"
+fn run(body: fn() -> ()) {}
+"#;
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    assert!(
+        !func.sig.params[0].value.is_noescape(),
+        "expected non-noescape parameter"
+    );
+}
+
+#[test]
+fn noescape_and_move_are_mutually_exclusive() {
+    // When both `move` and `noescape` are written, the parser consumes `move`
+    // and then fails to parse `noescape` as a parameter name (it's a keyword),
+    // producing a parse error.
+    let src = r#"
+fn take(move noescape: fn() -> ()) {}
+"#;
+    let (_file, errors) = parse_source(src);
+    assert!(
+        !errors.is_empty(),
+        "expected parse errors when both move and noescape are present"
+    );
+}
+
+#[test]
 fn parses_box_with_parens() {
     let src = r#"
 fn main() {
