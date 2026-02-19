@@ -137,7 +137,9 @@ impl CollectRefs for Inst {
             }
             Inst::StructInit(v, _) => v.collect_refs(collector),
             Inst::SetLocal(_, v) | Inst::SetGlobal(_, v) => v.collect_refs(collector),
-            Inst::Return(v) | Inst::IncRef(v, _) | Inst::DecRef(v, _) => v.collect_refs(collector),
+            Inst::Return(v) | Inst::IncRef(v, _) | Inst::DecRef(v, _, _) => {
+                v.collect_refs(collector)
+            }
             Inst::Call(c) => c.collect_refs(collector),
             Inst::CExternCall(c) => c.collect_refs(collector),
             Inst::Break(b) => {

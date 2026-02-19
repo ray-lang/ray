@@ -175,7 +175,7 @@ where
                 | Inst::SetField(_)
                 | Inst::MemCopy(_, _, _)
                 | Inst::IncRef(_, _)
-                | Inst::DecRef(_, _)
+                | Inst::DecRef(_, _, _)
                 | Inst::Return(_)
                 | Inst::Break(_) => continue,
             }
@@ -648,7 +648,7 @@ pub enum Inst {
     SetField(SetField),
     MemCopy(Variable, Variable, Atom),
     IncRef(Value, RefCountKind),
-    DecRef(Value, RefCountKind),
+    DecRef(Value, RefCountKind, Option<FuncRef>),
     Return(Value),
     Break(Break),
     Goto(usize),
@@ -680,7 +680,13 @@ impl Display for Inst {
             Inst::StructInit(v, ty) => write!(f, "{}: {}", v, ty),
             Inst::SetField(s) => write!(f, "{}", s),
             Inst::IncRef(v, kind) => write!(f, "incref.{} {}", kind, v),
-            Inst::DecRef(v, kind) => write!(f, "decref.{} {}", kind, v),
+            Inst::DecRef(v, kind, drop_fn) => {
+                write!(f, "decref.{} {}", kind, v)?;
+                if let Some(func_ref) = drop_fn {
+                    write!(f, " drop={}", func_ref)?;
+                }
+                Ok(())
+            }
             Inst::Return(v) => write!(f, "ret {}", v),
             Inst::Goto(idx) => write!(f, "goto B{}", idx),
             Inst::MemCopy(dst, src, size) => {
@@ -716,7 +722,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             }
             Inst::Call(c) => c.get_locals_mut(),
             Inst::CExternCall(c) => c.get_locals_mut(),
-            Inst::IncRef(v, _) | Inst::DecRef(v, _) | Inst::Return(v) => v.get_locals_mut(),
+            Inst::IncRef(v, _) | Inst::DecRef(v, _, _) | Inst::Return(v) => v.get_locals_mut(),
             Inst::Break(b) => b.get_locals_mut(),
             Inst::Goto(_) => vec![],
         }
@@ -748,7 +754,7 @@ impl<'a> GetLocals<'a> for Inst {
             }
             Inst::Call(c) => c.get_locals(),
             Inst::CExternCall(c) => c.get_locals(),
-            Inst::IncRef(v, _) | Inst::DecRef(v, _) | Inst::Return(v) => v.get_locals(),
+            Inst::IncRef(v, _) | Inst::DecRef(v, _, _) | Inst::Return(v) => v.get_locals(),
             Inst::Break(b) => b.get_locals(),
             Inst::Goto(_) => vec![],
         }
@@ -776,7 +782,12 @@ impl Substitutable for Inst {
                 z.apply_subst(subst);
             }
             Inst::IncRef(v, _) => v.apply_subst(subst),
-            Inst::DecRef(v, _) => v.apply_subst(subst),
+            Inst::DecRef(v, _, drop_fn) => {
+                v.apply_subst(subst);
+                if let Some(func_ref) = drop_fn {
+                    func_ref.apply_subst(subst);
+                }
+            }
             Inst::Return(v) => v.apply_subst(subst),
             Inst::Break(b) => b.apply_subst(subst),
             Inst::Free(_) | Inst::Goto(_) => {}

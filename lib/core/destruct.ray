@@ -1,0 +1,31 @@
+//! User-defined destructors for heap-allocated objects.
+//!
+//! The `Destruct` trait allows types to run cleanup code when the last strong
+//! reference to an object is dropped (strong reference count reaches zero).
+//! The `destruct` method receives `*mut self`, granting exclusive mutable
+//! access for cleanup (e.g., flushing buffers, closing handles).
+//!
+//! After the user-defined `destruct` returns, the compiler automatically drops
+//! all reference-typed fields in declaration order before deallocating the
+//! object's memory.
+
+/// A type that can perform cleanup when its last strong reference is dropped.
+///
+/// # Type Parameters
+///
+/// - `'a` — The type implementing this trait.
+///
+/// # Examples
+///
+/// ```ray
+/// struct FileHandle { fd: int }
+///
+/// impl Destruct[FileHandle] {
+///     fn destruct(self: *mut FileHandle) {
+///         close(self.fd)
+///     }
+/// }
+/// ```
+trait Destruct['a] {
+    fn destruct(self: *mut 'a)
+}

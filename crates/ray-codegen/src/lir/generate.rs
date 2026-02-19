@@ -4404,9 +4404,9 @@ mod tests {
     };
     use ray_typing::types::TyScheme;
 
-    use ray_lir::{ControlMarker, Inst, RefCountKind, Value};
+    use ray_lir::{Call, ControlMarker, GetField, Inst, RefCountKind, Value};
 
-    use crate::lir::generate;
+    use crate::lir::{generate, generate_drop_glue};
 
     struct TestWorkspaceFile {
         filepath: String,
@@ -6990,7 +6990,7 @@ pub fn main() -> u32 {
         let mut saw_decref_strong = false;
         for block in &main_func.blocks {
             for inst in block.iter() {
-                if let Inst::DecRef(_, RefCountKind::Strong) = inst {
+                if let Inst::DecRef(_, RefCountKind::Strong, _) = inst {
                     saw_decref_strong = true;
                 }
             }
@@ -7026,7 +7026,7 @@ pub fn main() -> u32 {
         let mut saw_decref_weak = false;
         for block in &main_func.blocks {
             for inst in block.iter() {
-                if let Inst::DecRef(_, RefCountKind::Weak) = inst {
+                if let Inst::DecRef(_, RefCountKind::Weak, _) = inst {
                     saw_decref_weak = true;
                 }
             }
@@ -7109,7 +7109,7 @@ pub fn main() -> u32 {
         let mut decref_count = 0;
         for block in &make_ref_func.blocks {
             for inst in block.iter() {
-                if matches!(inst, Inst::DecRef(_, _)) {
+                if matches!(inst, Inst::DecRef(_, _, _)) {
                     decref_count += 1;
                 }
             }
@@ -7147,7 +7147,7 @@ pub fn main() -> u32 {
         let saw_decref_strong = main_func.blocks.iter().any(|block| {
             block
                 .iter()
-                .any(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong)))
+                .any(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong, _)))
         });
 
         assert!(
@@ -7181,7 +7181,7 @@ pub fn main() -> u32 { 0u32 }
             .blocks
             .iter()
             .flat_map(|b| b.iter())
-            .filter(|inst| matches!(inst, Inst::DecRef(_, _)))
+            .filter(|inst| matches!(inst, Inst::DecRef(_, _, _)))
             .count();
 
         assert_eq!(
@@ -7218,7 +7218,7 @@ pub fn main() -> u32 { 0u32 }
             .blocks
             .iter()
             .flat_map(|b| b.iter())
-            .filter(|inst| matches!(inst, Inst::DecRef(_, _)))
+            .filter(|inst| matches!(inst, Inst::DecRef(_, _, _)))
             .count();
 
         assert_eq!(
@@ -7331,7 +7331,7 @@ pub fn main() -> u32 {
             .blocks
             .iter()
             .flat_map(|b| b.iter())
-            .filter(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong)))
+            .filter(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong, _)))
             .count();
 
         // box creates box_loc (tracked), p=box_loc (move: p tracked,
@@ -7341,6 +7341,435 @@ pub fn main() -> u32 {
             decref_strong_count, 1,
             "expected exactly 1 DecRef(Strong) after move chain, got {}\n--- LIR ---\n{}",
             decref_strong_count, prog
+        );
+    }
+
+    // =========================================================================
+    // Drop glue tests
+    // =========================================================================
+
+    #[test]
+    fn drop_glue_not_generated_for_struct_without_refs() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        let drop_funcs: Vec<_> = prog
+            .funcs
+            .iter()
+            .filter(|f| f.name.to_string().contains("__drop"))
+            .collect();
+
+        assert!(
+            drop_funcs.is_empty(),
+            "expected no drop functions for struct without ref fields, found: [{}]\n--- LIR ---\n{}",
+            map_join(&drop_funcs, ", ", |f| format!("{}", f.name)),
+            prog
+        );
+    }
+
+    #[test]
+    fn drop_glue_generated_for_struct_with_shared_ref_field() {
+        let src = r#"
+struct Inner { x: u32 }
+struct Container { child: *Inner }
+pub fn main() -> u32 {
+    inner_p = box(Inner { x: 42u32 })
+    inner_shared = freeze(inner_p)
+    c = box(Container { child: inner_shared })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        // Should have a drop function for Container but not for Inner
+        let drop_funcs: Vec<_> = prog
+            .funcs
+            .iter()
+            .filter(|f| f.name.to_string().contains("__drop"))
+            .collect();
+
+        assert_eq!(
+            drop_funcs.len(),
+            1,
+            "expected exactly 1 drop function (for Container), found: [{}]\n--- LIR ---\n{}",
+            map_join(&drop_funcs, ", ", |f| format!("{}", f.name)),
+            prog
+        );
+
+        let drop_fn = &drop_funcs[0];
+        assert!(
+            drop_fn.name.to_string().contains("Container"),
+            "expected drop function for Container, got {}\n--- LIR ---\n{}",
+            drop_fn.name,
+            prog
+        );
+
+        // The drop function should contain a DecRef(_, Strong, _) for the child field
+        let has_decref_strong = drop_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong, _)));
+
+        assert!(
+            has_decref_strong,
+            "expected drop function to emit DecRef(Strong) for *Inner field\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+
+        // The drop function should contain a GetField for "child"
+        let has_getfield_child = drop_fn.blocks.iter().flat_map(|b| b.iter()).any(|inst| {
+            if let Inst::SetLocal(_, Value::GetField(GetField { field, .. })) = inst {
+                field == "child"
+            } else {
+                false
+            }
+        });
+
+        assert!(
+            has_getfield_child,
+            "expected drop function to emit GetField for 'child'\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+    }
+
+    #[test]
+    fn drop_glue_generated_for_struct_with_id_ref_field() {
+        let src = r#"
+struct Inner { x: u32 }
+struct Holder { weak_ref: id *Inner }
+pub fn main() -> u32 {
+    inner_p = box(Inner { x: 42u32 })
+    inner_shared = freeze(inner_p)
+    weak = id(inner_shared)
+    h = box(Holder { weak_ref: weak })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        let drop_funcs: Vec<_> = prog
+            .funcs
+            .iter()
+            .filter(|f| f.name.to_string().contains("__drop"))
+            .collect();
+
+        assert_eq!(
+            drop_funcs.len(),
+            1,
+            "expected exactly 1 drop function (for Holder), found: [{}]\n--- LIR ---\n{}",
+            map_join(&drop_funcs, ", ", |f| format!("{}", f.name)),
+            prog
+        );
+
+        let drop_fn = &drop_funcs[0];
+
+        // The drop function should contain DecRef(_, Weak, _) for the id ref field
+        let has_decref_weak = drop_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Weak, _)));
+
+        assert!(
+            has_decref_weak,
+            "expected drop function to emit DecRef(Weak) for id *Inner field\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+    }
+
+    #[test]
+    fn drop_glue_with_destruct_impl_calls_destruct_before_field_drops() {
+        let src = r#"
+struct Inner { x: u32 }
+
+trait Destruct['a] {
+    fn destruct(self: *mut 'a)
+}
+
+struct Container { child: *Inner }
+
+impl Destruct[Container] {
+    fn destruct(self: *mut Container) {}
+}
+
+pub fn main() -> u32 {
+    inner_p = box(Inner { x: 42u32 })
+    inner_shared = freeze(inner_p)
+    c = box(Container { child: inner_shared })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        let drop_fn = prog
+            .funcs
+            .iter()
+            .find(|f| {
+                f.name.to_string().contains("__drop") && f.name.to_string().contains("Container")
+            })
+            .expect("expected drop function for Container");
+
+        // Collect instructions in order to verify destruct is called before DecRef
+        let mut saw_call = false;
+        let mut saw_decref = false;
+        let mut call_before_decref = false;
+
+        for block in &drop_fn.blocks {
+            for inst in block.iter() {
+                match inst {
+                    Inst::SetLocal(_, Value::Call(Call { fn_name, .. })) => {
+                        if fn_name.to_string().contains("destruct") {
+                            saw_call = true;
+                        }
+                    }
+                    Inst::DecRef(_, RefCountKind::Strong, _) => {
+                        saw_decref = true;
+                        if saw_call {
+                            call_before_decref = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            saw_call,
+            "expected drop function to call destruct\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+        assert!(
+            saw_decref,
+            "expected drop function to emit DecRef(Strong) for child field\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+        assert!(
+            call_before_decref,
+            "expected destruct call BEFORE DecRef (field drops)\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+    }
+
+    #[test]
+    fn drop_glue_nested_value_type_with_transitive_refs() {
+        let src = r#"
+struct Leaf { x: u32 }
+struct Inner { leaf_ref: *Leaf }
+struct Outer { inner: Inner }
+pub fn main() -> u32 {
+    leaf_p = box(Leaf { x: 42u32 })
+    leaf_shared = freeze(leaf_p)
+    o = box(Outer { inner: Inner { leaf_ref: leaf_shared } })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        // Outer has a value-type field `inner: Inner` where Inner has a ref field.
+        // Drop glue for Outer should inline GetField chains to reach the leaf ref.
+        let drop_outer = prog.funcs.iter().find(|f| {
+            f.name.to_string().contains("__drop") && f.name.to_string().contains("Outer")
+        });
+
+        assert!(
+            drop_outer.is_some(),
+            "expected drop function for Outer (transitive refs through Inner)\n--- LIR ---\n{}",
+            prog
+        );
+
+        let drop_fn = drop_outer.unwrap();
+
+        // Should have GetField for "inner" (the value-type field)
+        let has_getfield_inner = drop_fn.blocks.iter().flat_map(|b| b.iter()).any(|inst| {
+            if let Inst::SetLocal(_, Value::GetField(GetField { field, .. })) = inst {
+                field == "inner"
+            } else {
+                false
+            }
+        });
+
+        assert!(
+            has_getfield_inner,
+            "expected GetField for value-type field 'inner'\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+
+        // Should have GetField for "leaf_ref" (the nested ref field)
+        let has_getfield_leaf_ref = drop_fn.blocks.iter().flat_map(|b| b.iter()).any(|inst| {
+            if let Inst::SetLocal(_, Value::GetField(GetField { field, .. })) = inst {
+                field == "leaf_ref"
+            } else {
+                false
+            }
+        });
+
+        assert!(
+            has_getfield_leaf_ref,
+            "expected GetField for nested ref field 'leaf_ref'\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+
+        // Should have DecRef(Strong) for the leaf ref
+        let has_decref = drop_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong, _)));
+
+        assert!(
+            has_decref,
+            "expected DecRef(Strong) for the transitive *Leaf ref\n--- Drop fn ---\n{}",
+            drop_fn
+        );
+
+        // Inner also has direct ref fields, so it should have its own drop function
+        let drop_inner = prog.funcs.iter().find(|f| {
+            f.name.to_string().contains("__drop") && f.name.to_string().contains("Inner")
+        });
+
+        assert!(
+            drop_inner.is_some(),
+            "expected drop function for Inner (has direct ref field)\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn drop_glue_patches_decref_with_drop_fn_ref() {
+        let src = r#"
+struct Inner { x: u32 }
+struct Container { child: *Inner }
+pub fn main() -> u32 {
+    inner_p = box(Inner { x: 42u32 })
+    inner_shared = freeze(inner_p)
+    c = box(Container { child: inner_shared })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // After patching, DecRef instructions for Container locals should have
+        // a drop function reference (Some(FuncRef)).
+        let patched_decrefs: Vec<_> = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong, Some(_))))
+            .collect();
+
+        assert!(
+            !patched_decrefs.is_empty(),
+            "expected at least one DecRef(Strong) patched with a drop function ref\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn drop_glue_fn_in_symbols_of_caller() {
+        let src = r#"
+struct Inner { x: u32 }
+struct Container { child: *Inner }
+pub fn main() -> u32 {
+    inner_p = box(Inner { x: 42u32 })
+    inner_shared = freeze(inner_p)
+    c = box(Container { child: inner_shared })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // The drop function's path should appear in main's symbols set.
+        let has_drop_symbol = main_func
+            .symbols
+            .iter()
+            .any(|sym| sym.to_string().contains("__drop"));
+
+        assert!(
+            has_drop_symbol,
+            "expected __drop function path in main's symbols for tree-shake reachability\n--- Symbols ---\n{:?}\n--- LIR ---\n{}",
+            main_func.symbols.iter().collect::<Vec<_>>(),
+            prog
+        );
+    }
+
+    #[test]
+    fn drop_glue_destruct_path_in_drop_fn_symbols() {
+        let src = r#"
+struct Inner { x: u32 }
+
+trait Destruct['a] {
+    fn destruct(self: *mut 'a)
+}
+
+struct Container { child: *Inner }
+
+impl Destruct[Container] {
+    fn destruct(self: *mut Container) {}
+}
+
+pub fn main() -> u32 {
+    inner_p = box(Inner { x: 42u32 })
+    inner_shared = freeze(inner_p)
+    c = box(Container { child: inner_shared })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (mut prog, _) = generate(&db, false).expect("lir generation should succeed");
+        generate_drop_glue(&mut prog);
+
+        let drop_fn = prog
+            .funcs
+            .iter()
+            .find(|f| {
+                f.name.to_string().contains("__drop") && f.name.to_string().contains("Container")
+            })
+            .expect("expected drop function for Container");
+
+        // The destruct method path should appear in the drop function's symbols
+        let has_destruct_symbol = drop_fn
+            .symbols
+            .iter()
+            .any(|sym| sym.to_string().contains("destruct"));
+
+        assert!(
+            has_destruct_symbol,
+            "expected destruct method path in drop function's symbols\n--- Symbols ---\n{:?}\n--- Drop fn ---\n{}",
+            drop_fn.symbols.iter().collect::<Vec<_>>(),
+            drop_fn
         );
     }
 }

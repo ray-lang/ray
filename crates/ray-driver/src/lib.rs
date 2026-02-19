@@ -428,6 +428,7 @@ impl Driver {
             // discovers transitive dependencies through impls_by_trait that aren't
             // visible in the static symbol graph. Post-mono tree-shaking handles
             // dead code elimination after all specializations are resolved.
+            lir::generate_drop_glue(&mut program);
             log::debug!("program before monomorphization:\n{}", program);
             lir::monomorphize(&mut program);
             program.tree_shake(None);

@@ -3,6 +3,7 @@
 //! This is the root module of the core library.
 
 export deref with Deref
+export destruct with Destruct
 export dict with dict
 export list with list
 export hash with Hash

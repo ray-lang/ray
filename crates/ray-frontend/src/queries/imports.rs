@@ -1176,7 +1176,9 @@ mod tests {
         assert!(!result.contains_key("io"));
     }
 
-    // ── Sibling resolution tests (file = module) ────────────────────────
+    // =========================================================================
+    // Sibling resolution tests (file = module)
+    // =========================================================================
 
     #[test]
     fn resolved_imports_sibling_resolution_resolves_sibling_module() {

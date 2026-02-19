@@ -195,7 +195,7 @@ impl Builder {
                 continue;
             }
             let local_val: Value = Variable::Local(idx).into();
-            self.push(Inst::DecRef(local_val, kind));
+            self.push(Inst::DecRef(local_val, kind, None));
         }
         self.block().push(Inst::Return(value))
     }

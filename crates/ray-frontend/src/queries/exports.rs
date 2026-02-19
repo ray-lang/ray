@@ -760,7 +760,9 @@ mod tests {
         assert!(index.get("helper").unwrap().is_err());
     }
 
-    // ── file_reexports tests ────────────────────────────────────────────────
+    // =========================================================================
+    // file_reexports tests
+    // =========================================================================
 
     #[test]
     fn file_reexports_returns_empty_for_no_exports() {

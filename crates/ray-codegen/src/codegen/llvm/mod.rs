@@ -1997,9 +1997,10 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                         .build_int_add(old_count, count_ty.const_int(1, false), "rc_inc")?;
                 ctx.builder.build_store(count_ptr, new_count)?
             }
-            lir::Inst::DecRef(value, kind) => {
+            lir::Inst::DecRef(value, kind, drop_fn) => {
                 // Decrement the strong or weak reference count by 1.
                 // If the count reaches 0, conditionally free the allocation.
+                // For strong DecRef with a drop function: call drop glue first.
                 let data_ptr = value.codegen(ctx, srcmap)?.into_pointer_value();
                 let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
                 let count_ptr = ctx.get_rc_count_ptr(base_ptr, *kind)?;
@@ -2029,8 +2030,22 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                 ctx.builder
                     .build_conditional_branch(is_zero, then_bb, merge_bb)?;
 
-                // then block: this count reached 0, check the other count
+                // then block: this count reached 0
                 ctx.builder.position_at_end(then_bb);
+
+                // For strong DecRef with a drop function: call it now.
+                // The drop function runs the user's destruct() and decrements
+                // refcounts of all reference-typed fields.
+                if matches!(kind, lir::RefCountKind::Strong) {
+                    if let Some(drop_fn_ref) = drop_fn {
+                        if let Some(&drop_fn_val) = ctx.fn_index.get(&drop_fn_ref.path) {
+                            ctx.builder
+                                .build_call(drop_fn_val, &[data_ptr.into()], "")?;
+                        }
+                    }
+                }
+
+                // Check the other count
                 let other_kind = match kind {
                     lir::RefCountKind::Strong => lir::RefCountKind::Weak,
                     lir::RefCountKind::Weak => lir::RefCountKind::Strong,
@@ -2259,8 +2274,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                             ctx.builder
                                 .build_int_add(header_size, data_size, "rc_total_size")?;
                         let td = ctx.target_machine.get_target_data();
-                        let align =
-                            td.get_abi_alignment(&llvm_elem_ty);
+                        let align = td.get_abi_alignment(&llvm_elem_ty);
                         let align_val = ctx.ptr_type().const_int(align as u64, false);
                         let alloc_fn = ctx.get_or_declare_alloc();
                         let base = ctx
@@ -2342,9 +2356,9 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
         };
 
         let elem_size = llvm_elem_ty.size_of().expect("sized type");
-        let total_size = ctx
-            .builder
-            .build_int_mul(elem_size, size.into_int_value(), "array_total_size")?;
+        let total_size =
+            ctx.builder
+                .build_int_mul(elem_size, size.into_int_value(), "array_total_size")?;
         let td = ctx.target_machine.get_target_data();
         let arr_align = td.get_abi_alignment(&llvm_elem_ty);
         let arr_align_val = ctx.ptr_type().const_int(arr_align as u64, false);

@@ -689,7 +689,7 @@ impl<'p> Monomorphizer<'p> {
                 lir::Inst::SetGlobal(_, v)
                 | lir::Inst::SetLocal(_, v)
                 | lir::Inst::IncRef(v, _)
-                | lir::Inst::DecRef(v, _)
+                | lir::Inst::DecRef(v, _, _)
                 | lir::Inst::Return(v) => self.add_ref_from_value(v, poly_refs),
                 lir::Inst::Store(s) => self.add_ref_from_value(&mut s.value, poly_refs),
                 lir::Inst::Insert(i) => self.add_ref_from_value(&mut i.value, poly_refs),

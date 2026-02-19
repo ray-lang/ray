@@ -732,8 +732,20 @@ impl<'p> Monomorphizer<'p> {
                 lir::Inst::SetGlobal(_, v)
                 | lir::Inst::SetLocal(_, v)
                 | lir::Inst::IncRef(v, _)
-                | lir::Inst::DecRef(v, _)
                 | lir::Inst::Return(v) => self.add_ref_from_value(v, poly_refs),
+                lir::Inst::DecRef(v, _, drop_fn) => {
+                    self.add_ref_from_value(v, poly_refs);
+                    if let Some(func_ref) = drop_fn {
+                        if let Some(poly_ty) = func_ref.poly_ty.clone() {
+                            let callee_ty = func_ref.ty.clone();
+                            poly_refs.push(PolyRef {
+                                value: PolyValue::FuncRef(func_ref),
+                                poly_ty,
+                                callee_ty,
+                            });
+                        }
+                    }
+                }
                 lir::Inst::Store(s) => self.add_ref_from_value(&mut s.value, poly_refs),
                 lir::Inst::Insert(i) => self.add_ref_from_value(&mut i.value, poly_refs),
                 lir::Inst::SetField(s) => self.add_ref_from_value(&mut s.value, poly_refs),
