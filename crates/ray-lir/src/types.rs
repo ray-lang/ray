@@ -26,6 +26,24 @@ use ray_core::{ast::Modifier, convert::ToSet, strutils::indent_lines};
 
 use crate::{IntrinsicKind, RAY_MAIN_FUNCTION};
 
+/// Distinguishes strong vs weak reference count operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefCountKind {
+    /// Strong reference count (`*T`, `*mut T`).
+    Strong,
+    /// Weak reference count (`id *T`).
+    Weak,
+}
+
+impl Display for RefCountKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefCountKind::Strong => write!(f, "strong"),
+            RefCountKind::Weak => write!(f, "weak"),
+        }
+    }
+}
+
 macro_rules! LirImplInto {
     ($dst:ident for $src:ident) => {
         impl Into<$dst> for $src {
@@ -157,7 +175,7 @@ where
                 | Inst::SetField(_)
                 | Inst::MemCopy(_, _, _)
                 | Inst::IncRef(_, _)
-                | Inst::DecRef(_)
+                | Inst::DecRef(_, _)
                 | Inst::Return(_)
                 | Inst::Break(_) => continue,
             }
@@ -443,6 +461,10 @@ pub enum Value {
     IntConvert(IntConvert),
     Type(TyScheme),
     Closure(Closure),
+    /// `upgrade(id_ref)` — atomically checks strong_count and, if > 0,
+    /// increments it and returns a shared ref wrapped in nilable. Otherwise
+    /// returns nil. The inner value is the id ref pointer.
+    Upgrade(Box<Value>),
 }
 
 impl Value {
@@ -483,6 +505,7 @@ impl Display for Value {
             Value::IntConvert(a) => write!(f, "{}", a),
             Value::Type(ty) => write!(f, "type({})", ty),
             Value::Closure(c) => write!(f, "closure({}, {})", c.fn_name, c.env),
+            Value::Upgrade(v) => write!(f, "upgrade({})", v),
         }
     }
 }
@@ -510,6 +533,7 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::Cast(c) => c.get_locals_mut(),
             Value::IntConvert(_) => todo!(),
             Value::Closure(c) => c.get_locals_mut(),
+            Value::Upgrade(v) => v.get_locals_mut(),
             Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
         }
     }
@@ -532,6 +556,7 @@ impl<'a> GetLocals<'a> for Value {
             Value::Cast(c) => c.get_locals(),
             Value::IntConvert(_) => todo!(),
             Value::Closure(c) => c.get_locals(),
+            Value::Upgrade(v) => v.get_locals(),
             Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
         }
     }
@@ -556,6 +581,7 @@ impl Substitutable for Value {
             Value::IntConvert(i) => i.apply_subst(subst),
             Value::Type(ty) => ty.apply_subst(subst),
             Value::Closure(c) => c.apply_subst(subst),
+            Value::Upgrade(v) => v.apply_subst(subst),
         }
     }
 }
@@ -602,7 +628,8 @@ impl Value {
             | Value::Cast(_)
             | Value::Type(_)
             | Value::IntConvert(_)
-            | Value::Closure(_) => None,
+            | Value::Closure(_)
+            | Value::Upgrade(_) => None,
         }
     }
 }
@@ -620,8 +647,8 @@ pub enum Inst {
     StructInit(Variable, StructTy),
     SetField(SetField),
     MemCopy(Variable, Variable, Atom),
-    IncRef(Value, i8),
-    DecRef(Value),
+    IncRef(Value, RefCountKind),
+    DecRef(Value, RefCountKind),
     Return(Value),
     Break(Break),
     Goto(usize),
@@ -652,8 +679,8 @@ impl Display for Inst {
             Inst::Insert(i) => write!(f, "{}", i),
             Inst::StructInit(v, ty) => write!(f, "{}: {}", v, ty),
             Inst::SetField(s) => write!(f, "{}", s),
-            Inst::IncRef(v, i) => write!(f, "incref {} {}", v, i),
-            Inst::DecRef(v) => write!(f, "decref {}", v),
+            Inst::IncRef(v, kind) => write!(f, "incref.{} {}", kind, v),
+            Inst::DecRef(v, kind) => write!(f, "decref.{} {}", kind, v),
             Inst::Return(v) => write!(f, "ret {}", v),
             Inst::Goto(idx) => write!(f, "goto B{}", idx),
             Inst::MemCopy(dst, src, size) => {
@@ -689,7 +716,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             }
             Inst::Call(c) => c.get_locals_mut(),
             Inst::CExternCall(c) => c.get_locals_mut(),
-            Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => v.get_locals_mut(),
+            Inst::IncRef(v, _) | Inst::DecRef(v, _) | Inst::Return(v) => v.get_locals_mut(),
             Inst::Break(b) => b.get_locals_mut(),
             Inst::Goto(_) => vec![],
         }
@@ -721,7 +748,7 @@ impl<'a> GetLocals<'a> for Inst {
             }
             Inst::Call(c) => c.get_locals(),
             Inst::CExternCall(c) => c.get_locals(),
-            Inst::IncRef(v, _) | Inst::DecRef(v) | Inst::Return(v) => v.get_locals(),
+            Inst::IncRef(v, _) | Inst::DecRef(v, _) | Inst::Return(v) => v.get_locals(),
             Inst::Break(b) => b.get_locals(),
             Inst::Goto(_) => vec![],
         }
@@ -749,7 +776,7 @@ impl Substitutable for Inst {
                 z.apply_subst(subst);
             }
             Inst::IncRef(v, _) => v.apply_subst(subst),
-            Inst::DecRef(v) => v.apply_subst(subst),
+            Inst::DecRef(v, _) => v.apply_subst(subst),
             Inst::Return(v) => v.apply_subst(subst),
             Inst::Break(b) => b.apply_subst(subst),
             Inst::Free(_) | Inst::Goto(_) => {}

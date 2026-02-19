@@ -15,7 +15,7 @@ where
                 lir::Inst::SetGlobal(_, v)
                 | lir::Inst::SetLocal(_, v)
                 | lir::Inst::IncRef(v, _)
-                | lir::Inst::DecRef(v)
+                | lir::Inst::DecRef(v, _)
                 | lir::Inst::Return(v) => {
                     if matches!(v, lir::Value::Call(_)) {
                         inst

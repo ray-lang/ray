@@ -26,8 +26,8 @@ use ray_typing::{
 
 use ray_core::{
     ast::{
-        self, Assign, Call, Closure, CurlyElement, Decl, Expr, FStringPart, Literal, Modifier,
-        Node, Pattern, PrefixOp, RangeLimits, token::IntegerBase,
+        self, Assign, BuiltinKind, Call, Closure, CurlyElement, Decl, Expr, FStringPart, Literal,
+        Modifier, Node, Pattern, PrefixOp, RangeLimits, token::IntegerBase,
     },
     errors::{RayError, RayErrorKind, RayResult},
     sema::closure::ClosureInfo,
@@ -965,6 +965,27 @@ impl<'a> GenCtx<'a> {
 
     fn set_local(&mut self, idx: usize, value: lir::Value) {
         self.push(lir::Inst::SetLocal(idx.into(), value));
+    }
+
+    /// Copy a ref-typed value from one local to another. Emits SetLocal +
+    /// IncRef for the appropriate ref kind (strong for `*T`, weak for `id *T`).
+    fn copy_ref_to_local(&mut self, dst: usize, src: usize) {
+        let src_val: lir::Value = lir::Variable::Local(src).into();
+        self.set_local(dst, src_val.clone());
+        let kind = match self.locals[dst].ty.mono() {
+            Ty::Ref(_) => lir::RefCountKind::Strong,
+            Ty::IdRef(_) => lir::RefCountKind::Weak,
+            other => panic!("copy_ref_to_local called with non-ref type: {}", other),
+        };
+        self.push(lir::Inst::IncRef(src_val, kind));
+    }
+
+    /// Move a `*mut T` value from one local to another. Emits SetLocal and
+    /// removes the source from the ref-tracking list (ownership transfer).
+    fn move_ref_to_local(&mut self, dst: usize, src: usize) {
+        let src_val: lir::Value = lir::Variable::Local(src).into();
+        self.set_local(dst, src_val);
+        self.consume_ref_local(src);
     }
 
     pub fn with_new_block<F, T>(&mut self, f: F) -> (usize, T)
@@ -2134,6 +2155,22 @@ impl<'a> GenCtx<'a> {
             call_args.push(self.value_to_local_or_unit(value, ty_for_local));
         }
 
+        // Emit IncRef for ref-typed call arguments. The callee will
+        // DecRef on exit; this balances the count.
+        for (idx, arg) in call_args.iter().enumerate() {
+            if let lir::Variable::Local(loc) = arg {
+                let kind = match param_monos.get(idx) {
+                    Some(Ty::Ref(_)) => Some(lir::RefCountKind::Strong),
+                    Some(Ty::IdRef(_)) => Some(lir::RefCountKind::Weak),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    let local_val: lir::Value = lir::Variable::Local(*loc).into();
+                    self.push(lir::Inst::IncRef(local_val, kind));
+                }
+            }
+        }
+
         Ok(call_args)
     }
 
@@ -2387,10 +2424,22 @@ impl<'a> GenCtx<'a> {
                 let lhs_loc = self.ensure_local_for_binding(binding, debug_name, lhs_ty.clone());
 
                 log::debug!("  EMIT: ${} = ${}", lhs_loc, rhs_loc);
-                self.set_local(
-                    lhs_loc,
-                    lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
-                );
+                if lhs_loc != rhs_loc {
+                    match lhs_ty.mono() {
+                        Ty::Ref(_) | Ty::IdRef(_) => {
+                            self.copy_ref_to_local(lhs_loc, rhs_loc);
+                        }
+                        Ty::MutRef(_) => {
+                            self.move_ref_to_local(lhs_loc, rhs_loc);
+                        }
+                        _ => {
+                            self.set_local(
+                                lhs_loc,
+                                lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
+                            );
+                        }
+                    }
+                }
                 Ok(())
             }
             Pattern::Deref(inner) => {
@@ -2925,9 +2974,40 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Malloc::new(ty.into(), count)
             }
             Expr::BuiltinCall(bc) => {
-                // TODO: Implement LIR lowering for freeze/id/upgrade.
-                // For now, lower the arg and pass through.
-                bc.arg.lir_gen(ctx)?
+                let arg_value = bc.arg.lir_gen(ctx)?;
+                match bc.kind {
+                    BuiltinKind::Freeze => {
+                        // freeze(*mut T) -> *T: same pointer, type changes at
+                        // compile time only. No refcount change needed.
+                        // Create a new local typed *T so the shared ref is
+                        // tracked for automatic DecRef on function exit.
+                        // Consume the source *mut T — freeze is a move.
+                        let new_loc = ctx.local(ty.clone());
+                        ctx.set_local(new_loc, arg_value.clone());
+                        if let Some(src_idx) = arg_value.local() {
+                            ctx.consume_ref_local(src_idx);
+                        }
+                        lir::Variable::Local(new_loc).into()
+                    }
+                    BuiltinKind::Id => {
+                        // id(*T) -> id *T: creates a weak reference from a
+                        // shared ref. Increment the weak count, then create a
+                        // new local typed id *T for weak refcount tracking.
+                        let arg_ty = ctx.ty_of(bc.arg.id);
+                        let arg_loc = ctx.get_or_set_local(arg_value, arg_ty).unwrap();
+                        let arg_local: lir::Value = lir::Variable::Local(arg_loc).into();
+                        ctx.push(lir::Inst::IncRef(arg_local, lir::RefCountKind::Weak));
+                        let new_loc = ctx.local(ty.clone());
+                        ctx.set_local(new_loc, lir::Variable::Local(arg_loc).into());
+                        lir::Variable::Local(new_loc).into()
+                    }
+                    BuiltinKind::Upgrade => {
+                        // upgrade(id *T) -> nilable[*T]: runtime check of
+                        // strong_count. Handled in LLVM codegen with
+                        // conditional branching.
+                        lir::Value::Upgrade(Box::new(arg_value))
+                    }
+                }
             }
             Expr::Cast(c) => {
                 let src = c.lhs.lir_gen(ctx)?;
@@ -3262,7 +3342,10 @@ impl LirGen<GenResult> for Node<Expr> {
             },
             Expr::Boxed(boxed) => {
                 let ptr_loc = ctx.local(ty.clone());
-                let pointee_ty = variant!(ty.mono(), if Ty::Ref(p));
+                let pointee_ty = match ty.mono() {
+                    Ty::Ref(p) | Ty::MutRef(p) => p,
+                    other => panic!("expected reference type for box, got: {}", other),
+                };
                 let ptr_malloc =
                     lir::Malloc::new(pointee_ty.as_ref().clone().into(), lir::Atom::uptr(1));
 
@@ -3352,20 +3435,34 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 // Create result local and store from both branches
                 let result_loc = ctx.local(ty.clone());
+                let is_ref_copy = matches!(ty.mono(), Ty::Ref(_) | Ty::IdRef(_));
+                let is_ref_move = matches!(ty.mono(), Ty::MutRef(_));
                 ctx.with_block(then_end, |ctx| {
                     if let Some(loc) = ctx.get_or_set_local(then_val, payload_ty) {
-                        ctx.set_local(
-                            result_loc,
-                            lir::Atom::Variable(lir::Variable::Local(loc)).into(),
-                        );
+                        if is_ref_copy {
+                            ctx.copy_ref_to_local(result_loc, loc);
+                        } else if is_ref_move {
+                            ctx.move_ref_to_local(result_loc, loc);
+                        } else {
+                            ctx.set_local(
+                                result_loc,
+                                lir::Atom::Variable(lir::Variable::Local(loc)).into(),
+                            );
+                        }
                     }
                 });
                 ctx.with_block(else_end, |ctx| {
                     if let Some(loc) = ctx.get_or_set_local(else_val, ty.clone()) {
-                        ctx.set_local(
-                            result_loc,
-                            lir::Atom::Variable(lir::Variable::Local(loc)).into(),
-                        );
+                        if is_ref_copy {
+                            ctx.copy_ref_to_local(result_loc, loc);
+                        } else if is_ref_move {
+                            ctx.move_ref_to_local(result_loc, loc);
+                        } else {
+                            ctx.set_local(
+                                result_loc,
+                                lir::Atom::Variable(lir::Variable::Local(loc)).into(),
+                            );
+                        }
                     }
                 });
 
@@ -3783,12 +3880,34 @@ impl LirGen<GenResult> for Node<Expr> {
                 // create a local for the result of the if expression
                 let if_loc = if !then_ty.is_unit() && then_has_value {
                     let if_loc = ctx.local(ty.clone());
+                    let is_ref_copy = matches!(ty.mono(), Ty::Ref(_) | Ty::IdRef(_));
+                    let is_ref_move = matches!(ty.mono(), Ty::MutRef(_));
                     ctx.with_block(then_end, |ctx| {
+                        if let Some(src) = then_val.local() {
+                            if is_ref_copy {
+                                ctx.copy_ref_to_local(if_loc, src);
+                                return;
+                            }
+                            if is_ref_move {
+                                ctx.move_ref_to_local(if_loc, src);
+                                return;
+                            }
+                        }
                         ctx.set_local(if_loc, then_val);
                     });
 
                     if let Some(else_val) = else_val? {
                         ctx.with_block(else_end, |ctx| {
+                            if let Some(src) = else_val.local() {
+                                if is_ref_copy {
+                                    ctx.copy_ref_to_local(if_loc, src);
+                                    return;
+                                }
+                                if is_ref_move {
+                                    ctx.move_ref_to_local(if_loc, src);
+                                    return;
+                                }
+                            }
                             ctx.set_local(if_loc, else_val);
                         });
                     }
@@ -4285,7 +4404,7 @@ mod tests {
     };
     use ray_typing::types::TyScheme;
 
-    use ray_lir::{ControlMarker, Inst, Value};
+    use ray_lir::{ControlMarker, Inst, RefCountKind, Value};
 
     use crate::lir::generate;
 
@@ -4353,9 +4472,10 @@ mod tests {
 
     #[test]
     fn generates_simple_function() {
+        // Note: `id` is a keyword (ref builtin), so use `identity` instead.
         let src = r#"
-            fn id(x: u32) -> u32 { x }
-            pub fn main() -> u32 { id(1u32) }
+            fn identity(x: u32) -> u32 { x }
+            pub fn main() -> u32 { identity(1u32) }
         "#;
 
         let (db, _file_id) = setup_test_workspace(src);
@@ -4367,17 +4487,17 @@ mod tests {
         let (prog, _) = gen_result.unwrap();
         assert_eq!(
             prog.funcs.len(),
-            4, // _start, module main, id, and user main
+            4, // _start, module main, identity, and user main
             "expected 4 functions, found {}: [{}]",
             prog.funcs.len(),
             map_join(&prog.funcs, ", ", |f| format!("{:#}", f.name))
         );
 
-        let id_func = prog
+        let identity_func = prog
             .funcs
             .iter()
-            .find(|f| &f.name.with_names_only().to_short_name() == "id");
-        assert!(id_func.is_some());
+            .find(|f| &f.name.with_names_only().to_short_name() == "identity");
+        assert!(identity_func.is_some());
     }
 
     #[test]
@@ -5278,9 +5398,10 @@ pub fn main() -> list[u32] {
 
     #[test]
     fn generates_boxed_expression() {
+        // Note: `box` now requires parens and produces `*mut T`.
         let src = r#"
-pub fn main() -> *u32 {
-    box 42u32
+pub fn main() -> *mut u32 {
+    box(42u32)
 }
 "#;
 
@@ -6687,6 +6808,539 @@ test "check exit" {
             "harness should call proc_exit on failure\n--- Calls: {:?}\n--- LIR Program ---\n{}",
             call_names,
             prog
+        );
+    }
+
+    // =========================================================================
+    // Reference counting tests
+    // =========================================================================
+
+    #[test]
+    fn box_generates_malloc_for_mut_ref() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // box(expr) creates a local with *mut T type and a Malloc value
+        let has_mut_ref_local = main_func
+            .locals
+            .iter()
+            .any(|local| matches!(local.ty.mono(), Ty::MutRef(_)));
+
+        let has_malloc = main_func.blocks.iter().any(|block| {
+            block
+                .iter()
+                .any(|inst| matches!(inst, Inst::SetLocal(_, Value::Malloc(_))))
+        });
+
+        assert!(
+            has_mut_ref_local,
+            "expected box(expr) to create a local with *mut T type\n--- LIR ---\n{}",
+            prog
+        );
+        assert!(
+            has_malloc,
+            "expected box(expr) to generate Malloc instruction\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn freeze_creates_new_shared_ref_local() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // freeze should create a local typed *Foo (Ty::Ref)
+        let has_shared_ref_local = main_func
+            .locals
+            .iter()
+            .any(|local| matches!(local.ty.mono(), Ty::Ref(_)));
+
+        assert!(
+            has_shared_ref_local,
+            "expected freeze to create a local with Ty::Ref type\n--- Locals: {:?}\n--- LIR ---\n{}",
+            main_func
+                .locals
+                .iter()
+                .map(|l| format!("{}: {}", l.idx, l.ty))
+                .collect::<Vec<_>>(),
+            prog
+        );
+    }
+
+    #[test]
+    fn id_emits_incref_weak() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    weak = id(shared)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_incref_weak = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::IncRef(_, RefCountKind::Weak) = inst {
+                    saw_incref_weak = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_incref_weak,
+            "expected id(shared) to emit IncRef with Weak kind\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn id_creates_id_ref_local() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    weak = id(shared)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let has_id_ref_local = main_func
+            .locals
+            .iter()
+            .any(|local| matches!(local.ty.mono(), Ty::IdRef(_)));
+
+        assert!(
+            has_id_ref_local,
+            "expected id() to create a local with Ty::IdRef type\n--- Locals: {:?}\n--- LIR ---\n{}",
+            main_func
+                .locals
+                .iter()
+                .map(|l| format!("{}: {}", l.idx, l.ty))
+                .collect::<Vec<_>>(),
+            prog
+        );
+    }
+
+    #[test]
+    fn decref_emitted_for_shared_ref_before_return() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        // Look for DecRef(_, Strong) before a Return instruction
+        let mut saw_decref_strong = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::DecRef(_, RefCountKind::Strong) = inst {
+                    saw_decref_strong = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_decref_strong,
+            "expected DecRef(Strong) before return for shared ref local\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn decref_weak_emitted_for_id_ref_before_return() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    weak = id(shared)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_decref_weak = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::DecRef(_, RefCountKind::Weak) = inst {
+                    saw_decref_weak = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_decref_weak,
+            "expected DecRef(Weak) before return for id ref local\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn upgrade_emits_upgrade_value() {
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    weak = id(shared)
+    result = upgrade(weak)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let mut saw_upgrade = false;
+        for block in &main_func.blocks {
+            for inst in block.iter() {
+                if let Inst::SetLocal(_, Value::Upgrade(_)) = inst {
+                    saw_upgrade = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_upgrade,
+            "expected upgrade(weak) to emit Value::Upgrade\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn no_decref_for_returned_ref() {
+        // When a shared ref is returned from a function, it should NOT
+        // be DecRef'd (caller takes ownership of that reference).
+        let src = r#"
+struct Foo { x: u32 }
+
+fn make_ref() -> *Foo {
+    p = box(Foo { x: 1u32 })
+    freeze(p)
+}
+
+pub fn main() -> u32 {
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let make_ref_func = prog
+            .funcs
+            .iter()
+            .find(|f| {
+                let name = f.name.with_names_only().to_short_name();
+                name == "make_ref"
+            })
+            .expect("expected make_ref function");
+
+        // The function creates a *Foo local via freeze, then returns it.
+        // There should be NO DecRef for the returned local.
+        let mut decref_count = 0;
+        for block in &make_ref_func.blocks {
+            for inst in block.iter() {
+                if matches!(inst, Inst::DecRef(_, _)) {
+                    decref_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(
+            decref_count, 0,
+            "expected 0 DecRef instructions for a function that returns its only ref\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn mut_ref_local_gets_decref_on_exit() {
+        // A *mut T local from box() that is NOT frozen should get
+        // DecRef(Strong) on function exit — the owner is responsible
+        // for freeing the allocation.
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    mut p = box(Foo { x: 42u32 })
+    p.x = 10u32
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let saw_decref_strong = main_func.blocks.iter().any(|block| {
+            block
+                .iter()
+                .any(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong)))
+        });
+
+        assert!(
+            saw_decref_strong,
+            "expected DecRef(Strong) for *mut T local on function exit\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn mut_ref_param_no_decref() {
+        // A *mut T parameter is a reborrow (§6.1) — the callee does NOT
+        // own it, so it must NOT emit DecRef on exit.
+        let src = r#"
+struct Foo { x: u32 }
+fn read_val(p: *mut Foo) -> u32 {
+    p.x
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let read_val_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.with_names_only().to_short_name() == "read_val")
+            .expect("expected read_val function");
+
+        let decref_count: usize = read_val_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::DecRef(_, _)))
+            .count();
+
+        assert_eq!(
+            decref_count, 0,
+            "expected 0 DecRef for *mut T reborrow parameter\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn freeze_consumes_source_no_double_decref() {
+        // freeze(p) consumes the *mut T. In a function that creates a
+        // *mut T, freezes it, and returns the *Foo, there should be
+        // 0 DecRef instructions — the *mut T is consumed by freeze, and
+        // the *Foo is the return value (skipped by ret()).
+        let src = r#"
+struct Foo { x: u32 }
+fn make_shared() -> *Foo {
+    p = box(Foo { x: 42u32 })
+    freeze(p)
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let make_shared_func = prog
+            .funcs
+            .iter()
+            .find(|f| f.name.with_names_only().to_short_name() == "make_shared")
+            .expect("expected make_shared function");
+
+        let decref_count: usize = make_shared_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::DecRef(_, _)))
+            .count();
+
+        assert_eq!(
+            decref_count, 0,
+            "expected 0 DecRef in make_shared — *mut T consumed by freeze, *Foo is return value\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn copy_shared_ref_emits_incref_strong() {
+        // Copying a *T from one local to another (alias = shared) must
+        // emit IncRef(Strong) per §3.2: "Copy a *T → strong_count +1".
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    alias = shared
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let incref_strong_count: usize = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::IncRef(_, RefCountKind::Strong)))
+            .count();
+
+        // At minimum: shared=freeze_result (copy) + alias=shared (copy)
+        assert!(
+            incref_strong_count >= 2,
+            "expected >= 2 IncRef(Strong) for *T copies, got {}\n--- LIR ---\n{}",
+            incref_strong_count,
+            prog
+        );
+    }
+
+    #[test]
+    fn copy_id_ref_emits_incref_weak_on_copy() {
+        // Copying an id *T emits IncRef(Weak) per §3.2: "Copy an id *T
+        // → weak_count +1". This is in addition to id()'s own IncRef.
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    shared = freeze(p)
+    weak = id(shared)
+    alias = weak
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let incref_weak_count: usize = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::IncRef(_, RefCountKind::Weak)))
+            .count();
+
+        // id(shared) emits 1 IncRef Weak, weak=id_result emits 1 (copy),
+        // alias=weak emits 1 (copy) — at least 3 total.
+        assert!(
+            incref_weak_count >= 3,
+            "expected >= 3 IncRef(Weak) (id + copies), got {}\n--- LIR ---\n{}",
+            incref_weak_count,
+            prog
+        );
+    }
+
+    #[test]
+    fn move_mut_ref_assignment_consumes_source() {
+        // q = p where p: *mut T is a move — the source p is consumed
+        // from ref_locals. Only q should get DecRef'd on exit.
+        let src = r#"
+struct Foo { x: u32 }
+pub fn main() -> u32 {
+    p = box(Foo { x: 42u32 })
+    q = p
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let decref_strong_count: usize = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong)))
+            .count();
+
+        // box creates box_loc (tracked), p=box_loc (move: p tracked,
+        // box_loc consumed), q=p (move: q tracked, p consumed).
+        // Only q remains → exactly 1 DecRef(Strong).
+        assert_eq!(
+            decref_strong_count, 1,
+            "expected exactly 1 DecRef(Strong) after move chain, got {}\n--- LIR ---\n{}",
+            decref_strong_count, prog
         );
     }
 }

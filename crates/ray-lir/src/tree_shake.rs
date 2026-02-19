@@ -76,6 +76,7 @@ impl CollectRefs for Value {
             Value::IntConvert(ic) => ic.value.collect_refs(collector),
             // Phi contains (block_label, local_idx) pairs — no Variable refs
             Value::Phi(_) => {}
+            Value::Upgrade(v) => v.collect_refs(collector),
             // No nested refs
             Value::Empty | Value::VarRef(_) | Value::Type(_) => {}
         }
@@ -136,7 +137,7 @@ impl CollectRefs for Inst {
             }
             Inst::StructInit(v, _) => v.collect_refs(collector),
             Inst::SetLocal(_, v) | Inst::SetGlobal(_, v) => v.collect_refs(collector),
-            Inst::Return(v) | Inst::IncRef(v, _) | Inst::DecRef(v) => v.collect_refs(collector),
+            Inst::Return(v) | Inst::IncRef(v, _) | Inst::DecRef(v, _) => v.collect_refs(collector),
             Inst::Call(c) => c.collect_refs(collector),
             Inst::CExternCall(c) => c.collect_refs(collector),
             Inst::Break(b) => {

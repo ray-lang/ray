@@ -477,6 +477,63 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
     }
 
+    /// Whether a type uses reference counting (has a refcount header on the heap).
+    /// `*T`, `*mut T`, and `id *T` are refcounted. `rawptr[T]` is not.
+    fn is_refcounted_alloc(ty: &Ty) -> bool {
+        matches!(ty, Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_))
+    }
+
+    /// Size of the refcount header in bytes: `2 * sizeof(ptr)`.
+    /// Layout: `[strong_count: uint | weak_count: uint | data: T]`
+    fn rc_header_size(&self) -> IntValue<'ctx> {
+        let ptr_size = self.ptr_type().size_of();
+        let two = self.ptr_type().const_int(2, false);
+        ptr_size.const_mul(two)
+    }
+
+    /// Given a data pointer (past the refcount header), compute the allocation
+    /// base pointer by subtracting the header size.
+    fn get_rc_base_ptr(
+        &self,
+        data_ptr: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, BuilderError> {
+        let header_size = self.rc_header_size();
+        let neg_header = self.builder.build_int_neg(header_size, "neg_header")?;
+        unsafe {
+            self.builder
+                .build_gep(self.lcx.i8_type(), data_ptr, &[neg_header], "rc_base")
+        }
+    }
+
+    /// Get a pointer to the strong or weak count field given the allocation base pointer.
+    /// `kind == Strong` → offset 0 (strong_count), `kind == Weak` → offset 1 (weak_count).
+    fn get_rc_count_ptr(
+        &self,
+        base_ptr: PointerValue<'ctx>,
+        kind: lir::RefCountKind,
+    ) -> Result<PointerValue<'ctx>, BuilderError> {
+        let offset = match kind {
+            lir::RefCountKind::Strong => self.ptr_type().const_int(0, false),
+            lir::RefCountKind::Weak => self.ptr_type().const_int(1, false),
+        };
+        unsafe {
+            self.builder
+                .build_gep(self.ptr_type(), base_ptr, &[offset], "rc_count_ptr")
+        }
+    }
+
+    /// Declare `free` as an external function if not already declared, and return it.
+    fn get_or_declare_free(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function("free") {
+            return f;
+        }
+        let void_ty = self.lcx.void_type();
+        let ptr_ty = self.lcx.ptr_type(AddressSpace::default());
+        let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+        self.module
+            .add_function("free", fn_ty, Some(Linkage::External))
+    }
+
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
         match container_ty {
             Ty::Array(elem_ty, _) => elem_ty.as_ref().clone(),
@@ -1686,8 +1743,11 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
         }
 
         if let Some(malloc_fn) = ctx.module.get_function("malloc") {
-            // use the __wasi_malloc import for malloc
             malloc_fn.as_global_value().set_name("__wasi_malloc");
+        }
+
+        if let Some(free_fn) = ctx.module.get_function("free") {
+            free_fn.as_global_value().set_name("__wasi_free");
         }
 
         Ok(())
@@ -1850,7 +1910,18 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                 return Ok(None);
             }
 
-            lir::Inst::Free(_) => todo!("codegen lir::Inst: {}", self),
+            lir::Inst::Free(local_idx) => {
+                // Free a heap allocation. Compute the allocation base pointer
+                // (before the refcount header) and call free().
+                let data_ptr = ctx.load_local(*local_idx)?.into_pointer_value();
+                let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
+                let free_fn = ctx.get_or_declare_free();
+                ctx.builder
+                    .build_call(free_fn, &[base_ptr.into()], "free")?
+                    .try_as_basic_value()
+                    .right()
+                    .expect("free returns void")
+            }
             lir::Inst::Call(call) => {
                 match call.codegen(ctx, srcmap)? {
                     LoweredCall::Value(_v) => {
@@ -1881,8 +1952,88 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
             lir::Inst::Store(s) => s.codegen(ctx, srcmap)?,
             lir::Inst::Insert(i) => i.codegen(ctx, srcmap)?,
             lir::Inst::SetField(s) => s.codegen(ctx, srcmap)?,
-            lir::Inst::IncRef(_, _) => todo!("codegen lir::Inst: {}", self),
-            lir::Inst::DecRef(_) => todo!("codegen lir::Inst: {}", self),
+            lir::Inst::IncRef(value, kind) => {
+                // Increment the strong or weak reference count by 1.
+                let data_ptr = value.codegen(ctx, srcmap)?.into_pointer_value();
+                let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
+                let count_ptr = ctx.get_rc_count_ptr(base_ptr, *kind)?;
+
+                let count_ty = ctx.ptr_type();
+                let old_count = ctx
+                    .builder
+                    .build_load(count_ty, count_ptr, "rc_load")?
+                    .into_int_value();
+                let new_count =
+                    ctx.builder
+                        .build_int_add(old_count, count_ty.const_int(1, false), "rc_inc")?;
+                ctx.builder.build_store(count_ptr, new_count)?
+            }
+            lir::Inst::DecRef(value, kind) => {
+                // Decrement the strong or weak reference count by 1.
+                // If the count reaches 0, conditionally free the allocation.
+                let data_ptr = value.codegen(ctx, srcmap)?.into_pointer_value();
+                let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
+                let count_ptr = ctx.get_rc_count_ptr(base_ptr, *kind)?;
+
+                let count_ty = ctx.ptr_type();
+                let old_count = ctx
+                    .builder
+                    .build_load(count_ty, count_ptr, "rc_load")?
+                    .into_int_value();
+                let new_count =
+                    ctx.builder
+                        .build_int_sub(old_count, count_ty.const_int(1, false), "rc_dec")?;
+                ctx.builder.build_store(count_ptr, new_count)?;
+
+                // Check if count reached 0
+                let is_zero = ctx.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    new_count,
+                    count_ty.const_int(0, false),
+                    "rc_is_zero",
+                )?;
+
+                let fn_val = ctx.get_fn();
+                let then_bb = ctx.lcx.append_basic_block(fn_val, "rc_maybe_free");
+                let merge_bb = ctx.lcx.append_basic_block(fn_val, "rc_merge");
+
+                ctx.builder
+                    .build_conditional_branch(is_zero, then_bb, merge_bb)?;
+
+                // then block: this count reached 0, check the other count
+                ctx.builder.position_at_end(then_bb);
+                let other_kind = match kind {
+                    lir::RefCountKind::Strong => lir::RefCountKind::Weak,
+                    lir::RefCountKind::Weak => lir::RefCountKind::Strong,
+                };
+                let other_ptr = ctx.get_rc_count_ptr(base_ptr, other_kind)?;
+                let other_count = ctx
+                    .builder
+                    .build_load(count_ty, other_ptr, "rc_other_load")?
+                    .into_int_value();
+                let other_is_zero = ctx.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    other_count,
+                    count_ty.const_int(0, false),
+                    "rc_other_zero",
+                )?;
+
+                let free_bb = ctx.lcx.append_basic_block(fn_val, "rc_free");
+                ctx.builder
+                    .build_conditional_branch(other_is_zero, free_bb, merge_bb)?;
+
+                // free block: both counts are 0, deallocate
+                ctx.builder.position_at_end(free_bb);
+                let free_fn = ctx.get_or_declare_free();
+                ctx.builder.build_call(free_fn, &[base_ptr.into()], "")?;
+                ctx.builder.build_unconditional_branch(merge_bb)?;
+
+                // continue at merge block
+                ctx.builder.position_at_end(merge_bb);
+                // Return a no-op instruction for the match arm.
+                // The last instruction in merge_bb will be whatever follows.
+                return Ok(None);
+            }
             lir::Inst::Return(v) => {
                 // Compute the value to return, then delegate to the typed-return helper.
                 let ret_val = v.codegen(ctx, srcmap)?;
@@ -1929,6 +2080,75 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::GetField(g) => g.codegen(ctx, srcmap),
             lir::Value::BasicOp(b) => b.codegen(ctx, srcmap),
             lir::Value::Cast(c) => c.codegen(ctx, srcmap),
+            lir::Value::Upgrade(inner) => {
+                // upgrade(id *T) -> nilable[*T]: check strong_count, if > 0
+                // increment it and return Some(shared_ref), else return None.
+                let data_ptr = inner.codegen(ctx, srcmap)?.into_pointer_value();
+                let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
+                let count_ptr = ctx.get_rc_count_ptr(base_ptr, lir::RefCountKind::Strong)?;
+
+                let count_ty = ctx.ptr_type();
+                let strong_count = ctx
+                    .builder
+                    .build_load(count_ty, count_ptr, "rc_strong")?
+                    .into_int_value();
+
+                let is_alive = ctx.builder.build_int_compare(
+                    IntPredicate::UGT,
+                    strong_count,
+                    count_ty.const_int(0, false),
+                    "rc_alive",
+                )?;
+
+                // Nilable result: { i1, ptr }
+                let bool_ty = ctx.lcx.bool_type();
+                let ptr_ty = ctx.lcx.ptr_type(AddressSpace::default());
+                let nilable_ty = ctx.lcx.struct_type(&[bool_ty.into(), ptr_ty.into()], false);
+                let slot = ctx.builder.build_alloca(nilable_ty, "upgrade_result")?;
+
+                let fn_val = ctx.get_fn();
+                let some_bb = ctx.lcx.append_basic_block(fn_val, "upgrade_some");
+                let none_bb = ctx.lcx.append_basic_block(fn_val, "upgrade_none");
+                let merge_bb = ctx.lcx.append_basic_block(fn_val, "upgrade_merge");
+
+                ctx.builder
+                    .build_conditional_branch(is_alive, some_bb, none_bb)?;
+
+                // some: increment strong_count, store { true, data_ptr }
+                ctx.builder.position_at_end(some_bb);
+                let new_count = ctx.builder.build_int_add(
+                    strong_count,
+                    count_ty.const_int(1, false),
+                    "rc_inc",
+                )?;
+                ctx.builder.build_store(count_ptr, new_count)?;
+                let is_some_ptr = ctx
+                    .builder
+                    .build_struct_gep(nilable_ty, slot, 0, "is_some")?;
+                ctx.builder
+                    .build_store(is_some_ptr, bool_ty.const_int(1, false))?;
+                let payload_ptr = ctx
+                    .builder
+                    .build_struct_gep(nilable_ty, slot, 1, "payload")?;
+                ctx.builder.build_store(payload_ptr, data_ptr)?;
+                ctx.builder.build_unconditional_branch(merge_bb)?;
+
+                // none: store { false, null }
+                ctx.builder.position_at_end(none_bb);
+                let is_some_ptr = ctx
+                    .builder
+                    .build_struct_gep(nilable_ty, slot, 0, "is_some")?;
+                ctx.builder
+                    .build_store(is_some_ptr, bool_ty.const_int(0, false))?;
+                let payload_ptr = ctx
+                    .builder
+                    .build_struct_gep(nilable_ty, slot, 1, "payload")?;
+                ctx.builder.build_store(payload_ptr, ptr_ty.const_null())?;
+                ctx.builder.build_unconditional_branch(merge_bb)?;
+
+                ctx.builder.position_at_end(merge_bb);
+                Ok(slot.as_basic_value_enum())
+            }
             lir::Value::IntConvert(_) => todo!("codegen lir::IntConvert: {}", self),
             lir::Value::Type(_) => todo!("codegen lir::Type: {}", self),
             lir::Value::Closure(closure) => {
@@ -1997,6 +2217,50 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
             }
             &lir::Atom::UintConst(count, _) => {
                 if count == 1 {
+                    if LLVMCodegenCtx::is_refcounted_alloc(&orig_ty) {
+                        // Refcounted allocation: prepend [strong_count | weak_count] header.
+                        let header_size = ctx.rc_header_size();
+                        let data_size = llvm_elem_ty.size_of().expect("sized type");
+                        let total =
+                            ctx.builder
+                                .build_int_add(header_size, data_size, "rc_total_size")?;
+                        let base = ctx.builder.build_array_malloc(
+                            ctx.lcx.i8_type(),
+                            total,
+                            &format!("rc_alloc:<*{}>", pointee_ty),
+                        )?;
+
+                        // strong_count = 1
+                        ctx.builder
+                            .build_store(base, ctx.ptr_type().const_int(1, false))?;
+
+                        // weak_count = 0
+                        let weak_ptr = unsafe {
+                            ctx.builder.build_gep(
+                                ctx.ptr_type(),
+                                base,
+                                &[ctx.ptr_type().const_int(1, false)],
+                                "weak_count_ptr",
+                            )?
+                        };
+                        ctx.builder
+                            .build_store(weak_ptr, ctx.ptr_type().const_int(0, false))?;
+
+                        // data_ptr = base + header_size
+                        let data_ptr = unsafe {
+                            ctx.builder.build_gep(
+                                ctx.lcx.i8_type(),
+                                base,
+                                &[header_size],
+                                "rc_data_ptr",
+                            )?
+                        };
+
+                        ctx.register_pointee_ty(data_ptr, pointee_ty.clone());
+                        return Ok(data_ptr.as_basic_value_enum());
+                    }
+
+                    // Non-refcounted allocation (rawptr, bare types): plain malloc.
                     let ptr = ctx
                         .builder
                         .build_malloc(llvm_elem_ty, &format!("malloc1:<*{}>", pointee_ty))?;

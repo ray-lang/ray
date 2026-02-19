@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use ray_lir::{Block, ControlFlowGraph, If, Inst, Local, Param, SymbolSet, Value};
+use ray_lir::{
+    Block, ControlFlowGraph, If, Inst, Local, Param, RefCountKind, SymbolSet, Value, Variable,
+};
 use ray_shared::{local_binding::LocalBindingId, ty::Ty};
 use ray_typing::types::TyScheme;
 
@@ -19,6 +21,8 @@ pub struct Builder {
     pub(super) blocks: Vec<Block>,
     pub(super) symbols: SymbolSet,
     pub(super) cfg: ControlFlowGraph,
+    /// Ref-typed locals (`*T`, `*mut T`, `id *T`) that need DecRef on function exit.
+    pub(super) ref_locals: Vec<(usize, RefCountKind)>,
 }
 
 impl Builder {
@@ -35,6 +39,7 @@ impl Builder {
             blocks: vec![],
             symbols: SymbolSet::new(),
             cfg: ControlFlowGraph::default(),
+            ref_locals: vec![],
         }
     }
 
@@ -75,6 +80,11 @@ impl Builder {
 
     pub fn local(&mut self, ty: TyScheme) -> usize {
         let idx = self.locals.len();
+        match ty.mono() {
+            Ty::Ref(_) | Ty::MutRef(_) => self.ref_locals.push((idx, RefCountKind::Strong)),
+            Ty::IdRef(_) => self.ref_locals.push((idx, RefCountKind::Weak)),
+            _ => {}
+        }
         let loc = Local { idx, ty };
         self.locals.push(loc);
         idx
@@ -82,6 +92,13 @@ impl Builder {
 
     pub fn local_mut(&mut self, idx: usize) -> Option<&mut Local> {
         self.locals.get_mut(idx)
+    }
+
+    /// Remove a local from the ref-tracking list. Used when a `*mut T` is
+    /// moved (consumed by `freeze`, ownership transfer, etc.) so it won't
+    /// be DecRef'd a second time on function exit.
+    pub fn consume_ref_local(&mut self, idx: usize) {
+        self.ref_locals.retain(|(i, _)| *i != idx);
     }
 
     #[inline(always)]
@@ -97,6 +114,11 @@ impl Builder {
 
     pub fn param_unbound(&mut self, name: String, ty: Ty) -> usize {
         let idx = self.local(ty.clone().into());
+        // *mut T params are reborrows — caller retains ownership,
+        // so the callee must not DecRef on exit.
+        if matches!(ty, Ty::MutRef(_)) {
+            self.consume_ref_local(idx);
+        }
         self.params.push(Param::new(name.clone(), idx, ty));
         self.block().define_var(name, idx);
         idx
@@ -104,6 +126,11 @@ impl Builder {
 
     pub fn param(&mut self, binding: LocalBindingId, name: String, ty: Ty) -> usize {
         let idx = self.local(ty.clone().into());
+        // *mut T params are reborrows — caller retains ownership,
+        // so the callee must not DecRef on exit.
+        if matches!(ty, Ty::MutRef(_)) {
+            self.consume_ref_local(idx);
+        }
         self.params.push(Param::new(name.clone(), idx, ty));
         self.set_var(binding, name, idx);
         idx
@@ -161,6 +188,15 @@ impl Builder {
     }
 
     pub fn ret(&mut self, value: Value) {
+        let returning_local = value.local();
+        let ref_locals = self.ref_locals.clone();
+        for (idx, kind) in ref_locals {
+            if Some(idx) == returning_local {
+                continue;
+            }
+            let local_val: Value = Variable::Local(idx).into();
+            self.push(Inst::DecRef(local_val, kind));
+        }
         self.block().push(Inst::Return(value))
     }
 
