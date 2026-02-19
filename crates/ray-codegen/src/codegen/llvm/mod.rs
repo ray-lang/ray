@@ -522,16 +522,48 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         }
     }
 
-    /// Declare `free` as an external function if not already declared, and return it.
-    fn get_or_declare_free(&self) -> FunctionValue<'ctx> {
-        if let Some(f) = self.module.get_function("free") {
+    /// Declare `__wasi_alloc(size: i32, align: i32) -> ptr` as an external function.
+    fn get_or_declare_alloc(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function("__wasi_alloc") {
+            return f;
+        }
+        let ptr_ty = self.lcx.ptr_type(AddressSpace::default());
+        let size_ty = self.ptr_type();
+        let fn_ty = ptr_ty.fn_type(&[size_ty.into(), size_ty.into()], false);
+        self.module
+            .add_function("__wasi_alloc", fn_ty, Some(Linkage::External))
+    }
+
+    /// Declare `__wasi_dealloc(ptr: ptr, size: i32, align: i32) -> void` as an external function.
+    fn get_or_declare_dealloc(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function("__wasi_dealloc") {
             return f;
         }
         let void_ty = self.lcx.void_type();
         let ptr_ty = self.lcx.ptr_type(AddressSpace::default());
-        let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+        let size_ty = self.ptr_type();
+        let fn_ty = void_ty.fn_type(&[ptr_ty.into(), size_ty.into(), size_ty.into()], false);
         self.module
-            .add_function("free", fn_ty, Some(Linkage::External))
+            .add_function("__wasi_dealloc", fn_ty, Some(Linkage::External))
+    }
+
+    /// Compute the total allocation size and alignment for a refcounted object
+    /// whose data pointer is `data_ptr`. Uses the registered pointee type.
+    fn rc_alloc_layout(
+        &mut self,
+        data_ptr: PointerValue<'ctx>,
+    ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), BuilderError> {
+        let pointee_ty = self.get_pointee_ty(data_ptr).clone();
+        let llvm_ty = self.to_llvm_type(&pointee_ty);
+        let header_size = self.rc_header_size();
+        let data_size = llvm_ty.size_of().expect("sized type");
+        let total_size = self
+            .builder
+            .build_int_add(header_size, data_size, "dealloc_size")?;
+        let td = self.target_machine.get_target_data();
+        let align = td.get_abi_alignment(&llvm_ty);
+        let align_val = self.ptr_type().const_int(align as u64, false);
+        Ok((total_size, align_val))
     }
 
     fn get_element_ty(&self, container_ty: &Ty, index: usize) -> Ty {
@@ -1742,14 +1774,6 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             f.codegen(ctx, srcmap)?;
         }
 
-        if let Some(malloc_fn) = ctx.module.get_function("malloc") {
-            malloc_fn.as_global_value().set_name("__wasi_malloc");
-        }
-
-        if let Some(free_fn) = ctx.module.get_function("free") {
-            free_fn.as_global_value().set_name("__wasi_free");
-        }
-
         Ok(())
     }
 }
@@ -1911,16 +1935,21 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
             }
 
             lir::Inst::Free(local_idx) => {
-                // Free a heap allocation. Compute the allocation base pointer
-                // (before the refcount header) and call free().
+                // Free a heap allocation. Compute layout from the pointee type,
+                // get the allocation base pointer, and call __wasi_dealloc.
                 let data_ptr = ctx.load_local(*local_idx)?.into_pointer_value();
                 let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
-                let free_fn = ctx.get_or_declare_free();
+                let (total_size, align) = ctx.rc_alloc_layout(data_ptr)?;
+                let dealloc_fn = ctx.get_or_declare_dealloc();
                 ctx.builder
-                    .build_call(free_fn, &[base_ptr.into()], "free")?
+                    .build_call(
+                        dealloc_fn,
+                        &[base_ptr.into(), total_size.into(), align.into()],
+                        "",
+                    )?
                     .try_as_basic_value()
                     .right()
-                    .expect("free returns void")
+                    .expect("dealloc returns void")
             }
             lir::Inst::Call(call) => {
                 match call.codegen(ctx, srcmap)? {
@@ -2024,8 +2053,13 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
 
                 // free block: both counts are 0, deallocate
                 ctx.builder.position_at_end(free_bb);
-                let free_fn = ctx.get_or_declare_free();
-                ctx.builder.build_call(free_fn, &[base_ptr.into()], "")?;
+                let (total_size, align) = ctx.rc_alloc_layout(data_ptr)?;
+                let dealloc_fn = ctx.get_or_declare_dealloc();
+                ctx.builder.build_call(
+                    dealloc_fn,
+                    &[base_ptr.into(), total_size.into(), align.into()],
+                    "",
+                )?;
                 ctx.builder.build_unconditional_branch(merge_bb)?;
 
                 // continue at merge block
@@ -2224,11 +2258,22 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                         let total =
                             ctx.builder
                                 .build_int_add(header_size, data_size, "rc_total_size")?;
-                        let base = ctx.builder.build_array_malloc(
-                            ctx.lcx.i8_type(),
-                            total,
-                            &format!("rc_alloc:<*{}>", pointee_ty),
-                        )?;
+                        let td = ctx.target_machine.get_target_data();
+                        let align =
+                            td.get_abi_alignment(&llvm_elem_ty);
+                        let align_val = ctx.ptr_type().const_int(align as u64, false);
+                        let alloc_fn = ctx.get_or_declare_alloc();
+                        let base = ctx
+                            .builder
+                            .build_call(
+                                alloc_fn,
+                                &[total.into(), align_val.into()],
+                                &format!("rc_alloc:<*{}>", pointee_ty),
+                            )?
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_pointer_value();
 
                         // strong_count = 1
                         ctx.builder
@@ -2260,10 +2305,23 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                         return Ok(data_ptr.as_basic_value_enum());
                     }
 
-                    // Non-refcounted allocation (rawptr, bare types): plain malloc.
+                    // Non-refcounted allocation (rawptr, bare types).
+                    let elem_size = llvm_elem_ty.size_of().expect("sized type");
+                    let td = ctx.target_machine.get_target_data();
+                    let elem_align = td.get_abi_alignment(&llvm_elem_ty);
+                    let elem_align_val = ctx.ptr_type().const_int(elem_align as u64, false);
+                    let alloc_fn = ctx.get_or_declare_alloc();
                     let ptr = ctx
                         .builder
-                        .build_malloc(llvm_elem_ty, &format!("malloc1:<*{}>", pointee_ty))?;
+                        .build_call(
+                            alloc_fn,
+                            &[elem_size.into(), elem_align_val.into()],
+                            &format!("malloc1:<*{}>", pointee_ty),
+                        )?
+                        .try_as_basic_value()
+                        .left()
+                        .unwrap()
+                        .into_pointer_value();
                     ctx.register_pointee_ty(ptr, pointee_ty.clone());
                     return Ok(ptr.as_basic_value_enum());
                 }
@@ -2283,11 +2341,25 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
             ),
         };
 
-        let ptr = ctx.builder.build_array_malloc(
-            llvm_elem_ty,
-            size.into_int_value(),
-            &format!("malloc_array:<*{}>", pointee_ty),
-        )?;
+        let elem_size = llvm_elem_ty.size_of().expect("sized type");
+        let total_size = ctx
+            .builder
+            .build_int_mul(elem_size, size.into_int_value(), "array_total_size")?;
+        let td = ctx.target_machine.get_target_data();
+        let arr_align = td.get_abi_alignment(&llvm_elem_ty);
+        let arr_align_val = ctx.ptr_type().const_int(arr_align as u64, false);
+        let alloc_fn = ctx.get_or_declare_alloc();
+        let ptr = ctx
+            .builder
+            .build_call(
+                alloc_fn,
+                &[total_size.into(), arr_align_val.into()],
+                &format!("malloc_array:<*{}>", pointee_ty),
+            )?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
         ctx.register_pointee_ty(ptr, pointee_ty);
         Ok(ptr.as_basic_value_enum())
     }
