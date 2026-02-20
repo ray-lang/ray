@@ -1,6 +1,6 @@
 //! Parse query infrastructure for the incremental compiler.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +21,7 @@ use ray_shared::{
 
 use crate::{
     queries::{
+        auto_derive::auto_derive_impls,
         libraries::library_data,
         workspace::{FileMetadata, FileSource},
     },
@@ -34,10 +35,15 @@ pub struct ParseResult {
     pub defs: Vec<DefHeader>,
     pub source_map: SourceMap,
     pub errors: Vec<RayError>,
+    /// DefIds of compiler-generated (synthetic) definitions.
+    /// Used to distinguish auto-derived impls from user-written ones.
+    pub synthetic_defs: HashSet<DefId>,
 }
 
+/// Raw parse result — only definitions actually declared in source.
+/// This is the leaf query in the dependency chain. No other queries are called.
 #[query]
-pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
+pub fn parse_file_raw(db: &Database, file_id: FileId) -> Arc<ParseResult> {
     let source = db.get_input::<FileSource>(file_id);
     // Use FileMetadata (per-file, stable) instead of WorkspaceSnapshot (global,
     // mutated during discovery) so that disk cache entries have stable fingerprints.
@@ -53,21 +59,43 @@ pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
     let (ast, defs, source_map, errors) =
         Parser::parse_to_result(file_id, source.as_str(), options);
 
+    let ast = ast.unwrap_or_else(|| File {
+        path: metadata.module_path.to_path(),
+        stmts: vec![],
+        decls: vec![],
+        imports: vec![],
+        exports: vec![],
+        doc_comment: None,
+        filepath: metadata.path.clone(),
+        span: Span::default(),
+    });
+
     Arc::new(ParseResult {
-        ast: ast.unwrap_or_else(|| File {
-            path: metadata.module_path.to_path(),
-            stmts: vec![],
-            decls: vec![],
-            imports: vec![],
-            exports: vec![],
-            doc_comment: None,
-            filepath: metadata.path.clone(),
-            span: Span::default(),
-        }),
+        ast,
         defs,
         source_map,
         errors,
+        synthetic_defs: HashSet::new(),
     })
+}
+
+/// Merged parse result — raw source defs + auto-derived impls.
+/// All existing consumers use this query and see both explicit and synthetic impls.
+#[query]
+pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
+    let raw = parse_file_raw(db, file_id);
+    let synth = auto_derive_impls(db, file_id);
+
+    if synth.defs.is_empty() {
+        return raw;
+    }
+
+    let mut result = (*raw).clone();
+    result.ast.decls.extend(synth.decls.iter().cloned());
+    result.defs.extend(synth.defs.iter().cloned());
+    result.source_map.extend_with(synth.source_map.clone());
+    result.synthetic_defs = synth.synthetic_defs.clone();
+    Arc::new(result)
 }
 
 /// Returns the decorators attached to a definition.
@@ -134,6 +162,7 @@ mod tests {
 
     use crate::{
         queries::{
+            libraries::LoadedLibraries,
             parse::{decorators, doc_comment, has_decorator, parse_file},
             workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
         },
@@ -147,6 +176,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, "fn main() {}".to_string());
         FileMetadata::new(
             &db,
@@ -169,6 +199,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, "fn foo() {}\nfn bar() {}".to_string());
         FileMetadata::new(
             &db,
@@ -194,6 +225,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, "fn main( {".to_string());
         FileMetadata::new(
             &db,
@@ -214,6 +246,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(
             &db,
             file_id,
@@ -247,6 +280,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, "fn main() {}".to_string());
         FileMetadata::new(
             &db,
@@ -274,6 +308,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(
             &db,
             file_id,
@@ -304,6 +339,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, "fn main() {}".to_string());
         FileMetadata::new(
             &db,
@@ -329,6 +365,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(
             &db,
             file_id,
@@ -361,6 +398,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, "fn undocumented() {}".to_string());
         FileMetadata::new(
             &db,
@@ -387,6 +425,7 @@ mod tests {
         let mut workspace = WorkspaceSnapshot::new();
         let file_id = workspace.add_file(FilePath::from("test.ray"), Path::from("test"));
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
 
         let src = r#"
 map = std::collections::HashMap[u32, string]::create()

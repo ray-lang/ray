@@ -2,6 +2,7 @@
 //!
 //! This is the root module of the core library.
 
+export clone with Clone
 export deref with Deref
 export destruct with Destruct
 export dict with dict

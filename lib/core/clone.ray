@@ -1,0 +1,102 @@
+//! Cloning for producing independent copies of values.
+//!
+//! The `Clone` trait allows types to produce a new independent copy.
+//! For structs, this means creating a new instance with the same field values,
+//! incrementing reference counts for any reference-typed fields.
+//!
+//! Clone is automatically derived for all struct types, since struct fields
+//! cannot contain `*mut T` (unique references are non-copyable). User-written
+//! `impl Clone[T]` takes priority over the auto-derived implementation.
+
+/// A type that can be cloned to produce an independent copy.
+///
+/// # Type Parameters
+///
+/// - `'a` — The type implementing this trait.
+///
+/// # Examples
+///
+/// ```ray
+/// struct Point { x: int, y: int }
+///
+/// p = Point { x: 1, y: 2 }
+/// q = p.clone()
+/// ```
+trait Clone['a] {
+    fn clone(self: *'a) -> 'a
+}
+
+// Integer types
+impl Clone[int] {
+    fn clone(self: *int) -> int => *self
+}
+
+impl Clone[i8] {
+    fn clone(self: *i8) -> i8 => *self
+}
+
+impl Clone[i16] {
+    fn clone(self: *i16) -> i16 => *self
+}
+
+impl Clone[i32] {
+    fn clone(self: *i32) -> i32 => *self
+}
+
+impl Clone[i64] {
+    fn clone(self: *i64) -> i64 => *self
+}
+
+impl Clone[i128] {
+    fn clone(self: *i128) -> i128 => *self
+}
+
+impl Clone[uint] {
+    fn clone(self: *uint) -> uint => *self
+}
+
+impl Clone[u8] {
+    fn clone(self: *u8) -> u8 => *self
+}
+
+impl Clone[u16] {
+    fn clone(self: *u16) -> u16 => *self
+}
+
+impl Clone[u32] {
+    fn clone(self: *u32) -> u32 => *self
+}
+
+impl Clone[u64] {
+    fn clone(self: *u64) -> u64 => *self
+}
+
+impl Clone[u128] {
+    fn clone(self: *u128) -> u128 => *self
+}
+
+// Float types
+impl Clone[float] {
+    fn clone(self: *float) -> float => *self
+}
+
+impl Clone[f32] {
+    fn clone(self: *f32) -> f32 => *self
+}
+
+impl Clone[f64] {
+    fn clone(self: *f64) -> f64 => *self
+}
+
+impl Clone[f128] {
+    fn clone(self: *f128) -> f128 => *self
+}
+
+// Other primitives
+impl Clone[bool] {
+    fn clone(self: *bool) -> bool => *self
+}
+
+impl Clone[char] {
+    fn clone(self: *char) -> char => *self
+}

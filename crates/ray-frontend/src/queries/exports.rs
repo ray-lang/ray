@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
-        imports::resolve_module_path, libraries::LoadedLibraries, parse::parse_file,
+        imports::resolve_module_path, libraries::LoadedLibraries, parse::parse_file_raw,
         workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
@@ -46,7 +46,7 @@ pub enum ExportedItem {
 /// Methods and impls are NOT included - they are accessed through their parent type.
 #[query]
 pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedItem> {
-    let parse_result = parse_file(db, file_id);
+    let parse_result = parse_file_raw(db, file_id);
     let mut exports = HashMap::new();
 
     // FileMain is at index 0 - it owns top-level bindings
@@ -146,7 +146,7 @@ pub struct ResolvedReExport {
 /// how imports are resolved. Returns a list of resolved re-exports.
 #[query]
 pub fn file_reexports(db: &Database, file_id: FileId) -> Vec<ResolvedReExport> {
-    let parse_result = parse_file(db, file_id);
+    let parse_result = parse_file_raw(db, file_id);
     let workspace = db.get_input::<WorkspaceSnapshot>(());
     let libraries = db.get_input::<LoadedLibraries>(());
 

@@ -1,3 +1,4 @@
+pub mod auto_derive;
 pub mod bindings;
 pub mod calls;
 pub mod closures;

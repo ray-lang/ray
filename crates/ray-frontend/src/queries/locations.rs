@@ -58,6 +58,7 @@ mod tests {
 
     use crate::{
         queries::{
+            libraries::LoadedLibraries,
             locations::{find_at_position, span_of},
             parse::parse_file,
             workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
@@ -71,6 +72,7 @@ mod tests {
         let module_path = ModulePath::from("test");
         let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         FileSource::new(&db, file_id, source.to_string());
         FileMetadata::new(
             &db,
@@ -224,6 +226,7 @@ fn distance(p: Point) -> int {
         let module_path = ModulePath::from("test");
         let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
         db.set_input::<WorkspaceSnapshot>((), workspace);
+        db.set_input::<LoadedLibraries>((), LoadedLibraries::default());
         // Note: We don't create FileSource, so parse will fail
 
         // Create a fake file ID that doesn't exist

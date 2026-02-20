@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     queries::{
         libraries::LoadedLibraries,
-        parse::parse_file,
+        parse::parse_file_raw,
         workspace::{CompilerOptions, WorkspaceSnapshot},
     },
     query::{Database, Query},
@@ -91,7 +91,7 @@ pub fn resolved_imports(
     }
 
     // Inject `import testing with *` when file has test blocks
-    let parse_result = parse_file(db, file_id);
+    let parse_result = parse_file_raw(db, file_id);
     let has_tests = parse_result
         .ast
         .decls
@@ -107,7 +107,7 @@ pub fn resolved_imports(
 /// Extract all import statements from a file.
 #[query]
 pub fn file_imports(db: &Database, file_id: FileId) -> Vec<Import> {
-    let parse_result = parse_file(db, file_id);
+    let parse_result = parse_file_raw(db, file_id);
     parse_result.ast.imports.clone()
 }
 
@@ -117,7 +117,7 @@ pub fn file_imports(db: &Database, file_id: FileId) -> Vec<Import> {
 /// the file will not receive automatic `import core with *` and `import core::io with *`.
 #[query]
 pub fn file_no_core(db: &Database, file_id: FileId) -> bool {
-    let parse_result = parse_file(db, file_id);
+    let parse_result = parse_file_raw(db, file_id);
     parse_result
         .ast
         .doc_comment

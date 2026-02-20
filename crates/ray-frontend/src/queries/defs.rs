@@ -27,8 +27,8 @@ use crate::{
     queries::{
         exports::{ExportedItem, module_def_index},
         libraries::{LoadedLibraries, library_data},
-        parse::{doc_comment, parse_file},
-        resolve::name_resolutions,
+        parse::{doc_comment, parse_file, parse_file_raw},
+        resolve::{name_resolutions, resolve_builtin},
         typecheck::def_scheme,
         types::{apply_type_resolutions, apply_type_resolutions_to_scheme, mapped_def_types},
         workspace::WorkspaceSnapshot,
@@ -1753,6 +1753,162 @@ fn type_matches_target(ty: &Ty, target: &DefTarget, db: &Database) -> bool {
 }
 
 // ============================================================================
+// explicit_impls_for_trait query
+// ============================================================================
+
+/// An explicit (user-written) trait impl found in the workspace or libraries.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExplicitTraitImpl {
+    pub impl_target: DefTarget,
+    pub implementing_type_target: Option<DefTarget>,
+}
+
+/// Finds all explicit (user-written) impls for a trait across the workspace and libraries.
+///
+/// Uses `parse_file_raw` for workspace scanning and `resolve_builtin` for name
+/// resolution — both depend only on `parse_file_raw`, avoiding cycles with `parse_file`.
+#[query]
+pub fn explicit_impls_for_trait(
+    db: &Database,
+    trait_target: DefTarget,
+) -> Arc<Vec<ExplicitTraitImpl>> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let mut result = Vec::new();
+
+    // Workspace impls: scan raw parse results for trait impls matching trait_target
+    for module_info in workspace.modules.values() {
+        for &file_id in &module_info.files {
+            let parse_result = parse_file_raw(db, file_id);
+            for def_header in &parse_result.defs {
+                if !matches!(def_header.kind, DefKind::Impl) {
+                    continue;
+                }
+
+                // Find the impl AST node
+                let Some(im) = parse_result
+                    .ast
+                    .decls
+                    .iter()
+                    .find(|d| d.id == def_header.root_node)
+                    .and_then(|d| match &d.value {
+                        Decl::Impl(im) => Some(im),
+                        _ => None,
+                    })
+                else {
+                    continue;
+                };
+
+                // Only trait impls have Ty::Proj; inherent impls have Ty::Const
+                let (trait_path, args) = match im.ty.value() {
+                    Ty::Proj(path, args) => (path, args),
+                    _ => continue,
+                };
+
+                let Some(trait_name) = trait_path.item_name() else {
+                    continue;
+                };
+
+                // Resolve the trait name in this file's scope
+                let resolved = resolve_builtin(db, file_id, trait_name.to_string());
+                if resolved.as_ref() != Some(&trait_target) {
+                    continue;
+                }
+
+                // Resolve the implementing type (first type arg)
+                let implementing_type_target = args.first().and_then(|ty| {
+                    let type_name = match ty {
+                        Ty::Const(p) | Ty::Proj(p, _) => p.item_name()?,
+                        _ => return None,
+                    };
+                    resolve_builtin(db, file_id, type_name.to_string())
+                });
+
+                result.push(ExplicitTraitImpl {
+                    impl_target: DefTarget::Workspace(def_header.def_id),
+                    implementing_type_target,
+                });
+            }
+        }
+    }
+
+    // Library impls: scan pre-built library data
+    collect_library_explicit_impls(db, &trait_target, &mut result);
+
+    Arc::new(result)
+}
+
+/// Collect library impls that implement the target trait.
+///
+/// Uses `path_for_target_raw` to resolve the trait target's path without
+/// depending on `parse_file`.
+fn collect_library_explicit_impls(
+    db: &Database,
+    trait_target: &DefTarget,
+    result: &mut Vec<ExplicitTraitImpl>,
+) {
+    let libraries = db.get_input::<LoadedLibraries>(());
+    let Some(target_path) = path_for_target_raw(trait_target, db) else {
+        return;
+    };
+
+    for (_, lib_data) in &libraries.libraries {
+        for (lib_def_id, lib_impl) in &lib_data.impls {
+            let Some(ref impl_trait_ty) = lib_impl.trait_ty else {
+                continue;
+            };
+            let Some(impl_trait_path) = impl_trait_ty.item_path() else {
+                continue;
+            };
+            if impl_trait_path != &target_path {
+                continue;
+            }
+
+            // Resolve implementing type from library data
+            let implementing_type_target =
+                lib_impl
+                    .implementing_type
+                    .item_path()
+                    .and_then(|type_path| {
+                        for (_, ld) in &libraries.libraries {
+                            if let Some(lid) = ld.names.get(type_path) {
+                                return Some(DefTarget::Library(lid.clone()));
+                            }
+                        }
+                        None
+                    });
+
+            result.push(ExplicitTraitImpl {
+                impl_target: DefTarget::Library(lib_def_id.clone()),
+                implementing_type_target,
+            });
+        }
+    }
+}
+
+/// Like `path_for_target` but uses `parse_file_raw` instead of `parse_file`
+/// to avoid cycles. Used by the explicit-impl and auto-derive query chains.
+fn path_for_target_raw(target: &DefTarget, db: &Database) -> Option<ItemPath> {
+    match target {
+        DefTarget::Workspace(def_id) => {
+            let parse_result = parse_file_raw(db, def_id.file);
+            let workspace = db.get_input::<WorkspaceSnapshot>(());
+            let def_header = parse_result.defs.iter().find(|h| h.def_id == *def_id)?;
+            let module_path = workspace
+                .file_info(def_id.file)
+                .map(|info| info.module_path.clone())
+                .unwrap_or_else(ModulePath::root);
+            Some(ItemPath::new(module_path, vec![def_header.name.clone()]))
+        }
+        DefTarget::Library(lib_def_id) => {
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+            lib_data.paths.get(lib_def_id).cloned()
+        }
+        DefTarget::Primitive(path) => Some(path.clone()),
+        DefTarget::Module(module_path) => Some(ItemPath::new(module_path.clone(), Vec::new())),
+    }
+}
+
+// ============================================================================
 // method_receiver_mode query
 // ============================================================================
 
@@ -1919,9 +2075,9 @@ mod tests {
         queries::{
             defs::{
                 MethodInfo, SourceLocation, StructDef, StructField, TraitDef, def_for_path,
-                def_name, def_path, definition_record, impl_def, impls_for_trait, impls_for_type,
-                impls_in_module, method_receiver_mode, struct_def, trait_def,
-                trait_methods_for_name, traits_in_module, type_alias,
+                def_name, def_path, definition_record, explicit_impls_for_trait, impl_def,
+                impls_for_trait, impls_for_type, impls_in_module, method_receiver_mode, struct_def,
+                trait_def, trait_methods_for_name, traits_in_module, type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
             parse::parse_file,
@@ -4911,5 +5067,116 @@ trait Eq['a] {
             "library defs have no source location in current impl"
         );
         assert!(matches!(record.kind, DefKind::Struct));
+    }
+
+    // explicit_impls_for_trait tests
+
+    #[test]
+    fn explicit_impls_for_trait_finds_workspace_impl() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Clone['a] {
+    fn clone(self: *'a) -> 'a
+}
+
+struct Foo { x: int }
+
+impl Clone[Foo] {
+    fn clone(self: *Foo) -> Foo => Foo { x: self.x }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let clone_path = ItemPath::new(module_path.clone(), vec!["Clone".into()]);
+        let clone_target = def_for_path(&db, clone_path).expect("Clone trait should be found");
+
+        let impls = explicit_impls_for_trait(&db, clone_target);
+        assert_eq!(impls.len(), 1, "should find 1 explicit Clone impl");
+
+        let foo_path = ItemPath::new(module_path, vec!["Foo".into()]);
+        let foo_target = def_for_path(&db, foo_path).expect("Foo should be found");
+        assert_eq!(
+            impls[0].implementing_type_target,
+            Some(foo_target),
+            "implementing type should be Foo"
+        );
+    }
+
+    #[test]
+    fn explicit_impls_for_trait_returns_empty_for_no_impls() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Clone['a] {
+    fn clone(self: *'a) -> 'a
+}
+
+struct Foo { x: int }
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let clone_path = ItemPath::new(module_path, vec!["Clone".into()]);
+        let clone_target = def_for_path(&db, clone_path).expect("Clone trait should be found");
+
+        let impls = explicit_impls_for_trait(&db, clone_target);
+        assert!(impls.is_empty(), "no explicit impls for Clone");
+    }
+
+    #[test]
+    fn explicit_impls_for_trait_ignores_inherent_impls() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+trait Clone['a] {
+    fn clone(self: *'a) -> 'a
+}
+
+struct Foo { x: int }
+
+impl object Foo {
+    fn bar(self: *Foo) -> int => self.x
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let clone_path = ItemPath::new(module_path, vec!["Clone".into()]);
+        let clone_target = def_for_path(&db, clone_path).expect("Clone trait should be found");
+
+        let impls = explicit_impls_for_trait(&db, clone_target);
+        assert!(impls.is_empty(), "inherent impls should not be counted");
     }
 }

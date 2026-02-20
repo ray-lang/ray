@@ -2549,6 +2549,117 @@ impl<'a> GenCtx<'a> {
             Ok(lir::Value::new(lir::Atom::NilConst))
         }
     }
+
+    /// Check if a struct type has any reference-typed fields (directly or
+    /// transitively through value-type struct fields).
+    fn struct_has_ref_fields(&self, sty: &StructTy) -> bool {
+        for (_, field_ty) in &sty.fields {
+            match field_ty.mono() {
+                Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) => return true,
+                Ty::Proj(path, _) | Ty::Const(path) => {
+                    if let Some(target) = def_for_path(self.db, path.clone()) {
+                        if let Some(sdef) = struct_def(self.db, target) {
+                            let nested = sdef.convert_to_struct_ty();
+                            if self.struct_has_ref_fields(&nested) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Emit IncRef for a value being copied into a struct field.
+    ///
+    /// Mirrors drop_glue's DecRef walk:
+    /// - `*T` → IncRef Strong
+    /// - `id *T` → IncRef Weak
+    /// - Value-type struct containing refs → recursively walk sub-fields
+    fn emit_copy_inc_refs(&mut self, src_var: lir::Variable, ty: &TyScheme) {
+        match ty.mono() {
+            Ty::Ref(_) => {
+                self.push(lir::Inst::IncRef(src_var.into(), lir::RefCountKind::Strong));
+            }
+            Ty::IdRef(_) => {
+                self.push(lir::Inst::IncRef(src_var.into(), lir::RefCountKind::Weak));
+            }
+            Ty::Proj(path, _) | Ty::Const(path) => {
+                let Some(target) = def_for_path(self.db, path.clone()) else {
+                    return;
+                };
+                let Some(sdef) = struct_def(self.db, target) else {
+                    return;
+                };
+                let sty = sdef.convert_to_struct_ty();
+                if self.struct_has_ref_fields(&sty) {
+                    self.emit_struct_field_inc_refs(src_var, &sty);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Emit IncRef for each ref-typed field (direct or transitive) in a struct
+    /// value. This is the IncRef counterpart of drop_glue's `emit_field_drops`.
+    fn emit_struct_field_inc_refs(&mut self, src_var: lir::Variable, sty: &StructTy) {
+        for (field_name, field_ty) in &sty.fields {
+            match field_ty.mono() {
+                Ty::Ref(_) | Ty::MutRef(_) => {
+                    let sub_loc = self.local(field_ty.clone());
+                    self.push(lir::Inst::SetLocal(
+                        sub_loc,
+                        lir::Value::GetField(lir::GetField {
+                            src: src_var.clone(),
+                            field: field_name.clone(),
+                        }),
+                    ));
+                    self.push(lir::Inst::IncRef(
+                        lir::Variable::Local(sub_loc).into(),
+                        lir::RefCountKind::Strong,
+                    ));
+                }
+                Ty::IdRef(_) => {
+                    let sub_loc = self.local(field_ty.clone());
+                    self.push(lir::Inst::SetLocal(
+                        sub_loc,
+                        lir::Value::GetField(lir::GetField {
+                            src: src_var.clone(),
+                            field: field_name.clone(),
+                        }),
+                    ));
+                    self.push(lir::Inst::IncRef(
+                        lir::Variable::Local(sub_loc).into(),
+                        lir::RefCountKind::Weak,
+                    ));
+                }
+                Ty::Proj(path, _) | Ty::Const(path) => {
+                    if let Some(target) = def_for_path(self.db, path.clone()) {
+                        if let Some(sdef) = struct_def(self.db, target) {
+                            let nested = sdef.convert_to_struct_ty();
+                            if self.struct_has_ref_fields(&nested) {
+                                let sub_loc = self.local(field_ty.clone());
+                                self.push(lir::Inst::SetLocal(
+                                    sub_loc,
+                                    lir::Value::GetField(lir::GetField {
+                                        src: src_var.clone(),
+                                        field: field_name.clone(),
+                                    }),
+                                ));
+                                self.emit_struct_field_inc_refs(
+                                    lir::Variable::Local(sub_loc),
+                                    &nested,
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 pub type GenResult = lir::Value;
@@ -3235,12 +3346,17 @@ impl LirGen<GenResult> for Node<Expr> {
                 }
 
                 for (val, name, ty) in field_insts {
-                    if let Some(field_loc) = ctx.get_or_set_local(val, ty) {
+                    if let Some(field_loc) = ctx.get_or_set_local(val, ty.clone()) {
                         ctx.push(lir::SetField::new(
                             lir::Variable::Local(loc),
                             name.path.name().unwrap(),
                             lir::Variable::Local(field_loc).into(),
                         ));
+
+                        // Emit IncRef for the copied value: direct refs get
+                        // IncRef, value-type structs containing refs get
+                        // recursive sub-field IncRef.
+                        ctx.emit_copy_inc_refs(lir::Variable::Local(field_loc), &ty);
                     }
                 }
 

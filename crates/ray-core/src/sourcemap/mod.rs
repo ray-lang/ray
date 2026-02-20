@@ -101,7 +101,7 @@ impl SourceMap {
             .unwrap()
     }
 
-    pub(crate) fn set_src_id(&mut self, id: NodeId, src: Source) {
+    pub fn set_src_id(&mut self, id: NodeId, src: Source) {
         if let Some(existing) = self.map.insert(id, src.clone()) {
             if !existing.filepath.is_empty() {
                 if let Some(ids) = self.file_index.get_mut(&existing.filepath) {
@@ -152,6 +152,13 @@ impl SourceMap {
                 .or_default()
                 .append(&mut entries);
         }
+        for (filepath, mut ids) in other.file_index.drain() {
+            self.file_index
+                .entry(filepath)
+                .or_default()
+                .append(&mut ids);
+        }
+        self.synthetic_nodes.extend(other.synthetic_nodes.drain());
     }
 
     pub fn decorators(&self) -> &HashMap<NodeId, Vec<Decorator>> {
