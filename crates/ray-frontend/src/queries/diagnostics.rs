@@ -21,9 +21,15 @@ use ray_shared::{
 
 use crate::{
     queries::{
-        deps::binding_group_for_def, ownership::validate_ownership, parse::parse_file,
-        ref_mutability::validate_ref_mutability, resolve::name_resolutions, transform::file_ast,
-        typecheck::typecheck_group, validation::validate_def, workspace::WorkspaceSnapshot,
+        deps::binding_group_for_def,
+        ownership::validate_ownership,
+        parse::parse_file,
+        ref_mutability::validate_ref_mutability,
+        resolve::name_resolutions,
+        transform::file_ast,
+        typecheck::typecheck_group,
+        validation::{validate_def, validate_struct_cycles, validate_value_type_cycles},
+        workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
 };
@@ -69,6 +75,12 @@ pub fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
     // Collect validation errors (annotation policy, impl completeness, etc.)
     for def_header in &file_ast_result.defs {
         errors.extend(validate_def(db, def_header.def_id));
+    }
+
+    // Collect cycle detection errors for struct types.
+    for def_header in &file_ast_result.defs {
+        errors.extend(validate_struct_cycles(db, def_header.def_id));
+        errors.extend(validate_value_type_cycles(db, def_header.def_id));
     }
 
     // Collect type errors (triggers typechecking)
@@ -217,7 +229,7 @@ mod tests {
     #[test]
     fn file_diagnostics_returns_empty_for_valid_code() {
         // Use simple code without built-in type references (no_core mode)
-        let (db, file_id) = setup_test_db("struct Point { x: Point }");
+        let (db, file_id) = setup_test_db("struct Point {}");
 
         let errors = file_diagnostics(&db, file_id);
 
@@ -414,7 +426,7 @@ fn foo() -> A => B {}
 
     #[test]
     fn workspace_diagnostics_returns_empty_for_valid_code() {
-        let (db, _file_id) = setup_test_db("struct Point { x: Point }");
+        let (db, _file_id) = setup_test_db("struct Point {}");
 
         let errors = workspace_diagnostics(&db, ());
 

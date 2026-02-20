@@ -6,6 +6,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
+    sync::Arc,
 };
 
 use ray_core::{
@@ -16,11 +17,11 @@ use ray_core::{
     sourcemap::SourceMap,
 };
 use ray_query_macros::query;
-use ray_shared::pathlib::Path;
 use ray_shared::{
     def::{DefId, DefKind},
     file_id::FileId,
-    pathlib::FilePath,
+    graph::DirectedGraph,
+    pathlib::{FilePath, ItemPath, Path},
     resolution::{DefTarget, Resolution},
     span::{Source, Span},
     ty::Ty,
@@ -28,9 +29,10 @@ use ray_shared::{
 
 use crate::{
     queries::{
-        defs::{def_for_path, find_def_ast, impl_def, trait_def},
+        defs::{def_for_path, find_def_ast, impl_def, struct_def, trait_def},
         resolve::name_resolutions,
         transform::file_ast,
+        workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
 };
@@ -836,19 +838,400 @@ fn validate_trait_method_signature(
     validate_qualifiers(db, sig, file_id, filepath, errors);
 }
 
+// ============================================================================
+// Static cycle prevention (§9 of references.md)
+// ============================================================================
+
+/// Build a directed graph of strong reference edges between struct types.
+///
+/// Nodes are struct `ItemPath`s. An edge A → B exists when struct A has a
+/// field of type `*B` (strong shared reference). `id *T` (weak) and value
+/// types do not produce edges.
+///
+/// This is a workspace-level query — cached once and shared by all
+/// per-def cycle validation calls.
+#[query]
+pub fn strong_ref_type_graph(db: &Database, _key: ()) -> Arc<DirectedGraph<ItemPath>> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let mut graph = DirectedGraph::new();
+
+    for file_id in workspace.all_file_ids() {
+        let file_result = file_ast(db, file_id);
+
+        for def_header in &file_result.defs {
+            if !matches!(def_header.kind, DefKind::Struct) {
+                continue;
+            }
+
+            let target = DefTarget::Workspace(def_header.def_id);
+            let Some(sdef) = struct_def(db, target) else {
+                continue;
+            };
+
+            graph.add_node(sdef.path.clone());
+
+            for field in &sdef.fields {
+                for pointee_path in strong_ref_targets(field.ty.mono()) {
+                    graph.add_edge(sdef.path.clone(), pointee_path);
+                }
+            }
+        }
+    }
+
+    Arc::new(graph)
+}
+
+/// Extract the struct `ItemPath`(s) that a type contributes as strong
+/// reference edges in the type graph.
+///
+/// Only `Ty::Ref(inner)` where `inner` is a named struct type produces
+/// an edge. Everything else (weak refs, value types, primitives) is ignored.
+fn strong_ref_targets(ty: &Ty) -> Vec<ItemPath> {
+    match ty {
+        Ty::Ref(inner) => match inner.as_ref() {
+            Ty::Const(path) | Ty::Proj(path, _) => vec![path.clone()],
+            _ => vec![],
+        },
+        _ => vec![],
+    }
+}
+
+/// Build a directed graph of value-type embedding edges between struct types.
+///
+/// An edge A → B exists when struct A has a field of type `B` directly
+/// (not behind `*T`, `id *T`, or `*mut T`). A cycle in this graph means
+/// the types have infinite size.
+#[query]
+pub fn value_type_graph(db: &Database, _key: ()) -> Arc<DirectedGraph<ItemPath>> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let mut graph = DirectedGraph::new();
+
+    for file_id in workspace.all_file_ids() {
+        let file_result = file_ast(db, file_id);
+
+        for def_header in &file_result.defs {
+            if !matches!(def_header.kind, DefKind::Struct) {
+                continue;
+            }
+
+            let target = DefTarget::Workspace(def_header.def_id);
+            let Some(sdef) = struct_def(db, target) else {
+                continue;
+            };
+
+            graph.add_node(sdef.path.clone());
+
+            for field in &sdef.fields {
+                for target_path in value_type_targets(field.ty.mono()) {
+                    graph.add_edge(sdef.path.clone(), target_path);
+                }
+            }
+        }
+    }
+
+    Arc::new(graph)
+}
+
+/// Extract struct `ItemPath`(s) from a direct value-type field.
+///
+/// Returns the path when the field type is a named struct type directly
+/// (not behind any reference). References (`*T`, `id *T`, `*mut T`) and
+/// primitives are ignored — they provide indirection that breaks the cycle.
+fn value_type_targets(ty: &Ty) -> Vec<ItemPath> {
+    match ty {
+        Ty::Const(path) | Ty::Proj(path, _) => vec![path.clone()],
+        _ => vec![],
+    }
+}
+
+/// Validate a struct definition for participation in a value-type cycle
+/// (infinite-size type).
+///
+/// Returns errors if the struct belongs to an SCC of size > 1 in the
+/// value-type graph, or if it directly contains itself as a value field.
+#[query]
+pub fn validate_value_type_cycles(db: &Database, def_id: DefId) -> Vec<RayError> {
+    let file_result = file_ast(db, def_id.file);
+
+    let Some(def_header) = file_result.defs.iter().find(|h| h.def_id == def_id) else {
+        return vec![];
+    };
+
+    if !matches!(def_header.kind, DefKind::Struct) {
+        return vec![];
+    }
+
+    let target = DefTarget::Workspace(def_id);
+    let Some(sdef) = struct_def(db, target) else {
+        return vec![];
+    };
+
+    let graph = value_type_graph(db, ());
+    let sccs = graph.compute_sccs();
+
+    let Some(scc) = sccs.iter().find(|scc| scc.contains(&sdef.path)) else {
+        return vec![];
+    };
+
+    let has_self_edge = graph
+        .edges
+        .get(&sdef.path)
+        .map(|targets| targets.contains(&sdef.path))
+        .unwrap_or(false);
+
+    if scc.len() <= 1 && !has_self_edge {
+        return vec![];
+    }
+
+    let cycle_names: Vec<String> = if has_self_edge && scc.len() <= 1 {
+        vec![
+            sdef.path.item_name().unwrap_or("?").to_string(),
+            sdef.path.item_name().unwrap_or("?").to_string(),
+        ]
+    } else {
+        build_cycle_chain(&sdef.path, scc, &graph)
+    };
+
+    let chain_str = cycle_names.join(" -> ");
+
+    let filepath = file_result.ast.filepath.clone();
+    let field_sources = collect_cycle_field_sources(
+        &file_result.ast.decls,
+        def_header.root_node,
+        &file_result.source_map,
+        &filepath,
+        scc,
+        &sdef.path,
+        &graph,
+        value_type_targets,
+    );
+
+    let src = if field_sources.is_empty() {
+        let span = file_result.source_map.get_by_id(def_header.root_node);
+        vec![span.unwrap_or_else(|| Source::from(filepath))]
+    } else {
+        field_sources
+    };
+
+    vec![RayError {
+        msg: format!(
+            "struct has infinite size due to recursive value-type fields: \
+             {chain_str}. Use `*T` to add indirection"
+        ),
+        src,
+        kind: RayErrorKind::Type,
+        context: Some("cycle detection".to_string()),
+    }]
+}
+
+/// Validate a struct definition for participation in a strong reference cycle.
+///
+/// Returns errors if the struct belongs to an SCC of size > 1 in the
+/// strong-reference type graph, or if it has a self-referential `*T` field.
+#[query]
+pub fn validate_struct_cycles(db: &Database, def_id: DefId) -> Vec<RayError> {
+    let file_result = file_ast(db, def_id.file);
+
+    let Some(def_header) = file_result.defs.iter().find(|h| h.def_id == def_id) else {
+        return vec![];
+    };
+
+    if !matches!(def_header.kind, DefKind::Struct) {
+        return vec![];
+    }
+
+    let target = DefTarget::Workspace(def_id);
+    let Some(sdef) = struct_def(db, target) else {
+        return vec![];
+    };
+
+    let graph = strong_ref_type_graph(db, ());
+    let sccs = graph.compute_sccs();
+
+    // Find the SCC containing this struct.
+    let Some(scc) = sccs.iter().find(|scc| scc.contains(&sdef.path)) else {
+        return vec![];
+    };
+
+    // Check for self-edge (a struct with a *Self field).
+    let has_self_edge = graph
+        .edges
+        .get(&sdef.path)
+        .map(|targets| targets.contains(&sdef.path))
+        .unwrap_or(false);
+
+    if scc.len() <= 1 && !has_self_edge {
+        return vec![];
+    }
+
+    // Build the cycle chain for the error message.
+    let cycle_names: Vec<String> = if has_self_edge && scc.len() <= 1 {
+        // Self-referential: Foo → Foo
+        vec![
+            sdef.path.item_name().unwrap_or("?").to_string(),
+            sdef.path.item_name().unwrap_or("?").to_string(),
+        ]
+    } else {
+        // Multi-struct cycle: build a chain starting from this struct.
+        build_cycle_chain(&sdef.path, scc, &graph)
+    };
+
+    let chain_str = cycle_names.join(" -> ");
+
+    // Collect source locations for the offending fields in this struct.
+    let filepath = file_result.ast.filepath.clone();
+    let field_sources = collect_cycle_field_sources(
+        &file_result.ast.decls,
+        def_header.root_node,
+        &file_result.source_map,
+        &filepath,
+        scc,
+        &sdef.path,
+        &graph,
+        strong_ref_targets,
+    );
+
+    let src = if field_sources.is_empty() {
+        // Fallback: point at the struct declaration itself.
+        let span = file_result.source_map.get_by_id(def_header.root_node);
+        vec![span.unwrap_or_else(|| Source::from(filepath))]
+    } else {
+        field_sources
+    };
+
+    vec![RayError {
+        msg: format!(
+            "cyclic strong references: {chain_str}. \
+             Break the cycle by changing a field to `id *T`"
+        ),
+        src,
+        kind: RayErrorKind::Type,
+        context: Some("cycle detection".to_string()),
+    }]
+}
+
+/// Build a human-readable cycle chain starting from `start`.
+///
+/// Follows edges in the graph through SCC members to produce e.g.
+/// `["Foo", "Bar", "Baz", "Foo"]`.
+fn build_cycle_chain(
+    start: &ItemPath,
+    scc: &[ItemPath],
+    graph: &DirectedGraph<ItemPath>,
+) -> Vec<String> {
+    let scc_set: HashSet<&ItemPath> = scc.iter().collect();
+    let mut chain = vec![start.item_name().unwrap_or("?").to_string()];
+    let mut current = start;
+    let mut visited: HashSet<&ItemPath> = HashSet::new();
+    visited.insert(current);
+
+    loop {
+        let Some(targets) = graph.edges.get(current) else {
+            break;
+        };
+
+        // Follow the first unvisited SCC-member neighbor.
+        let next = targets
+            .iter()
+            .find(|t| scc_set.contains(t) && !visited.contains(t));
+
+        match next {
+            Some(n) => {
+                chain.push(n.item_name().unwrap_or("?").to_string());
+                visited.insert(n);
+                current = n;
+            }
+            None => {
+                // All neighbors visited — close the cycle back to start.
+                chain.push(start.item_name().unwrap_or("?").to_string());
+                break;
+            }
+        }
+    }
+
+    chain
+}
+
+/// Collect `Source` entries for fields in this struct that contribute to the
+/// cycle. Uses `target_fn` to extract edge targets from each field's AST type,
+/// so the same logic works for both strong-ref and value-type cycles.
+fn collect_cycle_field_sources(
+    decls: &[Node<Decl>],
+    root_node: ray_shared::node_id::NodeId,
+    source_map: &SourceMap,
+    filepath: &FilePath,
+    scc: &[ItemPath],
+    struct_path: &ItemPath,
+    graph: &DirectedGraph<ItemPath>,
+    target_fn: fn(&Ty) -> Vec<ItemPath>,
+) -> Vec<Source> {
+    let Some(decl_node) = find_def_ast(decls, root_node) else {
+        return vec![];
+    };
+
+    let Decl::Struct(st) = &decl_node.value else {
+        return vec![];
+    };
+
+    let Some(fields) = &st.fields else {
+        return vec![];
+    };
+
+    let scc_set: HashSet<&ItemPath> = scc.iter().collect();
+
+    // Get the edge targets for this struct.
+    let edge_targets: HashSet<&ItemPath> = graph
+        .edges
+        .get(struct_path)
+        .map(|targets| targets.iter().filter(|t| scc_set.contains(t)).collect())
+        .unwrap_or_default();
+
+    let mut sources = Vec::new();
+
+    for field_node in fields {
+        let Some(parsed_ty) = &field_node.value.ty else {
+            continue;
+        };
+
+        // Check if this field's type contributes an edge to an SCC member.
+        let targets = target_fn(&parsed_ty.value().ty);
+        for target_path in &targets {
+            if edge_targets.contains(target_path) {
+                if let Some(src) = source_map.get_by_id(field_node.id) {
+                    sources.push(src);
+                } else {
+                    sources.push(Source {
+                        span: parsed_ty.span().copied(),
+                        filepath: filepath.clone(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
+    sources
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use ray_shared::pathlib::{FilePath, ModulePath};
 
+    use ray_shared::def::DefKind;
+
     use crate::{
         queries::{
             defs::impls_in_module,
+            diagnostics::file_diagnostics,
             libraries::LoadedLibraries,
             parse::parse_file,
-            validation::validate_def,
-            workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
+            validation::{
+                strong_ref_type_graph, validate_def, validate_struct_cycles,
+                validate_value_type_cycles, value_type_graph,
+            },
+            workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
     };
@@ -2170,5 +2553,548 @@ impl object Point {
             "Expected no errors for valid reference types, got: {:?}",
             errors
         );
+    }
+
+    // ====================================================================
+    // Static cycle prevention tests
+    // ====================================================================
+
+    /// Set up a no-core test database (cycle detection doesn't need the core library).
+    fn setup_cycle_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+        (db, file_id)
+    }
+
+    #[test]
+    fn cycle_no_error_for_acyclic_refs() {
+        let source = r#"
+struct Bar {}
+struct Foo { bar: *Bar }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_struct_cycles(&db, def.def_id);
+                assert!(
+                    errors.is_empty(),
+                    "Acyclic refs should produce no cycle error for {}, got: {:?}",
+                    def.name,
+                    errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_error_for_mutual_strong_refs() {
+        let source = r#"
+struct Foo { bar: *Bar }
+struct Bar { foo: *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "Foo").unwrap();
+        let bar = parse_result.defs.iter().find(|d| d.name == "Bar").unwrap();
+
+        let foo_errors = validate_struct_cycles(&db, foo.def_id);
+        assert!(!foo_errors.is_empty(), "Foo should have a cycle error");
+        assert!(
+            foo_errors[0].msg.contains("cyclic strong references"),
+            "Error should mention cyclic strong references: {}",
+            foo_errors[0].msg
+        );
+        assert!(
+            foo_errors[0].msg.contains("id *T"),
+            "Error should suggest id *T: {}",
+            foo_errors[0].msg
+        );
+        assert_eq!(
+            foo_errors[0].context.as_deref(),
+            Some("cycle detection"),
+            "Error context should be 'cycle detection'"
+        );
+
+        let bar_errors = validate_struct_cycles(&db, bar.def_id);
+        assert!(!bar_errors.is_empty(), "Bar should have a cycle error");
+    }
+
+    #[test]
+    fn cycle_error_for_self_referential_struct() {
+        let source = r#"
+struct Node { next: *Node }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let node = parse_result.defs.iter().find(|d| d.name == "Node").unwrap();
+
+        let errors = validate_struct_cycles(&db, node.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Self-referential struct should have a cycle error"
+        );
+        assert!(
+            errors[0].msg.contains("Node"),
+            "Error should mention Node: {}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn cycle_no_error_when_weak_ref_breaks_cycle() {
+        let source = r#"
+struct Foo { bar: *Bar }
+struct Bar { foo: id *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_struct_cycles(&db, def.def_id);
+                assert!(
+                    errors.is_empty(),
+                    "Weak ref should break cycle for {}, got: {:?}",
+                    def.name,
+                    errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_error_for_transitive_three_struct_cycle() {
+        let source = r#"
+struct A { b: *B }
+struct B { c: *C }
+struct C { a: *A }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        // All three structs should report cycle errors.
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_struct_cycles(&db, def.def_id);
+                assert!(
+                    !errors.is_empty(),
+                    "Struct {} should have a cycle error",
+                    def.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_no_error_for_value_type_fields() {
+        // Value-type fields (not behind *T) don't create edges.
+        let source = r#"
+struct Inner { x: int }
+struct Outer { inner: Inner, y: int }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_struct_cycles(&db, def.def_id);
+                assert!(
+                    errors.is_empty(),
+                    "Value-type fields should not produce cycle errors for {}, got: {:?}",
+                    def.name,
+                    errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_no_error_for_non_struct_defs() {
+        let source = r#"
+fn foo() -> int => 42
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "foo").unwrap();
+
+        let errors = validate_struct_cycles(&db, foo.def_id);
+        assert!(
+            errors.is_empty(),
+            "Non-struct defs should return no cycle errors"
+        );
+    }
+
+    #[test]
+    fn cycle_error_has_field_source_locations() {
+        let source = r#"
+struct Foo { bar: *Bar }
+struct Bar { foo: *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "Foo").unwrap();
+
+        let errors = validate_struct_cycles(&db, foo.def_id);
+        assert!(!errors.is_empty());
+
+        // The error should have source location(s) pointing at the offending field.
+        assert!(
+            !errors[0].src.is_empty(),
+            "Cycle error should have source locations"
+        );
+        assert!(
+            errors[0].src[0].span.is_some(),
+            "Source location should have a span"
+        );
+    }
+
+    #[test]
+    fn cycle_graph_has_correct_structure() {
+        let source = r#"
+struct Foo { bar: *Bar, weak: id *Baz }
+struct Bar { x: int }
+struct Baz {}
+"#;
+        let (db, _file_id) = setup_cycle_db(source);
+        let graph = strong_ref_type_graph(&db, ());
+
+        // Foo should have an edge to Bar (strong ref) but NOT to Baz (weak ref).
+        let foo_path = ray_shared::pathlib::ItemPath::from("test::Foo");
+        let bar_path = ray_shared::pathlib::ItemPath::from("test::Bar");
+        let baz_path = ray_shared::pathlib::ItemPath::from("test::Baz");
+
+        let foo_targets = graph.edges.get(&foo_path).expect("Foo should be in graph");
+        assert!(
+            foo_targets.contains(&bar_path),
+            "Foo should have edge to Bar"
+        );
+        assert!(
+            !foo_targets.contains(&baz_path),
+            "Foo should NOT have edge to Baz (id *T is weak)"
+        );
+
+        // Bar should have no outgoing edges (x: int is a value type).
+        let bar_targets = graph.edges.get(&bar_path).expect("Bar should be in graph");
+        assert!(bar_targets.is_empty(), "Bar should have no outgoing edges");
+    }
+
+    #[test]
+    fn cycle_mixed_strong_and_weak_fields() {
+        // Foo → *Bar (strong), Foo → id *Baz (weak)
+        // Bar → *Foo (strong) — cycle between Foo and Bar
+        // Baz → *Foo (strong) — no cycle since Foo → Baz is weak
+        let source = r#"
+struct Foo { bar: *Bar, baz: id *Baz }
+struct Bar { foo: *Foo }
+struct Baz { foo: *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "Foo").unwrap();
+        let bar = parse_result.defs.iter().find(|d| d.name == "Bar").unwrap();
+        let baz = parse_result.defs.iter().find(|d| d.name == "Baz").unwrap();
+
+        // Foo and Bar are in a cycle.
+        assert!(
+            !validate_struct_cycles(&db, foo.def_id).is_empty(),
+            "Foo should have cycle error (Foo <-> Bar)"
+        );
+        assert!(
+            !validate_struct_cycles(&db, bar.def_id).is_empty(),
+            "Bar should have cycle error (Foo <-> Bar)"
+        );
+
+        // Baz is NOT in a cycle: Baz → *Foo is a one-way edge, and
+        // Foo → id *Baz is weak (not counted).
+        assert!(
+            validate_struct_cycles(&db, baz.def_id).is_empty(),
+            "Baz should NOT have a cycle error (Foo -> Baz is weak)"
+        );
+    }
+
+    #[test]
+    fn cycle_diagnostics_integration() {
+        // Cycle errors should appear in file_diagnostics.
+        let source = r#"
+struct Foo { bar: *Bar }
+struct Bar { foo: *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+
+        let errors = file_diagnostics(&db, file_id);
+
+        let cycle_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| e.context.as_deref() == Some("cycle detection"))
+            .collect();
+
+        assert_eq!(
+            cycle_errors.len(),
+            2,
+            "Should have 2 cycle errors (one per struct), got: {:?}",
+            cycle_errors
+        );
+    }
+
+    #[test]
+    fn cycle_no_error_for_struct_with_only_value_and_weak_fields() {
+        let source = r#"
+struct Foo { x: int, parent: id *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "Foo").unwrap();
+
+        let errors = validate_struct_cycles(&db, foo.def_id);
+        assert!(
+            errors.is_empty(),
+            "id *Foo self-reference should not be a cycle error, got: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // Value-type cycle tests (infinite-size types)
+    // ====================================================================
+
+    #[test]
+    fn value_cycle_error_for_mutual_embedding() {
+        let source = r#"
+struct Foo { bar: Bar }
+struct Bar { foo: Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "Foo").unwrap();
+        let bar = parse_result.defs.iter().find(|d| d.name == "Bar").unwrap();
+
+        let foo_errors = validate_value_type_cycles(&db, foo.def_id);
+        assert!(
+            !foo_errors.is_empty(),
+            "Foo should have a value-type cycle error"
+        );
+        assert!(
+            foo_errors[0].msg.contains("infinite size"),
+            "Error should mention infinite size: {}",
+            foo_errors[0].msg
+        );
+        assert!(
+            foo_errors[0].msg.contains("*T"),
+            "Error should suggest *T indirection: {}",
+            foo_errors[0].msg
+        );
+        assert_eq!(foo_errors[0].context.as_deref(), Some("cycle detection"),);
+
+        let bar_errors = validate_value_type_cycles(&db, bar.def_id);
+        assert!(
+            !bar_errors.is_empty(),
+            "Bar should have a value-type cycle error"
+        );
+    }
+
+    #[test]
+    fn value_cycle_error_for_self_embedding() {
+        let source = r#"
+struct Node { child: Node }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let node = parse_result.defs.iter().find(|d| d.name == "Node").unwrap();
+
+        let errors = validate_value_type_cycles(&db, node.def_id);
+        assert!(
+            !errors.is_empty(),
+            "Self-embedding struct should have an infinite-size error"
+        );
+        assert!(
+            errors[0].msg.contains("Node"),
+            "Error should mention Node: {}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn value_cycle_no_error_for_ref_indirection() {
+        // Using *T breaks the value-type cycle.
+        let source = r#"
+struct Foo { bar: *Bar }
+struct Bar { foo: *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_value_type_cycles(&db, def.def_id);
+                assert!(
+                    errors.is_empty(),
+                    "*T indirection should prevent value-type cycle for {}, got: {:?}",
+                    def.name,
+                    errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn value_cycle_no_error_for_acyclic_embedding() {
+        let source = r#"
+struct Inner { x: int }
+struct Outer { inner: Inner }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_value_type_cycles(&db, def.def_id);
+                assert!(
+                    errors.is_empty(),
+                    "Acyclic value embedding should not produce errors for {}, got: {:?}",
+                    def.name,
+                    errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn value_cycle_error_for_transitive_chain() {
+        let source = r#"
+struct A { b: B }
+struct B { c: C }
+struct C { a: A }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_value_type_cycles(&db, def.def_id);
+                assert!(
+                    !errors.is_empty(),
+                    "Struct {} should have an infinite-size error",
+                    def.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn value_cycle_graph_has_correct_structure() {
+        let source = r#"
+struct Foo { bar: Bar, ref_baz: *Baz }
+struct Bar { x: int }
+struct Baz {}
+"#;
+        let (db, _file_id) = setup_cycle_db(source);
+        let graph = value_type_graph(&db, ());
+
+        let foo_path = ray_shared::pathlib::ItemPath::from("test::Foo");
+        let bar_path = ray_shared::pathlib::ItemPath::from("test::Bar");
+        let baz_path = ray_shared::pathlib::ItemPath::from("test::Baz");
+
+        let foo_targets = graph.edges.get(&foo_path).expect("Foo should be in graph");
+        assert!(
+            foo_targets.contains(&bar_path),
+            "Foo should have value-type edge to Bar"
+        );
+        assert!(
+            !foo_targets.contains(&baz_path),
+            "Foo should NOT have edge to Baz (*T is indirection, not value embedding)"
+        );
+    }
+
+    #[test]
+    fn value_cycle_no_error_for_non_struct_defs() {
+        let source = r#"
+fn foo() -> int => 42
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        let foo = parse_result.defs.iter().find(|d| d.name == "foo").unwrap();
+
+        let errors = validate_value_type_cycles(&db, foo.def_id);
+        assert!(
+            errors.is_empty(),
+            "Non-struct defs should return no value-type cycle errors"
+        );
+    }
+
+    #[test]
+    fn value_cycle_diagnostics_integration() {
+        let source = r#"
+struct Foo { bar: Bar }
+struct Bar { foo: Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+
+        let errors = file_diagnostics(&db, file_id);
+
+        let value_cycle_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| {
+                e.context.as_deref() == Some("cycle detection") && e.msg.contains("infinite size")
+            })
+            .collect();
+
+        assert_eq!(
+            value_cycle_errors.len(),
+            2,
+            "Should have 2 value-type cycle errors (one per struct), got: {:?}",
+            value_cycle_errors
+        );
+    }
+
+    #[test]
+    fn value_cycle_partial_indirection_breaks_cycle() {
+        // Foo embeds Bar directly, but Bar uses *Foo — breaks the value cycle.
+        let source = r#"
+struct Foo { bar: Bar }
+struct Bar { foo: *Foo }
+"#;
+        let (db, file_id) = setup_cycle_db(source);
+        let parse_result = parse_file(&db, file_id);
+
+        for def in &parse_result.defs {
+            if matches!(def.kind, DefKind::Struct) {
+                let errors = validate_value_type_cycles(&db, def.def_id);
+                assert!(
+                    errors.is_empty(),
+                    "Partial *T indirection should break value-type cycle for {}, got: {:?}",
+                    def.name,
+                    errors
+                );
+            }
+        }
     }
 }
