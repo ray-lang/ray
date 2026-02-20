@@ -32,6 +32,7 @@ use crate::{
         exports::{ExportedItem, module_def_index},
         operators::operator_index,
         parse::parse_file,
+        regions::{RegionRequirements, analyze_regions},
         typecheck::def_scheme,
         workspace::WorkspaceSnapshot,
     },
@@ -125,6 +126,11 @@ pub struct LibraryData {
     /// `DefTarget::Library` for these entries.
     #[serde(default)]
     pub module_defs: HashMap<LibraryDefId, ModulePath>,
+
+    /// Region requirements for functions/methods: what outlives constraints
+    /// each reference-typed parameter must satisfy. Used by `analyze_regions`
+    /// to check call sites against library callees.
+    pub region_requirements: HashMap<LibraryDefId, RegionRequirements>,
 }
 
 impl LibraryData {
@@ -674,6 +680,7 @@ pub fn build_library_data(
     let mut parent_map: HashMap<LibraryDefId, LibraryDefId> = HashMap::new();
     let mut module_defs: HashMap<LibraryDefId, ModulePath> = HashMap::new();
     let mut func_defs: HashMap<LibraryDefId, FuncDef> = HashMap::new();
+    let mut region_reqs: HashMap<LibraryDefId, RegionRequirements> = HashMap::new();
 
     for file_id in workspace.all_file_ids() {
         let parse_result = parse_file(db, file_id);
@@ -707,11 +714,20 @@ pub fn build_library_data(
                 display_vars.insert(lib_def_id.clone(), reverse_map);
             }
 
-            // Build FuncDef for functions and methods
+            // Build FuncDef and region requirements for functions and methods
             if matches!(def_header.kind, DefKind::Function { .. } | DefKind::Method) {
                 if let Some(mut fdef) = func_def(db, target.clone()) {
                     fdef.target = remap_def_target(&fdef.target, &def_id_to_lib);
                     func_defs.insert(lib_def_id.clone(), fdef);
+                }
+                let analysis = analyze_regions(db, target.clone());
+                if analysis
+                    .requirements
+                    .param_constraints
+                    .iter()
+                    .any(|c| !c.is_empty())
+                {
+                    region_reqs.insert(lib_def_id.clone(), analysis.requirements);
                 }
             }
 
@@ -847,6 +863,7 @@ pub fn build_library_data(
         parent_map,
         func_defs,
         module_defs,
+        region_requirements: region_reqs,
     }
 }
 

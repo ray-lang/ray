@@ -19,6 +19,7 @@ pub mod operators;
 pub mod ownership;
 pub mod parse;
 pub mod ref_mutability;
+pub mod regions;
 pub mod resolve;
 pub mod scope;
 pub mod semantic_tokens;

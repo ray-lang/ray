@@ -708,6 +708,7 @@ mod tests {
 
     use ray_shared::{
         def::DefId,
+        file_id::FileId,
         local_binding::LocalBindingId,
         pathlib::{FilePath, ModulePath},
     };
@@ -1482,7 +1483,7 @@ fn ok() {
     fn borrow_path_same_root_overlaps() {
         use super::BorrowPath;
 
-        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let root = LocalBindingId::new(DefId::new(FileId(0), 0), 1);
         let a = BorrowPath {
             root,
             fields: vec![],
@@ -1498,7 +1499,7 @@ fn ok() {
     fn borrow_path_prefix_overlaps() {
         use super::BorrowPath;
 
-        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let root = LocalBindingId::new(DefId::new(FileId(0), 0), 1);
         let parent = BorrowPath {
             root,
             fields: vec![],
@@ -1521,7 +1522,7 @@ fn ok() {
     fn borrow_path_disjoint_fields() {
         use super::BorrowPath;
 
-        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let root = LocalBindingId::new(DefId::new(FileId(0), 0), 1);
         let x = BorrowPath {
             root,
             fields: vec!["x".to_string()],
@@ -1540,8 +1541,8 @@ fn ok() {
     fn borrow_path_different_roots_no_overlap() {
         use super::BorrowPath;
 
-        let root_a = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
-        let root_b = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 2);
+        let root_a = LocalBindingId::new(DefId::new(FileId(0), 0), 1);
+        let root_b = LocalBindingId::new(DefId::new(FileId(0), 0), 2);
         let a = BorrowPath {
             root: root_a,
             fields: vec!["x".to_string()],
@@ -1560,7 +1561,7 @@ fn ok() {
     fn borrow_path_nested_field_overlap() {
         use super::BorrowPath;
 
-        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let root = LocalBindingId::new(DefId::new(FileId(0), 0), 1);
         let shallow = BorrowPath {
             root,
             fields: vec!["x".to_string()],
@@ -1579,7 +1580,7 @@ fn ok() {
     fn borrow_path_nested_disjoint() {
         use super::BorrowPath;
 
-        let root = LocalBindingId::new(DefId::new(ray_shared::file_id::FileId(0), 0), 1);
+        let root = LocalBindingId::new(DefId::new(FileId(0), 0), 1);
         let a = BorrowPath {
             root,
             fields: vec!["x".to_string(), "a".to_string()],

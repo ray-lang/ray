@@ -15,7 +15,7 @@ use ray_shared::{
     file_id::FileId,
     node_id::NodeId,
     pathlib::FilePath,
-    resolution::{NameKind, Resolution},
+    resolution::{DefTarget, NameKind, Resolution},
     span::Source,
 };
 
@@ -25,6 +25,7 @@ use crate::{
         ownership::validate_ownership,
         parse::parse_file,
         ref_mutability::validate_ref_mutability,
+        regions::analyze_regions,
         resolve::name_resolutions,
         transform::file_ast,
         typecheck::typecheck_group,
@@ -120,6 +121,7 @@ pub fn file_diagnostics(db: &Database, file_id: FileId) -> Vec<RayError> {
     for def_header in &file_ast_result.defs {
         errors.extend(validate_ownership(db, def_header.def_id));
         errors.extend(validate_ref_mutability(db, def_header.def_id));
+        errors.extend(analyze_regions(db, DefTarget::Workspace(def_header.def_id)).errors);
     }
 
     errors
@@ -183,7 +185,10 @@ mod tests {
     use std::collections::HashMap;
 
     use ray_core::errors::RayErrorKind;
-    use ray_shared::pathlib::{FilePath, ModulePath};
+    use ray_shared::{
+        file_id::FileId,
+        pathlib::{FilePath, ModulePath},
+    };
 
     use crate::{
         queries::{
@@ -208,7 +213,7 @@ mod tests {
         );
     }
 
-    fn setup_test_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_test_db(source: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
         let module_path = ModulePath::from("test");

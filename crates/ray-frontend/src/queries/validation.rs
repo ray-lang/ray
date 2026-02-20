@@ -1246,6 +1246,7 @@ fn collect_cycle_field_sources(
 mod tests {
     use std::collections::HashMap;
 
+    use ray_shared::file_id::FileId;
     use ray_shared::pathlib::{FilePath, ModulePath};
 
     use ray_shared::def::DefKind;
@@ -2589,7 +2590,7 @@ impl object Point {
     // ====================================================================
 
     /// Set up a no-core test database (cycle detection doesn't need the core library).
-    fn setup_cycle_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_cycle_db(source: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
         let module_path = ModulePath::from("test");

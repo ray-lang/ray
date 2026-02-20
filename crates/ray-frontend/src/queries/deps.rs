@@ -232,6 +232,81 @@ pub fn binding_group_for_def(db: &Database, def_id: DefId) -> Option<BindingGrou
     None
 }
 
+/// Build the full call graph for a module (all edges, not filtered by annotation).
+///
+/// Unlike `binding_graph` which only includes edges to unannotated defs (for type
+/// inference grouping), this includes ALL call edges. Used by region analysis to
+/// detect mutual recursion cycles in the call graph.
+#[query]
+pub fn region_call_graph(db: &Database, module: ModulePath) -> BindingGraph<DefId> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let module_info = match workspace.module_info(&module) {
+        Some(info) => info,
+        None => return BindingGraph::new(),
+    };
+
+    let mut all_def_ids: std::collections::HashSet<DefId> = std::collections::HashSet::new();
+    let mut all_defs: Vec<DefId> = Vec::new();
+
+    for &file_id in &module_info.files {
+        let parse_result = parse_file(db, file_id);
+        for def_header in &parse_result.defs {
+            all_def_ids.insert(def_header.def_id);
+            all_defs.push(def_header.def_id);
+        }
+    }
+
+    let mut graph = BindingGraph::new();
+    for def_id in &all_defs {
+        graph.add_binding(*def_id);
+        for dep in def_deps(db, *def_id) {
+            if all_def_ids.contains(&dep) {
+                graph.add_edge(*def_id, dep);
+            }
+        }
+    }
+    graph
+}
+
+/// Compute call-graph SCCs for a module.
+///
+/// Like `binding_groups` but uses the full call graph (all edges).
+/// Used by region analysis for cycle detection.
+#[query]
+pub fn region_call_groups(db: &Database, module: ModulePath) -> Arc<BindingGroupsResult> {
+    let graph = region_call_graph(db, module.clone());
+    let sccs = graph.compute_binding_groups();
+
+    let group_ids: Vec<BindingGroupId> = (0..sccs.len())
+        .map(|idx| BindingGroupId {
+            module: module.clone(),
+            index: idx as u32,
+        })
+        .collect();
+    let members: Vec<Vec<DefId>> = sccs.into_iter().map(|group| group.bindings).collect();
+
+    Arc::new(BindingGroupsResult { group_ids, members })
+}
+
+/// Find the region call group for a definition.
+///
+/// Returns the SCC in the full call graph that contains this def.
+/// Two defs in the same group are mutually recursive and must not
+/// call each other's `analyze_regions` (to avoid query cycles).
+pub fn region_call_group_for_def(db: &Database, def_id: DefId) -> Option<BindingGroupId> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let file_info = workspace.file_info(def_id.file)?;
+    let module = file_info.module_path.clone();
+
+    let result = region_call_groups(db, module);
+    for (idx, members) in result.members.iter().enumerate() {
+        if members.contains(&def_id) {
+            return Some(result.group_ids[idx].clone());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};

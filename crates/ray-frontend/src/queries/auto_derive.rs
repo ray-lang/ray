@@ -402,6 +402,7 @@ mod tests {
 
     use ray_shared::{
         def::DefKind,
+        file_id::FileId,
         pathlib::{FilePath, ModulePath},
     };
 
@@ -421,7 +422,7 @@ mod tests {
         }
     "#;
 
-    fn setup_db(source: &str) -> (Database, ray_shared::file_id::FileId) {
+    fn setup_db(source: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
         let module_path = ModulePath::from("test");
