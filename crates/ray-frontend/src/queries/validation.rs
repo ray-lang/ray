@@ -21,6 +21,7 @@ use ray_shared::{
     def::{DefId, DefKind},
     file_id::FileId,
     graph::DirectedGraph,
+    node_id::NodeId,
     pathlib::{FilePath, ItemPath, Path},
     resolution::{DefTarget, Resolution},
     span::{Source, Span},
@@ -995,7 +996,7 @@ pub fn validate_value_type_cycles(db: &Database, def_id: DefId) -> Vec<RayError>
     let chain_str = cycle_names.join(" -> ");
 
     let filepath = file_result.ast.filepath.clone();
-    let field_sources = collect_cycle_field_sources(
+    let (field_sources, suggestion) = collect_cycle_field_sources(
         &file_result.ast.decls,
         def_header.root_node,
         &file_result.source_map,
@@ -1013,10 +1014,14 @@ pub fn validate_value_type_cycles(db: &Database, def_id: DefId) -> Vec<RayError>
         field_sources
     };
 
+    let hint = match suggestion {
+        Some((field, ty)) => format!("Change field `{field}` to `*{ty}` to add indirection"),
+        None => "Use `*T` to add indirection".to_string(),
+    };
+
     vec![RayError {
         msg: format!(
-            "struct has infinite size due to recursive value-type fields: \
-             {chain_str}. Use `*T` to add indirection"
+            "struct has infinite size due to recursive value-type fields: {chain_str}. {hint}"
         ),
         src,
         kind: RayErrorKind::Type,
@@ -1080,7 +1085,7 @@ pub fn validate_struct_cycles(db: &Database, def_id: DefId) -> Vec<RayError> {
 
     // Collect source locations for the offending fields in this struct.
     let filepath = file_result.ast.filepath.clone();
-    let field_sources = collect_cycle_field_sources(
+    let (field_sources, suggestion) = collect_cycle_field_sources(
         &file_result.ast.decls,
         def_header.root_node,
         &file_result.source_map,
@@ -1099,11 +1104,15 @@ pub fn validate_struct_cycles(db: &Database, def_id: DefId) -> Vec<RayError> {
         field_sources
     };
 
+    let hint = match suggestion {
+        Some((field, ty)) => {
+            format!("Change field `{field}` to `id *{ty}` to break the cycle")
+        }
+        None => "Break the cycle by changing a field to `id *T`".to_string(),
+    };
+
     vec![RayError {
-        msg: format!(
-            "cyclic strong references: {chain_str}. \
-             Break the cycle by changing a field to `id *T`"
-        ),
+        msg: format!("cyclic strong references: {chain_str}. {hint}"),
         src,
         kind: RayErrorKind::Type,
         context: Some("cycle detection".to_string()),
@@ -1157,24 +1166,24 @@ fn build_cycle_chain(
 /// so the same logic works for both strong-ref and value-type cycles.
 fn collect_cycle_field_sources(
     decls: &[Node<Decl>],
-    root_node: ray_shared::node_id::NodeId,
+    root_node: NodeId,
     source_map: &SourceMap,
     filepath: &FilePath,
     scc: &[ItemPath],
     struct_path: &ItemPath,
     graph: &DirectedGraph<ItemPath>,
     target_fn: fn(&Ty) -> Vec<ItemPath>,
-) -> Vec<Source> {
+) -> (Vec<Source>, Option<(String, String)>) {
     let Some(decl_node) = find_def_ast(decls, root_node) else {
-        return vec![];
+        return (vec![], None);
     };
 
     let Decl::Struct(st) = &decl_node.value else {
-        return vec![];
+        return (vec![], None);
     };
 
     let Some(fields) = &st.fields else {
-        return vec![];
+        return (vec![], None);
     };
 
     let scc_set: HashSet<&ItemPath> = scc.iter().collect();
@@ -1186,7 +1195,14 @@ fn collect_cycle_field_sources(
         .map(|targets| targets.iter().filter(|t| scc_set.contains(t)).collect())
         .unwrap_or_default();
 
+    // Build a set of edge target item names for matching against parsed
+    // (unqualified) type paths. The graph uses fully-qualified ItemPaths but
+    // parsed field types use unqualified names.
+    let edge_target_names: HashSet<Option<&str>> =
+        edge_targets.iter().map(|t| t.item_name()).collect();
+
     let mut sources = Vec::new();
+    let mut first_suggestion: Option<(String, String)> = None;
 
     for field_node in fields {
         let Some(parsed_ty) = &field_node.value.ty else {
@@ -1196,7 +1212,20 @@ fn collect_cycle_field_sources(
         // Check if this field's type contributes an edge to an SCC member.
         let targets = target_fn(&parsed_ty.value().ty);
         for target_path in &targets {
-            if edge_targets.contains(target_path) {
+            let matches_edge = edge_targets.contains(target_path)
+                || edge_target_names.contains(&target_path.item_name());
+            if matches_edge {
+                // Capture the first offending field for the suggestion.
+                if first_suggestion.is_none() {
+                    let field_name = field_node
+                        .value
+                        .path
+                        .name()
+                        .unwrap_or_else(|| "?".to_string());
+                    let type_name = target_path.item_name().unwrap_or("T").to_string();
+                    first_suggestion = Some((field_name, type_name));
+                }
+
                 if let Some(src) = source_map.get_by_id(field_node.id) {
                     sources.push(src);
                 } else {
@@ -1210,7 +1239,7 @@ fn collect_cycle_field_sources(
         }
     }
 
-    sources
+    (sources, first_suggestion)
 }
 
 #[cfg(test)]
@@ -2626,8 +2655,10 @@ struct Bar { foo: *Foo }
             foo_errors[0].msg
         );
         assert!(
-            foo_errors[0].msg.contains("id *T"),
-            "Error should suggest id *T: {}",
+            foo_errors[0]
+                .msg
+                .contains("Change field `bar` to `id *Bar`"),
+            "Error should suggest specific field change: {}",
             foo_errors[0].msg
         );
         assert_eq!(
@@ -2906,8 +2937,8 @@ struct Bar { foo: Foo }
             foo_errors[0].msg
         );
         assert!(
-            foo_errors[0].msg.contains("*T"),
-            "Error should suggest *T indirection: {}",
+            foo_errors[0].msg.contains("Change field `bar` to `*Bar`"),
+            "Error should suggest specific field change: {}",
             foo_errors[0].msg
         );
         assert_eq!(foo_errors[0].context.as_deref(), Some("cycle detection"),);
