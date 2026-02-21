@@ -11,6 +11,8 @@ import int with Int
 @intrinsic extern fn sizeof(t: type['a]) -> uint
 /// Copies `len` bytes from `src` to `dst`. The memory regions may not overlap.
 @intrinsic extern fn memcopy(dst: rawptr[u8], src: rawptr[u8], len: uint) -> ()
+/// Allocates uninitialized memory for `count` elements of type `'a`.
+@intrinsic extern fn alloc(t: type['a], count: uint) -> rawptr['a]
 
 /// Packs the bytes of an integer value for hashing. Returns the packed
 /// representation and the number of bytes.

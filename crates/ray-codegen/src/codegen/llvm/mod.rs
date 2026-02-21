@@ -2764,6 +2764,41 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
                 let inst = ctx.build_memcpy(dst, src, &size_atom, srcmap)?;
                 Ok(LoweredCall::Inst(inst))
             }
+            lir::IntrinsicKind::Alloc => {
+                // alloc(type['a], count: uint) -> rawptr['a]
+                // Compute sizeof(T), multiply by count, call __wasi_alloc.
+                let meta_ty = ctx.type_of(&self.args[0]).clone();
+                let elem_ty = meta_ty.type_argument_at(0).unwrap_or(&Ty::Never).clone();
+                let llvm_elem_ty = ctx.to_llvm_type(&elem_ty);
+                let elem_size = llvm_elem_ty.size_of().expect("sized type");
+
+                let count_val = self.eval_intrinsic_int(ctx, srcmap, 1)?;
+                let count_cast =
+                    ctx.builder
+                        .build_int_cast(count_val, ctx.ptr_type(), "alloc_count")?;
+                let total_size =
+                    ctx.builder
+                        .build_int_mul(elem_size, count_cast, "alloc_total_size")?;
+
+                let td = ctx.target_machine.get_target_data();
+                let align = td.get_abi_alignment(&llvm_elem_ty);
+                let align_val = ctx.ptr_type().const_int(align as u64, false);
+
+                let alloc_fn = ctx.get_or_declare_alloc();
+                let ptr = ctx
+                    .builder
+                    .build_call(
+                        alloc_fn,
+                        &[total_size.into(), align_val.into()],
+                        "alloc_raw",
+                    )?
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+                ctx.register_pointee_ty(ptr, elem_ty);
+                Ok(LoweredCall::Value(ptr.as_basic_value_enum()))
+            }
             lir::IntrinsicKind::IntHashBytes => {
                 // Returns `(u64, uint)` where:
                 // - the `u64` is the value's low bytes packed little-endian

@@ -4,7 +4,7 @@
 //! any `ToStr` value to a string and appends a newline. `puts` writes
 //! a raw string without conversion.
 
-import super with Deref, Int, sizeof, string, ToStr
+import super with Deref, Int, alloc, sizeof, string, ToStr
 import io_wasi with writev_stdout
 
 /// Prints `v` to stdout followed by a newline.
@@ -14,8 +14,8 @@ fn print(v: 'a) -> () where ToStr['a] {
     s = v.to_str()
     nl = "\n"
 
-    chunks = new(string, 2)
-    mut ptr = chunks as rawptr[string]
+    chunks = alloc(string, 2)
+    mut ptr = chunks
     *ptr = s
     ptr = ptr + 1
     *ptr = nl
@@ -25,5 +25,5 @@ fn print(v: 'a) -> () where ToStr['a] {
 
 /// Writes the string `s` to stdout without a trailing newline.
 fn puts(s: string) -> () {
-    _ = writev_stdout(&s, 1)
+    _ = writev_stdout(&s as rawptr[string], 1)
 }
