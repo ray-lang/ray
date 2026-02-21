@@ -95,7 +95,7 @@ pub(crate) struct RayLanguageServer {
 #[tower_lsp::async_trait]
 impl tower_lsp::LanguageServer for RayLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        log::info!("initialize request: {params:#?}");
+        log::info!("initialize request: root = {:?}", params.root_uri);
 
         self.update_workspace_root(&params).await;
         self.update_toolchain_root(params.initialization_options.as_ref())
