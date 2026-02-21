@@ -3,3 +3,6 @@ name = "core"
 version = "0.1.0"
 type = "lib"
 no_core = true
+
+[dependencies]
+testing = { path = "../testing" }

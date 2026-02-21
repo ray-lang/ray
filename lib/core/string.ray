@@ -326,3 +326,8 @@ impl Iter[StringIter, char] {
         some(cp as char)
     }
 }
+
+test "string is empty" {
+    s = ""
+    assert(s.is_empty())
+}

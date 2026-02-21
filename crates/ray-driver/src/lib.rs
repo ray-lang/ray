@@ -10,6 +10,7 @@ use ray_codegen::{
     libgen, lir,
 };
 use ray_core::errors::{RayError, RayErrorKind};
+use ray_core::sourcemap::SourceMap;
 use ray_frontend::{
     persistence::redb_backend::RedbBackend,
     queries::{
@@ -244,11 +245,26 @@ impl Driver {
             },
         );
 
+        // Resolve source dependency paths relative to workspace root
+        let source_deps = self
+            .project_cfg
+            .source_deps()
+            .values()
+            .filter_map(|dep| {
+                self.workspace_root.as_ref().map(|root| {
+                    let dep_path = FilePath::from(dep.path.as_str());
+                    let resolved = FilePath::from(root.clone()) / &dep_path;
+                    resolved.canonicalize().unwrap_or(resolved)
+                })
+            })
+            .collect();
+
         // Run discovery to populate workspace and libraries
         let discovery_options = discovery::DiscoveryOptions {
             no_core: options.no_core,
             build_lib: options.build_lib,
             test_mode: options.test_mode,
+            source_deps,
         };
         let (workspace, loaded_libs) = discovery::discover_workspace(
             &db,
@@ -383,15 +399,34 @@ impl Driver {
         };
 
         if options.build_lib {
-            let mut modules = module_paths.into_iter().collect::<Vec<_>>();
+            // Filter out source dependency modules — only include
+            // modules belonging to the root package in the .raylib.
+            let mut modules: Vec<_> = module_paths
+                .into_iter()
+                .filter(|p| p.starts_with(&module_path))
+                .collect();
             modules.sort();
             log::debug!("modules: {:?}", modules);
 
-            let module_paths_vec = modules
+            let module_paths_vec: Vec<ModulePath> = modules
                 .into_iter()
                 .map(|p| ModulePath::from(p.to_string().as_str()))
                 .collect();
-            let lib_data = build_library_data(db, module_paths_vec, srcmap.clone());
+
+            // Build a filtered source map containing only root package files.
+            let module_set: HashSet<&ModulePath> = module_paths_vec.iter().collect();
+            let workspace = db.get_input::<WorkspaceSnapshot>(());
+            let mut filtered_srcmap = SourceMap::new();
+            for file_id in workspace.all_file_ids() {
+                if let Some(info) = workspace.file_info(file_id) {
+                    if module_set.contains(&info.module_path) {
+                        let file_ast_result = file_ast(db, file_id);
+                        filtered_srcmap.extend_with(file_ast_result.source_map.clone());
+                    }
+                }
+            }
+
+            let lib_data = build_library_data(db, module_paths_vec, filtered_srcmap);
             log::debug!(
                 "library data: names={} schemes={} structs={} traits={} impls={}",
                 lib_data.names.len(),

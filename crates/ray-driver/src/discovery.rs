@@ -15,6 +15,9 @@ pub struct DiscoveryOptions {
     pub build_lib: bool,
     /// If true, also load the `testing` library for test mode.
     pub test_mode: bool,
+    /// Source dependency directories resolved from `[dependencies]` in ray.toml.
+    /// Each path is an absolute path to a dependency's entry directory.
+    pub source_deps: Vec<FilePath>,
 }
 
 use ray_core::{
@@ -85,6 +88,17 @@ pub fn discover_workspace(
     if options.build_lib {
         if let Some(dir) = &entry_dir {
             discover_all_submodules(dir, &entry_module, &mut pending);
+        }
+    }
+
+    // Discover source dependencies declared in [dependencies]
+    for dep_path in &options.source_deps {
+        if let Ok((dep_entry, dep_dir)) = resolve_entry_path(dep_path) {
+            let dep_module = discover_module_for_file(&dep_entry);
+            pending.push_back(dep_entry);
+            if let Some(dir) = dep_dir {
+                discover_all_submodules(&dir, &dep_module, &mut pending);
+            }
         }
     }
 
@@ -297,7 +311,7 @@ pub fn resolve_import(
 
     // 2. Try resolution in search paths
     for search_path in search_paths {
-        // Check for .raylib file first: {search_path}/{module}#.raylib
+        // Check for .raylib file first: {search_path}/{module}.raylib
         let lib_file = library_path_for_module(search_path, import_path);
         if lib_file.exists() {
             return ImportResolution::Library(import_path.clone(), lib_file);

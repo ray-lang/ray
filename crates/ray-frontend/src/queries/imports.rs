@@ -76,9 +76,29 @@ pub fn resolved_imports(
         .map(|info| info.module_path.clone());
     let mut result = resolve_imports(&imports, &workspace, &libraries, file_module.as_ref());
 
-    // Inject implicit core imports unless no_core is set globally or per-file
+    // Inject implicit core imports unless no_core is set globally or per-file.
+    //
+    // When global no_core is true, it only applies to files in the root package
+    // (whose module path starts with the entry module). Source dependency files
+    // (e.g., `testing` when building `core`) still need implicit core imports.
     let per_file_no_core = file_no_core(db, file_id);
-    if !global_no_core && !per_file_no_core {
+    let effective_no_core = if global_no_core {
+        let entry_module = workspace
+            .entry
+            .and_then(|eid| workspace.file_info(eid))
+            .map(|info| info.module_path.to_string());
+        entry_module
+            .map(|em| {
+                file_module
+                    .as_ref()
+                    .map(|fm| fm.starts_with(&em))
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true)
+    } else {
+        false
+    };
+    if !effective_no_core && !per_file_no_core {
         // Don't inject core imports into files that are part of core itself
         let is_core_file = file_module
             .as_ref()

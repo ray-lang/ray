@@ -222,6 +222,17 @@ impl WorkspaceManager {
             },
         );
 
+        // Resolve source dependency paths relative to workspace root
+        let source_deps = config
+            .source_deps()
+            .values()
+            .map(|dep| {
+                let dep_path = FilePath::from(dep.path.as_str());
+                let resolved = &root / &dep_path;
+                resolved.canonicalize().unwrap_or(resolved)
+            })
+            .collect();
+
         // Run discovery. LSP uses build_lib=true so that ALL files in the
         // workspace are discovered (not just those reachable via imports),
         // enabling navigation and diagnostics for every file.
@@ -229,6 +240,7 @@ impl WorkspaceManager {
             no_core: config.no_core(),
             build_lib: true,
             test_mode: false,
+            source_deps,
         };
 
         let (workspace, loaded_libs) =

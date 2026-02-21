@@ -637,6 +637,7 @@ pub fn build_library_data(
     srcmap: SourceMap,
 ) -> LibraryData {
     let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let module_set: HashSet<&ModulePath> = modules.iter().collect();
 
     // Phase 1: Allocate LibraryDefIds for all defs and build DefId -> LibraryDefId mapping
     let mut module_counters: HashMap<ModulePath, u32> = HashMap::new();
@@ -647,6 +648,9 @@ pub fn build_library_data(
             Some(info) => info,
             None => continue,
         };
+        if !module_set.contains(&file_info.module_path) {
+            continue; // Skip source dependency modules
+        }
         let module_path = file_info.module_path.clone();
         let parse_result = parse_file(db, file_id);
 
@@ -683,6 +687,13 @@ pub fn build_library_data(
     let mut region_reqs: HashMap<LibraryDefId, RegionRequirements> = HashMap::new();
 
     for file_id in workspace.all_file_ids() {
+        // Skip source dependency files
+        if let Some(info) = workspace.file_info(file_id) {
+            if !module_set.contains(&info.module_path) {
+                continue;
+            }
+        }
+
         let parse_result = parse_file(db, file_id);
 
         for def_header in &parse_result.defs {

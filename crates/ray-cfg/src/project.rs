@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path;
 
@@ -7,6 +8,19 @@ use serde::Deserialize;
 pub struct ProjectCfg {
     pub package: Option<PackageCfg>,
     pub toolchain: Option<ToolchainCfg>,
+    pub dependencies: Option<HashMap<String, DependencyCfg>>,
+}
+
+/// A source dependency declared in `[dependencies]`.
+///
+/// Currently only supports path-based dependencies:
+/// ```toml
+/// [dependencies]
+/// testing = { path = "../testing" }
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct DependencyCfg {
+    pub path: String,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -63,6 +77,13 @@ impl ProjectCfg {
             .as_ref()
             .and_then(|p| p.no_core)
             .unwrap_or(false)
+    }
+
+    /// Returns the source dependencies declared in `[dependencies]`.
+    pub fn source_deps(&self) -> &HashMap<String, DependencyCfg> {
+        static EMPTY: std::sync::LazyLock<HashMap<String, DependencyCfg>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.dependencies.as_ref().unwrap_or(&EMPTY)
     }
 }
 
