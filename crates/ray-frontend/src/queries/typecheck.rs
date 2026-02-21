@@ -647,7 +647,7 @@ impl ToStr[Point] {
 struct Point { x: int }
 
 impl object Point {
-    fn new(x: int): Point => Point { x }
+    fn new(x: int) -> Point => Point { x }
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -849,7 +849,7 @@ struct Point { x: int, y: int }
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn origin(): Point => Point { x: 0, y: 0 }
+    fn origin() -> Point => Point { x: 0, y: 0 }
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());
@@ -1869,7 +1869,7 @@ impl Point {
 struct Point { x: int, y: int }
 
 impl object Point {
-    fn origin(): Point => Point { x: 0, y: 0 }
+    fn origin() -> Point => Point { x: 0, y: 0 }
 }
 "#;
         FileSource::new(&db, file_id, source.to_string());

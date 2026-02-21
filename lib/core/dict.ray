@@ -77,7 +77,7 @@ impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
 
     /// Inserts or replaces the value for `key`. Returns the previous value,
     /// or `nil` if the key was not present.
-    fn set(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
+    fn set(self: *mut dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.insert(key, value)
     }
 }
@@ -92,7 +92,7 @@ impl Iterable[dict['k, 'v], DictIter['k, 'v], ('k, 'v)] {
 /// Advances the dict iterator, returning the next `(key, value)` pair or
 /// `nil` when exhausted.
 impl Iter[DictIter['k, 'v], ('k, 'v)] where Hash['k], Eq['k, 'k] {
-    fn next(self: *DictIter['k, 'v]) -> ('k, 'v)? {
+    fn next(self: *mut DictIter['k, 'v]) -> ('k, 'v)? {
         while self.idx < self.dict.capacity {
             idx = self.idx
             self.idx = self.idx + 1
@@ -198,7 +198,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
 
     /// Inserts `key` / `value` into the dict. Returns the previous value
     /// if the key was already present, or `nil` otherwise.
-    fn insert(self: *dict['k, 'v], key: 'k, value: 'v) -> 'v? {
+    fn insert(self: *mut dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.__ensure_capacity(1)
 
         if self.capacity == 0 {
@@ -235,7 +235,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
 
     /// Removes `key` from the dict. Returns the removed value, or `nil` if
     /// the key was not present.
-    fn remove(self: *dict['k, 'v], key: 'k) -> 'v? {
+    fn remove(self: *mut dict['k, 'v], key: 'k) -> 'v? {
         if self.capacity == 0 {
             return nil
         }
@@ -258,7 +258,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         some(prev)
     }
 
-    fn __ensure_capacity(self: *dict['k, 'v], additional: uint) -> () {
+    fn __ensure_capacity(self: *mut dict['k, 'v], additional: uint) -> () {
         if self.capacity == 0 {
             next = dict['k, 'v]::with_capacity(16)
             self.ctrl = next.ctrl
@@ -281,7 +281,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         }
     }
 
-    fn __rehash(self: *dict['k, 'v], capacity: uint) -> () {
+    fn __rehash(self: *mut dict['k, 'v], capacity: uint) -> () {
         cap = dict['k, 'v]::__round_capacity(capacity)
         if cap == 0 {
             return
@@ -312,7 +312,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         }
     }
 
-    fn __insert_rehash(self: *dict['k, 'v], key: 'k, value: 'v) -> () {
+    fn __insert_rehash(self: *mut dict['k, 'v], key: 'k, value: 'v) -> () {
         hash = key.hash()
         h2 = dict['k, 'v]::__h2(hash)
         _, idx = self.__find_slot(key, hash)

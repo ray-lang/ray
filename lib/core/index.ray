@@ -37,5 +37,5 @@ trait Index['a, 'el, 'idx] {
     ///
     /// For `list`, the index must be within bounds. For `dict`, this
     /// inserts a new entry or updates an existing one.
-    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+    fn set(self: *mut 'a, idx: 'idx, el: 'el) -> 'el?
 }

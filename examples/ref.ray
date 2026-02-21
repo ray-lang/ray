@@ -1,9 +1,9 @@
-fn modify(x: *int) {
+fn modify(x: *mut int) {
     *x = 10
 }
 
 fn main() {
     x = 1
-    modify(&x)
+    modify(&mut x)
     io::print(x)
 }

@@ -1460,8 +1460,8 @@ fn generate_constraints_for_expr(
                         ));
 
                         // Also emit ResolveMemberConstraint to record in the side-table
-                        // Index::set has signature: (*container, index, elem) -> elem?
-                        let recv_ty = Ty::ref_of(container_ty.clone());
+                        // Index::set has signature: (*mut container, index, elem) -> elem?
+                        let recv_ty = Ty::mut_ref_of(container_ty.clone());
                         let expected_fn_ty = Ty::Func(
                             vec![recv_ty, index_ty, rhs_ty],
                             Box::new(Ty::nilable(elem_ty)),

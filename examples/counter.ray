@@ -8,7 +8,7 @@ impl Iterable[Counter, CounterIter, u32] {
 }
 
 impl Iter[CounterIter, u32] {
-    fn next(self: *CounterIter) -> u32? {
+    fn next(self: *mut CounterIter) -> u32? {
         if self.cur >= self.end {
             return nil
         }

@@ -317,7 +317,7 @@ impl Iterable[string, StringIter, char] {
 
 /// Advances the string iterator, returning the next codepoint or `nil`.
 impl Iter[StringIter, char] {
-    fn next(self: *StringIter) -> char? {
+    fn next(self: *mut StringIter) -> char? {
         if self.byte_off >= self.s.len {
             return nil
         }

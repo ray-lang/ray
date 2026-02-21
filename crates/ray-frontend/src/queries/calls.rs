@@ -59,7 +59,7 @@ pub fn call_resolution(db: &Database, node_id: NodeId) -> Option<CallResolution>
             let rhs_ty = ty_of(db, *rhs)?;
             // Index::set returns nilable[elem], not the assignment expression type (unit)
             let ret_ty = Ty::nilable(rhs_ty.clone());
-            let recv_ty = Ty::ref_of(container_ty);
+            let recv_ty = Ty::mut_ref_of(container_ty);
             TyScheme::from_mono(Ty::Func(vec![recv_ty, index_ty, rhs_ty], Box::new(ret_ty)))
         }
         _ => return None,
@@ -318,14 +318,14 @@ fn check() -> int {
         let source = r#"
 trait Index['a, 'el, 'idx] {
     fn get(self: *'a, idx: 'idx) -> 'el?
-    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+    fn set(self: *mut 'a, idx: 'idx, el: 'el) -> 'el?
 }
 
 struct List { data: int }
 
 impl Index[List, int, int] {
     fn get(self: *List, idx: int) -> int? => nil
-    fn set(self: *List, idx: int, el: int) -> int? => nil
+    fn set(self: *mut List, idx: int, el: int) -> int? => nil
 }
 
 fn check() -> int? {
@@ -382,18 +382,18 @@ fn check() -> int? {
         let source = r#"
 trait Index['a, 'el, 'idx] {
     fn get(self: *'a, idx: 'idx) -> 'el?
-    fn set(self: *'a, idx: 'idx, el: 'el) -> 'el?
+    fn set(self: *mut 'a, idx: 'idx, el: 'el) -> 'el?
 }
 
 struct List { data: int }
 
 impl Index[List, int, int] {
     fn get(self: *List, idx: int) -> int? => nil
-    fn set(self: *List, idx: int, el: int) -> int? => nil
+    fn set(self: *mut List, idx: int, el: int) -> int? => nil
 }
 
 fn check() -> int? {
-    l = List { data: 0 }
+    mut l = List { data: 0 }
     l[0] = 42
 }
 "#;

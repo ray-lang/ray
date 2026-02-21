@@ -45,13 +45,13 @@ impl object set['k] where Hash['k], Eq['k, 'k] {
 
     /// Adds `key` to the set. Returns `true` if the key was newly inserted,
     /// `false` if it was already present.
-    fn insert(self: *set['k], key: 'k) -> bool {
+    fn insert(self: *mut set['k], key: 'k) -> bool {
         prev = self.inner.insert(key, ())
         prev == nil
     }
 
     /// Removes `key` from the set. Returns `true` if the key was present.
-    fn remove(self: *set['k], key: 'k) -> bool {
+    fn remove(self: *mut set['k], key: 'k) -> bool {
         prev = self.inner.remove(key)
         prev != nil
     }

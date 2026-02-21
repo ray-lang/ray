@@ -42,7 +42,7 @@ trait Iter['it, 'el] {
     /// Advances the iterator and returns the next element.
     ///
     /// Returns `nil` when there are no more elements.
-    fn next(self: *'it) -> 'el?
+    fn next(self: *mut 'it) -> 'el?
 }
 
 /// A collection that can produce an iterator over its elements.
