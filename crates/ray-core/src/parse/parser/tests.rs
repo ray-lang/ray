@@ -10,6 +10,7 @@ use ray_typing::types::NominalKind;
 use crate::{
     ast::{
         Decl, ExportKind, Expr, FStringPart, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern,
+        ReceiverKind,
     },
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
@@ -1427,6 +1428,46 @@ trait Printable {
             }
         }
         other => panic!("expected function item in trait, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_ref_receiver_self() {
+    let source = r#"
+fn foo(*self) {}
+"#;
+    let (file, errors) = parse_source(source);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = match &file.decls[0].value {
+        Decl::Func(f) => f,
+        other => panic!("expected Func, got {:?}", other),
+    };
+    match &func.sig.params[0].value {
+        FnParam::Name { name, receiver, .. } => {
+            assert_eq!(name.path.to_string(), "self");
+            assert_eq!(*receiver, Some(ReceiverKind::Ref));
+        }
+        other => panic!("expected Name param, got {:?}", other),
+    }
+}
+
+#[test]
+fn parses_mut_ref_receiver_self() {
+    let source = r#"
+fn foo(*mut self) {}
+"#;
+    let (file, errors) = parse_source(source);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = match &file.decls[0].value {
+        Decl::Func(f) => f,
+        other => panic!("expected Func, got {:?}", other),
+    };
+    match &func.sig.params[0].value {
+        FnParam::Name { name, receiver, .. } => {
+            assert_eq!(name.path.to_string(), "self");
+            assert_eq!(*receiver, Some(ReceiverKind::MutRef));
+        }
+        other => panic!("expected Name param, got {:?}", other),
     }
 }
 

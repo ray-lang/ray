@@ -6,7 +6,9 @@ use super::{
 };
 
 use crate::{
-    ast::{self, FnParam, FuncSig, Missing, Name, Node, TrailingPolicy, token::TokenKind},
+    ast::{
+        self, FnParam, FuncSig, Missing, Name, Node, ReceiverKind, TrailingPolicy, token::TokenKind,
+    },
     parse::lexer::NewlineMode,
 };
 use ray_shared::span::Span;
@@ -190,6 +192,16 @@ impl Parser<'_> {
         } else {
             false
         };
+        let receiver = if expect_if!(self, TokenKind::Asterisk) {
+            if expect_if!(self, TokenKind::Mut) {
+                Some(ReceiverKind::MutRef)
+            } else {
+                Some(ReceiverKind::Ref)
+            }
+        } else {
+            None
+        };
+
         self.parse_name_with_type(Some(&TokenKind::RightParen), ctx)
             .map(|name| {
                 let span = self.srcmap.span_of(&name);
@@ -198,6 +210,7 @@ impl Parser<'_> {
                         name: name.value,
                         is_move,
                         is_noescape,
+                        receiver,
                     },
                     span,
                     path.clone(),
@@ -223,6 +236,7 @@ impl Parser<'_> {
                 name: Name::typed(name, ty),
                 is_move,
                 is_noescape,
+                receiver: None,
             },
             span,
             ctx.path.clone(),

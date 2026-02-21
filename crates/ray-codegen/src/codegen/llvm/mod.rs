@@ -483,12 +483,28 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         matches!(ty, Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_))
     }
 
+    /// Return `size_of(llvm_ty)` as a `ptr_type()`-width integer.
+    ///
+    /// LLVM's `size_of()` always returns `i64`, but on wasm32 our allocator
+    /// functions (`__wasi_alloc`, `__wasi_dealloc`) and pointer arithmetic use
+    /// `i32`. This helper casts the result so it matches `ptr_type()`.
+    fn llvm_size_of(
+        &self,
+        llvm_ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, BuilderError> {
+        let raw = llvm_ty.size_of().expect("sized type");
+        self.builder.build_int_cast(raw, self.ptr_type(), name)
+    }
+
     /// Size of the refcount header in bytes: `2 * sizeof(ptr)`.
     /// Layout: `[strong_count: uint | weak_count: uint | data: T]`
-    fn rc_header_size(&self) -> IntValue<'ctx> {
-        let ptr_size = self.ptr_type().size_of();
+    fn rc_header_size(&self) -> Result<IntValue<'ctx>, BuilderError> {
+        let ptr_size =
+            self.builder
+                .build_int_cast(self.ptr_type().size_of(), self.ptr_type(), "ptr_size")?;
         let two = self.ptr_type().const_int(2, false);
-        ptr_size.const_mul(two)
+        Ok(self.builder.build_int_mul(ptr_size, two, "rc_header")?)
     }
 
     /// Given a data pointer (past the refcount header), compute the allocation
@@ -497,7 +513,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         &self,
         data_ptr: PointerValue<'ctx>,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
-        let header_size = self.rc_header_size();
+        let header_size = self.rc_header_size()?;
         let neg_header = self.builder.build_int_neg(header_size, "neg_header")?;
         unsafe {
             self.builder
@@ -555,8 +571,8 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), BuilderError> {
         let pointee_ty = self.get_pointee_ty(data_ptr).clone();
         let llvm_ty = self.to_llvm_type(&pointee_ty);
-        let header_size = self.rc_header_size();
-        let data_size = llvm_ty.size_of().expect("sized type");
+        let header_size = self.rc_header_size()?;
+        let data_size = self.llvm_size_of(llvm_ty, "data_size")?;
         let total_size = self
             .builder
             .build_int_add(header_size, data_size, "dealloc_size")?;
@@ -1774,6 +1790,27 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             f.codegen(ctx, srcmap)?;
         }
 
+        // Bridge `malloc(size) -> ptr` to `__wasi_alloc(size, align=1) -> ptr`.
+        // Ray's core library declares `extern fn malloc(size: uint) -> rawptr[u8]`
+        // but the WASI allocator exports `__wasi_alloc`. Emit a thin wrapper so
+        // the linker resolves the `malloc` symbol.
+        if let Some(malloc_fn) = ctx.module.get_function("malloc") {
+            if malloc_fn.count_basic_blocks() == 0 {
+                let alloc_fn = ctx.get_or_declare_alloc();
+                let entry = ctx.lcx.append_basic_block(malloc_fn, "entry");
+                ctx.builder.position_at_end(entry);
+                let size_arg = malloc_fn.get_first_param().unwrap().into_int_value();
+                let align = ctx.ptr_type().const_int(1, false);
+                let result = ctx
+                    .builder
+                    .build_call(alloc_fn, &[size_arg.into(), align.into()], "ptr")?
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
+                ctx.builder.build_return(Some(&result))?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -2268,8 +2305,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                 if count == 1 {
                     if LLVMCodegenCtx::is_refcounted_alloc(&orig_ty) {
                         // Refcounted allocation: prepend [strong_count | weak_count] header.
-                        let header_size = ctx.rc_header_size();
-                        let data_size = llvm_elem_ty.size_of().expect("sized type");
+                        let header_size = ctx.rc_header_size()?;
+                        let data_size = ctx.llvm_size_of(llvm_elem_ty, "data_size")?;
                         let total =
                             ctx.builder
                                 .build_int_add(header_size, data_size, "rc_total_size")?;
@@ -2320,7 +2357,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                     }
 
                     // Non-refcounted allocation (rawptr, bare types).
-                    let elem_size = llvm_elem_ty.size_of().expect("sized type");
+                    let elem_size = ctx.llvm_size_of(llvm_elem_ty, "elem_size")?;
                     let td = ctx.target_machine.get_target_data();
                     let elem_align = td.get_abi_alignment(&llvm_elem_ty);
                     let elem_align_val = ctx.ptr_type().const_int(elem_align as u64, false);
@@ -2355,7 +2392,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
             ),
         };
 
-        let elem_size = llvm_elem_ty.size_of().expect("sized type");
+        let elem_size = ctx.llvm_size_of(llvm_elem_ty, "elem_size")?;
         let total_size =
             ctx.builder
                 .build_int_mul(elem_size, size.into_int_value(), "array_total_size")?;
@@ -2770,7 +2807,7 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
                 let meta_ty = ctx.type_of(&self.args[0]).clone();
                 let elem_ty = meta_ty.type_argument_at(0).unwrap_or(&Ty::Never).clone();
                 let llvm_elem_ty = ctx.to_llvm_type(&elem_ty);
-                let elem_size = llvm_elem_ty.size_of().expect("sized type");
+                let elem_size = ctx.llvm_size_of(llvm_elem_ty, "elem_size")?;
 
                 let count_val = self.eval_intrinsic_int(ctx, srcmap, 1)?;
                 let count_cast =
@@ -3114,14 +3151,9 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
             ctx.get_pointee_ty(ptr_val)
         );
         let pointee_ty = ctx.get_pointee_ty(ptr_val).clone();
-        let elem_size_raw = ctx
-            .to_llvm_type(&pointee_ty)
-            .size_of()
-            .expect("element size must be computable");
-        log::debug!("[codegen_ptr_offset] elem_size_raw={}", elem_size_raw);
-        let elem_size = ctx
-            .builder
-            .build_int_cast(elem_size_raw, ctx.ptr_type(), "elem_size")?;
+        let llvm_pointee_ty = ctx.to_llvm_type(&pointee_ty);
+        let elem_size = ctx.llvm_size_of(llvm_pointee_ty, "elem_size")?;
+        log::debug!("[codegen_ptr_offset] elem_size={}", elem_size);
 
         let ptr_int = ctx
             .builder
@@ -3166,9 +3198,8 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
         let meta_ty = ctx.type_of(&self.args[0]).clone();
         let underlying_ty = meta_ty.type_argument_at(0).unwrap_or(&Ty::Never);
         let ll = ctx.to_llvm_type(underlying_ty);
-        let raw = ll.size_of().expect("could not compute sizeof for type");
-        let cast = ctx.builder.build_int_cast(raw, ctx.ptr_type(), "")?;
-        Ok(LoweredCall::Value(cast.as_basic_value_enum()))
+        let size = ctx.llvm_size_of(ll, "sizeof")?;
+        Ok(LoweredCall::Value(size.as_basic_value_enum()))
     }
 
     fn codegen_basic_op(

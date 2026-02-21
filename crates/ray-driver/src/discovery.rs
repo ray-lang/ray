@@ -24,7 +24,7 @@ use ray_core::{
 };
 use ray_frontend::queries::{
     libraries::{LoadedLibraries, load_library},
-    parse::parse_file,
+    parse::parse_file_raw,
     workspace::{FileMetadata, FileSource, WorkspaceSnapshot},
 };
 use ray_shared::{
@@ -127,7 +127,7 @@ pub fn discover_workspace(
         db.set_input::<WorkspaceSnapshot>((), snapshot.clone());
 
         // Parse to get imports (uses parse_file query)
-        let parse_result = parse_file(db, file_id);
+        let parse_result = parse_file_raw(db, file_id);
 
         // Process imports
         for import in &parse_result.ast.imports {

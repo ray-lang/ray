@@ -262,7 +262,15 @@ impl Database {
             .any(|k| k == &qkey)
         {
             match Q::CYCLE_POLICY {
-                CyclePolicy::Panic => panic!("cycle in query {}", Q::NAME),
+                CyclePolicy::Panic => {
+                    let stack = self.active_stack.lock().unwrap();
+                    let chain: Vec<_> = stack.iter().map(|k| k.name).collect();
+                    panic!(
+                        "cycle in query {}\nactive stack:\n{}",
+                        Q::NAME,
+                        chain.join("\n  -> ")
+                    );
+                }
                 CyclePolicy::Error => return Q::on_cycle(self, key),
             }
         }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use ray_core::ast::{Decl, Expr, FuncSig, Node, WalkItem, walk_file};
+use ray_core::ast::{Decl, Expr, FuncSig, Node, ReceiverKind, WalkItem, walk_file};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefId, DefKind, SignatureStatus},
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     queries::{
         defs::{def_header, def_path, find_def_ast},
-        parse::parse_file,
+        parse::{ParseResult, parse_file},
         resolve::name_resolutions,
         transform::file_ast,
     },
@@ -143,6 +143,21 @@ where
 
     let mut id_iter = synthetic_ids.iter();
     transform_ty_with_resolutions(ty, &mut id_iter, resolutions, var_map, get_item_path)
+}
+
+/// Wrap an implementing type with the receiver prefix from a `*self` or `*mut self` parameter.
+///
+/// Given the implementing type (e.g., `Box['a]`) and the receiver kind from the parsed
+/// parameter, produces the full self type:
+/// - `None` → `Box['a]` (value receiver)
+/// - `Some(Ref)` → `*Box['a]` (shared reference)
+/// - `Some(MutRef)` → `*mut Box['a]` (mutable reference)
+pub fn apply_receiver(implementing_ty: Ty, receiver: Option<ReceiverKind>) -> Ty {
+    match receiver {
+        None => implementing_ty,
+        Some(ReceiverKind::Ref) => Ty::ref_of(implementing_ty),
+        Some(ReceiverKind::MutRef) => Ty::mut_ref_of(implementing_ty),
+    }
 }
 
 /// Recursively transforms a type, consuming synthetic IDs in the same order as `Ty::flatten()`.
@@ -411,12 +426,14 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
         return None;
     }
 
-    let file_result = file_ast(db, def_id.file);
+    // Use parse_file instead of file_ast to avoid cycle:
+    // file_ast -> transform -> def_ty -> annotated_scheme -> file_ast
+    let parse_result = parse_file(db, def_id.file);
     let mapping = mapped_def_types(db, def_id);
     let resolutions = name_resolutions(db, def_id.file);
 
     // Find the DefHeader for this definition
-    let def_header = file_result.defs.iter().find(|h| h.def_id == def_id)?;
+    let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
     // Get parent var_map if this is a nested definition (trait method, impl method)
     let parent_var_map = get_parent_var_map(db, def_id);
@@ -430,8 +447,19 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
         def_path(db, target.clone()).expect("DefTarget should have a valid path")
     };
 
+    // For methods with a parent impl/trait, compute the implementing type so
+    // bare `self` parameters can be annotated with the correct resolved type.
+    let self_ty = compute_self_ty_for_method(
+        db,
+        def_id,
+        &parse_result,
+        &resolutions,
+        &combined_var_map,
+        get_item_path,
+    );
+
     // Find the AST node for this definition
-    let def_ast = find_def_ast(&file_result.ast.decls, def_header.root_node)?;
+    let def_ast = find_def_ast(&parse_result.ast.decls, def_header.root_node)?;
 
     let mut scheme = compute_scheme_resolved(
         def_ast,
@@ -439,6 +467,7 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
         &resolutions,
         get_item_path,
         status,
+        self_ty,
     )?;
 
     // For methods inside impl/trait blocks, include the parent's where-clause predicates.
@@ -449,6 +478,48 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
     }
 
     Some(scheme)
+}
+
+/// Compute the resolved implementing type for a method's bare `self` parameter.
+///
+/// For `impl object T`: returns `T` (resolved).
+/// For `impl Trait[T, ...]`: returns `T` (first type arg, resolved).
+/// For `trait Foo['a]`: returns the trait's own type (resolved).
+/// For top-level functions: returns `None`.
+fn compute_self_ty_for_method<F>(
+    db: &Database,
+    def_id: DefId,
+    parse_result: &ParseResult,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Option<Ty>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    let header = def_header(db, def_id)?;
+    let parent_def_id = header.parent?;
+    let parent_header = def_header(db, parent_def_id)?;
+    let parent_ast = find_def_ast(&parse_result.ast.decls, parent_header.root_node)?;
+
+    match &parent_ast.value {
+        Decl::Impl(im) => {
+            let resolved_impl_ty =
+                apply_type_resolutions(&im.ty, resolutions, var_map, get_item_path);
+            if im.is_object {
+                Some(resolved_impl_ty)
+            } else {
+                resolved_impl_ty.type_argument_at(0).cloned()
+            }
+        }
+        Decl::Trait(tr) => Some(apply_type_resolutions(
+            &tr.ty,
+            resolutions,
+            var_map,
+            get_item_path,
+        )),
+        _ => None,
+    }
 }
 
 /// Get the parent definition's var_map for nested definitions.
@@ -587,22 +658,31 @@ where
 }
 
 /// Compute the type scheme for a declaration with resolved types.
+///
+/// `self_ty` is the pre-resolved implementing type for bare `self` parameters
+/// (from the parent impl/trait). Pass `None` for top-level functions.
 fn compute_scheme_resolved<F>(
     decl: &Node<Decl>,
     var_map: &HashMap<TypeParamId, TyVar>,
     resolutions: &HashMap<NodeId, Resolution>,
     get_item_path: F,
     status: SignatureStatus,
+    self_ty: Option<Ty>,
 ) -> Option<TyScheme>
 where
     F: Fn(&DefTarget) -> ItemPath + Copy,
 {
     match &decl.value {
-        Decl::Func(func) => {
-            compute_func_scheme_resolved(&func.sig, var_map, resolutions, get_item_path, status)
-        }
+        Decl::Func(func) => compute_func_scheme_resolved(
+            &func.sig,
+            var_map,
+            resolutions,
+            get_item_path,
+            status,
+            self_ty,
+        ),
         Decl::FnSig(sig) => {
-            compute_func_scheme_resolved(sig, var_map, resolutions, get_item_path, status)
+            compute_func_scheme_resolved(sig, var_map, resolutions, get_item_path, status, self_ty)
         }
         // For non-function definitions, we don't compute schemes here
         // (structs/traits/impls have their own type representations)
@@ -611,12 +691,17 @@ where
 }
 
 /// Compute the type scheme for a function signature with resolved types.
+///
+/// `self_ty` is the pre-resolved implementing type for bare `self` parameters.
+/// When a param is named `self`, has no type annotation, and `self_ty` is `Some`,
+/// the self type (with receiver applied) is used instead.
 fn compute_func_scheme_resolved<F>(
     sig: &FuncSig,
     var_map: &HashMap<TypeParamId, TyVar>,
     resolutions: &HashMap<NodeId, Resolution>,
     get_item_path: F,
     status: SignatureStatus,
+    self_ty: Option<Ty>,
 ) -> Option<TyScheme>
 where
     F: Fn(&DefTarget) -> ItemPath + Copy,
@@ -624,9 +709,14 @@ where
     // Extract and resolve parameter types
     let mut param_tys = Vec::with_capacity(sig.params.len());
     for param in &sig.params {
-        let ty = param.value.parsed_ty().map(|parsed_scheme| {
+        let ty = if let Some(parsed_scheme) = param.value.parsed_ty() {
             apply_type_resolutions_to_scheme(parsed_scheme, resolutions, var_map, get_item_path)
-        })?;
+        } else if param.value.name().is_self() {
+            let implementing_ty = self_ty.as_ref()?.clone();
+            apply_receiver(implementing_ty, param.value.receiver())
+        } else {
+            return None;
+        };
         param_tys.push(ty);
     }
 
@@ -2143,6 +2233,156 @@ impl object Foo {
         assert!(
             scheme.is_some(),
             "Bare self in impl method should produce a scheme (self is implicitly typed)"
+        );
+    }
+
+    #[test]
+    fn annotated_scheme_bare_self_in_generic_impl_uses_schema_vars() {
+        // Given: impl Clone[list['a]] with bare `self`
+        // The self param should be annotated as `list[?s0]` (schema var),
+        // matching the return type's `?s0` — NOT the parsed user var `'a`.
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+trait Clone['a] {
+    fn clone(self: *'a) -> 'a
+}
+
+struct Box['a] { val: 'a }
+
+impl Clone[Box['a]] {
+    fn clone(self) -> Box['a] => Box { val: self.val }
+}
+"#
+            .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the clone method inside the impl (not the trait)
+        let clone_def = parse_result
+            .defs
+            .iter()
+            .find(|d| {
+                d.name == "clone"
+                    && d.parent.map_or(false, |parent_id| {
+                        parse_result
+                            .defs
+                            .iter()
+                            .any(|p| p.def_id == parent_id && matches!(p.kind, DefKind::Impl))
+                    })
+            })
+            .expect("should find clone method in impl block");
+
+        let scheme = annotated_scheme(&db, clone_def.def_id)
+            .expect("Should return a scheme for impl method with bare self");
+
+        // The scheme type should be Func([self_ty], ret_ty)
+        let (param_tys, ret_ty) = match &scheme.ty {
+            Ty::Func(params, ret) => (params, ret.as_ref()),
+            other => panic!("Expected Func type, got: {:?}", other),
+        };
+
+        assert_eq!(param_tys.len(), 1, "clone should have 1 param (self)");
+
+        // The self param type should be Box[?s0] (with a schema var)
+        // and the return type should be Box[?s0] (same schema var).
+        // If the bug exists, self would have Box['a] (parsed var) while
+        // return has Box[?s0] (schema var).
+        let self_ty = &param_tys[0];
+        assert_eq!(
+            self_ty, ret_ty,
+            "Self param type and return type should use the same schema vars.\n  self: {:?}\n  ret:  {:?}",
+            self_ty, ret_ty,
+        );
+    }
+
+    #[test]
+    fn annotated_scheme_bare_self_in_trait_impl_matches_trait_receiver() {
+        // Given: trait Clone['a] with `fn clone(self: *'a) -> 'a`
+        //        impl Clone[Box['a]] with `fn clone(*self) -> Box['a]`
+        // The `*self` prefix produces `*Box['a]` (shared ref to implementing type).
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        FileSource::new(
+            &db,
+            file_id,
+            r#"
+trait Clone['a] {
+    fn clone(self: *'a) -> 'a
+}
+
+struct Box['a] { val: 'a }
+
+impl Clone[Box['a]] {
+    fn clone(*self) -> Box['a] => Box { val: self.val }
+}
+"#
+            .to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+
+        // Find the clone method inside the impl (not the trait)
+        let clone_def = parse_result
+            .defs
+            .iter()
+            .find(|d| {
+                d.name == "clone"
+                    && d.parent.map_or(false, |parent_id| {
+                        parse_result
+                            .defs
+                            .iter()
+                            .any(|p| p.def_id == parent_id && matches!(p.kind, DefKind::Impl))
+                    })
+            })
+            .expect("should find clone method in impl block");
+
+        let scheme = annotated_scheme(&db, clone_def.def_id)
+            .expect("Should return a scheme for impl method with *self");
+
+        // The scheme type should be Func([self_ty], ret_ty)
+        let (param_tys, _ret_ty) = match &scheme.ty {
+            Ty::Func(params, ret) => (params, ret.as_ref()),
+            other => panic!("Expected Func type, got: {:?}", other),
+        };
+
+        assert_eq!(param_tys.len(), 1, "clone should have 1 param (self)");
+
+        // The self param type should be *Box[?s0] — a shared reference to
+        // the implementing type, produced by the `*self` receiver prefix.
+        let self_ty = &param_tys[0];
+        assert!(
+            matches!(self_ty, Ty::Ref(_)),
+            "*self in trait impl should produce a Ref type, got: {:?}",
+            self_ty,
         );
     }
 

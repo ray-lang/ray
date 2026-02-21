@@ -20,10 +20,10 @@ use ray_core::{
 };
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefHeader, DefKind},
+    def::{DefHeader, DefId},
     file_id::FileId,
     node_id::NodeId,
-    pathlib::{FilePath, ItemPath},
+    pathlib::FilePath,
     resolution::{DefTarget, Resolution},
     span::{Source, parsed::Parsed},
     ty::Ty,
@@ -32,10 +32,10 @@ use ray_typing::types::TyScheme;
 
 use crate::{
     queries::{
-        defs::{def_header, def_path},
+        defs::{def_path, def_ty},
         parse::parse_file,
         resolve::{file_scope, name_resolutions},
-        types::apply_type_resolutions,
+        types::{apply_receiver, apply_type_resolutions},
     },
     query::{Database, Query},
 };
@@ -249,13 +249,17 @@ fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
         Expr::ScopedAccess(scoped_access) => {
             // Convert Name to Type when the LHS resolves to a type definition.
             // This handles parameterized types like `T[...]::method` where T is parsed as Name.
-            if let Expr::Name(name) = &scoped_access.lhs.value {
+            if let Expr::Name(_) = &scoped_access.lhs.value {
                 let name_node_id = scoped_access.lhs.id;
                 if let Some(Resolution::Def(def_target)) = ctx.resolutions.get(&name_node_id) {
-                    if is_type_def(ctx.db, def_target) {
-                        let item_path: ItemPath = (&name.path).into();
-                        let lhs_src = ctx.source_map.get(&scoped_access.lhs);
-                        scoped_access.lhs.value = Expr::Type(make_type_expr(item_path, lhs_src));
+                    let lhs_src = ctx.source_map.get(&scoped_access.lhs);
+                    if let Some(ty) = resolve_type_expr(def_target, &lhs_src, ctx) {
+                        scoped_access.lhs.value = Expr::Type(make_type_expr(
+                            ty,
+                            lhs_src,
+                            ctx.source_map,
+                            name_node_id.owner,
+                        ));
                     }
                 }
             }
@@ -268,13 +272,13 @@ fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
             // method names. We use the resolutions to find the type boundary.
             if segments.len() >= 2 {
                 // Find the type boundary: the last segment that has a resolution
-                // pointing to a type definition.
-                let mut type_boundary_idx: Option<usize> = None;
+                // pointing to a type definition (one that has a def_ty).
+                let mut type_boundary: Option<(usize, DefTarget)> = None;
 
                 for (i, segment) in segments.iter().enumerate() {
                     if let Some(Resolution::Def(def_target)) = ctx.resolutions.get(&segment.id) {
-                        if is_type_def(ctx.db, def_target) {
-                            type_boundary_idx = Some(i);
+                        if def_ty(ctx.db, def_target.clone()).is_some_and(|ty| ty.is_nominal()) {
+                            type_boundary = Some((i, def_target.clone()));
                             // Don't break - keep looking for the last type resolution
                             // (in case there are nested types, though rare)
                         }
@@ -283,33 +287,30 @@ fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
 
                 // Also check file_scope for the first segment (local types like `Counter::create`)
                 // Name resolution may have resolved this, but let's be sure
-                if type_boundary_idx.is_none() {
+                if type_boundary.is_none() {
                     let first_name = &segments[0].value;
                     let scope = file_scope(ctx.db, ctx.file_id);
                     if let Some(def_target) = scope.get(first_name) {
-                        if is_type_def(ctx.db, def_target) {
-                            type_boundary_idx = Some(0);
+                        if def_ty(ctx.db, def_target.clone()).is_some_and(|ty| ty.is_nominal()) {
+                            type_boundary = Some((0, def_target.clone()));
                         }
                     }
                 }
 
                 // If we found a type boundary and there's at least one segment after it
                 // (the method name), convert to ScopedAccess
-                if let Some(type_idx) = type_boundary_idx {
+                if let Some((type_idx, def_target)) = type_boundary {
                     if type_idx + 1 < segments.len() {
-                        // Extract data before borrowing expr
-                        let type_path_str = segments[..=type_idx]
-                            .iter()
-                            .map(|s| s.value.as_str())
-                            .collect::<Vec<_>>()
-                            .join("::");
                         let type_node_id = segments[type_idx].id;
                         let member_name = segments[type_idx + 1].value.clone();
                         let member_node_id = segments[type_idx + 1].id;
 
-                        let item_path = ItemPath::from(type_path_str.as_str());
                         let expr_src = ctx.source_map.get(expr);
-                        let parsed_ty = make_type_expr(item_path, expr_src);
+                        let Some(ty) = resolve_type_expr(&def_target, &expr_src, ctx) else {
+                            return;
+                        };
+                        let parsed_ty =
+                            make_type_expr(ty, expr_src, ctx.source_map, type_node_id.owner);
 
                         // Use the type segment's NodeId for the LHS type expression
                         let lhs_node = Node::with_id(type_node_id, Expr::Type(parsed_ty));
@@ -329,27 +330,73 @@ fn transform_expr(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>) {
                 }
             }
         }
+        Expr::Name(_) => {
+            // Convert Name to Type when the name resolves to a type-level definition
+            // (struct, trait, or primitive). This handles type names in expression
+            // position, e.g. `alloc(IOVec, 1)` or `sizeof(int)`.
+            if let Some(Resolution::Def(def_target)) = ctx.resolutions.get(&node_id) {
+                if let Some(ty) = resolve_type_expr(def_target, &src, ctx) {
+                    expr.value = Expr::Type(make_type_expr(ty, src, ctx.source_map, node_id.owner));
+                }
+            }
+        }
         _ => {}
     }
 }
 
-/// Check if a DefTarget refers to a type definition (struct or trait).
-fn is_type_def(db: &Database, def_target: &DefTarget) -> bool {
-    match def_target {
-        DefTarget::Workspace(def_id) => def_header(db, *def_id)
-            .map(|h| matches!(h.kind, DefKind::Struct | DefKind::Trait))
-            .unwrap_or(false),
-        DefTarget::Library(_) => true,
-        DefTarget::Primitive(_) => true,
-        DefTarget::Module(_) => false,
+/// Resolve a DefTarget to a nominal Ty suitable for use as a type expression.
+///
+/// Returns `Some(ty)` if the def is a type-level definition (struct, trait, primitive).
+/// Emits an error and returns `None` if the type has unspecified type parameters
+/// (e.g., bare `dict` when `dict['k, 'v]` has two type params).
+fn resolve_type_expr(
+    def_target: &DefTarget,
+    src: &Source,
+    ctx: &mut TransformContext<'_>,
+) -> Option<Ty> {
+    let ty = def_ty(ctx.db, def_target.clone())?;
+    if !ty.is_nominal() {
+        return None;
     }
+
+    // Reject generic types used without explicit type arguments
+    if let Ty::Proj(path, args) = &ty {
+        if !args.is_empty() {
+            ctx.errors.push(RayError {
+                msg: format!(
+                    "type `{}` has {} type parameter(s) that must be specified explicitly",
+                    path,
+                    args.len()
+                ),
+                src: vec![src.clone()],
+                kind: RayErrorKind::Type,
+                context: Some("type expression".to_string()),
+            });
+            return None;
+        }
+    }
+
+    Some(ty)
 }
 
-/// Create a Parsed<TyScheme> for a type expression from an ItemPath and source.
-fn make_type_expr(item_path: ItemPath, src: Source) -> Parsed<TyScheme> {
-    let ty = Ty::Const(item_path);
+/// Create a Parsed<TyScheme> for a type expression from a resolved Ty and source.
+///
+/// Creates a synthetic NodeId as `root_id` so that downstream queries
+/// (`expr_type_refs`, `resolved_ty`) and codegen can locate this type.
+/// The `owner` DefId is needed to create the synthetic NodeId in the correct scope.
+fn make_type_expr(
+    ty: Ty,
+    src: Source,
+    source_map: &mut SourceMap,
+    owner: DefId,
+) -> Parsed<TyScheme> {
+    let _guard = NodeId::resume_def(owner);
+    let root_id = NodeId::new();
+    source_map.set_src_id(root_id, src.clone());
     let ty_scheme = TyScheme::from_mono(ty);
-    Parsed::new(ty_scheme, src)
+    let mut parsed = Parsed::new(ty_scheme, src);
+    parsed.set_synthetic_ids(vec![root_id]);
+    parsed
 }
 
 /// Recursively transform child expressions.
@@ -573,7 +620,10 @@ fn annotate_impl_self_params(
 
 /// Annotate a function signature's first parameter with a type if it's named
 /// `self` and missing an annotation.
-fn annotate_self_param_if_missing(sig: &mut FuncSig, self_ty: &Ty, srcmap: &SourceMap) {
+///
+/// The final self type is `apply_receiver(implementing_ty, receiver)`, where
+/// `receiver` comes from the parsed `*self` / `*mut self` prefix.
+fn annotate_self_param_if_missing(sig: &mut FuncSig, implementing_ty: &Ty, srcmap: &SourceMap) {
     let Some(first) = sig.params.first_mut() else {
         return;
     };
@@ -588,9 +638,11 @@ fn annotate_self_param_if_missing(sig: &mut FuncSig, self_ty: &Ty, srcmap: &Sour
         return;
     }
 
-    // Create a Parsed<TyScheme> with the trait's self type
+    let receiver = first.value.receiver();
+    let self_ty = apply_receiver(implementing_ty.clone(), receiver);
+
     let param_span = srcmap.span_of(first);
-    let ty_scheme = TyScheme::from_mono(self_ty.clone());
+    let ty_scheme = TyScheme::from_mono(self_ty);
     let parsed_ty = Parsed::new(
         ty_scheme,
         Source {

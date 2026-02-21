@@ -573,10 +573,16 @@ impl Ty {
     }
 
     pub fn is_func(&self) -> bool {
-        match &self {
-            Ty::Func(..) => true,
-            _ => false,
-        }
+        matches!(self, Ty::Func(..))
+    }
+
+    /// Returns true if this is a nominal type (struct, trait, primitive).
+    ///
+    /// Nominal types are `Ty::Const` (zero type args) and `Ty::Proj` (with type args).
+    /// This is used to distinguish type-level definitions from value-level ones
+    /// (functions, bindings) when a name appears in expression position.
+    pub fn is_nominal(&self) -> bool {
+        matches!(self, Ty::Const(_) | Ty::Proj(_, _))
     }
 
     #[inline(always)]

@@ -30,7 +30,10 @@ use crate::{
         parse::{doc_comment, parse_file, parse_file_raw},
         resolve::{name_resolutions, resolve_builtin},
         typecheck::def_scheme,
-        types::{apply_type_resolutions, apply_type_resolutions_to_scheme, mapped_def_types},
+        types::{
+            annotated_scheme, apply_type_resolutions, apply_type_resolutions_to_scheme,
+            mapped_def_types,
+        },
         workspace::WorkspaceSnapshot,
     },
     query::{Database, Query},
@@ -1031,6 +1034,58 @@ fn extract_library_trait(db: &Database, lib_def_id: &LibraryDefId) -> Option<Tra
 
     // Look up the trait directly by LibraryDefId
     lib_data.traits.get(lib_def_id).cloned()
+}
+
+/// Returns the type of a definition as written by the user.
+///
+/// This provides a unified way to get the `Ty` for any definition regardless
+/// of its kind. The returned type is the *declared* type, not an inferred one.
+///
+/// - Primitives: `Ty::Const(path)` (e.g., `int`, `bool`)
+/// - Structs: the nominal type from the struct definition (e.g., `IOVec` or `list['a]`)
+/// - Traits: the nominal type from the trait definition
+/// - Functions/methods: the function type from the annotated signature
+/// - Annotated bindings: the annotated type
+/// - Modules, unannotated bindings: `None`
+#[query]
+pub fn def_ty(db: &Database, target: DefTarget) -> Option<Ty> {
+    match target {
+        DefTarget::Primitive(path) => Some(Ty::Const(path)),
+        DefTarget::Module(_) => None,
+        DefTarget::Workspace(def_id) => {
+            let header = def_header(db, def_id)?;
+            match header.kind {
+                DefKind::Struct => {
+                    Some(struct_def(db, DefTarget::Workspace(def_id))?.ty.ty.clone())
+                }
+                DefKind::Trait => Some(trait_def(db, DefTarget::Workspace(def_id))?.ty.clone()),
+                DefKind::Function { .. } | DefKind::Method => {
+                    Some(annotated_scheme(db, def_id)?.ty)
+                }
+                DefKind::Binding {
+                    annotated: true, ..
+                }
+                | DefKind::AssociatedConst { annotated: true } => {
+                    Some(annotated_scheme(db, def_id)?.ty)
+                }
+                _ => None,
+            }
+        }
+        DefTarget::Library(ref lib_def_id) => {
+            // Try struct
+            if let Some(sd) = struct_def(db, target.clone()) {
+                return Some(sd.ty.ty.clone());
+            }
+            // Try trait
+            if let Some(td) = trait_def(db, target.clone()) {
+                return Some(td.ty.clone());
+            }
+            // Fall back to library scheme (functions, etc.)
+            let lib_data = library_data(db, lib_def_id.module.clone())?;
+            let scheme = lib_data.schemes.get(lib_def_id)?;
+            Some(scheme.ty.clone())
+        }
+    }
 }
 
 /// Look up all traits

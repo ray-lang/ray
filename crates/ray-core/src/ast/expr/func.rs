@@ -16,12 +16,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::{Expr, Missing, Modifier, Name, Node, TypeParams};
 
+/// The receiver kind for a `self` parameter prefix.
+///
+/// `*self` is `Ref`, `*mut self` is `MutRef`. Bare `self` has no receiver
+/// (represented as `None` in `FnParam::Name::receiver`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReceiverKind {
+    Ref,
+    MutRef,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnParam {
     Name {
         name: Name,
         is_move: bool,
         is_noescape: bool,
+        receiver: Option<ReceiverKind>,
     },
     DefaultValue(Box<Node<FnParam>>, Box<Node<Expr>>),
     Missing {
@@ -37,13 +48,17 @@ impl std::fmt::Display for FnParam {
                 name,
                 is_move,
                 is_noescape,
+                receiver,
             } => {
                 if *is_move {
-                    write!(f, "move {}", name)
+                    write!(f, "move ")?;
                 } else if *is_noescape {
-                    write!(f, "noescape {}", name)
-                } else {
-                    write!(f, "{}", name)
+                    write!(f, "noescape ")?;
+                }
+                match receiver {
+                    Some(ReceiverKind::Ref) => write!(f, "*{}", name),
+                    Some(ReceiverKind::MutRef) => write!(f, "*mut {}", name),
+                    None => write!(f, "{}", name),
                 }
             }
             FnParam::DefaultValue(p, v) => write!(f, "{} = {}", p, v),
@@ -108,6 +123,14 @@ impl FnParam {
             FnParam::Name { is_noescape, .. } => *is_noescape,
             FnParam::DefaultValue(p, _) => p.value.is_noescape(),
             FnParam::Missing { .. } => false,
+        }
+    }
+
+    pub fn receiver(&self) -> Option<ReceiverKind> {
+        match self {
+            FnParam::Name { receiver, .. } => *receiver,
+            FnParam::DefaultValue(p, _) => p.value.receiver(),
+            FnParam::Missing { .. } => None,
         }
     }
 }

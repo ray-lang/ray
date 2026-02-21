@@ -10,7 +10,7 @@ export list with list
 export hash with Hash
 export int with Int, SignedInt, UnsignedInt
 export iter with Iter, Iterable
-export intrinsics with sizeof
+export intrinsics with sizeof, alloc
 export mem with malloc
 export ops with *
 export range with range

@@ -895,6 +895,7 @@ mod tests {
             name: Name::new("x"),
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
@@ -991,6 +992,7 @@ mod tests {
             name: Name::new("x"),
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
         let body_name = Node::new(Expr::Name(Name::new("x")));
         let func_body = Node::new(Expr::Block(Block {
@@ -1538,6 +1540,7 @@ mod tests {
             name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         let mut sig = make_func_sig("test::f");
@@ -1850,6 +1853,7 @@ mod tests {
             name: other_name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         // Create method signature
@@ -2320,6 +2324,7 @@ mod tests {
             name: x_name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         // Create function
@@ -2408,6 +2413,7 @@ mod tests {
             name: x_name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         // Create function with type parameter
@@ -2823,6 +2829,7 @@ mod tests {
             name: buf_name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         // Create extern function signature
@@ -2940,6 +2947,7 @@ mod tests {
             name: arr_name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         // Create extern function signature with type params
@@ -3015,6 +3023,7 @@ mod tests {
             name: x_name,
             is_move: false,
             is_noescape: false,
+            receiver: None,
         });
 
         // Create extern function signature with type params
