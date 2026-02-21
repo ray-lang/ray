@@ -219,6 +219,23 @@ pub(crate) fn get_library_exports(
     result
 }
 
+/// Look up a single exported name from a module (workspace or library).
+///
+/// Used by the LSP to resolve selective import/export names to their definitions.
+pub fn lookup_module_export(db: &Database, module: &ModulePath, name: &str) -> Option<DefTarget> {
+    let libraries = db.get_input::<LoadedLibraries>(());
+
+    // Try workspace first
+    let index = module_def_index(db, module.clone());
+    if let Some(Ok(item)) = index.get(name) {
+        return exported_item_to_def_target(item);
+    }
+
+    // Try library
+    let lib_exports = get_library_exports(&libraries, module);
+    lib_exports.get(name).cloned()
+}
+
 /// Convert ExportedItem to DefTarget if possible.
 fn exported_item_to_def_target(item: &ExportedItem) -> Option<DefTarget> {
     match item {

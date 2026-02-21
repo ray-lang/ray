@@ -37,11 +37,13 @@ use ray_frontend::queries::{
     diagnostics::file_diagnostics,
     display::{def_display_info, display_library_ty, display_ty},
     exports::{ExportedItem, module_def_index},
+    imports::{ImportExportTarget, import_export_targets},
     inlay_hints::{InlayHintDataKind, inlay_hints as query_inlay_hints},
     items::associated_items,
     locations::{self, find_at_position},
     methods::methods_for_type,
-    resolve::name_resolutions,
+    parse::parse_file_raw,
+    resolve::{lookup_module_export, name_resolutions},
     semantic_tokens::semantic_tokens as query_semantic_tokens,
     symbols::symbol_targets,
     typecheck::{def_scheme, ty_of},
@@ -51,7 +53,7 @@ use ray_frontend::query::Database;
 use ray_shared::{
     def::DefKind,
     file_id::FileId,
-    pathlib::{FilePath, RayPaths},
+    pathlib::{FilePath, ModulePath, RayPaths},
     resolution::{DefTarget, Resolution},
     scope::ScopeEntry,
     span::Span,
@@ -329,6 +331,12 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
                     position.character as usize,
                 )?;
 
+                // Check import/export targets first
+                let ie_targets = import_export_targets(db, file_id);
+                if let Some(ie_target) = ie_targets.get(&node_id) {
+                    return resolve_import_export_location(db, ie_target);
+                }
+
                 let targets = symbol_targets(db, node_id);
                 if targets.is_empty() {
                     return None;
@@ -526,6 +534,14 @@ impl tower_lsp::LanguageServer for RayLanguageServer {
 
                 // Get the span for the hover range
                 let span = locations::span_of(db, node_id);
+
+                // Check import/export targets first
+                let ie_targets = import_export_targets(db, file_id);
+                if let Some(ie_target) = ie_targets.get(&node_id) {
+                    let content = hover_import_export(db, ie_target);
+                    let range = span.map(span_to_range);
+                    return content.map(|c| (c, range));
+                }
 
                 // Look up what this node resolves to
                 let resolutions = name_resolutions(db, file_id);
@@ -1007,10 +1023,87 @@ fn format_hover_markdown(signatures: &[String], doc: Option<&str>) -> String {
         .collect();
 
     if let Some(doc) = doc {
+        parts.push("---".to_string());
         parts.push(doc.to_string());
     }
 
-    parts.join("\n\n---\n\n")
+    parts.join("\n\n")
+}
+
+/// Resolve an import/export target to LSP locations for go-to-definition.
+fn resolve_import_export_location(
+    db: &Database,
+    target: &ImportExportTarget,
+) -> Option<Vec<Location>> {
+    match target {
+        ImportExportTarget::Module(mp) => {
+            let workspace = db.get_input::<WorkspaceSnapshot>(());
+            let module_info = workspace.module_info(mp)?;
+            let first_file = module_info.files.first()?;
+            let metadata = db.get_input::<FileMetadata>(*first_file);
+            let uri = filepath_to_uri(&metadata.path)?;
+            let zero_span = Span::default();
+            Some(vec![Location {
+                uri,
+                range: span_to_range(zero_span),
+            }])
+        }
+        ImportExportTarget::ModuleName { module, name } => {
+            let def_target = lookup_module_export(db, module, name)?;
+            let record = definition_record(db, def_target)?;
+            let loc = record.source_location?;
+            match loc {
+                SourceLocation::Workspace { file, span } => {
+                    let metadata = db.get_input::<FileMetadata>(file);
+                    let uri = filepath_to_uri(&metadata.path)?;
+                    Some(vec![Location {
+                        uri,
+                        range: span_to_range(span),
+                    }])
+                }
+                SourceLocation::Library { filepath, span } => {
+                    let uri = filepath_to_uri(&filepath)?;
+                    Some(vec![Location {
+                        uri,
+                        range: span_to_range(span),
+                    }])
+                }
+            }
+        }
+    }
+}
+
+/// Generate hover content for an import/export target.
+fn hover_import_export(db: &Database, target: &ImportExportTarget) -> Option<String> {
+    match target {
+        ImportExportTarget::Module(mp) => {
+            let doc = module_doc_comment(db, mp);
+            Some(format_hover_markdown(
+                &[format!("module {}", mp)],
+                doc.as_deref(),
+            ))
+        }
+        ImportExportTarget::ModuleName { module, name } => {
+            let def_target = lookup_module_export(db, module, name)?;
+            def_display_info(db, def_target)
+                .map(|info| format_hover_markdown(&info.signatures, info.doc.as_deref()))
+        }
+    }
+}
+
+/// Get the doc comment for a module by checking its files.
+///
+/// Returns the first `//!` doc comment found across the module's files.
+fn module_doc_comment(db: &Database, mp: &ModulePath) -> Option<String> {
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+    let module_info = workspace.module_info(mp)?;
+    for &file_id in &module_info.files {
+        let parse_result = parse_file_raw(db, file_id);
+        if let Some(ref doc) = parse_result.ast.doc_comment {
+            return Some(doc.clone());
+        }
+    }
+    None
 }
 
 /// Get the display type string for a definition target.

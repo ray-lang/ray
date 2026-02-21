@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use ray_core::ast::{Decl, Import, ImportKind};
+use ray_core::ast::{Decl, Export, ExportKind, Import, ImportKind};
 use ray_query_macros::query;
-use ray_shared::{file_id::FileId, pathlib::ModulePath};
+use ray_shared::{file_id::FileId, node_id::NodeId, pathlib::ModulePath};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -185,6 +185,125 @@ fn inject_testing_import(
     }
 }
 
+/// What a NodeId in an import/export statement points to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportExportTarget {
+    /// A module path node (e.g., `core::io` in `import core::io`).
+    Module(ModulePath),
+    /// A specific name from a module (e.g., `read` in `import core::io with read`).
+    ModuleName { module: ModulePath, name: String },
+}
+
+/// Build an index mapping NodeIds in import/export statements to their resolved targets.
+///
+/// For each import and export statement, maps:
+/// - The module path `Node<Path>` → `ImportExportTarget::Module(resolved_module_path)`
+/// - Each selective name `Node<Path>` → `ImportExportTarget::ModuleName { module, name }`
+///
+/// This is used by the LSP for hover and go-to-definition on import/export statements.
+#[query]
+pub fn import_export_targets(
+    db: &Database,
+    file_id: FileId,
+) -> HashMap<NodeId, ImportExportTarget> {
+    let mut targets = HashMap::new();
+
+    // Process imports
+    let imports = file_imports(db, file_id);
+    let resolved = resolved_imports(db, file_id);
+
+    for import in &imports {
+        collect_import_targets(import, &resolved, &mut targets);
+    }
+
+    // Process exports
+    let parse_result = parse_file_raw(db, file_id);
+    let reexports = crate::queries::exports::file_reexports(db, file_id);
+
+    for (export, reexport) in parse_result.ast.exports.iter().zip(reexports.iter()) {
+        collect_export_targets(export, reexport, &mut targets);
+    }
+
+    targets
+}
+
+/// Collect targets from a single import statement.
+fn collect_import_targets(
+    import: &Import,
+    resolved: &HashMap<String, Result<ResolvedImport, ImportError>>,
+    targets: &mut HashMap<NodeId, ImportExportTarget>,
+) {
+    match &import.kind {
+        ImportKind::Path(path_node) => {
+            let alias = path_node.value.to_short_name();
+            if let Some(Ok(resolved_import)) = resolved.get(&alias) {
+                targets.insert(
+                    path_node.id,
+                    ImportExportTarget::Module(resolved_import.module_path.clone()),
+                );
+            }
+        }
+        ImportKind::Names(path_node, name_nodes) => {
+            let alias = path_node.value.to_short_name();
+            if let Some(Ok(resolved_import)) = resolved.get(&alias) {
+                let mp = &resolved_import.module_path;
+                targets.insert(path_node.id, ImportExportTarget::Module(mp.clone()));
+                for name_node in name_nodes {
+                    let name = name_node.value.to_short_name();
+                    targets.insert(
+                        name_node.id,
+                        ImportExportTarget::ModuleName {
+                            module: mp.clone(),
+                            name,
+                        },
+                    );
+                }
+            }
+        }
+        ImportKind::Glob(path_node) => {
+            let alias = path_node.value.to_short_name();
+            if let Some(Ok(resolved_import)) = resolved.get(&alias) {
+                targets.insert(
+                    path_node.id,
+                    ImportExportTarget::Module(resolved_import.module_path.clone()),
+                );
+            }
+        }
+        ImportKind::CImport(_, _) | ImportKind::Incomplete => {}
+    }
+}
+
+/// Collect targets from a single export statement.
+fn collect_export_targets(
+    export: &Export,
+    reexport: &crate::queries::exports::ResolvedReExport,
+    targets: &mut HashMap<NodeId, ImportExportTarget>,
+) {
+    let mp = &reexport.module_path;
+    match &export.kind {
+        ExportKind::Path(path_node) => {
+            targets.insert(path_node.id, ImportExportTarget::Module(mp.clone()));
+        }
+        ExportKind::Names(path_node, name_nodes) => {
+            targets.insert(path_node.id, ImportExportTarget::Module(mp.clone()));
+            for name_node in name_nodes {
+                let name = name_node.value.to_short_name();
+                targets.insert(
+                    name_node.id,
+                    ImportExportTarget::ModuleName {
+                        module: mp.clone(),
+                        name,
+                    },
+                );
+            }
+        }
+        ExportKind::Glob(path_node) => {
+            targets.insert(path_node.id, ImportExportTarget::Module(mp.clone()));
+        }
+        ExportKind::Incomplete => {}
+    }
+}
+
 /// Resolve a list of imports against a workspace and loaded libraries.
 ///
 /// `current_module` is the module containing the imports, used to resolve `super`.
@@ -329,13 +448,17 @@ pub(crate) fn resolve_module_path(
 mod tests {
     use std::collections::HashMap;
 
-    use ray_core::ast::ImportKind;
+    use ray_core::ast::{ExportKind, ImportKind};
     use ray_shared::pathlib::{FilePath, ModulePath};
 
     use crate::{
         queries::{
-            imports::{ImportError, ImportNames, file_imports, file_no_core, resolved_imports},
+            imports::{
+                ImportError, ImportExportTarget, ImportNames, file_imports, file_no_core,
+                import_export_targets, resolved_imports,
+            },
             libraries::{LibraryData, LoadedLibraries},
+            parse::parse_file_raw,
             workspace::{CompilerOptions, FileMetadata, FileSource, WorkspaceSnapshot},
         },
         query::Database,
@@ -1360,6 +1483,395 @@ mod tests {
             resolved.module_path.to_string(),
             "mymod::utils::sub",
             "child resolution should take priority over sibling"
+        );
+    }
+
+    // =========================================================================
+    // Tests for import_export_targets
+    // =========================================================================
+
+    #[test]
+    fn import_export_targets_namespace_import() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
+        FileSource::new(&db, file_id, "import utils".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+        let imports = file_imports(&db, file_id);
+
+        assert_eq!(imports.len(), 1);
+        let ImportKind::Path(ref path_node) = imports[0].kind else {
+            panic!("Expected Path import");
+        };
+
+        let target = targets
+            .get(&path_node.id)
+            .expect("path node should have a target");
+        assert_eq!(
+            *target,
+            ImportExportTarget::Module(ModulePath::from("utils"))
+        );
+    }
+
+    #[test]
+    fn import_export_targets_selective_import() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
+        FileSource::new(&db, file_id, "import utils with helper, other".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+        let imports = file_imports(&db, file_id);
+
+        assert_eq!(imports.len(), 1);
+        let ImportKind::Names(ref path_node, ref name_nodes) = imports[0].kind else {
+            panic!("Expected Names import");
+        };
+
+        // Module path node maps to Module target
+        let path_target = targets
+            .get(&path_node.id)
+            .expect("path node should have a target");
+        assert_eq!(
+            *path_target,
+            ImportExportTarget::Module(ModulePath::from("utils"))
+        );
+
+        // Each name node maps to ModuleName target
+        assert_eq!(name_nodes.len(), 2);
+        let name0_target = targets
+            .get(&name_nodes[0].id)
+            .expect("first name node should have a target");
+        assert_eq!(
+            *name0_target,
+            ImportExportTarget::ModuleName {
+                module: ModulePath::from("utils"),
+                name: "helper".to_string(),
+            }
+        );
+
+        let name1_target = targets
+            .get(&name_nodes[1].id)
+            .expect("second name node should have a target");
+        assert_eq!(
+            *name1_target,
+            ImportExportTarget::ModuleName {
+                module: ModulePath::from("utils"),
+                name: "other".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn import_export_targets_glob_import() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
+        FileSource::new(&db, file_id, "import utils with *".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+        let imports = file_imports(&db, file_id);
+
+        assert_eq!(imports.len(), 1);
+        let ImportKind::Glob(ref path_node) = imports[0].kind else {
+            panic!("Expected Glob import");
+        };
+
+        let target = targets
+            .get(&path_node.id)
+            .expect("path node should have a target");
+        assert_eq!(
+            *target,
+            ImportExportTarget::Module(ModulePath::from("utils"))
+        );
+    }
+
+    #[test]
+    fn import_export_targets_unresolved_import_has_no_entry() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, file_id, "import nonexistent".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+
+        // Unresolved import should produce no targets
+        assert!(
+            targets.is_empty(),
+            "Unresolved import should not appear in targets"
+        );
+    }
+
+    #[test]
+    fn import_export_targets_export_path() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
+        let file_id =
+            workspace.add_file(FilePath::from("mymod/mod.ray"), ModulePath::from("mymod"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
+        FileSource::new(&db, file_id, "export utils".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymod/mod.ray"),
+            ModulePath::from("mymod"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+        let parse_result = parse_file_raw(&db, file_id);
+
+        assert_eq!(parse_result.ast.exports.len(), 1);
+        let ExportKind::Path(ref path_node) = parse_result.ast.exports[0].kind else {
+            panic!("Expected Path export");
+        };
+
+        let target = targets
+            .get(&path_node.id)
+            .expect("export path node should have a target");
+        assert_eq!(
+            *target,
+            ImportExportTarget::Module(ModulePath::from("utils"))
+        );
+    }
+
+    #[test]
+    fn import_export_targets_export_with_names() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
+        let file_id =
+            workspace.add_file(FilePath::from("mymod/mod.ray"), ModulePath::from("mymod"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
+        FileSource::new(&db, file_id, "export utils with helper".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymod/mod.ray"),
+            ModulePath::from("mymod"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+        let parse_result = parse_file_raw(&db, file_id);
+
+        assert_eq!(parse_result.ast.exports.len(), 1);
+        let ExportKind::Names(ref path_node, ref name_nodes) = parse_result.ast.exports[0].kind
+        else {
+            panic!("Expected Names export");
+        };
+
+        // Module path maps to Module target
+        let path_target = targets
+            .get(&path_node.id)
+            .expect("export path node should have a target");
+        assert_eq!(
+            *path_target,
+            ImportExportTarget::Module(ModulePath::from("utils"))
+        );
+
+        // Name node maps to ModuleName target
+        assert_eq!(name_nodes.len(), 1);
+        let name_target = targets
+            .get(&name_nodes[0].id)
+            .expect("export name node should have a target");
+        assert_eq!(
+            *name_target,
+            ImportExportTarget::ModuleName {
+                module: ModulePath::from("utils"),
+                name: "helper".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn import_export_targets_no_imports_or_exports() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, file_id, "fn main() {}".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+
+        assert!(targets.is_empty(), "No imports or exports means no targets");
+    }
+
+    #[test]
+    fn import_export_targets_multiple_imports() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let utils_file =
+            workspace.add_file(FilePath::from("utils/mod.ray"), ModulePath::from("utils"));
+        let io_file = workspace.add_file(
+            FilePath::from("std/io/mod.ray"),
+            ModulePath::from("std::io"),
+        );
+        let file_id = workspace.add_file(FilePath::from("main.ray"), ModulePath::from("main"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        setup_no_core(&db);
+
+        FileSource::new(&db, utils_file, "fn helper() {}".to_string());
+        FileMetadata::new(
+            &db,
+            utils_file,
+            FilePath::from("utils/mod.ray"),
+            ModulePath::from("utils"),
+        );
+        FileSource::new(&db, io_file, "fn read() {}".to_string());
+        FileMetadata::new(
+            &db,
+            io_file,
+            FilePath::from("std/io/mod.ray"),
+            ModulePath::from("std::io"),
+        );
+        FileSource::new(
+            &db,
+            file_id,
+            "import utils\nimport std::io with read".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let targets = import_export_targets(&db, file_id);
+        let imports = file_imports(&db, file_id);
+
+        assert_eq!(imports.len(), 2);
+
+        // First import: `import utils` (Path)
+        let ImportKind::Path(ref path_node0) = imports[0].kind else {
+            panic!("Expected Path import for utils");
+        };
+        assert_eq!(
+            *targets.get(&path_node0.id).unwrap(),
+            ImportExportTarget::Module(ModulePath::from("utils"))
+        );
+
+        // Second import: `import std::io with read` (Names)
+        let ImportKind::Names(ref path_node1, ref name_nodes1) = imports[1].kind else {
+            panic!("Expected Names import for std::io");
+        };
+        assert_eq!(
+            *targets.get(&path_node1.id).unwrap(),
+            ImportExportTarget::Module(ModulePath::from("std::io"))
+        );
+        assert_eq!(
+            *targets.get(&name_nodes1[0].id).unwrap(),
+            ImportExportTarget::ModuleName {
+                module: ModulePath::from("std::io"),
+                name: "read".to_string(),
+            }
         );
     }
 }
