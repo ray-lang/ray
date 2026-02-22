@@ -100,6 +100,10 @@ impl Path {
         self.name().unwrap().as_str() == "self"
     }
 
+    pub fn is_wildcard(&self) -> bool {
+        self.name().unwrap().as_str() == "_"
+    }
+
     pub fn as_str(&self) -> &str {
         self.parts
             .back()

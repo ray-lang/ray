@@ -98,6 +98,9 @@ pub fn validate_def(db: &Database, def_id: DefId) -> Vec<RayError> {
         DefKind::Struct => {
             validate_struct_fields(def_ast, &filepath, &mut errors);
         }
+        DefKind::Test => {
+            validate_mutability(def_ast, &filepath, &file_result.source_map, &mut errors);
+        }
         // Other definition kinds don't have special validation
         _ => {}
     }
@@ -311,7 +314,7 @@ impl MutabilityCtx {
     fn register_new_bindings(&mut self, pattern: &Node<Pattern>, is_mut: bool) {
         for node in pattern.paths() {
             let PathBinding { path, is_bindable } = node.value;
-            if is_bindable && self.is_mutable(path).is_none() {
+            if is_bindable && !path.is_wildcard() && self.is_mutable(path).is_none() {
                 self.register_name(path, is_mut);
             }
         }
@@ -376,8 +379,14 @@ fn validate_mutability(
             }
             WalkItem::Expr(expr) => match &expr.value {
                 Expr::Assign(assign) => {
-                    validate_assignment(assign, &ctx, filepath, srcmap, errors);
-                    ctx.register_new_bindings(&assign.lhs, assign.is_mut);
+                    if matches!(assign.lhs.value, Pattern::Some(_)) {
+                        // if-let bindings (e.g. `if some(x) = expr`) always
+                        // introduce fresh names — they shadow, never reassign.
+                        ctx.register_pattern(&assign.lhs, false);
+                    } else {
+                        validate_assignment(assign, &ctx, filepath, srcmap, errors);
+                        ctx.register_new_bindings(&assign.lhs, assign.is_mut);
+                    }
                 }
                 Expr::For(for_expr) => {
                     // For loops introduce a binding for the loop variable
@@ -415,7 +424,7 @@ fn validate_assignment(
 ) {
     for node in assign.lhs.paths() {
         let PathBinding { path, is_bindable } = node.value;
-        if !is_bindable {
+        if !is_bindable || path.is_wildcard() {
             continue;
         }
 
@@ -3128,5 +3137,143 @@ struct Bar { foo: *Foo }
                 );
             }
         }
+    }
+
+    #[test]
+    fn validate_def_error_for_reassign_immutable_in_test_block() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymod");
+        let file_id = workspace.add_file(FilePath::from("mymod/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+test "reassign" {
+    s = 1
+    s = 2
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymod/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let test_def = parse_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Test))
+            .expect("should find test def");
+
+        let errors = validate_def(&db, test_def.def_id);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.msg.contains("cannot assign to immutable")),
+            "Test block should detect immutable reassignment: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_no_error_for_if_let_shadowing() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymod");
+        let file_id = workspace.add_file(FilePath::from("mymod/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Two if-let bindings in the same scope with the same name should not
+        // produce a mutability error — each `some(x)` introduces a fresh binding.
+        let source = r#"
+struct S {}
+fn foo(a: S?, b: S?) -> S {
+    if some(v) = a {
+        return v
+    }
+    if some(v) = b {
+        return v
+    }
+    S {}
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymod/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let func_def = parse_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }))
+            .expect("should find func def");
+
+        let errors = validate_def(&db, func_def.def_id);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.msg.contains("cannot assign to immutable")),
+            "if-let bindings should not produce immutable reassignment errors: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_def_no_error_for_underscore_pattern() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymod");
+        let file_id = workspace.add_file(FilePath::from("mymod/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // Multiple uses of `_` as a discard binding should not error.
+        let source = r#"
+struct S {}
+fn foo(a: S?, b: S?) -> S {
+    if some(_) = a {
+        return S {}
+    }
+    if some(_) = b {
+        return S {}
+    }
+    S {}
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymod/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let func_def = parse_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }))
+            .expect("should find func def");
+
+        let errors = validate_def(&db, func_def.def_id);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.msg.contains("cannot assign to immutable")),
+            "Underscore bindings should not produce immutable reassignment errors: {:?}",
+            errors
+        );
     }
 }

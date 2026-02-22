@@ -3246,7 +3246,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     .type_argument_at(0)
                     .unwrap_or_else(|| panic!("expected list to have element type param: {}", ty));
 
-                let values_loc = ctx.local(Ty::ref_of(el_ty.clone()).into());
+                let values_loc = ctx.local(Ty::rawptr(el_ty.clone()).into());
                 let values_ptr = lir::Malloc::new(el_ty.clone().into(), lir::Atom::uptr(capacity));
                 ctx.set_local(values_loc, values_ptr.into());
 
@@ -3277,7 +3277,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         path: list_fqn.clone(),
                         ty: Ty::proj(list_fqn, vec![el_ty.clone()]).into(),
                         fields: vec![
-                            ("values".to_string(), Ty::ref_of(el_ty.clone()).into()),
+                            ("values".to_string(), Ty::rawptr(el_ty.clone()).into()),
                             ("len".to_string(), Ty::uint().into()),
                             ("capacity".to_string(), Ty::uint().into()),
                         ],
@@ -3394,7 +3394,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 // tmp.insert(k, v)
                 let insert_base = dict_base.append("insert");
                 let insert_ret = Ty::nilable(value_mono.clone());
-                let insert_recv_param = Ty::ref_of(dict_mono.clone());
+                let insert_recv_param = Ty::mut_ref_of(dict_mono.clone());
                 let insert_fn_ty = TyScheme::from_mono(Ty::func(
                     vec![
                         insert_recv_param.clone(),
@@ -3407,7 +3407,12 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 let recv_val: lir::Value = lir::Variable::Local(dict_loc).into();
                 let recv_var = ctx
-                    .maybe_coerce_receiver_arg(recv_val, &ty, &insert_recv_param, ReceiverMode::Ptr)
+                    .maybe_coerce_receiver_arg(
+                        recv_val,
+                        &ty,
+                        &insert_recv_param,
+                        ReceiverMode::MutPtr,
+                    )
                     .unwrap_or_else(|| {
                         panic!(
                             "could not build receiver arg for dict.insert: dict_ty={}",
@@ -3809,7 +3814,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     ctx.block().markers_mut().push(lir::ControlMarker::Loop);
 
                     let next_callee_ty = TyScheme::from_mono(Ty::func(
-                        vec![Ty::ref_of(it_mono.clone())],
+                        vec![Ty::mut_ref_of(it_mono.clone())],
                         next_ret_mono.clone(),
                     ));
                     let next_call_loc = ctx
@@ -4136,7 +4141,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 // tmp.insert(x)
                 let insert_base = set_base.append("insert");
-                let insert_recv_param = Ty::ref_of(set_mono.clone());
+                let insert_recv_param = Ty::mut_ref_of(set_mono.clone());
                 let insert_fn_ty = TyScheme::from_mono(Ty::func(
                     vec![insert_recv_param.clone(), elem_mono.clone()],
                     Ty::bool(),
@@ -4145,7 +4150,12 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 let recv_val: lir::Value = lir::Variable::Local(set_loc).into();
                 let recv_var = ctx
-                    .maybe_coerce_receiver_arg(recv_val, &ty, &insert_recv_param, ReceiverMode::Ptr)
+                    .maybe_coerce_receiver_arg(
+                        recv_val,
+                        &ty,
+                        &insert_recv_param,
+                        ReceiverMode::MutPtr,
+                    )
                     .unwrap_or_else(|| {
                         panic!("could not build receiver arg for set.insert: set_ty={}", ty)
                     });
@@ -4191,6 +4201,8 @@ impl LirGen<GenResult> for Node<Expr> {
                 let prev_continue = ctx.continue_block;
                 ctx.control_block = Some(end_label);
                 ctx.continue_block = Some(cond_label);
+
+                ctx.goto(cond_label);
 
                 ctx.with_block(cond_label, |ctx| {
                     ctx.block().markers_mut().push(lir::ControlMarker::Loop);

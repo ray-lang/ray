@@ -327,7 +327,170 @@ impl Iter[StringIter, char] {
     }
 }
 
-test "string is empty" {
-    s = ""
+test "string::is_empty" {
+    mut s = ""
     assert(s.is_empty())
+
+    s = "hello"
+    assert(!s.is_empty())
+}
+
+test "string::eq" {
+    assert("hello" == "hello")
+    assert("" == "")
+    assert(!("hello" == "world"))
+    assert(!("hello" == "hell"))
+    assert(!("hi" == "high"))
+}
+
+test "string::neq" {
+    assert("hello" != "world")
+    assert("a" != "b")
+    assert(!("same" != "same"))
+}
+
+test "string::lt" {
+    assert("abc" < "abd")
+    assert("abc" < "abcd")
+    assert("a" < "b")
+    assert(!("b" < "a"))
+    assert(!("abc" < "abc"))
+    assert("" < "a")
+}
+
+test "string::gt" {
+    assert("b" > "a")
+    assert("abd" > "abc")
+    assert(!("a" > "b"))
+    assert(!("abc" > "abc"))
+}
+
+test "string::lteq" {
+    assert("a" <= "b")
+    assert("abc" <= "abc")
+    assert(!("b" <= "a"))
+}
+
+test "string::gteq" {
+    assert("b" >= "a")
+    assert("abc" >= "abc")
+    assert(!("a" >= "b"))
+}
+
+test "string::add" {
+    result = "hello" + " " + "world"
+    assert(result == "hello world")
+
+    assert("" + "a" == "a")
+    assert("a" + "" == "a")
+    assert("" + "" == "")
+}
+
+test "string::char_at" {
+    s = "hello"
+    if some(ch) = s.char_at(0) {
+        assert((ch as u32) == 104)  // 'h'
+    } else {
+        fail("char_at(0) should not be nil")
+    }
+
+    if some(ch) = s.char_at(4) {
+        assert((ch as u32) == 111)  // 'o'
+    } else {
+        fail("char_at(4) should not be nil")
+    }
+
+    // out of bounds
+    if some(_) = s.char_at(5) {
+        fail("char_at(5) should be nil")
+    }
+
+    if some(_) = s.char_at(100) {
+        fail("char_at(100) should be nil")
+    }
+}
+
+test "string::slice" {
+    s = "hello world"
+    assert(s.slice(0, 5) == "hello")
+    assert(s.slice(6, 11) == "world")
+    assert(s.slice(0, 11) == "hello world")
+    assert(s.slice(0, 0) == "")
+    assert(s.slice(3, 3) == "")
+
+    // clamping: end beyond char_len
+    assert(s.slice(6, 100) == "world")
+
+    // start >= end gives empty
+    assert(s.slice(5, 3) == "")
+}
+
+test "string::contains" {
+    s = "hello world"
+    assert(s.contains("hello"))
+    assert(s.contains("world"))
+    assert(s.contains("lo wo"))
+    assert(s.contains(""))
+    assert(s.contains("hello world"))
+    assert(!s.contains("xyz"))
+    assert(!s.contains("hello world!"))
+
+    empty = ""
+    assert(empty.contains(""))
+    assert(!empty.contains("a"))
+}
+
+test "string::starts_with" {
+    s = "hello world"
+    assert(s.starts_with("hello"))
+    assert(s.starts_with(""))
+    assert(s.starts_with("hello world"))
+    assert(!s.starts_with("world"))
+    assert(!s.starts_with("hello world!"))
+}
+
+test "string::ends_with" {
+    s = "hello world"
+    assert(s.ends_with("world"))
+    assert(s.ends_with(""))
+    assert(s.ends_with("hello world"))
+    assert(!s.ends_with("hello"))
+    assert(!s.ends_with("hello world!"))
+}
+
+test "string::repeat" {
+    s = "ab"
+    assert(s.repeat(3) == "ababab")
+    assert(s.repeat(1) == "ab")
+    assert(s.repeat(0) == "")
+
+    empty = ""
+    assert(empty.repeat(5) == "")
+}
+
+test "string::iter" {
+    s = "hey"
+    mut count: uint = 0
+    for ch in s {
+        if count == 0 {
+            assert((ch as u32) == 104)  // 'h'
+        }
+        if count == 1 {
+            assert((ch as u32) == 101)  // 'e'
+        }
+        if count == 2 {
+            assert((ch as u32) == 121)  // 'y'
+        }
+        count += 1
+    }
+    assert(count == 3)
+}
+
+test "string::iter_empty" {
+    s = ""
+    mut count: uint = 0
+    for ch in s {
+        count += 1
+    }
+    assert(count == 0)
 }
