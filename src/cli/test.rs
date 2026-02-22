@@ -8,10 +8,14 @@ use wasmtime_wasi::{I32Exit, WasiCtxBuilder};
 use ray_driver::{BuildOptions, Driver, TestOptions};
 
 pub(super) fn action(driver: &mut Driver, options: TestOptions) {
+    let emit = options.emit;
+
     // Convert TestOptions into BuildOptions with test_mode enabled
     let build_options = BuildOptions {
         input_path: options.input_path,
         no_core: options.no_core,
+        opt_level: options.opt_level,
+        emit,
         test_mode: true,
         ..Default::default()
     };
@@ -20,8 +24,8 @@ pub(super) fn action(driver: &mut Driver, options: TestOptions) {
     let wasm_path = match driver.build(build_options) {
         Ok(Some(path)) => path,
         Ok(None) => {
-            eprintln!("error: build produced no output");
-            process::exit(1);
+            // --emit prints to stdout and returns None
+            return;
         }
         Err(errs) => {
             driver.emit_errors(errs);

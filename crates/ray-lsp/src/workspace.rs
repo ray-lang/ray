@@ -233,12 +233,8 @@ impl WorkspaceManager {
             })
             .collect();
 
-        // Run discovery. LSP uses build_lib=true so that ALL files in the
-        // workspace are discovered (not just those reachable via imports),
-        // enabling navigation and diagnostics for every file.
         let discovery_options = DiscoveryOptions {
             no_core: config.no_core(),
-            build_lib: true,
             test_mode: false,
             source_deps,
         };

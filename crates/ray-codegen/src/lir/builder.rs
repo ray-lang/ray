@@ -80,14 +80,20 @@ impl Builder {
 
     pub fn local(&mut self, ty: TyScheme) -> usize {
         let idx = self.locals.len();
-        match ty.mono() {
+        let loc = Local { idx, ty };
+        self.locals.push(loc);
+        idx
+    }
+
+    /// Explicitly mark a local as owning a ref-counted heap allocation.
+    /// Only locals that genuinely own heap refs should be tracked — borrows
+    /// (auto-ref via LEA, params) must not be.
+    pub fn track_ref_local(&mut self, idx: usize) {
+        match self.locals[idx].ty.mono() {
             Ty::Ref(_) | Ty::MutRef(_) => self.ref_locals.push((idx, RefCountKind::Strong)),
             Ty::IdRef(_) => self.ref_locals.push((idx, RefCountKind::Weak)),
             _ => {}
         }
-        let loc = Local { idx, ty };
-        self.locals.push(loc);
-        idx
     }
 
     pub fn local_mut(&mut self, idx: usize) -> Option<&mut Local> {
@@ -113,24 +119,16 @@ impl Builder {
     }
 
     pub fn param_unbound(&mut self, name: String, ty: Ty) -> usize {
+        // Params are borrows from the caller — never RC-tracked.
         let idx = self.local(ty.clone().into());
-        // *mut T params are reborrows — caller retains ownership,
-        // so the callee must not DecRef on exit.
-        if matches!(ty, Ty::MutRef(_)) {
-            self.consume_ref_local(idx);
-        }
         self.params.push(Param::new(name.clone(), idx, ty));
         self.block().define_var(name, idx);
         idx
     }
 
     pub fn param(&mut self, binding: LocalBindingId, name: String, ty: Ty) -> usize {
+        // Params are borrows from the caller — never RC-tracked.
         let idx = self.local(ty.clone().into());
-        // *mut T params are reborrows — caller retains ownership,
-        // so the callee must not DecRef on exit.
-        if matches!(ty, Ty::MutRef(_)) {
-            self.consume_ref_local(idx);
-        }
         self.params.push(Param::new(name.clone(), idx, ty));
         self.set_var(binding, name, idx);
         idx

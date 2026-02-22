@@ -2020,7 +2020,12 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
             lir::Inst::SetField(s) => s.codegen(ctx, srcmap)?,
             lir::Inst::IncRef(value, kind) => {
                 // Increment the strong or weak reference count by 1.
-                let data_ptr = value.codegen(ctx, srcmap)?.into_pointer_value();
+                // For locals, load the heap pointer from the stack alloca.
+                let data_ptr = if let Some(idx) = value.local() {
+                    ctx.load_local(idx)?.into_pointer_value()
+                } else {
+                    value.codegen(ctx, srcmap)?.into_pointer_value()
+                };
                 let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
                 let count_ptr = ctx.get_rc_count_ptr(base_ptr, *kind)?;
 
@@ -2038,7 +2043,12 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                 // Decrement the strong or weak reference count by 1.
                 // If the count reaches 0, conditionally free the allocation.
                 // For strong DecRef with a drop function: call drop glue first.
-                let data_ptr = value.codegen(ctx, srcmap)?.into_pointer_value();
+                // For locals, load the heap pointer from the stack alloca.
+                let data_ptr = if let Some(idx) = value.local() {
+                    ctx.load_local(idx)?.into_pointer_value()
+                } else {
+                    value.codegen(ctx, srcmap)?.into_pointer_value()
+                };
                 let base_ptr = ctx.get_rc_base_ptr(data_ptr)?;
                 let count_ptr = ctx.get_rc_count_ptr(base_ptr, *kind)?;
 

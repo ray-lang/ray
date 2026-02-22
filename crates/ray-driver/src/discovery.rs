@@ -10,9 +10,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub struct DiscoveryOptions {
     /// If true, don't inject implicit core imports.
     pub no_core: bool,
-    /// If true, discover ALL submodules (for library builds).
-    /// When false, only discover modules reachable via imports.
-    pub build_lib: bool,
     /// If true, also load the `testing` library for test mode.
     pub test_mode: bool,
     /// Source dependency directories resolved from `[dependencies]` in ray.toml.
@@ -84,11 +81,11 @@ pub fn discover_workspace(
     let entry_module = discover_module_for_file(&entry_file);
     pending.push_back(entry_file.clone());
 
-    // For library builds, also discover all submodules in the entry directory
-    if options.build_lib {
-        if let Some(dir) = &entry_dir {
-            discover_all_submodules(dir, &entry_module, &mut pending);
-        }
+    // When the entry point is a directory, discover all submodules.
+    // All files in a package must be processed because trait impls may
+    // live in modules that aren't explicitly imported.
+    if let Some(dir) = &entry_dir {
+        discover_all_submodules(dir, &entry_module, &mut pending);
     }
 
     // Discover source dependencies declared in [dependencies]

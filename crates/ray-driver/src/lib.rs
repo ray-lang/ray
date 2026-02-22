@@ -135,7 +135,10 @@ impl Driver {
     /// CLI flag enables a feature, it stays enabled.
     fn apply_project_config(&self, options: &mut BuildOptions) {
         options.no_core = options.no_core || self.project_cfg.no_core();
-        options.build_lib = options.build_lib || self.project_cfg.is_lib();
+        // In test mode, always build an executable — never a .raylib.
+        if !options.test_mode {
+            options.build_lib = options.build_lib || self.project_cfg.is_lib();
+        }
     }
 
     pub fn analyze(&mut self, options: AnalyzeOptions) -> AnalysisReport {
@@ -262,7 +265,6 @@ impl Driver {
         // Run discovery to populate workspace and libraries
         let discovery_options = discovery::DiscoveryOptions {
             no_core: options.no_core,
-            build_lib: options.build_lib,
             test_mode: options.test_mode,
             source_deps,
         };
