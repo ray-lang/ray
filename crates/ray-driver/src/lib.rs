@@ -384,7 +384,33 @@ impl Driver {
         }
 
         log::debug!("{}", program);
-        let output_path = |ext| {
+        let build_dir: Option<FilePath> = if options.output_path.is_some() {
+            None
+        } else {
+            let base = if let Some(ref ws_root) = self.workspace_root {
+                FilePath::from(ws_root.clone()) / ".ray" / "build"
+            } else if options.input_path.is_dir() {
+                options.input_path.clone() / ".ray" / "build"
+            } else {
+                options
+                    .input_path
+                    .parent_dir()
+                    .unwrap_or_else(|| FilePath::from("."))
+                    / ".ray"
+                    / "build"
+            };
+            if options.test_mode {
+                Some(base / "test")
+            } else {
+                Some(base)
+            }
+        };
+
+        if let Some(ref dir) = build_dir {
+            fs::create_dir_all(dir.as_ref()).map_err(|err| vec![RayError::from(err)])?;
+        }
+
+        let output_path = |ext: &str| {
             if let Some(outpath) = &options.output_path {
                 if outpath.is_dir() {
                     let filename = module_path.name().unwrap();
@@ -392,11 +418,10 @@ impl Driver {
                 } else {
                     outpath.clone()
                 }
-            } else if options.build_lib && options.input_path.is_dir() {
-                &options.input_path / format!(".{}", ext)
             } else {
+                let dir = build_dir.as_ref().unwrap();
                 let filename = module_path.name().unwrap();
-                FilePath::from(filename).with_extension(ext)
+                (dir / filename).with_extension(ext)
             }
         };
 
