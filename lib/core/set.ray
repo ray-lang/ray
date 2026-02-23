@@ -29,29 +29,29 @@ impl object set['k] where Hash['k], Eq['k, 'k] {
     }
 
     /// Returns `true` if the set contains no elements.
-    fn is_empty(self: *set['k]) -> bool {
+    fn is_empty(self: &set['k]) -> bool {
         self.inner.is_empty()
     }
 
     /// Returns the number of elements in the set.
-    fn len(self: *set['k]) -> uint {
+    fn len(self: &set['k]) -> uint {
         self.inner.len
     }
 
     /// Returns `true` if `key` is in the set.
-    fn contains(self: *set['k], key: 'k) -> bool {
+    fn contains(self: &set['k], key: 'k) -> bool {
         self.inner.contains_key(key)
     }
 
     /// Adds `key` to the set. Returns `true` if the key was newly inserted,
     /// `false` if it was already present.
-    fn insert(self: *mut set['k], key: 'k) -> bool {
+    fn insert(self: &mut set['k], key: 'k) -> bool {
         prev = self.inner.insert(key, ())
         prev == nil
     }
 
     /// Removes `key` from the set. Returns `true` if the key was present.
-    fn remove(self: *mut set['k], key: 'k) -> bool {
+    fn remove(self: &mut set['k], key: 'k) -> bool {
         prev = self.inner.remove(key)
         prev != nil
     }

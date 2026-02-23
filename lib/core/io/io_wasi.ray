@@ -6,7 +6,7 @@
 import super::super with Deref, Int, alloc, string
 
 /// WASI `fd_write` -- writes scatter/gather vectors to a file descriptor.
-extern wasi fn fd_write(fd: int, iov: rawptr[IOVec], iov_len: uint, nwritten: *uint) -> uint
+extern wasi fn fd_write(fd: int, iov: rawptr[IOVec], iov_len: uint, nwritten: &mut uint) -> uint
 
 /// A scatter/gather I/O vector for WASI file operations.
 struct IOVec {
@@ -26,9 +26,9 @@ fn writev_stdout(chunks: rawptr[string], n: uint) -> uint {
         chunk = raw_chunk as string
         iov = alloc(IOVec, 1)
         *iov = IOVec { base: chunk.raw_ptr, len: chunk.len }
-        wrote = 0
+        mut wrote = 0
         // TODO: handle partial writes within a single iovec (retry loop)
-        _ = fd_write(1, iov, 1, &wrote)
+        _ = fd_write(1, iov, 1, &mut wrote)
         total = total + wrote
         i += 1
     }

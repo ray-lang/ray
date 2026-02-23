@@ -71,6 +71,8 @@ pub enum RecvKind {
     Value,
     Ref,
     MutRef,
+    BorrowRef,
+    BorrowMutRef,
 }
 
 // Recv[RecvTy, ExprTy].

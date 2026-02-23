@@ -42,7 +42,7 @@ trait Iter['it, 'el] {
     /// Advances the iterator and returns the next element.
     ///
     /// Returns `nil` when there are no more elements.
-    fn next(self: *mut 'it) -> 'el?
+    fn next(self: &mut 'it) -> 'el?
 }
 
 /// A collection that can produce an iterator over its elements.
@@ -70,5 +70,5 @@ trait Iterable['c, 'it, 'el] {
     ///
     /// The iterator borrows the collection via a pointer (`*'c`), so the
     /// collection must remain valid for the lifetime of the iterator.
-    fn iter(self: *'c) -> 'it
+    fn iter(self: &'c) -> 'it
 }

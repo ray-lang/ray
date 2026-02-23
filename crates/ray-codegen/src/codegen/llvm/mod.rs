@@ -2831,9 +2831,9 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
         match kind {
             lir::IntrinsicKind::PtrAdd => self.codegen_ptr_offset(ctx, srcmap, true),
             lir::IntrinsicKind::PtrSub => self.codegen_ptr_offset(ctx, srcmap, false),
-            lir::IntrinsicKind::DerefRef | lir::IntrinsicKind::DerefRaw => {
-                self.codegen_deref(ctx, srcmap)
-            }
+            lir::IntrinsicKind::DerefRef
+            | lir::IntrinsicKind::DerefRaw
+            | lir::IntrinsicKind::DerefBorrow => self.codegen_deref(ctx, srcmap),
             lir::IntrinsicKind::SizeOf => self.codegen_sizeof(ctx),
             lir::IntrinsicKind::Memcopy => {
                 let dst = self.args.get(0).expect("memcopy expects dest argument");

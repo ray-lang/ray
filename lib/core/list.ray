@@ -34,7 +34,7 @@ struct list['a] {
 
 /// Iterator over the elements of a `list`.
 struct ListIter['a] {
-    list: *list['a]
+    list: &list['a]
     idx: uint
 }
 
@@ -43,7 +43,7 @@ struct ListIter['a] {
 /// Returns `nil` if `idx` is out of bounds.
 impl Index[list['a], 'a, uint] {
     /// Returns the element at `idx`, or `nil` if out of bounds.
-    fn get(self: *list['a], idx: uint) -> 'a? {
+    fn get(self: &list['a], idx: uint) -> 'a? {
         if idx >= self.len {
             return nil
         }
@@ -54,7 +54,7 @@ impl Index[list['a], 'a, uint] {
 
     /// Replaces the element at `idx` with `el`. Returns the previous value,
     /// or `nil` if out of bounds.
-    fn set(self: *mut list['a], idx: uint, el: 'a) -> 'a? {
+    fn set(self: &mut list['a], idx: uint, el: 'a) -> 'a? {
         if idx >= self.len {
             return nil
         }
@@ -68,7 +68,7 @@ impl Index[list['a], 'a, uint] {
 
 /// Creates an iterator over the elements of a list.
 impl Iterable[list['a], ListIter['a], 'a] {
-    fn iter(self: *list['a]) -> ListIter['a] {
+    fn iter(self: &list['a]) -> ListIter['a] {
         ListIter { list: self, idx: 0 }
     }
 }
@@ -76,7 +76,7 @@ impl Iterable[list['a], ListIter['a], 'a] {
 /// Advances the list iterator, returning the next element or `nil` when
 /// exhausted.
 impl Iter[ListIter['a], 'a] {
-    fn next(self: *mut ListIter['a]) -> 'a? {
+    fn next(self: &mut ListIter['a]) -> 'a? {
         if self.idx >= self.list.len {
             return nil
         }
@@ -102,17 +102,17 @@ impl object list['a] {
     }
 
     /// Returns `true` if the list contains no elements.
-    fn is_empty(self: *list['a]) -> bool {
+    fn is_empty(self: &list['a]) -> bool {
         self.len == 0
     }
 
     /// Removes all elements from the list without releasing memory.
-    fn clear(self: *mut list['a]) -> () {
+    fn clear(self: &mut list['a]) -> () {
         self.len = 0
     }
 
     /// Removes and returns the last element, or `nil` if the list is empty.
-    fn pop(self: *mut list['a]) -> 'a? {
+    fn pop(self: &mut list['a]) -> 'a? {
         if self.len == 0 {
             return nil
         }
@@ -128,7 +128,7 @@ impl object list['a] {
     ///
     /// If `capacity` is less than the current length, elements beyond the
     /// new capacity are dropped.
-    fn reserve(self: *mut list['a], capacity: uint) -> () {
+    fn reserve(self: &mut list['a], capacity: uint) -> () {
         if capacity == self.capacity {
             return
         }
@@ -158,7 +158,7 @@ impl object list['a] {
     }
 
     /// Appends `el` to the end of the list, growing the allocation if needed.
-    fn push(self: *mut list['a], el: 'a) -> () {
+    fn push(self: &mut list['a], el: 'a) -> () {
         if self.len == self.capacity {
             if self.capacity == 0 {
                 self.reserve(1)

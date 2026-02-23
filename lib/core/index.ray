@@ -30,12 +30,12 @@ trait Index['a, 'el, 'idx] {
     ///
     /// Returns the element if the index is valid, or `nil` if the index
     /// is out of bounds or the key does not exist.
-    fn get(self: *'a, idx: 'idx) -> 'el?
+    fn get(self: &'a, idx: 'idx) -> 'el?
 
     /// Sets the element at the given index or key, returning the previous
     /// value if one existed.
     ///
     /// For `list`, the index must be within bounds. For `dict`, this
     /// inserts a new entry or updates an existing one.
-    fn set(self: *mut 'a, idx: 'idx, el: 'el) -> 'el?
+    fn set(self: &mut 'a, idx: 'idx, el: 'el) -> 'el?
 }

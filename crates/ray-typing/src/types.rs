@@ -675,6 +675,8 @@ pub enum ReceiverMode {
     Value,
     Ptr,
     MutPtr,
+    BorrowPtr,
+    BorrowMutPtr,
 }
 
 impl ReceiverMode {
@@ -687,8 +689,10 @@ impl ReceiverMode {
         // If it is a pointer type, we treat the method as a pointer receiver,
         // otherwise as a value receiver.
         match &param_tys[0] {
-            Ty::Ref(_) | Ty::Borrow(_) => ReceiverMode::Ptr,
-            Ty::MutRef(_) | Ty::BorrowMut(_) => ReceiverMode::MutPtr,
+            Ty::Borrow(_) => ReceiverMode::BorrowPtr,
+            Ty::BorrowMut(_) => ReceiverMode::BorrowMutPtr,
+            Ty::Ref(_) => ReceiverMode::Ptr,
+            Ty::MutRef(_) => ReceiverMode::MutPtr,
             _ => ReceiverMode::Value,
         }
     }

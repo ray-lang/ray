@@ -50,7 +50,7 @@ struct dict['k, 'v] {
 
 /// Iterator over the key-value pairs of a `dict`.
 struct DictIter['k, 'v] {
-    dict: *dict['k, 'v]
+    dict: &dict['k, 'v]
     idx: uint
 }
 
@@ -60,7 +60,7 @@ struct DictIter['k, 'v] {
 /// the value for the given key.
 impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
     /// Returns the value for `key`, or `nil` if not present.
-    fn get(self: *dict['k, 'v], key: 'k) -> 'v? {
+    fn get(self: &dict['k, 'v], key: 'k) -> 'v? {
         if self.capacity == 0 {
             return nil
         }
@@ -77,14 +77,14 @@ impl Index[dict['k, 'v], 'v, 'k] where Hash['k], Eq['k, 'k] {
 
     /// Inserts or replaces the value for `key`. Returns the previous value,
     /// or `nil` if the key was not present.
-    fn set(self: *mut dict['k, 'v], key: 'k, value: 'v) -> 'v? {
+    fn set(self: &mut dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.insert(key, value)
     }
 }
 
 /// Creates an iterator over the key-value pairs of a dict.
 impl Iterable[dict['k, 'v], DictIter['k, 'v], ('k, 'v)] {
-    fn iter(self: *dict['k, 'v]) -> DictIter['k, 'v] {
+    fn iter(self: &dict['k, 'v]) -> DictIter['k, 'v] {
         DictIter { dict: self, idx: 0 }
     }
 }
@@ -92,7 +92,7 @@ impl Iterable[dict['k, 'v], DictIter['k, 'v], ('k, 'v)] {
 /// Advances the dict iterator, returning the next `(key, value)` pair or
 /// `nil` when exhausted.
 impl Iter[DictIter['k, 'v], ('k, 'v)] where Hash['k], Eq['k, 'k] {
-    fn next(self: *mut DictIter['k, 'v]) -> ('k, 'v)? {
+    fn next(self: &mut DictIter['k, 'v]) -> ('k, 'v)? {
         while self.idx < self.dict.capacity {
             idx = self.idx
             self.idx = self.idx + 1
@@ -181,12 +181,12 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
     }
 
     /// Returns `true` if the dict contains no entries.
-    fn is_empty(self: *dict['k, 'v]) -> bool {
+    fn is_empty(self: &dict['k, 'v]) -> bool {
         self.len == 0
     }
 
     /// Returns `true` if `key` is present in the dict.
-    fn contains_key(self: *dict['k, 'v], key: 'k) -> bool {
+    fn contains_key(self: &dict['k, 'v], key: 'k) -> bool {
         if self.capacity == 0 {
             return false
         }
@@ -198,7 +198,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
 
     /// Inserts `key` / `value` into the dict. Returns the previous value
     /// if the key was already present, or `nil` otherwise.
-    fn insert(self: *mut dict['k, 'v], key: 'k, value: 'v) -> 'v? {
+    fn insert(self: &mut dict['k, 'v], key: 'k, value: 'v) -> 'v? {
         self.__ensure_capacity(1)
 
         if self.capacity == 0 {
@@ -235,7 +235,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
 
     /// Removes `key` from the dict. Returns the removed value, or `nil` if
     /// the key was not present.
-    fn remove(self: *mut dict['k, 'v], key: 'k) -> 'v? {
+    fn remove(self: &mut dict['k, 'v], key: 'k) -> 'v? {
         if self.capacity == 0 {
             return nil
         }
@@ -258,7 +258,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         some(prev)
     }
 
-    fn __ensure_capacity(self: *mut dict['k, 'v], additional: uint) -> () {
+    fn __ensure_capacity(self: &mut dict['k, 'v], additional: uint) -> () {
         if self.capacity == 0 {
             next = dict['k, 'v]::with_capacity(16)
             self.ctrl = next.ctrl
@@ -281,7 +281,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         }
     }
 
-    fn __rehash(self: *mut dict['k, 'v], capacity: uint) -> () {
+    fn __rehash(self: &mut dict['k, 'v], capacity: uint) -> () {
         cap = dict['k, 'v]::__round_capacity(capacity)
         if cap == 0 {
             return
@@ -312,7 +312,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         }
     }
 
-    fn __insert_rehash(self: *mut dict['k, 'v], key: 'k, value: 'v) -> () {
+    fn __insert_rehash(self: &mut dict['k, 'v], key: 'k, value: 'v) -> () {
         hash = key.hash()
         h2 = dict['k, 'v]::__h2(hash)
         _, idx = self.__find_slot(key, hash)
@@ -326,7 +326,7 @@ impl object dict['k, 'v] where Hash['k], Eq['k, 'k] {
         self.len = self.len + 1
     }
 
-    fn __find_slot(self: *dict['k, 'v], key: 'k, hash: u64) -> (bool, uint) {
+    fn __find_slot(self: &dict['k, 'v], key: 'k, hash: u64) -> (bool, uint) {
         if self.capacity == 0 {
             return false, 0
         }

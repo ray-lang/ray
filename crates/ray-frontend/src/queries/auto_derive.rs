@@ -278,7 +278,7 @@ fn synthesize_trait_impl(
     decls.push(impl_decl);
 }
 
-/// Builds a Clone method: `fn clone(self: *StructTy) -> StructTy => StructName { f1: self.f1, ... }`
+/// Builds a Clone method: `fn clone(self: &StructTy) -> StructTy => StructName { f1: self.f1, ... }`
 ///
 /// Returns `(method_name, method_decl, method_root_node)`.
 fn build_clone_method(
@@ -288,7 +288,7 @@ fn build_clone_method(
     src: &Source,
     source_map: &mut SourceMap,
 ) -> (&'static str, Node<Decl>, NodeId) {
-    let self_ty = Ty::Ref(Box::new(struct_ty.clone()));
+    let self_ty = Ty::Borrow(Box::new(struct_ty.clone()));
 
     let method_decl;
     let method_root_node;
@@ -345,12 +345,12 @@ fn build_clone_method(
         source_map.set_src(&body, src.clone());
         source_map.mark_synthetic(body.id);
 
-        // fn clone(self: *StructTy) -> StructTy => <body>
+        // fn clone(self: &StructTy) -> StructTy => <body>
         let sig_path = Node::new(Path::from("clone"));
         source_map.set_src(&sig_path, src.clone());
         source_map.mark_synthetic(sig_path.id);
 
-        // Self param type: *StructTy
+        // Self param type: &StructTy
         let self_ty_mono = self_ty.clone();
         let self_ty_ids = make_synthetic_ids(&self_ty_mono, source_map, src);
         let mut parsed_self_ty = Parsed::new(TyScheme::from_mono(self_ty), src.clone());
@@ -418,7 +418,7 @@ mod tests {
 
     const CLONE_TRAIT: &str = r#"
         trait Clone['a] {
-            fn clone(self: *'a) -> 'a
+            fn clone(self: &'a) -> 'a
         }
     "#;
 
@@ -483,7 +483,7 @@ mod tests {
 struct Foo { x: int }
 
 impl Clone[Foo] {
-    fn clone(self: *Foo) -> Foo => Foo { x: self.x }
+    fn clone(self: &Foo) -> Foo => Foo { x: self.x }
 }
 "#,
         );
@@ -519,7 +519,7 @@ struct Foo { x: int }
 struct Bar { y: int }
 
 impl Clone[Foo] {
-    fn clone(self: *Foo) -> Foo => Foo { x: self.x }
+    fn clone(self: &Foo) -> Foo => Foo { x: self.x }
 }
 "#,
         );

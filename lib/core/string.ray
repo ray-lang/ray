@@ -171,12 +171,12 @@ fn __utf8_decode(ptr: rawptr[u8], offset: uint) -> (u32, uint) {
 /// String methods.
 impl object string {
     /// Returns `true` if the string contains no characters.
-    fn is_empty(self: *string) -> bool => self.char_len == 0
+    fn is_empty(self: &string) -> bool => self.char_len == 0
 
     /// Returns the byte offset of the `n`-th character (0-indexed).
     ///
     /// Returns `self.len` if `n` is past the end.
-    fn __byte_offset_of_char(self: *string, n: uint) -> uint {
+    fn __byte_offset_of_char(self: &string, n: uint) -> uint {
         mut byte_off: uint = 0
         mut char_idx: uint = 0
         while char_idx < n {
@@ -199,7 +199,7 @@ impl object string {
     }
 
     /// Returns the character at index `idx`, or `nil` if out of bounds.
-    fn char_at(self: *string, idx: uint) -> char? {
+    fn char_at(self: &string, idx: uint) -> char? {
         if idx >= self.char_len {
             return nil
         }
@@ -210,7 +210,7 @@ impl object string {
 
     /// Returns a new string containing characters from `start` up to (but not
     /// including) `end`. Both indices are clamped to `char_len`.
-    fn slice(self: *string, start: uint, end: uint) -> string {
+    fn slice(self: &string, start: uint, end: uint) -> string {
         mut actual_end = end
         if actual_end > self.char_len {
             actual_end = self.char_len
@@ -230,7 +230,7 @@ impl object string {
     }
 
     /// Returns `true` if `sub` occurs anywhere within this string.
-    fn contains(self: *string, sub: string) -> bool {
+    fn contains(self: &string, sub: string) -> bool {
         if sub.len > self.len {
             return false
         }
@@ -258,7 +258,7 @@ impl object string {
     }
 
     /// Returns `true` if this string begins with `prefix`.
-    fn starts_with(self: *string, prefix: string) -> bool {
+    fn starts_with(self: &string, prefix: string) -> bool {
         if prefix.len > self.len {
             return false
         }
@@ -273,7 +273,7 @@ impl object string {
     }
 
     /// Returns `true` if this string ends with `suffix`.
-    fn ends_with(self: *string, suffix: string) -> bool {
+    fn ends_with(self: &string, suffix: string) -> bool {
         if suffix.len > self.len {
             return false
         }
@@ -289,7 +289,7 @@ impl object string {
     }
 
     /// Returns a new string formed by repeating this string `n` times.
-    fn repeat(self: *string, n: uint) -> string {
+    fn repeat(self: &string, n: uint) -> string {
         len = self.len * n
         char_len = self.char_len * n
         raw_ptr = malloc(len)
@@ -304,20 +304,20 @@ impl object string {
 
 /// Iterator over the Unicode codepoints of a string.
 struct StringIter {
-    s: *string
+    s: &string
     byte_off: uint
 }
 
 /// Strings can be iterated over, yielding each `char` (Unicode codepoint).
 impl Iterable[string, StringIter, char] {
-    fn iter(self: *string) -> StringIter {
+    fn iter(self: &string) -> StringIter {
         StringIter { s: self, byte_off: 0 }
     }
 }
 
 /// Advances the string iterator, returning the next codepoint or `nil`.
 impl Iter[StringIter, char] {
-    fn next(self: *mut StringIter) -> char? {
+    fn next(self: &mut StringIter) -> char? {
         if self.byte_off >= self.s.len {
             return nil
         }

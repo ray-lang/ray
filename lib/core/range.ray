@@ -32,13 +32,13 @@ struct range['a] {
 
 /// Iterator state for a range.
 struct RangeIter['a] {
-    range: *range['a]
+    range: &range['a]
     curr: 'a
 }
 
 /// Creates an iterator over the values in a range.
 impl Iterable[range['a], RangeIter['a], 'a] {
-    fn iter(self: *range['a]) -> RangeIter['a] {
+    fn iter(self: &range['a]) -> RangeIter['a] {
         RangeIter { range: self, curr: self.start }
     }
 }
@@ -46,7 +46,7 @@ impl Iterable[range['a], RangeIter['a], 'a] {
 /// Advances the range iterator by one step, returning the next value or
 /// `nil` when the range is exhausted.
 impl Iter[RangeIter['a], 'a] where Int['a], Add['a, 'a, 'a], Lt['a, 'a], LtEq['a, 'a] {
-    fn next(self: *mut RangeIter['a]) -> 'a? {
+    fn next(self: &mut RangeIter['a]) -> 'a? {
         if self.range.inclusive {
             if self.curr <= self.range.end {
                 val = self.curr

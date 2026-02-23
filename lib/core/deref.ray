@@ -21,6 +21,9 @@
 /// dangling raw pointer is undefined behavior.
 @intrinsic extern fn __deref_raw(p: rawptr['a]) -> 'a
 
+/// Intrinsic: dereferences a borrow `&'a` to produce the value `'a`.
+@intrinsic extern fn __deref_borrow(p: &'a) -> 'a
+
 /// A type that can be dereferenced to produce a value of another type.
 ///
 /// This trait powers the `*` prefix operator. When you write `*p`, the
@@ -43,9 +46,14 @@ trait Deref['a, 'b] {
     fn deref(self: 'a) -> 'b
 }
 
-/// Dereference a safe reference to obtain the underlying value.
+/// Dereference a safe shared reference to obtain the underlying value.
 impl Deref[*'a, 'a] {
     fn deref(self: *'a) -> 'a => __deref_ref(self)
+}
+
+/// Dereference a safe unique reference to obtain the underlying value.
+impl Deref[*mut 'a, 'a] {
+    fn deref(self: *mut 'a) -> 'a => __deref_ref(self)
 }
 
 /// Dereference a raw pointer to obtain the underlying value.
@@ -55,4 +63,14 @@ impl Deref[*'a, 'a] {
 /// The raw pointer must point to valid, initialized memory of type `'a`.
 impl Deref[rawptr['a], 'a] {
     fn deref(self: rawptr['a]) -> 'a => __deref_raw(self)
+}
+
+/// Dereference a shared borrow to obtain the underlying value.
+impl Deref[&'a, 'a] {
+    fn deref(self: &'a) -> 'a => __deref_borrow(self)
+}
+
+/// Dereference a unique borrow to obtain the underlying value.
+impl Deref[&mut 'a, 'a] {
+    fn deref(self: &mut 'a) -> 'a => __deref_borrow(self)
 }

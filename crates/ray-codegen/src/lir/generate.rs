@@ -2051,7 +2051,10 @@ impl<'a> GenCtx<'a> {
         let expr_mono = expr_ty_scheme.mono().clone();
 
         match recv_mode {
-            ReceiverMode::Ptr | ReceiverMode::MutPtr => {
+            ReceiverMode::Ptr
+            | ReceiverMode::MutPtr
+            | ReceiverMode::BorrowPtr
+            | ReceiverMode::BorrowMutPtr => {
                 if let Ty::Ref(inner)
                 | Ty::MutRef(inner)
                 | Ty::Borrow(inner)
@@ -3432,7 +3435,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         recv_val,
                         &ty,
                         &insert_recv_param,
-                        ReceiverMode::MutPtr,
+                        ReceiverMode::BorrowMutPtr,
                     )
                     .unwrap_or_else(|| {
                         panic!(
@@ -4175,7 +4178,7 @@ impl LirGen<GenResult> for Node<Expr> {
                         recv_val,
                         &ty,
                         &insert_recv_param,
-                        ReceiverMode::MutPtr,
+                        ReceiverMode::BorrowMutPtr,
                     )
                     .unwrap_or_else(|| {
                         panic!("could not build receiver arg for set.insert: set_ty={}", ty)

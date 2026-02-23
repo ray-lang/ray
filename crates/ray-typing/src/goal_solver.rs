@@ -732,6 +732,8 @@ fn solve_recv(wanted: &Constraint, subst: &mut Subst) -> bool {
         RecvKind::Value => base_ty,
         RecvKind::Ref => Ty::Ref(Box::new(base_ty)),
         RecvKind::MutRef => Ty::MutRef(Box::new(base_ty)),
+        RecvKind::BorrowRef => Ty::Borrow(Box::new(base_ty)),
+        RecvKind::BorrowMutRef => Ty::BorrowMut(Box::new(base_ty)),
     };
 
     log::debug!(
@@ -1517,6 +1519,8 @@ fn solve_chosen_method_call(
         let recv_kind = match recv_mode {
             ReceiverMode::Ptr => RecvKind::Ref,
             ReceiverMode::MutPtr => RecvKind::MutRef,
+            ReceiverMode::BorrowPtr => RecvKind::BorrowRef,
+            ReceiverMode::BorrowMutPtr => RecvKind::BorrowMutRef,
             _ => RecvKind::Value,
         };
         let recv_ok = solve_recv(
