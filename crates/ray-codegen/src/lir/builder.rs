@@ -119,7 +119,6 @@ impl Builder {
     }
 
     pub fn param_unbound(&mut self, name: String, ty: Ty) -> usize {
-        // Params are borrows from the caller — never RC-tracked.
         let idx = self.local(ty.clone().into());
         self.params.push(Param::new(name.clone(), idx, ty));
         self.block().define_var(name, idx);
@@ -127,7 +126,6 @@ impl Builder {
     }
 
     pub fn param(&mut self, binding: LocalBindingId, name: String, ty: Ty) -> usize {
-        // Params are borrows from the caller — never RC-tracked.
         let idx = self.local(ty.clone().into());
         self.params.push(Param::new(name.clone(), idx, ty));
         self.set_var(binding, name, idx);

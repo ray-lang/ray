@@ -4527,7 +4527,7 @@ mod tests {
     };
     use ray_typing::types::TyScheme;
 
-    use ray_lir::{Call, ControlMarker, GetField, Inst, RefCountKind, Value};
+    use ray_lir::{Call, ControlMarker, Func, GetField, Inst, Program, RefCountKind, Value};
 
     use crate::lir::{generate, generate_drop_glue};
 
@@ -8102,6 +8102,313 @@ pub fn main() -> u32 {
         assert!(
             decref_strong_count >= 1,
             "expected >= 1 DecRef(Strong) for freeze result not returned\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    // =========================================================================
+    // Ownership classification tests
+    // =========================================================================
+
+    fn find_func<'a>(prog: &'a Program, name: &str) -> &'a Func {
+        prog.funcs
+            .iter()
+            .find(|f| {
+                let short = f.name.with_names_only().to_short_name();
+                short == name
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "function `{}` not found; available: [{}]",
+                    name,
+                    map_join(&prog.funcs, ", ", |f| f
+                        .name
+                        .with_names_only()
+                        .to_short_name())
+                )
+            })
+    }
+
+    fn count_decref_strong(func: &Func) -> usize {
+        func.blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::DecRef(_, RefCountKind::Strong, _)))
+            .count()
+    }
+
+    fn count_incref_strong(func: &Func) -> usize {
+        func.blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| matches!(inst, Inst::IncRef(_, RefCountKind::Strong)))
+            .count()
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn getfield_on_param_ref_field_no_decref() {
+        // Accessing a ref-typed field from a parameter must NOT emit DecRef.
+        // The field is borrowed from the caller — no IncRef was emitted.
+        let src = r#"
+struct Inner { val: u32 }
+struct Outer { inner: *Inner }
+fn read_inner(o: *Outer) -> u32 {
+    o.inner.val
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let func = find_func(&prog, "read_inner");
+        assert_eq!(
+            count_decref_strong(func),
+            0,
+            "GetField on param's ref field should NOT be DecRef'd\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn binding_param_ref_field_incref_decref_balanced() {
+        // Binding a param's ref field to a local creates a new alias for
+        // the shared ref: IncRef for the copy, DecRef at exit. Both bindings
+        // should produce balanced IncRef/DecRef pairs.
+        let src = r#"
+struct Inner { val: u32 }
+struct Container { inner: *Inner }
+fn double_access(c: *Container) -> u32 {
+    a = c.inner
+    b = c.inner
+    0u32
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let func = find_func(&prog, "double_access");
+        let inc = count_incref_strong(func);
+        let dec = count_decref_strong(func);
+        // Each binding creates a copy of the shared ref → IncRef + DecRef.
+        assert!(
+            dec <= inc + 1,
+            "DecRef count ({}) should not exceed IncRef count ({}) by more than 1\n--- LIR ---\n{}",
+            dec,
+            inc,
+            prog
+        );
+        assert!(
+            dec >= 1,
+            "expected DecRef for copied ref-field bindings\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn transitive_getfield_from_param_no_decref() {
+        // GetField through a value-type struct chain from a param propagates
+        // Borrowed transitively — no DecRef.
+        let src = r#"
+struct Leaf { val: u32 }
+struct Mid { leaf: *Leaf }
+struct Root { mid: Mid }
+fn deep_read(r: *Root) -> u32 {
+    r.mid.leaf.val
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let func = find_func(&prog, "deep_read");
+        assert_eq!(
+            count_decref_strong(func),
+            0,
+            "transitive GetField from param should NOT be DecRef'd\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn call_result_ref_is_decrefed() {
+        // A Call returning a ref IS owned and gets DecRef'd when not returned.
+        let src = r#"
+struct Foo { x: u32 }
+fn make_ref() -> *Foo {
+    freeze(box(Foo { x: 42u32 }))
+}
+pub fn main() -> u32 {
+    f = make_ref()
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        assert!(
+            count_decref_strong(main_func) >= 1,
+            "call result ref should be DecRef'd when not returned\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn returned_ref_not_decrefed() {
+        // A ref being returned is skipped in ret()'s DecRef loop.
+        let src = r#"
+struct Foo { x: u32 }
+fn make_ref() -> *Foo {
+    freeze(box(Foo { x: 42u32 }))
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let func = find_func(&prog, "make_ref");
+        assert_eq!(
+            count_decref_strong(func),
+            0,
+            "returned ref should NOT be DecRef'd inside the function\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn struct_init_borrowed_field_incref_balanced() {
+        // Storing a borrowed ref (from param) into a struct emits IncRef
+        // and a matching DecRef.
+        let src = r#"
+struct Inner { val: u32 }
+struct Wrapper { inner: *Inner }
+fn wrap(i: *Inner) -> Wrapper {
+    Wrapper { inner: i }
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let func = find_func(&prog, "wrap");
+        let inc = count_incref_strong(func);
+        let dec = count_decref_strong(func);
+        assert!(
+            inc >= 1,
+            "expected IncRef for struct field copy\n--- LIR ---\n{}",
+            prog
+        );
+        assert!(
+            dec >= 1,
+            "expected DecRef to balance struct field IncRef\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn struct_init_owned_field_double_tracked() {
+        // Storing an owned ref (from Malloc/freeze) into a struct tracks it
+        // twice: once from the initial allocation, once from struct init IncRef.
+        let src = r#"
+struct Inner { val: u32 }
+struct Wrapper { inner: *Inner }
+pub fn main() -> u32 {
+    p = box(Inner { val: 42u32 })
+    shared = freeze(p)
+    w = Wrapper { inner: shared }
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        let inc = count_incref_strong(main_func);
+        let dec = count_decref_strong(main_func);
+        assert!(
+            inc >= 1,
+            "expected >= 1 IncRef for struct init\n--- LIR ---\n{}",
+            prog
+        );
+        assert!(
+            dec >= 2,
+            "expected >= 2 DecRef (freeze tracking + struct init tracking)\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn getfield_on_call_result_struct_is_owned() {
+        // GetField on a call result (value-type struct containing ref) is
+        // Owned (propagated from the call).
+        let src = r#"
+struct Leaf { val: u32 }
+struct Pair { leaf: *Leaf }
+fn make_pair() -> Pair {
+    l = box(Leaf { val: 1u32 })
+    shared = freeze(l)
+    Pair { leaf: shared }
+}
+pub fn main() -> u32 {
+    p = make_pair()
+    extracted = p.leaf
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let user_main_idx: usize = prog
+            .user_main_idx
+            .try_into()
+            .expect("user main index should be set");
+        let main_func = &prog.funcs[user_main_idx];
+
+        assert!(
+            count_decref_strong(main_func) >= 1,
+            "GetField on call result's ref field should be DecRef'd (Owned)\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    #[ignore = "requires borrow types (&T) to distinguish heap vs stack refs"]
+    fn load_of_ref_typed_value_not_tracked() {
+        // Load (deref) of a pointer produces a borrowed value — not tracked.
+        let src = r#"
+struct Foo { x: u32 }
+fn read_through(p: *Foo) -> u32 {
+    p.x
+}
+pub fn main() -> u32 { 0u32 }
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let func = find_func(&prog, "read_through");
+        assert_eq!(
+            count_decref_strong(func),
+            0,
+            "Load through param pointer should NOT produce DecRef\n--- LIR ---\n{}",
             prog
         );
     }

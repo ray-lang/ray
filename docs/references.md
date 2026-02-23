@@ -1,6 +1,6 @@
 # References & Pointer Model
 
-Ray uses a unified reference model built on three capability types, automatic reference counting, and fully inferred regions. The goal is memory safety without surface lifetime annotations, while keeping the mental model simple: **unique references can mutate, shared references cannot, and identity references only compare.**
+Ray uses a unified reference model built on five reference types — three heap-allocated capability types (`*mut T`, `*T`, `id *T`) and two borrow types (`&T`, `&mut T`) — with automatic reference counting for heap references and fully inferred regions. The goal is memory safety without surface lifetime annotations, while keeping the mental model simple: **unique references can mutate, shared references cannot, identity references only compare, and borrows are temporary aliases with no refcount overhead.**
 
 This document is a design specification. It describes the target semantics, not the current implementation.
 
@@ -16,7 +16,7 @@ Every reference in Ray carries a *capability* that governs what operations are p
 - Non-copyable: at most one `*mut T` exists for a given allocation at any time.
 - Produced by `new(T)` or `box(expr)`.
 - The holder of `*mut T` is the **owner** of the object.
-- **Not allowed as a struct field** (see [§1.5](#15-mut-t-is-not-allowed-in-struct-fields)).
+- **Not allowed as a struct field** (see [§1.7](#17-unique-references-are-not-allowed-in-struct-fields)).
 - Local-only: exists as variables, parameters, and return values.
 
 ```ray
@@ -51,59 +51,113 @@ shared = freeze(box(Foo { value: 1 }))
 identity = id(shared)                  // identity: id *Foo, shared is NOT consumed
 ```
 
-### 1.4 Capability Lattice
+### 1.4 `&T` — Shared Borrow
+
+- A temporary, read-only reference to a value. Permits reading fields and calling methods, but not mutation.
+- **Not reference-counted.** No heap header, no IncRef/DecRef. The referent may live on the stack or the heap.
+- Copyable: copying a `&T` is a plain pointer copy with no refcount effect.
+- Produced by `&x` where `x: T` (address-of a stack value), or by implicit coercion from `*T` or `*mut T`.
+- The borrow is constrained to a **region** ([§7](#7-regions--lifetime-safety)) — it cannot outlive the referent.
+
+```ray
+p = Point { x: 1, y: 2 }
+ref = &p                               // ref: &Point, borrows p on the stack
+
+shared = freeze(box(Point { x: 3, y: 4 }))
+borrow = shared                        // borrow: &Point via implicit coercion (when &Point is expected)
+```
+
+### 1.5 `&mut T` — Unique Borrow
+
+- A temporary, mutable reference to a value. Permits reading and writing fields and calling methods.
+- **Not reference-counted.** No heap header, no IncRef/DecRef.
+- Non-copyable: at most one `&mut T` to a given value exists at any time.
+- Produced by `&mut x` where `mut x: T` (address-of a mutable stack value), or by implicit coercion from `*mut T`.
+- The borrow is constrained to a **region** — it cannot outlive the referent.
+- While a `&mut T` borrow is active, the original value (or reference) is unavailable.
+
+```ray
+mut p = Point { x: 1, y: 2 }
+mref = &mut p                          // mref: &mut Point, borrows p mutably
+mref.x = 42                            // mutation through the borrow
+// p is unavailable while mref is active
+```
+
+### 1.6 Capability Lattice
 
 Capabilities only weaken, never strengthen:
 
 ```
-*mut T  →  *T  →  id *T
-(unique)   (shared)  (identity)
+Heap (owned, RC'd):       *mut T  →  *T  →  id *T
+                          (unique)   (shared)  (identity)
+
+Borrow (temporary, no RC): &mut T  →  &T
+                           (unique)   (shared)
+
+Cross-kind coercions:      *mut T  →  &mut T
+                           *T      →  &T
 ```
 
-The weakening operations are:
+A heap reference can always be borrowed (coerced to the corresponding borrow type), but a borrow can never be promoted to a heap reference. Borrowing a heap reference does not affect its reference count — the borrow is a temporary, region-scoped alias.
+
+The explicit weakening operations are:
 
 | Operation    | Input    | Output  | Consuming?                     |
 |--------------|----------|---------|--------------------------------|
-| `freeze(x)`  | `*mut T` | `*T`    | Yes — `x` is consumed (moved) |
-| `id(x)`      | `*T`     | `id *T` | No — `x` remains valid        |
+| `freeze(x)`  | `*mut T` | `*T`    | Yes — `x` is consumed (moved)  |
+| `id(x)`      | `*T`     | `id *T` | No — `x` remains valid         |
 
-There is no operation to strengthen a capability. The only way to temporarily use a `*mut T` at a weaker capability is through borrowing ([§6](#6-borrowing)).
+The implicit coercions are:
 
-### 1.5 `*mut T` Is Not Allowed in Struct Fields
+| Coercion         | Input     | Output   | When                                      |
+|------------------|-----------|----------|-------------------------------------------|
+| Borrow unique    | `*mut T`  | `&mut T` | Passing `*mut T` to a function or binding |
+| Borrow shared    | `*T`      | `&T`     | Passing `*T` to a function or binding     |
+| Weaken borrow    | `&mut T`  | `&T`     | Passing `&mut T` where `&T` is expected   |
 
-Struct fields may only contain value types, `*T`, `id *T`, or `nilable` variants thereof. `*mut T` is **not permitted** as a struct field type.
+There is no operation or coercion to strengthen a capability. A borrow cannot be promoted to an owned heap reference.
+
+### 1.7 Unique References Are Not Allowed in Struct Fields
+
+Struct fields may only contain value types, `*T`, `&T`, `id *T`, or `nilable` variants thereof. Unique references (`*mut T` and `&mut T`) are **not permitted** as struct field types.
 
 ```ray
 struct Container {
-    item: *Foo        // OK — shared reference
+    item: *Foo        // OK — shared heap reference
     parent: id *Bar   // OK — weak reference
     label: string     // OK — value type
-    // data: *mut Baz // ERROR — *mut T not allowed in struct fields
+    view: &Baz        // OK — shared borrow (region-constrained)
+    // data: *mut Baz // ERROR — unique references not allowed in struct fields
+    // edit: &mut Baz // ERROR — unique references not allowed in struct fields
 }
 ```
 
-**Rationale:** `*mut T` is a transient "setup handle" used during the unique phase. Structs represent persistent data that is stored and shared. Disallowing `*mut T` in fields ensures:
+**Rationale:** Unique references (`*mut T`, `&mut T`) are transient handles — `*mut T` is a setup handle during the unique phase, and `&mut T` is a temporary exclusive borrow. Disallowing them in fields ensures:
 
 - All structs are copyable (all field types are copyable).
 - Clone is always auto-derivable ([§10](#10-cloning)).
 - No non-copyable struct complexity.
 - The lifecycle is clear: create → mutate → freeze → store.
 
+**Borrow fields (`&T`) and struct lifetime:** A struct containing `&T` fields borrows the referent — the region system ([§7](#7-regions--lifetime-safety)) ensures the referent outlives the struct. Such structs can live on the stack but cannot be heap-allocated (storing a borrow in a heap object would violate the outlives constraint). This is the correct model for types like iterators that temporarily borrow data without taking ownership.
+
 For types that need exclusive heap ownership internally (e.g., `Vec`, `HashMap`), use unsafe `rawptr[T]` in the implementation.
 
-### 1.6 Copyability
+### 1.8 Copyability
 
 Copyability is a structural property:
 
-| Type                                       | Copyable?                                                               |
-|--------------------------------------------|-------------------------------------------------------------------------|
-| Primitives (`int`, `string`, `bool`, etc.) | Yes                                                                     |
-| `*T`                                       | Yes (copy bumps strong refcount)                                        |
-| `id *T`                                    | Yes (copy bumps weak refcount)                                          |
-| `*mut T`                                   | No (unique)                                                             |
-| `nilable[*T]`, `nilable[id *T]`            | Yes                                                                     |
-| Structs                                    | Yes (all fields are copyable, since `*mut T` fields are disallowed)     |
-| Enums                                      | Yes (all variant payloads are copyable)                                 |
+| Type                                       | Copyable?                                                                          |
+|--------------------------------------------|-------------------------------------------------------------------------------------|
+| Primitives (`int`, `string`, `bool`, etc.) | Yes                                                                                 |
+| `*T`                                       | Yes (copy bumps strong refcount)                                                    |
+| `id *T`                                    | Yes (copy bumps weak refcount)                                                      |
+| `&T`                                       | Yes (plain pointer copy, no refcount effect)                                        |
+| `*mut T`                                   | No (unique)                                                                         |
+| `&mut T`                                   | No (unique)                                                                         |
+| `nilable[*T]`, `nilable[id *T]`            | Yes                                                                                 |
+| Structs                                    | Yes (all fields are copyable, since unique reference fields are disallowed)         |
+| Enums                                      | Yes (all variant payloads are copyable)                                             |
 
 ---
 
@@ -287,19 +341,19 @@ Fields are dropped in **declaration order** (first field declared is dropped fir
 
 ## 5. Address-of Operators
 
-The `&` and `&mut` operators create references from stack values:
+The `&` and `&mut` operators create borrows from stack values:
 
-| Expression | Input                    | Result                  | Notes                           |
-|------------|--------------------------|-------------------------|---------------------------------|
-| `&x`       | `x: T` (stack value)     | `*T` in x's region      | Takes address of immutable value |
-| `&mut x`   | `mut x: T` (stack value) | `*mut T` in x's region  | Takes address of mutable value   |
+| Expression | Input                    | Result                   | Notes                               |
+|------------|--------------------------|--------------------------|-------------------------------------|
+| `&x`       | `x: T` (stack value)     | `&T` in x's region       | Shared borrow of immutable value    |
+| `&mut x`   | `mut x: T` (stack value) | `&mut T` in x's region   | Unique borrow of mutable value      |
 
 ```ray
 p = Point { x: 1, y: 2 }
-ref = &p                               // ref: *Point, in p's stack region
+ref = &p                               // ref: &Point, in p's stack region
 
 mut q = Point { x: 3, y: 4 }
-mref = &mut q                          // mref: *mut Point, in q's stack region
+mref = &mut q                          // mref: &mut Point, in q's stack region
 ```
 
 These references live in the **stack region** of the lvalue. Region constraints ([§7](#7-regions--lifetime-safety)) prevent them from escaping to longer-lived storage.
@@ -310,53 +364,50 @@ These references live in the **stack region** of the lvalue. Region constraints 
 
 ## 6. Borrowing
 
-Borrowing provides temporary, scoped access to a reference at a possibly different capability, without permanently consuming or weakening it.
+Borrowing provides temporary, scoped access to a value without taking ownership. With borrow types (`&T`, `&mut T`), borrowing is expressed directly in function signatures — a function declares whether it needs ownership (`*T`, `*mut T`) or just temporary access (`&T`, `&mut T`).
 
-### 6.1 Implicit Reborrowing at Call Sites
+### 6.1 Implicit Coercion at Call Sites
 
-When a `*mut T` is passed to a function expecting `*mut T`, the compiler creates an implicit **reborrow**:
+When a heap reference is passed to a function expecting a borrow, the compiler implicitly coerces it:
 
 ```ray
-fn reset(p: *mut Point) {
+fn reset(p: &mut Point) {
     p.x = 0
     p.y = 0
 }
 
 mut obj = box(Point { x: 1, y: 2 })
-reset(obj)                          // implicit reborrow, obj is NOT consumed
+reset(obj)                          // *mut Point coerced to &mut Point
 obj.x = 3                           // obj is available again after the call
 ```
 
-Internally:
-- A fresh region `ρ'` is created, constrained to be no longer than the call duration.
-- The callee receives `*mut ρ' T`.
-- The original `*mut ρ T` is marked **unavailable** for the duration of the call.
-- After the call returns, the original becomes available again.
-
-**Important:** Function calls **always** reborrow `*mut T` arguments. A regular function cannot consume a `*mut T` — only the compiler built-ins `freeze` and `box` have consuming semantics. To transfer `*mut T` ownership into a function, use the `move` keyword ([§6.4](#64-ownership-transfer-with-move)).
-
-### 6.2 Implicit Temporary Weakening at Call Sites
-
-A `*mut T` may also be passed where a `*T` is expected, without permanently freezing:
-
 ```ray
-fn print_point(p: *Point) {
+fn print_point(p: &Point) {
     // read-only access to p
 }
 
 mut obj = box(Point { x: 1, y: 2 })
-print_point(obj)                    // temporarily weakened to *Point for the call
+print_point(obj)                    // *mut Point coerced to &Point
 obj.x = 3                           // obj: *mut Point is available again
+
+shared = freeze(box(Point { x: 5, y: 6 }))
+print_point(shared)                 // *Point coerced to &Point
 ```
 
-The same region mechanism applies — the callee sees a `*T` in a short-lived region; the original `*mut T` is frozen during the call but restored afterward.
+Internally:
+- A fresh region `ρ'` is created, constrained to be no longer than the call duration.
+- The callee receives a borrow (`&ρ' T` or `&mut ρ' T`).
+- If the source is `*mut T`, the original is marked **unavailable** for the duration of the call.
+- After the call returns, the original becomes available again.
 
-### 6.3 Path-Level Borrowing
+The coercion rules follow the capability lattice ([§1.6](#16-capability-lattice)): `*mut T` → `&mut T` → `&T`, and `*T` → `&T`. No reference count is affected — the borrow is a temporary alias.
 
-Multiple disjoint fields of a `*mut T` may be borrowed simultaneously:
+### 6.2 Path-Level Borrowing
+
+Multiple disjoint fields of a `*mut T` (or `&mut T`) may be borrowed simultaneously:
 
 ```ray
-fn swap_coords(x: *mut int, y: *mut int) {
+fn swap_coords(x: &mut int, y: &mut int) {
     mut tmp = *x
     *x = *y
     *y = tmp
@@ -373,56 +424,38 @@ Rules:
 - For constant-length array types, individual elements at statically-known indices are treated as disjoint paths (e.g., `arr[0]` and `arr[1]`).
 - Dynamic array indexing is **not** eligible for path-level borrowing (the compiler cannot prove disjointness).
 
-### 6.4 Ownership Transfer with `move`
-
-By default, function calls reborrow `*mut T` arguments. To transfer ownership of a `*mut T` into a function, the **callee** declares the parameter with `move`:
-
-```ray
-fn build_and_freeze(move b: *mut Builder) -> *Thing {
-    b.finalize()
-    freeze(b)                          // allowed — b is owned, not a reborrow
-}
-
-mut builder = box(Builder { name: "test" })
-result = build_and_freeze(builder)     // builder is consumed
-// builder is no longer accessible here
-```
-
-- `move` appears in the **function signature**, not at the call site.
-- The compiler enforces: callers always transfer ownership when calling a `move` parameter function.
-- Inside the function, a `move` parameter is a fully owned `*mut T` — it can be frozen, stored, or dropped.
-- Without `move`, the parameter is a reborrow with a call-scoped region — it cannot be frozen or stored.
-
-### 6.5 Implicit Auto-ref for Method Receivers
+### 6.3 Implicit Auto-ref for Method Receivers
 
 When a method expects a reference receiver and is called on a value lvalue, the compiler inserts an implicit address-of operation:
 
 ```ray
 impl object Point {
-    fn scale(*mut self, factor: int) {
+    fn scale(&mut self, factor: int) {
         self.x = self.x * factor
         self.y = self.y * factor
     }
 }
 
 mut p = Point { x: 1, y: 2 } // p is a stack-allocated value
-p.scale(3)                   // compiler inserts &mut p, creating *mut Point in p's stack region
+p.scale(3)                   // compiler inserts &mut p, creating &mut Point
 ```
 
 This allows the same method definition to work on both stack values and heap references without the programmer writing different code for each case.
 
 Auto-ref applies **only to method receivers**, not to regular function arguments. For regular function arguments, use `&` / `&mut` explicitly when passing stack values.
 
-### 6.6 Closure Captures
+### 6.4 Closure Captures
 
 Closures capture variables from their enclosing scope. The capture behavior depends on the captured variable's type:
 
-| Captured type | Behavior                       | Rationale                  |
-|---------------|--------------------------------|----------------------------|
-| Value types   | **Copy**                       | No ownership semantics     |
-| `*T`          | **Copy** (strong RC bump)      | Shared refs alias freely   |
-| `id *T`       | **Copy** (weak RC bump)        | Identity refs alias freely |
-| `*mut T`      | **Move** (original consumed)   | Cannot alias unique refs   |
+| Captured type | Behavior                       | Rationale                    |
+|---------------|--------------------------------|------------------------------|
+| Value types   | **Copy**                       | No ownership semantics       |
+| `&T`          | **Copy** (plain pointer copy)  | Borrows alias freely         |
+| `*T`          | **Copy** (strong RC bump)      | Shared refs alias freely     |
+| `id *T`       | **Copy** (weak RC bump)        | Identity refs alias freely   |
+| `&mut T`      | **Move** (original consumed)   | Cannot alias unique borrows  |
+| `*mut T`      | **Move** (original consumed)   | Cannot alias unique refs     |
 
 #### Unique references are moved
 
@@ -479,22 +512,22 @@ fn example() {
 A future extension may allow closures to **borrow** `*mut T` instead of moving it, when the closure is provably short-lived. This would use a `noescape` annotation on the function parameter receiving the closure:
 
 ```ray
-fn with_lock(resource: *mut int, body: noescape fn() -> ()) {
+fn with_lock(resource: &mut int, body: noescape fn() -> ()) {
     body()
     // body cannot be stored or returned — only called within this scope
 }
 
-fn example(mut p: *mut int) {
-    with_lock(p, () => use(p))  // p is borrowed, not moved
+fn example(p: &mut int) {
+    with_lock(p, () => use(p))  // p is reborrowed, not moved
     p                           // still valid — borrow ended when with_lock returned
 }
 ```
 
 `noescape` is a property of the **parameter**, not the function type. The same function type `fn() -> ()` can appear in both escaping and non-escaping positions. The annotation is a promise by the callee that it will not store the closure beyond the call's duration.
 
-When a closure is passed to a `noescape` parameter, captured `*mut T` values are reborrowed for the call's duration — identical to how function arguments are reborrowed ([§6.1](#61-implicit-reborrowing-at-call-sites)). This ties into the region system ([§7](#7-regions--lifetime-safety)).
+When a closure is passed to a `noescape` parameter, captured `&mut T` and `*mut T` values are reborrowed for the call's duration — identical to how function arguments are coerced ([§6.1](#61-implicit-coercion-at-call-sites)). This ties into the region system ([§7](#7-regions--lifetime-safety)).
 
-Without `noescape`, the default is escaping — `*mut T` captures are always moves.
+Without `noescape`, the default is escaping — `&mut T` and `*mut T` captures are always moves.
 
 ---
 
@@ -504,8 +537,8 @@ Without `noescape`, the default is escaping — `*mut T` captures are always mov
 
 Every reference is internally parameterized by a **region** representing its validity extent:
 
-- Surface syntax: `*T`, `*mut T`, `id *T` (no region annotation).
-- Internal representation: `*ρ T`, `*mut ρ T`, `id *ρ T`.
+- Surface syntax: `*T`, `*mut T`, `id *T`, `&T`, `&mut T` (no region annotation).
+- Internal representation: `*ρ T`, `*mut ρ T`, `id *ρ T`, `&ρ T`, `&mut ρ T`.
 
 Regions are **never** written in source code. They are inferred by the compiler and used only for internal safety checking.
 
@@ -515,7 +548,7 @@ Regions are **never** written in source code. They are inferred by the compiler 
 |-------------------|-------------------------------------------------------------------------------|-------------------------------------------|
 | Heap region       | `new(T)`, `box(expr)`, `upgrade(x)`                                           | Lives as long as the refcount is nonzero  |
 | Stack region      | `&x`, `&mut x` on a stack lvalue                                              | Scoped to the enclosing stack frame       |
-| Call region       | Implicit reborrowing ([§6.1](#61-implicit-reborrowing-at-call-sites), [§6.2](#62-implicit-temporary-weakening-at-call-sites)) | Scoped to the function call               |
+| Call region       | Implicit coercion ([§6.1](#61-implicit-coercion-at-call-sites)) | Scoped to the function call               |
 | Destructor region | `*mut self` in `Destruct`                                                      | Scoped to the destructor body             |
 
 ### 7.3 Outlives Constraints
@@ -546,9 +579,9 @@ mut s = box(Wrapper { inner: some_ref })
 
 The region system ensures:
 
-1. **Stack references cannot escape**: a reference derived from `&x` or `&mut x` on a stack variable has a stack-scoped region. Storing it in a heap-allocated struct would require `Outlives(ρ_stack, ρ_heap)`, which fails.
+1. **Borrows cannot escape their region**: a `&T` or `&mut T` derived from `&x` / `&mut x` on a stack variable has a stack-scoped region. Storing it in a heap-allocated struct would require `Outlives(ρ_stack, ρ_heap)`, which fails.
 
-2. **Call-scoped borrows cannot escape**: a reborrowed reference has a call-scoped region. Storing it in a struct or returning it would violate the outlives constraint.
+2. **Call-scoped borrows cannot escape**: a borrow produced by implicit coercion at a call site has a call-scoped region. Storing it in a struct or returning it would violate the outlives constraint.
 
 3. **Heap references are freely storable**: references produced by `new` or `box` have heap-rooted regions that satisfy any outlives constraint.
 
@@ -586,10 +619,12 @@ Auto-deref applies transitively: if `p: **T` (a reference to a reference), `p.fi
 When resolving a method call `x.method(args)`, the compiler tries the following receiver types in order:
 
 1. `T` (direct value)
-2. `*T` (shared reference — insert `&x`)
-3. `*mut T` (unique reference — insert `&mut x`, requires mutable lvalue)
+2. `&T` (shared borrow — insert `&x`)
+3. `&mut T` (unique borrow — insert `&mut x`, requires mutable lvalue)
 
-This allows methods to be defined with reference receivers and called on values seamlessly.
+If `x` is a heap reference (`*T` or `*mut T`), it is first coerced to a borrow ([§6.1](#61-implicit-coercion-at-call-sites)), then the receiver search proceeds as above.
+
+This allows methods to be defined with borrow receivers and called on values, stack borrows, and heap references seamlessly.
 
 ---
 
@@ -669,11 +704,11 @@ error: cyclic strong references detected
 
 ```ray
 trait Clone['a] {
-    fn clone(*'a) -> 'a
+    fn clone(&'a) -> 'a
 }
 ```
 
-Clone takes a shared reference to a value and returns an independent copy as a **value**. The caller decides where the clone lives:
+Clone takes a shared borrow of a value and returns an independent copy as a **value**. The caller decides where the clone lives:
 
 ```ray
 shared: *Foo = ...
@@ -689,17 +724,20 @@ Clone is called as a method. Receiver resolution handles all reference types:
 
 | `x` type             | What happens                       | Result    |
 |----------------------|------------------------------------|-----------|
-| `x: T` (stack value) | auto-ref to `*T`                   | `T` value |
-| `x: *T`              | direct match                       | `T` value |
-| `x: *mut T`          | implicit temporary weaken to `*T`  | `T` value |
+| `x: T` (stack value) | auto-ref to `&T`                   | `T` value |
+| `x: &T`              | direct match                       | `T` value |
+| `x: &mut T`          | coerce to `&T`                     | `T` value |
+| `x: *T`              | coerce to `&T`                     | `T` value |
+| `x: *mut T`          | coerce to `&T`                     | `T` value |
 
 In all cases, `x` remains available after the call.
 
 ### 10.3 Auto-derived Clone
 
-Since `*mut T` is disallowed in struct fields, all struct fields are copyable, and Clone is always auto-derivable. The default implementation is **shallow**:
+Since `*mut T` and `&mut T` are disallowed in struct fields, all struct fields are copyable, and Clone is always auto-derivable. The default implementation is **shallow**:
 
 - Value fields: copied.
+- `&T` fields: copied (plain pointer copy — no refcount effect).
 - `*T` fields: copied (bumps refcount — both point to the same object).
 - `id *T` fields: copied (bumps weak refcount).
 
@@ -708,7 +746,7 @@ Since `*mut T` is disallowed in struct fields, all struct fields are copyable, a
 // struct Foo { x: int, data: *Bar }
 
 impl Clone[Foo] {
-    fn clone(self: *Foo) -> Foo {
+    fn clone(self: &Foo) -> Foo {
         Foo {
             x: self.x,            // copy value
             data: self.data,      // copy *Bar ref (bump refcount) — shallow
@@ -723,7 +761,7 @@ For deep copies (cloning referenced data recursively), implement Clone manually:
 
 ```ray
 impl Clone[Foo] {
-    fn clone(self: *Foo) -> Foo {
+    fn clone(self: &Foo) -> Foo {
         Foo {
             x: self.x,
             data: freeze(box(self.data.clone())),  // deep: clone the Bar, heap-allocate, share
@@ -742,6 +780,8 @@ All reference types are **non-null** by default:
 x: *Point    // always points to a valid Point
 y: *mut Foo  // always points to a valid Foo
 z: id *Bar   // always points to a valid (possibly freed) Bar
+a: &Point    // always points to a valid Point
+b: &mut Foo  // always points to a valid Foo
 ```
 
 For optional references, use `nilable`:
@@ -800,8 +840,8 @@ This will be addressed when trait objects are designed.
 
 Ray is single-threaded today. The reference model is designed to extend to multi-threaded execution:
 
-- `*T` (shared, read-only) is inherently thread-safe — no data races on immutable data.
-- `*mut T` (unique) is inherently thread-safe — no aliasing means no races.
+- `*T` and `&T` (shared, read-only) are inherently thread-safe — no data races on immutable data.
+- `*mut T` and `&mut T` (unique) are inherently thread-safe — no aliasing means no races.
 - Refcount operations (`strong_count`, `weak_count`) should use atomic operations when concurrency is enabled.
 - Shared mutation (through future interior mutability primitives) will require synchronization (`Mutex[T]`, atomics).
 - A `Send`/`Sync`-like trait system may be introduced to govern which types can cross thread boundaries.
@@ -821,7 +861,7 @@ trait Drop['a] {
 
 This mirrors Rust's `Drop` trait. A type implementing `Drop` would have its `drop` method called deterministically at scope exit, enabling RAII patterns for file handles, locks, transaction guards, and other resources that aren't heap-allocated references.
 
-**Implication:** types implementing `Drop` would likely need to be **non-copyable**, since implicit copies would create ambiguity about which copy's scope exit triggers the drop. The interaction between `Drop`, copyability, and the struct field rules ([§1.5](#15-mut-t-is-not-allowed-in-struct-fields)) requires careful design.
+**Implication:** types implementing `Drop` would likely need to be **non-copyable**, since implicit copies would create ambiguity about which copy's scope exit triggers the drop. The interaction between `Drop`, copyability, and the struct field rules ([§1.7](#17-unique-references-are-not-allowed-in-struct-fields)) requires careful design.
 
 The exact design is deferred to a separate specification.
 
