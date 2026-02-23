@@ -55,6 +55,21 @@ impl<'a> TyParser<'a> {
         self.index += count;
     }
 
+    /// Try to consume a keyword (e.g. `"mut"`). Succeeds only if the keyword
+    /// is followed by a non-identifier character (or EOF), so `"mut"` won't
+    /// match inside `"mutable"`.
+    fn try_keyword(&mut self, kw: &str) -> bool {
+        self.consume_whitespace();
+        if self.src.get(self.index..self.index + kw.len()) == Some(kw) {
+            let after = self.src.chars().nth(self.index + kw.len());
+            if after.map_or(true, |c| !c.is_ascii_alphanumeric() && c != '_') {
+                self.index += kw.len();
+                return true;
+            }
+        }
+        false
+    }
+
     fn consume_whitespace(&mut self) {
         while let Some(ch) = self.src.chars().nth(self.index) {
             if !ch.is_whitespace() {
@@ -131,6 +146,8 @@ impl<'a> TyParser<'a> {
     fn parse_ty_complex(&mut self) -> Result<Option<Ty>, String> {
         Ok(if let Some('*') = self.peek() {
             Some(self.parse_ptr_ty()?)
+        } else if let Some('&') = self.peek() {
+            Some(self.parse_borrow_ty()?)
         } else if let Some("id") = self.peek_n(2) {
             // Check if it's `id *T` (id ref type) by looking ahead
             let saved = self.index;
@@ -178,20 +195,22 @@ impl<'a> TyParser<'a> {
 
     fn parse_ptr_ty(&mut self) -> Result<Ty, String> {
         self.expect("*");
-        // Check for `*mut T`
-        if let Some("mu") = self.peek_n(2) {
-            if let Some("mut") = self.src.get(self.index..self.index + 3) {
-                // Ensure "mut" is not part of a longer identifier
-                let after_mut = self.src.chars().nth(self.index + 3);
-                if after_mut.map_or(true, |c| !c.is_ascii_alphanumeric() && c != '_') {
-                    self.advance(3);
-                    let ptee_ty = self.parse_ty()?;
-                    return Ok(Ty::mut_ref_of(ptee_ty));
-                }
-            }
+        if self.try_keyword("mut") {
+            let ptee_ty = self.parse_ty()?;
+            return Ok(Ty::mut_ref_of(ptee_ty));
         }
         let ptee_ty = self.parse_ty()?;
         Ok(Ty::ref_of(ptee_ty))
+    }
+
+    fn parse_borrow_ty(&mut self) -> Result<Ty, String> {
+        self.expect("&");
+        if self.try_keyword("mut") {
+            let ptee_ty = self.parse_ty()?;
+            return Ok(Ty::borrow_mut_of(ptee_ty));
+        }
+        let ptee_ty = self.parse_ty()?;
+        Ok(Ty::borrow_of(ptee_ty))
     }
 
     fn parse_id_ref_ty(&mut self) -> Result<Ty, String> {

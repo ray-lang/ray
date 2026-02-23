@@ -105,6 +105,8 @@ impl Parser<'_> {
     fn parse_ty_complex(&mut self, ctx: &ParseContext) -> ParseResult<Option<Parsed<TyScheme>>> {
         Ok(if peek!(self, TokenKind::Asterisk) {
             Some(self.parse_ptr_ty(ctx)?)
+        } else if peek!(self, TokenKind::Ampersand) {
+            Some(self.parse_borrow_ty(ctx)?)
         } else if peek!(self, TokenKind::Id) && self.peek_kind_at(1) == TokenKind::Asterisk {
             Some(self.parse_id_ref_ty(ctx)?)
         } else if peek!(self, TokenKind::Fn) {
@@ -154,6 +156,23 @@ impl Parser<'_> {
             Ty::mut_ref_of(inner)
         } else {
             Ty::ref_of(inner)
+        };
+        let mut parsed = Parsed::new(TyScheme::from_mono(ty), self.mk_src(Span { start, end }));
+        parsed.set_synthetic_ids(ids);
+        Ok(parsed)
+    }
+
+    fn parse_borrow_ty(&mut self, ctx: &ParseContext) -> ParseResult<Parsed<TyScheme>> {
+        let start = self.expect_start(TokenKind::Ampersand, ctx)?;
+        let is_mut = expect_if!(self, TokenKind::Mut);
+        let ptee_ty = self.parse_type_annotation(None, ctx);
+        let (ptee_ty, ptee_src, ids) = ptee_ty.take();
+        let end = ptee_src.span.unwrap().end;
+        let inner = ptee_ty.into_mono();
+        let ty = if is_mut {
+            Ty::borrow_mut_of(inner)
+        } else {
+            Ty::borrow_of(inner)
         };
         let mut parsed = Parsed::new(TyScheme::from_mono(ty), self.mk_src(Span { start, end }));
         parsed.set_synthetic_ids(ids);

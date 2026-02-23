@@ -198,6 +198,12 @@ impl Parser<'_> {
             } else {
                 Some(ReceiverKind::Ref)
             }
+        } else if expect_if!(self, TokenKind::Ampersand) {
+            if expect_if!(self, TokenKind::Mut) {
+                Some(ReceiverKind::BorrowMutRef)
+            } else {
+                Some(ReceiverKind::BorrowRef)
+            }
         } else {
             None
         };

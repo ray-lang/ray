@@ -150,13 +150,17 @@ where
 /// Given the implementing type (e.g., `Box['a]`) and the receiver kind from the parsed
 /// parameter, produces the full self type:
 /// - `None` → `Box['a]` (value receiver)
-/// - `Some(Ref)` → `*Box['a]` (shared reference)
-/// - `Some(MutRef)` → `*mut Box['a]` (mutable reference)
+/// - `Some(Ref)` → `*T` (shared heap reference)
+/// - `Some(MutRef)` → `*mut T` (mutable heap reference)
+/// - `Some(BorrowRef)` → `&T` (shared borrow)
+/// - `Some(BorrowMutRef)` → `&mut T` (mutable borrow)
 pub fn apply_receiver(implementing_ty: Ty, receiver: Option<ReceiverKind>) -> Ty {
     match receiver {
         None => implementing_ty,
         Some(ReceiverKind::Ref) => Ty::ref_of(implementing_ty),
         Some(ReceiverKind::MutRef) => Ty::mut_ref_of(implementing_ty),
+        Some(ReceiverKind::BorrowRef) => Ty::borrow_of(implementing_ty),
+        Some(ReceiverKind::BorrowMutRef) => Ty::borrow_mut_of(implementing_ty),
     }
 }
 

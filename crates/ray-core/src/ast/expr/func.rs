@@ -18,12 +18,15 @@ use crate::ast::{Expr, Missing, Modifier, Name, Node, TypeParams};
 
 /// The receiver kind for a `self` parameter prefix.
 ///
-/// `*self` is `Ref`, `*mut self` is `MutRef`. Bare `self` has no receiver
+/// `*self` is `Ref`, `*mut self` is `MutRef`, `&self` is `BorrowRef`,
+/// `&mut self` is `BorrowMutRef`. Bare `self` has no receiver
 /// (represented as `None` in `FnParam::Name::receiver`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiverKind {
     Ref,
     MutRef,
+    BorrowRef,
+    BorrowMutRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +61,8 @@ impl std::fmt::Display for FnParam {
                 match receiver {
                     Some(ReceiverKind::Ref) => write!(f, "*{}", name),
                     Some(ReceiverKind::MutRef) => write!(f, "*mut {}", name),
+                    Some(ReceiverKind::BorrowRef) => write!(f, "&{}", name),
+                    Some(ReceiverKind::BorrowMutRef) => write!(f, "&mut {}", name),
                     None => write!(f, "{}", name),
                 }
             }
