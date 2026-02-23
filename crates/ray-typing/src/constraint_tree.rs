@@ -1020,13 +1020,12 @@ fn generate_constraints_for_expr(
                 expr: inner,
                 mutable,
             } => {
-                // Explicit reference (Section 1.1 "Pointer types"):
-                // `&e : *T` when `e : T`; `&mut e : *mut T` when `e : T`.
+                // Explicit borrow: `&e : &T` when `e : T`; `&mut e : &mut T`.
                 let inner_ty = ctx.expr_ty_or_fresh(*inner);
                 let ptr_ty = if *mutable {
-                    Ty::mut_ref_of(inner_ty)
+                    Ty::borrow_mut_of(inner_ty)
                 } else {
-                    Ty::ref_of(inner_ty)
+                    Ty::borrow_of(inner_ty)
                 };
                 node.wanteds
                     .push(Constraint::eq(expr_ty, ptr_ty, info.clone()));
@@ -2838,10 +2837,10 @@ mod tests {
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
-        // &e should produce *T (Ref), not *mut T (MutRef)
+        // &e should produce &T (Borrow), not &mut T (BorrowMut)
         assert!(
-            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
-            "expected Ref in constraint rhs, got: {:?}",
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Borrow(_))),
+            "expected Borrow in constraint rhs, got: {:?}",
             eq_constraints(binding_node)
         );
     }
@@ -2872,15 +2871,15 @@ mod tests {
         let tree = build_constraint_tree_for_group(&input, &mut ctx, &group);
         let binding_node = get_binding_node(&tree);
 
-        // &mut e should produce *mut T (MutRef), not *T (Ref)
+        // &mut e should produce &mut T (BorrowMut), not &T (Borrow)
         assert!(
-            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::MutRef(_))),
-            "expected MutRef in constraint rhs for &mut, got: {:?}",
+            has_eq_rhs(binding_node, |ty| matches!(ty, Ty::BorrowMut(_))),
+            "expected BorrowMut in constraint rhs for &mut, got: {:?}",
             eq_constraints(binding_node)
         );
         assert!(
-            !has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Ref(_))),
-            "should not produce Ref constraint for &mut"
+            !has_eq_rhs(binding_node, |ty| matches!(ty, Ty::Borrow(_))),
+            "should not produce Borrow constraint for &mut"
         );
     }
 

@@ -806,9 +806,10 @@ fn solve_ref_coerce(wanted: &Constraint, subst: &mut Subst) -> SolveOutcome {
         return SolveOutcome::Unsolved;
     }
 
-    // `from` is headed. If it's `*mut T` and `to` is still a meta, defer —
-    // `to` might become `*T` (requiring coercion) or `*mut T` (exact match).
-    if (from.is_mut_ref() || from.is_borrow_mut()) && to_is_meta {
+    // `from` is headed and can coerce to a weaker ref type. If `to` is still
+    // a meta, defer — `to` might resolve to an exact match or a coercion target.
+    // Coercible sources: `*mut T`, `*T`, `&mut T`.
+    if (from.is_mut_ref() || from.is_shared_ref() || from.is_borrow_mut()) && to_is_meta {
         return SolveOutcome::Unsolved;
     }
 
@@ -823,6 +824,46 @@ fn solve_ref_coerce(wanted: &Constraint, subst: &mut Subst) -> SolveOutcome {
         let weakened = Ty::Ref(inner.clone());
         if let Ok(new_subst) = unify(&weakened, &to, subst, &wanted.info) {
             log::debug!("[solve_ref_coerce] coerced *mut {} → *{}", inner, inner);
+            subst.union(new_subst);
+            return SolveOutcome::Solved;
+        }
+    }
+
+    // BorrowMut → Borrow: `&mut T` → `&T`
+    if let Ty::BorrowMut(inner) = &from {
+        let weakened = Ty::Borrow(inner.clone());
+        if let Ok(new_subst) = unify(&weakened, &to, subst, &wanted.info) {
+            log::debug!("[solve_ref_coerce] coerced &mut {} → &{}", inner, inner);
+            subst.union(new_subst);
+            return SolveOutcome::Solved;
+        }
+    }
+
+    // MutRef → BorrowMut: `*mut T` → `&mut T`
+    if let Ty::MutRef(inner) = &from {
+        let weakened = Ty::BorrowMut(inner.clone());
+        if let Ok(new_subst) = unify(&weakened, &to, subst, &wanted.info) {
+            log::debug!("[solve_ref_coerce] coerced *mut {} → &mut {}", inner, inner);
+            subst.union(new_subst);
+            return SolveOutcome::Solved;
+        }
+    }
+
+    // Ref → Borrow: `*T` → `&T`
+    if let Ty::Ref(inner) = &from {
+        let weakened = Ty::Borrow(inner.clone());
+        if let Ok(new_subst) = unify(&weakened, &to, subst, &wanted.info) {
+            log::debug!("[solve_ref_coerce] coerced *{} → &{}", inner, inner);
+            subst.union(new_subst);
+            return SolveOutcome::Solved;
+        }
+    }
+
+    // MutRef → Borrow (transitive): `*mut T` → `&T`
+    if let Ty::MutRef(inner) = &from {
+        let weakened = Ty::Borrow(inner.clone());
+        if let Ok(new_subst) = unify(&weakened, &to, subst, &wanted.info) {
+            log::debug!("[solve_ref_coerce] coerced *mut {} → &{}", inner, inner);
             subst.union(new_subst);
             return SolveOutcome::Solved;
         }
