@@ -356,7 +356,7 @@ impl<'a> RegionCtx<'a> {
             let Some(ty) = inferred_local_type(self.db, local_id) else {
                 continue;
             };
-            if !(ty.is_shared_ref() || ty.is_mut_ref() || ty.is_id_ref()) {
+            if !(ty.is_any_ref()) {
                 continue;
             }
 
@@ -616,7 +616,7 @@ impl<'a> RegionCtx<'a> {
                 // If the call returns a reference type, assign Heap region.
                 // Callee validation ensures returned references outlive Heap.
                 let result_is_ref = ty_of(self.db, expr.id)
-                    .map(|ty| ty.is_shared_ref() || ty.is_mut_ref() || ty.is_id_ref())
+                    .map(|ty| ty.is_any_ref())
                     .unwrap_or(false);
                 if result_is_ref {
                     Some(self.fresh_region(RegionKind::Heap, expr.id, None))
@@ -629,7 +629,7 @@ impl<'a> RegionCtx<'a> {
                 let lhs_region = self.visit_expr(&dot.lhs);
                 // Propagate region only if the dot result is a reference type.
                 let result_is_ref = ty_of(self.db, expr.id)
-                    .map(|ty| ty.is_shared_ref() || ty.is_mut_ref() || ty.is_id_ref())
+                    .map(|ty| ty.is_any_ref())
                     .unwrap_or(false);
                 if result_is_ref { lhs_region } else { None }
             }
