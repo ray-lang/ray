@@ -5,7 +5,7 @@ LLVM_SYS_CONFIG_PATH := $(LLVM_SYS_170_PREFIX)/bin/llvm-config
 export LLVM_SYS_170_PREFIX
 export LLVM_SYS_CONFIG_PATH
 
-.PHONY: build build-release core dev-toolchain release-toolchain vscode-ext
+.PHONY: build build-release core dev-toolchain release-toolchain vscode-ext wasi-malloc
 
 build:
 	@cargo build
@@ -42,8 +42,11 @@ vscode-ext:
 	@echo "==> packaging extension VSIX"
 	@cd editors/vscode && vsce package --skip-license
 
+wasi-malloc:
+	@scripts/build-wasi-malloc.sh
+
 clean:
 	@echo "==> clearing .ray/lib"
 	@rm -rf .ray/lib
 	@echo "==> clearing build caches"
-	@rm -rf lib/core/.ray lib/testing/.ray 
+	@rm -rf lib/core/.ray lib/testing/.ray
