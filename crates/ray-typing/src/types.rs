@@ -187,7 +187,12 @@ impl Substitutable for Ty {
                 }
                 ret.apply_subst(subst);
             }
-            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
+            Ty::Ref(inner)
+            | Ty::MutRef(inner)
+            | Ty::IdRef(inner)
+            | Ty::RawPtr(inner)
+            | Ty::Borrow(inner)
+            | Ty::BorrowMut(inner) => {
                 inner.apply_subst(subst);
             }
             Ty::Proj(_, args) | Ty::Tuple(args) => {
@@ -682,8 +687,8 @@ impl ReceiverMode {
         // If it is a pointer type, we treat the method as a pointer receiver,
         // otherwise as a value receiver.
         match &param_tys[0] {
-            Ty::Ref(_) => ReceiverMode::Ptr,
-            Ty::MutRef(_) => ReceiverMode::MutPtr,
+            Ty::Ref(_) | Ty::Borrow(_) => ReceiverMode::Ptr,
+            Ty::MutRef(_) | Ty::BorrowMut(_) => ReceiverMode::MutPtr,
             _ => ReceiverMode::Value,
         }
     }

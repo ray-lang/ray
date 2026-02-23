@@ -291,6 +291,18 @@ where
             Ty::RawPtr(Box::new(resolved_inner))
         }
 
+        Ty::Borrow(inner) => {
+            let resolved_inner =
+                transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::Borrow(Box::new(resolved_inner))
+        }
+
+        Ty::BorrowMut(inner) => {
+            let resolved_inner =
+                transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);
+            Ty::BorrowMut(Box::new(resolved_inner))
+        }
+
         Ty::Array(inner, size) => {
             let resolved_inner =
                 transform_ty_with_resolutions(inner, id_iter, resolutions, var_map, get_item_path);

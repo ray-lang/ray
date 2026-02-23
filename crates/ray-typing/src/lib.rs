@@ -1401,7 +1401,9 @@ fn check_residuals_and_emit_errors(
                             Ty::Ref(inner)
                             | Ty::MutRef(inner)
                             | Ty::IdRef(inner)
-                            | Ty::RawPtr(inner) => ty = (*inner).clone(),
+                            | Ty::RawPtr(inner)
+                            | Ty::Borrow(inner)
+                            | Ty::BorrowMut(inner) => ty = (*inner).clone(),
                             Ty::Const(p) | Ty::Proj(p, _) => break Some(p),
                             Ty::Var(v) if v.is_meta() => break None,
                             _ => break None,

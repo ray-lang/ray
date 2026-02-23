@@ -122,9 +122,9 @@ fn check_ref_write_allowed(
     };
 
     match &ty {
-        Ty::Ref(_) => {
+        Ty::Ref(_) | Ty::Borrow(_) => {
             errors.push(RayError {
-                msg: "cannot assign through shared reference `*T`".to_string(),
+                msg: "cannot assign through shared reference".to_string(),
                 src: vec![Source {
                     span: Some(srcmap.span_of(lhs)),
                     filepath: filepath.clone(),

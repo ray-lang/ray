@@ -158,7 +158,7 @@ impl<'a> OwnershipCtx<'a> {
         let Some(ty) = inferred_local_type(self.db, local_id) else {
             return;
         };
-        if ty.is_mut_ref() {
+        if ty.is_unique_ref() {
             self.var_states.insert(local_id, VarState::Alive);
         }
     }
@@ -251,7 +251,7 @@ impl<'a> OwnershipCtx<'a> {
             Expr::Name(_) => {
                 let local_id = local_binding_for_node(self.db, expr.id)?;
                 let ty = inferred_local_type(self.db, local_id)?;
-                if ty.is_mut_ref() {
+                if ty.is_unique_ref() {
                     Some(BorrowPath {
                         root: local_id,
                         fields: vec![],
@@ -464,7 +464,7 @@ impl<'a> OwnershipCtx<'a> {
                     let mut captured_mut_refs = Vec::new();
                     for &capture_id in &info.captures {
                         let is_mut = inferred_local_type(self.db, capture_id)
-                            .map(|ty| ty.is_mut_ref())
+                            .map(|ty| ty.is_unique_ref())
                             .unwrap_or(false);
                         if is_mut {
                             // Check for use-after-consume (e.g., second closure capturing same var)

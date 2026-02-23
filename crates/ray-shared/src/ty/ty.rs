@@ -31,6 +31,10 @@ pub enum Ty {
     IdRef(Box<Ty>),
     /// Raw pointer `rawptr[T]` — unsafe, no semantics.
     RawPtr(Box<Ty>),
+    /// Shared borrow `&T` — non-owning, read-only, no reference counting.
+    Borrow(Box<Ty>),
+    /// Unique borrow `&mut T` — non-owning, read-write, no reference counting.
+    BorrowMut(Box<Ty>),
 
     // Placeholder for other constructors: structs, traits, type constructors, etc.
     Proj(ItemPath, Vec<Ty>),
@@ -66,6 +70,8 @@ impl std::fmt::Display for Ty {
             Ty::MutRef(ty) => write!(f, "*mut {}", ty),
             Ty::IdRef(ty) => write!(f, "id *{}", ty),
             Ty::RawPtr(ty) => write!(f, "rawptr[{}]", ty),
+            Ty::Borrow(ty) => write!(f, "&{}", ty),
+            Ty::BorrowMut(ty) => write!(f, "&mut {}", ty),
             Ty::Proj(p, args) => {
                 if args.is_empty() {
                     write!(f, "{}", p)
@@ -200,6 +206,14 @@ impl Ty {
         Ty::RawPtr(Box::new(ty))
     }
 
+    pub fn borrow_of(ty: Ty) -> Self {
+        Ty::Borrow(Box::new(ty))
+    }
+
+    pub fn borrow_mut_of(ty: Ty) -> Self {
+        Ty::BorrowMut(Box::new(ty))
+    }
+
     pub fn list(ty: Ty) -> Self {
         Ty::Proj(ItemPath::from("list"), vec![ty])
     }
@@ -293,7 +307,12 @@ impl Ty {
                 }
                 ret.free_ty_vars(out);
             }
-            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
+            Ty::Ref(inner)
+            | Ty::MutRef(inner)
+            | Ty::IdRef(inner)
+            | Ty::RawPtr(inner)
+            | Ty::Borrow(inner)
+            | Ty::BorrowMut(inner) => {
                 inner.free_ty_vars(out);
             }
             Ty::Proj(_, args) | Ty::Tuple(args) => {
@@ -355,6 +374,8 @@ impl Ty {
             Ty::MutRef(ty) => format!("unique reference to {}", ty.desc()),
             Ty::IdRef(ty) => format!("identity reference to {}", ty.desc()),
             Ty::RawPtr(ty) => format!("raw pointer to {}", ty.desc()),
+            Ty::Borrow(ty) => format!("shared borrow of {}", ty.desc()),
+            Ty::BorrowMut(ty) => format!("unique borrow of {}", ty.desc()),
             Ty::Array(ty, _) => format!("array of {}", ty.desc()),
             Ty::Func(_, _) => str!("function"),
             Ty::Const(path) | Ty::Proj(path, _) => path.to_string(),
@@ -452,9 +473,11 @@ impl Ty {
                 format!("<({}):{}>", params_str, ret.to_mangled())
             }
             Ty::Ref(inner) => format!("*{}", inner.to_mangled()),
-            Ty::MutRef(inner) => format!("*mut {}", inner.to_mangled()),
-            Ty::IdRef(inner) => format!("id *{}", inner.to_mangled()),
+            Ty::MutRef(inner) => format!("*mut[{}]", inner.to_mangled()),
+            Ty::IdRef(inner) => format!("id*[{}]", inner.to_mangled()),
             Ty::RawPtr(inner) => format!("rawptr[{}]", inner.to_mangled()),
+            Ty::Borrow(inner) => format!("&{}", inner.to_mangled()),
+            Ty::BorrowMut(inner) => format!("&mut[{}]", inner.to_mangled()),
             Ty::Tuple(elems) => {
                 let elems_str = elems
                     .iter()
@@ -501,6 +524,14 @@ impl Ty {
                 let base_path = Path::from("rawptr");
                 base_path.append_type_args(std::iter::once(ty.as_ref()))
             }
+            Ty::Borrow(ty) => {
+                let base_path = Path::from("borrow");
+                base_path.append_type_args(std::iter::once(ty.as_ref()))
+            }
+            Ty::BorrowMut(ty) => {
+                let base_path = Path::from("borrowmut");
+                base_path.append_type_args(std::iter::once(ty.as_ref()))
+            }
             Ty::Tuple(tys) => {
                 let base_path = Path::from("tuple");
                 base_path.append_type_args(tys.iter())
@@ -523,6 +554,8 @@ impl Ty {
             Ty::MutRef(_) => str!("mutref"),
             Ty::IdRef(_) => str!("idref"),
             Ty::RawPtr(_) => str!("rawptr"),
+            Ty::Borrow(_) => str!("borrow"),
+            Ty::BorrowMut(_) => str!("borrowmut"),
             Ty::Func(_, _) => str!("func"),
         }
     }
@@ -548,7 +581,13 @@ impl Ty {
     pub fn arity(&self) -> usize {
         match self {
             Ty::Any | Ty::Never | Ty::Const(_) | Ty::Var(_) => 0,
-            Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_) | Ty::Array(_, _) => 1,
+            Ty::Ref(_)
+            | Ty::MutRef(_)
+            | Ty::IdRef(_)
+            | Ty::RawPtr(_)
+            | Ty::Borrow(_)
+            | Ty::BorrowMut(_)
+            | Ty::Array(_, _) => 1,
             Ty::Proj(_, items) | Ty::Tuple(items) => items.len(),
             Ty::Func(items, _) => items.len() + 1,
         }
@@ -563,7 +602,9 @@ impl Ty {
             | Ty::Ref(_)
             | Ty::MutRef(_)
             | Ty::IdRef(_)
-            | Ty::RawPtr(_) => false,
+            | Ty::RawPtr(_)
+            | Ty::Borrow(_)
+            | Ty::BorrowMut(_) => false,
         }
     }
 
@@ -632,9 +673,13 @@ impl Ty {
     /// See also [`type_params`](Self::type_params) which filters to only type variables.
     pub fn type_arguments(&self) -> Vec<&Ty> {
         match self {
-            Ty::Array(t, _) | Ty::Ref(t) | Ty::MutRef(t) | Ty::IdRef(t) | Ty::RawPtr(t) => {
-                vec![t.as_ref()]
-            }
+            Ty::Array(t, _)
+            | Ty::Ref(t)
+            | Ty::MutRef(t)
+            | Ty::IdRef(t)
+            | Ty::RawPtr(t)
+            | Ty::Borrow(t)
+            | Ty::BorrowMut(t) => vec![t.as_ref()],
             Ty::Tuple(t) | Ty::Proj(_, t) => t.iter().collect(),
             Ty::Never | Ty::Any | Ty::Const(_) | Ty::Var(_) | Ty::Func(_, _) => vec![],
         }
@@ -678,14 +723,12 @@ impl Ty {
 
                 Some(t.as_ref())
             }
-            Ty::Ref(t) | Ty::MutRef(t) | Ty::IdRef(t) => {
-                if idx != 0 {
-                    return None;
-                }
-
-                Some(t.as_ref())
-            }
-            Ty::RawPtr(t) => {
+            Ty::Ref(t)
+            | Ty::MutRef(t)
+            | Ty::IdRef(t)
+            | Ty::RawPtr(t)
+            | Ty::Borrow(t)
+            | Ty::BorrowMut(t) => {
                 if idx != 0 {
                     return None;
                 }
@@ -710,16 +753,14 @@ impl Ty {
 
                 *t = Box::new(tp);
             }
-            Ty::Ref(t) | Ty::MutRef(t) | Ty::IdRef(t) => {
+            Ty::Ref(t)
+            | Ty::MutRef(t)
+            | Ty::IdRef(t)
+            | Ty::RawPtr(t)
+            | Ty::Borrow(t)
+            | Ty::BorrowMut(t) => {
                 if idx != 0 {
-                    panic!("reference only has one type parameter: idx={}", idx)
-                }
-
-                *t = Box::new(tp);
-            }
-            Ty::RawPtr(t) => {
-                if idx != 0 {
-                    panic!("rawptr only has one type parameter: idx={}", idx)
+                    panic!("pointer type only has one type parameter: idx={}", idx)
                 }
 
                 *t = Box::new(tp);
@@ -772,9 +813,12 @@ impl Ty {
 
     pub fn unwrap_pointer(&self) -> Option<&Ty> {
         match self {
-            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) => {
-                Some(&inner)
-            }
+            Ty::Ref(inner)
+            | Ty::MutRef(inner)
+            | Ty::IdRef(inner)
+            | Ty::RawPtr(inner)
+            | Ty::Borrow(inner)
+            | Ty::BorrowMut(inner) => Some(&inner),
             _ => None,
         }
     }
@@ -783,7 +827,12 @@ impl Ty {
     pub fn is_any_pointer(&self) -> bool {
         matches!(
             self,
-            Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::RawPtr(_)
+            Ty::Ref(_)
+                | Ty::MutRef(_)
+                | Ty::IdRef(_)
+                | Ty::RawPtr(_)
+                | Ty::Borrow(_)
+                | Ty::BorrowMut(_)
         )
     }
 
@@ -805,14 +854,50 @@ impl Ty {
         matches!(self, Ty::IdRef(_))
     }
 
-    /// Returns true if this type contains `*mut T` anywhere in its structure.
-    /// Used to reject `*mut T` in struct fields.
+    /// Returns true if this is a shared borrow `&T`.
+    #[inline]
+    pub fn is_borrow(&self) -> bool {
+        matches!(self, Ty::Borrow(_))
+    }
+
+    /// Returns true if this is a unique borrow `&mut T`.
+    #[inline]
+    pub fn is_borrow_mut(&self) -> bool {
+        matches!(self, Ty::BorrowMut(_))
+    }
+
+    /// Returns true if this is any borrow type (`&T` or `&mut T`).
+    #[inline]
+    pub fn is_any_borrow(&self) -> bool {
+        matches!(self, Ty::Borrow(_) | Ty::BorrowMut(_))
+    }
+
+    /// Returns true if this is any safe reference type (heap or borrow).
+    /// Includes `*T`, `*mut T`, `id *T`, `&T`, `&mut T`. Does NOT include `rawptr[T]`.
+    #[inline]
+    pub fn is_any_ref(&self) -> bool {
+        matches!(
+            self,
+            Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) | Ty::Borrow(_) | Ty::BorrowMut(_)
+        )
+    }
+
+    /// Returns true if this is a non-copyable unique reference type (`*mut T` or `&mut T`).
+    #[inline]
+    pub fn is_unique_ref(&self) -> bool {
+        matches!(self, Ty::MutRef(_) | Ty::BorrowMut(_))
+    }
+
+    /// Returns true if this type contains `*mut T` or `&mut T` anywhere in its structure.
+    /// Used to reject unique mutable references in struct fields.
     pub fn contains_mut_ref(&self) -> bool {
         match self {
-            Ty::MutRef(_) => true,
-            Ty::Ref(inner) | Ty::IdRef(inner) | Ty::RawPtr(inner) | Ty::Array(inner, _) => {
-                inner.contains_mut_ref()
-            }
+            Ty::MutRef(_) | Ty::BorrowMut(_) => true,
+            Ty::Ref(inner)
+            | Ty::IdRef(inner)
+            | Ty::RawPtr(inner)
+            | Ty::Borrow(inner)
+            | Ty::Array(inner, _) => inner.contains_mut_ref(),
             Ty::Tuple(items) => items.iter().any(Ty::contains_mut_ref),
             Ty::Func(params, ret) => {
                 params.iter().any(Ty::contains_mut_ref) || ret.contains_mut_ref()
@@ -827,9 +912,12 @@ impl Ty {
     pub fn contains_invalid_ref_nesting(&self) -> bool {
         match self {
             Ty::IdRef(inner) => inner.is_mut_ref() || inner.contains_invalid_ref_nesting(),
-            Ty::Ref(inner) | Ty::MutRef(inner) | Ty::RawPtr(inner) | Ty::Array(inner, _) => {
-                inner.contains_invalid_ref_nesting()
-            }
+            Ty::Ref(inner)
+            | Ty::MutRef(inner)
+            | Ty::RawPtr(inner)
+            | Ty::Borrow(inner)
+            | Ty::BorrowMut(inner)
+            | Ty::Array(inner, _) => inner.contains_invalid_ref_nesting(),
             Ty::Tuple(items) => items.iter().any(Ty::contains_invalid_ref_nesting),
             Ty::Func(params, ret) => {
                 params.iter().any(Ty::contains_invalid_ref_nesting)
@@ -844,9 +932,13 @@ impl Ty {
         match self {
             Ty::Never | Ty::Any | Ty::Var(_) | Ty::Const(_) => vec![self],
             Ty::Tuple(items) => items.iter().flat_map(Ty::flatten).collect(),
-            Ty::Ref(ty) | Ty::MutRef(ty) | Ty::IdRef(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => {
-                ty.flatten()
-            }
+            Ty::Ref(ty)
+            | Ty::MutRef(ty)
+            | Ty::IdRef(ty)
+            | Ty::RawPtr(ty)
+            | Ty::Borrow(ty)
+            | Ty::BorrowMut(ty)
+            | Ty::Array(ty, _) => ty.flatten(),
             Ty::Func(items, ty) => items
                 .iter()
                 .chain(std::iter::once(ty.as_ref()))
@@ -907,9 +999,13 @@ impl Ty {
             Ty::Proj(_, tys) | Ty::Tuple(tys) => {
                 tys.iter().map(|ty| ty.free_vars()).flatten().collect()
             }
-            Ty::Ref(ty) | Ty::MutRef(ty) | Ty::IdRef(ty) | Ty::RawPtr(ty) | Ty::Array(ty, _) => {
-                ty.free_vars()
-            }
+            Ty::Ref(ty)
+            | Ty::MutRef(ty)
+            | Ty::IdRef(ty)
+            | Ty::RawPtr(ty)
+            | Ty::Borrow(ty)
+            | Ty::BorrowMut(ty)
+            | Ty::Array(ty, _) => ty.free_vars(),
             Ty::Func(param_tys, ret_ty) => {
                 let mut vars = param_tys
                     .iter()
@@ -959,6 +1055,16 @@ mod tests {
         assert_eq!(ty.to_string(), "id **int");
     }
 
+    #[test]
+    fn display_borrow() {
+        assert_eq!(Ty::borrow_of(Ty::int()).to_string(), "&int");
+    }
+
+    #[test]
+    fn display_borrow_mut() {
+        assert_eq!(Ty::borrow_mut_of(Ty::int()).to_string(), "&mut int");
+    }
+
     // --- Constructors ---
 
     #[test]
@@ -973,6 +1079,20 @@ mod tests {
         let inner = Ty::string();
         let ty = Ty::id_ref_of(inner.clone());
         assert_eq!(ty, Ty::IdRef(Box::new(inner)));
+    }
+
+    #[test]
+    fn borrow_of_wraps_inner_type() {
+        let inner = Ty::string();
+        let ty = Ty::borrow_of(inner.clone());
+        assert_eq!(ty, Ty::Borrow(Box::new(inner)));
+    }
+
+    #[test]
+    fn borrow_mut_of_wraps_inner_type() {
+        let inner = Ty::string();
+        let ty = Ty::borrow_mut_of(inner.clone());
+        assert_eq!(ty, Ty::BorrowMut(Box::new(inner)));
     }
 
     // --- Predicates ---
@@ -1002,11 +1122,57 @@ mod tests {
     }
 
     #[test]
+    fn is_borrow_only_matches_borrow() {
+        assert!(Ty::borrow_of(Ty::int()).is_borrow());
+        assert!(!Ty::borrow_mut_of(Ty::int()).is_borrow());
+        assert!(!Ty::ref_of(Ty::int()).is_borrow());
+        assert!(!Ty::int().is_borrow());
+    }
+
+    #[test]
+    fn is_borrow_mut_only_matches_borrow_mut() {
+        assert!(Ty::borrow_mut_of(Ty::int()).is_borrow_mut());
+        assert!(!Ty::borrow_of(Ty::int()).is_borrow_mut());
+        assert!(!Ty::mut_ref_of(Ty::int()).is_borrow_mut());
+        assert!(!Ty::int().is_borrow_mut());
+    }
+
+    #[test]
+    fn is_any_borrow_matches_both_borrows() {
+        assert!(Ty::borrow_of(Ty::int()).is_any_borrow());
+        assert!(Ty::borrow_mut_of(Ty::int()).is_any_borrow());
+        assert!(!Ty::ref_of(Ty::int()).is_any_borrow());
+        assert!(!Ty::mut_ref_of(Ty::int()).is_any_borrow());
+    }
+
+    #[test]
+    fn is_any_ref_includes_all_safe_refs() {
+        assert!(Ty::ref_of(Ty::int()).is_any_ref());
+        assert!(Ty::mut_ref_of(Ty::int()).is_any_ref());
+        assert!(Ty::id_ref_of(Ty::int()).is_any_ref());
+        assert!(Ty::borrow_of(Ty::int()).is_any_ref());
+        assert!(Ty::borrow_mut_of(Ty::int()).is_any_ref());
+        assert!(!Ty::RawPtr(Box::new(Ty::int())).is_any_ref());
+        assert!(!Ty::int().is_any_ref());
+    }
+
+    #[test]
+    fn is_unique_ref_matches_mut_ref_and_borrow_mut() {
+        assert!(Ty::mut_ref_of(Ty::int()).is_unique_ref());
+        assert!(Ty::borrow_mut_of(Ty::int()).is_unique_ref());
+        assert!(!Ty::ref_of(Ty::int()).is_unique_ref());
+        assert!(!Ty::borrow_of(Ty::int()).is_unique_ref());
+        assert!(!Ty::id_ref_of(Ty::int()).is_unique_ref());
+    }
+
+    #[test]
     fn is_any_pointer_includes_all_ref_types() {
         assert!(Ty::ref_of(Ty::int()).is_any_pointer());
         assert!(Ty::mut_ref_of(Ty::int()).is_any_pointer());
         assert!(Ty::id_ref_of(Ty::int()).is_any_pointer());
         assert!(Ty::RawPtr(Box::new(Ty::int())).is_any_pointer());
+        assert!(Ty::borrow_of(Ty::int()).is_any_pointer());
+        assert!(Ty::borrow_mut_of(Ty::int()).is_any_pointer());
         assert!(!Ty::int().is_any_pointer());
     }
 
@@ -1021,6 +1187,11 @@ mod tests {
             Ty::RawPtr(Box::new(Ty::int())).unwrap_pointer(),
             Some(&Ty::int())
         );
+        assert_eq!(Ty::borrow_of(Ty::int()).unwrap_pointer(), Some(&Ty::int()));
+        assert_eq!(
+            Ty::borrow_mut_of(Ty::int()).unwrap_pointer(),
+            Some(&Ty::int())
+        );
         assert_eq!(Ty::int().unwrap_pointer(), None);
     }
 
@@ -1031,6 +1202,8 @@ mod tests {
         assert_eq!(Ty::ref_of(Ty::int()).arity(), 1);
         assert_eq!(Ty::mut_ref_of(Ty::int()).arity(), 1);
         assert_eq!(Ty::id_ref_of(Ty::int()).arity(), 1);
+        assert_eq!(Ty::borrow_of(Ty::int()).arity(), 1);
+        assert_eq!(Ty::borrow_mut_of(Ty::int()).arity(), 1);
     }
 
     #[test]
@@ -1038,6 +1211,11 @@ mod tests {
         assert_eq!(Ty::ref_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
         assert_eq!(Ty::mut_ref_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
         assert_eq!(Ty::id_ref_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
+        assert_eq!(Ty::borrow_of(Ty::int()).type_arguments(), vec![&Ty::int()]);
+        assert_eq!(
+            Ty::borrow_mut_of(Ty::int()).type_arguments(),
+            vec![&Ty::int()]
+        );
     }
 
     // --- desc ---
@@ -1047,6 +1225,8 @@ mod tests {
         assert_eq!(Ty::ref_of(Ty::int()).desc(), "shared reference to int");
         assert_eq!(Ty::mut_ref_of(Ty::int()).desc(), "unique reference to int");
         assert_eq!(Ty::id_ref_of(Ty::int()).desc(), "identity reference to int");
+        assert_eq!(Ty::borrow_of(Ty::int()).desc(), "shared borrow of int");
+        assert_eq!(Ty::borrow_mut_of(Ty::int()).desc(), "unique borrow of int");
     }
 
     // --- free_vars ---
@@ -1069,6 +1249,24 @@ mod tests {
         assert_eq!(*vars[0], var);
     }
 
+    #[test]
+    fn free_vars_traverses_borrow() {
+        let var = TyVar::new("'a");
+        let ty = Ty::borrow_of(Ty::Var(var.clone()));
+        let vars = ty.free_vars();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(*vars[0], var);
+    }
+
+    #[test]
+    fn free_vars_traverses_borrow_mut() {
+        let var = TyVar::new("'a");
+        let ty = Ty::borrow_mut_of(Ty::Var(var.clone()));
+        let vars = ty.free_vars();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(*vars[0], var);
+    }
+
     // --- Equality: different ref kinds are NOT equal ---
 
     #[test]
@@ -1076,10 +1274,15 @@ mod tests {
         let shared = Ty::ref_of(Ty::int());
         let mutable = Ty::mut_ref_of(Ty::int());
         let identity = Ty::id_ref_of(Ty::int());
+        let borrow = Ty::borrow_of(Ty::int());
+        let borrow_mut = Ty::borrow_mut_of(Ty::int());
 
         assert_ne!(shared, mutable);
         assert_ne!(shared, identity);
         assert_ne!(mutable, identity);
+        assert_ne!(shared, borrow);
+        assert_ne!(mutable, borrow_mut);
+        assert_ne!(borrow, borrow_mut);
     }
 
     // --- to_mangled ---
@@ -1089,14 +1292,21 @@ mod tests {
         let shared = Ty::ref_of(Ty::int()).to_mangled();
         let mutable = Ty::mut_ref_of(Ty::int()).to_mangled();
         let identity = Ty::id_ref_of(Ty::int()).to_mangled();
+        let borrow = Ty::borrow_of(Ty::int()).to_mangled();
+        let borrow_mut = Ty::borrow_mut_of(Ty::int()).to_mangled();
 
         // Each should produce a distinct mangled name
         assert_ne!(shared, mutable);
         assert_ne!(shared, identity);
         assert_ne!(mutable, identity);
+        assert_ne!(shared, borrow);
+        assert_ne!(mutable, borrow_mut);
+        assert_ne!(borrow, borrow_mut);
 
-        assert!(mutable.contains("mut"));
-        assert!(identity.contains("id"));
+        assert_eq!(mutable, "*mut[int]");
+        assert_eq!(identity, "id*[int]");
+        assert_eq!(borrow, "&int");
+        assert_eq!(borrow_mut, "&mut[int]");
     }
 
     // --- contains_mut_ref ---
@@ -1104,6 +1314,7 @@ mod tests {
     #[test]
     fn contains_mut_ref_direct() {
         assert!(Ty::mut_ref_of(Ty::int()).contains_mut_ref());
+        assert!(Ty::borrow_mut_of(Ty::int()).contains_mut_ref());
     }
 
     #[test]
@@ -1131,11 +1342,18 @@ mod tests {
     }
 
     #[test]
+    fn contains_mut_ref_nested_in_borrow() {
+        // &(&mut int) — shared borrow containing borrow mut
+        assert!(Ty::borrow_of(Ty::borrow_mut_of(Ty::int())).contains_mut_ref());
+    }
+
+    #[test]
     fn contains_mut_ref_negative() {
         assert!(!Ty::int().contains_mut_ref());
         assert!(!Ty::ref_of(Ty::int()).contains_mut_ref());
         assert!(!Ty::id_ref_of(Ty::int()).contains_mut_ref());
         assert!(!Ty::ref_of(Ty::ref_of(Ty::int())).contains_mut_ref());
+        assert!(!Ty::borrow_of(Ty::int()).contains_mut_ref());
     }
 
     // --- contains_invalid_ref_nesting ---

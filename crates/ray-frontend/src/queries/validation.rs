@@ -612,7 +612,7 @@ fn validate_struct_fields(decl: &Node<Decl>, filepath: &FilePath, errors: &mut V
         if ty.contains_mut_ref() {
             errors.push(RayError {
                 msg: format!(
-                    "`*mut` references are not allowed in struct fields (field `{}`)",
+                    "unique references (`*mut`/`&mut`) are not allowed in struct fields (field `{}`)",
                     field.value.path
                 ),
                 src: vec![Source {

@@ -79,6 +79,7 @@ fn has_ref_fields(struct_ty: &StructTy, all_structs: &HashMap<ItemPath, StructTy
         let mono = field_ty.mono();
         match mono {
             Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) => return true,
+            Ty::Borrow(_) | Ty::BorrowMut(_) => {} // Not reference-counted
             Ty::Proj(path, _) | Ty::Const(path) => {
                 if let Some(nested) = all_structs.get(path) {
                     if has_ref_fields(nested, all_structs) {
@@ -265,6 +266,7 @@ fn emit_field_drops(
     for (field_name, field_ty_scheme) in &struct_ty.fields {
         let field_mono = field_ty_scheme.mono();
         match field_mono {
+            Ty::Borrow(_) | Ty::BorrowMut(_) => {} // No DecRef for borrows
             Ty::Ref(inner) | Ty::MutRef(inner) => {
                 let kind = lir::RefCountKind::Strong;
                 let drop_fn_ref = make_drop_func_ref(inner, drop_fn_map);

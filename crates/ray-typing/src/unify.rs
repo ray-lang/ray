@@ -24,7 +24,9 @@ fn occurs_in(var: &TyVar, ty: &Ty, subst: &Subst) -> bool {
         Ty::Ref(ref inner)
         | Ty::MutRef(ref inner)
         | Ty::IdRef(ref inner)
-        | Ty::RawPtr(ref inner) => occurs_in(var, inner, subst),
+        | Ty::RawPtr(ref inner)
+        | Ty::Borrow(ref inner)
+        | Ty::BorrowMut(ref inner) => occurs_in(var, inner, subst),
         Ty::Proj(_, ref args) | Ty::Tuple(ref args) => {
             args.iter().any(|t| occurs_in(var, t, subst))
         }
@@ -167,6 +169,12 @@ pub fn unify(
             subst = unify(&t1, &t2, &subst, info)?;
         }
         (Ty::RawPtr(t1), Ty::RawPtr(t2)) => {
+            subst = unify(&t1, &t2, &subst, info)?;
+        }
+        (Ty::Borrow(t1), Ty::Borrow(t2)) => {
+            subst = unify(&t1, &t2, &subst, info)?;
+        }
+        (Ty::BorrowMut(t1), Ty::BorrowMut(t2)) => {
             subst = unify(&t1, &t2, &subst, info)?;
         }
 
@@ -385,7 +393,9 @@ pub fn match_ty(poly: &Ty, callee: &Ty, poly_vars: &HashSet<TyVar>, subst: &mut 
             (Ty::Ref(a), Ty::Ref(b))
             | (Ty::MutRef(a), Ty::MutRef(b))
             | (Ty::IdRef(a), Ty::IdRef(b))
-            | (Ty::RawPtr(a), Ty::RawPtr(b)) => match_ty(a, b, poly_vars, subst),
+            | (Ty::RawPtr(a), Ty::RawPtr(b))
+            | (Ty::Borrow(a), Ty::Borrow(b))
+            | (Ty::BorrowMut(a), Ty::BorrowMut(b)) => match_ty(a, b, poly_vars, subst),
             (Ty::Proj(a_name, a_args), Ty::Proj(b_name, b_args)) => {
                 a_name == b_name
                     && a_args.len() == b_args.len()

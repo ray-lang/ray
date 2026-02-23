@@ -981,6 +981,7 @@ impl<'a> GenCtx<'a> {
         let kind = match self.locals[dst].ty.mono() {
             Ty::Ref(_) => lir::RefCountKind::Strong,
             Ty::IdRef(_) => lir::RefCountKind::Weak,
+            Ty::Borrow(_) | Ty::BorrowMut(_) => return, // Plain pointer copy, no IncRef
             other => panic!("copy_ref_to_local called with non-ref type: {}", other),
         };
         self.push(lir::Inst::IncRef(src_val, kind));
@@ -2051,7 +2052,11 @@ impl<'a> GenCtx<'a> {
 
         match recv_mode {
             ReceiverMode::Ptr | ReceiverMode::MutPtr => {
-                if let Ty::Ref(inner) | Ty::MutRef(inner) = param_mono {
+                if let Ty::Ref(inner)
+                | Ty::MutRef(inner)
+                | Ty::Borrow(inner)
+                | Ty::BorrowMut(inner) = param_mono
+                {
                     if **inner == expr_mono {
                         let val_loc = self
                             .get_or_set_local(value, expr_ty_scheme.clone())
@@ -2426,6 +2431,13 @@ impl<'a> GenCtx<'a> {
                         Ty::MutRef(_) => {
                             self.move_ref_to_local(lhs_loc, rhs_loc);
                         }
+                        Ty::Borrow(_) | Ty::BorrowMut(_) => {
+                            // Plain pointer copy, no RC ops
+                            self.set_local(
+                                lhs_loc,
+                                lir::Atom::new(lir::Variable::Local(rhs_loc)).into(),
+                            );
+                        }
                         _ => {
                             self.set_local(
                                 lhs_loc,
@@ -2550,6 +2562,7 @@ impl<'a> GenCtx<'a> {
         for (_, field_ty) in &sty.fields {
             match field_ty.mono() {
                 Ty::Ref(_) | Ty::MutRef(_) | Ty::IdRef(_) => return true,
+                Ty::Borrow(_) | Ty::BorrowMut(_) => {} // Not reference-counted
                 Ty::Proj(path, _) | Ty::Const(path) => {
                     if let Some(target) = def_for_path(self.db, path.clone()) {
                         if let Some(sdef) = struct_def(self.db, target) {
@@ -2580,6 +2593,7 @@ impl<'a> GenCtx<'a> {
             Ty::IdRef(_) => {
                 self.push(lir::Inst::IncRef(src_var.into(), lir::RefCountKind::Weak));
             }
+            Ty::Borrow(_) | Ty::BorrowMut(_) => {} // No IncRef for borrows
             Ty::Proj(path, _) | Ty::Const(path) => {
                 let Some(target) = def_for_path(self.db, path.clone()) else {
                     return;
@@ -2601,6 +2615,7 @@ impl<'a> GenCtx<'a> {
     fn emit_struct_field_inc_refs(&mut self, src_var: lir::Variable, sty: &StructTy) {
         for (field_name, field_ty) in &sty.fields {
             match field_ty.mono() {
+                Ty::Borrow(_) | Ty::BorrowMut(_) => {} // No IncRef for borrows
                 Ty::Ref(_) | Ty::MutRef(_) => {
                     let sub_loc = self.local(field_ty.clone());
                     self.push(lir::Inst::SetLocal(
@@ -3192,8 +3207,14 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Atom::new(lir::Variable::Local(loc)).into()
             }
             Expr::Ref(rf) => {
-                // &expr has type *T, recover T
-                let pointee_ty = variant!(ty.mono(), if Ty::Ref(ty));
+                // &expr has type *T or &T, recover the pointee T
+                let pointee_ty = match ty.mono().clone() {
+                    Ty::Ref(inner)
+                    | Ty::MutRef(inner)
+                    | Ty::Borrow(inner)
+                    | Ty::BorrowMut(inner) => *inner,
+                    other => panic!("Expr::Ref has non-ref type: {}", other),
+                };
 
                 // generate the value for the expression
                 let (value, offset) = match &rf.expr.as_ref().value {
@@ -3219,7 +3240,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 } else {
                     // otherwise create a new local
                     let loc = ctx
-                        .get_or_set_local(value, pointee_ty.as_ref().clone().into())
+                        .get_or_set_local(value, pointee_ty.clone().into())
                         .unwrap();
                     lir::Variable::Local(loc)
                 };

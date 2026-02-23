@@ -83,7 +83,9 @@ impl MapVars for Ty {
             | Ty::Ref(inner)
             | Ty::MutRef(inner)
             | Ty::IdRef(inner)
-            | Ty::RawPtr(inner) => {
+            | Ty::RawPtr(inner)
+            | Ty::Borrow(inner)
+            | Ty::BorrowMut(inner) => {
                 let (new_ty, mapped_state) = inner.map_vars(&state, allocator);
                 **inner = new_ty;
                 state = mapped_state;

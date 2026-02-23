@@ -1018,8 +1018,8 @@ fn compute_receiver_mode(sig: &FuncSig, is_static: bool) -> ReceiverMode {
     let first_param = &sig.params[0];
     if let Some(ty) = first_param.value.ty() {
         match ty {
-            Ty::Ref(_) => ReceiverMode::Ptr,
-            Ty::MutRef(_) => ReceiverMode::MutPtr,
+            Ty::Ref(_) | Ty::Borrow(_) => ReceiverMode::Ptr,
+            Ty::MutRef(_) | Ty::BorrowMut(_) => ReceiverMode::MutPtr,
             _ => ReceiverMode::Value,
         }
     } else {

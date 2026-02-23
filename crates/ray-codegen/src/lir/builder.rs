@@ -92,6 +92,7 @@ impl Builder {
         match self.locals[idx].ty.mono() {
             Ty::Ref(_) | Ty::MutRef(_) => self.ref_locals.push((idx, RefCountKind::Strong)),
             Ty::IdRef(_) => self.ref_locals.push((idx, RefCountKind::Weak)),
+            Ty::Borrow(_) | Ty::BorrowMut(_) => {} // Not reference-counted
             _ => {}
         }
     }
