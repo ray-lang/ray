@@ -1398,14 +1398,22 @@ fn extract_workspace_func(db: &Database, def_id: DefId) -> Option<FuncDef> {
         _ => None,
     });
 
+    // Extract parameter types from the scheme so we can derive `is_move`
+    // from the type (`*mut T` = ownership transfer) rather than an AST flag.
+    let param_tys: Vec<Ty> = match scheme.mono() {
+        Ty::Func(params, _) => params.clone(),
+        _ => vec![],
+    };
+
     let (params, modifiers) = match sig {
         Some(sig) => {
             let params = sig
                 .params
                 .iter()
-                .map(|p| ParamDef {
+                .enumerate()
+                .map(|(i, p)| ParamDef {
                     name: p.value.name().to_short_name(),
-                    is_move: p.value.is_move(),
+                    is_move: param_tys.get(i).map_or(false, |ty| ty.is_mut_ref()),
                     is_noescape: p.value.is_noescape(),
                 })
                 .collect();

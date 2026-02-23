@@ -218,8 +218,8 @@ impl<'a> OwnershipCtx<'a> {
         }
     }
 
-    /// Check if any arguments to a call are passed to `move` parameters,
-    /// and if so, consume the corresponding `*mut T` variables.
+    /// Check if any arguments to a call are passed to `*mut T` parameters,
+    /// and if so, consume the corresponding `*mut T` variables (ownership transfer).
     fn check_move_params(&mut self, call: &Call) {
         for (arg, param) in call_arg_params(self.db, self.file_id, call) {
             if param.is_move {
@@ -390,8 +390,7 @@ impl<'a> OwnershipCtx<'a> {
                 }
                 // Check for conflicting borrows among *mut T arguments.
                 self.check_borrow_conflicts(call);
-                // Check for `move` parameters that consume the argument.
-                // Resolve the callee to its function AST to access is_move() flags.
+                // Check for `*mut T` parameters that consume the argument.
                 self.check_move_params(call);
             }
             Expr::Dot(dot) => {
@@ -1189,9 +1188,9 @@ fn outer() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // take() has a `move` parameter, so passing p consumes it
+        // take() has a *mut T parameter, so passing p consumes it (ownership transfer)
         let source = r#"
-fn take(move x: *mut int) {
+fn take(x: *mut int) {
     freeze(x)
 }
 
@@ -1238,9 +1237,9 @@ fn bad() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // borrow() does NOT have a `move` parameter, so p is not consumed
+        // borrow() takes &mut int (non-consuming), so p is not consumed
         let source = r#"
-fn borrow(x: *mut int) {
+fn borrow(x: &mut int) {
     x
 }
 
@@ -1287,10 +1286,10 @@ fn ok() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // borrow() takes a non-move *mut int parameter.
+        // borrow() takes &mut int (non-consuming).
         // After borrow(p), p should still be alive (reborrow semantics).
         let source = r#"
-fn borrow(x: *mut int) {
+fn borrow(x: &mut int) {
     x
 }
 
@@ -1334,14 +1333,14 @@ fn ok() {
         db.set_input::<WorkspaceSnapshot>((), workspace);
         setup_empty_libraries(&db);
 
-        // take() has a `move` parameter, so p is consumed.
+        // take() has a *mut T parameter, so p is consumed (ownership transfer).
         // The subsequent borrow(p) should be an error.
         let source = r#"
-fn take(move x: *mut int) {
+fn take(x: *mut int) {
     freeze(x)
 }
 
-fn borrow(x: *mut int) {
+fn borrow(x: &mut int) {
     x
 }
 

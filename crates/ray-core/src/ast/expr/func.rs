@@ -33,7 +33,6 @@ pub enum ReceiverKind {
 pub enum FnParam {
     Name {
         name: Name,
-        is_move: bool,
         is_noescape: bool,
         receiver: Option<ReceiverKind>,
     },
@@ -49,13 +48,10 @@ impl std::fmt::Display for FnParam {
         match self {
             FnParam::Name {
                 name,
-                is_move,
                 is_noescape,
                 receiver,
             } => {
-                if *is_move {
-                    write!(f, "move ")?;
-                } else if *is_noescape {
+                if *is_noescape {
                     write!(f, "noescape ")?;
                 }
                 match receiver {
@@ -112,14 +108,6 @@ impl FnParam {
             FnParam::Missing { placeholder, .. } => {
                 placeholder.ty.as_deref_mut().map(|t| t.mono_mut())
             }
-        }
-    }
-
-    pub fn is_move(&self) -> bool {
-        match self {
-            FnParam::Name { is_move, .. } => *is_move,
-            FnParam::DefaultValue(p, _) => p.value.is_move(),
-            FnParam::Missing { .. } => false,
         }
     }
 

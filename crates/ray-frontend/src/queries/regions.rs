@@ -363,10 +363,11 @@ impl<'a> RegionCtx<'a> {
             self.local_id_to_param_index.insert(local_id, idx);
 
             let param_name = param.value.name().to_short_name();
-            let region = if param.value.is_move() {
-                self.fresh_region(RegionKind::Heap, param.id, Some(param_name))
-            } else if self.is_destructor && param_name == "self" {
+            let region = if self.is_destructor && param_name == "self" {
                 self.fresh_region(RegionKind::Destructor, param.id, Some(param_name))
+            } else if ty.is_mut_ref() {
+                // `*mut T` params own the heap ref — Heap region
+                self.fresh_region(RegionKind::Heap, param.id, Some(param_name))
             } else {
                 self.fresh_region(RegionKind::Param(local_id), param.id, Some(param_name))
             };
@@ -1052,13 +1053,13 @@ fn returns_ref(x: *S) -> *S => x
         let analysis = find_def_analysis(
             r#"
 struct S {}
-fn returns_move(move x: *mut S) -> *mut S => x
+fn returns_move(x: *mut S) -> *mut S => x
 "#,
             "returns_move",
         );
         assert!(
             analysis.errors.is_empty(),
-            "Move param returned should produce no errors: {:?}",
+            "*mut T param returned should produce no errors: {:?}",
             analysis.errors
         );
         assert!(
@@ -1067,7 +1068,7 @@ fn returns_move(move x: *mut S) -> *mut S => x
                 .param_constraints
                 .iter()
                 .all(|c| c.is_empty()),
-            "Move ref param should have no requirements (Heap region): {:?}",
+            "*mut T param should have no requirements (Heap region): {:?}",
             analysis.requirements
         );
     }

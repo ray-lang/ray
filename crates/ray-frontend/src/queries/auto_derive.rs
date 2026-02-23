@@ -358,7 +358,6 @@ fn build_clone_method(
 
         let self_param = Node::new(FnParam::Name {
             name: Name::typed("self", parsed_self_ty),
-            is_move: false,
             is_noescape: false,
             receiver: None,
         });

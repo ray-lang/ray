@@ -893,7 +893,7 @@ mod tests {
 
         let param = Node::new(FnParam::Name {
             name: Name::new("x"),
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -990,7 +990,7 @@ mod tests {
 
         let param = Node::new(FnParam::Name {
             name: Name::new("x"),
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -1538,7 +1538,7 @@ mod tests {
         name.ty = Some(parsed_ty_scheme);
         let param = Node::new(FnParam::Name {
             name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -1851,7 +1851,7 @@ mod tests {
         other_name.ty = Some(parsed_param_ty);
         let other_param = Node::new(FnParam::Name {
             name: other_name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -2322,7 +2322,7 @@ mod tests {
         x_name.ty = Some(parsed_param_ty);
         let x_param = Node::new(FnParam::Name {
             name: x_name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -2411,7 +2411,7 @@ mod tests {
         x_name.ty = Some(parsed_param_ty);
         let x_param = Node::new(FnParam::Name {
             name: x_name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -2827,7 +2827,7 @@ mod tests {
         buf_name.ty = Some(parsed_param_ty);
         let buf_param = Node::new(FnParam::Name {
             name: buf_name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -2945,7 +2945,7 @@ mod tests {
         arr_name.ty = Some(parsed_param_ty);
         let arr_param = Node::new(FnParam::Name {
             name: arr_name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });
@@ -3021,7 +3021,7 @@ mod tests {
         x_name.ty = Some(parsed_param_ty);
         let x_param = Node::new(FnParam::Name {
             name: x_name,
-            is_move: false,
+
             is_noescape: false,
             receiver: None,
         });

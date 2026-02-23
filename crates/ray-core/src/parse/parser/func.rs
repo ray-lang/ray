@@ -186,12 +186,7 @@ impl Parser<'_> {
         ctx: &ParseContext,
         path: &Path,
     ) -> ParseResult<Node<FnParam>> {
-        let is_move = expect_if!(self, TokenKind::Move);
-        let is_noescape = if !is_move {
-            expect_if!(self, TokenKind::Noescape)
-        } else {
-            false
-        };
+        let is_noescape = expect_if!(self, TokenKind::Noescape);
         let receiver = if expect_if!(self, TokenKind::Asterisk) {
             if expect_if!(self, TokenKind::Mut) {
                 Some(ReceiverKind::MutRef)
@@ -214,7 +209,6 @@ impl Parser<'_> {
                 self.mk_node(
                     FnParam::Name {
                         name: name.value,
-                        is_move,
                         is_noescape,
                         receiver,
                     },
@@ -228,19 +222,13 @@ impl Parser<'_> {
         &mut self,
         ctx: &ParseContext,
     ) -> ParseResult<Node<FnParam>> {
-        let is_move = expect_if!(self, TokenKind::Move);
-        let is_noescape = if !is_move {
-            expect_if!(self, TokenKind::Noescape)
-        } else {
-            false
-        };
+        let is_noescape = expect_if!(self, TokenKind::Noescape);
         let (name, span) = self.expect_id(ctx)?;
         self.expect(TokenKind::Colon, ctx)?;
         let ty = self.parse_type_annotation(Some(&TokenKind::Comma), ctx);
         Ok(self.mk_node(
             FnParam::Name {
                 name: Name::typed(name, ty),
-                is_move,
                 is_noescape,
                 receiver: None,
             },
