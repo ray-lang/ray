@@ -3418,7 +3418,7 @@ impl LirGen<GenResult> for Node<Expr> {
                 // tmp.insert(k, v)
                 let insert_base = dict_base.append("insert");
                 let insert_ret = Ty::nilable(value_mono.clone());
-                let insert_recv_param = Ty::mut_ref_of(dict_mono.clone());
+                let insert_recv_param = Ty::borrow_mut_of(dict_mono.clone());
                 let insert_fn_ty = TyScheme::from_mono(Ty::func(
                     vec![
                         insert_recv_param.clone(),
@@ -3804,7 +3804,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 // it = (&iterable).iter()
                 let iter_callee_ty = TyScheme::from_mono(Ty::func(
-                    vec![Ty::ref_of(container_mono.clone())],
+                    vec![Ty::borrow_of(container_mono.clone())],
                     it_mono.clone(),
                 ));
                 let it_loc = ctx
@@ -3838,7 +3838,7 @@ impl LirGen<GenResult> for Node<Expr> {
                     ctx.block().markers_mut().push(lir::ControlMarker::Loop);
 
                     let next_callee_ty = TyScheme::from_mono(Ty::func(
-                        vec![Ty::mut_ref_of(it_mono.clone())],
+                        vec![Ty::borrow_mut_of(it_mono.clone())],
                         next_ret_mono.clone(),
                     ));
                     let next_call_loc = ctx
@@ -4165,7 +4165,7 @@ impl LirGen<GenResult> for Node<Expr> {
 
                 // tmp.insert(x)
                 let insert_base = set_base.append("insert");
-                let insert_recv_param = Ty::mut_ref_of(set_mono.clone());
+                let insert_recv_param = Ty::borrow_mut_of(set_mono.clone());
                 let insert_fn_ty = TyScheme::from_mono(Ty::func(
                     vec![insert_recv_param.clone(), elem_mono.clone()],
                     Ty::bool(),
