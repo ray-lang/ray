@@ -1,6 +1,9 @@
 //! Parse query infrastructure for the incremental compiler.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +17,7 @@ use ray_query_macros::query;
 use ray_shared::{
     def::{DefHeader, DefId},
     file_id::FileId,
+    node_id::NodeId,
     pathlib::Path,
     resolution::DefTarget,
     span::Span,
@@ -38,6 +42,9 @@ pub struct ParseResult {
     /// DefIds of compiler-generated (synthetic) definitions.
     /// Used to distinguish auto-derived impls from user-written ones.
     pub synthetic_defs: HashSet<DefId>,
+    /// Snapshot of NodeId counter values after parsing.
+    /// Restored on cache load so that `resume_def` produces consistent NodeIds.
+    pub node_id_counters: HashMap<DefId, u32>,
 }
 
 /// Raw parse result — only definitions actually declared in source.
@@ -70,12 +77,16 @@ pub fn parse_file_raw(db: &Database, file_id: FileId) -> Arc<ParseResult> {
         span: Span::default(),
     });
 
+    let def_ids: Vec<DefId> = defs.iter().map(|d| d.def_id).collect();
+    let node_id_counters = NodeId::snapshot_counters(&def_ids);
+
     Arc::new(ParseResult {
         ast,
         defs,
         source_map,
         errors,
         synthetic_defs: HashSet::new(),
+        node_id_counters,
     })
 }
 
@@ -84,6 +95,12 @@ pub fn parse_file_raw(db: &Database, file_id: FileId) -> Arc<ParseResult> {
 #[query]
 pub fn parse_file(db: &Database, file_id: FileId) -> Arc<ParseResult> {
     let raw = parse_file_raw(db, file_id);
+
+    // Restore NodeId counters so that downstream queries (file_ast, auto_derive_impls)
+    // calling resume_def + NodeId::new() produce consistent IDs, even when
+    // parse_file_raw was loaded from the persistence cache.
+    NodeId::restore_counters(&raw.node_id_counters);
+
     let synth = auto_derive_impls(db, file_id);
 
     if synth.defs.is_empty() {

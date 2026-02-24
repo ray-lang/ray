@@ -89,6 +89,33 @@ impl NodeId {
         NodeIdGuard { prev_def_id }
     }
 
+    /// Snapshot the current counter values for the given DefIds.
+    /// Used to persist counter state alongside cached parse results.
+    pub fn snapshot_counters(def_ids: &[DefId]) -> HashMap<DefId, u32> {
+        let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
+        let counters = counters.lock().unwrap_or_else(|e| e.into_inner());
+        let mut snapshot = HashMap::new();
+        for def_id in def_ids {
+            if let Some(&val) = counters.get(def_id) {
+                snapshot.insert(*def_id, val);
+            }
+        }
+        snapshot
+    }
+
+    /// Restore counter values from a snapshot. Uses max to avoid going
+    /// backwards if another path already advanced the counter.
+    pub fn restore_counters(snapshot: &HashMap<DefId, u32>) {
+        let counters = NODE_ID_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut counters = counters.lock().unwrap_or_else(|e| e.into_inner());
+        for (def_id, &val) in snapshot {
+            let entry = counters.entry(*def_id).or_insert(1);
+            if val > *entry {
+                *entry = val;
+            }
+        }
+    }
+
     pub fn enter_namespace(_path: &Path) -> NodeIdGuard {
         unreachable!()
         // let namespace = Self::namespace_from_path(path);
