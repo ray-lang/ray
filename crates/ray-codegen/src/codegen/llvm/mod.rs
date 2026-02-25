@@ -22,7 +22,7 @@ use llvm::{
     types::{BasicType, BasicTypeEnum, IntType, StructType},
     values::{
         BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode,
-        InstructionValue, IntValue, PointerValue,
+        InstructionValue, IntValue, PointerValue, ValueKind,
     },
 };
 use rand::RngCore;
@@ -408,10 +408,14 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
     fn size_to_int(&self, s: &lir::Size) -> IntValue<'ctx> {
         let ptr_type = self.ptr_type();
-        ptr_type
-            .size_of()
-            .const_mul(ptr_type.const_int(s.ptrs as u64, false))
-            .const_add(ptr_type.const_int(s.bytes as u64, false))
+        let ptr_size = ptr_type.size_of();
+        let ptr_component = self
+            .builder
+            .build_int_mul(ptr_size, ptr_type.const_int(s.ptrs as u64, false), "")
+            .unwrap();
+        self.builder
+            .build_int_add(ptr_component, ptr_type.const_int(s.bytes as u64, false), "")
+            .unwrap()
     }
 
     fn size_to_type(&self, s: &lir::Size) -> IntType<'ctx> {
@@ -1832,8 +1836,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
                     .builder
                     .build_call(alloc_fn, &[size_arg.into(), align.into()], "ptr")?
                     .try_as_basic_value()
-                    .left()
-                    .unwrap();
+                    .unwrap_basic();
                 ctx.builder.build_return(Some(&result))?;
             }
         }
@@ -2012,8 +2015,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                         "",
                     )?
                     .try_as_basic_value()
-                    .right()
-                    .expect("dealloc returns void")
+                    .expect_instruction("dealloc returns void")
             }
             lir::Inst::Call(call) => {
                 match call.codegen(ctx, srcmap)? {
@@ -2022,9 +2024,10 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
                         // this becomes a no-op.
                         return Ok(None);
                     }
-                    LoweredCall::Call { call, .. } => call
-                        .try_as_basic_value()
-                        .either(|val| val.as_instruction_value().unwrap(), |inst| inst),
+                    LoweredCall::Call { call, .. } => match call.try_as_basic_value() {
+                        ValueKind::Basic(val) => val.as_instruction_value().unwrap(),
+                        ValueKind::Instruction(inst) => inst,
+                    },
                     LoweredCall::Inst(inst) => inst,
                 }
             }
@@ -2189,7 +2192,11 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
                 LoweredCall::Value(v) => v,
                 LoweredCall::Call { call, ret_slot } => ret_slot
                     .map(|p| p.as_basic_value_enum())
-                    .unwrap_or_else(|| call.try_as_basic_value().left_or_else(|_| ctx.unit())),
+                    .unwrap_or_else(|| {
+                        call.try_as_basic_value()
+                            .basic()
+                            .unwrap_or_else(|| ctx.unit())
+                    }),
                 LoweredCall::Inst(_) => {
                     unreachable!("instruction should not be used in place of a value")
                 }
@@ -2364,8 +2371,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                                 &format!("rc_alloc:<*{}>", pointee_ty),
                             )?
                             .try_as_basic_value()
-                            .left()
-                            .unwrap()
+                            .unwrap_basic()
                             .into_pointer_value();
 
                         // strong_count = 1
@@ -2412,8 +2418,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                             &format!("malloc1:<*{}>", pointee_ty),
                         )?
                         .try_as_basic_value()
-                        .left()
-                        .unwrap()
+                        .unwrap_basic()
                         .into_pointer_value();
                     ctx.register_pointee_ty(ptr, pointee_ty.clone());
                     return Ok(ptr.as_basic_value_enum());
@@ -2450,8 +2455,7 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Malloc {
                 &format!("malloc_array:<*{}>", pointee_ty),
             )?
             .try_as_basic_value()
-            .left()
-            .unwrap()
+            .unwrap_basic()
             .into_pointer_value();
         ctx.register_pointee_ty(ptr, pointee_ty);
         Ok(ptr.as_basic_value_enum())
@@ -2872,8 +2876,7 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
                         "alloc_raw",
                     )?
                     .try_as_basic_value()
-                    .left()
-                    .unwrap()
+                    .unwrap_basic()
                     .into_pointer_value();
                 ctx.register_pointee_ty(ptr, elem_ty);
                 Ok(LoweredCall::Value(ptr.as_basic_value_enum()))

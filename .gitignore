@@ -7,4 +7,5 @@
 *.raylib
 .ray
 *.local.*
+.local/
 *.info

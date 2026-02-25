@@ -16,8 +16,8 @@
                     "kind": "bin"
                 },
                 "env": {
-                    "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
-                    "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",
+                    "LLVM_SYS_211_PREFIX": "${workspaceFolder}/.local/llvm",
+                    "LLVM_SYS_CONFIG_PATH": "${workspaceFolder}/.local/llvm/bin/llvm-config",
                 }
             },
             "args": [

@@ -11,7 +11,7 @@ use std::process::Command;
 
 lazy_static! {
     /// LLVM version used by this version of the crate.
-    static ref LLVM_VERSION: Version = Version::new(17, 0, 0);
+    static ref LLVM_VERSION: Version = Version::new(21, 1, 0);
 
     static ref LLVM_CONFIG_BINARY_NAMES: Vec<String> = {
         vec![
@@ -310,6 +310,30 @@ fn is_llvm_debug() -> bool {
     llvm_config("--build-mode").contains("Debug")
 }
 
+/// Get platform-specific directories where system libraries (zstd, zlib, etc.)
+/// may be installed. Mirrors the logic from the `llvm-sys` crate's build script.
+fn get_system_library_dirs() -> Vec<String> {
+    let mut dirs = Vec::new();
+    if cfg!(target_os = "macos") {
+        if let Some(prefix) = homebrew_prefix() {
+            dirs.push(format!("{}/lib", prefix));
+        }
+    } else if cfg!(target_os = "openbsd") || cfg!(target_os = "freebsd") {
+        dirs.push("/usr/local/lib".to_string());
+    }
+    dirs
+}
+
+fn homebrew_prefix() -> Option<String> {
+    Command::new("brew")
+        .arg("--prefix")
+        .output()
+        .ok()
+        .filter(|o| o.status.success() && !o.stdout.is_empty())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|val| val.trim().to_string())
+}
+
 fn main() {
     // Build the extra wrapper functions.
     let mut build = cc::Build::new();
@@ -330,6 +354,14 @@ fn main() {
     println!("cargo:config_path={}", LLVM_CONFIG_PATH.display()); // will be DEP_LLVM_CONFIG_PATH
     println!("cargo:libdir={}", libdir); // DEP_LLVM_LIBDIR
 
+    // Add linker search paths from --ldflags (includes -L paths for system deps)
+    for flag in llvm_config("--ldflags")
+        .split_whitespace()
+        .filter(|f| f.starts_with("-L"))
+    {
+        println!("cargo:rustc-link-search=native={}", &flag[2..]);
+    }
+
     // Link LLVM libraries
     println!("cargo:rustc-link-search=native={}", libdir);
     let blacklist = vec!["LLVMLineEditor"];
@@ -340,6 +372,11 @@ fn main() {
             .is_none()
     }) {
         println!("cargo:rustc-link-lib=static={}", name);
+    }
+
+    // Add platform-specific system library search paths (mirrors llvm-sys behavior)
+    for dir in get_system_library_dirs() {
+        println!("cargo:rustc-link-search=native={}", dir);
     }
 
     // Link system libraries

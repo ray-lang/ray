@@ -10,12 +10,12 @@
     "ray.cliPath": "/Users/jjacobson/code/ray/ray-lang/ray/target/debug/ray",
     "ray.toolchainPath": "/Users/jjacobson/code/ray/ray-lang/ray/.ray",
     "rust-analyzer.cargo.extraEnv": {
-        "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
-        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",
+        "LLVM_SYS_211_PREFIX": "${workspaceFolder}/.local/llvm",
+        "LLVM_SYS_CONFIG_PATH": "${workspaceFolder}/.local/llvm/bin/llvm-config",
     },
     "rust-analyzer.runnables.extraEnv": {
-        "LLVM_SYS_170_PREFIX": "/opt/homebrew/opt/llvm@17",
-        "LLVM_SYS_CONFIG_PATH": "/opt/homebrew/opt/llvm@17/bin/llvm-config",
+        "LLVM_SYS_211_PREFIX": "${workspaceFolder}/.local/llvm",
+        "LLVM_SYS_CONFIG_PATH": "${workspaceFolder}/.local/llvm/bin/llvm-config",
     },
     "files.associations": {
         "*.json.liquid": "json",
