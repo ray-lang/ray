@@ -446,7 +446,11 @@ fn generate_test_harness(
         lir::Atom::IntConst(0, lir::Size::ptr()).into(),
     );
 
-    let test_fn_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+    let string_ty = ctx.string_ty();
+    let test_fn_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit())));
+    let is_unwinding_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+    let load_message_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(string_ty.clone())));
+    let clear_unwinding_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit())));
 
     // For each test function
     for (test_name, test_path) in &test_functions {
@@ -464,17 +468,27 @@ fn generate_test_harness(
             .into(),
         );
 
-        // Call test function (returns bool: true = failed)
-        let result_loc = ctx.local(TyScheme::from_mono(Ty::bool()));
-        let call = lir::Call::new(test_path.clone(), vec![], test_fn_ty.clone(), None);
-        ctx.set_local(result_loc, call.into());
+        // Call test function (returns unit; panic sets the unwinding flag)
         main_symbols.insert(test_path.clone());
+        ctx.push(lir::Call::new(test_path.clone(), vec![], test_fn_ty.clone(), None).into());
 
-        // Branch on result: true = failed
+        // Inline recover: check the unwinding flag
+        let flag_loc = ctx.local(TyScheme::from_mono(Ty::bool()));
+        ctx.set_local(
+            flag_loc,
+            lir::Call::new(
+                Path::from("__panic_is_unwinding"),
+                vec![],
+                is_unwinding_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+
         let fail_block = ctx.new_block();
         let pass_block = ctx.new_block();
         let continue_block = ctx.new_block();
-        ctx.cond(result_loc, fail_block, pass_block);
+        ctx.cond(flag_loc, fail_block, pass_block);
 
         // Pass block
         ctx.use_block(pass_block);
@@ -500,13 +514,52 @@ fn generate_test_harness(
         ctx.set_local(pass_count_loc, add.into());
         ctx.goto(continue_block);
 
-        // Fail block
+        // Fail block: retrieve message, clear flag, print FAIL + message
         ctx.use_block(fail_block);
+        let msg_loc = ctx.local(TyScheme::from_mono(string_ty.clone()));
+        ctx.set_local(
+            msg_loc,
+            lir::Call::new(
+                Path::from("__panic_load_message"),
+                vec![],
+                load_message_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+        ctx.push(
+            lir::Call::new(
+                Path::from("__panic_clear_unwinding"),
+                vec![],
+                clear_unwinding_ty.clone(),
+                None,
+            )
+            .into(),
+        );
         let fail_str_loc = ctx.emit_string_literal("FAIL\n");
         ctx.push(
             lir::Call::new(
                 puts_path.clone(),
                 vec![lir::Variable::Local(fail_str_loc)],
+                puts_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+        ctx.push(
+            lir::Call::new(
+                puts_path.clone(),
+                vec![lir::Variable::Local(msg_loc)],
+                puts_ty.clone(),
+                None,
+            )
+            .into(),
+        );
+        let newline_loc = ctx.emit_string_literal("\n");
+        ctx.push(
+            lir::Call::new(
+                puts_path.clone(),
+                vec![lir::Variable::Local(newline_loc)],
                 puts_ty.clone(),
                 None,
             )
@@ -2098,6 +2151,13 @@ impl<'a> GenCtx<'a> {
         ));
 
         loc
+    }
+
+    fn string_ty(&self) -> Ty {
+        let target = resolve_builtin(self.db, self.file_id, "string".to_string())
+            .expect("string type not in scope");
+        let fqn = def_path(self.db, target).expect("missing def_path for string");
+        Ty::Const(fqn)
     }
 
     fn maybe_coerce_receiver_arg(
@@ -4834,14 +4894,8 @@ impl LirGen<GenResult> for Node<Decl> {
 
                 ctx.with_builder(Builder::new());
 
-                // Entry block: allocate __test_failed = false (always local 0)
-                let failed_loc = ctx.with_entry_block(|ctx| {
-                    let loc = ctx.local(TyScheme::from_mono(Ty::bool()));
-                    ctx.set_local(loc, lir::Atom::BoolConst(false).into());
-                    loc
-                });
-
-                // Generate body with flag checks after each statement
+                // Generate body: insert_panic_checks will insert post-call
+                // flag checks automatically.
                 if let Expr::Block(block) = &test_decl.body.value {
                     let (_, result) = ctx.with_new_block(|ctx| {
                         for stmt in &block.stmts {
@@ -4849,31 +4903,14 @@ impl LirGen<GenResult> for Node<Decl> {
                             if let Some(i) = value.to_inst() {
                                 ctx.push(i);
                             }
-
-                            // Flag check: if __test_failed, return early
-                            let check_block = ctx.new_block();
-                            ctx.goto(check_block);
-                            ctx.use_block(check_block);
-
-                            let return_block = ctx.new_block();
-                            let continue_block = ctx.new_block();
-                            ctx.cond(failed_loc, return_block, continue_block);
-
-                            ctx.with_block(return_block, |ctx| {
-                                ctx.ret(lir::Variable::Local(failed_loc).into());
-                            });
-
-                            ctx.use_block(continue_block);
                         }
-
                         RayResult::Ok(())
                     });
                     result?;
                 }
 
-                // Exit block: return __test_failed (false = all passed)
                 ctx.with_exit_block(|ctx| {
-                    ctx.ret(lir::Variable::Local(failed_loc).into());
+                    ctx.ret(lir::Value::Empty);
                 });
 
                 let builder = ctx.builder.take().unwrap();
@@ -4889,7 +4926,7 @@ impl LirGen<GenResult> for Node<Decl> {
                 let test_fn_name = format!("__test_{}_{}", test_idx, sanitized);
                 let test_path: Path = test_fn_name.into();
 
-                let fn_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+                let fn_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit())));
                 let mut func = lir::Func::new(test_path.clone(), fn_ty, vec![], symbols, cfg, None);
                 func.name = test_path.clone();
                 func.params = params;
