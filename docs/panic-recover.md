@@ -35,7 +35,7 @@ fn recover(body: () -> 'a) -> result['a, string]
 
 - Executes `body`. If `body` completes normally, returns `ok(value)`.
 - If `body` panics (directly or transitively), catches the panic and returns `err(msg)`.
-- `recover` is a compiler intrinsic — the compiler statically knows which frames have recover scopes and emits the appropriate flag-check handling inline.
+- `recover` is a **pure Ray function** implemented using low-level helper intrinsics for flag access (`__panic_is_unwinding`, `__panic_clear_unwinding`, `__panic_load_message`). It is exempt from the panicable post-call pass — its body handles the flag explicitly.
 
 ```ray
 res = recover(() => divide(10, 0))
@@ -106,7 +106,7 @@ All trace metadata (function name, file, line) is known at compile time and stor
 
 ### 2.4 Initialization
 
-The thread context is allocated and initialized at program startup (in `_start` or equivalent), before any user code runs.
+The thread context is a **statically allocated LLVM global** (`__thread_ctx`), zeroed at link time (placed in BSS). No runtime initialization is required — the zero value is the correct initial state (`unwinding = false`, `stack_trace.count = 0`). The global is injected by the compiler at the LLVM codegen stage before any user globals.
 
 ---
 
@@ -158,21 +158,28 @@ if context.unwinding:
 
 This is a conditional branch on a single boolean load. Branch prediction makes the non-panic path nearly free.
 
-### 4.3 `recover` Intrinsic
+### 4.3 `recover` Implementation
 
-The compiler inlines `recover` at the call site:
+`recover` is a **pure Ray function**, not a compiler intrinsic. It is implemented in `lib/core/panic.ray` using three low-level helper intrinsics that directly access the thread context:
 
+- `__panic_is_unwinding() -> bool` — loads `context.unwinding`
+- `__panic_clear_unwinding()` — stores `false` to `context.unwinding`
+- `__panic_load_message() -> string` — loads `context.panic_message`
+
+```ray
+fn recover(body: () -> 'a) -> result['a, string] {
+    result = body()
+    if __panic_is_unwinding() {
+        msg = __panic_load_message()
+        __panic_clear_unwinding()
+        err(msg)
+    } else {
+        ok(result)
+    }
+}
 ```
-result = call body()
-if context.unwinding:
-    msg = load context.panic_message
-    trace = load context.stack_trace    // available for diagnostics
-    store false → context.unwinding
-    store 0     → context.stack_trace.count
-    return err(msg)
-else:
-    return ok(result)
-```
+
+`recover` is **exempt from the panicable post-call pass** — the pass does not insert an auto flag-check after the `body()` call inside `recover`. Instead, the explicit `__panic_is_unwinding()` check is the one and only flag check. This is correct: an auto-generated early-return after `body()` would propagate the panic instead of catching it.
 
 `recover` is the only point where `unwinding` is reset to `false`.
 
