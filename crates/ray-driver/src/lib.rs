@@ -477,6 +477,7 @@ impl Driver {
             lir::generate_drop_glue(&mut program);
             log::debug!("program before monomorphization:\n{}", program);
             lir::monomorphize(&mut program);
+            lir::insert_panic_checks(&mut program);
             program.tree_shake(None);
             log::debug!("program after monomorphization:\n{}", program);
 

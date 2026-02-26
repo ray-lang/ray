@@ -445,6 +445,10 @@ impl Malloc {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Value {
     Empty,
+    /// A value that is intentionally left uninitialized (e.g. the dummy return
+    /// on an unwind propagation path).
+    /// Distinct from `Empty`, which means "no value" (unit/void).
+    Uninit(Ty),
     VarRef(String),
     Atom(Atom),
     Malloc(Malloc),
@@ -496,6 +500,7 @@ impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Empty => write!(f, ""),
+            Value::Uninit(ty) => write!(f, "uninit({})", ty),
             Value::VarRef(n) => write!(f, "${}", n),
             Value::Atom(a) => write!(f, "{}", a),
             Value::Malloc(a) => write!(f, "{}", a),
@@ -561,9 +566,9 @@ impl<'a> GetLocalsMut<'a> for Value {
                     }
                 })
                 .collect(),
-            Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
             Value::EnumTag(t) => t.get_locals_mut(),
             Value::EnumField(e) => e.get_locals_mut(),
+            Value::Type(_) | Value::VarRef(_) | Value::Empty | Value::Uninit(_) => vec![],
         }
     }
 }
@@ -597,9 +602,9 @@ impl<'a> GetLocals<'a> for Value {
                     }
                 })
                 .collect(),
-            Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
             Value::EnumTag(t) => t.get_locals(),
             Value::EnumField(e) => e.get_locals(),
+            Value::Type(_) | Value::VarRef(_) | Value::Empty | Value::Uninit(_) => vec![],
         }
     }
 }
@@ -607,7 +612,7 @@ impl<'a> GetLocals<'a> for Value {
 impl Substitutable for Value {
     fn apply_subst(&mut self, subst: &Subst) {
         match self {
-            Value::Empty | Value::VarRef(_) => {}
+            Value::Empty | Value::Uninit(_) | Value::VarRef(_) | Value::Enum(_) => {}
             Value::Atom(a) => a.apply_subst(subst),
             Value::Malloc(m) => m.apply_subst(subst),
             Value::Call(c) => c.apply_subst(subst),
@@ -624,8 +629,6 @@ impl Substitutable for Value {
             Value::Type(ty) => ty.apply_subst(subst),
             Value::Closure(c) => c.apply_subst(subst),
             Value::Upgrade(v) => v.apply_subst(subst),
-            // EnumValue carries a path (not substitutable) and Variable indices (untyped).
-            Value::Enum(_) => {}
             Value::EnumTag(t) => t.apply_subst(subst),
             Value::EnumField(e) => e.apply_subst(subst),
         }
@@ -661,6 +664,7 @@ impl Value {
             Value::Call(c) => Some(Inst::Call(c)),
             Value::CExternCall(c) => Some(Inst::CExternCall(c)),
             Value::Empty
+            | Value::Uninit(_)
             | Value::VarRef(_)
             | Value::Atom(_)
             | Value::Malloc(_)
@@ -2403,6 +2407,8 @@ pub struct Insert {
     pub index: usize,
     pub value: Value,
 }
+
+LirImplInto!(Inst for Insert);
 
 impl Display for Insert {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

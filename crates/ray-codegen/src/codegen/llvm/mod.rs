@@ -2456,6 +2456,13 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
                 unreachable!("COMPILER BUG: this should be removed by this point")
             }
             lir::Value::Empty => Ok(ctx.unit()),
+            lir::Value::Uninit(ty) => {
+                if ty.is_unit() || ty.is_never() {
+                    Ok(ctx.unit())
+                } else {
+                    Ok(ctx.to_llvm_type(ty).const_zero())
+                }
+            }
             lir::Value::Atom(a) => a.codegen(ctx, srcmap),
             lir::Value::Malloc(m) => m.codegen(ctx, srcmap),
             lir::Value::Call(c) => Ok(match c.codegen(ctx, srcmap)? {
