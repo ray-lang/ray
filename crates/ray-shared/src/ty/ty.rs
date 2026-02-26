@@ -578,6 +578,10 @@ impl Ty {
         matches!(self, Ty::Tuple(elems) if elems.is_empty())
     }
 
+    pub fn is_never(&self) -> bool {
+        matches!(self, Ty::Never)
+    }
+
     pub fn arity(&self) -> usize {
         match self {
             Ty::Any | Ty::Never | Ty::Const(_) | Ty::Var(_) => 0,

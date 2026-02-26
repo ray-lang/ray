@@ -955,7 +955,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
     fn to_llvm_type(&mut self, ty: &Ty) -> BasicTypeEnum<'ctx> {
         match ty {
-            Ty::Never => todo!("to_llvm_ty: {}", ty),
+            Ty::Never => self.lcx.struct_type(&[], false).as_basic_type_enum(),
             Ty::Any => todo!("to_llvm_ty: {}", ty),
             Ty::Var(_) => todo!("to_llvm_ty: {}", ty),
             Ty::Array(elem_ty, size) => self
@@ -1049,7 +1049,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .iter()
             .map(|ty| self.to_llvm_type(ty).into())
             .collect::<Vec<_>>();
-        if ret_ty.is_unit() {
+        if ret_ty.is_unit() || ret_ty.is_never() {
             return self.lcx.void_type().fn_type(&param_tys, false);
         }
 
