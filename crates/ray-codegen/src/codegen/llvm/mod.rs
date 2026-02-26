@@ -321,6 +321,8 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     struct_defs: &'a HashMap<ItemPath, StructTy>,
     /// Enum definitions from the program.
     enum_defs: &'a HashMap<ItemPath, EnumTy>,
+    /// Pointer to the compiler-internal `__thread_ctx` global (panic/recover state).
+    thread_ctx: Option<PointerValue<'ctx>>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -375,6 +377,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             intrinsics: HashMap::new(),
             struct_defs,
             enum_defs,
+            thread_ctx: None,
         }
     }
 
@@ -1836,6 +1839,72 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
 
         Ok(last_inst)
     }
+
+    fn thread_context_type(&self) -> StructType<'ctx> {
+        let bool_ty = self.lcx.bool_type();
+        // string = { raw_ptr: rawptr[u8], len: uint, char_len: uint }
+        let raw_ptr_ty = self.lcx.ptr_type(AddressSpace::default());
+        let uint_ty = self.ptr_type();
+        let string_ty = self
+            .lcx
+            .struct_type(&[raw_ptr_ty.into(), uint_ty.into(), uint_ty.into()], false);
+        let i32_ty = self.lcx.i32_type();
+        self.lcx
+            .struct_type(&[bool_ty.into(), string_ty.into(), i32_ty.into()], false)
+    }
+
+    fn get_thread_ctx_ptr(&self) -> PointerValue<'ctx> {
+        self.thread_ctx
+            .expect("thread context global not initialized")
+    }
+
+    fn load_unwinding_flag(&mut self) -> Result<IntValue<'ctx>, BuilderError> {
+        let ptr = self.get_thread_ctx_ptr();
+        let ctx_ty = self.thread_context_type();
+        let flag_ptr = self
+            .builder
+            .build_struct_gep(ctx_ty, ptr, 0, "unwinding_ptr")?;
+        let flag = self
+            .builder
+            .build_load(self.lcx.bool_type(), flag_ptr, "unwinding")?;
+        Ok(flag.into_int_value())
+    }
+
+    fn store_unwinding_flag(&mut self, val: IntValue<'ctx>) -> Result<(), BuilderError> {
+        let ptr = self.get_thread_ctx_ptr();
+        let ctx_ty = self.thread_context_type();
+        let flag_ptr = self
+            .builder
+            .build_struct_gep(ctx_ty, ptr, 0, "unwinding_ptr")?;
+        self.builder.build_store(flag_ptr, val)?;
+        Ok(())
+    }
+
+    fn load_panic_message(&mut self) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+        let ptr = self.get_thread_ctx_ptr();
+        let ctx_ty = self.thread_context_type();
+        let msg_ptr = self
+            .builder
+            .build_struct_gep(ctx_ty, ptr, 1, "panic_msg_ptr")?;
+        let string_ty = {
+            let raw_ptr_ty = self.lcx.ptr_type(AddressSpace::default());
+            let uint_ty = self.ptr_type();
+            self.lcx
+                .struct_type(&[raw_ptr_ty.into(), uint_ty.into(), uint_ty.into()], false)
+        };
+        let msg = self.builder.build_load(string_ty, msg_ptr, "panic_msg")?;
+        Ok(msg)
+    }
+
+    fn store_panic_message(&mut self, msg: BasicValueEnum<'ctx>) -> Result<(), BuilderError> {
+        let ptr = self.get_thread_ctx_ptr();
+        let ctx_ty = self.thread_context_type();
+        let msg_ptr = self
+            .builder
+            .build_struct_gep(ctx_ty, ptr, 1, "panic_msg_ptr")?;
+        self.builder.build_store(msg_ptr, msg)?;
+        Ok(())
+    }
 }
 
 impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
@@ -1923,6 +1992,15 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Program {
             ctx.register_pointee_ty(ptr, Ty::i8());
             ctx.data_addrs.insert(d.key(), global);
         }
+
+        // Inject the compiler-internal panic/recover thread context global.
+        let ctx_ty = ctx.thread_context_type();
+        let ctx_global =
+            ctx.module
+                .add_global(ctx_ty, Some(AddressSpace::default()), "__thread_ctx");
+        ctx_global.set_initializer(&ctx_ty.const_zero());
+        ctx_global.set_linkage(Linkage::Internal);
+        ctx.thread_ctx = Some(ctx_global.as_pointer_value());
 
         for global in self.globals.iter() {
             let global_type = ctx.to_llvm_type(global.ty.mono());
