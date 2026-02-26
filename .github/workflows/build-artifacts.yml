@@ -251,11 +251,12 @@ jobs:
 
       - name: Prepare toolchain layout
         run: |
-          mkdir -p build/toolchain/lib build/toolchain/build
+          mkdir -p build/toolchain/lib
           ./target/release/ray --root-path $PWD/build/toolchain build lib/core --lib --no-core
-          cp lib/core/.raylib build/toolchain/lib/core.raylib
+          cp lib/core/.ray/build/core.raylib build/toolchain/lib/core.raylib
+          ./target/release/ray --root-path $PWD/build/toolchain build lib/testing --lib
+          cp lib/testing/.ray/build/testing.raylib build/toolchain/lib/testing.raylib
           printf 'version = "%s"\nchannel = "%s"\n' "${REF_LABEL}" "${CHANNEL_HINT}" > build/toolchain/manifest.toml
-          rm -rf build/toolchain/build
 
       - name: Archive toolchain
         run: |
