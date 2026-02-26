@@ -123,6 +123,7 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             Decl::Mutable(_, _)
             | Decl::Name(_, _)
             | Decl::Struct(_)
+            | Decl::Enum(_)
             | Decl::Declare(_)
             | Decl::FnSig(_)
             | Decl::TypeAlias(_, _) => {}

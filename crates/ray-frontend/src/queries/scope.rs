@@ -155,6 +155,7 @@ fn collect_locals_in_decl(
         }
         // Other declarations don't introduce local scopes
         Decl::Struct(_)
+        | Decl::Enum(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)
         | Decl::Mutable(_, _)

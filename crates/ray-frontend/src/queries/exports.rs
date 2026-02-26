@@ -97,6 +97,7 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
             }
             DefKind::Function { .. }
             | DefKind::Struct
+            | DefKind::Enum
             | DefKind::Trait
             | DefKind::TypeAlias
             | DefKind::AssociatedConst { .. } => {
@@ -108,6 +109,7 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
             | DefKind::Impl
             | DefKind::Primitive
             | DefKind::StructField
+            | DefKind::EnumVariant
             | DefKind::Test => {
                 // FileMain, Method, Impl are handled above
                 // Primitive is for built-in types, not workspace definitions

@@ -9,8 +9,8 @@ use ray_typing::types::NominalKind;
 
 use crate::{
     ast::{
-        Decl, ExportKind, Expr, FStringPart, FnParam, Func, InfixOp, Literal, NilCoalesce, Pattern,
-        ReceiverKind,
+        Decl, Enum, ExportKind, Expr, FStringPart, FnParam, Func, InfixOp, Literal, NilCoalesce,
+        Pattern, ReceiverKind,
     },
     errors::{RayError, RayErrorKind},
     sourcemap::SourceMap,
@@ -3168,4 +3168,92 @@ fn main() {
     };
     let display = assign.rhs.value.to_string();
     assert_eq!(display, "freeze(y)");
+}
+
+fn first_enum(file: &crate::ast::File) -> &Enum {
+    match &file
+        .decls
+        .first()
+        .expect("expected at least one declaration")
+        .value
+    {
+        Decl::Enum(en) => en,
+        other => panic!("expected Enum declaration, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_enum_no_variants() {
+    let src = "enum color {}";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let en = first_enum(&file);
+    assert_eq!(en.path.name(), Some("color".to_string()));
+    assert!(en.ty_params.is_none());
+    assert!(en.variants.is_empty());
+}
+
+#[test]
+fn parse_enum_unit_variants() {
+    let src = "enum color { red, green, blue }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let en = first_enum(&file);
+    assert_eq!(en.path.name(), Some("color".to_string()));
+    assert_eq!(en.variants.len(), 3);
+    assert_eq!(en.variants[0].value.name, "red");
+    assert!(en.variants[0].value.fields.is_empty());
+    assert_eq!(en.variants[1].value.name, "green");
+    assert!(en.variants[1].value.fields.is_empty());
+    assert_eq!(en.variants[2].value.name, "blue");
+    assert!(en.variants[2].value.fields.is_empty());
+}
+
+#[test]
+fn parse_enum_single_payload_variant() {
+    let src = "enum shape { circle(int) }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let en = first_enum(&file);
+    assert_eq!(en.variants.len(), 1);
+    assert_eq!(en.variants[0].value.name, "circle");
+    assert_eq!(en.variants[0].value.fields.len(), 1);
+}
+
+#[test]
+fn parse_enum_multi_field_payload_variant() {
+    let src = "enum shape { rect(int, int) }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let en = first_enum(&file);
+    assert_eq!(en.variants[0].value.name, "rect");
+    assert_eq!(en.variants[0].value.fields.len(), 2);
+}
+
+#[test]
+fn parse_enum_with_type_params() {
+    let src = "enum result['a, 'e] { ok('a), err('e) }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let en = first_enum(&file);
+    assert_eq!(en.path.name(), Some("result".to_string()));
+    assert!(en.ty_params.is_some());
+    assert_eq!(en.variants.len(), 2);
+    assert_eq!(en.variants[0].value.name, "ok");
+    assert_eq!(en.variants[0].value.fields.len(), 1);
+    assert_eq!(en.variants[1].value.name, "err");
+    assert_eq!(en.variants[1].value.fields.len(), 1);
+}
+
+#[test]
+fn parse_enum_mixed_unit_and_payload() {
+    let src = "enum option['a] { none, some('a) }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let en = first_enum(&file);
+    assert_eq!(en.variants.len(), 2);
+    assert_eq!(en.variants[0].value.name, "none");
+    assert!(en.variants[0].value.fields.is_empty());
+    assert_eq!(en.variants[1].value.name, "some");
+    assert_eq!(en.variants[1].value.fields.len(), 1);
 }

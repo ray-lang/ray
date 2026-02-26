@@ -39,7 +39,7 @@ use ray_shared::{
     ty::{Ty, TyVar},
     utils::map_join,
 };
-use ray_typing::types::{StructTy, Subst, Substitutable};
+use ray_typing::types::{EnumTy, StructTy, Subst, Substitutable};
 
 use crate::codegen::{CodegenOptions, collect_symbols};
 
@@ -115,7 +115,14 @@ where
     let name = program.module_path.to_string();
     let module = lcx.create_module(&name);
     let builder = lcx.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(target, &lcx, &module, &builder, &program.struct_types);
+    let mut ctx = LLVMCodegenCtx::new(
+        target,
+        &lcx,
+        &module,
+        &builder,
+        &program.struct_types,
+        &program.enum_types,
+    );
     if let Some(err) = program.codegen(&mut ctx, srcmap).err() {
         // TODO: convert to ray error
         panic!("error during codegen: {}", err);
@@ -231,7 +238,14 @@ pub fn emit_module_ir(
     let context = llvm::context::Context::create();
     let module = context.create_module(&program.module_path.to_string());
     let builder = context.create_builder();
-    let mut ctx = LLVMCodegenCtx::new(target, &context, &module, &builder, &program.struct_types);
+    let mut ctx = LLVMCodegenCtx::new(
+        target,
+        &context,
+        &module,
+        &builder,
+        &program.struct_types,
+        &program.enum_types,
+    );
     if let Err(err) = program.codegen(&mut ctx, srcmap) {
         panic!("error during codegen: {}", err);
     }
@@ -305,6 +319,8 @@ struct LLVMCodegenCtx<'a, 'ctx> {
     intrinsics: HashMap<Path, lir::IntrinsicKind>,
     /// Struct definitions from the program (both workspace and synthetic).
     struct_defs: &'a HashMap<ItemPath, StructTy>,
+    /// Enum definitions from the program.
+    enum_defs: &'a HashMap<ItemPath, EnumTy>,
 }
 
 impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
@@ -314,6 +330,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         module: &'a llvm::module::Module<'ctx>,
         builder: &'a llvm::builder::Builder<'ctx>,
         struct_defs: &'a HashMap<ItemPath, StructTy>,
+        enum_defs: &'a HashMap<ItemPath, EnumTy>,
     ) -> Self {
         LLVMTarget::initialize_webassembly(&InitializationConfig::default());
 
@@ -357,6 +374,7 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             sret_param: None,
             intrinsics: HashMap::new(),
             struct_defs,
+            enum_defs,
         }
     }
 
@@ -983,7 +1001,12 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
                     }
                 }
 
-                // For all other projections, lower to the underlying type.
+                // Enum types lower to `{ i32, [N x i8] }`.
+                if self.enum_defs.contains_key(fqn) {
+                    return self.get_enum_llvm_type(fqn, args).as_basic_type_enum();
+                }
+
+                // For all other projections, lower to the underlying struct type.
                 self.get_struct_type(fqn, args).as_basic_type_enum()
             }
             Ty::Const(fqn) => match fqn.as_str() {
@@ -1312,6 +1335,11 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         value: &lir::Value,
         srcmap: &SourceMap,
     ) -> Result<InstructionValue<'ctx>, BuilderError> {
+        // Enum construction is handled in-place; intercept before the generic aggregate path.
+        if let lir::Value::Enum(ev) = value {
+            return self.build_enum_init(idx, ev, srcmap);
+        }
+
         let dst_ptr = self.get_local(idx);
         let dst_ty = self.get_pointee_ty(dst_ptr).clone();
 
@@ -1643,6 +1671,170 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .clone();
         llvm_struct.set_body(field_types.as_slice(), false);
         llvm_struct
+    }
+
+    /// Returns the LLVM struct type for an enum: `{ i32, [N x i8] }` where N
+    /// is the maximum payload size in bytes across all variants.
+    fn get_enum_llvm_type(&mut self, path: &ItemPath, args: &[Ty]) -> StructType<'ctx> {
+        let key = Ty::nominal(path.clone(), args.to_vec());
+
+        if let Some(st) = self.struct_types.get(&key) {
+            return st.clone();
+        }
+
+        let opaque = self.lcx.opaque_struct_type(&key.to_mangled());
+        self.struct_types.insert(key.clone(), opaque);
+
+        // Clone the enum definition and apply type argument substitution.
+        let mut enum_ty = self
+            .enum_defs
+            .get(path)
+            .cloned()
+            .expect(&format!("enum type not found: {}", path));
+
+        if !args.is_empty() {
+            let vars = enum_ty.ty.vars.clone();
+            assert_eq!(
+                vars.len(),
+                args.len(),
+                "cannot instantiate enum type: path={} vars={} args={}",
+                path,
+                vars.len(),
+                args.len()
+            );
+            let mut subst = Subst::new();
+            for (var, arg) in vars.into_iter().zip(args.iter()) {
+                subst.insert(var, arg.clone());
+            }
+            enum_ty.apply_subst(&subst);
+        }
+
+        // Compute maximum payload size in bytes across all variants.
+        let mut max_payload_bytes: u64 = 0;
+        for variant in &enum_ty.variants {
+            let mut variant_bytes: u64 = 0;
+            for field_scheme in &variant.field_types {
+                let field_llvm_ty = self.to_llvm_type(field_scheme.mono());
+                let td = self.target_machine.get_target_data();
+                let align = td.get_preferred_alignment(&field_llvm_ty) as u64;
+                let size = td.get_abi_size(&field_llvm_ty);
+                variant_bytes = (variant_bytes + align - 1) & !(align - 1);
+                variant_bytes += size;
+            }
+            max_payload_bytes = max_payload_bytes.max(variant_bytes);
+        }
+
+        // Body: { i32 tag, [N x i8] payload }
+        let i32_ty = self.lcx.i32_type();
+        let payload_ty = self.lcx.i8_type().array_type(max_payload_bytes as u32);
+        let llvm_struct = self
+            .struct_types
+            .get(&key)
+            .expect("enum not registered")
+            .clone();
+        llvm_struct.set_body(&[i32_ty.into(), payload_ty.into()], false);
+        llvm_struct
+    }
+
+    /// Initialises the enum local at `idx` from an `EnumValue`: stores the tag
+    /// into field 0 and packs payload fields into the byte-array field 1.
+    fn build_enum_init(
+        &mut self,
+        idx: usize,
+        ev: &lir::EnumValue,
+        srcmap: &SourceMap,
+    ) -> Result<InstructionValue<'ctx>, BuilderError> {
+        let dst_ptr = self.get_local(idx);
+
+        // Recover type args from the destination local's declared type so
+        // generic enums are instantiated correctly.
+        let args = match self.local_tys[idx].clone() {
+            Ty::Proj(_, args) => args,
+            _ => vec![],
+        };
+        let enum_llvm_ty = self.get_enum_llvm_type(&ev.path, &args);
+
+        let zero = self.zero();
+        let tag_field = self.ptr_type().const_int(0, false);
+        let payload_field = self.ptr_type().const_int(1, false);
+
+        // Store tag into struct field 0.
+        let tag_ptr = unsafe {
+            self.builder
+                .build_gep(enum_llvm_ty, dst_ptr, &[zero, tag_field], "enum_tag_ptr")?
+        };
+        self.register_pointee_ty(tag_ptr, Ty::i32());
+        let tag_val = self.lcx.i32_type().const_int(ev.tag as u64, false);
+        let mut last_inst = self.builder.build_store(tag_ptr, tag_val)?;
+
+        if ev.fields.is_empty() {
+            return Ok(last_inst);
+        }
+
+        // Get pointer to the payload byte array (struct field 1).
+        let payload_ptr = unsafe {
+            self.builder.build_gep(
+                enum_llvm_ty,
+                dst_ptr,
+                &[zero, payload_field],
+                "enum_payload_ptr",
+            )?
+        };
+
+        // Pack each payload field at the correct byte offset.
+        let mut byte_offset: u64 = 0;
+        for field_var in &ev.fields {
+            let field_ty = self.type_of(field_var).clone();
+            let field_llvm_ty = self.to_llvm_type(&field_ty);
+            let td = self.target_machine.get_target_data();
+            let align = td.get_preferred_alignment(&field_llvm_ty) as u64;
+            let size = td.get_abi_size(&field_llvm_ty);
+
+            // Advance to satisfy alignment.
+            byte_offset = (byte_offset + align - 1) & !(align - 1);
+
+            // GEP to the field's slot within the payload byte array.
+            let field_ptr = if byte_offset == 0 {
+                payload_ptr
+            } else {
+                let off_val = self.ptr_type().const_int(byte_offset, false);
+                unsafe {
+                    self.builder.build_gep(
+                        self.lcx.i8_type(),
+                        payload_ptr,
+                        &[off_val],
+                        "payload_field_ptr",
+                    )?
+                }
+            };
+            self.register_pointee_ty(field_ptr, field_ty.clone());
+
+            if field_ty.is_aggregate() {
+                let src_ptr = match field_var {
+                    lir::Variable::Local(i) => self.get_local(*i),
+                    other => {
+                        panic!("aggregate enum payload field must be a local: {:?}", other)
+                    }
+                };
+                let field_align = td.get_abi_alignment(&field_llvm_ty);
+                let size_val = self.ptr_type().const_int(size, false);
+                last_inst = self
+                    .builder
+                    .build_memcpy(field_ptr, field_align, src_ptr, field_align, size_val)?
+                    .as_instruction_value()
+                    .unwrap();
+            } else {
+                let field_val = match field_var {
+                    lir::Variable::Local(i) => self.load_local(*i)?,
+                    other => other.codegen(self, srcmap)?,
+                };
+                last_inst = self.builder.build_store(field_ptr, field_val)?;
+            }
+
+            byte_offset += size;
+        }
+
+        Ok(last_inst)
     }
 }
 
@@ -2210,6 +2402,11 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
             lir::Value::GetField(g) => g.codegen(ctx, srcmap),
             lir::Value::BasicOp(b) => b.codegen(ctx, srcmap),
             lir::Value::Cast(c) => c.codegen(ctx, srcmap),
+            lir::Value::Enum(_) => {
+                unreachable!(
+                    "Value::Enum must only appear as SetLocal RHS; lower via build_enum_init"
+                )
+            }
             lir::Value::Upgrade(inner) => {
                 // upgrade(id *T) -> nilable[*T]: check strong_count, if > 0
                 // increment it and return Some(shared_ref), else return None.

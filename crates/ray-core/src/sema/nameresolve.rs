@@ -13,7 +13,7 @@ use ray_shared::{
 use ray_typing::types::TyScheme;
 
 use crate::ast::{
-    CurlyElement, Decl, Expr, File, FuncSig, Impl, Node, PathBinding, Pattern, Struct, Trait,
+    CurlyElement, Decl, Enum, Expr, File, FuncSig, Impl, Node, PathBinding, Pattern, Struct, Trait,
     WalkItem, WalkScopeKind, walk_file,
 };
 
@@ -418,6 +418,10 @@ fn resolve_names_in_decl(decl: &Node<Decl>, ctx: &mut ResolveContext<'_>) {
             // Resolve type references in struct field types
             resolve_struct_type_refs(decl.id.owner, struct_decl, ctx);
         }
+        Decl::Enum(enum_decl) => {
+            // Resolve type references in enum variant payload types
+            resolve_enum_type_refs(decl.id.owner, enum_decl, ctx);
+        }
         Decl::Trait(trait_decl) => {
             // Collect all type vars (explicit + implicit) from trait type and super trait
             let ty_vars = Ty::all_user_type_vars(
@@ -510,6 +514,31 @@ fn resolve_struct_type_refs(def_id: DefId, struct_decl: &Struct, ctx: &mut Resol
             if let Some(parsed_ty_scheme) = &field.value.ty {
                 collect_type_resolutions_from_scheme(parsed_ty_scheme, &type_params, ctx);
             }
+        }
+    }
+}
+
+/// Resolve type references in an enum definition.
+///
+/// For `enum result['a, 'e] { ok('a), err('e) }`, this resolves:
+/// - Type parameter `'a` in variant `ok` to TypeParam
+/// - Type parameter `'e` in variant `err` to TypeParam
+fn resolve_enum_type_refs(def_id: DefId, enum_decl: &Enum, ctx: &mut ResolveContext<'_>) {
+    // Build type parameter scope from enum's type params
+    let ty_vars = extract_ty_vars_from_type_params(&enum_decl.ty_params);
+    let type_params = build_type_param_scope(def_id, &ty_vars);
+
+    // Resolve the enum's own type params
+    if let Some(tp) = &enum_decl.ty_params {
+        for parsed_ty in &tp.tys {
+            collect_type_resolutions(parsed_ty, &type_params, ctx);
+        }
+    }
+
+    // Resolve each variant's payload types
+    for variant in &enum_decl.variants {
+        for field_ty in &variant.value.fields {
+            collect_type_resolutions(field_ty, &type_params, ctx);
         }
     }
 }
@@ -861,9 +890,10 @@ mod tests {
 
     use crate::{
         ast::{
-            Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Expr, File,
-            FnParam, Func, FuncSig, Impl, InfixOp, Literal, Modifier, Name, New, Node,
-            Pattern as AstPattern, ScopedAccess, Sequence, Struct, Trait, TypeParams,
+            Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Enum,
+            EnumVariant, Expr, File, FnParam, Func, FuncSig, Impl, InfixOp, Literal, Modifier,
+            Name, New, Node, Pattern as AstPattern, ScopedAccess, Sequence, Struct, Trait,
+            TypeParams,
             token::{Token, TokenKind},
         },
         sema::{
@@ -3516,6 +3546,134 @@ mod tests {
             resolutions.get(&a_node_id),
             Some(&Resolution::TypeParam(expected_type_param_id)),
             "'a should resolve to impl's TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_enum_variant_field_type() {
+        // enum shape { circle(Bar) }
+        // where Bar is in exports
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let field_ty = Ty::con("Bar");
+        let field_node_id = NodeId::new();
+        let mut parsed_field_ty = Parsed::new(field_ty, Source::default());
+        parsed_field_ty.set_synthetic_ids(vec![field_node_id]);
+
+        let variant = Node::new(EnumVariant {
+            name: "circle".to_string(),
+            fields: vec![parsed_field_ty],
+        });
+
+        let enum_decl = Enum {
+            path: Node::new(Path::from("test::shape")),
+            ty_params: None,
+            variants: vec![variant],
+        };
+        let decl = Node::new(Decl::Enum(enum_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let bar_def_id = DefId::new(FileId(0), 1);
+        exports.insert("Bar".to_string(), DefTarget::Workspace(bar_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        assert_eq!(
+            resolutions.get(&field_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(bar_def_id))),
+            "Variant field type Bar should resolve to export"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_enum_variant_field_with_type_param() {
+        // enum option['a] { some('a) }
+        // 'a in variant field should resolve to TypeParam
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let field_ty = Ty::var("'a");
+        let field_node_id = NodeId::new();
+        let mut parsed_field_ty = Parsed::new(field_ty, Source::default());
+        parsed_field_ty.set_synthetic_ids(vec![field_node_id]);
+
+        let variant = Node::new(EnumVariant {
+            name: "some".to_string(),
+            fields: vec![parsed_field_ty],
+        });
+
+        let ty_param_node_id = NodeId::new();
+        let mut ty_param_parsed = Parsed::new(Ty::var("'a"), Source::default());
+        ty_param_parsed.set_synthetic_ids(vec![ty_param_node_id]);
+
+        let enum_decl = Enum {
+            path: Node::new(Path::from("test::option")),
+            ty_params: Some(TypeParams {
+                tys: vec![ty_param_parsed],
+                lb_span: Span::default(),
+                rb_span: Span::default(),
+            }),
+            variants: vec![variant],
+        };
+        let decl = Node::new(Decl::Enum(enum_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        let expected_type_param_id = TypeParamId {
+            owner: def_id,
+            index: 0,
+        };
+        assert_eq!(
+            resolutions.get(&field_node_id),
+            Some(&Resolution::TypeParam(expected_type_param_id)),
+            "Variant field type 'a should resolve to TypeParam"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_enum_variant_unresolved_field_type() {
+        // enum shape { circle(Unknown) }
+        // Unknown is not in scope — should resolve to Error
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let field_ty = Ty::con("Unknown");
+        let field_node_id = NodeId::new();
+        let mut parsed_field_ty = Parsed::new(field_ty, Source::default());
+        parsed_field_ty.set_synthetic_ids(vec![field_node_id]);
+
+        let variant = Node::new(EnumVariant {
+            name: "circle".to_string(),
+            fields: vec![parsed_field_ty],
+        });
+
+        let enum_decl = Enum {
+            path: Node::new(Path::from("test::shape")),
+            ty_params: None,
+            variants: vec![variant],
+        };
+        let decl = Node::new(Decl::Enum(enum_decl));
+
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let exports = HashMap::new();
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        assert_eq!(
+            resolutions.get(&field_node_id),
+            Some(&Resolution::Error {
+                name: "Unknown".to_string(),
+                kind: NameKind::Type,
+            }),
+            "Unresolved variant field type should be Resolution::Error"
         );
     }
 }

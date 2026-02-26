@@ -58,6 +58,8 @@ pub enum DefKind {
     Primitive,
     Struct,
     StructField, // A field within a struct (parent is the struct DefId)
+    Enum,
+    EnumVariant, // A variant within an enum (parent is the enum DefId)
     Trait,
     Impl,
     TypeAlias,

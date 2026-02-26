@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ray_core::ast::{Decl, Expr, FuncSig, Node, ReceiverKind, WalkItem, walk_file};
 use ray_query_macros::query;
 use ray_shared::{
-    def::{DefId, DefKind, SignatureStatus},
+    def::{DefHeader, DefId, DefKind, SignatureStatus},
     file_id::FileId,
     node_id::NodeId,
     pathlib::ItemPath,
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     queries::{
-        defs::{def_header, def_path, find_def_ast},
+        defs::{def_header, def_path, enum_def, find_def_ast},
         parse::{ParseResult, parse_file},
         resolve::name_resolutions,
         transform::file_ast,
@@ -371,6 +371,12 @@ pub fn def_signature_status(db: &Database, def_id: DefId) -> SignatureStatus {
         return SignatureStatus::Unannotated;
     };
 
+    // Enum variants always have fully determined types derived from the parent enum.
+    // They are nested inside Decl::Enum so find_def_ast won't find them as top-level decls.
+    if matches!(header.kind, DefKind::EnumVariant) {
+        return SignatureStatus::FullyAnnotated;
+    }
+
     // In impl/trait methods, bare `self` is implicitly typed by the parent block.
     // The transform pass annotates it, but we read the pre-transform AST here.
     let has_implicit_self = header
@@ -395,9 +401,11 @@ fn compute_signature_status(decl: &Node<Decl>, has_implicit_self: bool) -> Signa
         // Standalone signatures (trait methods) have no body — treat as block
         Decl::FnSig(sig) => sig.to_sig_status(has_implicit_self, true),
         // These always have explicit type information
-        Decl::Struct(_) | Decl::Trait(_) | Decl::Impl(_) | Decl::TypeAlias(_, _) => {
-            SignatureStatus::FullyAnnotated
-        }
+        Decl::Struct(_)
+        | Decl::Enum(_)
+        | Decl::Trait(_)
+        | Decl::Impl(_)
+        | Decl::TypeAlias(_, _) => SignatureStatus::FullyAnnotated,
         // Variable declarations
         Decl::Name(name, _) | Decl::Mutable(name, _) => {
             if name.value.ty.is_some() {
@@ -442,58 +450,67 @@ pub fn annotated_scheme(db: &Database, def_id: DefId) -> Option<TyScheme> {
         return None;
     }
 
-    // Use parse_file instead of file_ast to avoid cycle:
-    // file_ast -> transform -> def_ty -> annotated_scheme -> file_ast
     let parse_result = parse_file(db, def_id.file);
-    let mapping = mapped_def_types(db, def_id);
-    let resolutions = name_resolutions(db, def_id.file);
 
     // Find the DefHeader for this definition
     let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
-    // Get parent var_map if this is a nested definition (trait method, impl method)
-    let parent_var_map = get_parent_var_map(db, def_id);
+    match def_header.kind {
+        DefKind::Function { .. } | DefKind::Method => {
+            let mapping = mapped_def_types(db, def_id);
+            let resolutions = name_resolutions(db, def_id.file);
 
-    // Combine parent var_map with own var_map
-    let mut combined_var_map = parent_var_map;
-    combined_var_map.extend(mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
+            // Get parent var_map if this is a nested definition (trait method, impl method)
+            let parent_var_map = get_parent_var_map(db, def_id);
 
-    // Create closure to convert DefTarget to ItemPath using the def_path query
-    let get_item_path = |target: &DefTarget| {
-        def_path(db, target.clone()).expect("DefTarget should have a valid path")
-    };
+            // Combine parent var_map with own var_map
+            let mut combined_var_map = parent_var_map;
+            combined_var_map.extend(mapping.var_map.iter().map(|(k, v)| (*k, v.clone())));
 
-    // For methods with a parent impl/trait, compute the implementing type so
-    // bare `self` parameters can be annotated with the correct resolved type.
-    let self_ty = compute_self_ty_for_method(
-        db,
-        def_id,
-        &parse_result,
-        &resolutions,
-        &combined_var_map,
-        get_item_path,
-    );
+            // Create closure to convert DefTarget to ItemPath using the def_path query
+            let get_item_path = |target: &DefTarget| {
+                def_path(db, target.clone()).expect("DefTarget should have a valid path")
+            };
 
-    // Find the AST node for this definition
-    let def_ast = find_def_ast(&parse_result.ast.decls, def_header.root_node)?;
+            // For methods with a parent impl/trait, compute the implementing type so
+            // bare `self` parameters can be annotated with the correct resolved type.
+            let self_ty = compute_self_ty_for_method(
+                db,
+                def_id,
+                &parse_result,
+                &resolutions,
+                &combined_var_map,
+                get_item_path,
+            );
 
-    let mut scheme = compute_scheme_resolved(
-        def_ast,
-        &combined_var_map,
-        &resolutions,
-        get_item_path,
-        status,
-        self_ty,
-    )?;
+            // Find the AST node for this definition
+            let def_ast = find_def_ast(&parse_result.ast.decls, def_header.root_node)?;
 
-    // For methods inside impl/trait blocks, include the parent's where-clause predicates.
-    let parent_predicates =
-        get_parent_qualifiers(db, def_id, &resolutions, &combined_var_map, get_item_path);
-    if !parent_predicates.is_empty() {
-        scheme.qualifiers_mut().extend(parent_predicates);
+            let mut scheme = compute_scheme_resolved(
+                def_ast,
+                &combined_var_map,
+                &resolutions,
+                get_item_path,
+                status,
+                self_ty,
+            )?;
+
+            // For methods inside impl/trait blocks, include the parent's where-clause predicates.
+            let parent_predicates =
+                get_parent_qualifiers(db, def_id, &resolutions, &combined_var_map, get_item_path);
+            if !parent_predicates.is_empty() {
+                scheme.qualifiers_mut().extend(parent_predicates);
+            }
+
+            Some(scheme)
+        }
+        DefKind::EnumVariant => {
+            // Handle enum variants specially: look up parent enum and compute
+            // function type (for payload variants) or enum type (for unit variants).
+            compute_enum_variant_scheme(db, def_header)
+        }
+        _ => None,
     }
-
-    Some(scheme)
 }
 
 /// Compute the resolved implementing type for a method's bare `self` parameter.
@@ -673,6 +690,33 @@ where
         .collect()
 }
 
+/// Compute the type scheme for an enum variant.
+///
+/// - Payload variants: `fn(field_types...) -> EnumType` (a function type)
+/// - Unit variants: `EnumType` (the enum type itself, no function)
+fn compute_enum_variant_scheme(db: &Database, variant_header: &DefHeader) -> Option<TyScheme> {
+    let parent_def_id = variant_header.parent?;
+    let parent_target = DefTarget::Workspace(parent_def_id);
+    let enum_definition = enum_def(db, parent_target)?;
+
+    let variant = enum_definition
+        .variants
+        .iter()
+        .find(|v| v.name == variant_header.name)?;
+
+    let schema_vars = enum_definition.ty.vars.clone();
+    let enum_ty = enum_definition.ty.ty.clone();
+
+    if variant.field_types.is_empty() {
+        // Unit variant: type is the enum type itself
+        Some(TyScheme::new(schema_vars, vec![], enum_ty))
+    } else {
+        // Payload variant: type is fn(field_types...) -> EnumType
+        let fn_ty = Ty::Func(variant.field_types.clone(), Box::new(enum_ty));
+        Some(TyScheme::new(schema_vars, vec![], fn_ty))
+    }
+}
+
 /// Compute the type scheme for a declaration with resolved types.
 ///
 /// `self_ty` is the pre-resolved implementing type for bare `self` parameters
@@ -820,7 +864,8 @@ fn extract_type_param_names(decl: &Node<Decl>) -> Vec<String> {
     match &decl.value {
         Decl::Func(func) => sig_type_param_names(&func.sig),
         Decl::FnSig(sig) => sig_type_param_names(sig),
-        Decl::Struct(st) => collect_struct_type_params(st),
+        Decl::Struct(st) => extract_type_params_from_parsed_tys(st.ty_params.as_ref()),
+        Decl::Enum(en) => extract_type_params_from_parsed_tys(en.ty_params.as_ref()),
         Decl::Trait(tr) => Ty::all_user_type_vars(
             std::iter::once(tr.ty.value()).chain(tr.super_trait.iter().map(|s| s.value())),
         )
@@ -853,11 +898,6 @@ fn sig_type_param_names(sig: &FuncSig) -> Vec<String> {
         .into_iter()
         .filter_map(|tv| tv.path().name())
         .collect()
-}
-
-/// Collect type parameters from a struct definition (explicit only).
-fn collect_struct_type_params(st: &ray_core::ast::Struct) -> Vec<String> {
-    extract_type_params_from_parsed_tys(st.ty_params.as_ref())
 }
 
 /// Extract type parameter names from an optional TypeParams.
@@ -2726,6 +2766,132 @@ impl ToStr[('a, 'b)] where ToStr['a], ToStr['b] {
                 !var.is_ret_placeholder(),
                 "Return placeholder should not be quantified in scheme vars, found: {}",
                 var,
+            );
+        }
+    }
+
+    #[test]
+    fn annotated_scheme_for_unit_enum_variant() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "enum color { red, green, blue }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let red_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "red" && matches!(d.kind, DefKind::EnumVariant))
+            .expect("should find red variant");
+
+        let scheme = annotated_scheme(&db, red_def.def_id)
+            .expect("unit variant should have an annotated scheme");
+
+        // Unit variant: type is the enum type itself, not a function
+        assert!(
+            !matches!(scheme.ty, Ty::Func(_, _)),
+            "unit variant should not be a function type, got: {:?}",
+            scheme.ty
+        );
+        // Non-generic enum has no type vars
+        assert!(scheme.vars.is_empty());
+    }
+
+    #[test]
+    fn annotated_scheme_for_payload_enum_variant() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "enum shape { circle(int) }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let circle_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "circle" && matches!(d.kind, DefKind::EnumVariant))
+            .expect("should find circle variant");
+
+        let scheme = annotated_scheme(&db, circle_def.def_id)
+            .expect("payload variant should have an annotated scheme");
+
+        // Payload variant: type is fn(int) -> shape
+        assert!(
+            matches!(scheme.ty, Ty::Func(ref params, _) if params.len() == 1),
+            "payload variant should be fn with 1 param, got: {:?}",
+            scheme.ty
+        );
+        assert!(scheme.vars.is_empty());
+    }
+
+    #[test]
+    fn annotated_scheme_for_generic_enum_variant() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(
+            &db,
+            file_id,
+            "enum result['a, 'e] { ok('a), err('e) }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("test/mod.ray"),
+            module_path.clone(),
+        );
+
+        let parse_result = parse_file(&db, file_id);
+        let ok_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "ok" && matches!(d.kind, DefKind::EnumVariant))
+            .expect("should find ok variant");
+
+        let scheme = annotated_scheme(&db, ok_def.def_id)
+            .expect("generic payload variant should have an annotated scheme");
+
+        // ok('a) -> result['a, 'e]: should inherit both type vars from parent enum
+        assert_eq!(
+            scheme.vars.len(),
+            2,
+            "should have 2 schema vars from parent enum"
+        );
+        // Should be a function type fn('a) -> result['a, 'e]
+        assert!(
+            matches!(scheme.ty, Ty::Func(ref params, _) if params.len() == 1),
+            "ok variant should be fn('a) -> result, got: {:?}",
+            scheme.ty
+        );
+        // The single param and the return type should use the schema vars
+        if let Ty::Func(params, ret) = &scheme.ty {
+            assert!(
+                matches!(params[0], Ty::Var(_)),
+                "param should be a schema var"
+            );
+            assert!(
+                matches!(**ret, Ty::Proj(_, _)),
+                "return should be Ty::Proj for generic enum"
             );
         }
     }

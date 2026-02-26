@@ -94,6 +94,8 @@ fn is_unannotated(kind: DefKind) -> bool {
         DefKind::Method
         | DefKind::Struct
         | DefKind::StructField
+        | DefKind::Enum
+        | DefKind::EnumVariant
         | DefKind::Trait
         | DefKind::Impl
         | DefKind::TypeAlias

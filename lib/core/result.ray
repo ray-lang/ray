@@ -1,0 +1,9 @@
+//! The result type for representing success or failure.
+//!
+//! `result['a, 'e]` holds either an `ok` value of type `'a` or an `err` value
+//! of type `'e`.
+
+enum result['a, 'e] {
+    ok('a),
+    err('e)
+}

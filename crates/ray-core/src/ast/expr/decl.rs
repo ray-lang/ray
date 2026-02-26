@@ -66,6 +66,7 @@ pub enum Decl {
     Func(Func),
     FnSig(FuncSig),
     Struct(Struct),
+    Enum(Enum),
     Trait(Trait),
     TypeAlias(Node<Name>, Parsed<Ty>),
     Impl(Impl),
@@ -97,7 +98,7 @@ impl Into<usize> for &Decl {
     fn into(self) -> usize {
         match self {
             Decl::Trait(_) => 0,
-            Decl::Struct(_) => 1,
+            Decl::Struct(_) | Decl::Enum(_) => 1,
             Decl::TypeAlias(_, _) => 2,
             Decl::Func(_) | Decl::FnSig(_) => 3,
             Decl::Impl(_) => 4,
@@ -118,6 +119,7 @@ impl Decl {
             Decl::Func(_) => "Func",
             Decl::FnSig(_) => "FnSig",
             Decl::Struct(_) => "Struct",
+            Decl::Enum(_) => "Enum",
             Decl::Trait(_) => "Trait",
             Decl::TypeAlias(_, _) => "TypeAlias",
             Decl::Impl(_) => "Impl",
@@ -134,6 +136,7 @@ impl Decl {
             Decl::Func(_) => str!("function"),
             Decl::FnSig(_) => str!("function signature"),
             Decl::Struct(_) => str!("struct"),
+            Decl::Enum(_) => str!("enum"),
             Decl::Trait(_) => str!("trait"),
             Decl::TypeAlias(_, _) => str!("type alias"),
             Decl::Impl(_) => str!("impl"),
@@ -144,7 +147,7 @@ impl Decl {
 
     pub fn is_typed(&self) -> bool {
         match self {
-            Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => true,
+            Decl::Struct(_) | Decl::Enum(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => true,
             Decl::Mutable(_, _) => todo!(),
             Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
@@ -158,7 +161,11 @@ impl Decl {
 
     pub fn get_ty(&self) -> Option<&TyScheme> {
         match self {
-            Decl::Impl(_) | Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => todo!(),
+            Decl::Impl(_)
+            | Decl::Struct(_)
+            | Decl::Enum(_)
+            | Decl::Trait(_)
+            | Decl::TypeAlias(_, _) => todo!(),
             Decl::Mutable(_, _) => todo!(),
             Decl::Name(_, _) => todo!(),
             Decl::Declare(_) => todo!(),
@@ -181,7 +188,7 @@ impl Decl {
             Decl::FnSig(sig) => {
                 defs.insert(&sig.path, sig.ty.as_ref());
             }
-            Decl::Struct(_) => todo!(),
+            Decl::Struct(_) | Decl::Enum(_) => todo!(),
             Decl::Trait(tr) => {
                 for func in tr.fields.iter() {
                     let func = variant!(func.deref(), if Decl::FnSig(func));
@@ -223,6 +230,36 @@ pub struct Struct {
     pub path: Node<Path>,
     pub ty_params: Option<TypeParams>,
     pub fields: Option<Vec<Node<Name>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Enum {
+    pub path: Node<Path>,
+    pub ty_params: Option<TypeParams>,
+    pub variants: Vec<Node<EnumVariant>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<Parsed<Ty>>,
+}
+
+impl std::fmt::Display for EnumVariant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)?;
+        if !self.fields.is_empty() {
+            write!(f, "(")?;
+            for (i, field) in self.fields.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", field)?;
+            }
+            write!(f, ")")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +343,25 @@ impl std::fmt::Display for Decl {
                     write!(f, "(struct {}{})", st.path, tp)
                 }
             }
+            Decl::Enum(en) => {
+                let tp = if let Some(tp) = &en.ty_params {
+                    tp.to_string()
+                } else {
+                    "".to_string()
+                };
+
+                if en.variants.is_empty() {
+                    write!(f, "(enum {}{})", en.path, tp)
+                } else {
+                    let variants = en
+                        .variants
+                        .iter()
+                        .map(|v| format!("  {}", v))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    write!(f, "(enum {}{} {{\n{}\n}})", en.path, tp, variants)
+                }
+            }
             Decl::Trait(tr) => {
                 if tr.fields.len() != 0 {
                     let methods = format!("{}\n", strutils::indent_lines_iter(&tr.fields, 2));
@@ -386,6 +442,7 @@ impl Decl {
             Decl::Func(f) => f.sig.path.name(),
             Decl::FnSig(sig) => sig.path.name(),
             Decl::Struct(s) => s.path.name(),
+            Decl::Enum(e) => e.path.name(),
             Decl::Trait(t) => Some(t.ty.name()),
             Decl::TypeAlias(_, _) | Decl::Impl(_) | Decl::Declare(_) | Decl::FileMain(_) => None,
             Decl::Test(test) => Some(test.name.clone()),

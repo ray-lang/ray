@@ -2,7 +2,9 @@
 
 use std::{collections::HashMap, ops::Deref, sync::Arc};
 
-use ray_core::ast::{Call, Decl, Expr, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind};
+use ray_core::ast::{
+    Call, Decl, Enum, Expr, FuncSig, Impl, Modifier, Name, Node, TraitDirectiveKind, TypeParams,
+};
 use ray_query_macros::query;
 use ray_shared::{
     def::{DefHeader, DefId, DefKind, LibraryDefId, SignatureStatus},
@@ -17,8 +19,8 @@ use ray_shared::{
 use ray_typing::{
     constraints::Predicate,
     types::{
-        FieldKind, ImplField, ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, TraitField,
-        TraitTy, TyScheme,
+        EnumTy, EnumVariantTy, FieldKind, ImplField, ImplKind, ImplTy, NominalKind, ReceiverMode,
+        StructTy, TraitField, TraitTy, TyScheme,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -269,6 +271,54 @@ pub struct FuncDef {
     pub params: Vec<ParamDef>,
     /// Modifiers on the function (e.g., `[Pub, Static]`).
     pub modifiers: Vec<Modifier>,
+}
+
+/// A variant within an enum definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumVariantDef {
+    /// The name of the variant.
+    pub name: String,
+    /// The tag (discriminant) for this variant (0, 1, 2, ...).
+    pub tag: u32,
+    /// The payload field types (empty for unit variants).
+    pub field_types: Vec<Ty>,
+}
+
+/// An enum definition for the query layer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumDef {
+    /// The target identifying this enum definition.
+    pub target: DefTarget,
+    /// The path of the enum.
+    pub path: ItemPath,
+    /// The type scheme of the enum.
+    pub ty: TyScheme,
+    /// The variants of the enum.
+    pub variants: Vec<EnumVariantDef>,
+}
+
+impl EnumDef {
+    /// Convert to the codegen-level `EnumTy`.
+    pub fn convert_to_enum_ty(&self) -> EnumTy {
+        let schema_vars = &self.ty.vars;
+        EnumTy {
+            path: self.path.clone(),
+            ty: self.ty.clone(),
+            variants: self
+                .variants
+                .iter()
+                .map(|v| EnumVariantTy {
+                    name: v.name.clone(),
+                    tag: v.tag,
+                    field_types: v
+                        .field_types
+                        .iter()
+                        .map(|ft| TyScheme::new(schema_vars.clone(), vec![], ft.clone()))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Source location for a definition, supporting both workspace and library definitions.
@@ -763,6 +813,147 @@ fn extract_library_struct(db: &Database, lib_def_id: &LibraryDefId) -> Option<St
 
     // Look up the struct directly by LibraryDefId
     lib_data.structs.get(lib_def_id).cloned()
+}
+
+// ============================================================================
+// enum_def query
+// ============================================================================
+
+/// Look up an enum definition by its DefTarget.
+///
+/// For workspace definitions, extracts the enum from the parsed AST.
+/// For library definitions, looks up in the LibraryData.
+///
+/// Returns `None` if the target doesn't correspond to an enum.
+#[query]
+pub fn enum_def(db: &Database, target: DefTarget) -> Option<EnumDef> {
+    match target {
+        DefTarget::Workspace(def_id) => extract_workspace_enum(db, def_id),
+        DefTarget::Library(lib_def_id) => extract_library_enum(db, &lib_def_id),
+        DefTarget::Primitive(_) | DefTarget::Module(_) => None,
+    }
+}
+
+/// Extract an enum definition from the workspace AST.
+fn extract_workspace_enum(db: &Database, def_id: DefId) -> Option<EnumDef> {
+    let parse_result = parse_file(db, def_id.file);
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
+
+    if !matches!(def_header.kind, DefKind::Enum) {
+        return None;
+    }
+
+    let module_path = workspace
+        .file_info(def_id.file)
+        .map(|info| info.module_path.clone())
+        .unwrap_or_else(ModulePath::root);
+    let path = ItemPath::new(module_path, vec![def_header.name.clone()]);
+
+    let mapping = mapped_def_types(db, def_id);
+    let resolutions = name_resolutions(db, def_id.file);
+
+    let get_item_path = |target: &DefTarget| {
+        def_path(db, target.clone()).expect("DefTarget should have a valid path")
+    };
+
+    for decl in &parse_result.ast.decls {
+        if let Decl::Enum(en) = &decl.value {
+            if en.path.name() == Some(def_header.name.clone()) {
+                let schema_vars = extract_schema_vars(
+                    &en.ty_params,
+                    &resolutions,
+                    &mapping.var_map,
+                    get_item_path,
+                );
+
+                let enum_ty = if schema_vars.is_empty() {
+                    Ty::Const(path.clone())
+                } else {
+                    let ty_args: Vec<Ty> = schema_vars.iter().map(|v| Ty::Var(v.clone())).collect();
+                    Ty::Proj(path.clone(), ty_args)
+                };
+
+                let ty = TyScheme::new(schema_vars.clone(), vec![], enum_ty);
+
+                let variants =
+                    extract_enum_variants(en, &resolutions, &mapping.var_map, get_item_path);
+
+                return Some(EnumDef {
+                    target: DefTarget::Workspace(def_id),
+                    path,
+                    ty,
+                    variants,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract an enum definition from library data.
+fn extract_library_enum(db: &Database, lib_def_id: &LibraryDefId) -> Option<EnumDef> {
+    let lib_data = library_data(db, lib_def_id.module.clone())?;
+    lib_data.enums.get(lib_def_id).cloned()
+}
+
+/// Extract schema vars from type params (shared logic between struct_def and enum_def).
+fn extract_schema_vars<F>(
+    ty_params: &Option<TypeParams>,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Vec<TyVar>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    ty_params
+        .as_ref()
+        .map(|tp| {
+            tp.tys
+                .iter()
+                .filter_map(|parsed_ty| {
+                    match apply_type_resolutions(parsed_ty, resolutions, var_map, get_item_path) {
+                        Ty::Var(tv) => Some(tv),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Extract variant definitions from an enum AST node with resolved types.
+fn extract_enum_variants<F>(
+    en: &Enum,
+    resolutions: &HashMap<NodeId, Resolution>,
+    var_map: &HashMap<TypeParamId, TyVar>,
+    get_item_path: F,
+) -> Vec<EnumVariantDef>
+where
+    F: Fn(&DefTarget) -> ItemPath + Copy,
+{
+    en.variants
+        .iter()
+        .enumerate()
+        .map(|(tag, variant_node)| {
+            let field_types = variant_node
+                .value
+                .fields
+                .iter()
+                .map(|parsed_ty| {
+                    apply_type_resolutions(parsed_ty, resolutions, var_map, get_item_path)
+                })
+                .collect();
+            EnumVariantDef {
+                name: variant_node.value.name.clone(),
+                tag: tag as u32,
+                field_types,
+            }
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -2139,10 +2330,11 @@ mod tests {
     use crate::{
         queries::{
             defs::{
-                MethodInfo, SourceLocation, StructDef, StructField, TraitDef, def_for_path,
-                def_name, def_path, definition_record, explicit_impls_for_trait, impl_def,
-                impls_for_trait, impls_for_type, impls_in_module, method_receiver_mode, struct_def,
-                trait_def, trait_methods_for_name, traits_in_module, type_alias,
+                EnumDef, EnumVariantDef, MethodInfo, SourceLocation, StructDef, StructField,
+                TraitDef, def_for_path, def_name, def_path, definition_record, enum_def,
+                explicit_impls_for_trait, impl_def, impls_for_trait, impls_for_type,
+                impls_in_module, method_receiver_mode, struct_def, trait_def,
+                trait_methods_for_name, traits_in_module, type_alias,
             },
             libraries::{LibraryData, LoadedLibraries},
             parse::parse_file,
@@ -5243,5 +5435,174 @@ impl object Foo {
 
         let impls = explicit_impls_for_trait(&db, clone_target);
         assert!(impls.is_empty(), "inherent impls should not be counted");
+    }
+
+    #[test]
+    fn enum_def_finds_workspace_enum_unit_variants() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(&db, file_id, "enum color { red, green, blue }".to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let path = ItemPath::new(module_path, vec!["color".into()]);
+        let target = def_for_path(&db, path).expect("enum should be found");
+        let result = enum_def(&db, target);
+
+        assert!(result.is_some());
+        let def = result.unwrap();
+        assert_eq!(def.path.item_name(), Some("color"));
+        assert_eq!(def.variants.len(), 3);
+        assert_eq!(def.variants[0].name, "red");
+        assert_eq!(def.variants[0].tag, 0);
+        assert!(def.variants[0].field_types.is_empty());
+        assert_eq!(def.variants[1].name, "green");
+        assert_eq!(def.variants[1].tag, 1);
+        assert!(def.variants[1].field_types.is_empty());
+        assert_eq!(def.variants[2].name, "blue");
+        assert_eq!(def.variants[2].tag, 2);
+        assert!(def.variants[2].field_types.is_empty());
+    }
+
+    #[test]
+    fn enum_def_finds_workspace_enum_payload_variants() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(
+            &db,
+            file_id,
+            "enum shape { circle(int), rect(int, int) }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let path = ItemPath::new(module_path, vec!["shape".into()]);
+        let target = def_for_path(&db, path).expect("enum should be found");
+        let result = enum_def(&db, target);
+
+        assert!(result.is_some());
+        let def = result.unwrap();
+        assert_eq!(def.variants.len(), 2);
+        assert_eq!(def.variants[0].name, "circle");
+        assert_eq!(def.variants[0].tag, 0);
+        assert_eq!(def.variants[0].field_types.len(), 1);
+        assert_eq!(def.variants[1].name, "rect");
+        assert_eq!(def.variants[1].tag, 1);
+        assert_eq!(def.variants[1].field_types.len(), 2);
+    }
+
+    #[test]
+    fn enum_def_finds_workspace_enum_with_type_params() {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        FileSource::new(
+            &db,
+            file_id,
+            "enum result['a, 'e] { ok('a), err('e) }".to_string(),
+        );
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let path = ItemPath::new(module_path, vec!["result".into()]);
+        let target = def_for_path(&db, path).expect("enum should be found");
+        let result = enum_def(&db, target);
+
+        assert!(result.is_some());
+        let def = result.unwrap();
+        assert_eq!(def.ty.vars.len(), 2, "should have 2 schema type vars");
+        assert!(
+            matches!(def.ty.ty, Ty::Proj(_, _)),
+            "generic enum should have Ty::Proj type"
+        );
+        // ok variant: 1 field, type is a schema var
+        assert_eq!(def.variants[0].name, "ok");
+        assert_eq!(def.variants[0].field_types.len(), 1);
+        assert!(matches!(def.variants[0].field_types[0], Ty::Var(_)));
+        // err variant: 1 field, type is a schema var
+        assert_eq!(def.variants[1].name, "err");
+        assert_eq!(def.variants[1].field_types.len(), 1);
+        assert!(matches!(def.variants[1].field_types[0], Ty::Var(_)));
+    }
+
+    #[test]
+    fn enum_def_finds_library_enum() {
+        let db = Database::new();
+        let workspace = WorkspaceSnapshot::new();
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+
+        let mut libraries = LoadedLibraries::default();
+        let mut lib_data = LibraryData::default();
+        lib_data.modules.push(ModulePath::from("mylib::shapes"));
+
+        let shape_def_id = LibraryDefId {
+            module: ModulePath::from("mylib::shapes"),
+            index: 0,
+        };
+        let shape_path = ItemPath {
+            module: ModulePath::from("mylib::shapes"),
+            item: vec!["shape".to_string()],
+        };
+
+        lib_data.register_name(shape_path.clone(), shape_def_id.clone());
+        lib_data.enums.insert(
+            shape_def_id.clone(),
+            EnumDef {
+                target: DefTarget::Library(shape_def_id.clone()),
+                path: shape_path.clone(),
+                ty: TyScheme::from_mono(Ty::Const(shape_path.clone())),
+                variants: vec![
+                    EnumVariantDef {
+                        name: "circle".to_string(),
+                        tag: 0,
+                        field_types: vec![Ty::Any],
+                    },
+                    EnumVariantDef {
+                        name: "rect".to_string(),
+                        tag: 1,
+                        field_types: vec![Ty::Any, Ty::Any],
+                    },
+                ],
+            },
+        );
+
+        libraries.add(ModulePath::from("mylib"), lib_data);
+        db.set_input::<LoadedLibraries>((), libraries);
+
+        let result = enum_def(&db, DefTarget::Library(shape_def_id));
+
+        assert!(result.is_some());
+        let def = result.unwrap();
+        assert_eq!(def.path.item_name(), Some("shape"));
+        assert_eq!(def.variants.len(), 2);
+        assert_eq!(def.variants[0].name, "circle");
+        assert_eq!(def.variants[0].tag, 0);
+        assert_eq!(def.variants[0].field_types.len(), 1);
+        assert_eq!(def.variants[1].name, "rect");
+        assert_eq!(def.variants[1].tag, 1);
+        assert_eq!(def.variants[1].field_types.len(), 2);
     }
 }

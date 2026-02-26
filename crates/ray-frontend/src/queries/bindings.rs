@@ -177,6 +177,7 @@ fn collect_all_bindings_in_decl(
             collect_all_bindings_in_expr(&test.body, resolutions, names);
         }
         Decl::Struct(_)
+        | Decl::Enum(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)
         | Decl::Mutable(_, _)

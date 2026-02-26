@@ -167,6 +167,13 @@ impl<'a> SemanticTokenCollector<'a> {
     fn visit_decl(&mut self, decl: &Node<Decl>) {
         match &decl.value {
             Decl::Struct(strct) => self.visit_struct(strct),
+            Decl::Enum(en) => {
+                self.emit_path_node(
+                    &en.path,
+                    SemanticTokenKind::Type,
+                    &[SemanticTokenModifier::Declaration],
+                );
+            }
             Decl::Trait(tr) => self.visit_trait(tr),
             Decl::Func(func) => {
                 self.visit_func(func);

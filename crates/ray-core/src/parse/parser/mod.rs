@@ -432,6 +432,7 @@ impl<'src> Parser<'src> {
                 }
                 TokenKind::Extern
                 | TokenKind::Struct
+                | TokenKind::Enum
                 | TokenKind::Trait
                 | TokenKind::TypeAlias
                 | TokenKind::Impl

@@ -25,8 +25,8 @@ use ray_core::sourcemap::SourceMap;
 use crate::{
     queries::{
         defs::{
-            DefinitionRecord, FuncDef, ImplDef, StructDef, TraitDef, def_path, func_def, impl_def,
-            struct_def, trait_def,
+            DefinitionRecord, EnumDef, FuncDef, ImplDef, StructDef, TraitDef, def_path, enum_def,
+            func_def, impl_def, struct_def, trait_def,
         },
         display::collect_reverse_map,
         exports::{ExportedItem, module_def_index},
@@ -70,6 +70,9 @@ pub struct LibraryData {
 
     /// Struct definitions, keyed by LibraryDefId.
     pub structs: HashMap<LibraryDefId, StructDef>,
+
+    /// Enum definitions, keyed by LibraryDefId.
+    pub enums: HashMap<LibraryDefId, EnumDef>,
 
     /// Trait definitions, keyed by LibraryDefId.
     pub traits: HashMap<LibraryDefId, TraitDef>,
@@ -425,6 +428,20 @@ fn find_max_schema_var_id(data: &LibraryData) -> u32 {
         }
     }
 
+    for e in data.enums.values() {
+        for var in &e.ty.vars {
+            if let Some(id) = parse_schema_var_id(var) {
+                max_id = max_id.max(id + 1);
+            }
+        }
+        max_id = max_id.max(find_max_in_ty(&e.ty.ty));
+        for variant in &e.variants {
+            for field_ty in &variant.field_types {
+                max_id = max_id.max(find_max_in_ty(field_ty));
+            }
+        }
+    }
+
     for t in data.traits.values() {
         for var in &t.type_params {
             if let Some(id) = parse_schema_var_id(var) {
@@ -519,6 +536,17 @@ fn remap_library_type_vars(data: &mut LibraryData, offset: u32) {
         }
     }
 
+    for e in data.enums.values_mut() {
+        e.ty.vars.apply_subst(&subst);
+        e.ty.ty.apply_subst(&subst);
+        e.ty.qualifiers.apply_subst(&subst);
+        for variant in &mut e.variants {
+            for field_ty in &mut variant.field_types {
+                field_ty.apply_subst(&subst);
+            }
+        }
+    }
+
     for t in data.traits.values_mut() {
         t.type_params.apply_subst(&subst);
     }
@@ -576,6 +604,18 @@ fn build_offset_subst(data: &LibraryData, offset: u32) -> Subst {
             collect_vars_from_ty(&mut subst, &field.ty.ty, offset);
             for qual in &field.ty.qualifiers {
                 collect_vars_from_predicate(&mut subst, qual, offset);
+            }
+        }
+    }
+
+    for e in data.enums.values() {
+        for var in &e.ty.vars {
+            add_var_to_subst(&mut subst, var, offset);
+        }
+        collect_vars_from_ty(&mut subst, &e.ty.ty, offset);
+        for variant in &e.variants {
+            for field_ty in &variant.field_types {
+                collect_vars_from_ty(&mut subst, field_ty, offset);
             }
         }
     }
@@ -675,6 +715,7 @@ pub fn build_library_data(
     let mut paths = HashMap::new();
     let mut schemes = HashMap::new();
     let mut structs_map = HashMap::new();
+    let mut enums_map = HashMap::new();
     let mut traits_map = HashMap::new();
     let mut impls_map = HashMap::new();
     let mut impls_by_type: HashMap<ItemPath, Vec<LibraryDefId>> = HashMap::new();
@@ -769,6 +810,15 @@ pub fn build_library_data(
                         structs_map.insert(lib_def_id, sdef);
                     }
                 }
+                DefKind::Enum => {
+                    if let Some(path) = item_path {
+                        names.insert(path, lib_def_id.clone());
+                    }
+                    if let Some(mut edef) = enum_def(db, target) {
+                        edef.target = remap_def_target(&edef.target, &def_id_to_lib);
+                        enums_map.insert(lib_def_id, edef);
+                    }
+                }
                 DefKind::Trait => {
                     if let Some(path) = item_path {
                         names.insert(path, lib_def_id.clone());
@@ -808,7 +858,11 @@ pub fn build_library_data(
                     // Method schemes already added above; they're accessed
                     // through their parent trait/impl, not via names
                 }
-                DefKind::FileMain | DefKind::StructField | DefKind::Primitive | DefKind::Test => {}
+                DefKind::FileMain
+                | DefKind::StructField
+                | DefKind::EnumVariant
+                | DefKind::Primitive
+                | DefKind::Test => {}
             }
         }
     }
@@ -854,6 +908,7 @@ pub fn build_library_data(
         paths,
         schemes,
         structs: structs_map,
+        enums: enums_map,
         traits: traits_map,
         impls: impls_map,
         impls_by_type,

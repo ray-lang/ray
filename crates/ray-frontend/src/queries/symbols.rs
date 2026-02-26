@@ -266,6 +266,9 @@ pub fn definition_identities(db: &Database, file_id: FileId) -> HashMap<NodeId, 
                     Decl::Struct(st) => {
                         identities.insert(st.path.id, def_identity);
                     }
+                    Decl::Enum(en) => {
+                        identities.insert(en.path.id, def_identity);
+                    }
                     Decl::Trait(tr) => {
                         identities.insert(tr.path.id, def_identity);
                     }

@@ -10,8 +10,9 @@ use ray_typing::types::NominalKind;
 
 use crate::{
     ast::{
-        Assign, Decl, Decorator, Expr, Impl, Modifier, Name, Node, Pattern, Struct, TestDecl,
-        TrailingPolicy, Trait, TraitDirective, TraitDirectiveKind, token::TokenKind,
+        Assign, Decl, Decorator, Enum, EnumVariant, Expr, Impl, Modifier, Name, Node, Pattern,
+        Struct, TestDecl, TrailingPolicy, Trait, TraitDirective, TraitDirectiveKind,
+        token::TokenKind,
     },
     errors::{RayError, RayErrorKind},
     parse::lexer::NewlineMode,
@@ -150,6 +151,7 @@ impl Parser<'_> {
         match kind {
             TokenKind::Extern => self.parse_extern(ctx),
             TokenKind::Struct => self.parse_struct(ctx),
+            TokenKind::Enum => self.parse_enum(ctx),
             TokenKind::Impl => self.parse_impl(false, false, ctx),
             TokenKind::Trait => self.parse_trait(ctx),
             TokenKind::Fn | TokenKind::Modifier(_) => {
@@ -614,6 +616,122 @@ impl Parser<'_> {
 
             Ok(node)
         })
+    }
+
+    pub(crate) fn parse_enum(&mut self, ctx: &ParseContext) -> DeclResult {
+        self.enter_def(|parser, def_id| {
+            let kw_span = parser.expect_keyword(TokenKind::Enum, ctx)?;
+            let start = kw_span.start;
+
+            // Parse enum name
+            let (name, name_span) = parser.expect_id(ctx)?;
+            let raw_path = ctx.path.append(&name);
+            let path = parser.mk_node(raw_path, name_span, ctx.path.clone());
+
+            // Parse optional type params
+            let ty_params = parser.parse_ty_params(ctx)?;
+
+            // Parse variants inside { }
+            parser.expect(TokenKind::LeftCurly, ctx)?;
+            parser.consume_newlines(ctx)?;
+
+            let mut variants = Vec::new();
+            loop {
+                parser.consume_newlines(ctx)?;
+                if peek!(parser, TokenKind::RightCurly) || parser.is_eof() {
+                    break;
+                }
+
+                let variant_node = parser.parse_enum_variant(ctx)?;
+                variants.push(variant_node);
+
+                // Consume optional comma separator
+                if peek!(parser, TokenKind::Comma) {
+                    parser.expect(TokenKind::Comma, ctx)?;
+                }
+
+                if peek!(parser, TokenKind::RightCurly) || parser.is_eof() {
+                    break;
+                }
+            }
+
+            let end = parser.expect_end(TokenKind::RightCurly, ctx)?;
+
+            let node_path = ctx.path.append(&path);
+            let en = Enum {
+                path,
+                ty_params,
+                variants: variants.clone(),
+            };
+
+            let span = Span { start, end };
+            let node = parser.mk_decl(Decl::Enum(en), span, node_path);
+            parser.defs.push(DefHeader {
+                def_id,
+                root_node: node.id,
+                kind: DefKind::Enum,
+                span,
+                name,
+                name_span,
+                parent: None,
+            });
+
+            // Create DefHeaders for each variant
+            for variant_node in &variants {
+                let variant_def_id = parser.next_def_id();
+                let variant_span = parser.srcmap.span_of(variant_node);
+                parser.defs.push(DefHeader {
+                    def_id: variant_def_id,
+                    root_node: variant_node.id,
+                    name: variant_node.value.name.clone(),
+                    kind: DefKind::EnumVariant,
+                    span: variant_span,
+                    name_span: variant_span,
+                    parent: Some(def_id),
+                });
+            }
+
+            Ok(node)
+        })
+    }
+
+    fn parse_enum_variant(&mut self, ctx: &ParseContext) -> ParseResult<Node<EnumVariant>> {
+        let (name, name_span) = self.expect_id(ctx)?;
+        let mut end = name_span.end;
+
+        // Parse optional payload types: (type1, type2, ...)
+        let fields = if peek!(self, TokenKind::LeftParen) {
+            let _ = self.token(); // consume (
+            let mut types = Vec::new();
+            loop {
+                self.consume_newlines(ctx)?;
+                if peek!(self, TokenKind::RightParen) || self.is_eof() {
+                    break;
+                }
+
+                let ty = self.parse_ty(ctx)?;
+                types.push(ty.map(|ts| ts.ty));
+
+                if peek!(self, TokenKind::Comma) {
+                    self.expect(TokenKind::Comma, ctx)?;
+                }
+
+                if peek!(self, TokenKind::RightParen) || self.is_eof() {
+                    break;
+                }
+            }
+            end = self.expect_end(TokenKind::RightParen, ctx)?;
+            types
+        } else {
+            vec![]
+        };
+
+        let variant = EnumVariant { name, fields };
+        let span = Span {
+            start: name_span.start,
+            end,
+        };
+        Ok(self.mk_node(variant, span, ctx.path.clone()))
     }
 
     pub(crate) fn parse_impl(

@@ -7,7 +7,7 @@ use std::{
 
 use ray_lir::START_FUNCTION;
 use ray_shared::{
-    def::{DefId, DefKind},
+    def::DefKind,
     file_id::FileId,
     local_binding::LocalBindingId,
     node_id::NodeId,
@@ -19,7 +19,8 @@ use ray_shared::{
 use ray_typing::{
     call_resolution::CallResolution,
     types::{
-        ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, Subst, Substitutable, TyScheme,
+        EnumTy, ImplKind, ImplTy, NominalKind, ReceiverMode, StructTy, Subst, Substitutable,
+        TyScheme,
     },
     unify::{match_ty, mgu},
 };
@@ -39,7 +40,7 @@ use ray_frontend::{
         calls::call_resolution,
         closures::closure_info,
         defs::{
-            def_for_path, def_path, definition_record, impl_def, impls_for_trait,
+            def_for_path, def_path, definition_record, enum_def, impl_def, impls_for_trait,
             method_receiver_mode, struct_def, trait_def,
         },
         libraries::{LoadedLibraries, library_lir},
@@ -47,7 +48,7 @@ use ray_frontend::{
         resolve::{name_resolutions, resolve_builtin},
         transform::file_ast,
         typecheck::{def_scheme, inferred_local_type, ty_of},
-        types::resolved_ty,
+        types::{annotated_scheme, resolved_ty},
         workspace::{CompilerOptions, WorkspaceSnapshot},
     },
     query::Database,
@@ -149,9 +150,6 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<(lir::Program, Option<
     };
 
     if !has_module_main {
-        // Enter a synthetic def scope for LIR-generated nodes
-        let _guard = NodeId::enter_def(DefId::default());
-
         ctx.with_builder(Builder::new());
         ctx.with_new_block(|ctx| {
             ctx.ret(lir::Value::Empty);
@@ -249,6 +247,7 @@ pub fn generate(db: &Database, is_lib: bool) -> RayResult<(lir::Program, Option<
     prog.start_idx = start_idx;
     prog.resolved_user_main = user_main_resolved_path.clone();
     prog.struct_types = struct_types;
+    prog.enum_types = build_enum_types(db);
     prog.impls_by_trait = build_impls_by_trait(db);
     if prog.user_main_idx < 0 {
         if let Some(path) = &user_main_resolved_path {
@@ -685,6 +684,31 @@ fn build_struct_types(db: &Database) -> HashMap<ItemPath, StructTy> {
 
             let struct_ty = struct_definition.convert_to_struct_ty();
             result.insert(struct_ty.path.clone(), struct_ty);
+        }
+    }
+
+    result
+}
+
+/// Build the enum_types map by collecting all enum definitions from workspace.
+fn build_enum_types(db: &Database) -> HashMap<ItemPath, EnumTy> {
+    let mut result: HashMap<ItemPath, EnumTy> = HashMap::new();
+    let workspace = db.get_input::<WorkspaceSnapshot>(());
+
+    for file_id in workspace.all_file_ids() {
+        let parse_result = parse_file(db, file_id);
+        for def_header in &parse_result.defs {
+            if !matches!(def_header.kind, DefKind::Enum) {
+                continue;
+            }
+
+            let target = DefTarget::Workspace(def_header.def_id);
+            let Some(enum_definition) = enum_def(db, target) else {
+                continue;
+            };
+
+            let enum_ty = enum_definition.convert_to_enum_ty();
+            result.insert(enum_ty.path.clone(), enum_ty);
         }
     }
 
@@ -4439,6 +4463,114 @@ impl LirGen<GenResult> for Node<Decl> {
                 // Non-extern FnSig (trait method signatures) don't generate LIR
             }
             Decl::TypeAlias(_, _) | Decl::Struct(_) => {}
+            Decl::Enum(_) => {
+                // Generate constructor functions for payload variants
+                // and global constants for unit variants.
+                let enum_def_id = self.id.owner;
+                let enum_target = DefTarget::Workspace(enum_def_id);
+                let Some(enum_definition) = enum_def(ctx.db, enum_target.clone()) else {
+                    return Ok(lir::Value::Empty);
+                };
+                let enum_ty_scheme = enum_definition.ty.clone();
+
+                let parse_result = parse_file(ctx.db, enum_def_id.file);
+
+                for variant_def in &enum_definition.variants {
+                    // Find the variant's DefHeader to get its def_id
+                    let variant_header = parse_result.defs.iter().find(|h| {
+                        matches!(h.kind, DefKind::EnumVariant)
+                            && h.parent == Some(enum_def_id)
+                            && h.name == variant_def.name
+                    });
+                    let Some(variant_header) = variant_header else {
+                        continue;
+                    };
+
+                    let variant_target = DefTarget::Workspace(variant_header.def_id);
+                    let variant_scheme = annotated_scheme(ctx.db, variant_header.def_id)
+                        .expect("variant should have a type scheme");
+
+                    let variant_path = def_path(ctx.db, variant_target)
+                        .expect("variant should have a path")
+                        .to_path();
+
+                    if variant_def.field_types.is_empty() {
+                        // Unit variant: create a global constant
+                        let tag_val =
+                            lir::Atom::IntConst(variant_def.tag as i64, lir::Size::bytes(4));
+                        ctx.new_global(
+                            &variant_path,
+                            tag_val.into(),
+                            variant_scheme.ty.clone().into(),
+                            false,
+                        );
+                    } else {
+                        // Payload variant: generate a constructor function
+                        ctx.with_builder(Builder::new());
+
+                        // Entry block: declare parameters for each field
+                        let param_locals: Vec<usize> = ctx.with_entry_block(|ctx| {
+                            variant_def
+                                .field_types
+                                .iter()
+                                .enumerate()
+                                .map(|(i, field_ty)| {
+                                    ctx.param_unbound(format!("__{}", i), field_ty.clone())
+                                })
+                                .collect()
+                        });
+
+                        // Body block: construct the enum value
+                        let (_, result) = ctx.with_new_block(|ctx| {
+                            let enum_ret_ty = enum_ty_scheme.ty.clone();
+                            let loc = ctx.local(enum_ret_ty.clone().into());
+
+                            ctx.set_local(
+                                loc,
+                                lir::Value::Enum(lir::EnumValue {
+                                    path: enum_definition.path.clone(),
+                                    tag: variant_def.tag,
+                                    fields: param_locals
+                                        .iter()
+                                        .map(|&i| lir::Variable::Local(i))
+                                        .collect(),
+                                }),
+                            );
+
+                            RayResult::Ok(loc)
+                        });
+                        let enum_loc = result?;
+
+                        // Exit block: return the enum value
+                        ctx.with_exit_block(|ctx| {
+                            ctx.ret(lir::Variable::Local(enum_loc).into());
+                        });
+
+                        let builder = ctx.builder.take().unwrap();
+                        let (params, locals, blocks, symbols, cfg) = builder.done();
+
+                        let fn_name = if !variant_scheme.is_polymorphic() {
+                            mangle::fn_name(&variant_path, &variant_scheme)
+                        } else {
+                            variant_path.clone()
+                        };
+
+                        let mut func = lir::Func::new(
+                            variant_path,
+                            variant_scheme,
+                            vec![],
+                            symbols,
+                            cfg,
+                            None,
+                        );
+                        func.name = fn_name;
+                        func.params = params;
+                        func.locals = locals;
+                        func.blocks = blocks;
+                        ctx.new_func(func);
+                    }
+                }
+            }
             Decl::FileMain(stmts) => {
                 // FileMain statements are generated via the main entry point
                 for stmt in stmts {
@@ -4450,9 +4582,6 @@ impl LirGen<GenResult> for Node<Decl> {
                 if !options.test_mode {
                     return Ok(lir::Value::Empty);
                 }
-
-                // Enter a synthetic def scope for LIR-generated nodes
-                let _guard = NodeId::enter_def(DefId::default());
 
                 ctx.with_builder(Builder::new());
 

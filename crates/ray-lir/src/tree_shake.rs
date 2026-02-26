@@ -77,6 +77,11 @@ impl CollectRefs for Value {
             // Phi contains (block_label, local_idx) pairs — no Variable refs
             Value::Phi(_) => {}
             Value::Upgrade(v) => v.collect_refs(collector),
+            Value::Enum(e) => {
+                for field in &e.fields {
+                    field.collect_refs(collector);
+                }
+            }
             // No nested refs
             Value::Empty | Value::VarRef(_) | Value::Type(_) => {}
         }

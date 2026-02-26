@@ -137,7 +137,7 @@ pub fn build_typecheck_input(
             // Structs/traits/type aliases are already lowered into the
             // GlobalEnv by the AST lowering pipeline; they do not produce
             // value bindings here.
-            Decl::Struct(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => {}
+            Decl::Struct(_) | Decl::Enum(_) | Decl::Trait(_) | Decl::TypeAlias(_, _) => {}
             // Impl blocks can contain methods and consts that introduce
             // additional value bindings. We lower these similarly to
             // top-level functions and declarations so they participate in

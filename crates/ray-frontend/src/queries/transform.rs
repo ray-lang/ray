@@ -163,6 +163,7 @@ fn transform_decl(decl: &mut Node<Decl>, ctx: &mut TransformContext<'_>) {
         }
         // Other declaration types don't contain expressions to transform
         Decl::Struct(_)
+        | Decl::Enum(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)
         | Decl::Mutable(_, _)

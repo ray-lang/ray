@@ -154,6 +154,17 @@ pub fn def_display_info(db: &Database, target: DefTarget) -> Option<DefDisplayIn
             signatures.push(format!("struct {}{}", name, vars));
         }
 
+        DefKind::Enum => {
+            if !record.path.module.is_empty() {
+                signatures.push(record.path.module.to_string());
+            }
+            signatures.push(format!("enum {}", name));
+        }
+
+        DefKind::EnumVariant => {
+            signatures.push(name);
+        }
+
         DefKind::StructField => {
             if let Some(ref parent_target) = record.parent {
                 let parent_name = definition_record(db, parent_target.clone())

@@ -19,7 +19,7 @@ use ray_shared::{
     unless,
     utils::{join, map_join},
 };
-use ray_typing::types::{ImplTy, StructTy, Subst, Substitutable, TyScheme};
+use ray_typing::types::{EnumTy, ImplTy, StructTy, Subst, Substitutable, TyScheme};
 use serde::{Deserialize, Serialize};
 
 use ray_core::{ast::Modifier, convert::ToSet, strutils::indent_lines};
@@ -465,6 +465,9 @@ pub enum Value {
     /// increments it and returns a shared ref wrapped in nilable. Otherwise
     /// returns nil. The inner value is the id ref pointer.
     Upgrade(Box<Value>),
+    /// Constructs an enum variant: packs a tag and zero or more payload
+    /// field values into the canonical tagged-union layout `{ i32, [N x i8] }`.
+    Enum(EnumValue),
 }
 
 impl Value {
@@ -506,6 +509,13 @@ impl Display for Value {
             Value::Type(ty) => write!(f, "type({})", ty),
             Value::Closure(c) => write!(f, "closure({}, {})", c.fn_name, c.env),
             Value::Upgrade(v) => write!(f, "upgrade({})", v),
+            Value::Enum(e) => write!(
+                f,
+                "enum({}::tag{}, [{}])",
+                e.path,
+                e.tag,
+                map_join(&e.fields, ", ", |v| format!("{}", v))
+            ),
         }
     }
 }
@@ -534,6 +544,17 @@ impl<'a> GetLocalsMut<'a> for Value {
             Value::IntConvert(_) => todo!(),
             Value::Closure(c) => c.get_locals_mut(),
             Value::Upgrade(v) => v.get_locals_mut(),
+            Value::Enum(e) => e
+                .fields
+                .iter_mut()
+                .filter_map(|v| {
+                    if let Variable::Local(idx) = v {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
         }
     }
@@ -557,6 +578,17 @@ impl<'a> GetLocals<'a> for Value {
             Value::IntConvert(_) => todo!(),
             Value::Closure(c) => c.get_locals(),
             Value::Upgrade(v) => v.get_locals(),
+            Value::Enum(e) => e
+                .fields
+                .iter()
+                .filter_map(|v| {
+                    if let Variable::Local(idx) = v {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
         }
     }
@@ -582,6 +614,8 @@ impl Substitutable for Value {
             Value::Type(ty) => ty.apply_subst(subst),
             Value::Closure(c) => c.apply_subst(subst),
             Value::Upgrade(v) => v.apply_subst(subst),
+            // EnumValue carries a path (not substitutable) and Variable indices (untyped).
+            Value::Enum(_) => {}
         }
     }
 }
@@ -629,7 +663,8 @@ impl Value {
             | Value::Type(_)
             | Value::IntConvert(_)
             | Value::Closure(_)
-            | Value::Upgrade(_) => None,
+            | Value::Upgrade(_)
+            | Value::Enum(_) => None,
         }
     }
 }
@@ -1092,6 +1127,8 @@ pub struct Program {
     /// Includes both workspace struct definitions and synthetic structs
     /// (closure environment types, function handle types, etc.).
     pub struct_types: HashMap<ItemPath, StructTy>,
+    /// All enum types needed for codegen.
+    pub enum_types: HashMap<ItemPath, EnumTy>,
 }
 
 impl Display for Program {
@@ -1146,6 +1183,7 @@ impl Program {
             user_main_idx: -1,
             resolved_user_main: None,
             struct_types: HashMap::new(),
+            enum_types: HashMap::new(),
         }
     }
 
@@ -1198,6 +1236,7 @@ impl Program {
         // --- Sets and maps (naturally dedup) ---
         self.trait_member_set.extend(other.trait_member_set);
         self.struct_types.extend(other.struct_types);
+        self.enum_types.extend(other.enum_types);
         for (trait_name, bucket) in other.impls_by_trait {
             self.impls_by_trait
                 .entry(trait_name)
@@ -2702,6 +2741,18 @@ impl Substitutable for Closure {
         }
         self.env.apply_subst(subst);
     }
+}
+
+/// Data carried by `Value::Enum` — everything codegen needs to emit the
+/// tagged-union initialisation for a single variant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumValue {
+    /// Path of the enum type (used to look up the max payload size).
+    pub path: ItemPath,
+    /// Discriminant tag for this variant.
+    pub tag: u32,
+    /// Payload field values in declaration order.
+    pub fields: Vec<Variable>,
 }
 
 #[derive(Clone)]

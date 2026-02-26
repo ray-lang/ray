@@ -189,6 +189,7 @@ fn find_context_in_decl(
         }
         Decl::Test(test) => find_context_in_expr(&test.body, srcmap, pos, enclosing_func_id),
         Decl::Struct(_)
+        | Decl::Enum(_)
         | Decl::FnSig(_)
         | Decl::TypeAlias(_, _)
         | Decl::Mutable(_, _)

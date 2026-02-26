@@ -421,12 +421,14 @@ impl TyScheme {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NominalKind {
     Struct,
+    Enum,
 }
 
 impl std::fmt::Display for NominalKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NominalKind::Struct => write!(f, "struct"),
+            NominalKind::Enum => write!(f, "enum"),
         }
     }
 }
@@ -490,6 +492,65 @@ impl Substitutable for StructTy {
         for (_, field_ty) in &mut self.fields {
             field_ty.apply_subst(subst);
         }
+    }
+}
+
+/// A variant within an enum type definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumVariantTy {
+    pub name: String,
+    pub tag: u32,
+    pub field_types: Vec<TyScheme>,
+}
+
+/// An enum type definition for codegen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumTy {
+    pub path: ItemPath,
+    pub ty: TyScheme,
+    pub variants: Vec<EnumVariantTy>,
+}
+
+impl std::fmt::Display for EnumTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "enum {} {{", self.path)?;
+        for (i, v) in self.variants.iter().enumerate() {
+            write!(f, " {}", v.name)?;
+            if !v.field_types.is_empty() {
+                write!(f, "(")?;
+                for (j, ft) in v.field_types.iter().enumerate() {
+                    if j > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", ft)?;
+                }
+                write!(f, ")")?;
+            }
+            if i < self.variants.len() - 1 {
+                write!(f, ",")?;
+            } else {
+                write!(f, " ")?;
+            }
+        }
+        write!(f, "}}")
+    }
+}
+
+impl Substitutable for EnumTy {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.ty.apply_subst(subst);
+        for variant in &mut self.variants {
+            for field_ty in &mut variant.field_types {
+                field_ty.apply_subst(subst);
+            }
+        }
+    }
+}
+
+impl EnumTy {
+    /// Look up a variant by name, returning it if found.
+    pub fn get_variant(&self, name: &str) -> Option<&EnumVariantTy> {
+        self.variants.iter().find(|v| v.name == name)
     }
 }
 
