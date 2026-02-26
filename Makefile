@@ -29,9 +29,9 @@ release-toolchain:
 	@cargo build --release
 	@echo "==> staging toolchain contents"
 	@mkdir -p build/toolchain/lib
-	@target/release/ray --root-path $(PWD)/build/toolchain build lib/core --lib --no-core
+	@target/release/ray --root-path $(PWD)/build/toolchain --config-path=lib/core/ray.toml build lib/core
 	@cp lib/core/.ray/build/core.raylib build/toolchain/lib/core.raylib
-	@target/release/ray --root-path $(PWD)/build/toolchain build lib/testing --lib
+	@target/release/ray --root-path $(PWD)/build/toolchain --config-path=lib/testing/ray.toml build lib/testing
 	@cp lib/testing/.ray/build/testing.raylib build/toolchain/lib/testing.raylib
 	@echo "==> writing toolchain manifest"
 	@printf 'version = "%s"\nchannel = "%s"\n' "local" "local" > build/toolchain/manifest.toml
