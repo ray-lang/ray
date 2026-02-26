@@ -1,8 +1,15 @@
 use super::{
-    ExprResult, ParsedExpr, Parser, Recover, RecoveryCtx, Restrictions, context::ParseContext,
+    ExprResult, ParseResult, ParsedExpr, Parser, Recover, RecoveryCtx, Restrictions,
+    context::{ParseContext, SeqSpec},
 };
 
-use crate::ast::{Expr, For, If, Loop, While, token::TokenKind};
+use crate::{
+    ast::{
+        Expr, For, If, Loop, Match, MatchArm, Name, Node, Pattern, TrailingPolicy, While,
+        token::TokenKind,
+    },
+    parse::lexer::NewlineMode,
+};
 use ray_shared::span::Span;
 
 impl Parser<'_> {
@@ -270,6 +277,147 @@ impl Parser<'_> {
             Expr::Loop(Loop {
                 body: Box::new(body),
                 loop_span,
+            }),
+            span,
+            ctx.path.clone(),
+        ))
+    }
+
+    /// Parse a single pattern in a match arm:
+    /// - `_`            → `Pattern::Wildcard`
+    /// - `name(p, ...)` → `Pattern::Variant(path, sub_patterns)`
+    /// - `name`         → `Pattern::Name` (unit variant or variable binding)
+    fn parse_match_arm_pattern(&mut self, ctx: &ParseContext) -> ParseResult<Node<Pattern>> {
+        // Wildcard: `_`
+        if peek!(self, TokenKind::Underscore) {
+            let span = self.expect_sp(TokenKind::Underscore, ctx)?;
+            return Ok(self.mk_node(Pattern::Wildcard, span, ctx.path.clone()));
+        }
+
+        // Parse a path — either a simple name or a qualified path like `result::ok`.
+        let path_node = self.parse_path(ctx)?;
+        let path_span = self.srcmap.span_of(&path_node);
+
+        // If followed by `(`, it's a payload variant: `ok(v)`, `custom(r, g, b)`.
+        if peek!(self, TokenKind::LeftParen) {
+            let spec = SeqSpec {
+                delimiters: Some((TokenKind::LeftParen, TokenKind::RightParen)),
+                trailing: TrailingPolicy::Allow,
+                newline: NewlineMode::Suppress,
+                restrictions: Restrictions::IN_PAREN,
+            };
+            let (sub_patterns, spans) =
+                self.parse_delimited_seq(spec, ctx, |parser, trailing, stop, ctx| {
+                    let stop_ref = stop.as_ref();
+                    let (items, _) = parser.parse_sep_seq(
+                        &TokenKind::Comma,
+                        trailing,
+                        stop_ref,
+                        ctx,
+                        |parser, ctx| parser.parse_match_arm_pattern(ctx),
+                    )?;
+                    Ok(items)
+                })?;
+            let (_, r_span) = spans.expect("variant pattern requires parentheses");
+            let span = path_span.extend_to(&r_span);
+            return Ok(self.mk_node(
+                Pattern::Variant(path_node, sub_patterns),
+                span,
+                ctx.path.clone(),
+            ));
+        }
+
+        // Otherwise it's a Name pattern (unit variant or variable binding).
+        let name = Name::new(path_node.value);
+        Ok(self.mk_node(Pattern::Name(name), path_span, ctx.path.clone()))
+    }
+
+    pub(crate) fn parse_match(&mut self, ctx: &ParseContext) -> ExprResult {
+        let parser = &mut self
+            .with_scope(ctx)
+            .with_description("parse match expression");
+        let ctx = &parser.ctx_clone();
+
+        let match_span = parser.expect_keyword(TokenKind::Match, ctx)?;
+        let start = match_span.start;
+
+        // Parse the scrutinee — NO_CURLY_EXPR prevents `{` from being consumed as part of it.
+        let scrutinee = parser.parse_pre_block_expr(ctx)?;
+
+        // Parse the arms block: `{ pattern => body, ... }`
+        let spec = SeqSpec {
+            delimiters: Some((TokenKind::LeftCurly, TokenKind::RightCurly)),
+            trailing: TrailingPolicy::Allow,
+            newline: NewlineMode::Emit,
+            restrictions: Restrictions::empty(),
+        };
+
+        let (arms, spans) = parser.parse_delimited_seq(spec, ctx, |parser, _, stop, ctx| {
+            let stop_ref = stop.as_ref();
+            let mut arms: Vec<Node<MatchArm>> = Vec::new();
+
+            loop {
+                // Skip leading newlines between arms.
+                while matches!(parser.peek_kind(), TokenKind::NewLine) {
+                    parser.expect(TokenKind::NewLine, ctx)?;
+                }
+
+                // Stop at `}` or EOF.
+                if stop_ref
+                    .map(|t| parser.peek_kind().similar_to(t))
+                    .unwrap_or(false)
+                    || parser.is_eof()
+                {
+                    break;
+                }
+
+                // Parse the arm pattern.
+                let pattern = parser.parse_match_arm_pattern(ctx)?;
+                let pattern_span = parser.srcmap.span_of(&pattern);
+
+                // Expect `=>`.
+                parser.expect_sp(TokenKind::FatArrow, ctx)?;
+
+                // Parse the arm body: a block `{ ... }` or a single expression.
+                // For single expressions, stop_token=Comma prevents commas from being
+                // consumed as infix sequence operators.
+                let body = if peek!(parser, TokenKind::LeftCurly) {
+                    parser.parse_block(ctx)?
+                } else {
+                    let mut body_ctx = ctx.clone();
+                    body_ctx.stop_token = Some(TokenKind::Comma);
+                    parser.parse_expr(&body_ctx)?
+                };
+
+                let body_span = parser.srcmap.span_of(&body);
+                let arm_span = pattern_span.extend_to(&body_span);
+
+                arms.push(parser.mk_node(
+                    MatchArm {
+                        pattern,
+                        body: Box::new(body),
+                    },
+                    arm_span,
+                    ctx.path.clone(),
+                ));
+
+                // Consume an optional trailing comma between arms.
+                expect_if!(parser, TokenKind::Comma);
+            }
+
+            Ok(arms)
+        })?;
+
+        let (_, r_span) = spans.expect("match expression requires braces");
+        let span = Span {
+            start,
+            end: r_span.end,
+        };
+
+        Ok(parser.mk_expr(
+            Expr::Match(Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
             }),
             span,
             ctx.path.clone(),

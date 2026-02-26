@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use ray_core::sema::resolve_names_in_file;
 use ray_query_macros::query;
 use ray_shared::{
+    def::DefKind,
     file_id::FileId,
     node_id::NodeId,
     pathlib::ModulePath,
@@ -13,6 +14,7 @@ use ray_shared::{
 
 use crate::{
     queries::{
+        defs::definition_record,
         exports::{ExportedItem, module_def_index},
         imports::{ImportNames, resolved_imports},
         libraries::LoadedLibraries,
@@ -124,12 +126,37 @@ pub fn file_scope(db: &Database, file_id: FileId) -> HashMap<String, DefTarget> 
             };
             match &resolved_import.names {
                 ImportNames::Selective(names) => {
-                    // Bring only the specified names into scope
+                    // Bring only the specified names into scope.
+                    // When a named item is an enum type, also bring its variants into scope.
+                    // `import color with color` makes `red`, `green`, `blue` available unqualified.
                     for imported_name in names {
-                        if let Some(target) = imported_exports.get(imported_name) {
-                            combined_exports
-                                .entry(imported_name.clone())
-                                .or_insert(target.clone());
+                        let Some(target) = imported_exports.get(imported_name) else {
+                            continue;
+                        };
+                        combined_exports
+                            .entry(imported_name.clone())
+                            .or_insert(target.clone());
+
+                        // Enum: inject all variants whose parent is this enum.
+                        let Some(record) = definition_record(db, target.clone()) else {
+                            continue;
+                        };
+                        if !matches!(record.kind, DefKind::Enum) {
+                            continue;
+                        }
+                        for (variant_name, variant_target) in &imported_exports {
+                            let Some(variant_record) =
+                                definition_record(db, variant_target.clone())
+                            else {
+                                continue;
+                            };
+                            if matches!(variant_record.kind, DefKind::EnumVariant)
+                                && variant_record.parent.as_ref() == Some(target)
+                            {
+                                combined_exports
+                                    .entry(variant_name.clone())
+                                    .or_insert(variant_target.clone());
+                            }
                         }
                     }
                 }
@@ -140,7 +167,8 @@ pub fn file_scope(db: &Database, file_id: FileId) -> HashMap<String, DefTarget> 
                     }
                 }
                 ImportNames::Namespace => {
-                    // Namespace imports don't bring names directly into scope
+                    // Namespace imports don't bring names directly into scope.
+                    // Use qualified access: `color::red`, `io::read`, etc.
                 }
             }
         }

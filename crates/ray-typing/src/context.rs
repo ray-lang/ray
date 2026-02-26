@@ -22,6 +22,27 @@ use crate::{
     types::{MethodResolutionInfo, Subst, Substitutable, TyScheme},
 };
 
+/// A pattern in a match arm.
+///
+/// This is distinct from `Pattern` (used in `for`/`if-pat`/`while-pat`) because
+/// match arm LHS patterns are always constructor references, never bare variable
+/// bindings. A separate type avoids adding dead arms to those existing handlers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum MatchPattern {
+    /// A variant constructor pattern, e.g. `ok(v)` or `red` (unit variant).
+    ///
+    /// `variant_target` is the `DefTarget` of the variant — used by
+    /// `TypecheckEnv::enum_variant_def` to fetch field types and `enum_target`.
+    /// `field_bindings` pairs each payload sub-pattern node id with the local
+    /// binding it introduces (empty for unit variants).
+    Variant {
+        variant_target: DefTarget,
+        field_bindings: Vec<(NodeId, LocalBindingId)>,
+    },
+    /// Wildcard `_` — matches any value, introduces no bindings.
+    Wild,
+}
+
 /// Minimal expression and pattern kinds used for v2 constraint generation.
 ///
 /// This is intentionally tiny and decoupled from the real frontend AST; the
@@ -150,6 +171,14 @@ pub enum ExprKind {
         pattern: Pattern,
         then_branch: NodeId,
         else_branch: Option<NodeId>,
+    },
+    /// Match expression `match scrutinee { pattern => body, ... }`.
+    ///
+    /// Each arm is a `(MatchPattern, body_NodeId)` pair. All arm bodies must
+    /// have the same type, which becomes the type of the overall match expression.
+    Match {
+        scrutinee: NodeId,
+        arms: Vec<(MatchPattern, NodeId)>,
     },
     /// While expression `while cond { body }`, following the rule in
     /// docs/type-system.md "While expressions".

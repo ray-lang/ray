@@ -17,7 +17,7 @@ use crate::{
     PatternKind, TypeCheckInput,
     binding_groups::BindingGroup,
     constraints::{Constraint, ConstraintKind, ResolveMemberConstraint},
-    context::{AssignLhs, BuiltinOp, ExprKind, LhsPattern, Pattern, SolverContext},
+    context::{AssignLhs, BuiltinOp, ExprKind, LhsPattern, MatchPattern, Pattern, SolverContext},
     info::TypeSystemInfo,
     types::{Subst, Substitutable, TyScheme},
 };
@@ -1664,6 +1664,74 @@ fn generate_constraints_for_expr(
                         .push(Constraint::eq(then_ty.clone(), Ty::unit(), info.clone()));
                     node.wanteds
                         .push(Constraint::eq(expr_ty, Ty::unit(), info.clone()));
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                // Match expression:
+                //
+                // Γ ⊢ scrutinee ⇝ (Ts, Cs)
+                // For each arm (Variant { variant_target, field_bindings }, body_i):
+                //   variant_def = env.enum_variant_def(variant_target)
+                //   enum_def    = env.enum_def(variant_def.enum_target)
+                //   σ           = fresh metas for each schema var in enum_def.ty
+                //   Ts == σ(enum_ty)                         [scrutinee constraint]
+                //   for each (node_id, local_id), field_ty[i]:
+                //     binding_schemes[local_id] = σ(field_ty[i])  [payload binding]
+                //   T == T_body_i                            [arm result must match]
+                // For each arm (Wild, body_i):
+                //   T == T_body_i
+                let scrut_ty = ctx.expr_ty_or_fresh(*scrutinee);
+
+                for (pattern, body_id) in arms {
+                    let body_ty = ctx.expr_ty_or_fresh(*body_id);
+
+                    // All arm bodies must have the same type as the match expression.
+                    node.wanteds
+                        .push(Constraint::eq(expr_ty.clone(), body_ty, info.clone()));
+
+                    if let MatchPattern::Variant {
+                        variant_target,
+                        field_bindings,
+                    } = pattern
+                    {
+                        // Two lookups: variant fields, then enum type.
+                        let Some(variant_ty) = ctx.env().enum_variant_def(variant_target.clone())
+                        else {
+                            continue;
+                        };
+                        let Some(enum_ty) = ctx.env().enum_def(variant_ty.enum_target.clone())
+                        else {
+                            continue;
+                        };
+
+                        // Instantiate all schema vars with fresh metas.
+                        let mut subst = Subst::new();
+                        for var in &enum_ty.ty.vars {
+                            subst.insert(var.clone(), ctx.fresh_meta());
+                        }
+
+                        // Scrutinee must be the instantiated enum type.
+                        let mut concrete_enum_ty = enum_ty.ty.mono().clone();
+                        concrete_enum_ty.apply_subst(&subst);
+                        node.wanteds.push(Constraint::eq(
+                            scrut_ty.clone(),
+                            concrete_enum_ty,
+                            info.clone(),
+                        ));
+
+                        // Bind each field pattern variable to its instantiated field type.
+                        for ((node_id, local_id), field_scheme) in
+                            field_bindings.iter().zip(variant_ty.field_types.iter())
+                        {
+                            let mut field_ty = field_scheme.ty.clone();
+                            field_ty.apply_subst(&subst);
+                            ctx.binding_schemes
+                                .entry((*local_id).into())
+                                .or_insert_with(|| TyScheme::from_mono(field_ty.clone()));
+                            ctx.node_tys.insert(*node_id, field_ty);
+                        }
+                    }
+                    // Wild arms need no additional constraints beyond the body type equality.
                 }
             }
             ExprKind::While { cond, body } => {

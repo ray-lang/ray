@@ -89,6 +89,7 @@ impl Parser<'_> {
             TokenKind::For => self.parse_for(ctx),
             TokenKind::While => self.parse_while(ctx),
             TokenKind::Loop => self.parse_loop(ctx),
+            TokenKind::Match => self.parse_match(ctx),
             TokenKind::Modifier(Modifier::Unsafe) => self.parse_unsafe_expr(ctx),
             TokenKind::New => self.parse_new_expr(ctx),
             TokenKind::Bx => self.parse_box_expr(ctx),

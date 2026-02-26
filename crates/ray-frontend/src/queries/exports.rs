@@ -78,7 +78,14 @@ pub fn file_exports(db: &Database, file_id: FileId) -> HashMap<String, ExportedI
             continue;
         }
 
-        // Skip methods - they have a parent (impl or trait)
+        // Enum variants are exported directly by their short name so that
+        // `x = red` and `match x { red => ... }` work without qualification.
+        if matches!(def.kind, DefKind::EnumVariant) {
+            exports.insert(def.name.clone(), ExportedItem::Def(def.def_id));
+            continue;
+        }
+
+        // Skip other defs that have a parent (methods, struct fields).
         if def.parent.is_some() {
             continue;
         }

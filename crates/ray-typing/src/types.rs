@@ -501,6 +501,8 @@ pub struct EnumVariantTy {
     pub name: String,
     pub tag: u32,
     pub field_types: Vec<TyScheme>,
+    /// The `DefTarget` of the containing enum (for `enum_def()` lookups).
+    pub enum_target: DefTarget,
 }
 
 /// An enum type definition for codegen.

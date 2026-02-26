@@ -12,7 +12,7 @@ use ray_shared::{
 use ray_typing::{
     ExprRecord, PatternKind, PatternRecord, TypeCheckInput, TypeError,
     binding_groups::BindingGraph,
-    context::{AssignLhs, BuiltinOp, ExprKind, LhsPattern, Pattern},
+    context::{AssignLhs, BuiltinOp, ExprKind, LhsPattern, MatchPattern, Pattern},
     env::TypecheckEnv,
     info::TypeSystemInfo,
 };
@@ -348,7 +348,9 @@ fn lower_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> LhsPattern
         | AstPattern::Dot(_, _)
         | AstPattern::Index(_, _, _)
         | AstPattern::Some(_)
-        | AstPattern::Missing(_) => {
+        | AstPattern::Missing(_)
+        | AstPattern::Variant(_, _)
+        | AstPattern::Wildcard => {
             // These forms are handled at the AssignLhs layer in `lower_lhs_pattern`.
             unreachable!("unexpected non-binding pattern in lower_lhs_pat")
         }
@@ -482,6 +484,9 @@ fn lower_assign_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Ass
             // the overall result type.
             ctx.record_pattern(pat, PatternKind::Missing);
             AssignLhs::ErrorPlaceholder
+        }
+        AstPattern::Variant(_, _) | AstPattern::Wildcard => {
+            unreachable!("Variant and Wildcard patterns cannot appear as assignment targets")
         }
     }
 }
@@ -1044,6 +1049,17 @@ fn lower_expr(ctx: &mut TyLowerCtx<'_>, node: &Node<Expr>) -> NodeId {
             }
         }
         Expr::Unsafe(inner) => lower_expr(ctx, inner),
+        Expr::Match(match_expr) => {
+            let scrutinee = lower_expr(ctx, &match_expr.scrutinee);
+            let mut arms = Vec::with_capacity(match_expr.arms.len());
+            for arm_node in &match_expr.arms {
+                let arm = &arm_node.value;
+                let match_pattern = lower_match_pattern(ctx, &arm.pattern);
+                let body = lower_expr(ctx, &arm.body);
+                arms.push((match_pattern, body));
+            }
+            ctx.record_expr(node, ExprKind::Match { scrutinee, arms })
+        }
         Expr::While(whileexpr) => {
             let cond = lower_expr(ctx, &whileexpr.cond);
             ctx.enter_loop();
@@ -1152,6 +1168,51 @@ fn lower_guard_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> Patt
                 pat.value
             )
         }
+    }
+}
+
+/// Lower an `ast::Pattern` appearing as the top-level LHS of a match arm into
+/// a `MatchPattern` for constraint generation.
+///
+/// The LHS is always a constructor reference, never a bare variable binding:
+/// - `AstPattern::Variant(path, sub_patterns)` → payload variant
+/// - `AstPattern::Name(name)` that resolves to a `DefTarget` → unit variant
+/// - `AstPattern::Wildcard` → `MatchPattern::Wild`
+fn lower_match_pattern(ctx: &mut TyLowerCtx<'_>, pat: &Node<AstPattern>) -> MatchPattern {
+    match &pat.value {
+        AstPattern::Variant(path_node, sub_patterns) => {
+            let variant_target = match ctx.resolutions.get(&path_node.id) {
+                Some(Resolution::Def(target)) => target.clone(),
+                _ => return MatchPattern::Wild,
+            };
+            let field_bindings = sub_patterns
+                .iter()
+                .filter_map(|sub| {
+                    if let Some(Resolution::Local(local_id)) = ctx.resolutions.get(&sub.id) {
+                        Some((sub.id, *local_id))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            MatchPattern::Variant {
+                variant_target,
+                field_bindings,
+            }
+        }
+        AstPattern::Name(_) => {
+            // A bare name in a match arm resolves to a unit variant constructor.
+            match ctx.resolutions.get(&pat.id) {
+                Some(Resolution::Def(target)) => MatchPattern::Variant {
+                    variant_target: target.clone(),
+                    field_bindings: vec![],
+                },
+                _ => MatchPattern::Wild,
+            }
+        }
+        AstPattern::Wildcard => MatchPattern::Wild,
+        AstPattern::Missing(_) => MatchPattern::Wild,
+        _ => MatchPattern::Wild,
     }
 }
 

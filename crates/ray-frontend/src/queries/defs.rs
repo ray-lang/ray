@@ -315,6 +315,7 @@ impl EnumDef {
                         .iter()
                         .map(|ft| TyScheme::new(schema_vars.clone(), vec![], ft.clone()))
                         .collect(),
+                    enum_target: self.target.clone(),
                 })
                 .collect(),
         }
@@ -472,7 +473,7 @@ pub fn def_path(db: &Database, target: DefTarget) -> Option<ItemPath> {
     match target {
         DefTarget::Workspace(def_id) => {
             let workspace = db.get_input::<WorkspaceSnapshot>(());
-            let parse_result = parse_file(db, def_id.file);
+            let parse_result = parse_file_raw(db, def_id.file);
 
             let module_path = workspace
                 .file_info(def_id.file)
@@ -560,7 +561,7 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
     match target {
         DefTarget::Workspace(def_id) => {
             let path = def_path(db, DefTarget::Workspace(def_id))?;
-            let parse_result = parse_file(db, def_id.file);
+            let parse_result = parse_file_raw(db, def_id.file);
             let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
 
             let source_location = Some(SourceLocation::Workspace {
@@ -599,6 +600,15 @@ pub fn definition_record(db: &Database, target: DefTarget) -> Option<DefinitionR
                 DefKind::Trait
             } else if lib_data.impls.contains_key(&lib_def_id) {
                 DefKind::Impl
+            } else if lib_data.enums.contains_key(&lib_def_id) {
+                DefKind::Enum
+            } else if lib_data
+                .parent_map
+                .get(&lib_def_id)
+                .map(|parent_id| lib_data.enums.contains_key(parent_id))
+                .unwrap_or(false)
+            {
+                DefKind::EnumVariant
             } else {
                 DefKind::Function {
                     signature: SignatureStatus::FullyAnnotated,

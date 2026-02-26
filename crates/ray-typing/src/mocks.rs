@@ -7,7 +7,7 @@ use ray_shared::{
 
 use crate::{
     env::TypecheckEnv,
-    types::{ImplKind, ImplTy, StructTy, TraitTy, TyScheme},
+    types::{EnumTy, EnumVariantTy, ImplKind, ImplTy, StructTy, TraitTy, TyScheme},
 };
 
 #[derive(Default)]
@@ -127,6 +127,14 @@ impl TypecheckEnv for MockTypecheckEnv {
     }
 
     fn resolved_expr_ty(&self, _node_id: NodeId) -> Option<Ty> {
+        None
+    }
+
+    fn enum_variant_def(&self, _target: DefTarget) -> Option<EnumVariantTy> {
+        None
+    }
+
+    fn enum_def(&self, _target: DefTarget) -> Option<EnumTy> {
         None
     }
 }

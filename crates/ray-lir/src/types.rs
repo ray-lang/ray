@@ -468,6 +468,10 @@ pub enum Value {
     /// Constructs an enum variant: packs a tag and zero or more payload
     /// field values into the canonical tagged-union layout `{ i32, [N x i8] }`.
     Enum(EnumValue),
+    /// Reads the `i32` discriminant tag from an existing enum local.
+    EnumTag(EnumTag),
+    /// Reads a single payload field from an existing enum local.
+    EnumField(EnumField),
 }
 
 impl Value {
@@ -516,6 +520,8 @@ impl Display for Value {
                 e.tag,
                 map_join(&e.fields, ", ", |v| format!("{}", v))
             ),
+            Value::EnumTag(t) => write!(f, "{}", t),
+            Value::EnumField(e) => write!(f, "{}", e),
         }
     }
 }
@@ -556,6 +562,8 @@ impl<'a> GetLocalsMut<'a> for Value {
                 })
                 .collect(),
             Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
+            Value::EnumTag(t) => t.get_locals_mut(),
+            Value::EnumField(e) => e.get_locals_mut(),
         }
     }
 }
@@ -590,6 +598,8 @@ impl<'a> GetLocals<'a> for Value {
                 })
                 .collect(),
             Value::Type(_) | Value::VarRef(_) | Value::Empty => vec![],
+            Value::EnumTag(t) => t.get_locals(),
+            Value::EnumField(e) => e.get_locals(),
         }
     }
 }
@@ -616,6 +626,8 @@ impl Substitutable for Value {
             Value::Upgrade(v) => v.apply_subst(subst),
             // EnumValue carries a path (not substitutable) and Variable indices (untyped).
             Value::Enum(_) => {}
+            Value::EnumTag(t) => t.apply_subst(subst),
+            Value::EnumField(e) => e.apply_subst(subst),
         }
     }
 }
@@ -664,7 +676,9 @@ impl Value {
             | Value::IntConvert(_)
             | Value::Closure(_)
             | Value::Upgrade(_)
-            | Value::Enum(_) => None,
+            | Value::Enum(_)
+            | Value::EnumTag(_)
+            | Value::EnumField(_) => None,
         }
     }
 }
@@ -2753,6 +2767,103 @@ pub struct EnumValue {
     pub tag: u32,
     /// Payload field values in declaration order.
     pub fields: Vec<Variable>,
+}
+
+/// Reads the `i32` discriminant tag out of an existing enum local.
+/// The enum layout is `{ i32 tag, [N x i8] payload }` so this GEPs
+/// to field 0 and loads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumTag {
+    /// The enum local to read from.
+    pub src: Variable,
+}
+
+LirImplInto!(Value for EnumTag);
+
+impl Display for EnumTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "enum_tag({})", self.src)
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for EnumTag {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        if let Variable::Local(idx) = &mut self.src {
+            vec![idx]
+        } else {
+            vec![]
+        }
+    }
+}
+
+impl<'a> GetLocals<'a> for EnumTag {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        if let Variable::Local(idx) = &self.src {
+            vec![idx]
+        } else {
+            vec![]
+        }
+    }
+}
+
+impl Substitutable for EnumTag {
+    fn apply_subst(&mut self, _subst: &Subst) {}
+}
+
+/// Reads a single payload field from an existing enum local.
+/// The payload is stored as a byte array; this GEPs to the field's
+/// byte offset within the payload and loads it as `field_ty`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumField {
+    /// The enum local to read from.
+    pub src: Variable,
+    /// Path of the enum type (for LLVM enum-type lookup).
+    pub enum_path: ItemPath,
+    /// Discriminant tag of the matched variant (selects which variant's
+    /// field layout to use when computing the byte offset).
+    pub variant_tag: u32,
+    /// Index of this field within the variant's field list.
+    pub field_idx: usize,
+    /// The Ray type of this field (used to load with the correct LLVM type).
+    pub field_ty: Ty,
+}
+
+LirImplInto!(Value for EnumField);
+
+impl Display for EnumField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "enum_field({}::tag{}[{}] as {})",
+            self.enum_path, self.variant_tag, self.field_idx, self.field_ty
+        )
+    }
+}
+
+impl<'a> GetLocalsMut<'a> for EnumField {
+    fn get_locals_mut(&'a mut self) -> Vec<&'a mut usize> {
+        if let Variable::Local(idx) = &mut self.src {
+            vec![idx]
+        } else {
+            vec![]
+        }
+    }
+}
+
+impl<'a> GetLocals<'a> for EnumField {
+    fn get_locals(&'a self) -> Vec<&'a usize> {
+        if let Variable::Local(idx) = &self.src {
+            vec![idx]
+        } else {
+            vec![]
+        }
+    }
+}
+
+impl Substitutable for EnumField {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.field_ty.apply_subst(subst);
+    }
 }
 
 #[derive(Clone)]

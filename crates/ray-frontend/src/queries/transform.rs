@@ -553,6 +553,12 @@ fn transform_expr_children(expr: &mut Node<Expr>, ctx: &mut TransformContext<'_>
         Expr::Unsafe(inner) => {
             transform_expr(inner, ctx);
         }
+        Expr::Match(match_expr) => {
+            transform_expr(&mut match_expr.scrutinee, ctx);
+            for arm in &mut match_expr.arms {
+                transform_expr(&mut arm.value.body, ctx);
+            }
+        }
         // Leaf expressions with no children
         Expr::Name(_)
         | Expr::Literal(_)
@@ -671,7 +677,7 @@ fn annotate_self_param_if_missing(sig: &mut FuncSig, implementing_ty: &Ty, srcma
 mod tests {
     use std::collections::HashMap;
 
-    use ray_core::ast::{CurlyElement, Decl, Expr, InfixOp};
+    use ray_core::ast::{CurlyElement, Decl, Expr, InfixOp, Node};
     use ray_shared::pathlib::{FilePath, ModulePath, Path};
 
     use crate::{
@@ -1198,7 +1204,6 @@ fn main() -> Counter {
         let result = file_ast(&db, file_id);
 
         // Find the main function
-        use ray_core::ast::{Decl, Expr};
         let main_fn = result.ast.decls.iter().find(|d| {
             if let Decl::Func(f) = &d.value {
                 f.sig.path.name() == Some("main".to_string())
@@ -1246,6 +1251,93 @@ fn main() -> Counter {
             matches!(scoped_access.lhs.value, Expr::Type(_)),
             "Expected ScopedAccess LHS to be Expr::Type after transform, got: {:?}",
             scoped_access.lhs.value
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Match / enum transform tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn transform_preserves_match_expression() {
+        // After the transform pass the match expression must still be present
+        // in the AST — it must NOT be removed or folded away.
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = r#"
+enum color { red, green }
+fn main() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        _ => 0u32
+    }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(&db, file_id, FilePath::from("test/mod.ray"), module_path);
+
+        let result = file_ast(&db, file_id);
+
+        // Find the main function
+        let main_fn = result.ast.decls.iter().find(|d| {
+            if let Decl::Func(f) = &d.value {
+                f.sig.path.name() == Some("main".to_string())
+            } else {
+                false
+            }
+        });
+        let main_fn = main_fn.expect("should have main function");
+        let Decl::Func(func) = &main_fn.value else {
+            panic!("expected Func decl");
+        };
+        let body = func.body.as_ref().expect("should have body");
+
+        fn contains_match(expr: &Node<Expr>) -> bool {
+            match &expr.value {
+                Expr::Match(_) => true,
+                Expr::Block(block) => block.stmts.iter().any(contains_match),
+                Expr::Return(Some(inner)) => contains_match(inner),
+                _ => false,
+            }
+        }
+
+        assert!(
+            contains_match(body),
+            "match expression should survive the transform pass"
+        );
+    }
+
+    #[test]
+    fn transform_preserves_enum_declaration() {
+        // The enum declaration must remain in the transformed AST.
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("test");
+        let file_id = workspace.add_file(FilePath::from("test/mod.ray"), module_path.to_path());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        let source = "enum color { red, green, blue }\nfn main() {}";
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(&db, file_id, FilePath::from("test/mod.ray"), module_path);
+
+        let result = file_ast(&db, file_id);
+
+        let has_enum = result
+            .ast
+            .decls
+            .iter()
+            .any(|d| matches!(&d.value, Decl::Enum(_)));
+
+        assert!(
+            has_enum,
+            "enum declaration should survive the transform pass"
         );
     }
 }

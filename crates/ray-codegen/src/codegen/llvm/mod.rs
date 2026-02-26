@@ -2407,6 +2407,8 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Value {
                     "Value::Enum must only appear as SetLocal RHS; lower via build_enum_init"
                 )
             }
+            lir::Value::EnumTag(t) => t.codegen(ctx, srcmap),
+            lir::Value::EnumField(e) => e.codegen(ctx, srcmap),
             lir::Value::Upgrade(inner) => {
                 // upgrade(id *T) -> nilable[*T]: check strong_count, if > 0
                 // increment it and return Some(shared_ref), else return None.
@@ -2949,6 +2951,121 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Cast {
                 bit_cast_value
             }
         })
+    }
+}
+
+impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::EnumTag {
+    type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
+
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, _: &SourceMap) -> Self::Output {
+        let src_ty = ctx.type_of(&self.src).clone();
+        let (path, args) = match src_ty {
+            Ty::Proj(path, args) => (path, args),
+            other => panic!("EnumTag: source is not a nominal enum type: {}", other),
+        };
+        let enum_llvm_ty = ctx.get_enum_llvm_type(&path, &args);
+        let src_ptr = match &self.src {
+            lir::Variable::Local(idx) => ctx.get_local(*idx),
+            other => panic!("EnumTag: src must be a local variable: {:?}", other),
+        };
+        let zero = ctx.zero();
+        let tag_field = ctx.ptr_type().const_int(0, false);
+        let tag_ptr = unsafe {
+            ctx.builder
+                .build_gep(enum_llvm_ty, src_ptr, &[zero, tag_field], "enum_tag_ptr")?
+        };
+        ctx.register_pointee_ty(tag_ptr, Ty::i32());
+        ctx.load_pointer(tag_ptr)
+    }
+}
+
+impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::EnumField {
+    type Output = Result<BasicValueEnum<'ctx>, BuilderError>;
+
+    fn codegen(&self, ctx: &mut LLVMCodegenCtx<'a, 'ctx>, _: &SourceMap) -> Self::Output {
+        let src_ty = ctx.type_of(&self.src).clone();
+        let args = match &src_ty {
+            Ty::Proj(_, args) => args.clone(),
+            _ => vec![],
+        };
+
+        // Instantiate the enum definition with the type arguments.
+        let mut enum_ty = ctx
+            .enum_defs
+            .get(&self.enum_path)
+            .cloned()
+            .unwrap_or_else(|| panic!("EnumField: enum not found: {}", self.enum_path));
+        if !args.is_empty() {
+            let vars = enum_ty.ty.vars.clone();
+            let mut subst = Subst::new();
+            for (var, arg) in vars.into_iter().zip(args.iter()) {
+                subst.insert(var, arg.clone());
+            }
+            enum_ty.apply_subst(&subst);
+        }
+
+        let variant = enum_ty
+            .variants
+            .iter()
+            .find(|v| v.tag == self.variant_tag)
+            .unwrap_or_else(|| {
+                panic!(
+                    "EnumField: variant tag {} not found in {}",
+                    self.variant_tag, self.enum_path
+                )
+            });
+
+        // Compute the byte offset of the target field within the payload byte array,
+        // using the same alignment calculation as build_enum_init.
+        let mut byte_offset: u64 = 0;
+        for field_scheme in variant.field_types.iter().take(self.field_idx) {
+            let field_llvm_ty = ctx.to_llvm_type(field_scheme.mono());
+            let td = ctx.target_machine.get_target_data();
+            let align = td.get_preferred_alignment(&field_llvm_ty) as u64;
+            let size = td.get_abi_size(&field_llvm_ty);
+            byte_offset = (byte_offset + align - 1) & !(align - 1);
+            byte_offset += size;
+        }
+        // Align for the target field itself.
+        let target_field_llvm_ty = ctx.to_llvm_type(&self.field_ty);
+        let td = ctx.target_machine.get_target_data();
+        let target_align = td.get_preferred_alignment(&target_field_llvm_ty) as u64;
+        byte_offset = (byte_offset + target_align - 1) & !(target_align - 1);
+
+        let enum_llvm_ty = ctx.get_enum_llvm_type(&self.enum_path, &args);
+        let src_ptr = match &self.src {
+            lir::Variable::Local(idx) => ctx.get_local(*idx),
+            other => panic!("EnumField: src must be a local variable: {:?}", other),
+        };
+
+        // GEP to the payload byte array (struct field 1).
+        let zero = ctx.zero();
+        let payload_field = ctx.ptr_type().const_int(1, false);
+        let payload_ptr = unsafe {
+            ctx.builder.build_gep(
+                enum_llvm_ty,
+                src_ptr,
+                &[zero, payload_field],
+                "enum_payload_ptr",
+            )?
+        };
+
+        // GEP to the field's byte offset within the payload.
+        let field_ptr = if byte_offset == 0 {
+            payload_ptr
+        } else {
+            let off_val = ctx.ptr_type().const_int(byte_offset, false);
+            unsafe {
+                ctx.builder.build_gep(
+                    ctx.lcx.i8_type(),
+                    payload_ptr,
+                    &[off_val],
+                    "enum_field_ptr",
+                )?
+            }
+        };
+        ctx.register_pointee_ty(field_ptr, self.field_ty.clone());
+        ctx.load_pointer(field_ptr)
     }
 }
 

@@ -20,6 +20,12 @@ pub enum Pattern {
     Sequence(Vec<Node<Pattern>>),
     Some(Box<Node<Pattern>>),
     Tuple(Vec<Node<Pattern>>),
+    /// A variant pattern in a match arm: `ok(v)`, `custom(r, g, b)`.
+    /// The `Node<Path>` holds the variant constructor name with its own NodeId
+    /// for name resolution. The `Vec` holds the payload bindings.
+    Variant(Node<Path>, Vec<Node<Pattern>>),
+    /// Wildcard pattern in a match arm: `_`. Matches any value, binds nothing.
+    Wildcard,
 }
 
 impl Into<Expr> for Pattern {
@@ -63,6 +69,11 @@ impl Into<Expr> for Pattern {
             Pattern::Some(inner) => {
                 let expr = inner.take_map(Pattern::into);
                 Expr::Some(Box::new(expr))
+            }
+            Pattern::Variant(_, _) | Pattern::Wildcard => {
+                unreachable!(
+                    "Variant and Wildcard patterns only appear in match arms, not in assignment patterns"
+                )
             }
         }
     }
@@ -145,6 +156,13 @@ impl std::fmt::Display for Pattern {
                 Pattern::Index(lhs, index, _) => format!("(index {} {})", lhs, index),
                 Pattern::Some(pat) => format!("(some {})", pat),
                 Pattern::Missing(m) => format!("(missing {})", m),
+                Pattern::Variant(name, fields) if fields.is_empty() => {
+                    format!("(variant {})", name.value)
+                }
+                Pattern::Variant(name, fields) => {
+                    format!("(variant {} ({}))", name.value, join(fields, ", "))
+                }
+                Pattern::Wildcard => "_".to_string(),
             }
         )
     }
@@ -164,7 +182,8 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&n.path),
             Pattern::Some(inner) => inner.value.path(),
-            Pattern::Index(_, _, _) => None,
+            Pattern::Variant(path, _) => Some(&path.value),
+            Pattern::Index(_, _, _) | Pattern::Wildcard => None,
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -175,7 +194,8 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(&mut n.path),
             Pattern::Some(inner) => inner.value.path_mut(),
-            Pattern::Index(_, _, _) => None,
+            Pattern::Variant(path, _) => Some(&mut path.value),
+            Pattern::Index(_, _, _) | Pattern::Wildcard => None,
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -186,7 +206,8 @@ impl Pattern {
         match self {
             Pattern::Name(n) | Pattern::Deref(Node { id: _, value: n }) => Some(n.path.to_string()),
             Pattern::Some(inner) => inner.value.get_name(),
-            Pattern::Index(_, _, _) => None,
+            Pattern::Variant(path, _) => path.value.name().map(|s| s.to_string()),
+            Pattern::Index(_, _, _) | Pattern::Wildcard => None,
             Pattern::Dot(_, _) | Pattern::Sequence(_) | Pattern::Tuple(_) | Pattern::Missing(_) => {
                 None
             }
@@ -240,9 +261,15 @@ impl Node<Pattern> {
             },
             Pattern::Some(inner) => inner.paths(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
-                ps.iter().map(|p| p.paths()).flatten().collect()
+                ps.iter().flat_map(|p| p.paths()).collect()
             }
             Pattern::Missing(_) => vec![],
+            // Variant: only the sub-pattern bindings are local bindings; the
+            // constructor path is resolved separately during name resolution.
+            Pattern::Variant(_, sub_patterns) => {
+                sub_patterns.iter().flat_map(|p| p.paths()).collect()
+            }
+            Pattern::Wildcard => vec![],
         }
     }
 
@@ -275,9 +302,14 @@ impl Node<Pattern> {
                 .collect(),
             Pattern::Some(inner) => inner.paths_mut(),
             Pattern::Tuple(ps) | Pattern::Sequence(ps) => {
-                ps.iter_mut().map(|p| p.paths_mut()).flatten().collect()
+                ps.iter_mut().flat_map(|p| p.paths_mut()).collect()
             }
             Pattern::Missing(_) => vec![],
+            Pattern::Variant(_, sub_patterns) => sub_patterns
+                .iter_mut()
+                .flat_map(|p| p.paths_mut())
+                .collect(),
+            Pattern::Wildcard => vec![],
         }
     }
 }

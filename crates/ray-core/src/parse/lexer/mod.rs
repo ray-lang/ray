@@ -348,6 +348,7 @@ impl Lexer {
             "move" => TokenKind::Move,
             "noescape" => TokenKind::Noescape,
             "upgrade" => TokenKind::Upgrade,
+            "match" => TokenKind::Match,
             "test" => TokenKind::Test,
             "pub" => TokenKind::Modifier(Modifier::Pub),
             "static" => TokenKind::Modifier(Modifier::Static),

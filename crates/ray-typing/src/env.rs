@@ -13,7 +13,8 @@ use ray_shared::{
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ImplField, ImplTy, StructTy, Subst, Substitutable, TraitField, TraitTy, TyScheme,
+    EnumTy, EnumVariantTy, ImplField, ImplTy, StructTy, Subst, Substitutable, TraitField, TraitTy,
+    TyScheme,
 };
 
 /// Environment trait for typechecking that abstracts over definition lookups.
@@ -96,6 +97,20 @@ pub trait TypecheckEnv {
     /// This applies name resolutions and type parameter mappings to produce a
     /// fully resolved type from expression-level type references like `x as rawptr['k]`.
     fn resolved_expr_ty(&self, node_id: NodeId) -> Option<Ty>;
+
+    /// Look up a single enum variant by its `DefTarget`.
+    ///
+    /// Returns the variant's tag, field type schemes (sharing schema vars with the
+    /// enum's type scheme), and the `DefTarget` of the containing enum.
+    /// Used during match-expression constraint generation to type-check arm patterns.
+    fn enum_variant_def(&self, target: DefTarget) -> Option<EnumVariantTy>;
+
+    /// Look up an enum definition by its `DefTarget`.
+    ///
+    /// Returns the enum's path and type scheme. Used in match-expression constraint
+    /// generation to constrain the scrutinee type after `enum_variant_def` provides
+    /// the `enum_target`.
+    fn enum_def(&self, target: DefTarget) -> Option<EnumTy>;
 }
 
 #[derive(

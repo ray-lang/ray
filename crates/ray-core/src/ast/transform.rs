@@ -28,7 +28,9 @@ pub fn desugar_compound_assignment(
         | Pattern::Tuple(_)
         | Pattern::Deref(_)
         | Pattern::Some(_)
-        | Pattern::Missing(_) => Err(RayError {
+        | Pattern::Missing(_)
+        | Pattern::Variant(_, _)
+        | Pattern::Wildcard => Err(RayError {
             msg: str!("cannot use expression as l-value for re-assignment"),
             src: vec![lhs_src],
             kind: RayErrorKind::Type,

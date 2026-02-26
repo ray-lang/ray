@@ -82,6 +82,8 @@ impl CollectRefs for Value {
                     field.collect_refs(collector);
                 }
             }
+            Value::EnumTag(t) => t.src.collect_refs(collector),
+            Value::EnumField(e) => e.src.collect_refs(collector),
             // No nested refs
             Value::Empty | Value::VarRef(_) | Value::Type(_) => {}
         }

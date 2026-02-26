@@ -154,7 +154,7 @@ pub fn has_decorator(db: &Database, def_id: DefId, name: &str) -> bool {
 pub fn doc_comment(db: &Database, target: DefTarget) -> Option<String> {
     match target {
         DefTarget::Workspace(def_id) => {
-            let parse_result = parse_file(db, def_id.file);
+            let parse_result = parse_file_raw(db, def_id.file);
             let def_header = parse_result.defs.iter().find(|h| h.def_id == def_id)?;
             parse_result
                 .source_map

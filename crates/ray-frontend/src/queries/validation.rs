@@ -26,11 +26,15 @@ use ray_shared::{
     resolution::{DefTarget, Resolution},
     span::{Source, Span},
     ty::Ty,
+    utils::join,
 };
 
 use crate::{
     queries::{
-        defs::{def_for_path, find_def_ast, impl_def, struct_def, trait_def},
+        defs::{
+            def_for_path, definition_record, enum_def, find_def_ast, impl_def, struct_def,
+            trait_def,
+        },
         resolve::name_resolutions,
         transform::file_ast,
         workspace::WorkspaceSnapshot,
@@ -100,6 +104,14 @@ pub fn validate_def(db: &Database, def_id: DefId) -> Vec<RayError> {
         }
         DefKind::Test => {
             validate_mutability(def_ast, &filepath, &file_result.source_map, &mut errors);
+            validate_match_exhaustiveness(
+                db,
+                def_id.file,
+                def_ast,
+                &filepath,
+                &file_result.source_map,
+                &mut errors,
+            );
         }
         // Other definition kinds don't have special validation
         _ => {}
@@ -126,9 +138,140 @@ fn validate_function(
     validate_annotation_policy(sig, filepath, srcmap, errors);
     validate_qualifiers(db, sig, file_id, filepath, errors);
 
-    // Only validate mutability for declarations with bodies (not FnSig)
+    // Only validate mutability and match exhaustiveness for declarations with bodies (not FnSig)
     if body.is_some() {
         validate_mutability(decl, filepath, srcmap, errors);
+        validate_match_exhaustiveness(db, file_id, decl, filepath, srcmap, errors);
+    }
+}
+
+/// Validate that every match expression in a declaration is exhaustive.
+///
+/// A match is exhaustive if it contains a wildcard `_` arm, or explicitly
+/// covers every variant of the scrutinee's enum type.
+fn validate_match_exhaustiveness(
+    db: &Database,
+    file_id: FileId,
+    decl: &Node<Decl>,
+    filepath: &FilePath,
+    srcmap: &SourceMap,
+    errors: &mut Vec<RayError>,
+) {
+    let resolutions = name_resolutions(db, file_id);
+
+    for item in walk_decl(decl) {
+        let WalkItem::Expr(expr_node) = item else {
+            continue;
+        };
+        let Expr::Match(m) = &expr_node.value else {
+            continue;
+        };
+
+        // A wildcard arm covers all remaining variants — exhaustive.
+        if m.arms
+            .iter()
+            .any(|arm| matches!(arm.value.pattern.value, Pattern::Wildcard))
+        {
+            continue;
+        }
+
+        // Collect covered variant names and find the parent enum from the first resolved arm.
+        let mut covered: HashSet<String> = HashSet::new();
+        let mut parent_enum: Option<DefTarget> = None;
+
+        for arm in &m.arms {
+            let pat = &arm.value.pattern;
+            let (variant_name, lookup_id) = match &pat.value {
+                Pattern::Name(name) => {
+                    let Some(n) = name.path.name() else { continue };
+                    (n, pat.id)
+                }
+                Pattern::Variant(path_node, _) => {
+                    let Some(n) = path_node.value.name() else {
+                        continue;
+                    };
+                    (n, path_node.id)
+                }
+                _ => continue,
+            };
+            if !covered.insert(variant_name.clone()) {
+                errors.push(RayError {
+                    msg: format!(
+                        "duplicate match arm: variant '{}' is already covered",
+                        variant_name
+                    ),
+                    src: vec![Source {
+                        span: Some(srcmap.span_of(pat)),
+                        filepath: filepath.clone(),
+                        ..Default::default()
+                    }],
+                    kind: RayErrorKind::Type,
+                    context: Some("match exhaustiveness".to_string()),
+                });
+            }
+            if parent_enum.is_none() {
+                if let Some(Resolution::Def(target)) = resolutions.get(&lookup_id) {
+                    if let Some(record) = definition_record(db, target.clone()) {
+                        parent_enum = record.parent;
+                    }
+                }
+            }
+        }
+
+        // Not an enum match (or unresolved) — skip.
+        let Some(enum_target) = parent_enum else {
+            continue;
+        };
+        let Some(edef) = enum_def(db, enum_target) else {
+            continue;
+        };
+
+        let mut missing: Vec<String> = edef
+            .variants
+            .iter()
+            .filter_map(|variant| {
+                if covered.contains(&variant.name) {
+                    return None;
+                }
+
+                if variant.field_types.is_empty() {
+                    Some(variant.name.clone())
+                } else {
+                    Some(format!(
+                        "{}({})",
+                        variant.name,
+                        join(std::iter::repeat_n("_", variant.field_types.len()), ", ")
+                    ))
+                }
+            })
+            .collect();
+
+        if missing.is_empty() {
+            continue;
+        }
+
+        missing.sort();
+
+        let missing_str = if missing.len() > 3 {
+            format!(
+                "{} and {} more",
+                missing[0..3].join(", "),
+                missing.len() - 3
+            )
+        } else {
+            missing.join(", ")
+        };
+
+        errors.push(RayError {
+            msg: format!("non-exhaustive match: missing variants {}", missing_str),
+            src: vec![Source {
+                span: Some(srcmap.span_of(&*m.scrutinee)),
+                filepath: filepath.clone(),
+                ..Default::default()
+            }],
+            kind: RayErrorKind::Type,
+            context: Some("match exhaustiveness".to_string()),
+        });
     }
 }
 
@@ -3273,6 +3416,303 @@ fn foo(a: S?, b: S?) -> S {
                 .iter()
                 .any(|e| e.msg.contains("cannot assign to immutable")),
             "Underscore bindings should not produce immutable reassignment errors: {:?}",
+            errors
+        );
+    }
+
+    // ====================================================================
+    // Match exhaustiveness tests
+    // ====================================================================
+
+    fn setup_two_file_db(
+        source_enum: &str,
+        enum_module: &str,
+        source_main: &str,
+        main_module: &str,
+    ) -> (Database, FileId, FileId) {
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_enum = workspace.add_file(
+            FilePath::from(format!("{}.ray", enum_module)),
+            ModulePath::from(enum_module),
+        );
+        let file_main = workspace.add_file(
+            FilePath::from(format!("{}.ray", main_module)),
+            ModulePath::from(main_module),
+        );
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
+        FileSource::new(&db, file_enum, source_enum.to_string());
+        FileMetadata::new(
+            &db,
+            file_enum,
+            FilePath::from(format!("{}.ray", enum_module)),
+            ModulePath::from(enum_module),
+        );
+        FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from(format!("{}.ray", main_module)),
+            ModulePath::from(main_module),
+        );
+        (db, file_enum, file_main)
+    }
+
+    #[test]
+    fn validate_match_exhaustive_all_unit_variants_no_error() {
+        // Covering all variants explicitly → no error.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum color { red, green, blue }
+"#,
+            "color",
+            r#"
+import color with color
+fn f(c: color) -> int {
+    match c {
+        red => 1,
+        green => 2,
+        blue => 3
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for exhaustive match, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_match_non_exhaustive_emits_error() {
+        // Missing `blue` variant → error.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum color { red, green, blue }
+"#,
+            "color",
+            r#"
+import color with color
+fn f(c: color) -> int {
+    match c {
+        red => 1,
+        green => 2
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.msg.contains("non-exhaustive match")),
+            "Expected non-exhaustive match error, got: {:?}",
+            errors
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("blue")),
+            "Error should name missing variant 'blue', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_match_wildcard_is_exhaustive() {
+        // Wildcard covers the rest — exhaustive.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum color { red, green, blue }
+"#,
+            "color",
+            r#"
+import color with color
+fn f(c: color) -> int {
+    match c {
+        red => 1,
+        _ => 0
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Wildcard match should be exhaustive, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_match_payload_variants_exhaustive_no_error() {
+        // result enum: both ok and err covered.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum result['a, 'e] { ok('a), err('e) }
+"#,
+            "result",
+            r#"
+import result with result
+fn f['a, 'e](r: result['a, 'e]) -> int {
+    match r {
+        ok(v) => 1,
+        err(e) => 2
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for exhaustive payload match, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_match_payload_variant_non_exhaustive_emits_error() {
+        // result enum: only ok covered, err missing.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum result['a, 'e] { ok('a), err('e) }
+"#,
+            "result",
+            r#"
+import result with result
+fn f['a, 'e](r: result['a, 'e]) -> int {
+    match r {
+        ok(v) => 1
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.msg.contains("non-exhaustive match")),
+            "Expected non-exhaustive match error, got: {:?}",
+            errors
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("err")),
+            "Error should name missing variant 'err', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_match_single_variant_enum_no_error() {
+        // A single-variant enum covered by its one arm → no error.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum status { done }
+"#,
+            "status",
+            r#"
+import status with status
+fn f(s: status) -> int {
+    match s {
+        done => 1
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors.is_empty(),
+            "Single-variant enum fully covered should produce no error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_match_duplicate_arm_emits_error() {
+        // `red` appears twice → duplicate arm error.
+        let (db, _file_enum, file_main) = setup_two_file_db(
+            r#"
+enum color { red, green, blue }
+"#,
+            "color",
+            r#"
+import color with color
+fn f(c: color) -> int {
+    match c {
+        red => 1,
+        green => 2,
+        red => 3,
+        blue => 4
+    }
+}
+"#,
+            "main",
+        );
+        let parse_result = parse_file(&db, file_main);
+        let f_def = parse_result
+            .defs
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("should find f");
+        let errors = validate_def(&db, f_def.def_id);
+        assert!(
+            errors.iter().any(|e| e.msg.contains("duplicate match arm")),
+            "Expected duplicate arm error, got: {:?}",
+            errors
+        );
+        assert!(
+            errors.iter().any(|e| e.msg.contains("red")),
+            "Duplicate error should name the repeated variant 'red', got: {:?}",
             errors
         );
     }

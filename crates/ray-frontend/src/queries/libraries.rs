@@ -858,11 +858,16 @@ pub fn build_library_data(
                     // Method schemes already added above; they're accessed
                     // through their parent trait/impl, not via names
                 }
-                DefKind::FileMain
-                | DefKind::StructField
-                | DefKind::EnumVariant
-                | DefKind::Primitive
-                | DefKind::Test => {}
+                DefKind::EnumVariant => {
+                    // Register by short name under the enum's module so that
+                    // `import result` makes `ok` and `err` directly available.
+                    if let Some(ref path) = item_path {
+                        let short_path =
+                            ItemPath::new(path.module.clone(), vec![def_header.name.clone()]);
+                        names.entry(short_path).or_insert(lib_def_id);
+                    }
+                }
+                DefKind::FileMain | DefKind::StructField | DefKind::Primitive | DefKind::Test => {}
             }
         }
     }

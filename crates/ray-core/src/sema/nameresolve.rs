@@ -4,7 +4,7 @@ use ray_shared::{
     def::DefId,
     local_binding::LocalBindingId,
     node_id::NodeId,
-    pathlib::{ItemPath, ModulePath},
+    pathlib::{ItemPath, ModulePath, Path, PathPart},
     resolution::{DefTarget, NameKind, Resolution},
     span::parsed::Parsed,
     ty::{Ty, TyVar},
@@ -97,9 +97,57 @@ impl<'a> ResolveContext<'a> {
         }
         combined
     }
+
+    /// Resolve a path to a `DefTarget` using module imports and exports.
+    ///
+    /// For single-segment paths, looks up in `exports`. For multi-segment
+    /// paths, follows import aliases into submodules using `module_exports`,
+    /// or falls back to treating the first segment as a locally-visible type.
+    fn resolve_path(&self, path: &Path) -> Option<DefTarget> {
+        let names: Vec<&str> = path
+            .iter()
+            .filter_map(|p| {
+                if let PathPart::Name(n) = p {
+                    Some(n.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let first = *names.first()?;
+
+        if names.len() == 1 {
+            self.exports.get(first).cloned()
+        } else if let Some(base_module) = self.imports.get(first) {
+            let mut current = base_module.clone();
+            for name in &names[1..] {
+                if let Some(mod_exports) = (self.module_exports)(&current) {
+                    if let Some(target) = mod_exports.get(*name) {
+                        return Some(target.clone());
+                    }
+                    // Not an export — try descending into a submodule.
+                    let mut segs = current.segments().to_vec();
+                    segs.push(name.to_string());
+                    let sub = ModulePath::new(segs);
+                    if (self.module_exports)(&sub).is_some() {
+                        current = sub;
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            None
+        } else {
+            // First segment is a locally-visible export (e.g., `Foo` in `Foo::A`).
+            self.exports.get(first).cloned()
+        }
+    }
 }
 
-/// Resolve names in a file AST and return the resolution table.
+/// Resolve names in a file ASxxzxT and return the resolution table.
 ///
 /// This is a pure function that walks the AST read-only and returns a mapping
 /// from NodeIds to their resolutions without mutating the input.
@@ -327,6 +375,20 @@ pub fn resolve_names_in_file(
                         }
                     }
                     _ => {}
+                }
+            }
+            WalkItem::MatchPattern(pat) => {
+                // Resolve the constructor path in a match arm. The LHS of a match arm
+                // is never a binding — it is always a constructor reference.
+                let (path, node_id) = match &pat.value {
+                    Pattern::Name(name) => (&name.path, pat.id),
+                    Pattern::Variant(path_node, _) => (&path_node.value, path_node.id),
+                    // Wildcard and Missing have no constructor path to resolve.
+                    _ => continue,
+                };
+
+                if let Some(target) = ctx.resolve_path(path) {
+                    ctx.resolutions.insert(node_id, Resolution::Def(target));
                 }
             }
             WalkItem::Pattern(pat) => {
@@ -891,9 +953,9 @@ mod tests {
     use crate::{
         ast::{
             Assign, Block, Cast, Closure as AstClosure, Curly, CurlyElement, Decl, Enum,
-            EnumVariant, Expr, File, FnParam, Func, FuncSig, Impl, InfixOp, Literal, Modifier,
-            Name, New, Node, Pattern as AstPattern, ScopedAccess, Sequence, Struct, Trait,
-            TypeParams,
+            EnumVariant, Expr, File, FnParam, Func, FuncSig, Impl, InfixOp, Literal, Match,
+            MatchArm, Modifier, Name, New, Node, Pattern as AstPattern, ScopedAccess, Sequence,
+            Struct, Trait, TypeParams,
             token::{Token, TokenKind},
         },
         sema::{
@@ -3674,6 +3736,138 @@ mod tests {
                 kind: NameKind::Type,
             }),
             "Unresolved variant field type should be Resolution::Error"
+        );
+    }
+
+    // =====================================================================
+    // Match expression name-resolution tests
+    // =====================================================================
+
+    /// Build a `Func` whose body is `match x { <arms> }`.
+    ///
+    /// Must be called inside an active `NodeId::enter_def` scope.
+    fn func_with_match(arms: Vec<Node<MatchArm>>) -> Node<Decl> {
+        let scrutinee = Node::new(Expr::Name(Name::new("x")));
+        let match_expr = Expr::Match(Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        });
+        let body = Node::new(Expr::Block(Block {
+            stmts: vec![Node::new(match_expr)],
+        }));
+        let param = Node::new(FnParam::Name {
+            name: Name::new("x"),
+            is_noescape: false,
+            receiver: None,
+        });
+        let mut func = Func::new(Node::new(Path::from("test::f")), vec![param], body);
+        func.sig.span = Span::default();
+        Node::new(Decl::Func(func))
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_match_arm_unit_pattern() {
+        // fn f(x) { match x { red => 0 } }
+        // `red` is a unit variant in exports — the Name pattern should resolve to its DefTarget.
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Pattern node: Name("red") — its node-id is the one we resolve.
+        let pattern_node_id = NodeId::new();
+        let pattern = Node::with_id(pattern_node_id, AstPattern::Name(Name::new("red")));
+
+        let arm = Node::new(MatchArm {
+            pattern,
+            body: Box::new(Node::new(Expr::Literal(Literal::Bool(false)))),
+        });
+
+        let decl = func_with_match(vec![arm]);
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let red_def_id = DefId::new(FileId(0), 1);
+        exports.insert("red".to_string(), DefTarget::Workspace(red_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        assert_eq!(
+            resolutions.get(&pattern_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(red_def_id))),
+            "Unit variant pattern 'red' should resolve to its variant DefTarget"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_resolves_match_arm_payload_variant() {
+        // fn f(x) { match x { ok(v) => v } }
+        // The `ok` constructor in the Variant pattern should resolve to its DefTarget.
+        // The sub-pattern `v` should become a local binding.
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        // Sub-pattern: v (the payload binding)
+        let v_node_id = NodeId::new();
+        let v_pat = Node::with_id(v_node_id, AstPattern::Name(Name::new("v")));
+
+        // The variant path node: ok — its id is used to look up the resolution.
+        let ok_path_node_id = NodeId::new();
+        let ok_path = Node::with_id(ok_path_node_id, Path::from("ok"));
+
+        // Variant pattern: ok(v)
+        let pattern_node_id = NodeId::new();
+        let pattern = Node::with_id(pattern_node_id, AstPattern::Variant(ok_path, vec![v_pat]));
+
+        let arm = Node::new(MatchArm {
+            pattern,
+            body: Box::new(Node::new(Expr::Name(Name::new("v")))),
+        });
+
+        let decl = func_with_match(vec![arm]);
+        let file = test_file(vec![decl], vec![]);
+        let imports = HashMap::new();
+        let mut exports = HashMap::new();
+        let ok_def_id = DefId::new(FileId(0), 1);
+        exports.insert("ok".to_string(), DefTarget::Workspace(ok_def_id));
+
+        let resolutions = resolve_names_in_file(&file, &imports, &exports, |_| None);
+
+        // The variant path node (ok_path_node_id) must resolve to the variant def.
+        assert_eq!(
+            resolutions.get(&ok_path_node_id),
+            Some(&Resolution::Def(DefTarget::Workspace(ok_def_id))),
+            "Payload variant constructor 'ok' should resolve to its variant DefTarget"
+        );
+
+        // The sub-pattern v must be a local binding.
+        assert!(
+            matches!(resolutions.get(&v_node_id), Some(Resolution::Local(_))),
+            "Payload sub-pattern 'v' should become a local binding"
+        );
+    }
+
+    #[test]
+    fn resolve_names_in_file_match_arm_wildcard_not_resolved() {
+        // fn f(x) { match x { _ => 0 } }
+        // The wildcard pattern has no constructor path and should produce no resolution.
+        let def_id = DefId::new(FileId(0), 0);
+        let _guard = NodeId::enter_def(def_id);
+
+        let wildcard_node_id = NodeId::new();
+        let pattern = Node::with_id(wildcard_node_id, AstPattern::Wildcard);
+
+        let arm = Node::new(MatchArm {
+            pattern,
+            body: Box::new(Node::new(Expr::Literal(Literal::Bool(false)))),
+        });
+
+        let decl = func_with_match(vec![arm]);
+        let file = test_file(vec![decl], vec![]);
+
+        let resolutions = resolve_names_in_file(&file, &HashMap::new(), &HashMap::new(), |_| None);
+
+        assert!(
+            !resolutions.contains_key(&wildcard_node_id),
+            "Wildcard pattern should not produce a resolution"
         );
     }
 }

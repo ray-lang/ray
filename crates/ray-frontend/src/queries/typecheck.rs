@@ -21,15 +21,15 @@ use ray_typing::{
     TypeCheckInput, TypeCheckResult,
     binding_groups::{BindingGraph, BindingGroup},
     env::TypecheckEnv,
-    types::{ImplTy, StructTy, TraitTy, TyScheme},
+    types::{EnumTy, EnumVariantTy, ImplTy, StructTy, TraitTy, TyScheme},
 };
 
 use crate::{
     queries::{
         bindings::local_bindings_for_group,
         defs::{
-            all_traits, def_for_path, def_path, impl_def, impls_for_trait, impls_for_type,
-            struct_def, trait_def,
+            all_traits, def_for_path, def_path, definition_record, enum_def, impl_def,
+            impls_for_trait, impls_for_type, struct_def, trait_def,
         },
         deps::{BindingGroupId, binding_graph, binding_group_for_def, binding_group_members},
         libraries::library_data,
@@ -226,6 +226,23 @@ impl<'db> TypecheckEnv for QueryEnv<'db> {
 
     fn resolved_expr_ty(&self, node_id: NodeId) -> Option<Ty> {
         resolved_ty(self.db, node_id)
+    }
+
+    fn enum_variant_def(&self, target: DefTarget) -> Option<EnumVariantTy> {
+        // Navigate from the variant's DefTarget to its parent enum's DefTarget,
+        // then look up the full enum definition and extract the matching variant.
+        let record = definition_record(self.db, target.clone())?;
+        let enum_target = record.parent?;
+        let enum_def = enum_def(self.db, enum_target)?.convert_to_enum_ty();
+        let variant_name = record.path.item_name()?.to_string();
+        enum_def
+            .variants
+            .into_iter()
+            .find(|v| v.name == variant_name)
+    }
+
+    fn enum_def(&self, target: DefTarget) -> Option<EnumTy> {
+        Some(enum_def(self.db, target)?.convert_to_enum_ty())
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::ast::{
-    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, FStringPart, File, Index, List,
+    BinOp, Cast, Curly, CurlyElement, Decl, Dict, Dot, Expr, FStringPart, File, Index, List, Match,
     Module, Name, New, Node, Pattern, Range, ScopedAccess, Set, Tuple, UnaryOp,
     expr::{Assign, Block, Call, Closure, For, Func, If, Loop, Sequence, While},
 };
@@ -11,6 +11,11 @@ pub enum WalkItem<'a> {
     Expr(&'a Node<Expr>),
     Func(&'a Node<Func>),
     Pattern(&'a Node<Pattern>),
+    /// A pattern appearing as the top-level LHS of a match arm. Unlike
+    /// `Pattern`, this is never a variable binding — it is always a
+    /// constructor reference. Sub-patterns inside a `Variant` are still
+    /// emitted as `Pattern` (they are local bindings).
+    MatchPattern(&'a Node<Pattern>),
     Name(&'a Node<Name>),
     CurlyElement(&'a Node<CurlyElement>),
     EnterScope(WalkScopeKind),
@@ -150,6 +155,7 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             Expr::Pattern(pattern) => push_pattern(walk, pattern),
             Expr::Sequence(sequence) => push_sequence(walk, sequence),
             Expr::While(while_expr) => push_while(walk, while_expr),
+            Expr::Match(match_expr) => push_match(walk, match_expr),
             Expr::BinOp(bin_op) => push_bin_op(walk, bin_op),
             Expr::NilCoalesce(nc) => {
                 walk.stack
@@ -198,6 +204,7 @@ fn push_children<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, item: &WalkItem<'a>) {
             }
         },
         WalkItem::Pattern(pattern) => push_pattern(walk, pattern),
+        WalkItem::MatchPattern(pattern) => push_match_pattern(walk, pattern),
         WalkItem::CurlyElement(element) => push_curly_element(walk, element),
         WalkItem::Name(_) | WalkItem::EnterScope(_) | WalkItem::ExitScope(_) => {}
     }
@@ -279,6 +286,37 @@ fn push_sequence<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, sequence: &'a Sequence
     }
 }
 
+fn push_match<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, match_expr: &'a Match) {
+    for arm in match_expr.arms.iter().rev() {
+        // Each arm gets its own scope so payload bindings don't leak between arms.
+        walk.stack.push(StackEntry::ExitScope(WalkScopeKind::Block));
+        walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+            arm.value.body.as_ref(),
+        )));
+        walk.stack
+            .push(StackEntry::EnterNode(WalkItem::MatchPattern(
+                &arm.value.pattern,
+            )));
+        walk.stack.push(StackEntry::VisitNode(WalkItem::EnterScope(
+            WalkScopeKind::Block,
+        )));
+    }
+    walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
+        match_expr.scrutinee.as_ref(),
+    )));
+}
+
+fn push_match_pattern<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, pattern: &'a Pattern) {
+    // Only Variant patterns have sub-patterns that are local bindings.
+    // Name and Wildcard patterns are constructor references — no children to bind.
+    if let Pattern::Variant(_, sub_patterns) = pattern {
+        for pat in sub_patterns.iter().rev() {
+            walk.stack
+                .push(StackEntry::EnterNode(WalkItem::Pattern(pat)));
+        }
+    }
+}
+
 fn push_while<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, while_expr: &'a While) {
     walk.stack.push(StackEntry::EnterNode(WalkItem::Expr(
         while_expr.body.as_ref(),
@@ -314,7 +352,13 @@ fn push_pattern<'a>(walk: &mut ModuleWalk<WalkItem<'a>>, pattern: &'a Pattern) {
             walk.stack
                 .push(StackEntry::EnterNode(WalkItem::Pattern(pattern)));
         }
-        Pattern::Name(_) | Pattern::Missing(_) => {}
+        Pattern::Variant(_, sub_patterns) => {
+            for pat in sub_patterns.iter().rev() {
+                walk.stack
+                    .push(StackEntry::EnterNode(WalkItem::Pattern(pat)));
+            }
+        }
+        Pattern::Name(_) | Pattern::Missing(_) | Pattern::Wildcard => {}
     }
 }
 

@@ -8,8 +8,8 @@ use ray_typing::types::TyScheme;
 
 use super::{
     Assign, BinOp, Block, BuiltinCall, Call, Cast, Closure, Curly, Dict, Dot, FString, For, Func,
-    If, Index, List, Literal, Loop, Missing, Name, New, NilCoalesce, Pattern, Range, ScopedAccess,
-    Sequence, Set, Tuple, UnaryOp, While,
+    If, Index, List, Literal, Loop, Match, Missing, Name, New, NilCoalesce, Pattern, Range,
+    ScopedAccess, Sequence, Set, Tuple, UnaryOp, While,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,7 @@ pub enum Expr {
     For(For),
     If(If),
     Index(Index),
+    Match(Match),
     Labeled(Box<Node<Expr>>, Box<Node<Expr>>),
     List(List),
     Literal(Literal),
@@ -104,6 +105,7 @@ impl std::fmt::Display for Expr {
                 Expr::For(ex) => ex.to_string(),
                 Expr::If(ex) => ex.to_string(),
                 Expr::Index(ex) => ex.to_string(),
+                Expr::Match(ex) => ex.to_string(),
                 Expr::Labeled(label, ex) => format!("({}: {})", label, ex),
                 Expr::List(ex) => ex.to_string(),
                 Expr::Literal(ex) => ex.to_string(),
@@ -162,6 +164,7 @@ impl Expr {
             Expr::For(..) => "For",
             Expr::If(..) => "If",
             Expr::Index(..) => "Index",
+            Expr::Match(..) => "Match",
             Expr::Labeled(..) => "Labeled",
             Expr::List(..) => "List",
             Expr::Literal(..) => "Literal",
@@ -214,6 +217,7 @@ impl Expr {
             | Expr::FString(_)
             | Expr::If(_)
             | Expr::Index(_)
+            | Expr::Match(_)
             | Expr::Labeled(_, _)
             | Expr::Literal(_)
             | Expr::List(_)
@@ -269,6 +273,7 @@ impl Expr {
             | Expr::FString(_)
             | Expr::If(_)
             | Expr::Index(_)
+            | Expr::Match(_)
             | Expr::Labeled(_, _)
             | Expr::Literal(_)
             | Expr::List(_)
@@ -316,6 +321,7 @@ impl Expr {
             Expr::For(..) => "for",
             Expr::If(..) => "if",
             Expr::Index(..) => "index",
+            Expr::Match(..) => "match",
             Expr::Labeled(..) => "labeled",
             Expr::Literal(..) => "literal",
             Expr::Loop(..) => "loop",

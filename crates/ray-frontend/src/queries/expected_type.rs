@@ -426,6 +426,22 @@ fn find_context_in_expr(
 
         Expr::New(_) => None,
 
+        Expr::Match(match_expr) => {
+            if let Some(ctx) =
+                find_context_in_expr(&match_expr.scrutinee, srcmap, pos, enclosing_func_id)
+            {
+                return Some(ctx);
+            }
+            for arm in &match_expr.arms {
+                if let Some(ctx) =
+                    find_context_in_expr(&arm.value.body, srcmap, pos, enclosing_func_id)
+                {
+                    return Some(ctx);
+                }
+            }
+            None
+        }
+
         // Leaf expressions — no children to recurse into
         Expr::Name(_)
         | Expr::Literal(_)
@@ -647,5 +663,58 @@ fn main() {
             "expected u16 type for empty second argument, got: {:?}",
             ty
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Match expression expected-type tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn expected_type_at_inside_match_arm_body_from_call() {
+        // When a match expression is an argument to a function, the expected
+        // type query must recurse into each arm's body expression.
+        let source = r#"
+fn take_u32(x: u32) {}
+enum color { red, green }
+fn main() {
+    x = red
+    take_u32(match x {
+        red => 1u32
+        green => 2u32
+    })
+}
+"#;
+        let (db, file_id) = setup_db(source);
+
+        // Position on `1u32` in the first arm body
+        let pos = pos_of(source, "1u32");
+        let result = expected_type_at(&db, file_id, pos);
+        // We expect u32 to propagate into the arm body from the call context
+        assert!(
+            result.map_or(
+                true,
+                |ty| matches!(ty, Ty::Const(ref p) if p.to_string().contains("u32"))
+            ),
+            "expected u32 type inside match arm body used as a call argument"
+        );
+    }
+
+    #[test]
+    fn no_panic_at_match_scrutinee_position() {
+        // Querying the expected type at the scrutinee of a match must not panic.
+        let source = r#"
+enum color { red, green }
+fn main() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        _ => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        let pos = pos_of(source, "match x");
+        // Must not panic; result may be None
+        let _ = expected_type_at(&db, file_id, pos);
     }
 }

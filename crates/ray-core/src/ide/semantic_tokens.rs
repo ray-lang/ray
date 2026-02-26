@@ -370,7 +370,14 @@ impl<'a> SemanticTokenCollector<'a> {
                 }
             }
             Pattern::Some(pattern) => self.visit_pattern(pattern),
-            Pattern::Missing(_) => {}
+            Pattern::Variant(name, sub_patterns) => {
+                let span = self.srcmap.span_of(name);
+                self.emit_span(span, SemanticTokenKind::Variable, &[]);
+                for pat in sub_patterns {
+                    self.visit_pattern(pat);
+                }
+            }
+            Pattern::Missing(_) | Pattern::Wildcard => {}
         }
     }
 
@@ -464,6 +471,13 @@ impl<'a> SemanticTokenCollector<'a> {
                 self.visit_expr(&if_expr.then);
                 if let Some(els) = &if_expr.els {
                     self.visit_expr(els);
+                }
+            }
+            Expr::Match(match_expr) => {
+                self.visit_expr(&match_expr.scrutinee);
+                for arm in &match_expr.arms {
+                    self.visit_pattern(&arm.value.pattern);
+                    self.visit_expr(&arm.value.body);
                 }
             }
             Expr::Index(index) => {

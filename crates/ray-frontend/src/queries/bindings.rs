@@ -334,6 +334,13 @@ fn collect_all_bindings_in_expr(
             }
         }
         Expr::New(_) => {}
+        Expr::Match(match_expr) => {
+            collect_all_bindings_in_expr(&match_expr.scrutinee, resolutions, names);
+            for arm in &match_expr.arms {
+                collect_pattern_name(&arm.value.pattern, resolutions, names);
+                collect_all_bindings_in_expr(&arm.value.body, resolutions, names);
+            }
+        }
         Expr::Name(_)
         | Expr::Literal(_)
         | Expr::Continue
@@ -396,7 +403,12 @@ fn collect_pattern_name(
         Pattern::Some(inner) => {
             collect_pattern_name(inner, resolutions, names);
         }
-        Pattern::Dot(_, _) | Pattern::Index(_, _, _) | Pattern::Missing(_) => {}
+        Pattern::Variant(_, sub_patterns) => {
+            for pat in sub_patterns {
+                collect_pattern_name(pat, resolutions, names);
+            }
+        }
+        Pattern::Dot(_, _) | Pattern::Index(_, _, _) | Pattern::Missing(_) | Pattern::Wildcard => {}
     }
 }
 
@@ -648,5 +660,79 @@ mod tests {
                 resolution
             );
         }
+    }
+
+    #[test]
+    fn match_arm_payload_binding_appears_in_binding_names() {
+        // The payload binding `n` inside `packed(n)` must be collected as a
+        // local binding — it is a fresh local, not a reference to a variant.
+        let source = r#"
+enum box_val { empty, packed(u32) }
+fn foo() -> u32 {
+    x = packed(42u32)
+    match x {
+        packed(n) => n
+        empty => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        let names = binding_names(&db, file_id);
+        assert!(
+            names.contains(&"n".to_string()),
+            "match arm payload binding `n` should appear in local binding names, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn match_arm_wildcard_does_not_produce_spurious_binding() {
+        // A wildcard `_` arm must NOT introduce any binding.
+        let source = r#"
+enum color { red, green }
+fn foo() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        _ => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        let names = binding_names(&db, file_id);
+        assert!(
+            !names.contains(&"_".to_string()),
+            "wildcard `_` must not produce a binding named `_`, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn match_arm_unit_variant_pattern_is_not_a_binding() {
+        // A unit variant name in a match arm (e.g. `red`) refers to a
+        // constructor, NOT a local binding.  The name `red` must not appear
+        // in `local_binding_names`.
+        let source = r#"
+enum color { red, green }
+fn foo() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        green => 2u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+        let names = binding_names(&db, file_id);
+        assert!(
+            !names.contains(&"red".to_string()),
+            "unit variant `red` in a match arm must not be a local binding, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"green".to_string()),
+            "unit variant `green` in a match arm must not be a local binding, got: {:?}",
+            names
+        );
     }
 }

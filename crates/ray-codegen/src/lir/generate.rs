@@ -1216,13 +1216,48 @@ impl<'a> GenCtx<'a> {
             return None; // locals, type params, primitives
         };
 
-        // Check if it's a function/method definition (works for both workspace and library defs)
+        // Check if it's a function/method/variant-constructor definition.
+        // Payload enum variant constructors have DefKind::EnumVariant but are
+        // lowered as LIR functions, so they must be callable here.
         let record = definition_record(self.db, def_target.clone())?;
-        if matches!(record.kind, DefKind::Function { .. } | DefKind::Method) {
+        if matches!(
+            record.kind,
+            DefKind::Function { .. } | DefKind::Method | DefKind::EnumVariant
+        ) {
             Some(scheme)
         } else {
             None
         }
+    }
+
+    /// If `node_id` resolves to a unit enum variant constant, return the
+    /// `Value::Enum` that represents it. Returns `None` for any other kind
+    /// of name (locals, payload variants, non-enum defs).
+    fn maybe_unit_enum_variant(&self, node_id: NodeId) -> Option<lir::Value> {
+        let resolutions = name_resolutions(self.db, node_id.owner.file);
+        let Resolution::Def(variant_target) = resolutions.get(&node_id)? else {
+            return None;
+        };
+        let record = definition_record(self.db, variant_target.clone())?;
+        if !matches!(record.kind, DefKind::EnumVariant) {
+            return None;
+        }
+        let enum_target = record.parent.clone()?;
+        let enum_definition = enum_def(self.db, enum_target)?;
+        let variant_name = record.path.item_name()?;
+        let variant = enum_definition
+            .variants
+            .iter()
+            .find(|v| v.name == variant_name)?;
+        // Payload variants are handled as direct function calls, not here.
+        if !variant.field_types.is_empty() {
+            return None;
+        }
+        Some(lir::Value::Enum(lir::EnumValue {
+            path: enum_definition.path.clone(),
+            tag: variant.tag,
+            fields: vec![],
+        }))
     }
 
     fn collect_closure_captures(&mut self, closure_id: NodeId) -> Vec<lir::CaptureSlot> {
@@ -2394,6 +2429,9 @@ impl<'a> GenCtx<'a> {
             Pattern::Sequence(_) => todo!("emit_pattern_value: Pattern::Sequence"),
             Pattern::Some(_) => todo!("emit_pattern_value: Pattern::Some"),
             Pattern::Tuple(_) => todo!("emit_pattern_value: Pattern::Tuple"),
+            Pattern::Variant(_, _) | Pattern::Wildcard => {
+                unreachable!("Variant and Wildcard patterns cannot appear in emit_pattern_value")
+            }
         }
     }
 
@@ -2555,6 +2593,11 @@ impl<'a> GenCtx<'a> {
                 Ok(())
             }
             Pattern::Some(_) => todo!("emit_assign_to_pattern: Pattern::Some"),
+            Pattern::Variant(_, _) | Pattern::Wildcard => {
+                unreachable!(
+                    "Variant and Wildcard patterns cannot appear in emit_assign_to_pattern"
+                )
+            }
         }
     }
 
@@ -3064,6 +3107,8 @@ impl LirGen<GenResult> for Node<Expr> {
                 if let Some(fn_ty) = ctx.maybe_direct_function(self.id) {
                     let var = ctx.build_fn_handle_for_function(n.path.clone(), fn_ty);
                     lir::Value::new(var)
+                } else if let Some(enum_val) = ctx.maybe_unit_enum_variant(self.id) {
+                    enum_val
                 } else {
                     let binding = ctx.binding_for_node(self.id).unwrap_or_else(|| {
                         let src = ctx.srcmap.get_by_id(self.id);
@@ -4330,6 +4375,210 @@ impl LirGen<GenResult> for Node<Expr> {
                 lir::Variable::Local(loc).into()
             }
             Expr::Missing(_) => todo!("lir_gen: Expr::Missing: {}", self.value),
+            Expr::Match(match_expr) => {
+                // Evaluate the scrutinee into a local in the current block.
+                let scrut_ty = ctx.ty_of(match_expr.scrutinee.id);
+                let scrut_val = match_expr.scrutinee.lir_gen(ctx)?;
+                let scrut_loc = ctx
+                    .get_or_set_local(scrut_val, scrut_ty.clone())
+                    .expect("match scrutinee must produce a non-unit value");
+
+                // Extract enum path and type args from the scrutinee type.
+                // Non-generic enums are represented as Ty::Const; generic enums
+                // (e.g. result['a, 'e]) are Ty::Proj with their type arguments.
+                let (enum_path, type_args) = match scrut_ty.mono() {
+                    Ty::Proj(path, args) => (path.clone(), args.clone()),
+                    Ty::Const(path) => (path.clone(), vec![]),
+                    other => panic!("match scrutinee is not an enum type: {}", other),
+                };
+
+                // Look up the enum definition and apply type substitution.
+                let enum_target = def_for_path(ctx.db, enum_path.clone())
+                    .unwrap_or_else(|| panic!("enum type not found: {}", enum_path));
+                let enum_definition = enum_def(ctx.db, enum_target)
+                    .unwrap_or_else(|| panic!("enum definition not found: {}", enum_path));
+                let mut enum_ty_data = enum_definition.convert_to_enum_ty();
+                if !type_args.is_empty() {
+                    let vars = enum_ty_data.ty.vars.clone();
+                    let mut subst = Subst::new();
+                    for (var, arg) in vars.into_iter().zip(type_args.iter()) {
+                        subst.insert(var, arg.clone());
+                    }
+                    enum_ty_data.apply_subst(&mut subst);
+                }
+
+                // Read the discriminant tag into a local.
+                let tag_loc = ctx.local(TyScheme::from_mono(Ty::i32()));
+                ctx.set_local(
+                    tag_loc,
+                    lir::EnumTag {
+                        src: lir::Variable::Local(scrut_loc),
+                    }
+                    .into(),
+                );
+
+                // Optional result local (for non-unit match expressions).
+                let result_loc = if !ty.is_unit() {
+                    Some(ctx.local(ty.clone()))
+                } else {
+                    None
+                };
+
+                // Partition arms into variant arms and optional wildcard.
+                let mut variant_arms = Vec::new();
+                let mut wildcard_arm = None;
+                for arm_node in &match_expr.arms {
+                    if matches!(arm_node.value.pattern.value, Pattern::Wildcard) {
+                        wildcard_arm = Some(arm_node);
+                    } else {
+                        variant_arms.push(arm_node);
+                    }
+                }
+
+                let end_label = ctx.new_block();
+
+                // Pre-allocate check labels and the else label.
+                let first_check_label = ctx.new_block();
+                ctx.goto(first_check_label);
+
+                let mut check_labels = vec![first_check_label];
+                for _ in 1..variant_arms.len() {
+                    check_labels.push(ctx.new_block());
+                }
+                let else_label = ctx.new_block();
+
+                let file = match_expr.scrutinee.id.owner.file;
+                let resolutions = name_resolutions(ctx.db, file);
+
+                for (arm_idx, arm_node) in variant_arms.iter().enumerate() {
+                    let arm = &arm_node.value;
+                    let check_label = check_labels[arm_idx];
+                    let next_label = if arm_idx + 1 < variant_arms.len() {
+                        check_labels[arm_idx + 1]
+                    } else {
+                        else_label
+                    };
+
+                    // Resolve the variant DefTarget and sub-patterns from the arm pattern.
+                    let (variant_res_id, sub_patterns) = match &arm.pattern.value {
+                        Pattern::Variant(path_node, sub_pats) => {
+                            (path_node.id, sub_pats.as_slice())
+                        }
+                        Pattern::Name(_) => (arm.pattern.id, &[][..]),
+                        _ => continue,
+                    };
+
+                    let variant_target = match resolutions.get(&variant_res_id) {
+                        Some(Resolution::Def(target)) => target.clone(),
+                        _ => continue,
+                    };
+
+                    // Look up the variant name to find it in the instantiated enum.
+                    let Some(record) = definition_record(ctx.db, variant_target) else {
+                        continue;
+                    };
+                    let Some(variant_name) = record.path.item_name() else {
+                        continue;
+                    };
+                    let Some(variant_info) = enum_ty_data
+                        .variants
+                        .iter()
+                        .find(|v| v.name == variant_name)
+                    else {
+                        continue;
+                    };
+                    let variant_tag = variant_info.tag;
+                    let field_types: Vec<Ty> = variant_info
+                        .field_types
+                        .iter()
+                        .map(|s| s.ty.clone())
+                        .collect();
+
+                    let arm_body_label = ctx.new_block();
+
+                    // Emit tag comparison in the check block.
+                    ctx.with_block(check_label, |ctx| {
+                        let eq_val: lir::Value = lir::BasicOp {
+                            op: lir::Op::Eq,
+                            size: lir::Size::bytes(4),
+                            signed: true,
+                            operands: vec![
+                                lir::Variable::Local(tag_loc).into(),
+                                lir::Atom::IntConst(variant_tag as i64, lir::Size::bytes(4)),
+                            ],
+                        }
+                        .into();
+                        let eq_loc = ctx.local(TyScheme::from_mono(Ty::bool()));
+                        ctx.set_local(eq_loc, eq_val);
+                        ctx.cond(eq_loc, arm_body_label, next_label);
+                    });
+
+                    // Emit arm body: bind field variables, then evaluate body.
+                    let (arm_val, arm_end) = ctx.with_block_capture(arm_body_label, |ctx| {
+                        for (field_idx, sub_pat) in sub_patterns.iter().enumerate() {
+                            let field_ty = field_types.get(field_idx).cloned().unwrap_or(Ty::Never);
+                            let Some(binding) = ctx.binding_for_node(sub_pat.id) else {
+                                continue;
+                            };
+                            let field_val: lir::Value = lir::EnumField {
+                                src: lir::Variable::Local(scrut_loc),
+                                enum_path: enum_path.clone(),
+                                variant_tag,
+                                field_idx,
+                                field_ty: field_ty.clone(),
+                            }
+                            .into();
+                            let debug_name = ctx.fallback_binding_name(binding);
+                            let slot = ctx.ensure_local_for_binding(
+                                binding,
+                                debug_name,
+                                TyScheme::from_mono(field_ty),
+                            );
+                            ctx.set_local(slot, field_val);
+                        }
+                        arm.body.lir_gen(ctx)
+                    });
+
+                    let arm_val = arm_val?;
+                    ctx.with_block(arm_end, |ctx| {
+                        if let Some(res_loc) = result_loc {
+                            ctx.set_local(res_loc, arm_val);
+                        } else if let Some(i) = arm_val.to_inst() {
+                            ctx.push(i);
+                        }
+                        ctx.goto(end_label);
+                    });
+                }
+
+                // Wildcard / fall-through block.
+                let (wild_val, wild_end) = ctx.with_block_capture(else_label, |ctx| {
+                    if let Some(wild_arm) = wildcard_arm {
+                        wild_arm.value.body.lir_gen(ctx)
+                    } else {
+                        RayResult::Ok(lir::Value::Empty)
+                    }
+                });
+                let wild_val = wild_val?;
+                ctx.with_block(wild_end, |ctx| {
+                    if let Some(res_loc) = result_loc {
+                        if !matches!(wild_val, lir::Value::Empty) {
+                            ctx.set_local(res_loc, wild_val);
+                        }
+                    } else if let Some(i) = wild_val.to_inst() {
+                        ctx.push(i);
+                    }
+                    ctx.goto(end_label);
+                });
+
+                ctx.use_block(end_label);
+                ctx.block()
+                    .markers_mut()
+                    .push(lir::ControlMarker::End(first_check_label));
+
+                result_loc
+                    .map(|l| lir::Atom::Variable(lir::Variable::Local(l)).into())
+                    .unwrap_or_default()
+            }
         })
     }
 }
@@ -4680,7 +4929,7 @@ mod tests {
     };
     use ray_typing::types::TyScheme;
 
-    use ray_lir::{Call, ControlMarker, Func, GetField, Inst, Program, RefCountKind, Value};
+    use ray_lir::{Call, ControlMarker, Func, GetField, Inst, Op, Program, RefCountKind, Value};
 
     use crate::lir::{generate, generate_drop_glue};
 
@@ -8563,6 +8812,208 @@ pub fn main() -> u32 { 0u32 }
             0,
             "Load through param pointer should NOT produce DecRef\n--- LIR ---\n{}",
             prog
+        );
+    }
+
+    // =========================================================================
+    // Enum and match LIR generation tests
+    // =========================================================================
+
+    #[test]
+    fn enum_unit_variant_constructor_generates_enum_value() {
+        // A unit variant (no payload) should generate `Value::Enum` with the
+        // correct discriminant tag and an empty field list.
+        let src = r#"
+enum color { red, green, blue }
+pub fn main() -> u32 {
+    x = red
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let main_func = find_func(&prog, "main");
+
+        let has_enum_value = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::SetLocal(_, Value::Enum(ev)) if ev.tag == 0 && ev.fields.is_empty()));
+
+        assert!(
+            has_enum_value,
+            "expected Value::Enum with tag=0 and no fields for unit variant `red`\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn enum_payload_variant_constructor_generates_enum_value_with_fields() {
+        // A payload variant constructor function body should contain `Value::Enum`
+        // with the correct discriminant tag and non-empty payload field locals.
+        // (The constructor function is called by callers — the enum value is
+        //  built inside the constructor, not inlined at the call site.)
+        let src = r#"
+enum box_val { empty, packed(u32) }
+pub fn main() -> u32 {
+    x = packed(42u32)
+    0u32
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        // The `Value::Enum` lives inside the `packed` constructor function body.
+        let packed_ctor = find_func(&prog, "packed");
+
+        let has_enum_value = packed_ctor
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::SetLocal(_, Value::Enum(ev)) if ev.tag == 1 && !ev.fields.is_empty()));
+
+        assert!(
+            has_enum_value,
+            "expected Value::Enum with tag=1 and non-empty fields inside `packed` constructor\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn match_on_unit_variants_generates_enum_tag_read() {
+        // A match expression must emit `Value::EnumTag` to read the
+        // discriminant from the scrutinee before branching.
+        let src = r#"
+enum color { red, green, blue }
+pub fn main() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        green => 2u32
+        _ => 3u32
+    }
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let main_func = find_func(&prog, "main");
+
+        let has_enum_tag = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::SetLocal(_, Value::EnumTag(_))));
+
+        assert!(
+            has_enum_tag,
+            "expected Value::EnumTag instruction in match lowering\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn match_on_unit_variants_generates_tag_equality_comparisons() {
+        // Each non-wildcard match arm must emit a `BasicOp { op: Op::Eq }`
+        // comparing the tag local against the variant's discriminant.
+        let src = r#"
+enum color { red, green, blue }
+pub fn main() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        green => 2u32
+        _ => 3u32
+    }
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let main_func = find_func(&prog, "main");
+
+        let eq_count = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| {
+                matches!(inst, Inst::SetLocal(_, Value::BasicOp(bop)) if matches!(bop.op, Op::Eq))
+            })
+            .count();
+
+        // Two non-wildcard arms (red, green) → at least two Eq comparisons
+        assert!(
+            eq_count >= 2,
+            "expected >= 2 Eq comparisons for 2 non-wildcard arms, got {}\n--- LIR ---\n{}",
+            eq_count,
+            prog
+        );
+    }
+
+    #[test]
+    fn match_payload_variant_arm_generates_enum_field_read() {
+        // A payload-variant arm must emit `Value::EnumField` to extract the
+        // payload value from the scrutinee after the tag check passes.
+        let src = r#"
+enum box_val { empty, packed(u32) }
+pub fn main() -> u32 {
+    x = packed(42u32)
+    match x {
+        packed(n) => n
+        empty => 0u32
+    }
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let main_func = find_func(&prog, "main");
+
+        let has_enum_field = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .any(|inst| matches!(inst, Inst::SetLocal(_, Value::EnumField(_))));
+
+        assert!(
+            has_enum_field,
+            "expected Value::EnumField instruction for payload variant arm\n--- LIR ---\n{}",
+            prog
+        );
+    }
+
+    #[test]
+    fn match_wildcard_only_arm_has_no_tag_comparison() {
+        // A match with only a wildcard arm should read the tag (for
+        // exhaustiveness bookkeeping) but emit no Eq comparison.
+        let src = r#"
+enum single { only }
+pub fn main() -> u32 {
+    x = only
+    match x {
+        _ => 99u32
+    }
+}
+"#;
+        let (db, _) = setup_test_workspace(src);
+        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
+
+        let main_func = find_func(&prog, "main");
+
+        let eq_count = main_func
+            .blocks
+            .iter()
+            .flat_map(|b| b.iter())
+            .filter(|inst| {
+                matches!(inst, Inst::SetLocal(_, Value::BasicOp(bop)) if matches!(bop.op, Op::Eq))
+            })
+            .count();
+
+        assert_eq!(
+            eq_count, 0,
+            "wildcard-only match should have no Eq comparisons, got {}\n--- LIR ---\n{}",
+            eq_count, prog
         );
     }
 }

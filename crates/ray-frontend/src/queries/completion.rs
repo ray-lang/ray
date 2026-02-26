@@ -853,6 +853,17 @@ fn find_ctx_in_expr(expr: &Node<Expr>, srcmap: &SourceMap, pos: &Pos) -> Option<
             Some(PositionContext::General)
         }
 
+        Expr::Match(match_expr) => {
+            if let Some(ctx) = find_ctx_in_expr(&match_expr.scrutinee, srcmap, pos) {
+                return Some(ctx);
+            }
+            for arm in &match_expr.arms {
+                if let Some(ctx) = find_ctx_in_expr(&arm.value.body, srcmap, pos) {
+                    return Some(ctx);
+                }
+            }
+            Some(PositionContext::General)
+        }
         Expr::Continue | Expr::Missing(_) => None,
     }
 }
@@ -1303,6 +1314,90 @@ fn main() {
                 offset: 0,
             };
             // Must not panic — result can be Some or None.
+            let _ = completion_context(&db, file_id, pos);
+        }
+    }
+
+    // =====================================================================
+    // Match expression context tests
+    // =====================================================================
+
+    #[test]
+    fn completion_inside_match_arm_body_returns_scope_context() {
+        // A cursor inside a match arm body should produce a Scope completion
+        // context so that local names (including arm payload bindings) are
+        // suggested.
+        let source = r#"
+enum box_val { empty, packed(u32) }
+fn foo() -> u32 {
+    x = packed(42u32)
+    match x {
+        packed(n) => n
+        empty => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+
+        // Position on `n` after `packed(n) => `
+        let needle = "packed(n) => n";
+        let offset = source.find(needle).expect("needle in source") + "packed(n) => ".len();
+        let prefix = &source[..offset];
+        let lineno = prefix.matches('\n').count();
+        let col = match prefix.rfind('\n') {
+            Some(nl) => offset - nl - 1,
+            None => offset,
+        };
+        let pos = Pos {
+            lineno,
+            col,
+            offset,
+        };
+
+        let ctx = completion_context(&db, file_id, pos);
+        assert!(
+            ctx.is_some(),
+            "expected a completion context inside match arm body, got None"
+        );
+        let ctx = ctx.unwrap();
+        assert!(
+            matches!(ctx.kind, CompletionKind::Scope),
+            "expected Scope completion inside match arm body, got: {:?}",
+            ctx.kind
+        );
+    }
+
+    #[test]
+    fn no_panic_inside_match_expression() {
+        // Completion queries on positions inside a match expression must not
+        // panic regardless of whether we have a valid result.
+        let source = r#"
+enum color { red, green, blue }
+fn main() -> u32 {
+    x = red
+    match x {
+        red => 1u32
+        _ => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+
+        // Try a few positions inside the match expression
+        for needle in &["match x", "red =>", "_ =>"] {
+            let offset = source.find(needle).expect("needle in source");
+            let prefix = &source[..offset];
+            let lineno = prefix.matches('\n').count();
+            let col = match prefix.rfind('\n') {
+                Some(nl) => offset - nl - 1,
+                None => offset,
+            };
+            let pos = Pos {
+                lineno,
+                col,
+                offset,
+            };
+            // Must not panic
             let _ = completion_context(&db, file_id, pos);
         }
     }

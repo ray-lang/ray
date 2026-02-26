@@ -111,6 +111,8 @@ pub enum TokenKind {
     Noescape,
     /// upgrade
     Upgrade,
+    /// match
+    Match,
     /// test
     Test,
 
@@ -290,6 +292,7 @@ impl TokenKind {
             TokenKind::Move => "`move`",
             TokenKind::Noescape => "`noescape`",
             TokenKind::Upgrade => "`upgrade`",
+            TokenKind::Match => "`match`",
             TokenKind::Test => "`test`",
             TokenKind::Equals => "`=`",
             TokenKind::Gt => "`>`",
@@ -434,6 +437,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Move => "move".to_string(),
             TokenKind::Noescape => "noescape".to_string(),
             TokenKind::Upgrade => "upgrade".to_string(),
+            TokenKind::Match => "match".to_string(),
             TokenKind::Test => "test".to_string(),
             TokenKind::Equals => "=".to_string(),
             TokenKind::Gt => ">".to_string(),

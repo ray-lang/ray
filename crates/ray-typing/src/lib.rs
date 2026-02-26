@@ -245,6 +245,13 @@ impl TypeCheckInput {
                 }
                 out
             }
+            Some(ExprKind::Match { scrutinee, arms }) => {
+                let mut out = vec![*scrutinee];
+                for (_, body_id) in arms {
+                    out.push(*body_id);
+                }
+                out
+            }
             Some(ExprKind::While { cond, body }) => vec![*cond, *body],
             Some(ExprKind::WhilePattern {
                 scrutinee, body, ..

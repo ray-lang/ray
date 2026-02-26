@@ -3257,3 +3257,140 @@ fn parse_enum_mixed_unit_and_payload() {
     assert_eq!(en.variants[1].value.name, "some");
     assert_eq!(en.variants[1].value.fields.len(), 1);
 }
+
+// =====================================================================
+// Match expression tests
+// =====================================================================
+
+/// Extract the first `Expr::Match` from a function body block.
+fn first_match_in_function(func: &Func) -> &crate::ast::Match {
+    let block = function_body_block(func);
+    match &block
+        .stmts
+        .first()
+        .expect("expected at least one statement in block")
+        .value
+    {
+        Expr::Match(m) => m,
+        other => panic!("expected Match expression, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_match_unit_variant_arm() {
+    let src = "fn f(x) { match x { red => 1 } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    assert_eq!(m.arms.len(), 1);
+    match &m.arms[0].value.pattern.value {
+        Pattern::Name(n) => assert_eq!(n.path.to_string(), "red"),
+        other => panic!("expected Name pattern, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_match_payload_variant_arm() {
+    let src = "fn f(x) { match x { ok(v) => v } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    assert_eq!(m.arms.len(), 1);
+    match &m.arms[0].value.pattern.value {
+        Pattern::Variant(path_node, sub_pats) => {
+            assert_eq!(path_node.value.to_string(), "ok");
+            assert_eq!(sub_pats.len(), 1);
+            match &sub_pats[0].value {
+                Pattern::Name(n) => assert_eq!(n.path.to_string(), "v"),
+                other => panic!("expected Name sub-pattern, got {:?}", other),
+            }
+        }
+        other => panic!("expected Variant pattern, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_match_payload_variant_multi_field() {
+    let src = "fn f(x) { match x { custom(r, g, b) => r } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    assert_eq!(m.arms.len(), 1);
+    match &m.arms[0].value.pattern.value {
+        Pattern::Variant(path_node, sub_pats) => {
+            assert_eq!(path_node.value.to_string(), "custom");
+            assert_eq!(sub_pats.len(), 3);
+        }
+        other => panic!("expected Variant pattern, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_match_wildcard_arm() {
+    let src = "fn f(x) { match x { _ => 0 } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    assert_eq!(m.arms.len(), 1);
+    assert!(
+        matches!(m.arms[0].value.pattern.value, Pattern::Wildcard),
+        "expected Wildcard pattern"
+    );
+}
+
+#[test]
+fn parse_match_multiple_arms() {
+    let src = "fn f(x) { match x { red => 1, green => 2, _ => 3 } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    assert_eq!(m.arms.len(), 3);
+    match &m.arms[0].value.pattern.value {
+        Pattern::Name(n) => assert_eq!(n.path.to_string(), "red"),
+        other => panic!("expected Name pattern for first arm, got {:?}", other),
+    }
+    match &m.arms[1].value.pattern.value {
+        Pattern::Name(n) => assert_eq!(n.path.to_string(), "green"),
+        other => panic!("expected Name pattern for second arm, got {:?}", other),
+    }
+    assert!(
+        matches!(m.arms[2].value.pattern.value, Pattern::Wildcard),
+        "expected Wildcard for third arm"
+    );
+}
+
+#[test]
+fn parse_match_block_body() {
+    let src = "fn f(x) { match x { ok(v) => { v } } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    assert_eq!(m.arms.len(), 1);
+    // The body should be a block expression.
+    assert!(
+        matches!(m.arms[0].value.body.value, Expr::Block(_)),
+        "expected block body for match arm"
+    );
+}
+
+#[test]
+fn parse_match_display() {
+    let src = "fn f(x) { match x { ok(v) => v, _ => 0 } }";
+    let (file, errors) = parse_source(src);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let func = first_function(&file);
+    let m = first_match_in_function(func);
+    let display = m.to_string();
+    assert!(display.contains("match"), "display should contain 'match'");
+    assert!(
+        display.contains("ok"),
+        "display should contain variant name"
+    );
+    assert!(display.contains("=>"), "display should contain '=>'");
+}

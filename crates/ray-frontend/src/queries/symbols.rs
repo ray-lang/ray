@@ -1698,4 +1698,70 @@ struct Point { x: int, y: int }
     // limitation - only the element node and value expression have IDs.
     // If this becomes important for LSP "Go to Definition" on field names,
     // the AST would need to be modified to wrap the Name in a Node.
+
+    // ---------------------------------------------------------------
+    // Enum symbol identity tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn enum_declaration_appears_in_definition_identities() {
+        // An enum declaration must produce a Definition entry in
+        // `definition_identities` keyed on the enum name node.
+        let source = "enum color { red, green, blue }\nfn main() {}";
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+        let enum_def = parse_result
+            .defs
+            .iter()
+            .find(|def| def.name == "color" && matches!(def.kind, DefKind::Enum))
+            .expect("expected color enum def");
+
+        let identities = definition_identities(&db, file_id);
+
+        let has_enum_identity = identities.values().any(|identity| {
+            matches!(
+                identity,
+                SymbolIdentity::Def(DefTarget::Workspace(def_id))
+                    if *def_id == enum_def.def_id
+            )
+        });
+
+        assert!(
+            has_enum_identity,
+            "enum `color` should appear in definition_identities, identities: {:?}",
+            identities
+        );
+    }
+
+    #[test]
+    fn enum_name_node_resolves_to_definition_role() {
+        // The node for the enum name itself must map to a Definition-role target.
+        let source = "enum color { red, green, blue }\nfn main() {}";
+        let (db, file_id) = setup_test_db_with_libs(source);
+
+        let parse_result = parse_file(&db, file_id);
+
+        let enum_node_id = parse_result.ast.decls.iter().find_map(|d| {
+            if let Decl::Enum(en) = &d.value {
+                if en.path.value.name().as_deref() == Some("color") {
+                    return Some(en.path.id);
+                }
+            }
+            None
+        });
+
+        let enum_node_id = enum_node_id.expect("expected enum path node");
+        let targets = symbol_targets(&db, enum_node_id);
+
+        assert!(
+            !targets.is_empty(),
+            "enum name node should have symbol targets"
+        );
+        assert!(
+            targets.iter().any(|t| t.role == SymbolRole::Definition),
+            "enum name node should have a Definition-role target, got: {:?}",
+            targets
+        );
+    }
 }

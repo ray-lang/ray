@@ -351,6 +351,16 @@ fn collect_locals_in_expr(
                 collect_locals_in_expr(item, srcmap, pos, resolutions, locals);
             }
         }
+        Expr::Match(match_expr) => {
+            collect_locals_in_expr(&match_expr.scrutinee, srcmap, pos, resolutions, locals);
+            for arm in &match_expr.arms {
+                let arm_body_span = srcmap.get_by_id(arm.value.body.id).and_then(|s| s.span);
+                if arm_body_span.map_or(true, |s| s.contains_pos(pos)) {
+                    collect_pattern_binding(&arm.value.pattern, srcmap, resolutions, locals);
+                    collect_locals_in_expr(&arm.value.body, srcmap, pos, resolutions, locals);
+                }
+            }
+        }
         Expr::New(_) => {}
         // Leaf expressions — no children to recurse into
         Expr::Name(_)
@@ -415,7 +425,12 @@ fn collect_pattern_binding(
         Pattern::Some(inner) => {
             collect_pattern_binding(inner, srcmap, resolutions, locals);
         }
-        Pattern::Dot(_, _) | Pattern::Index(_, _, _) | Pattern::Missing(_) => {}
+        Pattern::Variant(_, sub_patterns) => {
+            for pat in sub_patterns {
+                collect_pattern_binding(pat, srcmap, resolutions, locals);
+            }
+        }
+        Pattern::Dot(_, _) | Pattern::Index(_, _, _) | Pattern::Missing(_) | Pattern::Wildcard => {}
     }
 }
 
@@ -854,6 +869,204 @@ mod tests {
             matches!(helper_entry.1, ScopeEntry::Def(_)),
             "helper should be a Def entry, got: {:?}",
             helper_entry.1
+        );
+    }
+
+    #[test]
+    fn scope_at_includes_match_arm_payload_binding() {
+        // The payload binding introduced in a match arm (e.g. `n` in
+        // `packed(n)`) must be visible inside that arm's body.
+        let source = r#"
+enum box_val { empty, packed(u32) }
+fn foo() -> u32 {
+    x = packed(42u32)
+    match x {
+        packed(n) => n
+        empty => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+
+        // Position inside the first arm body (on `n` after `=>`)
+        let pos = pos_of(source, "packed(n) => n");
+        // Advance past `packed(n) => ` to land inside the body expression
+        let pos = Pos {
+            offset: pos.offset + "packed(n) => ".len(),
+            col: pos.col + "packed(n) => ".len(),
+            ..pos
+        };
+        let scope = scope_at(&db, file_id, pos);
+
+        let local_names: Vec<&str> = scope
+            .iter()
+            .filter(|(_, e)| matches!(e, ScopeEntry::Local(_)))
+            .map(|(n, _)| n.as_str())
+            .collect();
+
+        assert!(
+            local_names.contains(&"n"),
+            "payload binding `n` should be in scope inside its arm body, got: {:?}",
+            local_names
+        );
+    }
+
+    #[test]
+    fn scope_at_match_arm_binding_not_visible_in_other_arm() {
+        // The payload binding `n` from `packed(n)` must NOT leak into the
+        // `empty` arm's body.
+        let source = r#"
+enum box_val { empty, packed(u32) }
+fn foo() -> u32 {
+    x = packed(42u32)
+    match x {
+        packed(n) => n
+        empty => 0u32
+    }
+}
+"#;
+        let (db, file_id) = setup_db(source);
+
+        // Position inside the second arm body (on `0u32`)
+        let pos = pos_of(source, "empty => 0u32");
+        let pos = Pos {
+            offset: pos.offset + "empty => ".len(),
+            col: pos.col + "empty => ".len(),
+            ..pos
+        };
+        let scope = scope_at(&db, file_id, pos);
+
+        let local_names: Vec<&str> = scope
+            .iter()
+            .filter(|(_, e)| matches!(e, ScopeEntry::Local(_)))
+            .map(|(n, _)| n.as_str())
+            .collect();
+
+        assert!(
+            !local_names.contains(&"n"),
+            "`n` from first arm must NOT be in scope in second arm body, got: {:?}",
+            local_names
+        );
+    }
+
+    #[test]
+    fn selective_import_of_enum_brings_variants_into_scope() {
+        // `import color with color` should make `red`, `green`, `blue` available unqualified.
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_main = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        let file_color = workspace.add_file(FilePath::from("color.ray"), ModulePath::from("color"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
+
+        let source_color = "enum color { red, green, blue }";
+        let source_main = "import color with color\nfn main() { x = 1 }";
+        FileSource::new(&db, file_color, source_color.to_string());
+        FileMetadata::new(
+            &db,
+            file_color,
+            FilePath::from("color.ray"),
+            ModulePath::from("color"),
+        );
+        FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let pos = pos_of(source_main, "x = 1");
+        let scope = scope_at(&db, file_main, pos);
+        let names: Vec<&str> = scope.iter().map(|(n, _)| n.as_str()).collect();
+
+        assert!(
+            names.contains(&"red"),
+            "selective enum import should make 'red' in scope, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"green"),
+            "selective enum import should make 'green' in scope, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"blue"),
+            "selective enum import should make 'blue' in scope, got: {:?}",
+            names
+        );
+
+        for variant in &["red", "green", "blue"] {
+            let entry = scope.iter().find(|(n, _)| n == variant).unwrap();
+            assert!(
+                matches!(entry.1, ScopeEntry::Def(_)),
+                "'{}' should be a Def entry, got: {:?}",
+                variant,
+                entry.1
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_import_does_not_bring_variants_into_scope() {
+        // `import color` must NOT bring variants into unqualified scope.
+        // Only `import color with color` does that.
+        let db = Database::new();
+        let mut workspace = WorkspaceSnapshot::new();
+        let file_main = workspace.add_file(FilePath::from("main.ray"), Path::from("main"));
+        let file_color = workspace.add_file(FilePath::from("color.ray"), ModulePath::from("color"));
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        db.set_input::<CompilerOptions>(
+            (),
+            CompilerOptions {
+                no_core: true,
+                test_mode: false,
+            },
+        );
+
+        let source_color = "enum color { red, green, blue }";
+        let source_main = "import color\nfn main() { x = 1 }";
+        FileSource::new(&db, file_color, source_color.to_string());
+        FileMetadata::new(
+            &db,
+            file_color,
+            FilePath::from("color.ray"),
+            ModulePath::from("color"),
+        );
+        FileSource::new(&db, file_main, source_main.to_string());
+        FileMetadata::new(
+            &db,
+            file_main,
+            FilePath::from("main.ray"),
+            ModulePath::from("main"),
+        );
+
+        let pos = pos_of(source_main, "x = 1");
+        let scope = scope_at(&db, file_main, pos);
+        let names: Vec<&str> = scope.iter().map(|(n, _)| n.as_str()).collect();
+
+        assert!(
+            !names.contains(&"red"),
+            "bare namespace import must NOT bring 'red' into scope, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"green"),
+            "bare namespace import must NOT bring 'green' into scope, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"blue"),
+            "bare namespace import must NOT bring 'blue' into scope, got: {:?}",
+            names
         );
     }
 }
