@@ -3570,6 +3570,36 @@ impl<'a, 'ctx> CallCodegenExt<'a, 'ctx> for lir::Call {
                 let inst = ctx.builder.build_store(test_failed_ptr, true_val)?;
                 Ok(LoweredCall::Inst(inst))
             }
+            lir::IntrinsicKind::Panic => {
+                // arg 0 = msg: string
+                let msg_val = self.args[0].codegen(ctx, srcmap)?;
+                let msg = ctx.maybe_load_pointer(msg_val)?;
+                // 1. store true → context.unwinding
+                ctx.store_unwinding_flag(ctx.lcx.bool_type().const_int(1, false))?;
+                // 2. store msg → context.panic_message
+                ctx.store_panic_message(msg)?;
+                // 3. store 0 → context.trace_count
+                let ctx_ptr = ctx.get_thread_ctx_ptr();
+                let ctx_ty = ctx.thread_context_type();
+                let trace_ptr =
+                    ctx.builder
+                        .build_struct_gep(ctx_ty, ctx_ptr, 2, "trace_count_ptr")?;
+                ctx.builder
+                    .build_store(trace_ptr, ctx.lcx.i32_type().const_zero())?;
+                Ok(LoweredCall::Value(ctx.unit()))
+            }
+            lir::IntrinsicKind::PanicIsUnwinding => {
+                let flag = ctx.load_unwinding_flag()?;
+                Ok(LoweredCall::Value(flag.into()))
+            }
+            lir::IntrinsicKind::PanicClearUnwinding => {
+                ctx.store_unwinding_flag(ctx.lcx.bool_type().const_int(0, false))?;
+                Ok(LoweredCall::Value(ctx.unit()))
+            }
+            lir::IntrinsicKind::PanicLoadMessage => {
+                let msg = ctx.load_panic_message()?;
+                Ok(LoweredCall::Value(msg))
+            }
         }
     }
 

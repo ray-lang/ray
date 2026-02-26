@@ -1,0 +1,26 @@
+//! Panic and recover — flag-based unwind support.
+
+import result with result, ok, err
+
+/// Initiates an unwind by setting the thread context's unwinding flag and
+/// storing the message. Control never continues past a `panic` call within
+/// the panicking function; the flag is checked by callers.
+@intrinsic extern fn panic(msg: string) -> never
+
+// Low-level thread-context accessors — not public API.
+@intrinsic extern fn __panic_is_unwinding() -> bool
+@intrinsic extern fn __panic_clear_unwinding()
+@intrinsic extern fn __panic_load_message() -> string
+
+/// Executes `body`. If it completes normally, returns `ok(value)`.
+/// If it panics, catches the panic and returns `err(msg)`.
+fn recover(body: () -> 'a) -> result['a, string] {
+    body_result = body()
+    if __panic_is_unwinding() {
+        msg = __panic_load_message()
+        __panic_clear_unwinding()
+        err(msg)
+    } else {
+        ok(body_result)
+    }
+}

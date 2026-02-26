@@ -205,6 +205,10 @@ pub enum IntrinsicKind {
     BoolNot,
     TestAssert,
     TestFail,
+    Panic,
+    PanicIsUnwinding,
+    PanicClearUnwinding,
+    PanicLoadMessage,
 }
 
 impl IntrinsicKind {
@@ -411,6 +415,10 @@ impl IntrinsicKind {
             "bool_not" => Some(Self::BoolNot),
             "assert" => Some(Self::TestAssert),
             "fail" => Some(Self::TestFail),
+            "panic" => Some(Self::Panic),
+            "__panic_is_unwinding" => Some(Self::PanicIsUnwinding),
+            "__panic_clear_unwinding" => Some(Self::PanicClearUnwinding),
+            "__panic_load_message" => Some(Self::PanicLoadMessage),
             _ => None,
         }
     }
