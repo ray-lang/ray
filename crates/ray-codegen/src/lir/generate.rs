@@ -2916,9 +2916,16 @@ impl LirGen<GenResult> for (&Literal, &TyScheme) {
     }
 }
 
-impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme, Option<&Path>) {
+impl LirGen<GenResult>
+    for (
+        &Node<&ast::Func>,
+        &TyScheme,
+        Option<&Path>,
+        Option<&Vec<&Ty>>,
+    )
+{
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
-        let &(func, fn_ty, base_override) = self;
+        let &(func, fn_ty, base_override, impl_ty_args) = self;
 
         ctx.with_builder(Builder::new());
 
@@ -2992,6 +2999,17 @@ impl LirGen<GenResult> for (&Node<&ast::Func>, &TyScheme, Option<&Path>) {
         func.params = params;
         func.locals = locals;
         func.blocks = blocks;
+
+        if let Some(impl_ty_args) = impl_ty_args {
+            let base = func.name.with_names_only();
+            let parent = base.parent();
+            if !parent.is_empty() {
+                func.display_path = parent.append_type_args(impl_ty_args.iter().map(|t| *t));
+                if let Some(last) = base.name() {
+                    func.display_path.append_mut(last);
+                }
+            }
+        }
 
         ctx.new_func(func);
 
@@ -4656,7 +4674,7 @@ impl LirGen<GenResult> for Node<Decl> {
                 let node = Node::with_id(self.id, func);
                 let ty = def_scheme(ctx.db, DefTarget::Workspace(self.id.owner))
                     .unwrap_or_else(|| ctx.raw_ty_of(self.id));
-                return (&node, &ty, None).lir_gen(ctx);
+                return (&node, &ty, None, None).lir_gen(ctx);
             }
             Decl::Mutable(name, modifiers) | Decl::Name(name, modifiers) => {
                 if modifiers.contains(&Modifier::Extern) {
@@ -4699,20 +4717,29 @@ impl LirGen<GenResult> for Node<Decl> {
                     }
                 }
 
+                let impl_target = DefTarget::Workspace(self.id.owner);
+                let impl_def = impl_def(ctx.db, impl_target);
+                let impl_def_ref = impl_def.as_ref().as_ref();
+
                 // For trait impls, compute the trait-qualified base path
                 // (e.g., core::ToStr) so methods are named core::ToStr::to_str.
                 // For inherent impls (impl object), use None to keep the AST path.
                 let trait_base: Option<Path> = if !imp.is_object {
-                    let impl_target = DefTarget::Workspace(self.id.owner);
-                    impl_def(ctx.db, impl_target)
-                        .as_ref()
-                        .as_ref()
+                    impl_def_ref
                         .and_then(|def| def.trait_ty.as_ref())
                         .and_then(|trait_ty| trait_ty.item_path())
                         .map(|ip| ip.to_path())
                 } else {
                     None
                 };
+
+                let impl_ty = if !imp.is_object {
+                    impl_def_ref.and_then(|def| def.trait_ty.as_ref())
+                } else {
+                    impl_def_ref.map(|def| &def.implementing_type)
+                };
+
+                let impl_ty_args = impl_ty.map(|trait_ty| trait_ty.type_arguments());
 
                 if let Some(funcs) = &imp.funcs {
                     for decl in funcs {
@@ -4737,7 +4764,13 @@ impl LirGen<GenResult> for Node<Decl> {
                             base_override,
                             func.sig
                         );
-                        (&func_node, &ty, base_override.as_ref()).lir_gen(ctx)?;
+                        (
+                            &func_node,
+                            &ty,
+                            base_override.as_ref(),
+                            impl_ty_args.as_ref(),
+                        )
+                            .lir_gen(ctx)?;
                     }
                 }
             }

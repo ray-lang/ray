@@ -177,7 +177,8 @@ where
                 | Inst::IncRef(_, _)
                 | Inst::DecRef(_, _, _)
                 | Inst::Return(_)
-                | Inst::Break(_) => continue,
+                | Inst::Break(_)
+                | Inst::PushTraceEntry(_) => continue,
             }
         }
     }
@@ -494,6 +495,14 @@ impl Value {
             None
         }
     }
+
+    pub fn get_call(&self) -> Option<&Call> {
+        match self {
+            Value::Call(c) => Some(c),
+            Value::Upgrade(inner) => inner.get_call(),
+            _ => None,
+        }
+    }
 }
 
 impl Display for Value {
@@ -705,6 +714,7 @@ pub enum Inst {
     Return(Value),
     Break(Break),
     Goto(usize),
+    PushTraceEntry(TraceEntry),
 }
 
 impl<'a> Display for FuncDisplayCtx<'a, &Inst> {
@@ -746,6 +756,7 @@ impl Display for Inst {
                 write!(f, "memcpy dst={} src={} size={}", dst, src, size)
             }
             Inst::Break(b) => write!(f, "{}", b),
+            Inst::PushTraceEntry(t) => write!(f, "{}", t),
         }
     }
 }
@@ -777,7 +788,7 @@ impl<'a> GetLocalsMut<'a> for Inst {
             Inst::CExternCall(c) => c.get_locals_mut(),
             Inst::IncRef(v, _) | Inst::DecRef(v, _, _) | Inst::Return(v) => v.get_locals_mut(),
             Inst::Break(b) => b.get_locals_mut(),
-            Inst::Goto(_) => vec![],
+            Inst::Goto(_) | Inst::PushTraceEntry(_) => vec![],
         }
     }
 }
@@ -809,7 +820,7 @@ impl<'a> GetLocals<'a> for Inst {
             Inst::CExternCall(c) => c.get_locals(),
             Inst::IncRef(v, _) | Inst::DecRef(v, _, _) | Inst::Return(v) => v.get_locals(),
             Inst::Break(b) => b.get_locals(),
-            Inst::Goto(_) => vec![],
+            Inst::Goto(_) | Inst::PushTraceEntry(_) => vec![],
         }
     }
 }
@@ -843,7 +854,7 @@ impl Substitutable for Inst {
             }
             Inst::Return(v) => v.apply_subst(subst),
             Inst::Break(b) => b.apply_subst(subst),
-            Inst::Free(_) | Inst::Goto(_) => {}
+            Inst::Free(_) | Inst::Goto(_) | Inst::PushTraceEntry(_) => {}
         }
     }
 }
@@ -869,6 +880,22 @@ impl Inst {
                 self,
                 Inst::Break(b) if b.operand.is_none()
             )
+    }
+
+    pub fn get_call(&self) -> Option<&Call> {
+        let value = match self {
+            Inst::Call(c) => return Some(c),
+            Inst::SetLocal(_, v) => v,
+            Inst::SetGlobal(_, v) => v,
+            Inst::SetField(sf) => &sf.value,
+            Inst::Return(v) => v,
+            Inst::IncRef(v, _) => v,
+            Inst::DecRef(v, _, _) => v,
+            Inst::Store(s) => &s.value,
+            Inst::Insert(i) => &i.value,
+            _ => return None,
+        };
+        value.get_call()
     }
 }
 
@@ -1622,6 +1649,7 @@ impl Loop {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Func {
     pub name: Path,
+    pub display_path: Path,
     pub params: Vec<Param>,
     pub locals: Vec<Local>,
     pub ty: TyScheme,
@@ -1687,6 +1715,7 @@ impl<'a> GetLocals<'a> for Func {
 impl Substitutable for Func {
     fn apply_subst(&mut self, subst: &Subst) {
         self.name.apply_subst(subst);
+        self.display_path.apply_subst(subst);
         self.ty.apply_subst(subst);
         self.params.apply_subst(subst);
         self.locals.apply_subst(subst);
@@ -1704,8 +1733,10 @@ impl Func {
         cfg: ControlFlowGraph,
         source_id: Option<NodeId>,
     ) -> Func {
+        let display_path = name.with_names_only();
         Func {
             name,
+            display_path,
             ty,
             modifiers,
             symbols,
@@ -2112,6 +2143,47 @@ impl If {
             then_label,
             else_label,
         }
+    }
+}
+
+/// Static metadata for a stack trace entry, emitted by the panic checks pass.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TraceEntry {
+    pub fn_name: String,
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl TraceEntry {
+    pub fn from_call(call: &Call, fn_name: String) -> Self {
+        let (file, line, col) = match &call.source {
+            Some(source) => (
+                source.filepath.to_string(),
+                source
+                    .span
+                    .map(|s| (s.start.lineno + 1) as u32)
+                    .unwrap_or(0),
+                source.span.map(|s| (s.start.col + 1) as u32).unwrap_or(0),
+            ),
+            None => (String::new(), 0, 0),
+        };
+        TraceEntry {
+            fn_name,
+            file,
+            line,
+            col,
+        }
+    }
+}
+
+impl Display for TraceEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "push_trace_entry fn={} file={}:{}:{},",
+            self.fn_name, self.file, self.line, self.col
+        )
     }
 }
 

@@ -154,7 +154,7 @@ impl CollectRefs for Inst {
                     operand.collect_refs(collector);
                 }
             }
-            Inst::Free(_) | Inst::If(_) | Inst::Goto(_) => {}
+            Inst::Free(_) | Inst::If(_) | Inst::Goto(_) | Inst::PushTraceEntry(_) => {}
         }
     }
 }

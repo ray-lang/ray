@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use ray_lir::{Atom, Block, Call, Func, If, Inst, IntrinsicKind, Local, Program, Size, Value};
+use ray_lir::{
+    Atom, Block, Call, Func, If, Inst, IntrinsicKind, Local, Program, Size, TraceEntry, Value,
+};
 use ray_shared::{pathlib::Path, ty::Ty};
 use ray_typing::types::TyScheme;
 
@@ -29,6 +31,9 @@ pub fn insert_panic_checks(program: &mut Program) {
             .unwrap_or_else(Ty::never);
         insert_checks_for_func(&mut program.funcs[func_idx], &panicable, &ret_ty);
     }
+    for func in &mut program.funcs {
+        insert_panic_site_traces(func);
+    }
 }
 
 fn insert_checks_for_func(func: &mut Func, panicable: &HashSet<String>, ret_ty: &Ty) {
@@ -44,6 +49,7 @@ fn insert_checks_for_func(func: &mut Func, panicable: &HashSet<String>, ret_ty: 
 /// Splits block `block_idx` at instruction index `call_pos`, inserting a
 /// flag check and branching to a fail block or a continue block.
 fn split_block_at(func: &mut Func, block_idx: usize, call_pos: usize, ret_ty: &Ty) {
+    let trace_entry = trace_entry_for_call(&func.blocks[block_idx][call_pos], func);
     let tail: Vec<Inst> = func.blocks[block_idx].drain(call_pos + 1..).collect();
 
     let flag_idx = func.locals.len();
@@ -65,6 +71,7 @@ fn split_block_at(func: &mut Func, block_idx: usize, call_pos: usize, ret_ty: &T
     func.blocks[block_idx].push(Inst::If(If::new(flag_idx, fail_label, continue_label)));
 
     let mut fail_block = Block::new(fail_label);
+    fail_block.push(Inst::PushTraceEntry(trace_entry));
     fail_block.push(Inst::Return(uninit_return(ret_ty)));
     func.blocks.push(fail_block);
 
@@ -102,7 +109,7 @@ fn uninit_return(ty: &Ty) -> Value {
 
 fn is_panic_self_managed(func: &Func) -> bool {
     func.blocks.iter().flat_map(|b| b.iter()).any(|inst| {
-        get_call(inst)
+        inst.get_call()
             .map(|c| {
                 matches!(
                     IntrinsicKind::from_path(&c.fn_name),
@@ -119,7 +126,7 @@ fn compute_panicable_set(program: &Program) -> HashSet<String> {
         .iter()
         .filter(|f| {
             f.blocks.iter().flat_map(|b| b.iter()).any(|inst| {
-                get_call(inst)
+                inst.get_call()
                     .map(|c| {
                         matches!(
                             IntrinsicKind::from_path(&c.fn_name),
@@ -143,7 +150,7 @@ fn compute_panicable_set(program: &Program) -> HashSet<String> {
                 func.blocks
                     .iter()
                     .flat_map(|b| b.iter())
-                    .any(|inst| match get_call(inst) {
+                    .any(|inst| match inst.get_call() {
                         Some(call) if call.fn_ref.is_some() => true,
                         Some(call) => panicable.contains(&call.fn_name.to_string()),
                         None => false,
@@ -169,7 +176,7 @@ fn find_panicable_call(block: &Block, panicable: &HashSet<String>) -> Option<usi
 }
 
 fn is_panicable_call(inst: &Inst, panicable: &HashSet<String>) -> bool {
-    let call = match get_call(inst) {
+    let call = match inst.get_call() {
         Some(c) => c,
         None => return false,
     };
@@ -189,10 +196,34 @@ fn is_panicable_call(inst: &Inst, panicable: &HashSet<String>) -> bool {
     panicable.contains(&call.fn_name.to_string())
 }
 
-fn get_call(inst: &Inst) -> Option<&ray_lir::Call> {
-    match inst {
-        Inst::Call(c) => Some(c),
-        Inst::SetLocal(_, Value::Call(c)) => Some(c),
-        _ => None,
+/// Insert a trace entry after every direct `panic()` call so the originating
+/// function appears as the first frame in the stack trace.
+fn insert_panic_site_traces(func: &mut Func) {
+    let fn_display_name = func.display_path.to_string();
+    let mut insertions: Vec<(usize, usize, TraceEntry)> = Vec::new();
+    for (block_idx, block) in func.blocks.iter().enumerate() {
+        for (inst_idx, inst) in block.iter().enumerate() {
+            let call = match inst.get_call() {
+                Some(c) => c,
+                None => continue,
+            };
+            if !matches!(
+                IntrinsicKind::from_path(&call.fn_name),
+                Some(IntrinsicKind::Panic)
+            ) {
+                continue;
+            }
+            let entry = TraceEntry::from_call(call, fn_display_name.clone());
+            insertions.push((block_idx, inst_idx + 1, entry));
+        }
     }
+    // Insert in reverse order so indices stay valid.
+    for (block_idx, inst_idx, entry) in insertions.into_iter().rev() {
+        func.blocks[block_idx].insert(inst_idx, Inst::PushTraceEntry(entry));
+    }
+}
+
+fn trace_entry_for_call(inst: &Inst, func: &Func) -> TraceEntry {
+    let call = inst.get_call().expect("expected a call instruction");
+    TraceEntry::from_call(call, func.display_path.to_string())
 }

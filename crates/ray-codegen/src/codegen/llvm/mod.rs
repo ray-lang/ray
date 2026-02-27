@@ -1849,8 +1849,10 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
     fn trace_entry_type(&self) -> StructType<'ctx> {
         let ptr_ty = self.lcx.ptr_type(AddressSpace::default());
         let i32_ty = self.lcx.i32_type();
-        self.lcx
-            .struct_type(&[ptr_ty.into(), ptr_ty.into(), i32_ty.into()], false)
+        self.lcx.struct_type(
+            &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
+            false,
+        )
     }
 
     /// Returns the LLVM type for the thread-local panic/recover context.
@@ -1932,6 +1934,107 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .builder
             .build_struct_gep(ctx_ty, ptr, 1, "panic_msg_ptr")?;
         self.builder.build_store(msg_ptr, msg)?;
+        Ok(())
+    }
+
+    /// Creates a null-terminated constant byte array global and returns a pointer to it.
+    fn create_cstring_global(&self, s: &str, name: &str) -> GlobalValue<'ctx> {
+        let i8_ty = self.lcx.i8_type();
+        let mut bytes: Vec<_> = s
+            .bytes()
+            .map(|b| i8_ty.const_int(b as u64, false))
+            .collect();
+        bytes.push(i8_ty.const_int(0, false)); // null terminator
+        let array_val = i8_ty.const_array(&bytes);
+        let global = self.module.add_global(
+            i8_ty.array_type(bytes.len() as u32),
+            Some(AddressSpace::default()),
+            name,
+        );
+        global.set_initializer(&array_val);
+        global.set_linkage(Linkage::Internal);
+        global.set_constant(true);
+        global
+    }
+
+    /// Pushes a stack trace entry if `trace_count < MAX_TRACE_DEPTH`.
+    ///
+    /// Emits: load count, bounds check, GEP into entries[count], store fields, increment count.
+    fn push_trace_entry(
+        &mut self,
+        fn_name_ptr: PointerValue<'ctx>,
+        file_ptr: PointerValue<'ctx>,
+        line: IntValue<'ctx>,
+        col: IntValue<'ctx>,
+    ) -> Result<(), BuilderError> {
+        let i32_ty = self.lcx.i32_type();
+        let ctx_ptr = self.get_thread_ctx_ptr();
+        let ctx_ty = self.thread_context_type();
+
+        // Load trace_count (field 2).
+        let count_ptr = self
+            .builder
+            .build_struct_gep(ctx_ty, ctx_ptr, 2, "trace_count_ptr")?;
+        let count = self
+            .builder
+            .build_load(i32_ty, count_ptr, "trace_count")?
+            .into_int_value();
+
+        // Bounds check: if count >= MAX_TRACE_DEPTH, skip.
+        let max_depth = i32_ty.const_int(MAX_TRACE_DEPTH as u64, false);
+        let is_full =
+            self.builder
+                .build_int_compare(IntPredicate::UGE, count, max_depth, "trace_full")?;
+
+        let current_fn = self.curr_fn.unwrap();
+        let push_bb = self.lcx.append_basic_block(current_fn, "trace_push");
+        let merge_bb = self.lcx.append_basic_block(current_fn, "trace_merge");
+        self.builder
+            .build_conditional_branch(is_full, merge_bb, push_bb)?;
+
+        // Push block: store the entry and increment count.
+        self.builder.position_at_end(push_bb);
+
+        // GEP into trace_entries[count].
+        let entry_ty = self.trace_entry_type();
+        let entries_ptr = self
+            .builder
+            .build_struct_gep(ctx_ty, ctx_ptr, 3, "trace_entries_ptr")?;
+        let entry_ptr = unsafe {
+            self.builder
+                .build_gep(entry_ty, entries_ptr, &[count], "trace_entry_ptr")?
+        };
+
+        // Store fn_name (field 0), file (field 1), line (field 2).
+        let fn_name_field =
+            self.builder
+                .build_struct_gep(entry_ty, entry_ptr, 0, "entry.fn_name")?;
+        self.builder.build_store(fn_name_field, fn_name_ptr)?;
+
+        let file_field = self
+            .builder
+            .build_struct_gep(entry_ty, entry_ptr, 1, "entry.file")?;
+        self.builder.build_store(file_field, file_ptr)?;
+
+        let line_field = self
+            .builder
+            .build_struct_gep(entry_ty, entry_ptr, 2, "entry.line")?;
+        self.builder.build_store(line_field, line)?;
+
+        let col_field = self
+            .builder
+            .build_struct_gep(entry_ty, entry_ptr, 3, "entry.col")?;
+        self.builder.build_store(col_field, col)?;
+
+        // Increment trace_count.
+        let one = i32_ty.const_int(1, false);
+        let new_count = self.builder.build_int_add(count, one, "trace_count_inc")?;
+        self.builder.build_store(count_ptr, new_count)?;
+
+        self.builder.build_unconditional_branch(merge_bb)?;
+
+        // Continue from merge.
+        self.builder.position_at_end(merge_bb);
         Ok(())
     }
 }
@@ -2472,6 +2575,20 @@ impl<'a, 'ctx> Codegen<LLVMCodegenCtx<'a, 'ctx>> for lir::Inst {
             }
             lir::Inst::Break(b) => b.codegen(ctx, srcmap)?,
             lir::Inst::If(if_expr) => if_expr.codegen(ctx, srcmap)?,
+            lir::Inst::PushTraceEntry(entry) => {
+                let fn_name_global = ctx.create_cstring_global(&entry.fn_name, "trace.fn");
+                let file_global = ctx.create_cstring_global(&entry.file, "trace.file");
+                let i32_ty = ctx.lcx.i32_type();
+                let line_val = i32_ty.const_int(entry.line as u64, false);
+                let col_val = i32_ty.const_int(entry.col as u64, false);
+                ctx.push_trace_entry(
+                    fn_name_global.as_pointer_value(),
+                    file_global.as_pointer_value(),
+                    line_val,
+                    col_val,
+                )?;
+                return Ok(None);
+            }
         }))
     }
 }

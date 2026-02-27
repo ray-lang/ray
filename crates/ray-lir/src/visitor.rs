@@ -53,7 +53,8 @@ where
                 | lir::Inst::If(_)
                 | lir::Inst::StructInit(_, _)
                 | lir::Inst::Break(_)
-                | lir::Inst::Goto(_) => continue,
+                | lir::Inst::Goto(_)
+                | lir::Inst::PushTraceEntry(_) => continue,
             };
 
             calls.push(inst);

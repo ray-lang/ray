@@ -702,7 +702,8 @@ impl<'p> Monomorphizer<'p> {
                 | lir::Inst::MemCopy(_, _, _)
                 | lir::Inst::If(_)
                 | lir::Inst::Break(_)
-                | lir::Inst::Goto(_) => continue,
+                | lir::Inst::Goto(_)
+                | lir::Inst::PushTraceEntry(_) => continue,
             }
         }
     }
