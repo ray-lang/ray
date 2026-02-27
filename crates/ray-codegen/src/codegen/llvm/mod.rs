@@ -45,6 +45,9 @@ use crate::codegen::{CodegenOptions, collect_symbols};
 
 use super::Codegen;
 
+/// Maximum number of stack trace entries collected during panic unwinding.
+const MAX_TRACE_DEPTH: u32 = 32;
+
 /// Extension trait for codegen methods on lir::Call
 trait CallCodegenExt<'a, 'ctx> {
     fn codegen_intrinsic(
@@ -1840,6 +1843,23 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
         Ok(last_inst)
     }
 
+    /// Returns the LLVM type for a single stack trace entry: `{ ptr, ptr, i32 }`.
+    ///
+    /// Layout: function_name (null-terminated C string), file (null-terminated C string), line.
+    fn trace_entry_type(&self) -> StructType<'ctx> {
+        let ptr_ty = self.lcx.ptr_type(AddressSpace::default());
+        let i32_ty = self.lcx.i32_type();
+        self.lcx
+            .struct_type(&[ptr_ty.into(), ptr_ty.into(), i32_ty.into()], false)
+    }
+
+    /// Returns the LLVM type for the thread-local panic/recover context.
+    ///
+    /// Layout:
+    /// - field 0: `bool` — unwinding flag
+    /// - field 1: `{ ptr, uint, uint }` — panic message (Ray string)
+    /// - field 2: `i32` — trace entry count
+    /// - field 3: `[TraceEntry; MAX_TRACE_DEPTH]` — stack trace entries
     fn thread_context_type(&self) -> StructType<'ctx> {
         let bool_ty = self.lcx.bool_type();
         // string = { raw_ptr: rawptr[u8], len: uint, char_len: uint }
@@ -1849,8 +1869,17 @@ impl<'a, 'ctx> LLVMCodegenCtx<'a, 'ctx> {
             .lcx
             .struct_type(&[raw_ptr_ty.into(), uint_ty.into(), uint_ty.into()], false);
         let i32_ty = self.lcx.i32_type();
-        self.lcx
-            .struct_type(&[bool_ty.into(), string_ty.into(), i32_ty.into()], false)
+        let trace_entry_ty = self.trace_entry_type();
+        let trace_array_ty = trace_entry_ty.array_type(MAX_TRACE_DEPTH);
+        self.lcx.struct_type(
+            &[
+                bool_ty.into(),
+                string_ty.into(),
+                i32_ty.into(),
+                trace_array_ty.into(),
+            ],
+            false,
+        )
     }
 
     fn get_thread_ctx_ptr(&self) -> PointerValue<'ctx> {
