@@ -1763,6 +1763,27 @@ impl Func {
         format!("fn {}({}) -> {}{}", self.name, params, ret_ty, preds_str)
     }
 
+    pub fn update_display_path(&mut self, type_args: &[&Ty]) {
+        if type_args.is_empty() {
+            return;
+        }
+
+        let base = self.name.with_names_only();
+        let parent = base.parent();
+        if parent.is_empty() {
+            return;
+        }
+
+        let mut display_path = parent.append_type_args(type_args.into_iter().map(|t| *t));
+        let Some(last) = base.name() else {
+            return;
+        };
+
+        display_path.append_mut(last);
+
+        self.display_path = display_path;
+    }
+
     pub fn ty_of_local(&self, loc: usize) -> Option<TyScheme> {
         self.locals.iter().find_map(|l| {
             if l.idx == loc {

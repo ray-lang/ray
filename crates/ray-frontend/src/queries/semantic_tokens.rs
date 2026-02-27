@@ -13,7 +13,7 @@ use ray_shared::file_id::FileId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    queries::parse::parse_file,
+    queries::parse::parse_file_raw,
     query::{Database, Query},
 };
 
@@ -29,7 +29,7 @@ pub struct SemanticTokens {
 
 /// Produces semantic tokens for a file.
 ///
-/// Depends on `parse_file` to obtain the raw (untransformed) AST and source
+/// Depends on `parse_file_raw` to obtain the raw (untransformed) AST and source
 /// map. Using the raw AST avoids walking synthetic nodes introduced by
 /// `file_ast` transformations (desugaring, shorthand expansion, etc.) which
 /// may lack proper source spans.
@@ -43,7 +43,7 @@ pub struct SemanticTokens {
 /// as `Method` when appropriate.
 #[query]
 pub fn semantic_tokens(db: &Database, file_id: FileId) -> Arc<SemanticTokens> {
-    let parse_result = parse_file(db, file_id);
+    let parse_result = parse_file_raw(db, file_id);
     let tokens = core_semantic_tokens::collect(&parse_result.ast, &parse_result.source_map);
     Arc::new(SemanticTokens { data: tokens })
 }

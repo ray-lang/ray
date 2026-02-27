@@ -3034,7 +3034,7 @@ impl LirGen<GenResult>
     )
 {
     fn lir_gen(&self, ctx: &mut GenCtx<'_>) -> RayResult<GenResult> {
-        let &(func, fn_ty, base_override, impl_ty_args) = self;
+        let &(func, fn_ty, base_override, impl_type_args) = self;
 
         ctx.with_builder(Builder::new());
 
@@ -3109,15 +3109,8 @@ impl LirGen<GenResult>
         func.locals = locals;
         func.blocks = blocks;
 
-        if let Some(impl_ty_args) = impl_ty_args {
-            let base = func.name.with_names_only();
-            let parent = base.parent();
-            if !parent.is_empty() {
-                func.display_path = parent.append_type_args(impl_ty_args.iter().map(|t| *t));
-                if let Some(last) = base.name() {
-                    func.display_path.append_mut(last);
-                }
-            }
+        if let Some(impl_type_args) = impl_type_args {
+            func.update_display_path(impl_type_args);
         }
 
         ctx.new_func(func);

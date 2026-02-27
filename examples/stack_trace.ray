@@ -1,3 +1,15 @@
+struct Point {
+    x: i32
+    y: i32
+}
+
+impl object Point {
+    fn panics(self: &Point) {
+        panic(f"panic inside of point: ({self.x}, {self.y})")
+    }
+}
+
 fn main() {
-    panic("hello, world")
+    p = Point { x: 10, y: 20 }
+    p.panics()
 }

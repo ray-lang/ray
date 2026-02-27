@@ -9,6 +9,9 @@
     "lldb.verboseLogging": true,
     "ray.cliPath": "/Users/jjacobson/code/ray/ray-lang/ray/target/debug/ray",
     "ray.toolchainPath": "/Users/jjacobson/code/ray/ray-lang/ray/.ray",
+    "ray.extraEnv": {
+        "RUST_BACKTRACE": "1",
+    },
     "rust-analyzer.cargo.extraEnv": {
         "LLVM_SYS_211_PREFIX": "${workspaceFolder}/.local/llvm",
         "LLVM_SYS_CONFIG_PATH": "${workspaceFolder}/.local/llvm/bin/llvm-config",
