@@ -523,6 +523,7 @@ pub fn ty_of(db: &Database, node_id: NodeId) -> Option<Ty> {
 mod tests {
     use std::collections::HashMap;
 
+    use ray_core::ast::{Expr, WalkItem, walk_file};
     use ray_shared::{
         def::{DefId, DefKind},
         node_id::NodeId,
@@ -2120,6 +2121,164 @@ fn foo() -> bool => true
 
         // Should return None for a non-existent node
         assert!(ty.is_none(), "Should return None for an invalid NodeId");
+    }
+
+    #[test]
+    fn ty_of_call_to_never_returning_fn_is_never() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // `fail` returns `never`; `caller` discards the result of calling it.
+        let source = r#"
+fn fail(x: bool) -> never {
+    fail(x)
+}
+
+fn caller() {
+    fail(true)
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+        assert!(
+            result.errors.is_empty(),
+            "expected no type errors, but found: {:?}",
+            result.errors
+        );
+
+        // Find the call node
+        let mut found_call_node = false;
+        for item in walk_file(&file_result.ast) {
+            let WalkItem::Expr(expr_node) = item else {
+                continue;
+            };
+
+            let Expr::Call(call) = &expr_node.value else {
+                continue;
+            };
+
+            let Some(callee_name) = call.callee.get_name() else {
+                continue;
+            };
+
+            if !callee_name.ends_with("fail") {
+                continue;
+            }
+
+            found_call_node = true;
+            let call_ty = ty_of(&db, expr_node.id).expect("could not find type of call node");
+
+            // The call expression `fail(true)` inside `caller` should have type `never`.
+            assert_eq!(
+                call_ty,
+                Ty::Never,
+                "call to a `(bool) -> never` function should produce Ty::Never; got: {}",
+                call_ty
+            );
+        }
+
+        assert!(found_call_node, "could not find the `fail` call node");
+    }
+
+    #[test]
+    fn ty_of_call_to_never_returning_fn_inside_if_body_is_never() {
+        let db = Database::new();
+
+        let mut workspace = WorkspaceSnapshot::new();
+        let module_path = ModulePath::from("mymodule");
+        let file_id = workspace.add_file(FilePath::from("mymodule/mod.ray"), module_path.clone());
+        db.set_input::<WorkspaceSnapshot>((), workspace);
+        setup_empty_libraries(&db);
+
+        // `fail` returns `never`; `caller` calls it inside an if-without-else.
+        // The call expression must still have type `never` even though the
+        // enclosing if expression has type unit.
+        let source = r#"
+fn fail(x: bool) -> never {
+    fail(x)
+}
+
+fn caller(cond: bool) {
+    if cond {
+        fail(true)
+    }
+}
+"#;
+        FileSource::new(&db, file_id, source.to_string());
+        FileMetadata::new(
+            &db,
+            file_id,
+            FilePath::from("mymodule/mod.ray"),
+            module_path.clone(),
+        );
+
+        let file_result = file_ast(&db, file_id);
+        let caller_def = file_result
+            .defs
+            .iter()
+            .find(|d| matches!(d.kind, DefKind::Function { .. }) && d.name == "caller")
+            .expect("Should have caller function");
+
+        let group_id = binding_group_for_def(&db, caller_def.def_id).unwrap();
+        let result = typecheck_group(&db, group_id);
+        assert!(
+            result.errors.is_empty(),
+            "expected no type errors, but found: {:?}",
+            result.errors
+        );
+
+        let mut found_call_node = false;
+        for item in walk_file(&file_result.ast) {
+            let WalkItem::Expr(expr_node) = item else {
+                continue;
+            };
+
+            let Expr::Call(call) = &expr_node.value else {
+                continue;
+            };
+
+            let Some(callee_name) = call.callee.get_name() else {
+                continue;
+            };
+
+            if !callee_name.ends_with("fail") {
+                continue;
+            }
+
+            found_call_node = true;
+            let call_ty = ty_of(&db, expr_node.id).expect("could not find type of call node");
+
+            // The call `fail(true)` inside the if body should have type `never`,
+            // not `unit`, even though the if expression itself has type unit.
+            assert_eq!(
+                call_ty,
+                Ty::Never,
+                "call to a `(bool) -> never` function inside if body should produce Ty::Never; got: {}",
+                call_ty
+            );
+        }
+
+        assert!(found_call_node, "could not find the `fail` call node");
     }
 
     // ====================================================================

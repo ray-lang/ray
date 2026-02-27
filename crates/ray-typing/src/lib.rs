@@ -1281,6 +1281,11 @@ fn solve_node(
         residuals.extend(child_residuals);
     }
 
+    // Commit subtype constraints after children are solved so that bindings
+    // established during child solving are visible when unifying sub/super types.
+    let subtype_result = term_solver::solve_subtypes(&node.wanteds, subst);
+    errors.extend(subtype_result.errors);
+
     let goal_result = goal_solver::solve_constraints(&residuals, &solve_env.givens, subst, ctx);
     goal_result.unsolved
 }

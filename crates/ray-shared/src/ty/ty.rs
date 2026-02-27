@@ -359,6 +359,7 @@ impl Ty {
             "string" => Ty::string(),
             "char" => Ty::char(),
             "bool" => Ty::bool(),
+            "never" => Ty::Never,
             "rawptr" => Ty::rawptr(Ty::Never),
             _ => return None,
         })

@@ -1,0 +1,12 @@
+test "pass test" {
+    assert(true)
+    assert(1 == 1)
+}
+
+test "fail test" {
+    fail("expected failure")
+}
+
+test "panic propagates" {
+    panic("should be caught")
+}

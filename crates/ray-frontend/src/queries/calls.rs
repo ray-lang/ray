@@ -190,6 +190,12 @@ fn get_value() -> int => 42
     fn call_resolution_for_binary_op() {
         // Define Add trait with operator method
         let source = r#"
+trait Int['a] {
+    default (int)
+}
+
+impl Int[int] {}
+
 trait Add['a, 'b, 'c] {
     fn +(a: 'a, b: 'b) -> 'c
 }

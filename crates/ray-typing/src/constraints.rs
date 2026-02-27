@@ -111,6 +111,24 @@ impl EqConstraint {
     }
 }
 
+/// Subtype constraint `sub <: sup`.
+///
+/// Succeeds when `sub` is `never` (bottom type), `sup` is `any` (top type),
+/// or `sub` and `sup` unify exactly. Used for positions where a value need
+/// only be *compatible with* the target type rather than identical to it
+/// (e.g. function body vs. declared return type).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SubtypeConstraint {
+    pub sub: Ty,
+    pub sup: Ty,
+}
+
+impl SubtypeConstraint {
+    pub fn new(sub: Ty, sup: Ty) -> Self {
+        SubtypeConstraint { sub, sup }
+    }
+}
+
 /// Directional ref coercion constraint: `from` can be used where `to` is expected.
 ///
 /// Allows `*mut T` → `*T` coercion (temporary weakening at call sites) but
@@ -349,6 +367,7 @@ impl Predicate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstraintKind {
     Eq(EqConstraint),
+    Subtype(SubtypeConstraint),
     RefCoerce(RefCoerceConstraint),
     Instantiate(InstantiateConstraint),
     ResolveMember(ResolveMemberConstraint),
@@ -371,6 +390,13 @@ impl Constraint {
     pub fn eq(lhs: Ty, rhs: Ty, info: TypeSystemInfo) -> Self {
         Constraint {
             kind: ConstraintKind::Eq(EqConstraint::new(lhs, rhs)),
+            info,
+        }
+    }
+
+    pub fn subtype(sub: Ty, sup: Ty, info: TypeSystemInfo) -> Self {
+        Constraint {
+            kind: ConstraintKind::Subtype(SubtypeConstraint::new(sub, sup)),
             info,
         }
     }
@@ -456,6 +482,7 @@ impl Constraint {
             ConstraintKind::HasField(h) => Some(Predicate::HasField(h.clone())),
             ConstraintKind::Recv(r) => Some(Predicate::Recv(r.clone())),
             ConstraintKind::Eq(_)
+            | ConstraintKind::Subtype(_)
             | ConstraintKind::RefCoerce(_)
             | ConstraintKind::Instantiate(_)
             | ConstraintKind::ResolveMember(_) => None,
@@ -481,6 +508,10 @@ impl Constraint {
             ConstraintKind::Eq(eq) => {
                 eq.lhs.free_ty_vars(out);
                 eq.rhs.free_ty_vars(out);
+            }
+            ConstraintKind::Subtype(st) => {
+                st.sub.free_ty_vars(out);
+                st.sup.free_ty_vars(out);
             }
             ConstraintKind::RefCoerce(rc) => {
                 rc.free_ty_vars(out);
@@ -570,6 +601,13 @@ impl Substitutable for Predicate {
     }
 }
 
+impl Substitutable for SubtypeConstraint {
+    fn apply_subst(&mut self, subst: &Subst) {
+        self.sub.apply_subst(subst);
+        self.sup.apply_subst(subst);
+    }
+}
+
 impl Substitutable for RefCoerceConstraint {
     fn apply_subst(&mut self, subst: &Subst) {
         self.from.apply_subst(subst);
@@ -581,6 +619,7 @@ impl Substitutable for ConstraintKind {
     fn apply_subst(&mut self, subst: &Subst) {
         match self {
             ConstraintKind::Eq(c) => c.apply_subst(subst),
+            ConstraintKind::Subtype(c) => c.apply_subst(subst),
             ConstraintKind::RefCoerce(c) => c.apply_subst(subst),
             ConstraintKind::Instantiate(c) => c.apply_subst(subst),
             ConstraintKind::ResolveMember(c) => c.apply_subst(subst),
@@ -602,6 +641,7 @@ impl std::fmt::Display for ConstraintKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConstraintKind::Eq(eq) => write!(f, "{}", eq),
+            ConstraintKind::Subtype(st) => write!(f, "{}", st),
             ConstraintKind::RefCoerce(rc) => write!(f, "{}", rc),
             ConstraintKind::Instantiate(inst) => write!(f, "{}", inst),
             ConstraintKind::ResolveMember(member) => write!(f, "{}", member),
@@ -653,6 +693,12 @@ impl std::fmt::Display for RecvPredicate {
 impl std::fmt::Display for EqConstraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} == {}", self.lhs, self.rhs)
+    }
+}
+
+impl std::fmt::Display for SubtypeConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} <: {}", self.sub, self.sup)
     }
 }
 

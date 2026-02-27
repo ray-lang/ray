@@ -452,6 +452,11 @@ fn generate_test_harness(
     let load_message_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(string_ty.clone())));
     let clear_unwinding_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit())));
 
+    // Retain panic intrinsic externs through tree-shake
+    main_symbols.insert(Path::from("__panic_is_unwinding"));
+    main_symbols.insert(Path::from("__panic_load_message"));
+    main_symbols.insert(Path::from("__panic_clear_unwinding"));
+
     // For each test function
     for (test_name, test_path) in &test_functions {
         // Print "test: {name} ... "
@@ -7092,8 +7097,8 @@ test "basic addition" {
         );
         assert_eq!(
             test_func.ty,
-            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool()))),
-            "test function should return bool"
+            TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit()))),
+            "test function should return ()"
         );
     }
 
@@ -7140,50 +7145,6 @@ test "third" {
             test_funcs[2].name.to_string().contains("__test_2_third"),
             "expected third test to be named __test_2_third, got {}",
             test_funcs[2].name
-        );
-    }
-
-    #[test]
-    fn test_function_has_flag_checks() {
-        let src = r#"
-test "with statements" {
-    x = 1u32
-    y = 2u32
-}
-"#;
-
-        let (db, _file_id) = setup_test_workspace_test_mode(src);
-        let (prog, _) = generate(&db, false).expect("lir generation should succeed");
-
-        let test_func = prog
-            .funcs
-            .iter()
-            .find(|f| f.is_test)
-            .expect("expected test function");
-
-        // The test function should have multiple blocks due to flag checks:
-        // entry block → body block → (for each stmt: check block → return/continue blocks)
-        // With 2 statements, we expect at least 6 blocks:
-        // entry, body, check1, return1, continue1, check2, return2, continue2, exit
-        assert!(
-            test_func.blocks.len() >= 6,
-            "expected at least 6 blocks (flag checks after each statement), got {}\n--- LIR Program ---\n{}",
-            test_func.blocks.len(),
-            prog
-        );
-
-        // Verify there are Inst::If instructions (flag checks)
-        let if_count = test_func
-            .blocks
-            .iter()
-            .flat_map(|b| b.iter())
-            .filter(|inst| matches!(inst, Inst::If(_)))
-            .count();
-        assert!(
-            if_count >= 2,
-            "expected at least 2 flag checks (one per statement), got {}\n--- LIR Program ---\n{}",
-            if_count,
-            prog
         );
     }
 

@@ -2,9 +2,14 @@
 //!
 //! Auto-imported for files containing test blocks.
 
-/// Asserts that `cond` is true. On failure, marks the test as failed
-/// and stops execution of the current test.
-@intrinsic extern fn assert(cond: bool)
-
 /// Explicitly fails the current test with a message.
-@intrinsic extern fn fail(msg: string)
+fn fail(msg: string) -> never {
+    panic(msg)
+}
+
+/// Asserts that `cond` is true. On failure, fails the test.
+fn assert(cond: bool) {
+    if !cond {
+        fail("assertion failed")
+    }
+}

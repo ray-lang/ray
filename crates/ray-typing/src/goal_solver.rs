@@ -186,9 +186,12 @@ pub fn solve_constraints(
         for c in &worklist {
             let mut constraint = c.clone();
             constraint.apply_subst(subst);
-            // Equality constraints should have been handled by the term
-            // solver; we ignore any stragglers here.
-            if matches!(&constraint.kind, ConstraintKind::Eq(_)) {
+            // Equality and subtype constraints should have been handled by the
+            // term solver; we ignore any stragglers here.
+            if matches!(
+                &constraint.kind,
+                ConstraintKind::Eq(_) | ConstraintKind::Subtype(_)
+            ) {
                 continue;
             }
 

@@ -97,7 +97,11 @@ pub fn unify(
     rhs.apply_subst(&global_subst);
 
     match (lhs, rhs) {
-        // Bottom type `never` unifies with anything without constraining it.
+        // Bottom type `never` unifies with a type variable by binding the variable.
+        (Ty::Never, Ty::Var(v)) | (Ty::Var(v), Ty::Never) => {
+            bind_var(v, Ty::Never, &mut subst, info)?;
+        }
+        // Bottom type `never` unifies with any concrete type (never is a subtype of all types).
         (Ty::Never, _) | (_, Ty::Never) => { /* ignore */ }
 
         // Top-like type `any` unifies with anything, without adding constraints.

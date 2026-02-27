@@ -863,10 +863,13 @@ fn generate_constraints_for_expr(
                     param_tys.push(param_ty);
                 }
                 let body_ty = ctx.expr_ty_or_fresh(*body);
-                let fn_ty = Ty::func(param_tys, body_ty.clone());
+                let ret_meta = ctx.fresh_meta();
+                let fn_ty = Ty::func(param_tys, ret_meta.clone());
 
                 node.wanteds
                     .push(Constraint::eq(expr_ty, fn_ty, info.clone()));
+                node.wanteds
+                    .push(Constraint::subtype(body_ty.clone(), ret_meta, info.clone()));
 
                 ctx.push_fn_ret(body_ty.clone());
 
@@ -1626,10 +1629,14 @@ fn generate_constraints_for_expr(
                     node.wanteds
                         .push(Constraint::eq(expr_ty, then_ty, info.clone()));
                 } else {
-                    // No else-branch: require that the then-branch has type
-                    // unit and that the whole expression is unit.
-                    node.wanteds
-                        .push(Constraint::eq(then_ty.clone(), Ty::unit(), info.clone()));
+                    // No else-branch: the whole expression has type unit.
+                    // The then-branch must be a subtype of unit, not equal to
+                    // it, so that `never`-typed branches are valid.
+                    node.wanteds.push(Constraint::subtype(
+                        then_ty.clone(),
+                        Ty::unit(),
+                        info.clone(),
+                    ));
                     node.wanteds
                         .push(Constraint::eq(expr_ty, Ty::unit(), info.clone()));
                 }

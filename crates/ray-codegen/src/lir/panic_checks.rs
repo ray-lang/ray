@@ -53,10 +53,12 @@ fn split_block_at(func: &mut Func, block_idx: usize, call_pos: usize, ret_ty: &T
     let fail_label = func.blocks.len();
     let continue_label = fail_label + 1;
 
+    let is_unwinding_path = Path::from("__panic_is_unwinding");
+    func.symbols.insert(is_unwinding_path.clone());
     let check_call = Call::new(
-        Path::from("__panic_is_unwinding"),
+        is_unwinding_path,
         vec![],
-        TyScheme::from(Ty::bool()),
+        TyScheme::from(Ty::Func(vec![], Box::new(Ty::bool()))),
         None,
     );
     func.blocks[block_idx].push(Inst::SetLocal(flag_idx, Value::Call(check_call)));
