@@ -344,10 +344,6 @@ fn main() {
 
     build.compile("lldwrapper");
 
-    if cfg!(feature = "no-llvm-linking") {
-        return;
-    }
-
     let libdir = llvm_config("--libdir");
 
     // Export information to other crates
@@ -362,16 +358,19 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", &flag[2..]);
     }
 
-    // Link LLVM libraries
     println!("cargo:rustc-link-search=native={}", libdir);
-    let blacklist = vec!["LLVMLineEditor"];
-    for name in get_link_libraries().iter().filter(|n| {
-        blacklist
-            .iter()
-            .find(|blacklisted| n.contains(**blacklisted))
-            .is_none()
-    }) {
-        println!("cargo:rustc-link-lib=static={}", name);
+
+    if !cfg!(feature = "no-llvm-linking") {
+        // Link LLVM libraries
+        let blacklist = vec!["LLVMLineEditor"];
+        for name in get_link_libraries().iter().filter(|n| {
+            blacklist
+                .iter()
+                .find(|blacklisted| n.contains(**blacklisted))
+                .is_none()
+        }) {
+            println!("cargo:rustc-link-lib=static={}", name);
+        }
     }
 
     // Add platform-specific system library search paths (mirrors llvm-sys behavior)
