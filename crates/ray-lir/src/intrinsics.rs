@@ -207,6 +207,7 @@ pub enum IntrinsicKind {
     PanicIsUnwinding,
     PanicClearUnwinding,
     PanicLoadMessage,
+    PanicPrintTrace,
 }
 
 impl IntrinsicKind {
@@ -415,6 +416,7 @@ impl IntrinsicKind {
             "__panic_is_unwinding" => Some(Self::PanicIsUnwinding),
             "__panic_clear_unwinding" => Some(Self::PanicClearUnwinding),
             "__panic_load_message" => Some(Self::PanicLoadMessage),
+            "__panic_print_trace" => Some(Self::PanicPrintTrace),
             _ => None,
         }
     }

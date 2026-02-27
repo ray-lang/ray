@@ -186,6 +186,7 @@ fn is_panicable_call(inst: &Inst, panicable: &HashSet<String>) -> bool {
             IntrinsicKind::PanicIsUnwinding
                 | IntrinsicKind::PanicClearUnwinding
                 | IntrinsicKind::PanicLoadMessage
+                | IntrinsicKind::PanicPrintTrace
         )
     ) {
         return false;

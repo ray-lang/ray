@@ -12,6 +12,7 @@ import string with string
 @intrinsic extern fn __panic_is_unwinding() -> bool
 @intrinsic extern fn __panic_clear_unwinding()
 @intrinsic extern fn __panic_load_message() -> string
+@intrinsic extern fn __panic_print_trace()
 
 /// Executes `body`. If it completes normally, returns `ok(value)`.
 /// If it panics, catches the panic and returns `err(msg)`.

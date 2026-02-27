@@ -5,7 +5,7 @@ LLVM_SYS_CONFIG_PATH := $(LLVM_SYS_211_PREFIX)/bin/llvm-config
 export LLVM_SYS_211_PREFIX
 export LLVM_SYS_CONFIG_PATH
 
-.PHONY: build build-release core dev-toolchain release-toolchain vscode-ext wasi-malloc install-llvm
+.PHONY: build build-release core dev-toolchain release-toolchain vscode-ext wasi-builtins install-llvm
 
 build:
 	@cargo build
@@ -42,8 +42,8 @@ vscode-ext:
 	@echo "==> packaging extension VSIX"
 	@cd editors/vscode && vsce package --skip-license
 
-wasi-malloc:
-	@scripts/build-wasi-malloc.sh
+wasi-builtins:
+	@scripts/build-wasi-builtins.sh
 
 install-llvm:
 	@if [ -d "$(LLVM_SYS_211_PREFIX)/bin" ]; then \

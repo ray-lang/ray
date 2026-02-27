@@ -316,6 +316,10 @@ pub fn monomorphize(program: &mut lir::Program) {
 }
 
 /// Generate the normal `_start` function body that calls module mains and user main.
+///
+/// After the user main call, checks the unwinding flag. If a panic propagated
+/// to the top level, prints the panic message and stack trace to stderr, then
+/// exits with code 1.
 fn generate_normal_start(
     ctx: &mut GenCtx,
     libs: &[lir::Program],
@@ -324,53 +328,159 @@ fn generate_normal_start(
     user_main_resolved_path: &Option<Path>,
     main_symbols: &mut lir::SymbolSet,
 ) {
-    ctx.with_new_block(|ctx| {
-        // call all the main functions from the libs first
-        let mut main_funcs = libs
-            .iter()
-            .map(|l| l.module_main_path())
-            .collect::<Vec<_>>();
+    // Resolve well-known functions through the query system.
+    let (puts_path, puts_ty) =
+        ctx.resolve_target_from_path(ItemPath::new("core::io", vec!["puts".into()]));
 
-        // then call _this_ module's main function
-        main_funcs.push(module_main_path.clone());
+    let (proc_exit_path, proc_exit_ty) =
+        ctx.resolve_target_from_path(ItemPath::new("core::process", vec!["proc_exit".into()]));
 
-        // generate calls
-        for main in main_funcs {
-            log::debug!("calling main function: {}", main);
-            main_symbols.insert(main.clone());
-            ctx.push(
-                lir::Call::new(
-                    main,
-                    vec![],
-                    Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                    None,
-                )
-                .into(),
-            );
-        }
+    let string_ty = ctx.string_ty();
+    let unit_fn_ty: TyScheme = Ty::Func(vec![], Box::new(Ty::unit())).into();
+    let is_unwinding_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+    let load_message_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(string_ty)));
+    let print_trace_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit())));
 
-        if let Some((user_main_path, user_main_ty)) = user_main_info {
-            log::debug!("calling user main function: {}", user_main_path);
-            main_symbols.insert(user_main_path.clone());
-            ctx.push(
-                lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None).into(),
-            );
-        } else if let Some(user_main_path) = user_main_resolved_path {
-            log::debug!("calling user main function: {}", user_main_path);
-            main_symbols.insert(user_main_path.clone());
-            ctx.push(
-                lir::Call::new(
-                    user_main_path.clone(),
-                    vec![],
-                    Ty::Func(vec![], Box::new(Ty::unit())).into(),
-                    None,
-                )
-                .into(),
-            );
-        }
+    // Retain panic intrinsic externs through tree-shake
+    main_symbols.insert(Path::from("__panic_is_unwinding"));
+    main_symbols.insert(Path::from("__panic_load_message"));
+    main_symbols.insert(Path::from("__panic_print_trace"));
 
-        ctx.ret(lir::Value::Empty);
-    });
+    // Entry block
+    let entry_block = ctx.new_block();
+    ctx.use_block(entry_block);
+
+    // Call all the main functions from the libs first, then this module's main
+    let main_funcs: Vec<Path> = libs
+        .iter()
+        .map(|l| l.module_main_path())
+        .chain(std::iter::once(module_main_path.clone()))
+        .collect();
+    for main in &main_funcs {
+        log::debug!("calling main function: {}", main);
+        main_symbols.insert(main.clone());
+        ctx.push(lir::Call::new(main.clone(), vec![], unit_fn_ty.clone(), None).into());
+    }
+
+    // Call user main
+    if let Some((user_main_path, user_main_ty)) = user_main_info {
+        log::debug!("calling user main function: {}", user_main_path);
+        main_symbols.insert(user_main_path.clone());
+        ctx.push(lir::Call::new(user_main_path.clone(), vec![], user_main_ty.clone(), None).into());
+    } else if let Some(user_main_path) = user_main_resolved_path {
+        log::debug!("calling user main function: {}", user_main_path);
+        main_symbols.insert(user_main_path.clone());
+        ctx.push(
+            lir::Call::new(
+                user_main_path.clone(),
+                vec![],
+                Ty::Func(vec![], Box::new(Ty::unit())).into(),
+                None,
+            )
+            .into(),
+        );
+    }
+
+    // Check the unwinding flag after user main returns
+    let flag_loc = ctx.local(TyScheme::from_mono(Ty::bool()));
+    ctx.set_local(
+        flag_loc,
+        lir::Call::new(
+            Path::from("__panic_is_unwinding"),
+            vec![],
+            is_unwinding_ty,
+            None,
+        )
+        .into(),
+    );
+
+    let fail_block = ctx.new_block();
+    let ok_block = ctx.new_block();
+    ctx.cond(flag_loc, fail_block, ok_block);
+
+    // Fail block: print panic message + trace, then exit(1)
+    ctx.use_block(fail_block);
+
+    // puts("panic: ")
+    let panic_prefix_loc = ctx.emit_string_literal("panic: ");
+    main_symbols.insert(puts_path.clone());
+    ctx.push(
+        lir::Call::new(
+            puts_path.clone(),
+            vec![lir::Variable::Local(panic_prefix_loc)],
+            puts_ty.clone(),
+            None,
+        )
+        .into(),
+    );
+
+    // puts(__panic_load_message())
+    let msg_ty = ctx.string_ty();
+    let msg_loc = ctx.local(TyScheme::from_mono(msg_ty));
+    ctx.set_local(
+        msg_loc,
+        lir::Call::new(
+            Path::from("__panic_load_message"),
+            vec![],
+            load_message_ty,
+            None,
+        )
+        .into(),
+    );
+    ctx.push(
+        lir::Call::new(
+            puts_path.clone(),
+            vec![lir::Variable::Local(msg_loc)],
+            puts_ty.clone(),
+            None,
+        )
+        .into(),
+    );
+
+    // puts("\n")
+    let newline_loc = ctx.emit_string_literal("\n");
+    ctx.push(
+        lir::Call::new(
+            puts_path,
+            vec![lir::Variable::Local(newline_loc)],
+            puts_ty,
+            None,
+        )
+        .into(),
+    );
+
+    // __panic_print_trace()
+    ctx.push(
+        lir::Call::new(
+            Path::from("__panic_print_trace"),
+            vec![],
+            print_trace_ty,
+            None,
+        )
+        .into(),
+    );
+
+    // proc_exit(1)
+    let exit_code_loc = ctx.local(TyScheme::from_mono(Ty::int()));
+    ctx.set_local(
+        exit_code_loc,
+        lir::Atom::IntConst(1, lir::Size::ptr()).into(),
+    );
+    main_symbols.insert(proc_exit_path.clone());
+    ctx.push(
+        lir::Call::new(
+            proc_exit_path,
+            vec![lir::Variable::Local(exit_code_loc)],
+            proc_exit_ty,
+            None,
+        )
+        .into(),
+    );
+    ctx.ret(lir::Value::Empty);
+
+    // Ok block: normal exit
+    ctx.use_block(ok_block);
+    ctx.ret(lir::Value::Empty);
 }
 
 /// Generate the test harness `_start` function body.
@@ -387,34 +497,18 @@ fn generate_test_harness(
     main_symbols: &mut lir::SymbolSet,
 ) {
     // Resolve well-known functions through the query system.
-    let puts_item = ItemPath::new("core::io", vec!["puts".into()]);
-    let puts_target = def_for_path(ctx.db, puts_item.clone()).expect("core::io::puts not found");
-    let puts_scheme = def_scheme(ctx.db, puts_target).expect("core::io::puts has no type scheme");
-    let puts_path = mangle::fn_name(&puts_item.to_path(), &puts_scheme);
-    let puts_ty = puts_scheme;
+    let (puts_path, puts_ty) =
+        ctx.resolve_target_from_path(ItemPath::new("core::io", vec!["puts".into()]));
 
     let print_item = ItemPath::new("core::io", vec!["print".into()]);
-    let print_target = def_for_path(ctx.db, print_item.clone()).expect("core::io::print not found");
-    let print_poly_ty =
-        def_scheme(ctx.db, print_target).expect("core::io::print has no type scheme");
+    let (_, print_poly_ty) = ctx.resolve_target_from_path(print_item.clone());
     let print_mono_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
     let print_mono_path = print_item
         .to_path()
         .append_func_type(vec![Ty::int()], Ty::unit());
 
-    let proc_exit_item = ItemPath::new("core::process", vec!["proc_exit".into()]);
-    let proc_exit_target =
-        def_for_path(ctx.db, proc_exit_item.clone()).expect("core::process::proc_exit not found");
-    let proc_exit_scheme =
-        def_scheme(ctx.db, proc_exit_target).expect("core::process::proc_exit has no type scheme");
-    let proc_exit_fqn = proc_exit_item.to_path();
-    let proc_exit_path = if ctx.is_extern(&proc_exit_fqn) {
-        ctx.extern_link_name(&proc_exit_fqn)
-            .unwrap_or_else(|| proc_exit_fqn)
-    } else {
-        mangle::fn_name(&proc_exit_fqn, &proc_exit_scheme)
-    };
-    let proc_exit_ty = proc_exit_scheme;
+    let (proc_exit_path, proc_exit_ty) =
+        ctx.resolve_target_from_path(ItemPath::new("core::process", vec!["proc_exit".into()]));
 
     let test_functions = ctx.test_functions.clone();
     let unit_fn_ty: TyScheme = Ty::Func(vec![], Box::new(Ty::unit())).into();
@@ -2804,6 +2898,21 @@ impl<'a> GenCtx<'a> {
             }
         }
     }
+
+    fn resolve_target_from_path(&self, path: ItemPath) -> (Path, TyScheme) {
+        let target =
+            def_for_path(self.db, path.clone()).unwrap_or_else(|| panic!("{} not found", path));
+        let ty =
+            def_scheme(self.db, target).unwrap_or_else(|| panic!("{} has no type scheme", path));
+        let fqn = path.to_path();
+        let mangled_path = if self.is_extern(&fqn) {
+            self.extern_link_name(&fqn).unwrap_or_else(|| fqn)
+        } else {
+            mangle::fn_name(&fqn, &ty)
+        };
+
+        (mangled_path, ty)
+    }
 }
 
 pub type GenResult = lir::Value;
@@ -4984,8 +5093,6 @@ impl LirGen<GenResult> for Node<Decl> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use ray_frontend::{
         queries::{
             defs::{StructDef, StructField},
@@ -5014,6 +5121,119 @@ mod tests {
         source: String,
     }
 
+    /// Build a stub core library with the minimum definitions needed by `_start`
+    /// generation: `string`, `puts`, `proc_exit`, and the panic intrinsics.
+    fn stub_core_library() -> LoadedLibraries {
+        let mut core_lib = LibraryData::default();
+        core_lib.modules.push(ModulePath::from("core"));
+        core_lib.modules.push(ModulePath::from("core::io"));
+        core_lib.modules.push(ModulePath::from("core::process"));
+        core_lib.modules.push(ModulePath::from("core::panic"));
+
+        // string struct
+        let string_def_id = LibraryDefId {
+            module: ModulePath::from("core"),
+            index: 0,
+        };
+        let string_path = ItemPath::new("core", vec!["string".into()]);
+        let string_ty = TyScheme::from_mono(Ty::Func(
+            vec![Ty::rawptr(Ty::u8()), Ty::uint(), Ty::uint()],
+            Box::new(Ty::string()),
+        ));
+        core_lib.register_name(string_path.clone(), string_def_id.clone());
+        core_lib
+            .schemes
+            .insert(string_def_id.clone(), string_ty.clone());
+        core_lib.structs.insert(
+            string_def_id.clone(),
+            StructDef {
+                target: DefTarget::Library(string_def_id),
+                path: string_path,
+                ty: string_ty,
+                fields: vec![
+                    StructField {
+                        name: "raw_ptr".to_string(),
+                        ty: TyScheme::from_mono(Ty::rawptr(Ty::u8())),
+                    },
+                    StructField {
+                        name: "len".to_string(),
+                        ty: TyScheme::from_mono(Ty::uint()),
+                    },
+                    StructField {
+                        name: "char_len".to_string(),
+                        ty: TyScheme::from_mono(Ty::uint()),
+                    },
+                ],
+            },
+        );
+
+        // puts
+        let puts_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 0,
+        };
+        let puts_path = ItemPath::new("core::io", vec!["puts".into()]);
+        let puts_ty = TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::unit())));
+        core_lib.register_name(puts_path, puts_def_id.clone());
+        core_lib.schemes.insert(puts_def_id, puts_ty);
+
+        // proc_exit
+        let proc_exit_def_id = LibraryDefId {
+            module: ModulePath::from("core::process"),
+            index: 0,
+        };
+        let proc_exit_path = ItemPath::new("core::process", vec!["proc_exit".into()]);
+        let proc_exit_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
+        core_lib.register_name(proc_exit_path, proc_exit_def_id.clone());
+        core_lib.schemes.insert(proc_exit_def_id, proc_exit_ty);
+
+        // panic intrinsics
+        let is_unwinding_def_id = LibraryDefId {
+            module: ModulePath::from("core::panic"),
+            index: 0,
+        };
+        let is_unwinding_path = ItemPath::new("core::panic", vec!["__panic_is_unwinding".into()]);
+        let is_unwinding_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::bool())));
+        core_lib.register_name(is_unwinding_path, is_unwinding_def_id.clone());
+        core_lib
+            .schemes
+            .insert(is_unwinding_def_id, is_unwinding_ty);
+
+        let load_message_def_id = LibraryDefId {
+            module: ModulePath::from("core::panic"),
+            index: 1,
+        };
+        let load_message_path = ItemPath::new("core::panic", vec!["__panic_load_message".into()]);
+        let load_message_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::string())));
+        core_lib.register_name(load_message_path, load_message_def_id.clone());
+        core_lib
+            .schemes
+            .insert(load_message_def_id, load_message_ty);
+
+        let print_trace_def_id = LibraryDefId {
+            module: ModulePath::from("core::panic"),
+            index: 2,
+        };
+        let print_trace_path = ItemPath::new("core::panic", vec!["__panic_print_trace".into()]);
+        let print_trace_ty = TyScheme::from_mono(Ty::Func(vec![], Box::new(Ty::unit())));
+        core_lib.register_name(print_trace_path, print_trace_def_id.clone());
+        core_lib.schemes.insert(print_trace_def_id, print_trace_ty);
+
+        // print (used by test harness)
+        let print_def_id = LibraryDefId {
+            module: ModulePath::from("core::io"),
+            index: 1,
+        };
+        let print_path = ItemPath::new("core::io", vec!["print".into()]);
+        let print_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
+        core_lib.register_name(print_path, print_def_id.clone());
+        core_lib.schemes.insert(print_def_id, print_ty);
+
+        let mut libraries = LoadedLibraries::default();
+        libraries.add(ModulePath::from("core"), core_lib);
+        libraries
+    }
+
     fn setup_test_workspace(src: &str) -> (Database, FileId) {
         let db = Database::new();
         let mut workspace = WorkspaceSnapshot::new();
@@ -5025,11 +5245,11 @@ mod tests {
         db.set_input::<CompilerOptions>(
             (),
             CompilerOptions {
-                no_core: true,
+                no_core: false,
                 test_mode: false,
             },
         );
-        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        db.set_input::<LoadedLibraries>((), stub_core_library());
         FileSource::new(&db, file_id, src.to_string());
         FileMetadata::new(
             &db,
@@ -5062,11 +5282,11 @@ mod tests {
         db.set_input::<CompilerOptions>(
             (),
             CompilerOptions {
-                no_core: true,
+                no_core: false,
                 test_mode: false,
             },
         );
-        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        db.set_input::<LoadedLibraries>((), stub_core_library());
         (db, file_ids)
     }
 
@@ -6555,11 +6775,11 @@ pub fn main() -> u32 {
         db.set_input::<CompilerOptions>(
             (),
             CompilerOptions {
-                no_core: true,
+                no_core: false,
                 test_mode: false,
             },
         );
-        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        db.set_input::<LoadedLibraries>((), stub_core_library());
 
         FileSource::new(
             &db,
@@ -6643,11 +6863,11 @@ pub fn main() -> u32 {
         db.set_input::<CompilerOptions>(
             (),
             CompilerOptions {
-                no_core: true,
+                no_core: false,
                 test_mode: false,
             },
         );
-        LoadedLibraries::new(&db, (), HashMap::new(), HashMap::new());
+        db.set_input::<LoadedLibraries>((), stub_core_library());
 
         FileSource::new(&db, entry_file, "pub fn main() -> u32 { 0u32 }".to_string());
         FileMetadata::new(
@@ -7021,83 +7241,7 @@ pub fn main() -> string {
                 test_mode: true,
             },
         );
-
-        // Build stub core library via LoadedLibraries so auto-import works
-        let mut core_lib = LibraryData::default();
-        core_lib.modules.push(ModulePath::from("core"));
-        core_lib.modules.push(ModulePath::from("core::io"));
-        core_lib.modules.push(ModulePath::from("core::process"));
-
-        // string struct in core module
-        let string_def_id = LibraryDefId {
-            module: ModulePath::from("core"),
-            index: 0,
-        };
-        let string_path = ItemPath::new("core", vec!["string".into()]);
-        let string_ty = TyScheme::from_mono(Ty::Func(
-            vec![Ty::rawptr(Ty::u8()), Ty::uint(), Ty::uint()],
-            Box::new(Ty::string()),
-        ));
-        core_lib.register_name(string_path.clone(), string_def_id.clone());
-        core_lib
-            .schemes
-            .insert(string_def_id.clone(), string_ty.clone());
-        core_lib.structs.insert(
-            string_def_id.clone(),
-            StructDef {
-                target: DefTarget::Library(string_def_id),
-                path: string_path,
-                ty: string_ty,
-                fields: vec![
-                    StructField {
-                        name: "raw_ptr".to_string(),
-                        ty: TyScheme::from_mono(Ty::rawptr(Ty::u8())),
-                    },
-                    StructField {
-                        name: "len".to_string(),
-                        ty: TyScheme::from_mono(Ty::uint()),
-                    },
-                    StructField {
-                        name: "char_len".to_string(),
-                        ty: TyScheme::from_mono(Ty::uint()),
-                    },
-                ],
-            },
-        );
-
-        // proc_exit in core module
-        let proc_exit_def_id = LibraryDefId {
-            module: ModulePath::from("core::process"),
-            index: 1,
-        };
-        let proc_exit_path = ItemPath::new("core::process", vec!["proc_exit".into()]);
-        let proc_exit_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
-        core_lib.register_name(proc_exit_path, proc_exit_def_id.clone());
-        core_lib.schemes.insert(proc_exit_def_id, proc_exit_ty);
-
-        // puts in core::io module
-        let puts_def_id = LibraryDefId {
-            module: ModulePath::from("core::io"),
-            index: 0,
-        };
-        let puts_path = ItemPath::new("core::io", vec!["puts".into()]);
-        let puts_ty = TyScheme::from_mono(Ty::Func(vec![Ty::string()], Box::new(Ty::unit())));
-        core_lib.register_name(puts_path, puts_def_id.clone());
-        core_lib.schemes.insert(puts_def_id, puts_ty);
-
-        // print in core::io module
-        let print_def_id = LibraryDefId {
-            module: ModulePath::from("core::io"),
-            index: 1,
-        };
-        let print_path = ItemPath::new("core::io", vec!["print".into()]);
-        let print_ty = TyScheme::from_mono(Ty::Func(vec![Ty::int()], Box::new(Ty::unit())));
-        core_lib.register_name(print_path, print_def_id.clone());
-        core_lib.schemes.insert(print_def_id, print_ty);
-
-        let mut libraries = LoadedLibraries::default();
-        libraries.add(ModulePath::from("core"), core_lib);
-        db.set_input::<LoadedLibraries>((), libraries);
+        db.set_input::<LoadedLibraries>((), stub_core_library());
 
         (db, file_id)
     }

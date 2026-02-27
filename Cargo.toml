@@ -8,7 +8,7 @@ edition = "2024"
 
 [workspace]
 members = [
-    "crates/wasi_malloc",
+    "crates/wasi_builtins",
     "crates/ray-cfg",
     "crates/ray-codegen",
     "crates/ray-core",

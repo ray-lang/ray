@@ -1,0 +1,10 @@
+[package]
+name = "wasi_builtins"
+version = "0.1.0"
+authors = ["Jeremy Jacobson <me@jjacobson.io>"]
+edition = "2021"
+
+[dependencies]
+
+[lib]
+crate-type = ["cdylib"]

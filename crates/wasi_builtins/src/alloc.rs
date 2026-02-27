@@ -1,6 +1,3 @@
-#![no_std]
-#![cfg(target_arch = "wasm32")]
-
 use core::ptr;
 
 const PAGE_SIZE: usize = 65536;
@@ -102,9 +99,4 @@ pub unsafe extern "C" fn __wasi_dealloc(ptr: *mut u8, size: usize, align: usize)
         FREE_LISTS[idx] = ptr;
     }
     // Oversized blocks are leaked (not returned to a free list).
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
 }

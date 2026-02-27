@@ -3,6 +3,8 @@
 # The parser uses global CURRENT_DEF_ID to track which definition is being parsed,
 # which doesn't work with parallel test execution.
 RUST_TEST_THREADS = "1"
+LLVM_SYS_211_PREFIX = { value = ".local/llvm", relative = true }
+LLVM_SYS_CONFIG_PATH = { value = ".local/llvm/bin/llvm-config", relative = true }
 
 [profile.dev]
 codegen-units = 8
