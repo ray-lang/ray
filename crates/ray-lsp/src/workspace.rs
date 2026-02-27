@@ -202,7 +202,10 @@ impl WorkspaceManager {
         let has_ray_toml = root.join("ray.toml").exists();
         let db = if has_ray_toml {
             let cache_path = root.join(".ray").join("cache.redb");
-            match RedbBackend::new(cache_path.as_ref().to_path_buf()) {
+            match RedbBackend::new(
+                cache_path.as_ref().to_path_buf(),
+                ray_driver::BUILD_FINGERPRINT,
+            ) {
                 Ok(backend) => Database::with_persistence(Box::new(backend)),
                 Err(e) => {
                     log::warn!("failed to open cache at {}: {}", cache_path, e);

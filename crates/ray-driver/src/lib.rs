@@ -4,6 +4,8 @@ use std::{
     path::PathBuf,
 };
 
+include!(concat!(env!("OUT_DIR"), "/fingerprint.rs"));
+
 use ray_cfg::ProjectCfg;
 use ray_codegen::{
     codegen::{CodegenOptions, llvm},
@@ -222,7 +224,7 @@ impl Driver {
         let db = if let Some(ref ws_root) = self.workspace_root {
             let cache_path = ws_root.join(".ray").join("cache.redb");
             log::info!("persistence enabled at {}", cache_path.display());
-            match RedbBackend::new(cache_path) {
+            match RedbBackend::new(cache_path, BUILD_FINGERPRINT) {
                 Ok(backend) => Database::with_persistence(Box::new(backend)),
                 Err(e) => {
                     log::warn!(

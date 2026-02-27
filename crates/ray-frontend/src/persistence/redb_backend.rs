@@ -9,14 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::persistence::{CacheMeta, PersistenceBackend, QueryId};
 
-/// Bump this to invalidate all redb caches.
-const CACHE_VERSION: u64 = 1;
-
 /// Table definitions.
 /// Key: (query_id, key_hash), Value: serialized bytes.
 const META_TABLE: TableDefinition<(u32, u64), &[u8]> = TableDefinition::new("meta");
 const VALUE_TABLE: TableDefinition<(u32, u64), &[u8]> = TableDefinition::new("values");
-const INFO_TABLE: TableDefinition<&str, u64> = TableDefinition::new("info");
+const INFO_TABLE: TableDefinition<&str, &str> = TableDefinition::new("info");
 
 /// On-disk format for metadata entries.
 #[derive(Serialize, Deserialize)]
@@ -53,7 +50,7 @@ fn to_io(e: impl std::fmt::Display) -> io::Error {
 }
 
 impl RedbBackend {
-    pub fn new(path: PathBuf) -> io::Result<Self> {
+    pub fn new(path: PathBuf, fingerprint: &str) -> io::Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -61,15 +58,15 @@ impl RedbBackend {
 
         let db = if path.exists() {
             let db = redb::Database::create(&path).map_err(to_io)?;
-            if !Self::check_version(&db)? {
+            if !Self::check_fingerprint(&db, fingerprint)? {
                 drop(db);
                 std::fs::remove_file(&path)?;
-                Self::create_fresh(&path)?
+                Self::create_fresh(&path, fingerprint)?
             } else {
                 db
             }
         } else {
-            Self::create_fresh(&path)?
+            Self::create_fresh(&path, fingerprint)?
         };
 
         Ok(Self {
@@ -79,26 +76,27 @@ impl RedbBackend {
         })
     }
 
-    fn create_fresh(path: &Path) -> io::Result<redb::Database> {
+    fn create_fresh(path: &Path, fingerprint: &str) -> io::Result<redb::Database> {
         let db = redb::Database::create(path).map_err(to_io)?;
         let txn = db.begin_write().map_err(to_io)?;
         {
             let mut info = txn.open_table(INFO_TABLE).map_err(to_io)?;
-            info.insert("version", CACHE_VERSION).map_err(to_io)?;
+            info.insert("build_fingerprint", fingerprint)
+                .map_err(to_io)?;
         }
         txn.commit().map_err(to_io)?;
         Ok(db)
     }
 
-    fn check_version(db: &redb::Database) -> io::Result<bool> {
+    fn check_fingerprint(db: &redb::Database, fingerprint: &str) -> io::Result<bool> {
         let txn = db.begin_read().map_err(to_io)?;
         let table = match txn.open_table(INFO_TABLE) {
             Ok(table) => table,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
             Err(e) => return Err(to_io(e)),
         };
-        match table.get("version").map_err(to_io)? {
-            Some(guard) => Ok(guard.value() == CACHE_VERSION),
+        match table.get("build_fingerprint").map_err(to_io)? {
+            Some(guard) => Ok(guard.value() == fingerprint),
             None => Ok(false),
         }
     }
@@ -265,37 +263,39 @@ mod tests {
 
     use crate::persistence::{
         PersistenceBackend as _, QueryId,
-        redb_backend::{CACHE_VERSION, INFO_TABLE, RedbBackend},
+        redb_backend::{INFO_TABLE, RedbBackend},
     };
+
+    const TEST_FINGERPRINT: &str = "abc1234";
 
     #[test]
     fn new_backend_creates_fresh_db() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
 
-        let _backend = RedbBackend::new(path.clone()).unwrap();
+        let _backend = RedbBackend::new(path.clone(), TEST_FINGERPRINT).unwrap();
 
         assert!(path.exists());
     }
 
     #[test]
-    fn new_backend_invalidates_on_version_mismatch() {
+    fn new_backend_invalidates_on_fingerprint_mismatch() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
 
-        // Create a db with wrong version
+        // Create a db with a different fingerprint
         {
             let db = redb::Database::create(&path).unwrap();
             let txn = db.begin_write().unwrap();
             {
                 let mut info = txn.open_table(INFO_TABLE).unwrap();
-                info.insert("version", CACHE_VERSION + 1).unwrap();
+                info.insert("build_fingerprint", "old_fingerprint").unwrap();
             }
             txn.commit().unwrap();
         }
 
         // Should recreate the db
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         // Should be empty (no stale data)
         let mut count = 0;
@@ -309,7 +309,7 @@ mod tests {
     fn stage_write_and_flush() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         let query = QueryId(1);
         backend
@@ -335,7 +335,7 @@ mod tests {
     fn load_meta_returns_none_for_missing_entry() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         assert!(backend.load_meta(QueryId(1), 999).unwrap().is_none());
     }
@@ -344,7 +344,7 @@ mod tests {
     fn load_value_returns_none_for_missing_entry() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         assert!(backend.load_value(QueryId(1), 999).unwrap().is_none());
     }
@@ -353,7 +353,7 @@ mod tests {
     fn flush_with_no_staged_entries_is_noop() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         backend.flush().unwrap();
     }
@@ -362,7 +362,7 @@ mod tests {
     fn stage_delete_removes_entries() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         let query = QueryId(1);
         backend
@@ -390,7 +390,7 @@ mod tests {
     fn load_all_meta_iterates_entries() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         let query = QueryId(2);
         backend
@@ -418,7 +418,7 @@ mod tests {
     fn load_all_meta_returns_ok_for_missing_query() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         let mut count = 0;
         backend
@@ -431,7 +431,7 @@ mod tests {
     fn flush_overwrites_existing_entry() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         let query = QueryId(1);
         backend
@@ -466,7 +466,7 @@ mod tests {
     fn load_all_meta_only_returns_matching_query() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("cache.redb");
-        let backend = RedbBackend::new(path).unwrap();
+        let backend = RedbBackend::new(path, TEST_FINGERPRINT).unwrap();
 
         // Write entries for two different queries
         backend
